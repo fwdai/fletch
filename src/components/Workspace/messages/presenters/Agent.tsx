@@ -1,5 +1,5 @@
-import { Markdown } from "@/components/Markdown";
 import { renderToolResult } from "@/util/toolText";
+import { HostMarkdown } from "../host";
 import type { ToolPresenter } from "./types";
 import { getStringField } from "./util";
 
@@ -45,7 +45,7 @@ export const agentPresenter: ToolPresenter = {
               fontSize: "var(--fs-base)",
             }}
           >
-            <Markdown>{renderToolResult(result.content)}</Markdown>
+            <HostMarkdown text={renderToolResult(result.content)} />
           </div>
         )}
       </>

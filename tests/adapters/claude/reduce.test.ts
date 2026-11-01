@@ -274,6 +274,66 @@ describe("claudeAdapter.reduce — extended thinking", () => {
     expect(twice).toEqual(once);
   });
 
+  // Claude persists each content block as its own record, so the thinking
+  // before a tool call is a record holding nothing else. The rebuild that
+  // replaces the live log at turn end runs through here; dropping these made
+  // a turn's reasoning vanish from the chat the moment the turn ended.
+  const assistant = (block: Record<string, unknown>) => ({
+    type: "assistant",
+    message: { id: "m1", role: "assistant", content: [block] },
+  });
+  const shape = (items: ChatItem[]) =>
+    items.map((i) => (i.kind === "notice" ? `reasoning:${i.text}` : i.kind));
+
+  it("keeps thinking-only transcript records, in order", () => {
+    const lines = [
+      { type: "user", message: { role: "user", content: "go" } },
+      assistant({ type: "thinking", thinking: "Check the reducer first.", signature: "s" }),
+      assistant({ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a" } }),
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "t1", content: "x" }],
+        },
+      },
+      assistant({ type: "thinking", thinking: "Now edit it.", signature: "s" }),
+      assistant({ type: "text", text: "Done." }),
+    ];
+    expect(shape(reduceAll(claudeAdapter.normalizeTranscript(lines)))).toEqual([
+      "user_message",
+      "reasoning:Check the reducer first.",
+      "tool_call",
+      "tool_result",
+      "reasoning:Now edit it.",
+      "agent_message",
+    ]);
+  });
+
+  // Under `thinkingDisplay: "updates"` the reasoning itself arrives as "" plus
+  // a signature, and the short progress updates as readable blocks. A
+  // redacted block has nothing to show and leaves no item; the updates keep
+  // their place.
+  it("drops redacted thinking and keeps the readable updates in place", () => {
+    const redacted = assistant({ type: "thinking", thinking: "", signature: "r" });
+    const lines = [
+      { type: "user", message: { role: "user", content: "go" } },
+      redacted,
+      assistant({ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a" } }),
+      redacted,
+      assistant({ type: "thinking", thinking: "Now edit it.", signature: "s" }),
+      assistant({ type: "text", text: "Done." }),
+    ];
+    expect(shape(reduceAll(claudeAdapter.normalizeTranscript(lines)))).toEqual([
+      "user_message",
+      "tool_call",
+      "reasoning:Now edit it.",
+      "agent_message",
+    ]);
+    // Live, the redacted block reaches the reducer too, and still leaves nothing.
+    expect(shape(reduceAll([redacted] as RawEvent[]))).toEqual([]);
+  });
+
   it("exposes a reasoning-visible policy", () => {
     expect(claudeAdapter.policy["notice:reasoning"]).toBe("show");
   });

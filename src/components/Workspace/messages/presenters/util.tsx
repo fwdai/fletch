@@ -1,44 +1,15 @@
 import type { ReactNode } from "react";
 import { renderToolResult } from "@/util/toolText";
 
-/** Mono-styled block used by presenter expanded views. `label` is a short
- *  prefix (e.g. "$" for a shell command, "file" for a path). */
-export function ToolBlock({
-  label,
-  isError,
-  children,
-}: {
-  label?: string;
-  isError?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <pre
-      style={{
-        margin: 0,
-        padding: "4px 0",
-        fontFamily: "var(--font-mono)",
-        fontSize: "var(--fs-sm)",
-        color: isError ? "var(--danger)" : "var(--fg-2)",
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-word",
-      }}
-    >
-      {label && <span style={{ color: "var(--fg-3)", marginRight: 8 }}>{label}</span>}
-      {children}
-    </pre>
-  );
-}
-
 /** Compact "+X −Y" line-count badge for file-editing tools. Renders nothing
  *  when there is no net change. Colors mirror the git panel's add/rem tokens. */
 export function DiffCount({ additions, deletions }: { additions: number; deletions: number }) {
   if (additions === 0 && deletions === 0) return null;
   return (
-    <span style={{ fontFamily: "var(--font-mono)", marginLeft: 6 }}>
-      {additions > 0 && <span style={{ color: "var(--success)" }}>+{additions}</span>}
+    <span className="diff-count">
+      {additions > 0 && <span className="add">+{additions}</span>}
       {additions > 0 && deletions > 0 && " "}
-      {deletions > 0 && <span style={{ color: "var(--danger)" }}>−{deletions}</span>}
+      {deletions > 0 && <span className="del">−{deletions}</span>}
     </span>
   );
 }
@@ -54,7 +25,7 @@ export function countResultLines(result: { content: unknown } | null): number {
  *  when empty. */
 export function SummaryNote({ children }: { children: ReactNode }) {
   if (children == null || children === "") return null;
-  return <span style={{ color: "var(--fg-3)", marginLeft: 6 }}>{children}</span>;
+  return <span className="summary-note">{children}</span>;
 }
 
 /** Type-narrowing helper: pull a string field from an unknown input bag. */
@@ -79,6 +50,114 @@ export function getCommandField(input: unknown, field = "command"): string {
     if (Array.isArray(v)) return v.map((part) => String(part)).join(" ");
   }
   return "";
+}
+
+/** The part of a shell command worth naming: its first line, without the
+ *  `cd <dir> &&` and `VAR=value` preamble agents put in front of the real
+ *  command, nor the `bash -lc` wrapper some adapters hand over. */
+export function commandHead(cmd: string, max = 60): string {
+  let head = cmd.trim();
+  const wrapped = /^(?:\/\S*\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/.exec(head);
+  if (wrapped) head = wrapped[2].trim();
+  for (;;) {
+    const next = head
+      .replace(/^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*/, "")
+      .replace(/^[A-Z_][A-Z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+/, "");
+    if (next === head) break;
+    head = next;
+  }
+  return firstLineOf(head, max);
+}
+
+/** Present participles of the verbs an agent opens its own description of a
+ *  command with ("Run the unit tests"). A closed list on purpose: an unknown
+ *  first word ("Git status", "Python script") would conjugate into nonsense,
+ *  so it misses here and the live line names the command instead. */
+const PARTICIPLES: Record<string, string> = {
+  add: "Adding",
+  apply: "Applying",
+  build: "Building",
+  bump: "Bumping",
+  check: "Checking",
+  clean: "Cleaning",
+  clone: "Cloning",
+  commit: "Committing",
+  compare: "Comparing",
+  compile: "Compiling",
+  confirm: "Confirming",
+  copy: "Copying",
+  count: "Counting",
+  create: "Creating",
+  delete: "Deleting",
+  diff: "Diffing",
+  download: "Downloading",
+  execute: "Executing",
+  extract: "Extracting",
+  fetch: "Fetching",
+  find: "Finding",
+  format: "Formatting",
+  generate: "Generating",
+  get: "Getting",
+  inspect: "Inspecting",
+  install: "Installing",
+  kill: "Killing",
+  launch: "Launching",
+  lint: "Linting",
+  list: "Listing",
+  locate: "Locating",
+  look: "Looking",
+  make: "Making",
+  measure: "Measuring",
+  merge: "Merging",
+  move: "Moving",
+  open: "Opening",
+  preview: "Previewing",
+  print: "Printing",
+  pull: "Pulling",
+  push: "Pushing",
+  query: "Querying",
+  read: "Reading",
+  rebase: "Rebasing",
+  remove: "Removing",
+  rename: "Renaming",
+  rerun: "Re-running",
+  "re-run": "Re-running",
+  restart: "Restarting",
+  run: "Running",
+  scan: "Scanning",
+  search: "Searching",
+  set: "Setting",
+  show: "Showing",
+  stage: "Staging",
+  start: "Starting",
+  stop: "Stopping",
+  sync: "Syncing",
+  test: "Testing",
+  trace: "Tracing",
+  typecheck: "Typechecking",
+  update: "Updating",
+  validate: "Validating",
+  verify: "Verifying",
+  view: "Viewing",
+  wait: "Waiting",
+  watch: "Watching",
+  write: "Writing",
+};
+
+/** "Run the unit tests" → "Running the unit tests"; null when the first word
+ *  isn't a verb we know (see PARTICIPLES). */
+export function progressive(description: string): string | null {
+  const m = /^(\S+)(.*)$/s.exec(firstLineOf(description.trim(), 80));
+  if (!m) return null;
+  const ing = PARTICIPLES[m[1].toLowerCase()];
+  return ing ? `${ing}${m[2]}` : null;
+}
+
+/** A tool's name as a person would say it: MCP's `mcp__server__tool` drops its
+ *  namespace, and snake_case reads as words (`update_plan` → "update plan"). */
+export function prettyToolName(name: string): string {
+  const bare = name.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, "").replace(/^[\w-]+\./, "");
+  return bare.includes("_") ? bare.replace(/_+/g, " ").trim() : bare;
 }
 
 /** One-line, punctuation-free view of an arbitrary tool input, for tools with

@@ -22,6 +22,8 @@
 @import "./components/Workspace/Chat.css";
 @import "./components/Workspace/messages/UserInput/UserInput.css";
 @import "./components/Workspace/messages/SubagentCard.css";
+/* After UserInput.css: restyles the `.m-tool` row it first defined. */
+@import "./components/Workspace/messages/Steps.css";
 @import "./components/Workspace/SubagentThread/SubagentThread.css";
 @import "./components/Composer/Composer.css";
 @import "./components/Composer/PrimaryControl/PrimaryControl.css";

@@ -1,9 +1,9 @@
 import type { PublishApproval } from "@desktop/api/types/sandbox";
 import { Icon } from "@desktop/components/Icon";
+import { getPresenter } from "@desktop/components/Workspace/messages/presenters";
 import type { ChatItem } from "../../adapters";
 import { providerLabel } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";
-import { toolArg } from "../../lib/tools";
 import { useStore } from "../../store";
 
 type ToolCall = Extract<ChatItem, { kind: "tool_call" }>;
@@ -35,7 +35,7 @@ export function ApprovalCard({
       <div className="why">
         {providerLabel(provider)} wants to run {call ? call.name : "a tool"} outside the sandbox.
       </div>
-      {call && <div className="cmd">{toolArg(call.input)}</div>}
+      {call && <div className="cmd">{getPresenter(call.name).summary(call, null)}</div>}
       <div className="acts">
         <button type="button" className="btn ghost" onClick={() => answer("deny")}>
           Deny

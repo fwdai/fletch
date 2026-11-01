@@ -1,10 +1,10 @@
-import { memo, type ReactNode, useMemo } from "react";
+import { memo, type ReactNode } from "react";
+import type { ChatItem } from "@/adapters/types";
 import { AttachmentList } from "@/components/Composer/AttachmentList";
 import { Markdown } from "@/components/Markdown";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { APP_ACTION_PREFIX } from "@/delegation";
 import { expandedCommandInvocation } from "@/helpers";
-import { type ChatItem, taskForToolUse, useAppStore } from "@/store";
 import {
   isSystemTurn,
   stripInjectedInstructions,
@@ -12,11 +12,11 @@ import {
 } from "@/util/instructions";
 import { RewindMenu } from "../RewindMenu";
 import { isSubagentCall } from "../SubagentThread/thread";
+import { useTranscriptHost } from "./host";
 import type { ViewItem } from "./pair";
-import { getPresenter } from "./presenters";
+import { ToolStep } from "./StepGroup";
 import { SubagentCard } from "./SubagentCard";
 import { ToolResultItem } from "./ToolResultItem";
-import { ToolRow } from "./ToolRow";
 import { UndeliveredMarker } from "./UndeliveredMarker";
 import { UserInput } from "./UserInput";
 import { isUserInputTool } from "./UserInput/parse";
@@ -51,14 +51,11 @@ export const MessageItem = memo(function MessageItem({
    *  DOM. Set only for top-level navigable user prompts. */
   turnId?: number;
 }) {
-  // The background task this row launched, if any (a backgrounded sub-agent or
-  // background Bash). It keeps reporting after the launch result lands and the
-  // agent goes idle, so it — not `busy` — says whether the row is still live.
-  // The per-agent map is selected whole (a stable reference); the lookup runs
-  // outside the selector.
-  const tasks = useAppStore((s) => (agentId ? s.backgroundTasks[agentId] : undefined));
-  const toolUseId = item.kind === "tool_pair" ? item.call.id : undefined;
-  const task = useMemo(() => taskForToolUse(tasks, toolUseId), [tasks, toolUseId]);
+  // The background task a sub-agent launch started, if any. It keeps reporting
+  // after the launch result lands and the agent goes idle, so it — not `busy`
+  // — says whether the card is still live.
+  const { taskFor } = useTranscriptHost();
+  const task = item.kind === "tool_pair" ? taskFor(item.call.id) : undefined;
 
   switch (item.kind) {
     case "user_message": {
@@ -147,34 +144,10 @@ export const MessageItem = memo(function MessageItem({
           />
         );
       }
-      const presenter = getPresenter(item.call.name);
-      // In flight: the agent is busy and this call has no result yet (a long
-      // Bash), or the background task it launched (background Bash) is still
-      // running — its launch result lands at once, so `busy && !result` alone
-      // would settle the row too early.
-      const taskRunning = task?.status === "running";
-      const taskFailed = task?.status === "failed";
-      const running = (Boolean(busy) && !item.result) || taskRunning;
+      // A tool call outside a run of steps reaches here only on a surface
+      // that renders items without the row model; it draws the same row.
       return (
-        <ToolRow
-          name={presenter.title ?? item.call.name}
-          icon={presenter.icon}
-          isError={item.result?.is_error || taskFailed}
-          running={running}
-          toolUseId={item.call.id}
-          agentId={agentId}
-          summary={
-            <>
-              {presenter.summary(item.call, item.result)}
-              {taskFailed && (
-                <span style={{ color: "var(--danger)", marginLeft: 8 }}>
-                  · {task.failureStatus ?? "failed"}
-                </span>
-              )}
-            </>
-          }
-          expanded={presenter.expanded(item.call, item.result)}
-        />
+        <ToolStep call={item.call} result={item.result} agentId={agentId} busy={Boolean(busy)} />
       );
     }
     case "tool_call": {
@@ -184,15 +157,7 @@ export const MessageItem = memo(function MessageItem({
       if (isUserInputTool(item.name)) {
         return <UserInput tool={item.name} call={item} result={null} agentId={agentId} />;
       }
-      const presenter = getPresenter(item.name);
-      return (
-        <ToolRow
-          name={presenter.title ?? item.name}
-          icon={presenter.icon}
-          summary={presenter.summary(item, null)}
-          expanded={presenter.expanded(item, null)}
-        />
-      );
+      return <ToolStep call={item} result={null} agentId={agentId} busy={Boolean(busy)} />;
     }
     case "tool_result":
       return <ToolResultItem item={item} />;

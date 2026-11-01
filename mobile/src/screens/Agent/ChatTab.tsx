@@ -1,6 +1,7 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
+import { endsInSteps } from "@desktop/components/Workspace/messages/rows";
 import { type MutableRefObject, useEffect, useMemo } from "react";
-import { applyPolicy, type ChatItem, getAdapter } from "../../adapters";
+import { type ChatItem, getAdapter } from "../../adapters";
 import { isAgentBusy, providerLabel } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { ignore } from "../../lib/ignore";
@@ -12,7 +13,7 @@ import { LoadOlder } from "./LoadOlder";
 import { LogPlaceholder } from "./LogState";
 import { ProposalCard } from "./ProposalCard";
 import { SubagentStrip } from "./SubagentStrip";
-import { Transcript } from "./Transcript";
+import { Transcript, useVisibleItems } from "./Transcript";
 
 export function ChatTab({
   agent,
@@ -60,8 +61,8 @@ export function ChatTab({
     if (unread && connected) void loadAgent(agent.id).catch(ignore);
   }, [unread, connected, agent.id, loadAgent]);
 
-  const policy = getAdapter(agent.provider).policy;
-  const visible = useMemo(() => applyPolicy(log ?? [], policy), [log, policy]);
+  // The one derivation of what the log shows; the transcript renders it as is.
+  const visible = useVisibleItems(log, getAdapter(agent.provider).policy);
   const pendingIds = Object.keys(pending ?? {});
   const publishForAgent = useMemo(
     () => publishApprovals.filter((r) => r.agent_id === agent.id),
@@ -101,6 +102,8 @@ export function ChatTab({
       <div className="scroll chat" ref={scroller} onScroll={onScroll}>
         <LoadOlder agentId={agent.id} scroller={scroller} />
         <Transcript
+          agentId={agent.id}
+          provider={agent.provider}
           items={visible}
           tasks={byToolUse}
           busy={busy}
@@ -124,7 +127,9 @@ export function ChatTab({
         {agent.status === "error" && (
           <ErrorCard agentId={agent.id} message={agent.last_error ?? null} />
         )}
-        {busy && pendingIds.length === 0 && !loading && (
+        {/* A run of steps carries its own live line; this stands in only
+            before the first step of the turn, or after prose. */}
+        {busy && pendingIds.length === 0 && !loading && !endsInSteps(visible) && (
           <div className="working rise">
             <span className="working-dots">
               <i />

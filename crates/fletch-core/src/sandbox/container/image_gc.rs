@@ -8,9 +8,100 @@
 //! survives — the under-reclaim bias the container sweep takes too.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use super::images::{image_repo, image_tag};
 use super::ContainerProvider;
+
+// ── Launch holds ──────────────────────────────────────────────────────────────
+//
+// A launch runs the image *id* its tag named when it looked (the engines'
+// `pin_image`), so the capability probe and the `run` see one image while a
+// background rebuild may retag at any moment. An id, though, holds no
+// reference: a rebuild's sweep finds the untagged predecessor and removes it,
+// and a launch between its inspect and its `run` would start from an image
+// that is gone — by a sweep of this process or of another Fletch beside it,
+// since side-by-side instances share the daemon (`util::container_name`).
+//
+// So the pin is a *tag*, `fletch-launch:<unix secs>-<nonce>` ([`launch_tag`]),
+// written to the daemon where every sweep lists it: `pin_image` tags the
+// provider's image first and reads the id off the tag, so the id it hands
+// out is held from the moment it was resolved. A row under a launch tag
+// younger than [`LAUNCH_HOLD`] keeps its image out of the candidates
+// ([`launch_holds`]); past that, the tag itself is removed — an untag, which
+// leaves a predecessor dangling for the pass after. A launch resolves its
+// image at `create`, seconds after the pin, the probe included, so the hold
+// outlives it by a wide margin; and whoever sweeps next reclaims the tag,
+// this process or another, so a crashed instance leaves nothing held for
+// good. What a tag can't do is reach back into a sweep that listed before it
+// was written, which is why a sweep looks at a dangling id once more before
+// removing it (the runtimes' `still_dangling`).
+
+/// The repository launch holds are written under; never a provider's.
+pub(crate) const LAUNCH_REPO: &str = "fletch-launch";
+
+/// How long a launch tag holds its image from the GC.
+const LAUNCH_HOLD: Duration = Duration::from_secs(120);
+
+/// A fresh launch hold for right now: `fletch-launch:<now_secs>-<nonce>`.
+pub(crate) fn launch_tag(now_secs: u64) -> String {
+    format!("{LAUNCH_REPO}:{now_secs}-{}", super::util::nonce())
+}
+
+/// Seconds since the epoch, as a launch tag records them.
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// When a launch tag was written, or `None` for a tag of another shape.
+fn launch_tagged_at(tag: &str) -> Option<u64> {
+    tag.split_once('-')?.0.parse().ok()
+}
+
+/// What the launch tags among a listing say right now.
+pub(crate) struct LaunchHolds {
+    /// Ids a launch still holds: every row of theirs stays out of a sweep.
+    pub(crate) held: HashSet<String>,
+    /// Launch tags past their hold, named for the sweep to remove.
+    pub(crate) expired: Vec<String>,
+}
+
+/// Read the launch holds off `rows` at `now_secs`. A tag dated in the future
+/// (a clock set back) reads as expired, not as held until the clock catches
+/// up; one of another shape in the launch repo is nobody's and left alone.
+pub(crate) fn launch_holds(rows: &[ImageRow], now_secs: u64) -> LaunchHolds {
+    let mut held = HashSet::new();
+    let mut expired = Vec::new();
+    for row in rows {
+        if row.compare_repo() != LAUNCH_REPO {
+            continue;
+        }
+        let Some(at) = launch_tagged_at(&row.tag) else {
+            continue;
+        };
+        if now_secs.abs_diff(at) < LAUNCH_HOLD.as_secs() {
+            held.insert(row.id.clone());
+        } else {
+            expired.push(row.named());
+        }
+    }
+    LaunchHolds { held, expired }
+}
+
+/// `rows` less every image a launch holds: what a sweep selects from. Ids are
+/// compared prefix-tolerantly ([`id_matches`]) in case the two listings
+/// truncate differently.
+pub(crate) fn unheld_rows(rows: Vec<ImageRow>, held: &HashSet<String>) -> Vec<ImageRow> {
+    if held.is_empty() {
+        return rows;
+    }
+    rows.into_iter()
+        .filter(|row| !held.iter().any(|h| id_matches(h, &row.id)))
+        .collect()
+}
 
 /// `images` line format for the GC listings. Both runtimes print `<none>` for a
 /// dangling image's repository and tag.
@@ -297,6 +388,54 @@ mod tests {
             refs,
             vec!["fletch-agent:0dab1e000000".to_string(), "ccc".to_string()],
         );
+    }
+
+    /// A launch tag holds its image out of a sweep while it is young — every
+    /// row of that image, the dangling one included — and is itself removed
+    /// once it isn't; a tag of another shape in the launch repo is nobody's.
+    #[test]
+    fn launch_holds_keep_an_image_and_then_expire() {
+        let now = 1_700_000_000;
+        let tag = launch_tag(now);
+        let (repo, held_tag) = tag.split_once(':').unwrap();
+        assert_eq!(repo, LAUNCH_REPO);
+        assert_eq!(launch_tagged_at(held_tag), Some(now));
+        assert_eq!(launch_tagged_at("backup"), None);
+
+        let rows = vec![
+            // The predecessor a launch holds: untagged by the rebuild, held
+            // by the launch tag, so neither row is a candidate.
+            row("aaa", "<none>", "<none>"),
+            row("aaa", "localhost/fletch-launch", held_tag),
+            // A hold from a launch long gone: the tag goes, the image waits
+            // for the pass after.
+            row("bbb", "fletch-launch", "1600000000-cafe0000"),
+            // Dated in the future: expired, not held until then.
+            row("ccc", "fletch-launch", "9999999999-cafe0000"),
+            // Not a hold at all.
+            row("ddd", "fletch-launch", "backup"),
+            row("eee", "<none>", "<none>"),
+        ];
+        let holds = launch_holds(&rows, now + 30);
+        assert_eq!(holds.held, HashSet::from(["aaa".to_string()]));
+        assert_eq!(
+            holds.expired,
+            vec![
+                "fletch-launch:1600000000-cafe0000".to_string(),
+                "fletch-launch:9999999999-cafe0000".to_string(),
+            ],
+        );
+        let kept: Vec<String> = unheld_rows(rows.clone(), &holds.held)
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(kept, ["bbb", "ccc", "ddd", "eee"]);
+        assert_eq!(unheld_rows(rows.clone(), &HashSet::new()), rows);
+
+        // Past the hold, the same launch no longer holds anything.
+        let later = launch_holds(&rows, now + 200);
+        assert!(later.held.is_empty());
+        assert_eq!(later.expired.len(), 3);
     }
 
     #[test]

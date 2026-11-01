@@ -5,6 +5,7 @@
 import { type MutableRefObject, useEffect, useRef } from "react";
 import type { AgentRecord } from "@/api";
 import { ChatNav } from "../ChatNav";
+import { RevealQuery } from "./Disclosure";
 import { TranscriptRows } from "./TranscriptRows";
 import type { Transcript } from "./useTranscript";
 
@@ -24,6 +25,9 @@ interface Props {
   /** Suppress the turn navigator — while find-in-conversation is open (it owns
    *  that corner), or in the native rail, which is too narrow for it. */
   hideNav?: boolean;
+  /** The find-in-conversation query while the find bar is open. Folded rows
+   *  holding a match open for as long as it stands. */
+  revealQuery?: string;
 }
 
 export function TranscriptList({
@@ -34,6 +38,7 @@ export function TranscriptList({
   scrollRef,
   pinRef,
   hideNav,
+  revealQuery = "",
 }: Props) {
   const { turns, transcriptLoading, log } = transcript;
 
@@ -75,12 +80,14 @@ export function TranscriptList({
     <div className="chat-scroll-wrap">
       <div className="chat-scroll" ref={ref} onScroll={handleScroll}>
         <div className="chat-inner fade-in" key={agent.id}>
-          <TranscriptRows
-            agent={agent}
-            transcript={transcript}
-            liveBusy={liveBusy}
-            pending={pending}
-          />
+          <RevealQuery.Provider value={revealQuery.trim().toLowerCase()}>
+            <TranscriptRows
+              agent={agent}
+              transcript={transcript}
+              liveBusy={liveBusy}
+              pending={pending}
+            />
+          </RevealQuery.Provider>
         </div>
       </div>
       {!hideNav && <ChatNav scrollRef={ref} turns={turns} />}

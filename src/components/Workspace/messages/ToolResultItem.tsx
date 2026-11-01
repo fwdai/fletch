@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ChatItem } from "@/store";
+import type { ChatItem } from "@/adapters/types";
 import { firstLine } from "@/util/format";
 
 /** Companion to ToolUseItem — shows the tool's textual output,

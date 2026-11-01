@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use crate::error::Result;
 use crate::sandbox::container::freshness::{classify_freshness, version_refresh_wanted, Freshness};
+use crate::sandbox::container::image_gc;
 use crate::sandbox::container::images::{image_spec, image_tag, write_build_context};
 use crate::sandbox::container::progress::{self, BuildEvent};
 use crate::sandbox::container::ContainerProvider;
@@ -424,6 +425,64 @@ fn cache_image_version_post_build(
             "post-build container CLI version probe failed; version trigger stays inert for this image",
         ),
     }
+}
+
+/// The image id `tag` names right now in `connection`'s store, for a launch
+/// to run and probe by instead of the tag: a parity rebuild in the background
+/// retags at any moment (`resolve_image`), and the probe and the `podman run`
+/// after it have to see one image. The image is held for the launch by a
+/// `fletch-launch` tag written first and read for its id
+/// (`image_gc::launch_tag`: every sweep of this store, by this Fletch or one
+/// beside it, lists the tag and keeps the image while the tag is young), so
+/// the rebuild's sweep of the then-untagged predecessor can't take it from
+/// under the launch. `None` when podman couldn't tag or say, and the caller
+/// keeps the tag and vouches for nothing.
+pub(super) fn pin_image(connection: Option<&str>, tag: &str) -> Option<String> {
+    let hold = image_gc::launch_tag(image_gc::unix_now());
+    let tagged = cli::run_podman_on(connection, &["tag", tag, &hold], INSPECT_TIMEOUT).ok()?;
+    if !tagged.status.success() {
+        return None;
+    }
+    inspect_id_and_created(connection, &hold).map(|(id, _)| id)
+}
+
+/// Whether the claude in `image_id` on `connection` — the image this launch
+/// runs from, pinned (`pin_image`), whatever the host has — parses
+/// `--thinking-display`. Remembered by that id (content-addressed: the same
+/// id in two stores is the same image, a rebuild is a new one); probed inside
+/// the image, with the host's probe and reading
+/// (`agent::THINKING_DISPLAY_PROBE_ARGS`), the first time an id is seen —
+/// synchronously, so the first launch of an image gets the answer too, and
+/// once per app run. A probe that couldn't run is no answer: nothing is
+/// remembered and the next launch asks again. Only claude has the flag.
+pub(super) fn claude_thinking_summaries(
+    provider: ContainerProvider,
+    connection: Option<&str>,
+    image_id: &str,
+) -> bool {
+    if provider.id() != "claude" {
+        return false;
+    }
+    let identity = format!("podman image {image_id}");
+    if let Some(known) = crate::agent::thinking_display_known(&identity) {
+        return known;
+    }
+    let pid_label = crate::sandbox::container::labels::host_pid_label();
+    let mut args = vec![
+        "run",
+        "--rm",
+        "--label",
+        pid_label.as_str(),
+        image_id,
+        provider.image_bin(),
+    ];
+    args.extend(crate::agent::THINKING_DISPLAY_PROBE_ARGS);
+    let Ok(out) = cli::run_podman_on(connection, &args, VERSION_PROBE_TIMEOUT) else {
+        return false;
+    };
+    let supported = crate::agent::probe_shows_thinking_display(&out);
+    crate::agent::remember_thinking_display(&identity, supported);
+    supported
 }
 
 /// `(image id, creation timestamp)` for `tag` in `connection`'s store, or `None`

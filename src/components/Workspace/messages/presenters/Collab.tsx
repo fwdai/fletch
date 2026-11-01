@@ -1,6 +1,6 @@
-import { renderToolResult, stringifyInput } from "@/util/toolText";
+import { renderToolResult } from "@/util/toolText";
+import { CodeSurface, Fields } from "./blocks";
 import type { ToolPresenter } from "./types";
-import { ToolBlock } from "./util";
 
 /** Codex's multi-agent coordination calls (`collab.<tool>`, see the codex
  *  reducer): what the parent does *about* its sub-agents — wait for them, send
@@ -18,24 +18,24 @@ function toolOf(name: string): string {
   return name.replace(/^collab\./, "");
 }
 
+function summaryOf(name: string): string {
+  const tool = toolOf(name);
+  return SUMMARIES[tool] ?? `Sub-agent ${tool.replace(/_/g, " ")}`;
+}
+
 export const collabPresenter: ToolPresenter = {
   icon: "bot",
   title: "Sub-agents",
-  summary: (call) => {
-    const tool = toolOf(call.name);
-    return SUMMARIES[tool] ?? `Sub-agent ${tool.replace(/_/g, " ")}`;
-  },
+  summary: (call) => summaryOf(call.name),
   expanded: (call, result) => {
-    const input = stringifyInput(call.input, 2);
+    const text = result ? renderToolResult(result.content) : "";
     return (
       <>
-        {input && input !== "{}" && <ToolBlock label="input">{input}</ToolBlock>}
-        {result && renderToolResult(result.content) && (
-          <ToolBlock label="result" isError={result.is_error}>
-            {renderToolResult(result.content)}
-          </ToolBlock>
-        )}
+        <Fields input={call.input} />
+        {text && <CodeSurface text={text} isError={result?.is_error} />}
       </>
     );
   },
+  facts: (call) => ({ kind: "other", subject: summaryOf(call.name).toLowerCase() }),
+  activity: (call) => summaryOf(call.name),
 };

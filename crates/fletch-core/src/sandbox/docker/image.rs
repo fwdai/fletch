@@ -32,6 +32,7 @@ use std::time::Duration;
 
 use crate::error::Result;
 use crate::sandbox::container::freshness::{classify_freshness, version_refresh_wanted, Freshness};
+use crate::sandbox::container::image_gc;
 use crate::sandbox::container::images::{image_spec, write_build_context, BASE_IMAGE};
 use crate::sandbox::container::progress::{self, BuildEvent};
 
@@ -576,12 +577,8 @@ fn probe_image_cli_version(provider: DockerProvider, tag: &str) -> Option<String
 /// probe logs at debug and the trigger stays inert for this image; it never
 /// fails or delays the build that preceded it.
 fn cache_image_version_post_build(provider: DockerProvider, tag: &str) {
-    let image_id = match cli::run_docker(
-        &["image", "inspect", "--format", "{{.Id}}", tag],
-        INSPECT_TIMEOUT,
-    ) {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        Ok(_) | Err(_) => return,
+    let Some(image_id) = inspect_image_id(tag) else {
+        return;
     };
     match image_cli_version(provider, tag, &image_id) {
         Some(version) => tracing::info!(
@@ -595,6 +592,71 @@ fn cache_image_version_post_build(provider: DockerProvider, tag: &str) {
             tag,
             "post-build container CLI version probe failed; version trigger stays inert for this image",
         ),
+    }
+}
+
+/// The image id `tag` names right now, for a launch to run and probe by
+/// instead of the tag: a parity rebuild in the background retags at any
+/// moment (`resolve_image`), and the probe and the `docker run` after it have
+/// to see one image. The image is held for the launch by a `fletch-launch`
+/// tag written first and read for its id (`image_gc::launch_tag`: every
+/// sweep, of this Fletch or one beside it, lists the tag and keeps the image
+/// while the tag is young), so the rebuild's sweep of the then-untagged
+/// predecessor can't take it from under the launch. `None` when docker
+/// couldn't tag or say, and the caller keeps the tag and vouches for nothing.
+pub(super) fn pin_image(tag: &str) -> Option<String> {
+    let hold = image_gc::launch_tag(image_gc::unix_now());
+    let tagged = cli::run_docker(&["tag", tag, &hold], INSPECT_TIMEOUT).ok()?;
+    if !tagged.status.success() {
+        return None;
+    }
+    inspect_image_id(&hold)
+}
+
+/// Whether the claude in `image_id` — the image this launch runs from,
+/// pinned (`pin_image`), whatever the host has — parses `--thinking-display`.
+/// Remembered by that id, so a rebuild is a new answer; probed inside the
+/// image, with the host's probe and reading
+/// (`agent::THINKING_DISPLAY_PROBE_ARGS`), the first time an id is seen —
+/// synchronously, so the first launch of an image gets the answer too, and
+/// once per app run. A probe that couldn't run is no answer: nothing is
+/// remembered and the next launch asks again. Only claude has the flag.
+pub(super) fn claude_thinking_summaries(provider: DockerProvider, image_id: &str) -> bool {
+    if provider.id() != "claude" {
+        return false;
+    }
+    let identity = format!("docker image {image_id}");
+    if let Some(known) = crate::agent::thinking_display_known(&identity) {
+        return known;
+    }
+    let pid_label = super::cleanup::host_pid_label();
+    let mut args = vec![
+        "run",
+        "--rm",
+        "--label",
+        pid_label.as_str(),
+        image_id,
+        provider.image_bin(),
+    ];
+    args.extend(crate::agent::THINKING_DISPLAY_PROBE_ARGS);
+    let Ok(out) = cli::run_docker(&args, VERSION_PROBE_TIMEOUT) else {
+        return false;
+    };
+    let supported = crate::agent::probe_shows_thinking_display(&out);
+    crate::agent::remember_thinking_display(&identity, supported);
+    supported
+}
+
+/// The id of the image `tag` names right now, or `None` when docker can't say.
+fn inspect_image_id(tag: &str) -> Option<String> {
+    match cli::run_docker(
+        &["image", "inspect", "--format", "{{.Id}}", tag],
+        INSPECT_TIMEOUT,
+    ) {
+        Ok(out) if out.status.success() => {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        Ok(_) | Err(_) => None,
     }
 }
 

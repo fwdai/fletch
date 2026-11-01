@@ -406,6 +406,7 @@ impl Agent {
             before_turn: _,
             after_exit,
             kill,
+            claude_thinking_summaries: _,
         } = engine.launch_agent(&ctx, &claude)?;
         // Released on any failure before the session owns it (`KillGuard`).
         let kill = KillGuard::new(kill);
@@ -525,6 +526,7 @@ impl Agent {
             before_turn: _,
             after_exit,
             kill,
+            claude_thinking_summaries: _,
         } = engine.launch_agent(&ctx, &bin)?;
         // Released on any failure before the session owns it (`KillGuard`).
         let kill = KillGuard::new(kill);
@@ -582,7 +584,6 @@ impl Agent {
         let engine = sandbox::engine_for(spec.engine)?;
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
-        let agent_args = prepare_managed_args(&spec, &mcp.args);
         let mut account = account_launch("claude", spec.account)?;
 
         let ctx = AgentLaunchCtx {
@@ -612,10 +613,15 @@ impl Agent {
             before_turn: _,
             after_exit,
             kill,
+            claude_thinking_summaries,
         } = engine.launch_agent(&ctx, &claude)?;
         // Released on any failure before the session owns it (`KillGuard`).
         let kill = KillGuard::new(kill);
         account.unset.extend(env_remove);
+        // After the plan: only the engine knows which claude actually runs —
+        // the host's, a container image's, a box's — and whether that one
+        // takes the thinking flag (`LaunchPlan::claude_thinking_summaries`).
+        let agent_args = prepare_managed_args(&spec, &mcp.args, claude_thinking_summaries);
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -798,6 +804,7 @@ impl Agent {
             before_turn: engine_before_turn,
             after_exit,
             kill,
+            claude_thinking_summaries: _,
         } = engine.launch_agent(&ctx, agent_bin)?;
         // Released on any failure before the session owns it (`KillGuard`).
         let kill = KillGuard::new(kill);

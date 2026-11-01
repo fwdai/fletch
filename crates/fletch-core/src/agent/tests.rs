@@ -59,7 +59,7 @@ fn claude_session_flags_match_the_start_in_both_views() {
         let flags: Vec<String> = flags.into_iter().map(String::from).collect();
         let spec = claude_spec(start);
         for args in [
-            prepare_managed_args(&spec, &[]),
+            prepare_managed_args(&spec, &[], true),
             prepare_pty_args(&spec, &[]),
         ] {
             assert!(args.ends_with(&flags), "{args:?}");
@@ -680,6 +680,29 @@ fn pi_args_thinking_when_set() {
     });
     assert!(args.args.contains(&"--thinking".to_string()));
     assert!(args.args.contains(&"xhigh".to_string()));
+}
+
+/// The custom view asks claude for readable thinking summaries when the
+/// binary parses the flag, and launches exactly as before when it doesn't;
+/// the native view is claude's own TUI, which picks its display itself.
+#[test]
+fn managed_args_ask_for_summarized_thinking_only_when_the_binary_takes_it() {
+    let spec = claude_spec(SessionStart::Fresh);
+    let with = prepare_managed_args(&spec, &[], true);
+    let at = with
+        .iter()
+        .position(|a| a == "--thinking-display")
+        .expect("managed args carry --thinking-display");
+    assert_eq!(with[at + 1], "summarized");
+    let without = prepare_managed_args(&spec, &[], false);
+    assert!(!without.iter().any(|a| a == "--thinking-display"));
+    let mut stripped = with.clone();
+    let flag: Vec<String> = stripped.drain(at..at + 2).collect();
+    assert_eq!(flag, ["--thinking-display", "summarized"]);
+    assert_eq!(stripped, without, "the flag is the only difference");
+    assert!(!prepare_pty_args(&spec, &[])
+        .iter()
+        .any(|a| a == "--thinking-display"));
 }
 
 #[test]
