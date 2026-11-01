@@ -1,20 +1,28 @@
-//! `exec --read-only <dir> --writable <path>`: run the command with each
-//! `<dir>` read-only, whole, and each `<path>` inside one writable again.
-//! Inside a box every ssh session is the one guest user, so a file mode cannot
-//! keep one process off a tree another may write; the kernel's namespaces can.
-//! The command gets namespaces of its own:
+//! `exec --read-only <dir> --writable <path> --cow <dir> <store> --cow-file
+//! <file> <copy>`: run the command with each `--read-only` directory
+//! read-only, whole, each `--writable` path inside one writable again, and
+//! each `--cow` directory and `--cow-file` file inside one a private
+//! copy-on-write view of its own. Inside a box every ssh session is the one
+//! guest user, so a file mode cannot keep one process off a tree another may
+//! write; the kernel's namespaces can. The command gets namespaces of its own:
 //!
 //! - a user namespace mapping the guest user to itself (so `id`, file
 //!   ownership and git's `safe.directory` check read as before), which is what
 //!   lets an unprivileged process make the rest;
-//! - a mount namespace in which each `<dir>` is bind-mounted on itself with
-//!   every mount below it, and that whole subtree made read-only at once
-//!   (`mount_setattr(2)` with `AT_RECURSIVE`), so a mount nested in the tree
-//!   is read-only too; then each `<path>` is bound on itself again and that
-//!   one bind alone made writable. The data disk's own mountpoint (`/data`,
-//!   where the same trees are reachable as `/data/ws/…`) is covered by an
-//!   empty read-only tmpfs; the identity binds at the host paths are separate
-//!   mounts and stay;
+//! - a mount namespace in which each `--read-only` directory is bind-mounted
+//!   on itself with every mount below it, and that whole subtree made
+//!   read-only at once (`mount_setattr(2)` with `AT_RECURSIVE`), so a mount
+//!   nested in the tree is read-only too; then each `--writable` path is bound
+//!   on itself again and that one bind alone made writable. Then each `--cow`
+//!   directory gets an overlay mounted on itself: the directory as it is is
+//!   the lower layer the command reads, and everything it writes there lands
+//!   in `<store>/upper`, which must lie in a writable path, so nothing it
+//!   writes reaches the directory itself, whether the file it writes existed
+//!   before or not. And each `--cow-file` file has its private `<copy>` bound
+//!   over it, made from the file the first time. The data disk's own
+//!   mountpoint (`/data`, where the same trees are reachable as `/data/ws/…`)
+//!   is covered by an empty read-only tmpfs; the identity binds at the host
+//!   paths are separate mounts and stay;
 //! - a pid namespace with a private `/proc`. Without it `/proc/<pid>/root` of
 //!   any other process of the guest user is a same-user path back into the
 //!   guest's own mount namespace, where the trees are writable.
@@ -23,6 +31,13 @@
 //! neither remount nor unmount what was set up. A user namespace it creates
 //! itself inherits these mounts locked (`MNT_LOCK_READONLY`, `MNT_LOCKED`): the
 //! kernel refuses to make them writable or peel them off there too.
+//!
+//! An overlay's lower layer is one filesystem: a mount below a `--cow`
+//! directory would be hidden by it, so none of the `--writable` paths may lie
+//! in one. Its upper and work directories are made inside the namespace, after
+//! the read-only and writable binds, where the only paths the command's user
+//! may write are its own: a symbolic link planted in a store can lead nowhere
+//! else.
 //!
 //! What the confinement does not cover is everything outside the named trees
 //! that the guest user may write anyway (`/tmp` and the other scratch tmpfs)
@@ -41,14 +56,52 @@ use std::path::{Path, PathBuf};
 /// host side.
 pub const CONFINE_FAILED: i32 = 125;
 
+/// What `exec` confines its command to (module docs), every path absolute, in
+/// the order its options named them.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct View {
+    /// `--read-only <dir>`.
+    pub read_only: Vec<PathBuf>,
+    /// `--writable <path>`.
+    pub writable: Vec<PathBuf>,
+    /// `--cow <dir> <store>`.
+    pub cow: Vec<(PathBuf, PathBuf)>,
+    /// `--cow-file <file> <copy>`.
+    pub cow_files: Vec<(PathBuf, PathBuf)>,
+}
+
+impl View {
+    /// Whether no option asked for confinement at all.
+    pub fn is_empty(&self) -> bool {
+        self.read_only.is_empty()
+            && self.writable.is_empty()
+            && self.cow.is_empty()
+            && self.cow_files.is_empty()
+    }
+}
+
 /// Checked before anything is unshared, for a message that names the path
-/// rather than a mount error. Each `read_only` path must be an existing
-/// directory, each `writable` one an existing directory or file strictly
+/// rather than a mount error. Each `--read-only` path must be an existing
+/// directory, each `--writable` one an existing directory or file strictly
 /// inside one of them (outside, it is writable or not as the guest has it
-/// already). Neither may reach its target through a symbolic link: a mount
-/// follows one, so a link another process of the guest user planted at a
-/// writable path would open whatever it points to.
-pub fn check_paths(read_only: &[PathBuf], writable: &[PathBuf]) -> Result<(), String> {
+/// already). Each `--cow` directory must be an existing directory strictly
+/// inside a read-only one, holding no writable path (the overlay would hide
+/// its mount) and overlapping no other `--cow` directory; each `--cow-file`
+/// file an existing regular file strictly inside a read-only directory and in
+/// no `--cow` one. A store or copy must lie where the command may write
+/// (strictly inside a writable path, or outside every read-only directory),
+/// clear of its directory; it need not exist yet. None of them may reach its
+/// target through a symbolic link: a mount follows one, so a link another
+/// process of the guest user planted at a path would open whatever it points
+/// to.
+pub fn check_paths(view: &View) -> Result<(), String> {
+    let View {
+        read_only,
+        writable,
+        cow,
+        cow_files,
+    } = view;
+    let held = |path: &Path| read_only.iter().any(|dir| inside(path, dir));
     for dir in read_only {
         let meta = resolved(dir, "--read-only")?;
         if !meta.is_dir() {
@@ -57,14 +110,100 @@ pub fn check_paths(read_only: &[PathBuf], writable: &[PathBuf]) -> Result<(), St
     }
     for path in writable {
         resolved(path, "--writable")?;
-        if !read_only.iter().any(|dir| inside(path, dir)) {
+        if !held(path) {
             return Err(format!(
                 "--writable {}: not inside any --read-only directory",
                 path.display()
             ));
         }
     }
+    for (i, (dir, store)) in cow.iter().enumerate() {
+        let meta = resolved(dir, "--cow")?;
+        if !meta.is_dir() {
+            return Err(format!("--cow {}: not a directory", dir.display()));
+        }
+        if !held(dir) {
+            return Err(format!(
+                "--cow {}: not inside any --read-only directory",
+                dir.display()
+            ));
+        }
+        if let Some(path) = writable.iter().find(|path| path.starts_with(dir)) {
+            return Err(format!(
+                "--cow {}: holds --writable {}, which the overlay would hide",
+                dir.display(),
+                path.display()
+            ));
+        }
+        let overlaps = |other: &Path| dir.starts_with(other) || other.starts_with(dir);
+        if let Some((other, _)) = cow[..i].iter().find(|(other, _)| overlaps(other)) {
+            return Err(format!(
+                "--cow {}: overlaps another --cow directory, {}",
+                dir.display(),
+                other.display()
+            ));
+        }
+        check_private(store, "--cow", view)?;
+        if store.starts_with(dir) || dir.starts_with(store) {
+            return Err(format!(
+                "--cow {} {}: the store and the directory overlap",
+                dir.display(),
+                store.display()
+            ));
+        }
+        if store.exists() && !store.is_dir() {
+            return Err(format!("--cow {}: not a directory", store.display()));
+        }
+    }
+    for (file, copy) in cow_files {
+        let meta = resolved(file, "--cow-file")?;
+        if !meta.is_file() {
+            return Err(format!("--cow-file {}: not a file", file.display()));
+        }
+        if !held(file) {
+            return Err(format!(
+                "--cow-file {}: not inside any --read-only directory",
+                file.display()
+            ));
+        }
+        if let Some((dir, _)) = cow.iter().find(|(dir, _)| file.starts_with(dir)) {
+            return Err(format!(
+                "--cow-file {}: inside --cow {}, which is private already",
+                file.display(),
+                dir.display()
+            ));
+        }
+        check_private(copy, "--cow-file", view)?;
+        if copy.exists() && !copy.is_file() {
+            return Err(format!("--cow-file {}: not a file", copy.display()));
+        }
+    }
     Ok(())
+}
+
+/// A `--cow` store or `--cow-file` copy: where the command may write in
+/// `view`, strictly inside a `--writable` path or outside every `--read-only`
+/// directory, and as much of it as exists already its own canonical form.
+fn check_private(path: &Path, option: &str, view: &View) -> Result<(), String> {
+    let carved_out = view.writable.iter().any(|dir| inside(path, dir));
+    if !carved_out && view.read_only.iter().any(|dir| path.starts_with(dir)) {
+        return Err(format!(
+            "{option} {}: in a --read-only directory and no --writable path",
+            path.display()
+        ));
+    }
+    let existing = path
+        .ancestors()
+        .find_map(|at| Some((at, std::fs::canonicalize(at).ok()?)));
+    match existing {
+        Some((at, canonical)) if canonical != at => Err(format!(
+            "{option} {}: {} resolves to {} (a symbolic link on the way)",
+            path.display(),
+            at.display(),
+            canonical.display()
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// `path`'s metadata, when it exists and is its own canonical form.
@@ -86,26 +225,34 @@ fn inside(path: &Path, dir: &Path) -> bool {
     path != dir && path.starts_with(dir)
 }
 
-/// Confines this process to a view in which each of `read_only` is read-only
-/// and each of `writable` writable again (module docs). Returns only in the
-/// process that is to exec the command, which starts in `/`: the directory it
-/// was in may lie in one of the trees, reached through the writable mount
-/// underneath. The processes that stay behind wait for it and exit with its
-/// status; they never return from here.
-pub fn confine(read_only: &[PathBuf], writable: &[PathBuf]) -> Result<(), String> {
-    imp::confine(read_only, writable)
+/// Confines this process to `view` (module docs), which [`check_paths`] has
+/// passed. Returns only in the process that is to exec the command, which
+/// starts in `/`: the directory it was in may lie in one of the trees,
+/// reached through the writable mount underneath. The processes that stay
+/// behind wait for it and exit with its status; they never return from here.
+pub fn confine(view: &View) -> Result<(), String> {
+    imp::confine(view)
 }
 
 #[cfg(target_os = "linux")]
 mod imp {
     use std::ffi::{CStr, CString};
-    use std::fs::OpenOptions;
+    use std::fs::{DirBuilder, OpenOptions};
     use std::io::{self, Write};
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicI32, Ordering};
 
-    use super::CONFINE_FAILED;
+    use super::{View, CONFINE_FAILED};
+
+    /// The name of a `--cow` store's upper layer: what the command wrote under
+    /// the directory, path for path (`fletch_box::guest::EXEC_COW_UPPER` on
+    /// the host side, which reads the command's own files from it).
+    const COW_UPPER: &str = "upper";
+    /// The name of a `--cow` store's work directory, which an overlay needs on
+    /// its upper layer's filesystem for its atomic copy-ups.
+    const COW_WORK: &str = "work";
 
     /// `mount_setattr(2)` (Linux 5.12), by number: the syscall table is one
     /// for every architecture from 424 on, so x86_64 and aarch64 both call it
@@ -146,9 +293,9 @@ mod imp {
     /// The process a waiting parent passes signals to; 0 while there is none.
     static CHILD: AtomicI32 = AtomicI32::new(0);
 
-    pub fn confine(read_only: &[PathBuf], writable: &[PathBuf]) -> Result<(), String> {
-        let read_only = c_paths(read_only, "--read-only")?;
-        let writable = c_paths(writable, "--writable")?;
+    pub fn confine(view: &View) -> Result<(), String> {
+        let read_only = c_paths(&view.read_only, "--read-only")?;
+        let writable = c_paths(&view.writable, "--writable")?;
         // Before the fork, so a signal never finds a waiting parent with the
         // default action; the handlers do not survive the command's exec.
         forward_signals().map_err(|e| format!("installing signal handlers: {e}"))?;
@@ -193,6 +340,16 @@ mod imp {
         }
         for (path, target) in &writable {
             bind_writable(target).map_err(|e| format!("--writable {}: {e}", path.display()))?;
+        }
+        // After the writable binds, which hold every store and copy: they are
+        // made here, where nothing but the command's own paths is writable.
+        for (dir, store) in &view.cow {
+            mount_cow(dir, store)
+                .map_err(|e| format!("--cow {} {}: {e}", dir.display(), store.display()))?;
+        }
+        for (file, copy) in &view.cow_files {
+            bind_copy(file, copy)
+                .map_err(|e| format!("--cow-file {} {}: {e}", file.display(), copy.display()))?;
         }
 
         // pid 1 of a namespace is the reaper of every orphan in it and
@@ -285,6 +442,107 @@ mod imp {
             None,
         )?;
         set_read_only(target, false, 0)
+    }
+
+    /// An overlay mounted on `dir`, inside a read-only tree, with `dir` as it
+    /// is for its one lower layer and `<store>/upper` for the upper one, so
+    /// the command reads what is there and writes only its own copy. The
+    /// lower layer is resolved before the overlay covers the path, so the
+    /// mountpoint may be the lower directory itself. `userxattr` keeps the
+    /// overlay's own metadata in `user.*` extended attributes, which is what
+    /// lets an unprivileged user namespace mount it (Linux 5.11).
+    fn mount_cow(dir: &Path, store: &Path) -> Result<(), String> {
+        let (upper, work) = (store.join(COW_UPPER), store.join(COW_WORK));
+        for layer in [&upper, &work] {
+            private_dir(layer)?;
+        }
+        let data = CString::new(overlay_options(dir, &upper, &work))
+            .map_err(|_| "a path contains a NUL byte".to_string())?;
+        mount(
+            Some(c"overlay"),
+            &c_path(dir)?,
+            Some(c"overlay"),
+            libc::MS_NOSUID | libc::MS_NODEV,
+            Some(data.as_c_str()),
+        )
+        .map_err(|e| format!("mounting the overlay: {e}"))
+    }
+
+    /// `file`, inside a read-only tree, covered by a bind of `copy`, which is
+    /// made from `file` the first time (owner-only) and kept after, so the
+    /// command goes on with the state it left there.
+    fn bind_copy(file: &Path, copy: &Path) -> Result<(), String> {
+        if let Some(parent) = copy.parent() {
+            private_dir(parent)?;
+        }
+        if std::fs::symlink_metadata(copy).is_err() {
+            let bytes =
+                std::fs::read(file).map_err(|e| format!("reading {}: {e}", file.display()))?;
+            let made = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(copy)
+                .and_then(|mut f| f.write_all(&bytes));
+            match made {
+                // Another launch of the same command made it first.
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                made => made.map_err(|e| format!("copying to {}: {e}", copy.display()))?,
+            }
+        }
+        // A link would make the bind open whatever it points to.
+        let is_file = std::fs::symlink_metadata(copy).is_ok_and(|meta| meta.is_file());
+        if !is_file {
+            return Err(format!("{}: not a regular file", copy.display()));
+        }
+        let (src, dst) = (c_path(copy)?, c_path(file)?);
+        mount(Some(src.as_c_str()), &dst, None, libc::MS_BIND, None)
+            .map_err(|e| format!("binding the copy: {e}"))
+    }
+
+    /// `dir` made (owner-only) where it is missing, and then a directory that
+    /// is its own canonical form: no link another process left on the way
+    /// redirects what the overlay or the bind is given.
+    fn private_dir(dir: &Path) -> Result<(), String> {
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .map_err(|e| format!("creating {}: {e}", dir.display()))?;
+        let meta = super::resolved(dir, "store")?;
+        if !meta.is_dir() {
+            return Err(format!("{}: not a directory", dir.display()));
+        }
+        Ok(())
+    }
+
+    /// The mount options of an overlay of `lower` with `upper` and `work`.
+    /// Overlayfs splits its options at `,` and a lower layer list at `:`, and
+    /// takes a backslash before either (or before itself) as the character
+    /// itself, in every path it is given.
+    fn overlay_options(lower: &Path, upper: &Path, work: &Path) -> Vec<u8> {
+        let mut data = Vec::new();
+        for (key, path) in [
+            ("lowerdir=", lower),
+            (",upperdir=", upper),
+            (",workdir=", work),
+        ] {
+            data.extend_from_slice(key.as_bytes());
+            for &byte in path.as_os_str().as_bytes() {
+                if matches!(byte, b'\\' | b',' | b':') {
+                    data.push(b'\\');
+                }
+                data.push(byte);
+            }
+        }
+        data.extend_from_slice(b",userxattr");
+        data
+    }
+
+    /// `path` as a C string, for `mount`.
+    fn c_path(path: &Path) -> Result<CString, String> {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| format!("{}: contains a NUL byte", path.display()))
     }
 
     /// Sets (`read_only`) or clears the read-only bit of the mount at
@@ -457,6 +715,22 @@ mod imp {
             assert_eq!(std::mem::size_of::<MountAttr>(), 32);
         }
 
+        /// What overlayfs splits its options on is escaped in every path,
+        /// and the overlay keeps its metadata in user xattrs.
+        #[test]
+        fn overlay_options_escape_what_overlayfs_splits_on() {
+            let data = overlay_options(
+                Path::new("/Users/u/.cursor"),
+                Path::new("/w/own/.fletch-cow/a:b,c\\d/upper"),
+                Path::new("/w/own/.fletch-cow/x/work"),
+            );
+            assert_eq!(
+                String::from_utf8(data).unwrap(),
+                "lowerdir=/Users/u/.cursor,upperdir=/w/own/.fletch-cow/a\\:b\\,c\\\\d/upper,\
+                 workdir=/w/own/.fletch-cow/x/work,userxattr"
+            );
+        }
+
         #[test]
         fn exit_statuses_read_as_a_shell_reports_them() {
             assert_eq!(exit_code(0), 0);
@@ -472,18 +746,18 @@ mod imp {
 
 #[cfg(not(target_os = "linux"))]
 mod imp {
-    use std::path::PathBuf;
+    use super::View;
 
-    pub fn confine(_read_only: &[PathBuf], _writable: &[PathBuf]) -> Result<(), String> {
+    pub fn confine(_view: &View) -> Result<(), String> {
         Err("--read-only needs Linux namespaces".into())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use super::check_paths;
+    use super::{check_paths, View};
 
     /// A temporary directory by its canonical path (on macOS the temp dir
     /// lies behind the `/var` link).
@@ -493,16 +767,25 @@ mod tests {
         (dir, path)
     }
 
+    /// [`check_paths`] of a view with only read-only and writable paths.
+    fn check(read_only: &[PathBuf], writable: &[PathBuf]) -> Result<(), String> {
+        check_paths(&View {
+            read_only: read_only.to_vec(),
+            writable: writable.to_vec(),
+            ..View::default()
+        })
+    }
+
     #[test]
     fn read_only_paths_must_be_directories() {
         let (_guard, dir) = tempdir();
         let file = dir.join("f");
         std::fs::write(&file, b"").unwrap();
-        assert!(check_paths(std::slice::from_ref(&dir), &[]).is_ok());
-        assert!(check_paths(&[], &[]).is_ok());
-        let err = check_paths(&[file], &[]).unwrap_err();
+        assert!(check(std::slice::from_ref(&dir), &[]).is_ok());
+        assert!(check_paths(&View::default()).is_ok());
+        let err = check(&[file], &[]).unwrap_err();
         assert!(err.contains("not a directory"), "{err}");
-        let err = check_paths(&[dir.join("missing")], &[]).unwrap_err();
+        let err = check(&[dir.join("missing")], &[]).unwrap_err();
         assert!(err.contains("missing"), "{err}");
     }
 
@@ -518,18 +801,18 @@ mod tests {
         }
         std::fs::write(&state, b"{}").unwrap();
         let read_only = [home.clone()];
-        assert!(check_paths(&read_only, &[own.clone(), state]).is_ok());
+        assert!(check(&read_only, &[own.clone(), state]).is_ok());
 
         for (writable, why) in [
             (other, "not inside any --read-only directory"),
             (home.clone(), "not inside any --read-only directory"),
             (home.join("missing"), "missing"),
         ] {
-            let err = check_paths(&read_only, &[writable]).unwrap_err();
+            let err = check(&read_only, &[writable]).unwrap_err();
             assert!(err.contains(why), "{err}");
         }
         // No read-only directory at all: nothing to make writable again.
-        let err = check_paths(&[], &[own]).unwrap_err();
+        let err = check(&[], &[own]).unwrap_err();
         assert!(err.contains("not inside"), "{err}");
     }
 
@@ -544,9 +827,134 @@ mod tests {
         std::fs::create_dir_all(&elsewhere).unwrap();
         let link = home.join("cache");
         std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
-        let err = check_paths(&[home], std::slice::from_ref(&link)).unwrap_err();
+        let err = check(&[home], std::slice::from_ref(&link)).unwrap_err();
         assert!(err.contains("symbolic link"), "{err}");
-        let err = check_paths(&[link], &[]).unwrap_err();
+        let err = check(&[link], &[]).unwrap_err();
+        assert!(err.contains("symbolic link"), "{err}");
+    }
+
+    /// A reviewer's tree: a home it only reads, its own root in it, a shared
+    /// state dir and state file, and a directory and file outside the home.
+    struct Tree {
+        _guard: tempfile::TempDir,
+        home: PathBuf,
+        own: PathBuf,
+        state: PathBuf,
+        file: PathBuf,
+        outside: PathBuf,
+    }
+
+    impl Tree {
+        fn new() -> Tree {
+            let (guard, root) = tempdir();
+            let home = root.join("home");
+            let (own, state) = (home.join("ws/own"), home.join(".cursor"));
+            let outside = root.join("outside");
+            for dir in [&own, &state.join("sub"), &own.join("x"), &outside] {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            let file = home.join(".claude.json");
+            for path in [&file, &state.join("mcp.json"), &outside.join("f")] {
+                std::fs::write(path, b"{}").unwrap();
+            }
+            Tree {
+                _guard: guard,
+                home,
+                own,
+                state,
+                file,
+                outside,
+            }
+        }
+
+        /// The view with these `--cow` and `--cow-file` pairs.
+        fn view<P: AsRef<Path>>(&self, cow: &[(P, P)], cow_files: &[(P, P)]) -> View {
+            let owned = |pairs: &[(P, P)]| -> Vec<(PathBuf, PathBuf)> {
+                pairs
+                    .iter()
+                    .map(|(a, b)| (a.as_ref().to_path_buf(), b.as_ref().to_path_buf()))
+                    .collect()
+            };
+            View {
+                read_only: vec![self.home.clone()],
+                writable: vec![self.own.clone()],
+                cow: owned(cow),
+                cow_files: owned(cow_files),
+            }
+        }
+    }
+
+    /// A copy-on-write directory or file is one that exists inside a
+    /// read-only tree; its store or copy lies where the command may write,
+    /// need not exist yet, and is reached through no link.
+    #[test]
+    fn copy_on_write_paths_pair_a_shared_one_with_a_private_one() {
+        let tree = Tree::new();
+        let (home, own) = (tree.home.as_path(), tree.own.as_path());
+        let stores = own.join(".fletch-cow");
+        let (store, copy) = (stores.join(".cursor"), stores.join(".claude.json"));
+        let view = tree.view(&[(&tree.state, &store)], &[(&tree.file, &copy)]);
+        assert!(check_paths(&view).is_ok(), "{:?}", check_paths(&view));
+        // Outside every read-only tree, the guest's own mode lets it write.
+        let elsewhere = tree.outside.join("s");
+        assert!(check_paths(&tree.view(&[(&tree.state, &elsewhere)], &[])).is_ok());
+
+        let (missing, home_dir) = (home.join("missing"), home.to_path_buf());
+        let (holder, nested) = (home.join("ws"), own.join("x"));
+        let in_nested = nested.join("s");
+        let (astray, own_dir) = (home.join("s"), own.to_path_buf());
+        for ((dir, private), why) in [
+            ((&missing, &store), "missing"),
+            ((&tree.file, &store), "not a directory"),
+            ((&tree.outside, &store), "not inside any --read-only"),
+            ((&home_dir, &store), "not inside any --read-only"),
+            ((&holder, &store), "which the overlay would hide"),
+            ((&tree.state, &astray), "no --writable path"),
+            ((&tree.state, &own_dir), "no --writable path"),
+            ((&nested, &in_nested), "the store and the directory"),
+        ] {
+            let err = check_paths(&tree.view(&[(dir, private)], &[])).unwrap_err();
+            assert!(err.contains(why), "{}: {err}", dir.display());
+        }
+
+        // One overlay inside another.
+        let (sub, sub_store) = (tree.state.join("sub"), stores.join("sub"));
+        let view = tree.view(&[(&tree.state, &store), (&sub, &sub_store)], &[]);
+        let err = check_paths(&view).unwrap_err();
+        assert!(err.contains("overlaps another --cow directory"), "{err}");
+
+        let mcp = tree.state.join("mcp.json");
+        let outside_file = tree.outside.join("f");
+        let astray_copy = home.join("copy");
+        for ((file, private), why) in [
+            ((&tree.state, &copy), "not a file"),
+            ((&outside_file, &copy), "not inside any --read-only"),
+            ((&tree.file, &astray_copy), "no --writable path"),
+            // An existing copy that is a directory.
+            ((&tree.file, &nested), "not a file"),
+        ] {
+            let err = check_paths(&tree.view(&[], &[(file, private)])).unwrap_err();
+            assert!(err.contains(why), "{}: {err}", file.display());
+        }
+        // A file in a copy-on-write directory is private already.
+        let view = tree.view(&[(&tree.state, &store)], &[(&mcp, &copy)]);
+        let err = check_paths(&view).unwrap_err();
+        assert!(err.contains("private already"), "{err}");
+    }
+
+    /// A store or copy reached through a link planted in the writable path
+    /// is refused, wherever the link points.
+    #[cfg(unix)]
+    #[test]
+    fn a_store_through_a_symbolic_link_is_refused() {
+        let tree = Tree::new();
+        let link = tree.own.join(".fletch-cow");
+        std::os::unix::fs::symlink(&tree.state, &link).unwrap();
+        let store = link.join(".cursor");
+        let err = check_paths(&tree.view(&[(&tree.state, &store)], &[])).unwrap_err();
+        assert!(err.contains("symbolic link"), "{err}");
+        let copy = link.join(".claude.json");
+        let err = check_paths(&tree.view(&[], &[(&tree.file, &copy)])).unwrap_err();
         assert!(err.contains("symbolic link"), "{err}");
     }
 }

@@ -82,23 +82,31 @@ impl Channel {
         env_file: Option<&Path>,
         cmd: &[&str],
     ) -> Vec<String> {
-        Self::remote_command_confined(cwd, env_file, &[], &[], cmd)
+        Self::remote_command_confined(cwd, env_file, &[], &[], &[], &[], cmd)
     }
 
     /// [`remote_command`](Self::remote_command) with directories `cmd` must
-    /// only read, each a [`guest::EXEC_READ_ONLY`] to `fletch-guest exec`,
-    /// and paths inside them it may write after all, each a
-    /// [`guest::EXEC_WRITABLE`]: the guest kernel enforces both, whoever owns
-    /// the tree. The guest needs an env file alongside.
+    /// only read, each a [`guest::EXEC_READ_ONLY`] to `fletch-guest exec`;
+    /// paths inside them it may write after all, each a
+    /// [`guest::EXEC_WRITABLE`]; and directories and files inside them it
+    /// sees as private copies, each `(shared, private)` pair a
+    /// [`guest::EXEC_COW`] or [`guest::EXEC_COW_FILE`]: the guest kernel
+    /// enforces all of them, whoever owns the tree. The guest needs an env
+    /// file alongside.
     pub fn remote_command_confined(
         cwd: Option<&Path>,
         env_file: Option<&Path>,
         read_only: &[&Path],
         writable: &[&Path],
+        cow_dirs: &[(&Path, &Path)],
+        cow_files: &[(&Path, &Path)],
         cmd: &[&str],
     ) -> Vec<String> {
         let mut words: Vec<String> = Vec::new();
-        let confined = !read_only.is_empty() || !writable.is_empty();
+        let confined = !read_only.is_empty()
+            || !writable.is_empty()
+            || !cow_dirs.is_empty()
+            || !cow_files.is_empty();
         if cwd.is_some() || env_file.is_some() || confined {
             words.push(guest::GUEST_AGENT.into());
             words.push(guest::EXEC.into());
@@ -113,6 +121,16 @@ impl Channel {
             for path in writable {
                 words.push(guest::EXEC_WRITABLE.into());
                 words.push(path.to_string_lossy().into_owned());
+            }
+            for (option, pairs) in [
+                (guest::EXEC_COW, cow_dirs),
+                (guest::EXEC_COW_FILE, cow_files),
+            ] {
+                for (shared, private) in pairs {
+                    words.push(option.into());
+                    words.push(shared.to_string_lossy().into_owned());
+                    words.push(private.to_string_lossy().into_owned());
+                }
             }
             if let Some(cwd) = cwd {
                 words.push("--cwd".into());
@@ -564,12 +582,16 @@ mod tests {
     fn confined_remote_commands_name_each_read_only_and_writable_path() {
         let (home, other) = (Path::new("/Users/a"), Path::new("/Volumes/my tree"));
         let (own, state) = (Path::new("/Users/a/own"), Path::new("/Users/a/s.json"));
+        let cursor = (Path::new("/Users/a/.cur"), Path::new("/Users/a/o/x y"));
+        let file = (Path::new("/Users/a/.c"), Path::new("/Users/a/o/f"));
         assert_eq!(
             Channel::remote_command_confined(
                 Some(Path::new("/Users/a/ws/repo")),
                 Some(Path::new("/data/run/1.env")),
                 &[home, other],
                 &[own, state],
+                &[cursor],
+                &[file],
                 &["claude"]
             ),
             [
@@ -585,6 +607,12 @@ mod tests {
                 "/Users/a/own",
                 "--writable",
                 "/Users/a/s.json",
+                "--cow",
+                "/Users/a/.cur",
+                "'/Users/a/o/x y'",
+                "--cow-file",
+                "/Users/a/.c",
+                "/Users/a/o/f",
                 "--cwd",
                 "/Users/a/ws/repo",
                 "--",
@@ -592,9 +620,10 @@ mod tests {
             ]
         );
         // Nothing confined: the plain command, word for word.
+        let env_file = Some(Path::new("/e"));
         assert_eq!(
-            Channel::remote_command_confined(None, Some(Path::new("/e")), &[], &[], &["true"]),
-            Channel::remote_command(None, Some(Path::new("/e")), &["true"])
+            Channel::remote_command_confined(None, env_file, &[], &[], &[], &[], &["true"]),
+            Channel::remote_command(None, env_file, &["true"])
         );
     }
 

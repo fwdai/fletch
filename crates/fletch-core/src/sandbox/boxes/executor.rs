@@ -492,11 +492,18 @@ impl RemoteExecutor for BoxExecutor {
         })
     }
 
+    /// `rm -rf`, after giving the owner back the permissions a tree may lack:
+    /// an overlay leaves its `work/work` directory with mode 000 in a
+    /// confined tenant's store (`super::COW_DIR`), which `rm` could not enter
+    /// to empty. The path itself is left alone when it is a link, so a link
+    /// an agent planted never has its target's modes changed; `rm` removes
+    /// the link only, as it always did.
     fn remove_async<'a>(&'a self, path: &'a Path) -> ExecFuture<'a, ()> {
         Box::pin(async move {
             let channel = self.channel().await?;
             let path = Self::path_str(path);
-            output_async(&channel, &["rm", "-rf", "--", &path], None).await?;
+            let script = "[ -L \"$1\" ] || chmod -R u+rwX -- \"$1\" 2>/dev/null; rm -rf -- \"$1\"";
+            output_async(&channel, &["sh", "-c", script, "sh", &path], None).await?;
             Ok(())
         })
     }

@@ -236,15 +236,23 @@ deletion touches:
   `std::process::Command` above all.
 - The box reviewer (a tenant in the coder's box) is held off the coder's
   files by the guest kernel, not by file modes (both are one user in the
-  guest): `fletch-guest exec --read-only … --writable …` gives its launch
-  user, mount and pid namespaces in which everything the guest exposes of the
+  guest), and writes nothing it shares with the coder: `fletch-guest exec
+  --read-only … --writable … --cow … --cow-file …` gives its launch user,
+  mount and pid namespaces in which everything the guest exposes of the
   coder's (its writable root, the home, its mailbox, the folders shared
-  writable) is read-only with every mount nested in it, and only the paths
-  seatbelt's allow-list gives the reviewer are writable again; `/data` is
-  hidden, `/proc` is private and every capability is dropped
-  (`boxes::confined_view`). Enforced, with no fallback: a guest that predates
-  the options or cannot set them up refuses the launch. What it does not
-  cover: scratch outside every bind (`/tmp` and the other tmpfs mounts), and
-  the network namespace, which is the guest's.
+  writable) is read-only with every mount nested in it; the reviewer's own
+  root, mailbox and writable folder grants are real writes; and every shared
+  location a CLI writes (the provider's state dirs, the scratch dirs, the
+  toolchain cache, `~/.claude.json`) is a private copy-on-write view, an
+  overlay whose upper layer (or, for the state file, a private copy) lies
+  under the reviewer's own root. It reads the coder's state through it and
+  its writes, new files included, never reach it, so no per-provider list of
+  executable config is needed; the toolchain cache is no exception (the
+  reviewer re-downloads what it needs into its upper). Its sessions are read
+  from its upper layer. `/data` is hidden, `/proc` is private and every
+  capability is dropped (`boxes::confined_view`). Enforced, with no
+  fallback: a guest that predates the options or cannot set them up refuses
+  the launch. What it does not cover: scratch outside every bind (`/tmp` and
+  the other tmpfs mounts), and the network namespace, which is the guest's.
 - The Run panel inside a box needs port forwarding over the channel; it is a
   declared gap.

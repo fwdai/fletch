@@ -287,6 +287,11 @@ pub struct Tenant {
     pub host_agent_id: String,
     /// The tenant's own writable root, routed to the host's box.
     pub writable_root: PathBuf,
+    /// Whether its launches are confined to the reviewer's view
+    /// (`super::confined_view`), in which what it writes in the state it
+    /// shares with its host lands in a private copy under its own root: where
+    /// the host reads its sessions from (`super::home`).
+    pub confined: bool,
 }
 
 struct Entry {
@@ -559,15 +564,18 @@ impl BoxRegistry {
     /// writable root (where the host writes its profile — skills, the MCP
     /// config) is routed to that box, so those land in the guest the tenant
     /// runs in. Idempotent; a tenant moving to another host is re-routed.
+    /// `confined`: its launches are ([`Tenant::confined`]).
     pub fn register_tenant(
         &self,
         tenant_agent_id: &str,
         writable_root: PathBuf,
         host_agent_id: &str,
+        confined: bool,
     ) {
         let tenant = Tenant {
             host_agent_id: host_agent_id.to_string(),
             writable_root: writable_root.clone(),
+            confined,
         };
         let previous = self
             .tenants
@@ -3002,7 +3010,7 @@ mod tests {
             crate::exec::Executor::Local
         ));
 
-        registry.register_tenant("tenant-test-reviewer", tenant_root.clone(), host);
+        registry.register_tenant("tenant-test-reviewer", tenant_root.clone(), host, true);
         assert!(matches!(
             crate::exec::for_path(&tenant_root.join(".fletch-profile")),
             crate::exec::Executor::Remote(_)
@@ -3012,6 +3020,7 @@ mod tests {
             Some(Tenant {
                 host_agent_id: host.into(),
                 writable_root: tenant_root.clone(),
+                confined: true,
             })
         );
         // A tenant is not a box: nothing to boot, no identity of its own.
@@ -3027,7 +3036,7 @@ mod tests {
         ));
 
         // Forgotten with its host's box.
-        registry.register_tenant("tenant-test-reviewer", tenant_root.clone(), host);
+        registry.register_tenant("tenant-test-reviewer", tenant_root.clone(), host, true);
         registry.discard(host).await.unwrap();
         assert_eq!(registry.tenant_of("tenant-test-reviewer"), None);
         assert!(matches!(

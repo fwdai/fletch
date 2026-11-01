@@ -510,11 +510,17 @@ fn coder_box(writable_root: &str, shares: Vec<FolderGrant>) -> BoxIdentity {
     }
 }
 
+/// Under the reviewer's own root, the store or copy named `name`.
+fn own_copy(name: &str) -> PathBuf {
+    Path::new(OWN_ROOT).join(super::COW_DIR).join(name)
+}
+
 /// The local reviewer, a tenant adopting the coder's checkout to read it,
-/// sees everything the guest exposes of the coder's read-only — the home,
-/// which holds the coder's root and mailbox, and the folders the box shares
-/// writable that the reviewer was not granted writable — and only what
-/// seatbelt lets it write on the host writable again.
+/// writes nothing it shares with the coder: everything the guest exposes of
+/// the coder's is read-only — the home, which holds the coder's root and
+/// mailbox, and the folders the box shares writable that the reviewer was
+/// not granted writable — its own paths are writable again, and every shared
+/// location a CLI writes is a private copy under its own root.
 #[test]
 fn a_reviewer_tenant_writes_only_its_own_paths() {
     let tree = Path::new(CODER_ROOT).join("repo");
@@ -544,25 +550,52 @@ fn a_reviewer_tenant_writes_only_its_own_paths() {
     let read_only: Vec<PathBuf> = [HOME, "/Volumes/data"].map(PathBuf::from).into();
     assert_eq!(view.read_only, read_only);
 
-    let home = Path::new(HOME);
-    let mut expected: Vec<PathBuf> = [OWN_ROOT, OWN_RPC, CACHE, "/Users/u/notes"]
+    // Writable again: its own root and mailbox, and the share it was granted
+    // inside the home (the other one lies in no read-only tree).
+    let mut expected: Vec<PathBuf> = [OWN_ROOT, OWN_RPC, "/Users/u/notes"]
         .map(PathBuf::from)
         .into();
-    expected.extend(policy::provider_state_dirs("claude", home));
-    expected.extend(policy::agent_scratch_dirs(home));
     expected.sort();
     let mut writable = view.writable_dirs.clone();
     writable.sort();
     assert_eq!(writable, expected);
-    assert_eq!(view.writable_files, [home.join(".claude.json")]);
 
-    // Each inside a read-only tree, none in anything of the coder's.
+    // A private copy each: the toolchain cache, the provider's state dirs and
+    // the scratch dirs, with their stores under its own root, and
+    // `~/.claude.json`, with its copy there.
+    let home = Path::new(HOME);
+    let mut shared: Vec<PathBuf> = vec![PathBuf::from(CACHE)];
+    shared.extend(policy::provider_state_dirs("claude", home));
+    shared.extend(policy::agent_scratch_dirs(home));
+    let cow: Vec<PathBuf> = view.cow_dirs.iter().map(|(dir, _)| dir.clone()).collect();
+    assert_eq!(cow, shared);
+    let store_of = |dir: &Path| -> Option<PathBuf> {
+        let (_, store) = view.cow_dirs.iter().find(|(d, _)| d == dir)?;
+        Some(store.clone())
+    };
+    let cache_store = own_copy(".fletch%2Ftoolchain-cache%2Fp1");
+    assert_eq!(store_of(Path::new(CACHE)), Some(cache_store));
+    let support = home.join("Library/Application Support");
+    let support_store = own_copy("Library%2FApplication Support");
+    assert_eq!(store_of(&support), Some(support_store));
+    assert_eq!(
+        view.cow_files,
+        [(home.join(".claude.json"), own_copy(".claude.json"))]
+    );
+
+    // Each inside a read-only tree; nothing writable in anything of the
+    // coder's; every store and copy in its own root.
     let held = |path: &Path| view.read_only.iter().any(|dir| super::inside(path, dir));
     for path in view.writable() {
         assert!(held(path), "{}", path.display());
         for coders in [CODER_ROOT, CODER_RPC, "/Volumes/data"] {
             assert!(!path.starts_with(coders), "{}", path.display());
         }
+    }
+    let stores = Path::new(OWN_ROOT).join(super::COW_DIR);
+    for (path, private) in view.cow_dirs.iter().chain(&view.cow_files) {
+        assert!(held(path), "{}", path.display());
+        assert!(super::inside(private, &stores), "{}", private.display());
     }
     // Parents first: no path is bound before a directory that holds it.
     let dirs = &view.writable_dirs;
@@ -573,6 +606,91 @@ fn a_reviewer_tenant_writes_only_its_own_paths() {
             dir.display()
         );
     }
+}
+
+/// A Cursor reviewer cannot plant an MCP config the coder's next launch
+/// runs: `~/.cursor` is not writable, it is a copy-on-write view, and what
+/// the reviewer writes at `~/.cursor/mcp.json`, a file that need not exist
+/// yet, lands in its own store.
+#[test]
+fn a_reviewers_writes_to_shared_state_land_in_its_own_copy() {
+    let tree = Path::new(CODER_ROOT).join("repo");
+    let host = coder_box(CODER_ROOT, Vec::new());
+    let ctx = AgentLaunchCtx {
+        provider: "cursor",
+        ..launch_ctx(Path::new(OWN_ROOT), &tree, true)
+    };
+    let view = super::confined_view(&ctx, true, &host, Path::new(CACHE)).unwrap();
+    let cursor = Path::new(HOME).join(".cursor");
+    let writes = |path: &Path| view.writable_dirs.iter().any(|dir| path.starts_with(dir));
+    assert!(!writes(&cursor.join("mcp.json")));
+    let pair = (cursor.clone(), own_copy(".cursor"));
+    assert!(view.cow_dirs.contains(&pair), "{:?}", view.cow_dirs);
+    assert_eq!(
+        view.private_path(&cursor.join("mcp.json")),
+        Some(own_copy(".cursor/upper/mcp.json"))
+    );
+    assert!(view.cow_files.is_empty());
+}
+
+/// A folder grant is matched against the box's shares by containment: a
+/// grant inside a share is carved out of it writable, the share staying
+/// read-only; a share inside a grant is the reviewer's whole; a grant no
+/// share covers is not in the guest, and a share no grant covers is
+/// read-only, with the shares nested in it. A shared directory that holds a
+/// mount stays read-only rather than hide it under an overlay.
+#[test]
+fn nested_grants_and_shares_are_matched_by_containment() {
+    let tree = Path::new(CODER_ROOT).join("repo");
+    let shares = vec![
+        grant("/Volumes/project", true),
+        grant("/Volumes/project/sub", true),
+        grant("/Volumes/work/docs", true),
+        grant("/Users/u/notes", true),
+        grant("/Users/u/.cache/models", false),
+    ];
+    let host = coder_box(CODER_ROOT, shares);
+    let grants = [
+        grant("/Volumes/project/docs", true),
+        grant("/Volumes/project/sub", false),
+        grant("/Volumes/work", true),
+        grant("/Volumes/elsewhere", true),
+        grant("/Users/u", true),
+    ];
+    let ctx = AgentLaunchCtx {
+        folder_grants: &grants,
+        ..launch_ctx(Path::new(OWN_ROOT), &tree, true)
+    };
+    let view = super::confined_view(&ctx, true, &host, Path::new(CACHE)).unwrap();
+
+    // The project share is the coder's, its nested share with it; the work
+    // docs lie in the reviewer's grant and stay out; a grant of the whole
+    // home does not make the coder's home binds the reviewer's.
+    let read_only: Vec<PathBuf> = [HOME, "/Volumes/project"].map(PathBuf::from).into();
+    assert_eq!(view.read_only, read_only);
+    let writable = |path: &str| view.writable_dirs.contains(&PathBuf::from(path));
+    // Carved out of the read-only project share; the notes share, inside
+    // the home grant, carved out of the read-only home.
+    assert!(writable("/Volumes/project/docs"), "{:?}", view.writable_dirs);
+    assert!(writable("/Users/u/notes"), "{:?}", view.writable_dirs);
+    // Outside every read-only tree (the guest's own mode), not mounted at
+    // all, granted read-only, or the coder's home.
+    for path in [
+        "/Volumes/work/docs",
+        "/Volumes/work",
+        "/Volumes/elsewhere",
+        "/Volumes/project/sub",
+        HOME,
+    ] {
+        assert!(!writable(path), "{path}");
+    }
+
+    // `~/.cache` holds a share, which an overlay would hide: read-only; the
+    // other scratch dirs are copies as ever.
+    let cow = |path: &Path| view.cow_dirs.iter().any(|(dir, _)| dir == path);
+    let home = Path::new(HOME);
+    assert!(!cow(&home.join(".cache")), "{:?}", view.cow_dirs);
+    assert!(cow(&home.join(".npm")), "{:?}", view.cow_dirs);
 }
 
 /// The three identity binds all go in when none holds the others, and a
@@ -594,7 +712,7 @@ fn a_root_outside_the_home_is_read_only_too() {
     let root = at(Path::new(OWN_ROOT)).unwrap();
     let overlay = at(&codex_home).unwrap();
     assert!(root < overlay, "{:?}", view.writable_dirs);
-    assert!(view.writable_files.is_empty());
+    assert!(view.cow_files.is_empty());
 }
 
 /// An owner is never confined, nor is a tenant that adopts its tree to
@@ -643,22 +761,25 @@ fn a_guest_that_cannot_confine_refuses_the_reviewer() {
     assert!(super::enforced_view(Some(view), cannot).is_err());
 }
 
-/// The launch, its probe and the step that makes the writable paths all
-/// carry the same view.
+/// The launch, its probe and the step that makes the directories it mounts
+/// all carry the same view.
 #[test]
 fn a_confined_launch_renders_the_view_it_was_given() {
     let home = Path::new(HOME);
+    let support = home.join("Library/Application Support");
     let view = super::ConfinedView {
         read_only: vec![home.to_path_buf(), PathBuf::from("/Volumes/my data")],
         writable_dirs: vec![
             PathBuf::from(OWN_ROOT),
-            home.join("Library/Application Support"),
+            PathBuf::from("/Volumes/my data/own"),
         ],
-        writable_files: vec![home.join(".claude.json")],
+        cow_dirs: vec![(support, own_copy("Library%2FApplication Support"))],
+        cow_files: vec![(home.join(".claude.json"), own_copy(".claude.json"))],
     };
     let tree = Path::new(CODER_ROOT).join("repo");
     let env_file = Path::new("/data/run/1.env");
     let remote = super::agent_remote_command(&tree, env_file, Some(&view), "claude");
+    let stores = "/Users/u/.fletch/workspaces/reviewer/.fletch-cow";
     assert_eq!(
         remote,
         [
@@ -673,9 +794,13 @@ fn a_confined_launch_renders_the_view_it_was_given() {
             "--writable",
             "/Users/u/.fletch/workspaces/reviewer",
             "--writable",
+            "'/Volumes/my data/own'",
+            "--cow",
             "'/Users/u/Library/Application Support'",
-            "--writable",
+            &format!("'{stores}/Library%2FApplication Support'"),
+            "--cow-file",
             "/Users/u/.claude.json",
+            &format!("{stores}/.claude.json"),
             "--cwd",
             "/Users/u/.fletch/workspaces/coder/repo",
             "--",
@@ -683,7 +808,7 @@ fn a_confined_launch_renders_the_view_it_was_given() {
         ]
     );
     let plain = super::agent_remote_command(&tree, env_file, None, "claude");
-    let options = ["--read-only", "--writable"].map(String::from);
+    let options = ["--read-only", "--writable", "--cow", "--cow-file"].map(String::from);
     assert!(!plain.iter().any(|w| options.contains(w)), "{plain:?}");
 
     assert_eq!(
@@ -698,20 +823,72 @@ fn a_confined_launch_renders_the_view_it_was_given() {
             "--writable",
             "/Users/u/.fletch/workspaces/reviewer",
             "--writable",
+            "/Volumes/my data/own",
+            "--cow",
             "/Users/u/Library/Application Support",
-            "--writable",
+            &format!("{stores}/Library%2FApplication Support"),
+            "--cow-file",
             "/Users/u/.claude.json",
+            &format!("{stores}/.claude.json"),
             "--env-file",
             "/dev/null",
             "--",
             "/bin/true"
         ]
     );
+    // The directories it binds and overlays, never the stores or copies,
+    // which the guest makes inside the confinement.
     assert_eq!(
         super::carve_out_script(&view),
-        "umask 077 && mkdir -p -- /Users/u/.fletch/workspaces/reviewer \
-         '/Users/u/Library/Application Support' && touch -- /Users/u/.claude.json"
+        "umask 077 && mkdir -p -- /Users/u/.fletch/workspaces/reviewer '/Volumes/my data/own' \
+         '/Users/u/Library/Application Support'"
     );
+}
+
+/// A confined launch's own files are found where it wrote them: under a
+/// copy-on-write directory in its store's upper layer, a copy-on-write file
+/// in its copy; the host finds the same paths without the launch's view.
+#[test]
+fn a_reviewers_sessions_are_read_from_its_private_copy() {
+    let tree = Path::new(CODER_ROOT).join("repo");
+    let host = coder_box(CODER_ROOT, Vec::new());
+    let ctx = launch_ctx(Path::new(OWN_ROOT), &tree, true);
+    let view = super::confined_view(&ctx, true, &host, Path::new(CACHE)).unwrap();
+    let home = Path::new(HOME);
+    let projects = home.join(".claude/projects");
+    let upper = own_copy(".claude%2Fprojects/upper");
+    let transcript = Path::new("-Users-u-repo/1.jsonl");
+    let claude_json = home.join(".claude.json");
+    for (shared, private) in [
+        (projects.clone(), upper.clone()),
+        (projects.join(transcript), upper.join(transcript)),
+        (claude_json, own_copy(".claude.json")),
+    ] {
+        assert_eq!(view.private_path(&shared), Some(private.clone()));
+        let found = super::tenant_private_path("claude", home, Path::new(OWN_ROOT), &shared);
+        assert_eq!(found, Some(private), "{}", shared.display());
+    }
+    // Its own paths, and what is read-only, stay where they are.
+    for path in [
+        Path::new(OWN_ROOT).join("x"),
+        home.join(".claude/settings.json"),
+    ] {
+        assert_eq!(view.private_path(&path), None, "{}", path.display());
+    }
+}
+
+/// One flat name per shared path under the reviewer's root, readable, and
+/// never the same for two paths.
+#[test]
+fn copy_on_write_names_are_flat_and_distinct() {
+    let home = Path::new(HOME);
+    let name = |path: &str| super::cow_name(home, Path::new(path));
+    assert_eq!(name("/Users/u/.cache"), ".cache");
+    assert_eq!(name("/Users/u/.local/share"), ".local%2Fshare");
+    assert_eq!(name("/Users/u/a%2Fb"), "a%252Fb");
+    assert_eq!(name("/opt/cache"), "%2Fopt%2Fcache");
+    assert_ne!(name("/Users/u/a/b"), name("/Users/u/a%2Fb"));
+    assert_ne!(name("/Users/u/opt/cache"), name("/opt/cache"));
 }
 
 /// The probe tells a guest that predates the options (it names one unknown)
@@ -719,10 +896,10 @@ fn a_confined_launch_renders_the_view_it_was_given() {
 #[test]
 fn the_read_only_probe_tells_an_old_guest_from_a_failed_one() {
     assert_eq!(super::read_only_probe_answer(true, ""), Some(true));
-    let old = "fletch-guest: exec: unknown option --read-only\n";
-    assert_eq!(super::read_only_probe_answer(false, old), Some(false));
-    let older = "fletch-guest: exec: unknown option --writable\n";
-    assert_eq!(super::read_only_probe_answer(false, older), Some(false));
+    for option in ["--read-only", "--writable", "--cow", "--cow-file"] {
+        let old = format!("fletch-guest: exec: unknown option {option}\n");
+        assert_eq!(super::read_only_probe_answer(false, &old), Some(false));
+    }
     let failed = "fletch-guest: exec: unshare: Operation not permitted (os error 1)\n";
     assert_eq!(super::read_only_probe_answer(false, failed), None);
     assert_eq!(super::read_only_probe_answer(false, ""), None);

@@ -440,29 +440,48 @@ fn unpack_files(archive: &[u8], dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The guest dir the CLI of an agent whose own writable root is `root`
+/// writes its sessions to: its provider's sessions dir, or for a tenant whose
+/// launches are confined (`super::confined_view`) the private copy of it
+/// under its own root that they write instead (`super::tenant_private_path`),
+/// which holds its sessions and none of its host's.
+fn agent_sessions_dir(
+    home: &dyn ProviderHome,
+    home_dir: &Path,
+    root: &Path,
+    confined: bool,
+) -> PathBuf {
+    let shared = home.sessions_dir(home_dir, root);
+    if !confined {
+        return shared;
+    }
+    super::tenant_private_path(home.id(), home_dir, root, &shared).unwrap_or(shared)
+}
+
 /// Where agent `agent_id`'s sessions are while its box (its own, or its
 /// host's when it is a tenant) runs: the channel, the guest sessions dir of
-/// the agent's own writable root, and the host mirror. `None` when nothing
-/// of the agent's runs now.
+/// the agent's own ([`agent_sessions_dir`]), and the host mirror. `None` when
+/// nothing of the agent's runs now.
 fn live_sessions(
     home: &dyn ProviderHome,
     agent_id: &str,
 ) -> Option<(Arc<Channel>, PathBuf, PathBuf)> {
     let registry = super::BoxRegistry::global();
-    let (running, root) = match registry.running(agent_id) {
+    let (running, root, confined) = match registry.running(agent_id) {
         Some(running) => {
             let root = running.identity.writable_root.clone();
-            (running, root)
+            (running, root, false)
         }
         None => {
             let tenant = registry.tenant_of(agent_id)?;
             (
                 registry.running(&tenant.host_agent_id)?,
                 tenant.writable_root,
+                tenant.confined,
             )
         }
     };
-    let sessions = home.sessions_dir(&running.identity.home, &root);
+    let sessions = agent_sessions_dir(home, &running.identity.home, &root, confined);
     let mirror = mirror_for_agent(home.id(), agent_id)?;
     Some((running.channel.clone(), sessions, mirror))
 }
@@ -497,19 +516,20 @@ pub(crate) async fn pull_before_stop(running: &super::RunningBox) {
     if home.transport() != Transport::Pull {
         return;
     }
-    let mut agents = vec![(identity.agent_id.clone(), identity.writable_root.clone())];
+    let (owner, owner_root) = (identity.agent_id.clone(), identity.writable_root.clone());
+    let mut agents = vec![(owner, owner_root, false)];
     agents.extend(
         super::BoxRegistry::global()
             .tenants_of(&identity.agent_id)
             .into_iter()
-            .map(|(id, tenant)| (id, tenant.writable_root)),
+            .map(|(id, tenant)| (id, tenant.writable_root, tenant.confined)),
     );
-    for (agent_id, root) in agents {
+    for (agent_id, root, confined) in agents {
         let Some(mirror) = mirror_for_agent(home.id(), &agent_id) else {
             continue;
         };
         let channel = running.channel.clone();
-        let sessions = home.sessions_dir(&identity.home, &root);
+        let sessions = agent_sessions_dir(home, &identity.home, &root, confined);
         let id = agent_id.clone();
         let pulled =
             tokio::task::spawn_blocking(move || pull_sessions(&channel, &id, &sessions, &mirror))
@@ -544,7 +564,11 @@ pub(crate) fn create_session_file(
     let mirror = mirror_for_agent(home.id(), agent_id)
         .ok_or_else(|| Error::Other("the box's mirror directory can't be resolved".into()))?
         .join(rel);
-    let guest_path = home.sessions_dir(&identity.home, &root).join(rel);
+    // A confined tenant's CLI resumes from its private copy of the dir.
+    let confined = super::BoxRegistry::global()
+        .tenant_of(agent_id)
+        .is_some_and(|tenant| tenant.confined);
+    let guest_path = agent_sessions_dir(home, &identity.home, &root, confined).join(rel);
     let mut bytes = Vec::new();
     for line in lines {
         serde_json::to_writer(&mut bytes, line)?;
