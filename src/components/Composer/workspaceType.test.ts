@@ -3,17 +3,15 @@ import type { WorkspaceTypeOption } from "@/api";
 import {
   answeredOptions,
   declaredWorkspaceType,
-  defaultWorkspaceType,
+  IMAGE_DOWNLOADING,
   shownWorkspaceType,
   WORKSPACE_TYPES_UNREADABLE,
   workspaceTypeChip,
   workspaceTypeLabel,
-  workspaceTypeOffered,
-  workspaceTypePickDropped,
   workspaceTypeResponseLands,
   workspaceTypesKey,
+  workspaceTypeTip,
   workspaceTypeToSend,
-  workspaceTypeVisible,
 } from "./workspaceType";
 
 const host = (over: Partial<WorkspaceTypeOption> = {}): WorkspaceTypeOption => ({
@@ -32,14 +30,6 @@ const box = (over: Partial<WorkspaceTypeOption> = {}): WorkspaceTypeOption => ({
 });
 
 describe("workspace type", () => {
-  it("defaults to what the host marks", () => {
-    expect(defaultWorkspaceType([host({ default: true }), box()])).toBe("host");
-    expect(defaultWorkspaceType([host(), box({ default: true })])).toBe("box");
-    // A host pinning a container engine marks neither.
-    expect(defaultWorkspaceType([host(), box()])).toBeNull();
-    expect(defaultWorkspaceType([])).toBeNull();
-  });
-
   it("keeps an explicit pick on the chip, the default included", () => {
     const options = [host({ default: true }), box()];
     expect(shownWorkspaceType(options, undefined)?.kind).toBe("host");
@@ -54,13 +44,6 @@ describe("workspace type", () => {
     // An unavailable default is shown with its reason too.
     const brokenDefault = [host(), box({ default: true, available: false, reason: "no runtime" })];
     expect(shownWorkspaceType(brokenDefault, undefined)?.reason).toBe("no runtime");
-  });
-
-  it("hides the chip when no option is the default", () => {
-    expect(workspaceTypeVisible(null)).toBe(false);
-    expect(workspaceTypeVisible([host(), box()])).toBe(false);
-    expect(workspaceTypeVisible([host({ default: true }), box()])).toBe(true);
-    expect(workspaceTypeVisible([host(), box({ default: true, available: false })])).toBe(true);
   });
 
   // Changed with the declaration model: the spawn used to carry only an
@@ -81,61 +64,62 @@ describe("workspace type", () => {
 
   it("sends nothing when nothing is declared", () => {
     const options = [host({ default: true }), box()];
-    // Not offered (a paired host, boxes not rolled out).
+    // Not offered (a paired host).
     expect(workspaceTypeToSend("box", false, options)).toBeUndefined();
     // No answer for the current inputs: loading, failed, or other inputs'.
     expect(workspaceTypeToSend("box", true, null)).toBeUndefined();
     expect(workspaceTypeToSend(undefined, true, null)).toBeUndefined();
-    // A container engine pinned: no option is the default, even with a pick.
-    expect(workspaceTypeToSend("box", true, [host(), box()])).toBeUndefined();
-    expect(declaredWorkspaceType([host(), box()], "box")).toBeNull();
-  });
-
-  it("offers the control on this Mac only", () => {
-    // On a paired host the control is never offered.
-    expect(workspaceTypeOffered(true, false)).toBe(false);
-    // A dev build (the test run) is unlocked whoever the user is.
-    expect(workspaceTypeOffered(false, true)).toBe(true);
   });
 
   it("names each type", () => {
-    expect(workspaceTypeLabel("host")).toBe("This Mac");
-    expect(workspaceTypeLabel("box")).toBe("Isolated VM");
+    expect(workspaceTypeLabel("host")).toBe("macOS sandbox");
+    expect(workspaceTypeLabel("box")).toBe("Linux VM");
   });
 
-  it("keys an answer by every input that moves the default", () => {
-    const key = workspaceTypesKey("/r", "claude", "auto", true);
+  it("keys an answer by its repo and provider", () => {
+    const key = workspaceTypesKey("/r", "claude");
     const answer = { key, options: [host({ default: true }), box()] };
     expect(answeredOptions(answer, key)).toBe(answer.options);
     expect(answeredOptions(null, key)).toBeNull();
-    for (const other of [
-      workspaceTypesKey("/other", "claude", "auto", true),
-      workspaceTypesKey("/r", "codex", "auto", true),
-      workspaceTypesKey("/r", "claude", "docker", true),
-      workspaceTypesKey("/r", "claude", "auto", false),
-    ]) {
+    for (const other of [workspaceTypesKey("/other", "claude"), workspaceTypesKey("/r", "codex")]) {
       expect(other).not.toBe(key);
       expect(answeredOptions(answer, other)).toBeNull();
     }
   });
 
   it("lands only the latest read for the current inputs", () => {
-    const key = workspaceTypesKey("/r", "claude", "auto", true);
+    const key = workspaceTypesKey("/r", "claude");
     const request = { id: 3, key };
     expect(workspaceTypeResponseLands(request, 3, key)).toBe(true);
     // A newer read started (on open, or after the inputs changed).
     expect(workspaceTypeResponseLands(request, 4, key)).toBe(false);
     // The read asked for other inputs than the picker has now, or none is on screen.
-    const other = workspaceTypesKey("/r", "codex", "auto", true);
+    const other = workspaceTypesKey("/r", "codex");
     expect(workspaceTypeResponseLands(request, 3, other)).toBe(false);
     expect(workspaceTypeResponseLands(request, 3, null)).toBe(false);
   });
 
-  it("drops the pick only when the host answers the control is not offered", () => {
-    expect(workspaceTypePickDropped(null)).toBe(false);
-    expect(workspaceTypePickDropped([host({ default: true }), box()])).toBe(false);
-    // A container engine pinned in Settings: neither option is the default.
-    expect(workspaceTypePickDropped([host(), box()])).toBe(true);
+  it("says in one sentence where the shown option runs, and why", () => {
+    expect(workspaceTypeTip(box({ default: true }), null)).toBe("Runs in a Linux VM");
+    expect(workspaceTypeTip(host(), null)).toBe("Runs in the macOS sandbox");
+    expect(
+      workspaceTypeTip(host({ default: true, reason: "this project builds a macOS app" }), null),
+    ).toBe("Runs in the macOS sandbox · this project builds a macOS app");
+    // The download's live percent rides on the host's downloading reason only.
+    const downloading = host({ default: true, reason: IMAGE_DOWNLOADING });
+    expect(workspaceTypeTip(downloading, 43)).toBe(
+      "Runs in the macOS sandbox · VM image downloading 43%",
+    );
+    expect(workspaceTypeTip(downloading, null)).toBe(
+      "Runs in the macOS sandbox · VM image downloading",
+    );
+    expect(
+      workspaceTypeTip(host({ default: true, reason: "this project builds a macOS app" }), 43),
+    ).toBe("Runs in the macOS sandbox · this project builds a macOS app");
+    // An unavailable option says why the launch will fail.
+    expect(workspaceTypeTip(box({ available: false, reason: "no runtime" }), null)).toBe(
+      "no runtime",
+    );
   });
 
   it("draws the chip for each answer", () => {
@@ -146,7 +130,6 @@ describe("workspace type", () => {
     expect(workspaceTypeChip(null, true, "box")).toEqual({
       kind: "retry",
       pick: "box",
-      label: "Isolated VM",
       tip: WORKSPACE_TYPES_UNREADABLE,
     });
     expect(workspaceTypeChip(null, true, undefined)).toMatchObject({ kind: "retry", pick: null });
@@ -154,13 +137,11 @@ describe("workspace type", () => {
     const options = [host({ default: true }), box()];
     for (const failed of [false, true]) {
       const chip = workspaceTypeChip(options, failed, "box");
-      expect(chip).toMatchObject({ kind: "menu", options, tip: "Where this workspace runs" });
+      expect(chip).toMatchObject({ kind: "menu", options, tip: "Runs in a Linux VM" });
       expect(chip?.kind === "menu" && chip.shown.kind).toBe("box");
     }
     // An unavailable shown option carries its reason as the tip.
     const refused = [host({ default: true }), box({ available: false, reason: "off" })];
     expect(workspaceTypeChip(refused, false, "box")).toMatchObject({ kind: "menu", tip: "off" });
-    // No default: the control stays away.
-    expect(workspaceTypeChip([host(), box()], false, "box")).toBeNull();
   });
 });

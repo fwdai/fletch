@@ -5,9 +5,17 @@ import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { SetGroup, SetRow, SetToggle } from "../primitives";
 
-/** The four text box knobs, in display order. Each maps to a host-owned
- *  `box_*` setting written through `set_box_setting`, which validates it; the
- *  defaults quoted here are the engine's (`sandbox/boxes/settings.rs`). */
+/** One text box knob: a host-owned `box_*` setting written through
+ *  `set_box_setting`, which validates it; the defaults quoted are the
+ *  engine's (`sandbox/boxes/settings.rs`). */
+interface KnobField {
+  key: BoxSettingKey;
+  title: string;
+  sub: string;
+  placeholder: string;
+}
+
+/** The text box knobs on Settings › Sandbox, in display order. */
 const FIELDS = [
   {
     key: "box_memory_mib",
@@ -27,18 +35,16 @@ const FIELDS = [
     sub: "Stop a box with no attached process after this long. Blank uses the default (10); 0 never stops.",
     placeholder: "10",
   },
-  {
-    key: "box_image_url",
-    title: "Image URL",
-    sub: "Alternate base URL for the image download (https://, http:// or file://). Blank uses the GitHub release.",
-    placeholder: "https://github.com/… (built-in)",
-  },
-] as const satisfies readonly {
-  key: BoxSettingKey;
-  title: string;
-  sub: string;
-  placeholder: string;
-}[];
+] as const satisfies readonly KnobField[];
+
+/** Where the image downloads from: on Settings › Developer, since it exists to
+ *  boot a locally built image (`file://`). */
+export const IMAGE_URL_FIELD: KnobField = {
+  key: "box_image_url",
+  title: "Linux VM image URL",
+  sub: "Alternate base URL for the VM image download (https://, http:// or file://). Blank uses the GitHub release.",
+  placeholder: "https://github.com/… (built-in)",
+};
 
 type FieldKey = (typeof FIELDS)[number]["key"];
 
@@ -78,7 +84,7 @@ export function layersValue(names: readonly string[]): string {
 /** One box knob: a draft committed on blur/Enter, with the host's validation
  *  message under it until the next edit. The stored value comes back through
  *  `settings:changed`, so the field never shows a value that did not stick. */
-function BoxKnob({ field, value }: { field: (typeof FIELDS)[number]; value: string }) {
+export function BoxKnob({ field, value }: { field: KnobField; value: string }) {
   const save = useAppStore((s) => s.saveBoxSetting);
   const hostGate = useGate("hostSettings");
   const [draft, setDraft] = useState(value);
@@ -140,19 +146,18 @@ function LayerToggle({ layer, value }: { layer: (typeof LAYERS)[number]; value: 
   );
 }
 
-/** The box sandbox's launch knobs. Mounted only while the box flag is on. */
+/** The Linux VM's launch knobs. Mounted only where the machine can boot one. */
 export function BoxKnobs({ last }: { last?: boolean }) {
-  // One selector per value, as ContainerLaunchKnobs does: a selector returning
-  // a fresh object would hand `useSyncExternalStore` a new snapshot each render.
+  // One selector per value: a selector returning a fresh object would hand
+  // `useSyncExternalStore` a new snapshot each render.
   const values: Record<FieldKey, string> = {
     box_memory_mib: useAppStore((s) => s.boxMemoryMib),
     box_cpus: useAppStore((s) => s.boxCpus),
     box_idle_stop_minutes: useAppStore((s) => s.boxIdleStopMinutes),
-    box_image_url: useAppStore((s) => s.boxImageUrl),
   };
   const layers = useAppStore((s) => s.boxLayers);
   return (
-    <SetGroup label="Box" last={last}>
+    <SetGroup label="Linux VM" last={last}>
       {LAYERS.map((l) => (
         <LayerToggle key={l.name} layer={l} value={layers} />
       ))}

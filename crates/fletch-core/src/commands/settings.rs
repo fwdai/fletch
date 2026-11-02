@@ -1,5 +1,5 @@
 //! The host-owned global settings: the `settings` rows the engine itself reads
-//! (alerts, the idle sweep, code indexing, the sandbox engine and its launch
+//! (alerts, the idle sweep, code indexing, the container engines' launch
 //! knobs, provider binary overrides, the publishing preferences), and the one
 //! setter per group that persists a value *and* updates the in-memory mirror
 //! the spawn and publish paths read. The desktop's Tauri commands are thin
@@ -28,14 +28,12 @@ const HOST_SETTING_KEYS: &[&str] = &[
     remote::push::PR_ACTIVITY_SETTING,
     supervisor::auto_archive::IDLE_DAYS_SETTING,
     codegraph::SETTING,
-    sandbox::ENGINE_SETTING,
     sandbox::docker::IMAGE_SETTING,
     sandbox::docker::MEMORY_SETTING,
     sandbox::docker::CPUS_SETTING,
     sandbox::podman::IMAGE_SETTING,
     sandbox::podman::MEMORY_SETTING,
     sandbox::podman::CPUS_SETTING,
-    sandbox::boxes::settings::ENABLED_SETTING,
     sandbox::boxes::settings::MEMORY_SETTING,
     sandbox::boxes::settings::CPUS_SETTING,
     sandbox::boxes::settings::IMAGE_URL_SETTING,
@@ -183,8 +181,8 @@ pub fn set_agent_attribution_removed_impl(ctx: &EngineCtx, removed: bool) -> Res
 ///
 /// Turning it ON kicks a best-effort background task: install the codegraph
 /// bundle, then warm the index mirror for every pinned repo so the first agent
-/// spawn after a fresh enable already has an index to copy in; with boxes on,
-/// the tools disks carrying codegraph are built too. Turning it OFF does
+/// spawn after a fresh enable already has an index to copy in; where boxes
+/// can boot, the tools disks carrying codegraph are built too. Turning it OFF does
 /// nothing else — indexes die with their workspaces.
 pub fn set_code_indexing_enabled_impl(
     ctx: &EngineCtx,
@@ -209,9 +207,7 @@ pub fn set_code_indexing_enabled_impl(
         crate::host::spawn(warm_codegraph_index(repos));
         // A box takes codegraph from its tools disk: build the disk carrying
         // it now rather than at the next box boot.
-        if sandbox::boxes::settings::enabled() {
-            sandbox::boxes::setup::prebuild_tools();
-        }
+        sandbox::boxes::setup::prebuild_tools();
     }
     Ok(())
 }
@@ -245,98 +241,6 @@ async fn warm_codegraph_index(repos: Vec<(String, PathBuf)>) {
             tracing::warn!(error = %e, repo = %source_repo.display(), "codegraph mirror warm-up failed");
         }
     }
-}
-
-/// Change the sandbox engine stamped onto *new* agents. Container engines are
-/// validated live before being accepted — Docker against a daemon probe, Podman
-/// against its availability plus its launch blocker — so a success here means
-/// the choice is actionable on this host. Existing agents keep the engine
-/// stamped on their record at creation.
-pub async fn set_sandbox_engine_impl(ctx: &EngineCtx, engine: &str) -> Result<()> {
-    let choice = sandbox::parse_engine_setting(engine)
-        .ok_or_else(|| Error::Other(format!("unknown sandbox engine: {engine}")))?;
-    let Some(kind) = choice else {
-        // Automatic needs no probe: it resolves per spawn to what can run —
-        // a box or seatbelt, neither of which a host off macOS has.
-        if !cfg!(target_os = "macos") {
-            return Err(Error::Other(
-                "automatic needs macOS (a box or the macOS sandbox); pick Docker or Podman on this host"
-                    .into(),
-            ));
-        }
-        store(ctx, sandbox::ENGINE_SETTING, sandbox::ENGINE_AUTO)?;
-        sandbox::set_selected_engine(None);
-        return Ok(());
-    };
-    let blocking = |e: tokio::task::JoinError| Error::Other(e.to_string());
-    if kind == sandbox::EngineKind::Podman {
-        // A stored engine is stamped onto every new agent, so one whose runtime
-        // can't launch fails every spawn. "Available" isn't "launchable":
-        // `podman info` can answer over a remote default connection that every
-        // launch then refuses, hence the blocker check on the same worker.
-        let (probe, blocker) = tokio::task::spawn_blocking(|| {
-            let probe = sandbox::podman_availability();
-            let blocker = matches!(probe, sandbox::PodmanAvailability::Available { .. })
-                .then(sandbox::podman_launch_blocker)
-                .flatten();
-            (probe, blocker)
-        })
-        .await
-        .map_err(blocking)?;
-        match probe {
-            sandbox::PodmanAvailability::Available { .. } => {
-                if let Some(blocker) = blocker {
-                    return Err(Error::Other(blocker));
-                }
-            }
-            sandbox::PodmanAvailability::NotInstalled => {
-                return Err(Error::Other(
-                    "Podman is not installed — install Podman first.".into(),
-                ))
-            }
-            sandbox::PodmanAvailability::MachineDown => {
-                return Err(Error::Other(
-                    "The Podman machine isn't running — run `podman machine start` first.".into(),
-                ))
-            }
-        }
-    }
-    if kind == sandbox::EngineKind::Box {
-        // The switch first, then the runtime: the same refusal a launch would
-        // meet (`boxes::availability`), so a stored `box` always names an
-        // engine that can boot one. Not the image: a launch waits for its
-        // download (`boxes::setup`), so `box` is selectable as soon as the
-        // switch is on.
-        if !sandbox::boxes::settings::enabled() {
-            return Err(Error::Other(sandbox::boxes::SWITCHED_OFF.into()));
-        }
-        tokio::task::spawn_blocking(sandbox::boxes::availability)
-            .await
-            .map_err(blocking)?
-            .map_err(|e| Error::Other(e.to_string()))?;
-    }
-    if kind == sandbox::EngineKind::Docker {
-        // A blocking worker: the probe can take up to its 2s timeout.
-        let probe = tokio::task::spawn_blocking(sandbox::docker_availability)
-            .await
-            .map_err(blocking)?;
-        match probe {
-            sandbox::DockerAvailability::Available { .. } => {}
-            sandbox::DockerAvailability::NotInstalled => {
-                return Err(Error::Other(
-                    "Docker is not installed — install Docker Desktop first.".into(),
-                ))
-            }
-            sandbox::DockerAvailability::DaemonDown => {
-                return Err(Error::Other(
-                    "Docker isn't running — start Docker Desktop first.".into(),
-                ))
-            }
-        }
-    }
-    store(ctx, sandbox::ENGINE_SETTING, kind.as_setting())?;
-    sandbox::set_selected_engine(Some(kind));
-    Ok(())
 }
 
 /// One runtime's three launch knobs, normalized: blank is `None`, because a
@@ -470,14 +374,12 @@ mod tests {
             "publish_approval_wait",
             "agent_attribution_removed",
             "code_indexing_enabled",
-            "sandbox_engine",
             "docker_image",
             "docker_memory",
             "docker_cpus",
             "podman_image",
             "podman_memory",
             "podman_cpus",
-            "boxes_enabled",
             "box_memory_mib",
             "box_cpus",
             "box_image_url",
@@ -488,6 +390,9 @@ mod tests {
             assert!(is_host_setting_key(key), "{key} must be answered");
         }
         assert!(!is_host_setting_key("agent_bin_path_"));
+        // Retired: nothing reads them any more.
+        assert!(!is_host_setting_key("sandbox_engine"));
+        assert!(!is_host_setting_key("boxes_enabled"));
     }
 
     /// The point of the allowlist: secrets, this machine's remote-access state,
@@ -582,64 +487,5 @@ mod tests {
         assert_eq!(got.get("podman_memory"), Some(&String::new()));
         assert_eq!(got.get("podman_cpus"), Some(&String::new()));
         assert_eq!(sink.events().len(), 3);
-    }
-
-    #[tokio::test]
-    async fn an_unknown_sandbox_engine_is_refused() {
-        let (ctx, _sink, _dir) = test_ctx();
-        let err = set_sandbox_engine_impl(&ctx, "firecracker")
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("firecracker"));
-    }
-
-    /// `box` is refused while the switch is off, before any probe, and
-    /// nothing is stored. (The switch is process-wide: put back on after.)
-    #[tokio::test]
-    async fn the_box_engine_is_refused_while_the_switch_is_off() {
-        let _serial = sandbox::boxes::settings::TEST_LOCK.lock().await;
-        let (ctx, sink, _dir) = test_ctx();
-        sandbox::boxes::settings::set(sandbox::boxes::settings::BoxSettings {
-            enabled: false,
-            ..Default::default()
-        });
-        let err = set_sandbox_engine_impl(&ctx, "box").await.unwrap_err();
-        sandbox::boxes::settings::set(sandbox::boxes::settings::BoxSettings::default());
-        assert!(err.to_string().contains("Settings › Sandbox"), "{err}");
-        assert!(get_settings_impl(&ctx).unwrap().is_empty());
-        assert!(sink.events().is_empty());
-    }
-
-    /// Automatic is stored as `auto` and mirrored as no pinned engine, with
-    /// no probe in the way; off macOS, where neither engine it picks between
-    /// exists, it is refused.
-    #[tokio::test]
-    async fn automatic_is_stored_and_mirrored_as_no_pinned_engine() {
-        let _serial = sandbox::boxes::settings::TEST_LOCK.lock().await;
-        let (ctx, sink, _dir) = test_ctx();
-        sandbox::set_selected_engine(Some(sandbox::EngineKind::SandboxExec));
-        if !cfg!(target_os = "macos") {
-            assert!(set_sandbox_engine_impl(&ctx, "auto").await.is_err());
-            assert!(sink.events().is_empty());
-            sandbox::set_selected_engine(None);
-            return;
-        }
-        set_sandbox_engine_impl(&ctx, "auto").await.unwrap();
-        assert_eq!(sandbox::selected_engine(), None);
-        assert_eq!(sandbox::selected_engine_setting(), "auto");
-        assert_eq!(
-            get_settings_impl(&ctx)
-                .unwrap()
-                .get("sandbox_engine")
-                .unwrap(),
-            "auto"
-        );
-        assert_eq!(
-            sink.events(),
-            vec![(
-                SETTINGS_CHANGED.to_string(),
-                json!({ "key": "sandbox_engine", "value": "auto" })
-            )]
-        );
     }
 }

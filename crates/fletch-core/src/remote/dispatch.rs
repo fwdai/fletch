@@ -281,7 +281,6 @@ pub const OPS: &[&str] = &[
     "set_auto_archive_idle_days",
     "set_code_indexing_enabled",
     "set_context_layer_enabled",
-    "set_sandbox_engine",
     "set_docker_launch_settings",
     "set_podman_launch_settings",
     "set_agent_bin_override",
@@ -609,7 +608,6 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("set_auto_archive_idle_days", Scope::Projects),
     ("set_code_indexing_enabled", Scope::Projects),
     ("set_context_layer_enabled", Scope::Projects),
-    ("set_sandbox_engine", Scope::Projects),
     ("set_docker_launch_settings", Scope::Projects),
     ("set_podman_launch_settings", Scope::Projects),
     ("set_agent_bin_override", Scope::Projects),
@@ -1865,7 +1863,6 @@ impl Dispatch for SupervisorDispatch {
                 | "set_auto_archive_idle_days"
                 | "set_code_indexing_enabled"
                 | "set_context_layer_enabled"
-                | "set_sandbox_engine"
                 | "set_docker_launch_settings"
                 | "set_podman_launch_settings"
                 | "set_agent_bin_override"
@@ -2060,10 +2057,6 @@ pub(super) async fn settings_op(
         "set_context_layer_enabled" => {
             let a: EnabledArgs = parse(args)?;
             res(c::set_context_layer_enabled_impl(ctx, a.enabled))
-        }
-        "set_sandbox_engine" => {
-            let a: EngineArgs = parse(args)?;
-            res(c::set_sandbox_engine_impl(ctx, &a.engine).await)
         }
         "set_docker_launch_settings" => {
             let a: LaunchArgs = parse(args)?;
@@ -2749,11 +2742,6 @@ struct DaysArgs {
 #[derive(Deserialize)]
 struct WaitArgs {
     secs: u64,
-}
-
-#[derive(Deserialize)]
-struct EngineArgs {
-    engine: String,
 }
 
 #[derive(Deserialize)]

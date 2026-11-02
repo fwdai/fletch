@@ -1,5 +1,5 @@
 import { api, type FolderGrant, type WorkspaceKind } from "@/api";
-import { workspaceTypeOffered, workspaceTypeToSend } from "@/components/Composer/workspaceType";
+import { workspaceTypeToSend } from "@/components/Composer/workspaceType";
 import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
@@ -455,10 +455,12 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // What the composer's chip declares, the pick or the default alike,
         // read from the host's answer for this repo and provider only: the
         // agent lands where the chip says, or the spawn fails with why. With
-        // no such answer the chip shows nothing and nothing is sent.
+        // no such answer the chip shows nothing and nothing is sent. Only
+        // for an agent on this Mac: a paired host's spawn carries no
+        // workspace type yet.
         workspaceTypeToSend(
           draft.workspaceType,
-          workspaceTypeOffered(get().admin, activeEnvironment().kind !== "remote"),
+          activeEnvironment().kind !== "remote",
           workspaceTypeOptionsFor(get(), draft.repoPath, provider),
         ),
       );

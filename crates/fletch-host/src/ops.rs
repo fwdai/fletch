@@ -163,7 +163,8 @@ impl Admin {
         object.insert("agents".into(), agent_counts(engine));
         object.insert(
             "sandboxEngine".into(),
-            json!(fletch_core::sandbox::selected_engine_setting()),
+            json!(fletch_core::sandbox::container_override()
+                .map_or("auto", fletch_core::sandbox::EngineKind::as_setting)),
         );
         object.insert(
             "githubConnected".into(),

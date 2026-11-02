@@ -3,13 +3,13 @@ import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { boxSetup } from "./boxSetup";
 
-/** One compact line under the isolated-VM switch saying where the host's
+/** One compact line on Settings › Sandbox saying where the host's Linux VM
  *  setup stands — "Downloading image 43% · Cancel", "Installing Claude Code
  *  tools…", "Ready · image v0.2.0 · Claude Code 2.1.312", or the error with
  *  Retry (Download, for an image that was never fetched). Reads the image
  *  once on mount (the probe is the pane's; `box:image` / `box:tools` carry
- *  every change after). Mounted only while the switch is on and the machine
- *  can boot a box; the one surface for the install state. */
+ *  every change after). Mounted only where the machine can boot a box (or
+ *  before the probe answers); the one surface for the install state. */
 export function BoxSetupStatus() {
   const probe = useAppStore((s) => s.boxProbe);
   const image = useAppStore((s) => s.boxImage);

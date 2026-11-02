@@ -13,7 +13,7 @@ import { StatusDot } from "./StatusDot";
 
 /** The workspace segment's hover/focus popover: who + what, then where it
  *  runs — the isolation, and for a box its live phase and the one action it
- *  takes here; for a seatbelt workspace, where the isolated VM stands, so a
+ *  takes here; for a seatbelt workspace, where the Linux VM stands, so a
  *  workspace that started before the download reads as early rather than
  *  as the rule. */
 export function WorkspacePopover({ agent, status }: { agent: AgentRecord; status: DotStatus }) {
@@ -60,19 +60,18 @@ export function WorkspacePopover({ agent, status }: { agent: AgentRecord; status
   );
 }
 
-/** Where the isolated VM stands, under a seatbelt workspace. The project's
+/** Where the Linux VM stands, under a seatbelt workspace. The project's
  *  placement is the effective one — the stored choice over the host's
  *  native-app detection, which rides the workspace snapshot — so the line
  *  never promises a VM to a project the spawn path keeps on this Mac. */
 function VmNote({ repoPath }: { repoPath: string | undefined }) {
-  const boxesEnabled = useAppStore((s) => s.boxesEnabled);
   const probe = useAppStore((s) => s.boxProbe);
   const image = useAppStore((s) => s.boxImage);
   const tools = useAppStore((s) => s.boxTools);
   const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
   const { settings } = useProjectSettings(project?.project_id);
   const note = seatbeltNote(
-    boxesEnabled && !!probe?.runtime_ok,
+    !!probe?.runtime_ok,
     boxSetup(probe, image, tools),
     effectivePlacement(settings?.[PLACEMENT_KEY], project),
   );

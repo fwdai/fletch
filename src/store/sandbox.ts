@@ -14,11 +14,9 @@ import {
   type PublishApprovalResolved,
 } from "@/api";
 import { hostSupports } from "@/remote/types";
-import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preferences";
 import { newestWins } from "@/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@/util/publishApprovals";
 import { activeEnvironment, forActiveEnvironment } from "./environments";
-import { BOXES_DEFAULT_ENABLED } from "./hostSettings";
 import type { SliceCreator } from "./types";
 
 /** Live state of one embedded container image build (first spawn under a
@@ -88,9 +86,6 @@ export function applyBuildEvent(
 }
 
 export interface SandboxSlice {
-  /** Engine new agents are stamped with. Mirrors the backend-owned
-   *  `sandbox_engine` setting; existing agents keep their stamped engine. */
-  sandboxEngine: SandboxEngine;
   /** Latest Docker availability probe; `null` until the first probe lands. */
   dockerProbe: DockerProbe | null;
   /** Latest Podman availability probe; `null` until the first probe lands. */
@@ -123,11 +118,6 @@ export interface SandboxSlice {
    *  head. Unanswered requests are denied backend-side after a timeout, so a
    *  dropped entry fails closed. */
   pendingPublishApprovals: PublishApproval[];
-  /** "Use isolated VMs when available", mirrored from the host-owned
-   *  `boxes_enabled` (absent is `BOXES_DEFAULT_ENABLED`). Off, the Sandbox
-   *  page's box controls fold away, nothing box-related is probed or shown,
-   *  and the automatic engine choice lands on the macOS sandbox. */
-  boxesEnabled: boolean;
   /** The box knobs, mirrored from the host-owned `box_*` settings. Empty
    *  string = unset (the engine's defaults apply). */
   boxMemoryMib: string;
@@ -151,9 +141,6 @@ export interface SandboxSlice {
    *  however many connections it took, oldest first. */
   boxEgressBlocked: BlockedHost[];
 
-  /** Persist a new engine choice via the backend, which validates docker
-   *  against a live daemon probe — reverts the store on refusal. */
-  setSandboxEngine: (engine: SandboxEngine) => Promise<void>;
   /** Turn the publish-approval prompt on or off (backend-owned setting). */
   setPublishConfirmation: (enabled: boolean) => Promise<void>;
   /** Queue a publish the backend is blocked on for the prompt. What the user
@@ -202,11 +189,6 @@ export interface SandboxSlice {
   /** Launch Docker Desktop (daemon-down error action); surfaces failures via
    *  `lastError`. */
   startDockerDesktop: () => Promise<void>;
-  /** Flip the isolated-VM switch (host-owned `boxes_enabled`, written through
-   *  `set_box_setting`). On the host, turning it on starts the image download
-   *  and the tools disks after it; those arrive back as events. Reverts the
-   *  toggle on refusal (an Intel Mac, no runtime). */
-  setBoxesEnabled: (enabled: boolean) => Promise<void>;
   /** Read where the host's box setup stands — the runtime probe (with the
    *  tools disks) and the image — once per environment; `box:image` and
    *  `box:tools` carry every change after. What the title bar's popover,
@@ -305,7 +287,6 @@ async function optimistic(
 }
 
 export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
-  sandboxEngine: DEFAULT_SANDBOX_ENGINE,
   dockerProbe: null,
   podmanProbe: null,
   containerBuilds: {},
@@ -317,7 +298,6 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   podmanCpus: "",
   publishConfirmation: false,
   pendingPublishApprovals: [],
-  boxesEnabled: BOXES_DEFAULT_ENABLED,
   boxMemoryMib: "",
   boxCpus: "",
   boxImageUrl: "",
@@ -376,18 +356,6 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     }));
   },
 
-  setSandboxEngine: async (engine) => {
-    // The backend command persists the `sandbox_engine` setting AND updates its
-    // in-memory spawn-path mirror, so we don't also call setSetting here (same
-    // posture as `setTelemetryEnabled`).
-    await optimistic(set, { sandboxEngine: engine }, { sandboxEngine: get().sandboxEngine }, () =>
-      api.setSandboxEngine(engine),
-    );
-    // The engine moves the default workspace type. The picker re-reads as the
-    // store value changes, which can reach the host before this write does;
-    // once the write settled, read again.
-    get().reloadWorkspaceTypes();
-  },
   refreshDockerProbe: async () => {
     let probe: DockerProbe;
     try {
@@ -476,13 +444,6 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     }
   },
 
-  setBoxesEnabled: async (enabled) => {
-    await optimistic(set, { boxesEnabled: enabled }, { boxesEnabled: get().boxesEnabled }, () =>
-      api.setBoxSetting("boxes_enabled", String(enabled)),
-    );
-    // As for the engine: re-read once the write settled.
-    get().reloadWorkspaceTypes();
-  },
   saveBoxSetting: async (key, value) => {
     try {
       await api.setBoxSetting(key, value || null);
@@ -519,10 +480,8 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   loadBoxSetup: async () => {
     // The setup is the active host's, wholesale: what the last one said is
     // cleared before this one answers, so a switch never shows host A's
-    // download on host B. Nothing reads it while the switch is off, and the
-    // probe runs processes, so a host with boxes off is never asked.
+    // download on host B.
     set({ boxProbe: null, boxImage: null, boxTools: {} });
-    if (!get().boxesEnabled) return;
     await Promise.all([get().refreshBoxProbe(), get().refreshBoxImage()]);
   },
   installBoxImage: async () => {

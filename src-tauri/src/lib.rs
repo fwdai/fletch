@@ -514,22 +514,12 @@ fn track_event(event: String, props: Option<serde_json::Value>) {
     telemetry::track(&event, props.unwrap_or_else(|| json!({})));
 }
 
-/// The persisted sandbox engine selection (`"sandbox-exec"` | `"docker"` |
-/// `"podman"`).
-/// Reads the in-memory mirror seeded at startup and kept in sync by
-/// `set_sandbox_engine`, so no DB handle is needed.
-#[tauri::command]
-fn get_sandbox_engine() -> String {
-    sandbox::selected_engine_setting().to_string()
-}
-
 /// What each sandbox engine actually guarantees — one report per engine, so the
 /// settings picker can show the trade rather than just the names.
 ///
 /// Every engine rather than the selected one: neither is a superset of the other
 /// (each is stronger on a different claim), so "which engine am I on" doesn't
-/// answer "what am I protected from". Each report carries its `engine` spelling,
-/// which joins `get_sandbox_engine`'s value.
+/// answer "what am I protected from". Each report carries its `engine` spelling.
 #[tauri::command]
 fn describe_sandbox_isolation() -> Vec<sandbox::IsolationReport> {
     sandbox::EngineKind::ALL
@@ -586,7 +576,7 @@ async fn get_container_auth_status() -> Result<sandbox::provider::auth::Containe
 /// (see `secrets`), the same posture as `github_token`. Trims; rejects empty;
 /// unexpected shapes are accepted with a warning (which, like every log line
 /// here, never includes the token itself). Persists and then updates the
-/// in-process mirror, like `set_sandbox_engine` and `github::set_token`.
+/// in-process mirror, like `github::set_token`.
 #[tauri::command]
 async fn set_container_auth_token(
     token: String,
@@ -1358,7 +1348,6 @@ pub fn run() {
             set_keep_awake_on_power,
             track_app_opened,
             track_event,
-            get_sandbox_engine,
             describe_sandbox_isolation,
             get_publish_confirmation,
             answer_publish_approval,
@@ -1367,7 +1356,6 @@ pub fn run() {
             commands::set_agent_bin_override,
             commands::set_code_indexing_enabled,
             commands::set_context_layer_enabled,
-            commands::set_sandbox_engine,
             commands::set_publish_confirmation,
             commands::set_publish_approval_wait,
             commands::set_auto_archive_idle_days,

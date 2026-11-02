@@ -270,26 +270,7 @@ export function parseRoadmapBoardWidth(raw: string | undefined): number | null {
   return Math.min(MAX_PANE_WIDTH, Math.max(ROADMAP_MIN_BOARD, n));
 }
 
-// ---- Sandbox engine ------------------------------------------------------------
-
-/** The isolation engine choice for new agents: `auto` leaves it to the host
- *  (a box when one can boot right now, the macOS sandbox otherwise), the
- *  rest pin one. Mirrors the backend's `EngineKind::as_setting` spellings and
- *  `sandbox::ENGINE_AUTO` (`sandbox/mod.rs`), so both sides agree on the wire
- *  strings. */
-export type SandboxEngine = "auto" | "sandbox-exec" | "docker" | "podman" | "box";
-
-export const DEFAULT_SANDBOX_ENGINE: SandboxEngine = "auto";
-
-/** Parse the `sandbox_engine` setting. The key is backend-owned (snake_case,
- *  written by the `set_sandbox_engine` Rust command — never via a frontend
- *  `setSetting`, same posture as `telemetry_enabled`). Unknown/missing values
- *  are automatic, matching the backend's parser. */
-export function parseSandboxEngine(raw: string | undefined): SandboxEngine {
-  return raw === "sandbox-exec" || raw === "docker" || raw === "podman" || raw === "box"
-    ? raw
-    : DEFAULT_SANDBOX_ENGINE;
-}
+// ---- Publish approval and auto-archive ------------------------------------------
 
 /** Seconds a publish-approval prompt waits before denying — the backend's
  *  `rpc::approval::DEFAULT_WAIT_SECS`. */
@@ -312,31 +293,6 @@ export const DEFAULT_AUTO_ARCHIVE_IDLE_DAYS = 7;
 export function parseAutoArchiveIdleDays(raw: string | undefined): number {
   const n = Number.parseInt(raw ?? "", 10);
   return Number.isInteger(n) && n >= 0 ? n : DEFAULT_AUTO_ARCHIVE_IDLE_DAYS;
-}
-
-/** Whether an engine runs the agent inside a container — mirrors the backend's
- *  `EngineKind::is_container`. Every "containerized" gate calls this rather
- *  than comparing against `"docker"`. Takes a loose string because callers read
- *  an agent's stamped `sandbox_engine` off the record, unparsed and possibly
- *  absent. */
-export function isContainerEngine(engine: string | null | undefined): boolean {
-  return engine === "docker" || engine === "podman";
-}
-
-/** The engine's name in prose ("Docker isn't available…"). */
-export function sandboxEngineLabel(engine: SandboxEngine): string {
-  switch (engine) {
-    case "docker":
-      return "Docker";
-    case "podman":
-      return "Podman";
-    case "box":
-      return "Box";
-    case "auto":
-      return "Automatic";
-    default:
-      return "Seatbelt";
-  }
 }
 
 // ---- Provider binary path overrides ------------------------------------------

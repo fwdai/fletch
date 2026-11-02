@@ -1,9 +1,8 @@
 //! Getting a host ready to boot boxes, and waiting for it: the pinned image's
 //! install (one at a time, in the background, `box:image` events) and the
 //! tools disks built after it. The install starts on its own once the host
-//! can boot a box ([`autostart`]: at boot, and when onboarding finishes) and
-//! when the switch is turned on (`commands::set_box_setting_impl`); a failed
-//! download tries again after a growing delay. A launch or provision of a
+//! can boot a box ([`autostart`]: at boot, and when onboarding finishes); a
+//! failed download tries again after a growing delay. A launch or provision of a
 //! box-stamped agent that arrives before it is done waits here instead of
 //! failing (`BoxRegistry::ensure_running`), reporting what it waits on as
 //! the box's `Preparing` phase — only ever for an engine the user or the
@@ -116,12 +115,9 @@ pub fn image_status() -> BoxImageStatus {
 /// image and the enabled layers (`box_layers`) in the background; progress
 /// and the outcome arrive as `box:image` events, and the tools disks are
 /// built once it is in. A no-op while an install runs, and quick when
-/// everything is installed already (the store skips the download), so the
-/// toggle, a layer change and a Retry can all call it blindly.
+/// everything is installed already (the store skips the download), so
+/// autostart, a layer change and a Retry can all call it blindly.
 pub fn start_install() -> Result<()> {
-    if !settings::enabled() {
-        return Err(Error::Other(super::SWITCHED_OFF.into()));
-    }
     let pinned = super::pinned_image();
     let mut status = BoxImageStatus {
         phase: "downloading",
@@ -201,14 +197,13 @@ pub fn start_install() -> Result<()> {
 }
 
 /// Start the image install on its own when it is wanted and nothing stands
-/// in the way: the switch on, a runtime that can boot a box, and no image
-/// for this build. A no-op everywhere else (and while an install runs), so
+/// in the way: a runtime that can boot a box, and no image for this build. A no-op everywhere else (and while an install runs), so
 /// boot, the end of onboarding and the retry timer all call it blindly. The
 /// download is the one thing boxes cost the user, and it is paid here in
 /// the background rather than asked for: the engine choice stays on
 /// seatbelt until the image and the tools disk are in, then moves to boxes.
 pub fn autostart() {
-    if !settings::enabled() || matches!(super::installed_image(), Ok(Some(_))) {
+    if matches!(super::installed_image(), Ok(Some(_))) {
         return;
     }
     if !super::runtime_usable() {
@@ -229,8 +224,8 @@ pub fn cancel_install() -> Result<()> {
     }
 }
 
-/// Everything a boot needs, now: the switch, the runtime and an installed
-/// image, with no waiting.
+/// Everything a boot needs, now: the runtime and an installed image, with no
+/// waiting.
 pub fn ready_now() -> Result<Ready> {
     let paths = super::availability()?;
     let image = super::installed_image()?
@@ -259,8 +254,8 @@ async fn wait_for_image(on_progress: &mut impl FnMut(String)) -> Result<Installe
             return Ok(image);
         }
         let Some(mut rx) = lock_slot().as_ref().map(|i| i.status.clone()) else {
-            // No install running and no image: this launch starts the one the
-            // toggle would have (a cancelled download, say).
+            // No install running and no image: this launch starts one (a
+            // cancelled download, say).
             start_install()?;
             continue;
         };
@@ -327,9 +322,6 @@ pub fn prebuild_tools() {
 /// already running. With the image not installed, the install starts instead
 /// and builds the disks once it is in.
 pub fn retry_tools(provider: &str) -> Result<()> {
-    if !settings::enabled() {
-        return Err(Error::Other(super::SWITCHED_OFF.into()));
-    }
     if !super::supports_provider(provider) {
         return Err(Error::Other(format!(
             "boxes have no tools disk for `{provider}`"
@@ -389,9 +381,6 @@ fn start_tools_builds(
 /// wait for in `ensure_running`, nothing once both are in place. For the
 /// spawn watchdog.
 pub fn setup_allowance(provider: &str) -> Duration {
-    if !settings::enabled() {
-        return Duration::ZERO;
-    }
     let mut extra = Duration::ZERO;
     if !matches!(super::installed_image(), Ok(Some(_))) {
         extra += IMAGE_WAIT;

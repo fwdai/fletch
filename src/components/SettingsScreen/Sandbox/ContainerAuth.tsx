@@ -21,10 +21,11 @@ const STATUS_LABELS: Record<string, string> = {
 
 const SETUP_COMMAND = "claude setup-token";
 
-/** Settings › Sandbox: how containerized agents authenticate to Anthropic. Shows which chain step is active and opens the connect modal —
- *  the path for Keychain-only claude logins, which containers can't see.
- *  Containers only (Docker and Podman share the chain): seatbelt agents keep
- *  the user's own login. */
+/** Settings › Sandbox: how claude in a Linux VM (and in a legacy container)
+ *  authenticates to Anthropic (`sandbox::provider::auth`, the chain every
+ *  engine that cannot read the user's own login shares). Shows which chain
+ *  step is active and opens the connect modal — the path for Keychain-only
+ *  claude logins. Seatbelt agents keep the user's own login. */
 export function ContainerAuth() {
   const containerAuth = useAppStore((s) => s.containerAuth);
   const refreshContainerAuth = useAppStore((s) => s.refreshContainerAuth);
@@ -42,8 +43,8 @@ export function ContainerAuth() {
   return (
     <>
       <SetRow
-        title="Claude auth for containers"
-        sub="Container agents use your Keychain Claude login, or an API key or setup token as fallback."
+        title="Claude in a Linux VM"
+        sub="Agents in a Linux VM use your Keychain Claude login, or an API key or setup token as fallback."
       >
         <span className={`set-cauth-status text-sm ${connected ? "connected" : ""}`}>
           {status ? STATUS_LABELS[status] : "Checking…"}

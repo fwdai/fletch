@@ -1,44 +1,40 @@
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
-import { useBoxesUnlocked } from "@/util/boxesUnlocked";
 import { effectivePlacement, PLACEMENT_KEY, parsePlacement } from "@/util/placement";
+import { LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
 import { useProjectSettings } from "@/util/useProjectSettings";
 
-/** Where this project's agents run when the engine in Settings › Sandbox is
- *  Automatic: the isolated VM when it can boot, this Mac for a repository the
- *  host found to build a macOS or iOS app (`ProjectRef.native_app`), or
- *  whichever the user pins here. The choice is the project's; the detection
- *  is per repository, as the spawn path reads it against the repo an agent
- *  is started in — so this reads the repo whose page is open, not the
- *  project's first. A pinned engine in Settings ignores this. */
+/** Where this project's agents run: Automatic is a Linux VM when one can boot
+ *  and the macOS sandbox for a repository the host found to build a macOS or
+ *  iOS app (`ProjectRef.native_app`); the user can pin either here. The choice
+ *  is the project's; the detection is per repository, as the spawn path reads
+ *  it against the repo an agent is started in — so this reads the repo whose
+ *  page is open, not the project's first. */
 export function SandboxSection({ projectId, repoPath }: { projectId: string; repoPath: string }) {
-  const unlocked = useBoxesUnlocked();
-  const { settings, save } = useProjectSettings(unlocked ? projectId : null);
+  const { settings, save } = useProjectSettings(projectId);
   const gate = useGate("projectSettings");
-  const boxesEnabled = useAppStore((s) => s.boxesEnabled);
   const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
   const value = parsePlacement(settings?.[PLACEMENT_KEY]);
   const { placement, detected } = effectivePlacement(settings?.[PLACEMENT_KEY], project);
-  // Nothing to place until boxes are rolled out to this user.
-  if (!unlocked) return null;
+  const automatic = detected
+    ? `Automatic · ${MACOS_SANDBOX.label} (macOS app detected)`
+    : `Automatic · ${LINUX_VM.label}`;
 
-  const hint = !boxesEnabled
-    ? "Isolated VMs are off in Settings › Sandbox, so every workspace runs on this Mac."
-    : detected
-      ? "This repository builds a macOS or iOS app, which a VM can't build or run, so Automatic keeps agents started in it on this Mac. Pick Isolated VM to override that."
-      : placement === "host"
-        ? "Every new workspace runs in the macOS sandbox on this Mac."
-        : placement === "box"
-          ? "Every new workspace runs in an isolated VM, waiting for the image if it is still on its way."
-          : "An isolated VM once it's ready, the macOS sandbox until then.";
+  const hint = detected
+    ? `This repository builds a macOS or iOS app, which a VM can't build or run, so its workspaces run in the ${MACOS_SANDBOX.label}. Pick ${LINUX_VM.label} to override that.`
+    : placement === "host"
+      ? `Every new workspace runs in the ${MACOS_SANDBOX.label}.`
+      : placement === "box"
+        ? `Every new workspace runs in a ${LINUX_VM.label}, waiting for its image if it is still downloading.`
+        : `A ${LINUX_VM.label} once it's ready, the ${MACOS_SANDBOX.label} until then.`;
 
   return (
     <section className="ps-section">
       <header className="ps-section-h">
         <h2 className="ps-section-t text-lg">Sandbox</h2>
         <p className="ps-section-lead text-sm">
-          Where this project&rsquo;s agents run while the engine in Settings › Sandbox is Automatic.
-          Each workspace keeps the sandbox it started in.
+          Where this project&rsquo;s new workspaces run. Each workspace keeps the sandbox it started
+          in.
         </p>
         {gate && <p className="ps-hint text-sm">{gate}</p>}
       </header>
@@ -58,9 +54,9 @@ export function SandboxSection({ projectId, repoPath }: { projectId: string; rep
             save(PLACEMENT_KEY, next === "auto" ? null : next);
           }}
         >
-          <option value="auto">Automatic</option>
-          <option value="box">Isolated VM</option>
-          <option value="host">This Mac</option>
+          <option value="auto">{automatic}</option>
+          <option value="box">{LINUX_VM.label}</option>
+          <option value="host">{MACOS_SANDBOX.label}</option>
         </select>
       </div>
       <p className="ps-hint text-xs">{hint}</p>

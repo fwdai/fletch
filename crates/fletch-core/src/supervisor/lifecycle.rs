@@ -507,11 +507,11 @@ impl Supervisor {
         // agent runs where its tree lives (`engine_for_adopted_tree`): in the
         // box that holds it, or never in a box for a host tree. Anyone else
         // gets the session's workspace type when it picked one, else the
-        // host's choice over the project's placement — read here, before the
-        // lock, since the automatic choice stats the repository and may run
-        // the runtime probe once. A workspace type that cannot be had (a box
-        // with the switch off, say) fails the spawn here, before anything is
-        // written.
+        // automatic choice over the project's placement — read here, before
+        // the lock, since the automatic choice stats the repository and may
+        // run the runtime probe once. A workspace type that cannot be had (a
+        // box on a machine that cannot boot one, say) fails the spawn here,
+        // before anything is written.
         let placement = match &adopted {
             Some(_) => None,
             None => self.project_placement(&req.repo_path),

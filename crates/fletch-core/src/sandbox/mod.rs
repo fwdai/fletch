@@ -45,71 +45,45 @@ pub use toolchain_cache::{
     toolchain_cache_root, BoxPlatform, ToolchainCache, TOOLCHAIN_CACHE_ROOT_ENV,
 };
 
-/// The `settings` key holding the user's engine choice; values are
-/// [`EngineKind::as_setting`] spellings or [`ENGINE_AUTO`], the default.
-pub const ENGINE_SETTING: &str = "sandbox_engine";
+/// The container engine a headless `fletch-host` off macOS runs every new
+/// agent under, until a box can boot there: set once by its boot
+/// (`host::boot`), `None` everywhere else. Not a setting — nothing stores it
+/// and no command changes it; on macOS the engine is always chosen
+/// automatically (`boxes::engine_for_new_agent`). Teardown never consults
+/// this — sessions carry a `KillHandle` bound to the engine that launched
+/// them.
+static CONTAINER_OVERRIDE: RwLock<Option<EngineKind>> = RwLock::new(None);
 
-/// The `sandbox_engine` value that leaves the choice to Fletch: a box when
-/// one can boot right now, the macOS sandbox otherwise
-/// (`boxes::engine_for_new_agent`). What an absent row means too.
-pub const ENGINE_AUTO: &str = "auto";
-
-/// The user's engine selection, mirrored from the `sandbox_engine` setting so
-/// spawn paths (deep in agent code, no DB handle) can read it: `None` is
-/// automatic. Seeded at startup (`host::boot`) and updated by the
-/// `set_sandbox_engine` command. Teardown never consults this — sessions
-/// carry a `KillHandle` bound to the engine that launched them.
-static SELECTED_ENGINE: RwLock<Option<EngineKind>> = RwLock::new(None);
-
-pub fn set_selected_engine(choice: Option<EngineKind>) {
-    *SELECTED_ENGINE.write() = choice;
+/// Pin new agents to `kind`, a container engine: headless boot off macOS only.
+pub fn set_container_override(kind: EngineKind) {
+    *CONTAINER_OVERRIDE.write() = Some(kind);
 }
 
-/// The engine the user pinned for *new* agents, or `None` for automatic.
+/// The container engine a headless host off macOS pinned, else `None`.
 /// Existing agents keep the kind stamped on their record at creation (see
-/// `supervisor::lifecycle::spawn_agent`), so a settings change never
-/// re-engines them.
-pub fn selected_engine() -> Option<EngineKind> {
-    *SELECTED_ENGINE.read()
-}
-
-/// The stored spelling of the current choice.
-pub fn selected_engine_setting() -> &'static str {
-    selected_engine().map_or(ENGINE_AUTO, EngineKind::as_setting)
-}
-
-/// Parse a `sandbox_engine` value: `Some(None)` for [`ENGINE_AUTO`],
-/// `Some(Some(kind))` for a pinned engine, `None` for anything else.
-pub fn parse_engine_setting(value: &str) -> Option<Option<EngineKind>> {
-    if value == ENGINE_AUTO {
-        Some(None)
-    } else {
-        EngineKind::from_setting(value).map(Some)
-    }
+/// `supervisor::lifecycle::spawn_agent`).
+pub fn container_override() -> Option<EngineKind> {
+    *CONTAINER_OVERRIDE.read()
 }
 
 /// The engine an agent that *adopts* `tree` — works in an existing checkout
 /// instead of provisioning one (the local reviewer in a coder's checkout) —
-/// is stamped with: **where the tree lives**, not what Settings selects. A
-/// tree inside a box is reachable only from that box, so the agent runs there
-/// as its tenant whatever the host's setting; a host tree is invisible to a
-/// guest, so automatic and a pinned `box` both land on seatbelt, as they do
-/// for a provider boxes cannot run. The caller still gates the provider
-/// against the result.
+/// is stamped with: **where the tree lives**. A tree inside a box is
+/// reachable only from that box, so the agent runs there as its tenant; a
+/// host tree is invisible to a guest, so it lands on seatbelt (or a headless
+/// host's container engine, [`container_override`]). The caller still gates
+/// the provider against the result.
 pub fn engine_for_adopted_tree(tree: &Path) -> EngineKind {
     if boxes::box_holding(tree).is_some() {
         return EngineKind::Box;
     }
-    match selected_engine() {
-        Some(EngineKind::Box) | None => EngineKind::SandboxExec,
-        Some(kind) => kind,
-    }
+    container_override().unwrap_or(EngineKind::SandboxExec)
 }
 
 /// This engine's own data directory ([`crate::host::BootConfig::data_dir`]),
 /// mirrored process-wide so the macOS profile builder — reached on the spawn
 /// path, with no handle on the boot config — can carve it out of what a confined
-/// agent may read or write. Same mirror idiom as [`set_selected_engine`].
+/// agent may read or write. Same mirror idiom as [`set_container_override`].
 ///
 /// It cannot be derived. [`crate::data_dir`] is the *desktop's* directory, keyed
 /// by [`crate::BUNDLE_ID`]; a `fletch-host` keeps its database (the GitHub token
@@ -142,9 +116,9 @@ pub(crate) fn configured_data_dir() -> Option<PathBuf> {
 pub fn engine_for(kind: EngineKind) -> Result<Arc<dyn SandboxEngine>> {
     match kind {
         EngineKind::SandboxExec => Ok(seatbelt_engine()),
-        // Behind the `boxes_enabled` switch, then the runtime probe and the
-        // image: `boxes::availability` refuses with the first thing missing,
-        // so a box-stamped agent never launches elsewhere.
+        // Behind the runtime probe: `boxes::availability` refuses with the
+        // first thing missing, so a box-stamped agent never launches
+        // elsewhere.
         EngineKind::Box => boxes::availability().map(|_| boxes::BoxEngine::shared() as Arc<_>),
         EngineKind::Docker => match docker::availability() {
             DockerAvailability::Available { .. } => Ok(docker::DockerEngine::shared()),
@@ -317,16 +291,16 @@ pub(crate) fn runs_in_container(provider: &str) -> bool {
 /// 8). An agent adopting `adopted_tree` runs where the tree lives
 /// ([`engine_for_adopted_tree`]) and ignores `override_`: a tree in a box is
 /// reachable only there, a host tree never from a guest. Anyone else gets
-/// the session's own choice when there is one, else the host's choice over
-/// the placement of the project at `repo`, whose stored setting is
+/// the session's own choice when there is one, else the automatic choice
+/// over the placement of the project at `repo`, whose stored setting is
 /// `placement_setting`.
 ///
-/// The override ([`WorkspaceType`]) stands over both the host's choice and
-/// the project's placement for this spawn only: `Host` is the macOS sandbox;
+/// The override ([`WorkspaceType`]) stands over the project's placement for
+/// this spawn only: `Host` is the macOS sandbox;
 /// `Box` is a box, waiting at launch for an image still on its way as a
 /// project pinned to boxes does, and refused with the reason the user sees
-/// (`box_refusal`: the switch off, a runtime that cannot boot, a provider
-/// boxes do not run) when there can be no box at all — an explicit choice
+/// (`box_refusal`: a runtime that cannot boot, a provider boxes do not
+/// run) when there can be no box at all — an explicit choice
 /// never quietly lands somewhere else. `Stamped(kind)` is exactly `kind`: a
 /// stamped box is checked as an explicit `Box` is, and a stamped container
 /// engine is returned as it is (its launch fails closed when the daemon is
@@ -358,7 +332,7 @@ pub fn engine_for_spawn(
         None => {
             let placement = placement::resolve(placement_setting, repo);
             Ok(boxes::engine_for_new_agent(
-                selected_engine(),
+                container_override(),
                 provider,
                 placement,
             ))
@@ -368,12 +342,8 @@ pub fn engine_for_spawn(
 
 /// Why a new agent of `provider` cannot run in a box, in the sentence the
 /// user sees, or `None` when it can (an image still downloading is waited
-/// for, not refused): the switch, then the machine and runtime, then the
-/// provider gate.
+/// for, not refused): the machine and runtime, then the provider gate.
 fn box_refusal(provider: &str) -> Option<String> {
-    if !boxes::settings::enabled() {
-        return Some(boxes::SWITCHED_OFF.to_string());
-    }
     if let Some(refusal) = boxes::runtime_refusal() {
         return Some(refusal);
     }
@@ -389,10 +359,12 @@ pub struct WorkspaceTypeOption {
     pub kind: &'static str,
     /// Whether a spawn may ask for it.
     pub available: bool,
-    /// Why not, when it is not: the sentence the spawn would fail with.
+    /// Why not, when it is not: the sentence the spawn would fail with. On
+    /// the default option, why it is the default when that is worth saying
+    /// (the macOS sandbox standing in for a box: [`host_default_reason`]).
     pub reason: Option<String>,
     /// What [`engine_for_spawn`] picks with no override. Neither option is
-    /// the default while the host pins a container engine.
+    /// the default on a headless host that pins a container engine.
     pub default: bool,
 }
 
@@ -407,22 +379,23 @@ pub fn workspace_types(
     provider: &str,
 ) -> Vec<WorkspaceTypeOption> {
     let box_reason = box_refusal(provider);
-    // What `engine_for_spawn` picks with a `None` override: the host's choice
-    // over the project's placement. A box refused above is never ready, and
-    // a passing runtime is remembered, so the runtime is probed at most once
-    // for the whole answer.
-    let default = boxes::engine_for_new_agent_with(
-        selected_engine(),
-        provider,
-        placement::resolve(placement_setting, repo),
-        || box_reason.is_none() && boxes::ready_for(provider),
-    );
+    let placement = placement::resolve(placement_setting, repo);
+    // What `engine_for_spawn` picks with a `None` override: the automatic
+    // choice over the project's placement. A box refused above is never
+    // ready, and a passing runtime is remembered, so the runtime is probed at
+    // most once for the whole answer.
+    let default =
+        boxes::engine_for_new_agent_with(container_override(), provider, placement, || {
+            box_reason.is_none() && boxes::ready_for(provider)
+        });
+    let host_default = default == EngineKind::SandboxExec;
     vec![
         WorkspaceTypeOption {
             kind: "host",
             available: true,
-            reason: None,
-            default: default == EngineKind::SandboxExec,
+            reason: host_default
+                .then(|| host_default_reason(placement_setting, placement, box_reason.as_deref())),
+            default: host_default,
         },
         WorkspaceTypeOption {
             kind: "box",
@@ -431,6 +404,43 @@ pub fn workspace_types(
             default: default == EngineKind::Box,
         },
     ]
+}
+
+/// The default macOS sandbox's reason while the VM image downloads. The
+/// composer adds the live percent to exactly this (`Composer/workspaceType.ts`).
+pub const IMAGE_DOWNLOADING: &str = "VM image downloading";
+
+/// Why the macOS sandbox is the default, in a few words: the project's
+/// placement first (as [`boxes::engine_for_new_agent`] decides), then why
+/// no box can be had (`box_refusal`'s `refusal`), then what the box is still
+/// waiting on ([`boxes::ready_for`]).
+fn host_default_reason(
+    placement_setting: Option<&str>,
+    placement: placement::Placement,
+    refusal: Option<&str>,
+) -> String {
+    use placement::Placement;
+    if placement == Placement::Host {
+        return if Placement::parse(placement_setting) == Placement::Host {
+            "set in the project's settings"
+        } else {
+            "this project builds a macOS app"
+        }
+        .into();
+    }
+    if let Some(refusal) = refusal {
+        return match boxes::runtime_refusal() {
+            Some(_) => "Linux VMs aren't available on this Mac".into(),
+            None => refusal.to_string(),
+        };
+    }
+    match boxes::setup::image_status().phase {
+        "downloading" | "verifying" => IMAGE_DOWNLOADING,
+        "unavailable" => "VM image download failed",
+        "installed" => "Linux VM still setting up",
+        _ => "VM image not downloaded yet",
+    }
+    .into()
 }
 
 /// Provision `spec.dest` for `record`, an agent stamped `engine`, at the base
@@ -761,7 +771,7 @@ pub fn agent_bin(
         // The CLI on the box's tools disk; a host path would mean nothing in
         // the guest.
         EngineKind::Box => fletch_box::tools::bin_path(provider)
-            .ok_or_else(|| Error::Other(format!("{label} isn't available in box sandboxes yet"))),
+            .ok_or_else(|| Error::Other(format!("{label} isn't available in Linux VMs yet"))),
         EngineKind::SandboxExec => host_resolve(),
     }
 }
@@ -813,7 +823,7 @@ mod adopted_tree_tests {
             shares: Vec::new(),
         });
         assert_eq!(engine_for_adopted_tree(&root.join("repo")), EngineKind::Box);
-        // Whatever Settings selects, a host tree never resolves to a box.
+        // A host tree never resolves to a box.
         assert_ne!(
             engine_for_adopted_tree(Path::new("/adopted-tree-test/runs/run-1/repo")),
             EngineKind::Box
@@ -841,8 +851,7 @@ mod workspace_type_tests {
     /// A session's workspace type stands over the host's choice and the
     /// project's placement, an explicit box is never quietly something else,
     /// and an adopted tree keeps running where it lives. Written to hold
-    /// whatever the boxes switch and the selected engine read while other
-    /// tests flip them.
+    /// whether or not this machine can boot a box.
     #[test]
     fn a_session_choice_is_honoured_or_refused() {
         let repo = tempfile::tempdir().unwrap();
@@ -858,8 +867,8 @@ mod workspace_type_tests {
             .unwrap(),
             EngineKind::SandboxExec
         );
-        // A provider boxes do not run: refused whatever the switch and the
-        // runtime say, never stamped seatbelt instead.
+        // A provider boxes do not run: refused whatever the runtime says,
+        // never stamped seatbelt instead.
         assert!(engine_for_spawn(
             None,
             None,
@@ -911,24 +920,17 @@ mod workspace_type_tests {
     /// A stamped box that cannot exist refuses with the reason, as an
     /// explicit box does, never falling back to this Mac.
     #[test]
-    fn a_stamped_box_with_the_switch_off_is_refused() {
-        let _serial = boxes::settings::TEST_LOCK.blocking_lock();
-        let before = boxes::settings::current();
-        boxes::settings::set(boxes::settings::BoxSettings {
-            enabled: false,
-            ..before.clone()
-        });
+    fn a_stamped_box_that_cannot_exist_is_refused() {
         let repo = tempfile::tempdir().unwrap();
-        let result = engine_for_spawn(
+        let err = engine_for_spawn(
             None,
             Some("host"),
             repo.path(),
-            "claude",
+            "antigravity",
             Some(WorkspaceType::Stamped(EngineKind::Box)),
-        );
-        boxes::settings::set(before);
-        let err = result.expect_err("a stamped box with the switch off must refuse");
-        assert!(err.to_string().contains(boxes::SWITCHED_OFF), "{err}");
+        )
+        .expect_err("a stamped box for a provider boxes do not run must refuse");
+        assert_eq!(Some(err.to_string()), box_refusal("antigravity"));
     }
 
     /// The list offers both types, this Mac always, and a box only when the
@@ -940,12 +942,37 @@ mod workspace_type_tests {
         let kinds: Vec<&str> = options.iter().map(|o| o.kind).collect();
         assert_eq!(kinds, ["host", "box"]);
         assert!(kinds.iter().all(|k| WorkspaceType::parse(k).is_some()));
-        assert!(options[0].available && options[0].reason.is_none());
+        assert!(options[0].available && options[0].default);
+        assert!(
+            options[0].reason.as_deref().is_some_and(|r| !r.is_empty()),
+            "the default says why it is not a box"
+        );
         assert!(!options[1].available);
         assert!(options[1].reason.as_deref().is_some_and(|r| !r.is_empty()));
         assert!(
             !options[1].default,
             "nothing defaults to a refused box here"
+        );
+    }
+
+    /// A project that stays on this Mac says so, in the words of where that
+    /// was decided: its detection, or its settings.
+    #[test]
+    fn the_default_says_why_it_stays_on_this_mac() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join("App.xcodeproj")).unwrap();
+        let reason = |setting| {
+            workspace_types(setting, repo.path(), "claude")[0]
+                .reason
+                .clone()
+        };
+        assert_eq!(
+            reason(None).as_deref(),
+            Some("this project builds a macOS app")
+        );
+        assert_eq!(
+            reason(Some("host")).as_deref(),
+            Some("set in the project's settings")
         );
     }
 }

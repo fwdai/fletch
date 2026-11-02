@@ -678,7 +678,6 @@ fn allowlist_matches_the_protocol_table() {
         "set_auto_archive_idle_days",
         "set_code_indexing_enabled",
         "set_context_layer_enabled",
-        "set_sandbox_engine",
         "set_docker_launch_settings",
         "set_podman_launch_settings",
         "set_agent_bin_override",
@@ -4062,9 +4061,9 @@ async fn every_settings_op_has_an_arm() {
             assert_ne!(e, dispatch::UNKNOWN_OP, "{op} has no arm");
         }
     }
-    // 17 through `settings_op`, plus `set_box_setting` through `boxes_op` and
+    // 16 through `settings_op`, plus `set_box_setting` through `boxes_op` and
     // `set_box_egress_global` through `project_file_op`.
-    assert_eq!(seen, 19, "the settings family is 19 ops");
+    assert_eq!(seen, 18, "the settings family is 18 ops");
 }
 
 /// The two settings events are forwarded and advertised, so a second desktop

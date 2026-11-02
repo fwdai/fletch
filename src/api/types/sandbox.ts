@@ -104,11 +104,9 @@ export interface BoxToolsStatus {
 
 /** `box_runtime_probe`: can this host boot a box, item by item. `runtime_ok`
  *  is the machine and the runtime (Apple silicon, hypervisor, helper, dylibs)
- *  — what the switch needs — with `problems` one sentence per failing item;
- *  `ok` adds the switch and an installed image. */
+ *  — what a box needs first — with `problems` one sentence per failing item;
+ *  `ok` adds an installed image. */
 export interface BoxRuntimeProbe {
-  /** The `boxes_enabled` switch. */
-  enabled: boolean;
   ok: boolean;
   runtime_ok: boolean;
   problems: string[];
@@ -121,14 +119,14 @@ export interface BoxRuntimeProbe {
 }
 
 /** A workspace type a new agent may be given (`sandbox::placement::Placement`
- *  minus automatic): this Mac's sandbox or an isolated VM. */
+ *  minus automatic): the macOS sandbox or a Linux VM. */
 export type WorkspaceKind = "host" | "box";
 
 /** One row of `available_workspace_types(repo_path, provider)`. `host` is
  *  always available; `box` exactly when a spawn asking for it would be
  *  accepted, else `reason` is the sentence that spawn would fail with.
- *  `default` marks what a spawn with no choice picks — neither row while the
- *  host pins a container engine. */
+ *  `default` marks what a spawn with no choice picks; on the default `host`
+ *  row, `reason` says why it is not a VM (`sandbox::workspace_types`). */
 export interface WorkspaceTypeOption {
   kind: WorkspaceKind;
   available: boolean;
@@ -201,7 +199,6 @@ export interface BoxPolicyEvent {
 
 /** The host-owned box settings `set_box_setting` accepts. */
 export type BoxSettingKey =
-  | "boxes_enabled"
   | "box_memory_mib"
   | "box_cpus"
   | "box_image_url"

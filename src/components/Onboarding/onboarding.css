@@ -577,7 +577,7 @@
   animation: pf-in 0.5s var(--ease) both;
 }
 /* fine print under the way in: what the first workspaces run in, and that
-   the isolated VM is on its way — read once, never acted on */
+   the Linux VM is on its way — read once, never acted on */
 .pf-vm-note {
   margin: 12px 0 0;
   max-width: 44ch;

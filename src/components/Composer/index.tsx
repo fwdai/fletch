@@ -91,7 +91,7 @@ interface Props {
   /** The provider account the agent runs (or will run) under, and how to move
    *  it. The picker offers it only when the provider has several accounts. */
   account?: AccountControl;
-  /** For a new agent only: where it runs, this Mac or an isolated VM, from
+  /** For a new agent only: where it runs, a Linux VM or the macOS sandbox, from
    *  the host's list of workspace types. Omit to hide the control; existing
    *  sessions keep the engine stamped at their creation. */
   workspaceType?: WorkspaceTypeControl;
@@ -480,6 +480,10 @@ export function Composer({
       }}
       foot={
         <>
+          {/* Where first: the row reads Where · Provider · Account · Model · Effort. */}
+          {workspaceType && !existingSession && (
+            <WorkspaceTypePicker {...workspaceType} provider={provider} />
+          )}
           <ModelPicker
             provider={provider}
             model={model}
@@ -523,9 +527,6 @@ export function Composer({
               <Icon name="sparkle" size={11} />
               <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
             </Chip>
-          )}
-          {workspaceType && !existingSession && (
-            <WorkspaceTypePicker {...workspaceType} provider={provider} />
           )}
           <span style={{ flex: 1 }} />
           {/* Insert actions live on the right, beside the primary control: what

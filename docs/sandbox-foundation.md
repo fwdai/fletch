@@ -84,24 +84,29 @@ engine enforces) and `docs/box.md` is the box runtime.
    sentence a box spawn would fail with. Nothing refuses by probing a path.
 
 8. **Workspace type is a field.** Every spawn carries the engine it is stamped
-   with, resolved from the host's choice, the project's placement and an
-   optional per-session override (`SpawnRequest::workspace_type`, a
-   `sandbox::WorkspaceType`), by one function (`sandbox::engine_for_spawn`).
-   The override stands over both for that spawn. The composer's choice is
+   with, resolved by one function (`sandbox::engine_for_spawn`) from the
+   project's placement and an optional per-session override
+   (`SpawnRequest::workspace_type`, a `sandbox::WorkspaceType`). Every new
+   workspace runs in a box; seatbelt is what it gets when no box can be had
+   right now (image still downloading, download failed, a machine that cannot
+   boot one) or when the project or the workspace is told to stay on the Mac.
+   There is no global engine setting and no switch; a headless host off macOS
+   pins its container engine at boot (`sandbox::container_override`) until
+   boxes boot there. The override stands over the placement for that spawn. The composer's choice is
    `Host` or `Box` (`WorkspaceType::parse`): `Host` is seatbelt; `Box` is a
    box that waits for its image as a box-pinned project does, and a spawn
-   refused with the user-facing reason when there can be no box (switch off,
-   runtime unusable, provider unsupported), never a quiet fallback. A fork
+   refused with the user-facing reason when there can be no box (runtime
+   unusable, provider unsupported), never a quiet fallback. A fork
    passes its parent's exact engine (`WorkspaceType::stamped`, the
    `Stamped(kind)` variant only `sandbox` builds): the child gets that engine
-   whatever Settings say now, a stamped box refused like an explicit `Box`
+   whatever the automatic choice says now, a stamped box refused like an explicit `Box`
    when it cannot be had, a stamped container engine kept as it is (its
    launch fails closed when the daemon is down). The project's placement
    (`sandbox::placement::Placement`) is a project setting only and never a
    spawn's override. An adopting agent ignores the override and runs where
    its tree lives. The UI reads one host-computed list of
    available workspace types with each one's reason when unavailable and the
-   default marked (`sandbox::workspace_types`, served by the
+   default marked, the default's reason saying why when it is not a box (`sandbox::workspace_types`, served by the
    `available_workspace_types` command in `commands/boxes.rs`, on the desktop
    and the remote wire).
 
@@ -153,8 +158,6 @@ deletion touches:
     `WorkspaceType::Stamped(Docker | Podman)` arm of `engine_for_spawn`;
   - `sandbox/provider/mod.rs`: the `Docker | Podman` arm of `supports`;
   - `sandbox/guarantees.rs`: every `Docker` / `Podman` coverage row;
-  - `commands/settings.rs`: the `Docker` and `Podman` arms of
-    `set_sandbox_engine_impl` (and its "pick Docker or Podman on this host" copy);
   - `host/boot.rs`: `headless_container_engine`.
 - [ ] Delete the `caps()` table's docker/podman column above.
 - [ ] `supervisor/disposition.rs` calls `sandbox::reap_agent_containers` at
@@ -189,10 +192,9 @@ deletion touches:
   engine. Instead the record fails closed: a spawn, resume or view switch
   refuses with a message naming the workspace and the retired engine, and a
   re-stamp to seatbelt or box happens only on an explicit user action.
-- [ ] The host's own `sandbox_engine` setting at `docker` or `podman` would
-  read as automatic (`parse_engine_setting` returns `None`; `host/boot.rs`
-  then selects automatic). It only picks the engine for new agents; existing
-  records are covered by the item above.
+- [x] The host's own `sandbox_engine` setting is no longer read (boot logs a
+  row that pinned `docker` or `podman`); new agents get the automatic engine.
+  Existing records are covered by the item above.
 
 **The headless host**
 

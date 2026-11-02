@@ -34,11 +34,10 @@ const host = (providers?: HostProvider[]): EnvironmentEntry => ({
   ...(providers ? { providers } : {}),
 });
 
-/** This Mac, everything installed, no container engine — the case where
- *  nothing is blocked, so a test that blocks has said why itself. */
+/** This Mac, claude and codex installed — the case where nothing is blocked,
+ *  so a test that blocks has said why itself. */
 const facts = (over: Partial<AvailabilityFacts> = {}): AvailabilityFacts => ({
   env: local,
-  sandboxEngine: "sandbox-exec",
   providerPaths: { claude: "/usr/local/bin/claude", codex: "/usr/local/bin/codex" },
   providerVersions: { claude: "2.1.4", codex: "0.48.0" },
   providersProbed: true,
@@ -67,24 +66,6 @@ describe("agentAvailability, on This Mac", () => {
     expect(a.reason).toBeNull();
     expect(a.installed).toBe(true);
   });
-
-  it("blocks a provider with no container image while a container engine is on", () => {
-    // antigravity is the one provider the backend has no image for.
-    const paths = { claude: "/usr/local/bin/claude", antigravity: "/usr/local/bin/agy" };
-    const a = agentAvailability(
-      facts({ sandboxEngine: "docker", providerPaths: paths }),
-      "antigravity",
-    );
-    expect(a.reason).toBe("Antigravity isn't available in Docker sandboxes yet");
-    expect(a.note).toBe("Not in Docker yet");
-    expect(a.installed).toBe(true);
-  });
-
-  it("still marks a container-blocked provider absent when the probe found no binary", () => {
-    const a = agentAvailability(facts({ sandboxEngine: "docker" }), "antigravity");
-    expect(a.reason).toBe("Antigravity isn't available in Docker sandboxes yet");
-    expect(a.installed).toBe(false);
-  });
 });
 
 describe("agentAvailability, on a paired host", () => {
@@ -92,16 +73,6 @@ describe("agentAvailability, on a paired host", () => {
     const a = agentAvailability(facts({ env: host([provider({ id: "claude" })]) }), "claude");
     expect(a.reason).toBeNull();
     // The host's version, not this Mac's — the agent runs there.
-    expect(a.note).toBe("1.0.0");
-  });
-
-  it("ignores this Mac's sandbox engine entirely", () => {
-    // The regression this guards: the local container gate used to run first,
-    // so switching *this* Mac to Docker hid antigravity on a host that has it
-    // installed, signed in, and no notion of this Mac's sandbox at all.
-    const env = host([provider({ id: "antigravity" })]);
-    const a = agentAvailability(facts({ env, sandboxEngine: "docker" }), "antigravity");
-    expect(a.reason).toBeNull();
     expect(a.note).toBe("1.0.0");
   });
 
@@ -134,9 +105,9 @@ describe("agentAvailability, on a paired host", () => {
   });
 
   it("blocks nothing while the host has said nothing", () => {
-    // Not greeted yet, or too old for the op: unknown is not a refusal, and a
-    // local Docker preference must not stand in for one.
-    const a = agentAvailability(facts({ env: host(), sandboxEngine: "docker" }), "antigravity");
+    // Not greeted yet, or too old for the op: unknown is not a refusal, and
+    // this Mac's probe must not stand in for one.
+    const a = agentAvailability(facts({ env: host(), providerPaths: {} }), "antigravity");
     expect(a.reason).toBeNull();
     expect(a.note).toBe("");
     expect(a.installed).toBe(true);
@@ -149,9 +120,9 @@ describe("blockedSentence", () => {
   });
 
   it("carries the reason and what to do about it", () => {
-    expect(
-      blockedSentence(agentAvailability(facts({ sandboxEngine: "docker" }), "antigravity")),
-    ).toBe("Antigravity isn't available in Docker sandboxes yet — switch to Claude to send");
+    expect(blockedSentence(agentAvailability(facts(), "cursor"))).toBe(
+      "Not installed — see Settings › Providers — install it in Settings › Providers",
+    );
   });
 
   it("adds nothing to a host refusal, which already ends in its own remedy", () => {

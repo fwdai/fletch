@@ -1,7 +1,6 @@
 //! The box sandbox engine: one libkrun micro-VM per agent, reached only over
 //! ssh on vsock and an egress proxy. The standard engine wherever a box can
-//! boot: with the engine choice on automatic (`sandbox::selected_engine` is
-//! `None`) a new agent is stamped `box` the moment the image and its
+//! boot: a new agent is stamped `box` the moment the image and its
 //! provider's tools disk are in ([`engine_for_new_agent`]), and seatbelt
 //! until then — the image downloads itself in the background
 //! ([`setup::autostart`]) and no launch ever waits for it. The guest holds
@@ -10,12 +9,12 @@
 //! translated path. Nothing of the host's enters the guest except the env
 //! file written for each launch and the folders the user granted the
 //! workspace (`workspace::folder_grants`, mounted as virtio-fs shares at their
-//! own paths), and a step that cannot keep that promise fails closed. With
-//! the `boxes_enabled` switch off nothing here is reachable: [`availability`]
+//! own paths), and a step that cannot keep that promise fails closed. On a
+//! machine that cannot boot a box nothing here is reachable: [`availability`]
 //! refuses first, and `engine_for(Box)` asks it.
 //!
 //! Layout:
-//! - [`settings`]: the switch and knobs, mirrored in-process.
+//! - [`settings`]: the knobs, mirrored in-process.
 //! - [`registry`]: `BoxRegistry`, one entry per box-stamped agent: boot, stop
 //!   ladder, idle timer, relays, discard.
 //! - [`executor`]: the `RemoteExecutor` the path-routed seam (`crate::exec`)
@@ -249,13 +248,10 @@ pub const RUNTIME_NOT_FOUND: &str = "the box runtime was not found: no fletch-vm
                                      FLETCH_BOX_HELPER";
 
 /// Why `engine_for(Box)` refuses, else the runtime a boot uses. Fail closed at
-/// every rung: the flag, the machine, the helper and dylibs. The image is not
+/// every rung: the machine, the helper and dylibs. The image is not
 /// a rung: a launch waits for its download ([`setup::ready`]) rather than
 /// refusing, so the engine is handed out while it is still on its way.
 pub fn availability() -> Result<RuntimePaths> {
-    if !settings::enabled() {
-        return Err(Error::SandboxUnavailable(SWITCHED_OFF.into()));
-    }
     let paths =
         runtime_paths().ok_or_else(|| Error::SandboxUnavailable(RUNTIME_NOT_FOUND.into()))?;
     let probe = paths.probe();
@@ -267,9 +263,6 @@ pub fn availability() -> Result<RuntimePaths> {
     }
     Ok(paths)
 }
-
-/// The sentence for the switch being off.
-pub const SWITCHED_OFF: &str = "isolated VMs are off; turn them on in Settings › Sandbox";
 
 /// Whether this machine and runtime can boot a box, probed once per process:
 /// the helper, its entitlement and dylibs, the architecture and the
@@ -308,13 +301,12 @@ pub fn runtime_refusal() -> Option<String> {
 }
 
 /// Whether a new agent of `provider` could boot a box right now, without
-/// waiting on anything: the switch, the runtime, this build's image, and
+/// waiting on anything: the provider, the runtime, this build's image, and
 /// the provider's tools disk — the gate the automatic engine choice stands
 /// behind. Everything here is a flag read or a file stat once the runtime
 /// probe has passed.
 pub fn ready_for(provider: &str) -> bool {
-    settings::enabled()
-        && supports_provider(provider)
+    supports_provider(provider)
         && runtime_usable()
         && matches!(installed_image(), Ok(Some(_)))
         && registry::built_tools_disk(provider).is_some()
@@ -533,52 +525,43 @@ pub fn asleep_for_path(path: &Path) -> bool {
         .is_some_and(|identity| BoxRegistry::global().running(&identity.agent_id).is_none())
 }
 
-/// The engine a new agent of `provider` is stamped with, from the host's
-/// choice (`sandbox::selected_engine`, `None` for automatic) and the
-/// project's placement.
+/// The engine a new agent of `provider` is stamped with, from the project's
+/// placement (and `container`, the container engine a headless host off
+/// macOS pins at boot, `sandbox::container_override`, which wins outright).
 ///
-/// A pinned engine is what the user asked for: `box` for a provider boxes
-/// cannot launch falls back to seatbelt rather than making the provider
-/// unsendable, and a pinned `box` with no image yet waits for it at launch
-/// (`setup::ready`). Automatic never waits: the project's placement decides
-/// first — a project that runs on this Mac (a macOS or iOS app, or the
-/// user's say-so) is seatbelt — then a box when one can boot right now
-/// ([`ready_for`]) and seatbelt otherwise, so the first workspace of a fresh
-/// install starts at once and the ones after the download land in boxes.
+/// The project's placement decides first — a project that runs on this Mac
+/// (a macOS or iOS app, or the user's say-so) is seatbelt — then a box when
+/// one can boot right now ([`ready_for`]) and seatbelt otherwise, so the
+/// first workspace of a fresh install starts at once and the ones after the
+/// download land in boxes. A project pinned to boxes on a machine that can
+/// boot one waits at launch for an image still on its way (`setup::ready`).
 pub fn engine_for_new_agent(
-    selected: Option<EngineKind>,
+    container: Option<EngineKind>,
     provider: &str,
     placement: Placement,
 ) -> EngineKind {
-    engine_for_new_agent_with(selected, provider, placement, || ready_for(provider))
+    engine_for_new_agent_with(container, provider, placement, || ready_for(provider))
 }
 
 /// [`engine_for_new_agent`] with [`ready_for`] supplied by a caller that has
 /// already answered part of it, so the runtime is probed once (asked only
 /// when automatic gets that far).
 pub fn engine_for_new_agent_with(
-    selected: Option<EngineKind>,
+    container: Option<EngineKind>,
     provider: &str,
     placement: Placement,
     ready: impl Fn() -> bool,
 ) -> EngineKind {
-    match selected {
-        Some(EngineKind::Box) if !supports_provider(provider) => {
-            tracing::info!(
-                provider,
-                "box engine does not run this provider yet; using seatbelt"
-            );
-            EngineKind::SandboxExec
-        }
-        Some(kind) => kind,
-        None => match placement {
-            Placement::Host => EngineKind::SandboxExec,
-            Placement::Auto | Placement::Box if ready() => EngineKind::Box,
-            // Pinned to boxes by the project but nothing to boot yet: the
-            // launch waits, as a pinned engine does.
-            Placement::Box if settings::enabled() && supports_provider(provider) => EngineKind::Box,
-            Placement::Auto | Placement::Box => EngineKind::SandboxExec,
-        },
+    if let Some(kind) = container {
+        return kind;
+    }
+    match placement {
+        Placement::Host => EngineKind::SandboxExec,
+        Placement::Auto | Placement::Box if ready() => EngineKind::Box,
+        // Pinned to boxes by the project but nothing to boot yet: the launch
+        // waits for the image, on a machine that can boot a box at all.
+        Placement::Box if supports_provider(provider) && runtime_usable() => EngineKind::Box,
+        Placement::Auto | Placement::Box => EngineKind::SandboxExec,
     }
 }
 
@@ -1742,46 +1725,44 @@ pub fn close() {
 /// and kill `fletch-vm` processes whose owning Fletch is dead. Off the boot
 /// thread for the process scan.
 pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
-    if settings::enabled() {
-        if let Ok(ids) = workspace.live_agent_ids() {
-            let records: Vec<_> = ids
-                .iter()
-                .filter_map(|id| workspace.agent(id).ok())
-                .filter(|r| r.sandbox_engine.as_deref() == Some(EngineKind::Box.as_setting()))
-                .collect();
-            // Owners first: a tenant resolves its host through the registry,
-            // so every box must be known before any tenant is placed. An
-            // adopting record is a tenant by construction — a box-stamped
-            // agent never adopts a tree outside a box (`engine_for_adopted_tree`).
-            let (tenants, owners): (Vec<_>, Vec<_>) = records
-                .into_iter()
-                .partition(|r| r.repos.first().is_some_and(|repo| repo.is_adopted()));
-            for record in owners {
-                match BoxIdentity::for_record(&record) {
-                    Ok(identity) => BoxRegistry::global().register(identity),
-                    Err(e) => {
-                        tracing::warn!(agent_id = %record.id, error = %e, "box identity failed")
-                    }
-                }
-            }
-            for record in tenants {
-                if let Err(e) = route_tenant(&record) {
-                    tracing::warn!(agent_id = %record.id, error = %e, "box tenant not routed");
+    if let Ok(ids) = workspace.live_agent_ids() {
+        let records: Vec<_> = ids
+            .iter()
+            .filter_map(|id| workspace.agent(id).ok())
+            .filter(|r| r.sandbox_engine.as_deref() == Some(EngineKind::Box.as_setting()))
+            .collect();
+        // Owners first: a tenant resolves its host through the registry,
+        // so every box must be known before any tenant is placed. An
+        // adopting record is a tenant by construction — a box-stamped
+        // agent never adopts a tree outside a box (`engine_for_adopted_tree`).
+        let (tenants, owners): (Vec<_>, Vec<_>) = records
+            .into_iter()
+            .partition(|r| r.repos.first().is_some_and(|repo| repo.is_adopted()));
+        for record in owners {
+            match BoxIdentity::for_record(&record) {
+                Ok(identity) => BoxRegistry::global().register(identity),
+                Err(e) => {
+                    tracing::warn!(agent_id = %record.id, error = %e, "box identity failed")
                 }
             }
         }
-        // The CLI version a tools disk is keyed by is probed once per process,
-        // so a CLI update since the last run shows here first: start its disk
-        // now rather than at the first boot that misses it. Skips a settled disk.
-        setup::prebuild_tools();
-        // And the disks an earlier update superseded go, and the one the next
-        // boot takes is hashed against its marker, off this thread: a launch
-        // checks only the marker's size.
-        for provider in fletch_box::tools::PROVIDERS {
-            if supports_provider(provider) {
-                registry::sweep_tools_disks_in_background(provider.to_string());
-                registry::verify_tools_disks_in_background(provider.to_string());
+        for record in tenants {
+            if let Err(e) = route_tenant(&record) {
+                tracing::warn!(agent_id = %record.id, error = %e, "box tenant not routed");
             }
+        }
+    }
+    // The CLI version a tools disk is keyed by is probed once per process,
+    // so a CLI update since the last run shows here first: start its disk
+    // now rather than at the first boot that misses it. Skips a settled disk.
+    setup::prebuild_tools();
+    // And the disks an earlier update superseded go, and the one the next
+    // boot takes is hashed against its marker, off this thread: a launch
+    // checks only the marker's size.
+    for provider in fletch_box::tools::PROVIDERS {
+        if supports_provider(provider) {
+            registry::sweep_tools_disks_in_background(provider.to_string());
+            registry::verify_tools_disks_in_background(provider.to_string());
         }
     }
     let leaked = leaked_box_dirs(workspace);

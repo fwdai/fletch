@@ -385,21 +385,22 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // points. So it comes from the boot config, the one place that knows.
     sandbox::set_data_dir(data_dir.clone());
 
-    // Seed the in-memory sandbox engine selection (mirror of the
-    // `sandbox_engine` setting) so spawn-time engine resolution — deep in agent
-    // code with no DB handle — honors the user's choice. Missing/unknown values
-    // are automatic (a box when one can boot, seatbelt otherwise), except on
-    // a headless host off macOS, where neither exists: there automatic too
-    // means the container engine (see `headless_container_engine`).
-    match database::get_setting(&db.lock(), sandbox::ENGINE_SETTING)
-        .as_deref()
-        .and_then(sandbox::parse_engine_setting)
+    // The engine of a new agent is chosen automatically (a box when one can
+    // boot, seatbelt otherwise), except on a headless host off macOS, where
+    // neither exists: there it is the container engine
+    // (`headless_container_engine`). The retired `sandbox_engine` setting is
+    // no longer read; a row that pinned a container engine is logged, so the
+    // change is visible.
+    if let Some(pinned) = database::get_setting(&db.lock(), "sandbox_engine")
+        .filter(|v| matches!(v.as_str(), "docker" | "podman"))
     {
-        Some(Some(kind)) => sandbox::set_selected_engine(Some(kind)),
-        Some(None) | None if headless && !cfg!(target_os = "macos") => {
-            sandbox::set_selected_engine(Some(headless_container_engine()?))
-        }
-        Some(None) | None => sandbox::set_selected_engine(None),
+        tracing::info!(
+            pinned,
+            "the sandbox_engine setting is no longer read; new agents get the automatic engine"
+        );
+    }
+    if headless && !cfg!(target_os = "macos") {
+        sandbox::set_container_override(headless_container_engine()?);
     }
 
     {
@@ -807,8 +808,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // The box engine: its settings mirrored like the container knobs, its
     // `box:*` events through the fanout, every live box-stamped agent's root
     // routed to its box, and the helpers of dead instances swept — on a
-    // thread, like the container sweeps. With the switch off this registers
-    // nothing and only the sweep runs.
+    // thread, like the container sweeps.
     sandbox::boxes::settings::seed(&db.lock());
     sandbox::boxes::set_event_sink(sink.clone());
     sandbox::boxes::startup(&workspace);
@@ -872,8 +872,8 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     })
 }
 
-/// The sandbox a headless host uses off macOS when the user has never chosen
-/// one: Docker if the daemon answers, else Podman, else nothing.
+/// The sandbox a headless host uses off macOS: Docker if the daemon answers,
+/// else Podman, else nothing.
 ///
 /// There is no safe default to fall back to. `sandbox-exec` — the engine the
 /// desktop starts with — is a macOS binary, and `engine_for` deliberately fails
@@ -886,19 +886,18 @@ fn headless_container_engine() -> Result<crate::sandbox::EngineKind, BootError> 
 
     let docker = sandbox::docker::availability();
     if matches!(docker, DockerAvailability::Available { .. }) {
-        tracing::info!("no sandbox engine configured; using docker");
+        tracing::info!("using docker as the sandbox engine");
         return Ok(EngineKind::Docker);
     }
     let podman = sandbox::podman::availability();
     if matches!(podman, PodmanAvailability::Available { .. }) {
-        tracing::info!("no sandbox engine configured; using podman");
+        tracing::info!("using podman as the sandbox engine");
         return Ok(EngineKind::Podman);
     }
     Err(BootError::Sandbox(format!(
-        "no container runtime is available, and this host has no sandbox engine configured. \
-         Docker: {docker:?}. Podman: {podman:?}. Install and start one of them, or set the \
-         `{}` setting, then start fletch-host again.",
-        sandbox::ENGINE_SETTING
+        "no container runtime is available, and this host off macOS has no other sandbox. \
+         Docker: {docker:?}. Podman: {podman:?}. Install and start one of them, then start \
+         fletch-host again."
     )))
 }
 

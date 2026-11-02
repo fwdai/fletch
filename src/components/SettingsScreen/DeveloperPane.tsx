@@ -3,6 +3,7 @@ import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
+import { BoxKnob, IMAGE_URL_FIELD } from "./Sandbox/BoxKnobs";
 
 /** Dev-only settings surface. The nav entry that routes here is gated on
  *  `import.meta.env.DEV`, so this pane only ships under `bun tauri dev`. */
@@ -16,6 +17,7 @@ export function DeveloperPane() {
   const setFeature = useAppStore((s) => s.setFeature);
   const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
   const setContextLayerEnabled = useAppStore((s) => s.setContextLayerEnabled);
+  const boxImageUrl = useAppStore((s) => s.boxImageUrl);
   const [refreshingModels, setRefreshingModels] = useState(false);
 
   const handleRefreshModels = async () => {
@@ -58,6 +60,10 @@ export function DeveloperPane() {
             onClick={() => setContextLayerEnabled(!contextLayerEnabled)}
           />
         </SetRow>
+      </SetGroup>
+
+      <SetGroup label="Sandbox">
+        <BoxKnob field={IMAGE_URL_FIELD} value={boxImageUrl} />
       </SetGroup>
 
       <SetGroup label="Onboarding">

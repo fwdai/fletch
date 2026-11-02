@@ -39,27 +39,26 @@ third mode and no silent fallback between them (`sandbox/engine.rs`,
   filesystem is unreachable *even for reads*. It is truer isolation, at the cost
   of requiring Docker and some startup latency (`sandbox/docker/`).
 
-An agent is stamped with its engine at creation and keeps it for life; changing
-the setting only affects agents spawned afterward (`sandbox/mod.rs`). A
+An agent is stamped with its engine at creation and keeps it for life
+(`sandbox/mod.rs`). A
 Docker-stamped agent whose daemon is unreachable is a **hard error** — Fletch
 fails closed rather than quietly launching outside the container boundary the
 user selected (`sandbox/mod.rs`, `engine_for`).
 
 Which engine a new agent gets is decided once, at creation, by
-`sandbox::engine_for_spawn` from three inputs: the host's choice in Settings ›
-Sandbox (an engine, or automatic), the project's placement
-(`sandbox.placement`: automatic, this Mac or an isolated VM; under automatic a
-repository that builds a macOS or iOS app stays on this Mac), and an optional
-per-session choice made in the composer for a new agent (this Mac or an
-isolated VM), which stands over the other two for that agent alone. A
-per-session "this Mac" always means the macOS sandbox, even when Settings
-pins a container engine, whereas a project placement of "this Mac" under a
-pinned container engine keeps the pinned engine. A fork's child is stamped
-with exactly the engine its parent was stamped with, whatever Settings or the
-placement now say, so a parent kept on this Mac never forks into a VM and a
+`sandbox::engine_for_spawn` from two inputs: the project's placement
+(`sandbox.placement`: automatic, the macOS sandbox or a Linux VM; under
+automatic a Linux VM when one can boot right now, the macOS sandbox
+otherwise, and a repository that builds a macOS or iOS app stays in the
+macOS sandbox), and an optional per-session choice made in the composer for a
+new agent (the macOS sandbox or a Linux VM), which stands over the placement
+for that agent alone. There is no global engine setting; a headless host off
+macOS runs every new agent in the container engine it found at boot. A
+fork's child is stamped with exactly the engine its parent was stamped with,
+whatever the placement now says, so a parent kept on this Mac never forks into a VM and a
 container-stamped parent's child stays in that container engine. A
-per-session isolated VM that cannot be had (the switch off, a runtime that
-cannot boot, a provider boxes do not run) fails the spawn with that reason
+per-session Linux VM that cannot be had (a runtime that cannot boot, a
+provider boxes do not run) fails the spawn with that reason
 rather than landing somewhere else; the composer offers the choice from the
 same answer (`available_workspace_types`). An agent that adopts an existing
 tree (the local reviewer, a workflow step in its run's workspace) runs where

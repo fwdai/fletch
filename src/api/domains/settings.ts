@@ -6,7 +6,6 @@
 // the host's in-memory mirror and emits `settings:changed` /
 // `project_settings:changed`; never write one of these keys with `setSetting`
 // or `dbUpsert` (src/storage/hostOwnedKeys.test.ts enforces it).
-import type { SandboxEngine } from "@/storage/preferences";
 import { invoke } from "../invoke";
 import type { ProjectFileEdit, ProjectFileStatus, ProjectFileWhich } from "../types/settings";
 
@@ -27,9 +26,6 @@ export const settingsApi = {
   /** The project context layer's developer gate (`context_layer_enabled`). */
   setContextLayerEnabled: (enabled: boolean) =>
     invoke<void>("set_context_layer_enabled", { enabled }),
-  /** The engine new agents are stamped with. The host probes a container
-   *  engine live and refuses one whose runtime is unreachable. */
-  setSandboxEngine: (engine: SandboxEngine) => invoke<void>("set_sandbox_engine", { engine }),
   /** Docker launch knobs, written together; blank/null clears one. */
   setDockerLaunchSettings: (image: string | null, memory: string | null, cpus: string | null) =>
     invoke<void>("set_docker_launch_settings", { image, memory, cpus }),

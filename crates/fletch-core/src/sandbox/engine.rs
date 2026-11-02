@@ -10,8 +10,8 @@ pub enum EngineKind {
     Podman,
     /// A libkrun micro-VM per agent, reached only over ssh on vsock and an
     /// egress proxy. Named here so settings, guarantees and the seams can refer
-    /// to it; [`super::engine_for`] refuses it while the `boxes_enabled`
-    /// switch is off.
+    /// to it; [`super::engine_for`] refuses it on a machine that cannot boot
+    /// one.
     Box,
 }
 
