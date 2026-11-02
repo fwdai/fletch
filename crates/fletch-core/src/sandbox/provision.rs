@@ -22,7 +22,10 @@
 //! engine); under seatbelt no mount is needed (same
 //! filesystem, reads open, writes blocked outside the workspace by policy).
 //! The source object store must therefore remain present for the clone's
-//! lifetime — Fletch owns the source repo lifecycle, so this holds.
+//! lifetime — Fletch owns the source repo lifecycle, so this holds, with one
+//! exception: the user moving the repository. Relocating the project to follow
+//! it relinks the existing clones ([`relink_alternates`]), and boot repeats
+//! that for a move the app was not running for.
 
 use std::path::Path;
 
@@ -477,6 +480,110 @@ async fn clone_base(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Where a `--shared` clone names the object stores it borrows, one path per
+/// line.
+const ALTERNATES: &str = ".git/objects/info/alternates";
+
+/// Point a `--shared` checkout at `source_repo`'s object store again when a
+/// store its alternates name is gone. A clone borrows its history by the
+/// source's absolute path, so moving the repository and relocating the project
+/// to follow it ([`crate::workspace::WorkspaceManager::relocate_repo`]) leaves
+/// every existing checkout unable to read even its own HEAD (`fatal: bad
+/// object HEAD`). The objects are all still there under the new path; only
+/// the line naming them is stale.
+///
+/// Conservative: a store that is still present is kept, so a repository that
+/// was copied rather than moved goes on serving the checkouts it served. A
+/// self-contained clone (no alternates file) and a box's checkout (a copy, in
+/// its guest) are left alone, as is a checkout whose `source_repo` git cannot
+/// read — that one is an error, for the caller to log. Returns whether the
+/// file was rewritten. The file is agent-writable, so it is read and replaced
+/// through the executor's own-file calls, which never follow a link the agent
+/// planted.
+pub async fn relink_alternates(checkout: &Path, source_repo: &Path) -> Result<bool> {
+    if let crate::exec::Executor::Remote(_) = crate::exec::for_path(checkout) {
+        return Ok(false);
+    }
+    let read = {
+        let checkout = checkout.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            crate::exec::Executor::Local.read_beneath(&checkout, Path::new(ALTERNATES))
+        })
+        .await
+        .map_err(|e| Error::Other(format!("alternates read task: {e}")))?
+    };
+    let Ok(bytes) = read else {
+        return Ok(false);
+    };
+    // A relative line is relative to the clone's own object directory; an
+    // absolute one replaces the base outright under `join`.
+    let objects = checkout.join(".git/objects");
+    let (mut kept, gone): (Vec<String>, Vec<String>) = String::from_utf8_lossy(&bytes)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .partition(|line| objects.join(line).is_dir());
+    if gone.is_empty() {
+        return Ok(false);
+    }
+
+    let out = git::git_output(
+        source_repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await?;
+    let store = Path::new(String::from_utf8_lossy(&out.stdout).trim()).join("objects");
+    if !out.status.success() || !store.is_dir() {
+        return Err(Error::Git(format!(
+            "{} borrows objects from {}, which is gone, and its repository {} cannot be read",
+            checkout.display(),
+            gone.join(", "),
+            source_repo.display()
+        )));
+    }
+    let store = path_str(&store)?;
+    if !kept
+        .iter()
+        .any(|line| objects.join(line) == Path::new(&store))
+    {
+        kept.push(store);
+    }
+    let mut body = kept.join("\n");
+    body.push('\n');
+
+    let checkout = checkout.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::exec::Executor::Local.write_beneath(
+            &checkout,
+            Path::new(ALTERNATES),
+            body.as_bytes(),
+            0o644,
+        )
+    })
+    .await
+    .map_err(|e| Error::Other(format!("alternates write task: {e}")))??;
+    Ok(true)
+}
+
+/// [`relink_alternates`] over `checkouts`, each `(checkout, source repo)`.
+/// Best-effort: a checkout that can't be relinked is logged and skipped.
+pub async fn relink_checkouts(checkouts: Vec<(std::path::PathBuf, std::path::PathBuf)>) {
+    for (checkout, source_repo) in checkouts {
+        match relink_alternates(&checkout, &source_repo).await {
+            Ok(true) => tracing::info!(
+                checkout = %checkout.display(),
+                source = %source_repo.display(),
+                "relinked a checkout to its moved repository's objects"
+            ),
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(checkout = %checkout.display(), error = %e, "relinking a checkout's objects failed")
+            }
+        }
+    }
 }
 
 /// The fixups every checkout Fletch makes gets once its base is delivered
@@ -1826,6 +1933,146 @@ mod tests {
         // History is still fully reachable through the borrowed store.
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
         assert!(run(&dest, &["log", "--format=%s"]).contains("first"));
+    }
+
+    /// Whether git can read `checkout`'s HEAD commit at all.
+    fn head_readable(checkout: &Path) -> bool {
+        std::process::Command::new("git")
+            .args(["cat-file", "-e", "HEAD^{commit}"])
+            .current_dir(checkout)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+
+    /// The alternates lines of `checkout`, canonicalized.
+    fn alternates_of(checkout: &Path) -> Vec<PathBuf> {
+        std::fs::read_to_string(checkout.join(ALTERNATES))
+            .unwrap()
+            .lines()
+            .map(|line| Path::new(line.trim()).canonicalize().unwrap())
+            .collect()
+    }
+
+    /// The user moves their repository and relocates the project after it:
+    /// the checkout, which read its history from the old path, reads it from
+    /// the new one, and a second pass finds nothing to do.
+    #[tokio::test]
+    async fn relink_follows_a_moved_repository() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+        provision(&spec).await.unwrap();
+
+        let moved = td.path().join("moved");
+        std::fs::rename(&repo, &moved).unwrap();
+        assert!(!head_readable(&dest), "the move strands the checkout");
+
+        assert!(relink_alternates(&dest, &moved).await.unwrap());
+        assert!(head_readable(&dest));
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            alternates_of(&dest),
+            [moved.join(".git/objects").canonicalize().unwrap()]
+        );
+
+        assert!(!relink_alternates(&dest, &moved).await.unwrap());
+    }
+
+    /// A store that is still there is never replaced — a repository copied
+    /// rather than moved keeps serving the checkouts it served — and a
+    /// self-contained clone has nothing to relink.
+    #[tokio::test]
+    async fn relink_leaves_a_readable_checkout_alone() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+        provision(&spec).await.unwrap();
+        let before = std::fs::read(dest.join(ALTERNATES)).unwrap();
+
+        let copy = td.path().join("copy");
+        run(
+            td.path(),
+            &[
+                "clone",
+                "-q",
+                repo.to_str().unwrap(),
+                copy.to_str().unwrap(),
+            ],
+        );
+        assert!(!relink_alternates(&dest, &copy).await.unwrap());
+        assert_eq!(std::fs::read(dest.join(ALTERNATES)).unwrap(), before);
+
+        let own = td.path().join("own");
+        run(
+            td.path(),
+            &[
+                "clone",
+                "-q",
+                "--no-hardlinks",
+                repo.to_str().unwrap(),
+                own.to_str().unwrap(),
+            ],
+        );
+        assert!(!relink_alternates(&own, &repo).await.unwrap());
+        assert!(!own.join(ALTERNATES).exists());
+    }
+
+    /// A store that is gone with no readable repository to point at is an
+    /// error for the caller to log, and the file is left as it was.
+    #[tokio::test]
+    async fn relink_without_a_readable_repository_is_an_error() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+        provision(&spec).await.unwrap();
+        let before = std::fs::read(dest.join(ALTERNATES)).unwrap();
+        std::fs::remove_dir_all(&repo).unwrap();
+
+        assert!(relink_alternates(&dest, &repo).await.is_err());
+        assert_eq!(std::fs::read(dest.join(ALTERNATES)).unwrap(), before);
+    }
+
+    /// The alternates file is agent-writable: one the agent swapped for a link
+    /// out of the checkout is neither read through nor written through.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relink_never_follows_a_planted_link() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+        provision(&spec).await.unwrap();
+        let precious = td.path().join("precious");
+        std::fs::write(&precious, "/nowhere/objects\n").unwrap();
+        std::fs::remove_file(dest.join(ALTERNATES)).unwrap();
+        std::os::unix::fs::symlink(&precious, dest.join(ALTERNATES)).unwrap();
+
+        assert!(!relink_alternates(&dest, &repo).await.unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&precious).unwrap(),
+            "/nowhere/objects\n"
+        );
     }
 
     #[tokio::test]

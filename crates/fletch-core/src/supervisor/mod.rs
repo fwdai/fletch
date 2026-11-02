@@ -773,8 +773,24 @@ impl Supervisor {
         })
     }
 
+    /// Repoint a pinned repo at where the user moved it, then relink the live
+    /// checkouts cloned from it: each borrows its history from the old path,
+    /// and reads nothing until it names the new one.
     pub fn relocate_repo(&self, old_path: PathBuf, new_path: PathBuf) -> Result<Workspace> {
-        self.workspace.relocate_repo(&old_path, &new_path)
+        let workspace = self.workspace.relocate_repo(&old_path, &new_path)?;
+        match self.workspace.live_checkouts() {
+            Ok(checkouts) => {
+                let moved = checkouts
+                    .into_iter()
+                    .filter(|(_, source)| *source == new_path)
+                    .collect();
+                crate::host::spawn(crate::sandbox::provision::relink_checkouts(moved));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "skipping the relink of a relocated repo's checkouts")
+            }
+        }
+        Ok(workspace)
     }
 }
 
