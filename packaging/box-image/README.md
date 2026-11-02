@@ -10,12 +10,12 @@ is the pipeline.
 | `packages/base.txt`, `devtools.txt`, `browser.txt` | The package split: the base and one file per layer |
 | `dpkg-excludes.cfg` | dpkg path rules for every install: docs, man, locales, Mesa/LLVM |
 | `rootfs/` | Files copied over the base: `opt/fletch/init`, `etc/ssh/sshd_config.fletch` |
-| `build.sh` | Root, Debian arm64, privileged: mmdebstrap the base, apt the layers into copies of it, rsync the deltas, `mkfs.erofs` each, `manifest.json`, `sizes.md` |
+| `build.sh` | Root, Debian arm64 or amd64 (the images are the build machine's architecture), privileged: mmdebstrap the base, apt the layers into copies of it, rsync the deltas, `mkfs.erofs` each, `manifest.json`, `sizes.md` |
 | `test.sh` | Mounts the output as init would and runs the checks (chroot as `agent`); `report.md` |
 | `build-docker.sh` | The one way to build, on a Mac (Docker Desktop) or in CI: fletch-guest, `build.sh` in a container, `test.sh` with `--test`, the delta manifests, an install with the app's installer |
-| `boot-check.sh` | Boots the output on a Mac with its layers and checks the guest over ssh |
-| `bump.sh` | Moves the pins in `build.sh` (Debian snapshot, Node 22), VERSION and the app's pin |
-| `publish.sh` | Creates the GitHub release from an output directory: a draft, published once every file is there; refuses an existing version |
+| `boot-check.sh` | Boots the output on a Mac (or a Linux host with KVM) with its layers and checks the guest over ssh |
+| `bump.sh` | Moves the pins in `build.sh` (Debian snapshot, Node 22 and its arm64 and x64 tarball hashes), VERSION and the app's pin |
+| `publish.sh` | Creates the GitHub release from an output directory: `box-image-v<VERSION>` for an aarch64 build, `box-image-v<VERSION>-x86_64` for an x86_64 one (the manifest's `arch`); a draft, published once every file is there; refuses an existing version |
 
 `build.sh`, `packages/`, `dpkg-excludes.cfg`, `rootfs/` and `crates/fletch-guest`
 are the image's inputs: a change to them needs a VERSION bump (docs/box.md,

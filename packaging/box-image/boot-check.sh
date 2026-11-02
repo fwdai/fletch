@@ -1,5 +1,6 @@
 #!/bin/sh
-# Boot a built image with its layers on this Mac and check the guest over ssh:
+# Boot a built image with its layers on this machine (an Apple silicon Mac, or
+# an x86-64 or arm64 Linux host with KVM) and check the guest over ssh:
 # the layer overlays, the tools in them, a headless screenshot, fletch-guest.
 # What test.sh cannot cover (init, libkrun, the real kernel). Stages the dev
 # runtime and builds the CLI when `fletch-box` is not on PATH.
