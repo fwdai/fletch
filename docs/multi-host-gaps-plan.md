@@ -336,4 +336,5 @@ everything is additive and gated by op membership.
 - In-place scope editing, a `terminal`/`files:write` scope and the pairing
   second factor. They arrive with the deferred terminal work.
 - systemd hardening directives (`ProtectSystem`, `PrivateTmp`) in the unit:
-  they interact with Docker socket access and deserve their own check.
+  they interact with the box runtime's device access (`/dev/kvm`) and deserve
+  their own check.

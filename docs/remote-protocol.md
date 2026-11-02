@@ -905,8 +905,6 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `set_auto_archive_idle_days` | `{ days: number }` — `auto_archive_idle_days`; `0` turns the idle sweep off | `null` |
 | `set_code_indexing_enabled` | `{ enabled: boolean }` — `code_indexing_enabled`; turning it on also installs codegraph and warms the index for every pinned repo, in the background on the host | `null` |
 | `set_context_layer_enabled` | `{ enabled: boolean }` — `context_layer_enabled`: the project context layer's developer gate; off, the layer's ops, instruction block, ingesters and extractor are inert and the project page shows no Context tab | `null` |
-| `set_docker_launch_settings` | `{ image: string \| null, memory: string \| null, cpus: string \| null }` — `docker_image` / `docker_memory` / `docker_cpus`, written together; blank or `null` clears one back to the launch default | `null` |
-| `set_podman_launch_settings` | `{ image, memory, cpus }` — the podman twin over `podman_image` / `podman_memory` / `podman_cpus` | `null` |
 | `box_runtime_probe` | `{}` — can this host boot a box (docs/boxes-spec.md §9): the flag, the machine and runtime (`runtime_ok`, with one sentence per failing item in `problems`), the image's install state and each supported provider's tools disk. Read-only | `BoxRuntimeProbe` |
 | `box_image_status` | `{}` — the pinned guest image's install state; `box:image` carries every change after | `BoxImageStatus` |
 | `box_image_install` | `{}` — download this build's pinned image in the background, then build the tools disks; a no-op while an install runs, so it is also the Retry after a failure. Refused with the flag off | `null` |
@@ -921,7 +919,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `box_egress_overview` | `{ projectId?: string }` — the egress allow-list layer by layer: the template with categories, the quiet (telemetry) list, the user's global changes, the list every project starts from, and with `projectId` that project's own entries (each with its source), settings files and in-app additions. Read-only | `EgressOverview` |
 | `set_box_egress_global` | `{ delta: { add: string[], remove: string[] } }` — replace the user's global changes over the template: hosts every project's boxes may also reach, template entries turned off. Validated and normalized; every running box takes the new list from its next connection | `{ add, remove }` (as stored) |
 | `set_box_setting` | `{ key, value: string \| null }` — one of the five host-owned box settings (see "Settings"), validated on the host; `null` restores the default. A `box_layers` change starts the install of a layer turned on (the host starts the image install on its own, at boot and after onboarding, wherever the runtime probe passes) | `null` |
-| `available_workspace_types` | `{ repoPath, provider }` — the workspace types a new agent of `provider` in the repo at `repoPath` may be given, for the composer's choice: `host` (the macOS sandbox, always available) and `box` (an isolated VM, available exactly when a spawn asking for one would be accepted, else `reason` is the sentence it would fail with); `default` marks what a spawn with no choice picks (neither, while the host pins a container engine). `spawn_agent` on the wire carries no workspace type yet, so a remote spawn always takes the default. Read-only | `{ kind: "host" \| "box", available: boolean, reason: string \| null, default: boolean }[]` |
+| `available_workspace_types` | `{ repoPath, provider }` — the workspace types a new agent of `provider` in the repo at `repoPath` may be given, for the composer's choice: `host` (the macOS sandbox, always available) and `box` (an isolated VM, available exactly when a spawn asking for one would be accepted, else `reason` is the sentence it would fail with); `default` marks what a spawn with no choice picks (always `box` on a host off macOS, where there is no macOS sandbox). `spawn_agent` on the wire carries no workspace type yet, so a remote spawn always takes the default. Read-only | `{ kind: "host" \| "box", available: boolean, reason: string \| null, default: boolean }[]` |
 | `set_agent_bin_override` | `{ id, path: string \| null }` — `agent_bin_path_<id>`, a path *on the host*; blank or `null` clears it. Live agents on that provider are respawned so they exec the new binary | `null` |
 | `set_branch_prefix` | `{ prefix }` — `git_branch_prefix`; validated and trimmed on the host, empty clears it | `string` (the prefix as stored) |
 | `set_draft_prs` | `{ enabled: boolean }` — `github_draft_prs` | `null` |
@@ -1139,8 +1137,6 @@ default the host does):
 | `auto_archive_idle_days` | `set_auto_archive_idle_days` | `projects` |
 | `code_indexing_enabled` | `set_code_indexing_enabled` | `projects` |
 | `context_layer_enabled` | `set_context_layer_enabled` | `projects` |
-| `docker_image`, `docker_memory`, `docker_cpus` | `set_docker_launch_settings` | `projects` |
-| `podman_image`, `podman_memory`, `podman_cpus` | `set_podman_launch_settings` | `projects` |
 | `box_memory_mib`, `box_cpus`, `box_image_url`, `box_idle_stop_minutes`, `box_layers` | `set_box_setting` | `projects` |
 | `agent_bin_path_<id>` | `set_agent_bin_override` | `projects` |
 | `git_branch_prefix` | `set_branch_prefix` | `publish` |
@@ -1555,7 +1551,7 @@ write to the project's context on the host). It carries no row: a client
 re-reads `context_overview`, which is small by design.
 
 Never forwarded: `agent:output`, `shell:output`, `run:output` (raw PTY bytes),
-the rest of `run:*`, `dictation:*`, `docker:*` and `agent-install:*`.
+the rest of `run:*`, `dictation:*` and `agent-install:*`.
 
 Delivery is best effort, exactly like the desktop frontend: the phone must
 refetch `get_workspace` on reconnect and on returning to the foreground, and

@@ -9,8 +9,8 @@ microphone or a window.
 
 Unix only: **Linux** (x86-64 and arm64) and **macOS** (Apple silicon). On Linux
 agents run in boxes, one KVM micro-VM each, so the machine needs KVM (see "The
-sandbox") — there is no `sandbox-exec` to fall back to, and the host refuses to
-start rather than run an agent outside the boundary it promised.
+sandbox") — there is no `sandbox-exec` to fall back to, and a spawn is refused
+rather than run outside the boundary it promised.
 
 ## Install
 
@@ -265,8 +265,11 @@ On a virtual server there is a `/dev/kvm` only if the provider passes
 virtualization through to your VM (nested virtualization): Hetzner Cloud,
 DigitalOcean and most KVM-based VPS do; on AWS only the bare-metal (`*.metal`)
 instances do; on GCP it is a per-instance flag (`--enable-nested-virtualization`).
-Without KVM the host refuses to start rather than run an agent unsandboxed;
-the message names what is missing.
+Without KVM the host still starts, so it can be paired and inspected, but it
+logs what is missing at boot and refuses every spawn with that reason rather
+than run an agent unsandboxed. The macOS sandbox is never offered on Linux:
+the composer lists it as unavailable, and a spawn that asks for it anyway is
+refused the same way. Docker and Podman are not supported.
 
 ## Pair a phone
 
@@ -297,9 +300,6 @@ reachable `addresses`, the paired `devices`, the `relay` link, any standing
 - `dataDir`, `pid`, `version` — which host you are talking to.
 - `agents: { total, running }` — live agents (archived ones are not counted)
   and how many are mid-turn right now.
-- `sandboxEngine` — `docker` / `podman` on a host off macOS, which runs every
-  agent in the container engine it found at boot; `auto` on a Mac, where each
-  new agent gets a Linux VM when one can boot and the macOS sandbox otherwise.
 - `githubConnected` — whether a GitHub token is loaded, i.e. whether pushes and
   PRs will work. See "GitHub" below if it is `false`.
 - `providers: { signedIn, signedOut }` — the installed agent CLIs, by whether
@@ -386,8 +386,8 @@ machine, so `provider status` says so instead of offering a command.
 
 Those logins persist in each tool's own config, so this is once per host (per
 provider), not once per run — but they must be the logins of **the user the
-service runs as**, since that is whose home directory the host reads them from
-to hand them to an agent. That is a requirement, not
+service runs as**, since that is whose home directory the agent (and the
+host, which hands a box its login) reads. That is a requirement, not
 a preference: `provider login` refuses to run as anyone else (a login as root
 would drop root-owned credential files into that user's home) and prints the
 `sudo -u <user> fletch-host provider login <id>` that does it properly.
@@ -429,9 +429,9 @@ no usable system git: an agent may read and execute it (it is on the agent's
 PATH, and is an unpacked upstream tarball, not a secret) but not write it. The
 desktop app carries the same read-only exception against its own data dir, since
 a shell's PATH search has to `stat` the binary before it will run it. A Run panel
-command gets the same deny, with its checkout re-allowed. On Linux the question
-does not arise: a box is a VM that sees its own disks and nothing of the host's
-filesystem, the data dir included. None of this helps against anything *outside* the sandbox,
+command gets the same deny, with its checkout re-allowed. In a box the question
+does not arise: a guest sees nothing of the host but the folders granted to its
+workspace. None of this helps against anything *outside* the sandbox,
 though — a `--data-dir` left world-readable is still world-readable, which is
 what the `0700` above is for.
 

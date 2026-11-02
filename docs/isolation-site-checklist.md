@@ -29,49 +29,49 @@ found `llms.txt` describing isolation as a **"worktree"** — treat that as the
   `~/.fletch/workspaces/<id>/`.
 - **Stale if it says:** each agent gets a **git worktree**; Fletch uses linked
   worktrees; the path is `~/.fletch/worktrees/<name>/`.
-- **Why:** provisioning is `git clone` (`--shared` normally, `--no-hardlinks`
-  for repos added to a live Docker container). Linked worktrees are explicitly
+- **Why:** provisioning is `git clone --shared` on the host, or a full copy
+  pushed into a box's guest. Linked worktrees are explicitly
   rejected — see `docs/isolation.md`, "Why not linked git worktrees."
 
 ### 2. Two isolation engines, no third mode, no fallback
 
-- **Must say:** Fletch ships **two** isolation engines — macOS **Seatbelt**
-  (default) and **Docker** (opt-in). Docker is optional, not required. If Docker
-  is selected but unavailable, spawning **fails closed** — it does not silently
-  fall back to seatbelt.
-- **Stale if it says:** "No Docker, no containers" as a blanket statement;
-  Docker is required; there is only one sandbox; an unavailable engine degrades
+- **Must say:** Fletch ships **two** isolation engines — a **Linux VM** per
+  agent (the box) wherever the Mac can run one, and macOS **Seatbelt** for
+  what stays on the Mac (a macOS app's project, a provider the VM doesn't run,
+  the first workspaces while the VM image downloads). Fletch picks per
+  workspace; nothing to install. A workspace placed in a VM that can't have one
+  **fails closed** — it does not silently fall back to seatbelt. Docker and
+  Podman are not supported.
+- **Stale if it says:** Docker or Podman is an isolation engine, optional or
+  required; there is only one sandbox; an unavailable engine degrades
   gracefully to another.
-- **Why:** `EngineKind { SandboxExec, Docker }`; `engine_for` hard-errors on an
-  unavailable Docker daemon.
+- **Why:** `EngineKind { SandboxExec, Box }`; `engine_for` hard-errors on a box
+  that cannot boot.
 
-### 3. Not a VM (both engines)
+### 3. Seatbelt is not a VM
 
-- **Must say:** neither engine is a virtual machine. Seatbelt is OS-level
-  **write confinement** for a process that runs as your user; Docker is
-  **per-agent live-process containment** (and runs as root in v1). No VM is
-  required to run Fletch.
-- **Stale if it says:** agents run in a VM; the sandbox is a full virtualization
-  boundary; it defeats a determined attacker.
+- **Must say:** Seatbelt is OS-level **write confinement** for a process that
+  runs as your user; the box is a VM.
+- **Stale if it says:** every agent runs in a VM; Seatbelt is a full
+  virtualization boundary; the sandbox defeats a determined attacker.
 - **Why:** `sandbox/seatbelt.rs` (write-only confinement, `allow default`);
-  `sandbox/docker/engine.rs` (threat-model note: containment, not a trust
-  boundary; root in v1).
+  `sandbox/boxes/` (a libkrun micro-VM per agent).
 
-### 4. Network is open (honesty item)
+### 4. Network is open under seatbelt (honesty item)
 
-- **Must say:** under **both** engines the **network is open**. Seatbelt leaves
-  it open; the Docker launch sets no network restriction. Treat agents as
-  network-capable.
-- **Stale if it says:** agents are network-isolated; the sandbox blocks network
-  access; egress is restricted.
-- **Why:** seatbelt `(allow default)`; the Docker run has no `--network` flag,
-  so the container uses the default bridge.
+- **Must say:** under **Seatbelt** the **network is open**; treat those agents
+  as network-capable. A box reaches the network only through the host proxy's
+  allow-list.
+- **Stale if it says:** every agent is network-isolated; or every agent has
+  open network access.
+- **Why:** seatbelt `(allow default)`; a box has no network device, only the
+  egress proxy (`sandbox/guarantees.rs`).
 
 ### 5. Reads are open under seatbelt
 
 - **Must say:** the default (seatbelt) engine confines **writes**, not reads —
-  an agent can read anything you can. Docker additionally restricts reads to
-  what is mounted.
+  an agent can read anything you can. A box reads only its own disks and the
+  folders granted to the workspace.
 - **Stale if it says:** the default sandbox prevents agents from reading your
   files; reads are sandboxed under seatbelt.
 - **Why:** `sandbox/seatbelt.rs` — the profile only denies `file-write*` (plus a
@@ -81,12 +81,10 @@ found `llms.txt` describing isolation as a **"worktree"** — treat that as the
 ### 6. Your source repo's `.git` is never writable
 
 - **Must say:** an agent can never write your repository's `.git`. It works in a
-  clone with its own `.git`; under Docker your source `.git` is never mounted,
-  and the borrowed object store it does mount is **read-only**.
+  clone with its own `.git`; a box holds a full copy and no mount of yours.
 - **Stale if it says:** agents share your repo's git store writably; worktrees
   share the origin `.git`.
-- **Why:** `sandbox/provision.rs`; `sandbox/docker/engine.rs` (object store
-  mounted `:ro`, source `.git` never mounted).
+- **Why:** `sandbox/provision.rs`; `sandbox/boxes/provision.rs`.
 
 ### 7. Credential brokering, with the no-confirmation caveat
 
@@ -103,8 +101,9 @@ found `llms.txt` describing isolation as a **"worktree"** — treat that as the
 ## Consistency check
 
 After edits, the site's isolation story must match, in one voice:
-**clone (not worktree) + two engines (seatbelt default, docker opt-in, fail
-closed) + not a VM + network open under both + reads open under seatbelt +
+**clone (not worktree) + two engines (a Linux VM where possible, seatbelt
+otherwise, fail closed) + seatbelt is not a VM + network and reads open under
+seatbelt +
 source `.git` never writable + credentials brokered host-side but push/PR
 unprompted.** If any surface tells a different story, it is stale.
 </content>

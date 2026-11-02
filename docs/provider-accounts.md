@@ -50,7 +50,7 @@ own; the selection is the user's.
 - **The host owns every claude login** (`agent/host_login/claude.rs` on the engine in `agent/host_login`). A sandboxed
   claude can't refresh its own token: the refresh needs `mkdir <dir>.lock`,
   `<dir>/.oauth_refresh.lock` and a Keychain write, all denied under seatbelt,
-  and a container has no Keychain. It also must not hold the ~30-day refresh
+  and a box has no Keychain. It also must not hold the ~30-day refresh
   token. So before every claude launch, on every engine, the app reads the
   account's login (Keychain item, else `.credentials.json`), refreshes it at
   `https://platform.claude.com/v1/oauth/token` when it expires within 30 min
@@ -311,15 +311,11 @@ Engine (`crates/fletch-core/src/`):
   denied; every profile denies reading `~/.codex/auth.json` and
   `<accounts root>/codex` (`deny_host_codex_logins`). Ignored kernel tests
   `seatbelt_enforces_account_dir_grants`, `seatbelt_hides_the_hosts_codex_logins`.
-- `sandbox/container/{launch.rs, launch_auth.rs, config_dir.rs}`, `sandbox/provider/auth.rs` —
-  `auth::resolve(oauth_token)`: the host token (`AuthSource::HostLogin`), then (default account only,
-  since a managed launch always has a token) the stored setup-token and the
-  shell's auth vars. A claude account dir is never mounted; the per-agent
-  `.fletch-claude-projects` mount stays; the `.credentials.json` rw overlay
-  is dropped whenever a host token is injected. `status()` is presence-only.
-  `claude_keychain_service`. Codex: the overlay mounted read-write and
-  forwarded, the shared config it links to mounted read-only, never
-  `~/.codex` or the account dir.
+- `sandbox/provider/auth.rs` — `auth::resolve(oauth_token)`: the host token
+  (`AuthSource::HostLogin`), then (default account only, since a managed
+  launch always has a token) the stored setup-token and the shell's auth
+  vars. A claude account dir never reaches a box. `status()` is
+  presence-only. `claude_keychain_service`.
 - `keychain.rs` — `item_present`, `item_stamp` (`acct` + `mdat`, no secret),
   `read_password` (launch or explicit action only, 20 s cap),
   `write_password` (`security -i`, hex `-X`, so the secret never hits argv;
@@ -330,8 +326,8 @@ Engine (`crates/fletch-core/src/`):
   access prompt.
 - `transcripts.rs` — `claude_projects_dirs` unions the claude account dirs
   (old claude history still lives there);
-  `claude_projects_dir(cwd, container)` resolves to the default for every
-  claude agent; `adopt_account_session` moves a legacy session out of an
+  `claude_projects_dir(cwd, engine)` resolves to the default for every
+  seatbelt claude agent; `adopt_account_session` moves a legacy session out of an
   account dir. Codex: `codex_overlay_sessions_dirs` (every agent's own, by
   agent id), `legacy_codex_sessions_dirs` (default + account homes, threads
   from before overlays), `find_codex_rollouts(id, agent_id)` (the agent's overlay,
@@ -447,7 +443,7 @@ What codex's login is (codex-cli 0.154.0, `codex-rs/login/src/auth/manager.rs`):
 
 What Fletch does:
 
-- Every codex launch (per-turn exec, native TUI; seatbelt and containers) runs
+- Every codex launch (per-turn exec, native TUI; seatbelt and boxes) runs
   with `CODEX_HOME=<agent dir>/.fletch-codex-home` (`overlay_for_agent`, the
   one path the launch, the fork/rewind writer and the locator share), an
   overlay the host assembles before each launch: `sessions/` (the agent's own), the shared
@@ -487,8 +483,7 @@ What Fletch does:
 - The account's directory (or `~/.codex`) is host-only storage. Seatbelt no
   longer grants `~/.codex`; it grants the overlay (with its `config.toml`
   denied) and denies **reading** `~/.codex/auth.json` and `<accounts
-  root>/codex/` in every agent's profile. Containers mount the overlay and the
-  shared config read-only; never the home or the account dir.
+  root>/codex/` in every agent's profile.
 - Transcripts move with the agent, not the account: rollouts are found in the
   agent's overlay first. A thread an agent ran before this change is copied
   (with its sub-agent threads) into the overlay at its launches, each file
@@ -667,7 +662,7 @@ polling.
   Keychain reads with `-w` only on an explicit user action or launch, never on
   a polling path (`item_present` is the presence check).
 - A managed account must never fall back to the default account's credentials:
-  strip `ambient_credential_vars` on host launches, filter in the container
+  strip `ambient_credential_vars` on host launches, filter in the box's auth
   chain, and the app-server probe must do the same.
 - Don't hold a lock across an await (`await_holding_lock` is denied).
 - `invokeLocal` for anything about this Mac (binaries, Keychain, files under
@@ -704,16 +699,14 @@ polling.
   the next turn records a reading under it.
 - `cli_auth_credentials_store = "keyring"` logins (no `auth.json`) are not
   read: such an agent runs signed out.
-- Each agent's overlay grows its own codex state (`logs_2.sqlite` etc.). In
-  containers the shared `skills` is read-only, so codex logs that it could
-  not install its bundled system skills; the ones already installed on the
-  host are read through the link. Seatbelt denies the same write, since
-  `~/.codex` is no longer writable.
+- Each agent's overlay grows its own codex state (`logs_2.sqlite` etc.).
+  Seatbelt denies writes to the shared `skills`, since `~/.codex` is no
+  longer writable, so codex logs that it could not install its bundled
+  system skills; the ones already installed on the host are read through the
+  link.
 - Codex's `hooks.json` is not among the shared items, so user hooks don't run
   in Fletch codex sessions.
 - One-shot CLI runs (handoff summariser) use the default account.
-- Claude's `.claude.json` is read-only in containers (same as a non-default
-  `CLAUDE_CONFIG_DIR` today); onboarding is pre-seeded to compensate.
 - `ensure_account_dir` never overwrites a shared-config link the CLI replaced
   with a real file; Settings does not yet surface such a fork.
 - A Keychain claude login over about 2 KB (the `security -i` line limit,

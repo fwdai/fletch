@@ -77,7 +77,7 @@ Layer-specific notes:
 - **Resume**: relaunch sandbox, `git worktree prune` (once worktrees exist), reset per I2, continue from first step without a `done` exec. Delete the no-resume refusal in the same PR.
 - **Loops**: iterate the body in the same workspace; reuse spec types (`Loop`, `Until`) unchanged.
 - **Parallel**: worktrees share object DB + refs → integration = local merges of pinned refs. Set `gc.auto=0` in the run workspace; `git worktree prune` on resume/cleanup; test with submodules before trusting. Children share the run's single sandbox (worktrees need the main `.git` visible). Then delete the old engine's clone+ferry machinery.
-- **Latency polish**: only with dogfood numbers. Candidates (independently droppable): pre-spawn next CLI for unambiguous straight-line successors only (no prediction, no orphan tracking), session reuse across loop iterations, async archive, run-owned container pooling — read `sandbox/docker/engine/mod.rs` header first (container-per-process-launch is an explicit design decision).
+- **Latency polish**: only with dogfood numbers. Candidates (independently droppable): pre-spawn next CLI for unambiguous straight-line successors only (no prediction, no orphan tracking), session reuse across loop iterations, async archive.
 
 ## Hazards
 

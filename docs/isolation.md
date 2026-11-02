@@ -17,33 +17,34 @@ sandbox is why a misbehaving or prompt-injected agent can't write anywhere else
 on disk. Together they protect your source repository's `.git` (never writable
 by an agent), everything on your filesystem outside the agent's workspace, and
 Fletch's own state. They deliberately do **not** restrict what an agent can
-*read* (under the default engine) or the network it can reach — Fletch confines
-writes, it does not virtualize the machine. Isolation is a containment boundary
+*read* or the network it can reach under seatbelt, which confines writes and
+does not virtualize the machine; the box does both (below). Isolation is a containment boundary
 for live agent processes, not a claim to defeat a determined attacker.
 
 ## The two engines
 
-Fletch ships exactly two isolation engines, chosen in Settings. There is no
-third mode and no silent fallback between them (`sandbox/engine.rs`,
-`sandbox/mod.rs`).
+Fletch ships exactly two isolation engines, chosen per workspace (below).
+There is no third mode and no silent fallback between them
+(`sandbox/engine.rs`, `sandbox/mod.rs`).
 
-- **Seatbelt (default).** Each agent is launched under a per-agent macOS
+- **Seatbelt.** Each agent is launched under a per-agent macOS
   `sandbox-exec` profile. The profile is write-confinement only: it starts from
   `(allow default)`, denies all writes, then re-allows a specific set of paths
   (last-match-wins SBPL). **Reads and network stay open.** The agent runs as
   *you* — same user, same read access, same network — so this is write
   protection, not a virtual machine (`sandbox/seatbelt.rs`).
-- **Docker (opt-in).** Each agent process runs in its own
-  `docker run --rm --init` container, one container per agent, agent ≈ PID 1.
-  The container sees only what Fletch bind-mounts into it, so the rest of your
-  filesystem is unreachable *even for reads*. It is truer isolation, at the cost
-  of requiring Docker and some startup latency (`sandbox/docker/`).
+- **The box.** Each agent runs in its own Linux micro-VM, its checkout inside
+  the guest. Nothing of your machine is in the guest but the folders you grant
+  the workspace, so the rest of your filesystem is unreachable *even for
+  reads*, and egress goes only through the host proxy's allow-list
+  (`sandbox/boxes/`, `docs/box.md`).
 
 An agent is stamped with its engine at creation and keeps it for life
-(`sandbox/mod.rs`). A
-Docker-stamped agent whose daemon is unreachable is a **hard error** — Fletch
-fails closed rather than quietly launching outside the container boundary the
-user selected (`sandbox/mod.rs`, `engine_for`).
+(`sandbox/mod.rs`). A box-stamped agent on a machine that cannot boot one is a
+**hard error** — Fletch fails closed rather than quietly launching it under
+seatbelt (`sandbox/mod.rs`, `engine_for`). A workspace stamped with an engine
+Fletch no longer ships (Docker, Podman) refuses to start, resume or fork rather
+than moving to another engine (`sandbox::ensure_engine_not_retired`).
 
 Which engine a new agent gets is decided once, at creation, by
 `sandbox::engine_for_spawn` from two inputs: the project's placement
@@ -52,11 +53,10 @@ automatic a Linux VM when one can boot right now, the macOS sandbox
 otherwise, and a repository that builds a macOS or iOS app stays in the
 macOS sandbox), and an optional per-session choice made in the composer for a
 new agent (the macOS sandbox or a Linux VM), which stands over the placement
-for that agent alone. There is no global engine setting; a headless host off
-macOS runs every new agent in the container engine it found at boot. A
+for that agent alone. There is no global engine setting; off macOS there is
+no seatbelt, so every new agent there is a box. A
 fork's child is stamped with exactly the engine its parent was stamped with,
-whatever the placement now says, so a parent kept on this Mac never forks into a VM and a
-container-stamped parent's child stays in that container engine. A
+whatever the placement now says, so a parent kept on this Mac never forks into a VM. A
 per-session Linux VM that cannot be had (a runtime that cannot boot, a
 provider boxes do not run) fails the spawn with that reason
 rather than landing somewhere else; the composer offers the choice from the
@@ -95,8 +95,8 @@ the deny: a dev server does not walk the home directory.
 The toolchain cache (`~/.fletch/toolchain-cache/<project id>`, or
 `~/.fletch/dev/toolchain-cache/<project id>` for a debug build) is where every
 package manager, the cargo overlay and the headless browsers are redirected. What is in it gets executed by later
-sandboxed processes, so it is keyed by project: every profile and container
-mount names that project's root and never the directory above it, so no project
+sandboxed processes, so it is keyed by project: every profile names that
+project's root and never the directory above it, so no project
 can write what another one executes. A box points the same variables at the
 same path, which by path identity is a directory on its own guest disk: the
 package caches without the cargo overlay, and not shared with the host's
@@ -120,11 +120,8 @@ Independently, every host-side git invocation carries hardening overrides that
 neutralise the fixed-name equivalents (`git/hardening.rs`), applied at git's
 single spawn seam rather than per call site.
 
-Withholding the write is **seatbelt-only**: under Docker the checkout is
-bind-mounted read-write at its host path, and nested read-only binds would stop a
-direct write but not a rename, because Docker mounts follow the inode where
-seatbelt's path rules do not. So a second, **engine-independent** check backs it
-up: before running git in an agent checkout, Fletch reads that checkout's config
+Withholding the write is **seatbelt-only**, and a path rule is only as good as
+the paths it names. So a second, **engine-independent** check backs it up: before running git in an agent checkout, Fletch reads that checkout's config
 and **refuses if any setting would execute a program** — matched on
 `(section, leaf)` with the subsection ignored, so `filter.<any-name>.clean` is
 caught even though the driver name is chosen by the agent's own `.gitattributes`
@@ -182,46 +179,23 @@ host write into a checkout that follows links, because repositories
 legitimately contain them; it checks that the resolved path stays inside the
 checkout instead (`commands/files.rs`, `safe_join`).
 
-### What the Docker container mounts
-
-Only the agent's writable root, its RPC mailbox and its project's toolchain
-cache (`~/.fletch/toolchain-cache/<project id>`, the same root seatbelt grants
-that project) are mounted read-write, at their identical host
-paths. The provider's config/data dirs are mounted per
-provider (Claude's `~/.claude` is read-only except its `.credentials.json` and a
-per-agent transcripts dir; the others are read-write). Crucially, the source
-repo's `.git` is **never** mounted; only its borrowed git object store is
-mounted, and only **read-only** (`sandbox/docker/engine.rs`). There is **no
-`--network` flag** anywhere in the launch, so the container uses Docker's default
-bridge — the network is open. Containers run as root in v1 (a documented
-limitation), which is another reason the container is treated as live-process
-containment, not a trust boundary.
-
 ## The isolation matrix
 
-Provisioning has two clone strategies, and the engine plus *when* the repo joins
-the agent decides which one runs (`sandbox/provision.rs`, `clone_base`).
-
-| Engine | When the repo is added | Clone strategy | Why |
-| --- | --- | --- | --- |
-| Seatbelt | Always | `git clone --shared` | Same filesystem as the source; borrowed objects are reachable directly, no mount involved, so the cheap shared clone always works. |
-| Docker | Present when the container starts (the primary repo, and any repo already tracked at launch) | `git clone --shared` | The borrowed object store is bind-mounted **read-only** at its identical host path when the container launches, so in-container git can read history while writes fail with `Read-only file system`. |
-| Docker | Added to an **already-running** container | `git clone --no-hardlinks` | A running container's bind mounts are fixed at `docker run`; a `--shared` clone's borrowed store could never be mounted, so in-container git would fail on missing objects. A self-contained full copy needs no extra mount. |
+A seatbelt checkout is a `git clone --shared` of the source on the host
+(`sandbox/provision.rs`, `clone_base`): same filesystem as the source, so the
+borrowed objects are reachable directly.
 
 `git clone --shared` borrows the source's object store through
 `.git/objects/info/alternates` and copies **no** objects, so spawning an agent
 costs kilobytes and milliseconds instead of a full history copy. New objects
 (the agent's commits and fetches) land in the clone's own store; reads of
 existing history fall through to the borrowed one. Borrowed objects are only
-ever *referenced*, never written, and under Docker the store is mounted
-read-only — so a container can't reach back through the alternates link to
-mutate the source (`sandbox/provision.rs`). `git clone --no-hardlinks` makes a
-full, self-contained copy with no alternates and no shared inodes.
+ever *referenced*, never written (`sandbox/provision.rs`).
 
 A box delivers its base differently: `git init` in the guest and a push of the
 base commit over the box's channel, a full copy (`sandbox/boxes/provision.rs`).
-After the base is in, every checkout Fletch makes (a clone of either strategy,
-a box's guest checkout, a restored one) runs the same pipeline,
+After the base is in, every checkout Fletch makes (a host clone, a box's guest
+checkout, a restored one) runs the same pipeline,
 `sandbox::provision::fixups`. Each step is git in the checkout or a write
 through its executor, so it runs wherever the checkout lives; a failure removes
 the half-built checkout there. In order:
@@ -231,11 +205,11 @@ the half-built checkout there. In order:
   a normal checkout. If the source has no remote, the clone's implicit
   local-path `origin` is *removed* — otherwise a push could silently create
   branches and objects inside your source repo.
-- **A git identity is frozen** into the checkout's own config, so in-container git
+- **A git identity is frozen** into the checkout's own config, so git in a box
   (which can't see your global gitconfig) can commit without failing on "Please
   tell me who you are."
 - **Commit signing is switched off** in the checkout's own config
-  (`commit.gpgsign=false`). The seatbelt engine, unlike a container, lets git
+  (`commit.gpgsign=false`). The seatbelt engine, unlike a box, lets git
   read your global gitconfig, so a `commit.gpgsign=true` there would reach the
   sandbox while the key it names (`~/.ssh`, the ssh-agent, a gpg keyring) stays
   denied — and every agent commit would fail with "failed to write commit
@@ -373,20 +347,20 @@ cannot go quietly unstated the way a doc caveat can. The
   reads; the agent runs as your user and can read anything you can, except the
   carve-outs the profile denies by name: Fletch's app data, the host's provider
   logins, `~/.ssh`, the `gh` login, git's stored credentials, the Keychain, and
-  the folders macOS guards with a privacy prompt (see below). Under Docker it
-  can read only what is mounted into the container.
-- **Open network connections — under both engines.** Neither engine restricts
-  the network. Seatbelt's `(allow default)` leaves it open; the Docker launch
-  sets no `--network` flag, so the container gets the default bridge. Treat every
-  agent as network-capable.
+  the folders macOS guards with a privacy prompt (see below). In a box it can
+  read only its own disks and the folders you granted the workspace.
+- **Open network connections — under seatbelt.** Seatbelt's `(allow default)`
+  leaves the network open; treat every seatbelt agent as network-capable. A box
+  has no network device: its egress goes only through the host proxy's
+  allow-list.
 
 **An agent CANNOT:**
 
 - **Write outside its workspace.** Both engines deny it: seatbelt by policy,
-  Docker by mounting nothing else writable.
+  a box by having no host folder but the ones you granted.
 - **Touch your source repo's `.git`.** The agent works in a clone with its own
-  `.git`; your repository's `.git` is never writable by an agent, and under
-  Docker it is never mounted at all.
+  `.git`; your repository's `.git` is never writable by an agent, and a box
+  holds a full copy with no mount of it at all.
 - **Hold your GitHub credentials.** Pushes and PR creation never run inside the
   sandbox. They are brokered: the agent writes a request to its RPC mailbox, and
   Fletch runs the operation **host-side**, where the credentials live
@@ -459,10 +433,10 @@ A natural-seeming alternative to cloning is `git worktree add` — a second
 working tree that shares the origin repository's object store and ref database.
 Fletch rejects it, for two reasons (`sandbox/provision.rs`):
 
-1. **It's incompatible with the Docker engine.** A linked worktree's `.git` is a
+1. **It would put your real `.git` in reach.** A linked worktree's `.git` is a
    *file* that points at the origin repo's `.git/worktrees/<name>` by absolute
-   path. Containerizing such a checkout would require bind-mounting your real
-   `.git` into the container — and a writable `.git/hooks` there is a host escape
+   path. Sandboxing such a checkout would require making your real `.git`
+   writable to the agent — and a writable `.git/hooks` there is a host escape
    (the next `git` command you run on the host would execute agent-authored hook
    code). The source `.git` must never enter an agent's sandbox writable.
 2. **Agents need a real, writable `.git`.** Local git mutations (commit, merge,
@@ -472,16 +446,13 @@ Fletch rejects it, for two reasons (`sandbox/provision.rs`):
 
 Both engines therefore converge on the same shape: a self-contained clone.
 
-## Why not a VM
-
-Neither engine is a virtual machine, and Fletch does not claim to be one.
+## Seatbelt is not a VM
 
 - **Seatbelt** is a write-confinement profile applied to a process that still
   runs as *you*, on your kernel, with your read access and your network. It stops
   writes; it does not virtualize anything.
-- **Docker** is live-process containment: it isolates the filesystem an agent can
-  see and write, but the network is open, and in v1 containers run as root, so
-  in-container privilege isolation is not relied upon.
+- **The box** is a VM, which is why a workspace gets one wherever the Mac can
+  run it.
 
 The real review gate that keeps agent output off your main branch is not the
 sandbox at all — it's the clone-plus-PR flow with you in the loop: nothing merges
@@ -520,10 +491,6 @@ and this document should be corrected.
 
 - `crates/fletch-core/src/sandbox/seatbelt.rs` — the macOS `sandbox-exec` profile: the
   deny-writes-then-re-allow model, the writable set, and the app-data deny.
-- `crates/fletch-core/src/sandbox/docker/` — the Docker engine: per-agent
-  `docker run --rm --init`, the identical-host-path mounts, the read-only
-  borrowed object store, and the invariants that keep the source `.git` and your
-  credentials out of the container.
 - `crates/fletch-core/src/sandbox/boxes/` — the box engine: the micro-VM per
   agent, the checkout inside the guest, and the guest-home mechanism
   (`home.rs`) that seeds a provider's home and keeps its credential files in

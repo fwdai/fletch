@@ -27,13 +27,7 @@ cargo test --manifest-path crates/fletch-core/Cargo.toml --lib -- --ignored --no
   seatbelt_denies_appsupport_auto_exec \
   seatbelt_denies_writing_git_config \
   shutdown_kills_sandbox_exec_grandchild
-
-# With Docker Desktop running (macOS shape: no --user mapping expected):
-FLETCH_DOCKER_TESTS=1 cargo test --manifest-path crates/fletch-core/Cargo.toml -- --ignored docker_
 ```
-
-`docker_run_as_host_user_writes_user_owned_files` only means something on a
-Linux box (see §7).
 
 ## 1. P0 — local desktop, no hosts saved (the "feels exactly as today" rule)
 
@@ -58,7 +52,7 @@ keyed by environment. None of this should be visible.
 | 1.12 | Seatbelt unchanged | From an agent shell: `touch ~/.gitconfig.x`, `ls "$HOME/Library/Application Support/com.fletch.desktop"`, `ls ~/.fletch/tools`, write in the checkout | Denied, denied, allowed, allowed. Profile text is meant to be byte-identical; only the empty-string case is unit-tested (`seatbelt.rs:200-210, 1796`). If `~/Library/Application Support` is a **symlink** on your machine, the host deny block would leak into the desktop profile; check `ls ~/.fletch/rpc/<agent>` still works either way. |
 | 1.13 | Secrets on release build | GitHub connected → restart | Still connected (keychain path unchanged, `secrets.rs:54-55`). Debug builds always used the settings table. |
 | 1.14 | Locked keychain at login | Add Fletch as a login item, log out/in | GitHub does not read as signed-out; the mirror retries in the background (boot.rs:714-739). |
-| 1.15 | Local-only surfaces | Dictation, provider sign-in (Claude/Codex), model catalog, updater check, Docker Desktop start, Claude container auth | Unaffected; these are pinned to `invokeLocal`/`onLocal`. |
+| 1.15 | Local-only surfaces | Dictation, provider sign-in (Claude/Codex), model catalog, updater check, Claude setup token | Unaffected; these are pinned to `invokeLocal`/`onLocal`. |
 | 1.16 | Nested Fletch via Run panel | Run Fletch from inside a Fletch agent (sets `FLETCH_WORKSPACES_ROOT`/`FLETCH_RPC_ROOT`) | Inner engine is `Inherited` and does not sweep the outer engine's mailboxes (boot.rs:71-107, 479-486). |
 | 1.17 | Remote control on desktop | Enable, set port, set a relay, generate a pairing link, disable | Listener now autostarts inside `boot`; a stored bad relay URL is a warning, not a failed launch (boot.rs:568-586). Pairing refused while not listening. |
 | 1.18 | Telemetry (P2) | Agents resumed at launch | `agent_spawned` for resumed agents is dropped because telemetry inits after boot (lib.rs:1430). Decide whether you care. |
@@ -151,7 +145,7 @@ Debug on purpose: `data_dir_under` only appends `dev` under `debug_assertions`
 
 | # | Check | Expect |
 |---|---|---|
-| 4.1 | `$H status` | JSON with `enabled, listening, port, name: "mini", hostId, addresses, devices, relay, dataDir, pid, version, agents{total,running}, sandboxEngine: "sandbox-exec", githubConnected`. |
+| 4.1 | `$H status` | JSON with `enabled, listening, port, name: "mini", hostId, addresses, devices, relay, dataDir, pid, version, agents{total,running}, githubConnected`. |
 | 4.2 | Second `serve` on the same data dir | "another fletch-host is already serving <dir>", exit 1. Kill -9 the first, start again: stale socket removed silently. |
 | 4.3 | Data dir perms | `stat -f %Lp <dataDir>` = 700, `host.sock` = 600. `chmod 755` it and restart: back to 700. |
 | 4.4 | `$H pair` | URL, QR, 8-char code, expiry. Phone (and the desktop client, §3) pair against it. |
@@ -171,13 +165,12 @@ Debug on purpose: `data_dir_under` only appends `dev` under `debug_assertions`
 
 | # | Check | Expect |
 |---|---|---|
-| 5.1 | No Docker/Podman | `serve` refuses with the "no container runtime is available" message, exit 1. |
-| 5.2 | Rootful Docker | Agent runs with `--user uid:gid` + tmpfs home; files in the checkout are owned by the service user; `apt-get` inside the container fails (documented). `FLETCH_DOCKER_TESTS=1` runs `docker_run_as_host_user_writes_user_owned_files`. |
-| 5.3 | Rootless Docker / Podman | No `--user`; files still owned by you. |
+| 5.1 | No box runtime (no KVM) | `serve` starts and logs a warning naming why no box can boot; a spawn is refused with the same reason. |
+| 5.2 | Box runtime present | A spawned agent runs in a box; files in the checkout are owned by the service user. |
 | 5.4 | Login shell | `$SHELL` is respected for PATH discovery (`bin_resolve`); `claude` installed via Linuxbrew is found. |
 | 5.5 | `service install` (systemd user) | Unit at `~/.config/systemd/user/fletch-host.service`; prints `loginctl enable-linger <user>`; survives SSH logout only after linger. `--system --user NAME` under sudo writes `/etc/systemd/system/…` with `User=` and the user's data dir; `--system` without a user or with root → refused. |
 | 5.6 | Full acceptance | Phone pairs over LAN and relay, spawns, approves a push, opens a PR; `kill -TERM` mid-run then restart resumes. |
-| 5.7 | Cursor on Linux | Runs under `--user uid:gid` (CLI installed under `/opt/cursor-agent`, world-readable); a turn completes. |
+| 5.7 | Cursor on Linux | Runs in a box with `CURSOR_API_KEY` from the login shell; a turn completes. |
 
 ## 6. Things the audit flagged as likely bugs (verify, then file)
 
