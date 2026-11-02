@@ -298,12 +298,25 @@ main() {
 
   BIN="$INSTALL_DIR/fletch-host"
   mkdir -p "$INSTALL_DIR"
+  # What this host takes from the tarball. On Linux that is the binary and
+  # the whole box runtime the host looks for beside it (the same set
+  # `fletch-host update` requires, `fletch_box::runtime::RUNTIME_FILES`):
+  # a release missing any of it installs nothing, since a host whose sandbox
+  # advertises itself and cannot boot is worse than no install.
+  FILES="fletch-host"
+  if [ "$(uname -s)" = "Linux" ]; then
+    FILES="fletch-host fletch-vm libkrun.so.1 libkrunfw.so.5"
+  fi
+  for f in $FILES; do
+    [ -f "$TMP/$f" ] || die "the release has no $f in it; a Linux host release carries fletch-host, fletch-vm, libkrun.so.1 and libkrunfw.so.5, so nothing was installed"
+  done
   # Install beside the target and rename: a running host's binary cannot be
-  # written in place on Linux, but it can be replaced. A Linux tarball also
-  # carries the box runtime, which the host looks for beside its binary.
-  for f in fletch-vm libkrun.so.1 libkrunfw.so.5 fletch-host; do
-    [ -f "$TMP/$f" ] || continue
+  # written in place on Linux, but it can be replaced. Every file is staged
+  # first, so a write that fails leaves the old set in place as a whole.
+  for f in $FILES; do
     install -m 755 "$TMP/$f" "$INSTALL_DIR/.$f.new"
+  done
+  for f in $FILES; do
     mv -f "$INSTALL_DIR/.$f.new" "$INSTALL_DIR/$f"
   done
   echo "installed $VERSION at $BIN"

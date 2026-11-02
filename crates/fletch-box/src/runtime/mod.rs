@@ -29,6 +29,12 @@ pub const LIBKRUNFW: &str = "libkrunfw.5.dylib";
 pub const LIBKRUN: &str = "libkrun.so.1";
 #[cfg(target_os = "linux")]
 pub const LIBKRUNFW: &str = "libkrunfw.so.5";
+/// The runtime as one unit: the helper and the two libraries it loads. A
+/// host that ships or installs the runtime carries all of these or none of
+/// them (`fletch-host update`, `scripts/install-host.sh`), since a helper
+/// without its libraries, or the other way round, is a sandbox that
+/// advertises itself and never boots.
+pub const RUNTIME_FILES: &[&str] = &[HELPER, LIBKRUN, LIBKRUNFW];
 /// macOS `sun_path` is 104 bytes including the NUL (Linux allows 108).
 pub const MAX_SOCKET_PATH: usize = 103;
 /// How much console is kept in an error.

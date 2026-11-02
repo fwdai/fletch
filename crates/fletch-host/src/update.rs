@@ -68,8 +68,15 @@ const BINARY_IN_TARBALL: &str = "fletch-host";
 
 /// The box runtime a Linux tarball carries beside the binary and an update
 /// installs beside it, where the engine looks for it on Linux
-/// (`fletch_box::runtime::RuntimePaths::bundled`). A macOS tarball has none.
-const RUNTIME_IN_TARBALL: &[&str] = &["fletch-vm", "libkrun.so.1", "libkrunfw.so.5"];
+/// (`fletch_box::runtime::RuntimePaths::bundled`): one unit, all of its
+/// files or none. A macOS host has no runtime in its tarball (the app bundle
+/// carries its own), so there the archive's runtime files, if any, are
+/// ignored.
+const RUNTIME_IN_TARBALL: &[&str] = if cfg!(target_os = "linux") {
+    fletch_box::runtime::RUNTIME_FILES
+} else {
+    &[]
+};
 
 /// GitHub wants a user agent and will refuse an anonymous client without one.
 const UA: &str = concat!("fletch-host/", env!("CARGO_PKG_VERSION"));
@@ -571,8 +578,12 @@ pub fn extract_files(tarball: &[u8], names: &[&str]) -> Result<Vec<(String, Vec<
 }
 
 /// Installs a verified tarball over `exe`: the box runtime it carries beside
-/// it first, then the binary, each by [`swap`]. A host still running keeps
-/// the files it has open; the restart that follows takes the new ones.
+/// it first, then the binary, each by [`swap`]. The archive is held to what
+/// this host needs before anything is replaced: the binary, and on Linux
+/// every runtime file ([`RUNTIME_IN_TARBALL`]), so a release missing one of
+/// them installs nothing rather than a host whose sandbox cannot boot. A
+/// host still running keeps the files it has open; the restart that follows
+/// takes the new ones.
 fn install(exe: &Path, tarball: &[u8]) -> Result<(), String> {
     let dir = ensure_replaceable(exe)?;
     let mut wanted = RUNTIME_IN_TARBALL.to_vec();
@@ -585,6 +596,19 @@ fn install(exe: &Path, tarball: &[u8]) -> Result<(), String> {
         .ok_or_else(|| {
             format!("the archive has no {BINARY_IN_TARBALL} in it; this is not a host release")
         })?;
+    let missing: Vec<&str> = RUNTIME_IN_TARBALL
+        .iter()
+        .copied()
+        .filter(|name| !files.iter().any(|(have, _)| have == name))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "the archive has no {} in it; a Linux host release carries the whole box runtime \
+             ({}) beside the binary, so this one installs nothing",
+            missing.join(", "),
+            RUNTIME_IN_TARBALL.join(", ")
+        ));
+    }
     for (name, bytes) in files {
         swap(&dir.join(&name), &bytes)?;
         println!("installed {}", dir.join(&name).display());
@@ -982,8 +1006,10 @@ mod tests {
         assert!(extract_binary(b"not a tarball at all").is_err());
     }
 
-    /// A Linux tarball's box runtime lands beside the binary, and a tarball
-    /// without one (macOS) installs the binary alone.
+    /// On Linux a tarball's box runtime lands beside the binary, all of it
+    /// or nothing: one missing file refuses the whole install, binary
+    /// included. On macOS the runtime is not the tarball's to carry, so any
+    /// runtime file in one is ignored and the binary installs alone.
     #[test]
     fn an_update_installs_the_box_runtime_beside_the_binary() {
         let tarball = |files: &[(&str, &[u8])]| {
@@ -1007,32 +1033,57 @@ mod tests {
         let exe = dir.path().join("fletch-host");
         std::fs::write(&exe, b"old").unwrap();
 
-        install(&exe, &tarball(&[("./fletch-host", b"mac")])).unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), b"mac");
-        assert!(!dir.path().join("fletch-vm").exists());
-
-        let linux = tarball(&[
+        let whole = tarball(&[
             ("./README.md", b"# fletch-host"),
             ("./fletch-vm", b"helper"),
             ("./libkrun.so.1", b"krun"),
             ("./libkrunfw.so.5", b"kernel"),
-            ("./fletch-host", b"linux"),
+            ("./fletch-host", b"whole"),
         ]);
-        install(&exe, &linux).unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), b"linux");
+        install(&exe, &whole).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"whole");
+        assert!(!dir.path().join("README.md").exists());
         for (name, body) in [
             ("fletch-vm", &b"helper"[..]),
             ("libkrun.so.1", b"krun"),
             ("libkrunfw.so.5", b"kernel"),
         ] {
             assert_eq!(
-                std::fs::read(dir.path().join(name)).unwrap(),
-                body,
-                "{name}"
+                dir.path().join(name).exists(),
+                cfg!(target_os = "linux"),
+                "{name} is the Linux tarball's to carry"
             );
+            if cfg!(target_os = "linux") {
+                assert_eq!(
+                    std::fs::read(dir.path().join(name)).unwrap(),
+                    body,
+                    "{name}"
+                );
+            }
         }
-        assert!(!dir.path().join("README.md").exists());
 
+        // One runtime file short: on Linux nothing is replaced, not even the
+        // binary; elsewhere the runtime files are not looked at.
+        let short = tarball(&[
+            ("./fletch-vm", b"helper2"),
+            ("./libkrun.so.1", b"krun2"),
+            ("./fletch-host", b"short"),
+        ]);
+        let result = install(&exe, &short);
+        if cfg!(target_os = "linux") {
+            let err = result.unwrap_err();
+            assert!(err.contains("libkrunfw.so.5"), "{err}");
+            assert_eq!(std::fs::read(&exe).unwrap(), b"whole");
+            assert_eq!(
+                std::fs::read(dir.path().join("fletch-vm")).unwrap(),
+                b"helper"
+            );
+        } else {
+            result.unwrap();
+            assert_eq!(std::fs::read(&exe).unwrap(), b"short");
+        }
+
+        // No binary at all: never a host release.
         assert!(install(&exe, &tarball(&[("./fletch-vm", b"helper")])).is_err());
     }
 
