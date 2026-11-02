@@ -158,10 +158,13 @@ repository, `box-image-v<version>`, published by the *Box image* workflow
 (`.github/workflows/box-image.yml`). The app boots the version
 `PinnedImage::VERSION` names and verifies the download against the release's
 `manifest.json`, so publishing an image needs no app change until that
-constant is bumped (`packaging/box-image/README.md`, "Publishing a release").
+constant is bumped (docs/box.md, "Releases and updates").
 An image release is created with `--latest=false` so it never becomes
 the release the updater endpoint serves. The app downloads it from
 `https://github.com/fwdai/fletch/releases/download/box-image-v<version>/base.erofs`.
+The release workflow's first step, `scripts/check-box-image.sh`, fails the
+run when the pinned image's release is missing a file its manifest lists:
+publish the image (or wait for `main`'s Box image run) before releasing.
 
 Licences: libkrun is Apache-2.0 and libkrunfw bundles a GPL-2.0 Linux kernel;
 `NOTICE` lists both with the source location, and the Settings screen's version

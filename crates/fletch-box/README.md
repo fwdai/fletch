@@ -33,11 +33,9 @@ eval "$(scripts/box-dev.sh)"        # stages the runtime (packaging/box-bundle/e
 fletch-box probe
 ```
 
-The guest is the Debian image `packaging/box-image` builds (`build-mac.sh` →
+The guest is the Debian image `packaging/box-image` builds (`build-docker.sh` →
 `out/base.erofs`). The runtime does not care which Linux is inside, only that
-init prints the markers and binds the vsock ports; `dev/calina-sshd.sh` is a
-stand-in init script for a dev image without `fletch-guest`, following the same
-contract with a dropbear on the data disk.
+init prints the markers and binds the vsock ports.
 
 ```sh
 export FLETCH_BOX_RUN_ROOT=/tmp/fletch-box-dev   # box dirs; default ~/.fletch/box-dev (short paths: sockets)
@@ -45,7 +43,7 @@ fletch-box boot --id dev1 --image packaging/box-image/out/base.erofs \
   --data $FLETCH_BOX_RUN_ROOT/dev1/data.img \
   --env FLETCH_BOX_HOME=$HOME --env FLETCH_BOX_WRITABLE_ROOT=$HOME/.fletch/workspaces/dev1 \
   --env FLETCH_BOX_RPC_DIR=$HOME/.fletch/rpc/dev1
-fletch-box ssh dev1 -- uname -r                # as `agent`; -l root for images without that user
+fletch-box ssh dev1 -- uname -r                # as `agent`
 fletch-box stop dev1                           # or Ctrl-C in the boot terminal
 ```
 
@@ -61,19 +59,18 @@ shell.
 ```sh
 cargo test                                      # unit tests; compile and pass on Linux too
 cargo clippy --all-targets -- -D warnings
-eval "$(scripts/box-dev.sh)"
-FLETCH_BOX_TEST_IMAGE=<base.erofs> FLETCH_BOX_TEST_INIT=<init> \
-  cargo test --test vm -- --ignored --nocapture --test-threads 1
+eval "$(scripts/box-dev.sh)"                    # from the repo root
+FLETCH_BOX_TEST_IMAGE=$PWD/packaging/box-image/out/base.erofs \
+  cargo test --manifest-path crates/fletch-box/Cargo.toml --test vm -- --ignored --nocapture --test-threads 1
 ```
 
 The VM tests boot the image with a script disk that prints the markers and
 waits for `stop` on the control port: clean stop clears `dirty`, kill leaves it
 and the next start removes the stale listen socket, closing the lifeline ends
-the helper. They print boot and stop timings. They need an image whose init
-runs the command libkrun hands it (`/bin/sh /dev/vdc`, the script disk) and
-ships `socat`; the product init takes no argv, so this is a dev image, its init
-named by `FLETCH_BOX_TEST_INIT`. The product image is exercised end to end by
-`crates/fletch-core/src/sandbox/boxes/tests.rs`.
+the helper. They print boot and stop timings. They boot the product image but
+not its init: `/usr/bin/env` runs the script disk (`/bin/sh /dev/vdc`), which
+uses the base image's `socat` for the control port. The product init is
+exercised end to end by `crates/fletch-core/src/sandbox/boxes/tests.rs`.
 
 Measured on an M-series Mac (macOS 27, from inside a Fletch seatbelt sandbox),
 1 vCPU, 1 GiB: first boot including formatting the data disk ready in 1.0 s,

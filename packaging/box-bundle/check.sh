@@ -3,19 +3,18 @@
 # carries the hypervisor entitlement, and that helper boots a guest with the
 # dylibs from the bundle's own Frameworks folder (no lib dir given).
 #
-#   packaging/box-bundle/check.sh APP [IMAGE [INIT]]
+#   packaging/box-bundle/check.sh APP [IMAGE]
 #
-# APP is a built Fletch.app; IMAGE is a base.erofs whose init prints the
-# FLETCH_READY marker (the product image), or any image whose init runs a
-# command when INIT is given (Calina's: /opt/calina/init, with a script disk
-# that prints the markers). Without IMAGE only the signature and entitlement
-# checks run: that is what the release workflow does, since hosted runners
-# cannot boot a VM. Port of Calina's sandbox/bundle/check.sh.
+# APP is a built Fletch.app; IMAGE is the product base.erofs, booted with
+# /usr/bin/env running a script disk that prints the markers (what is checked
+# is the helper and the dylibs, not the guest). Without IMAGE only the
+# signature and entitlement checks run: that is what the release workflow
+# does, since hosted runners cannot boot a VM. Port of Calina's
+# sandbox/bundle/check.sh.
 set -eu
 
-APP=$(cd "${1:?usage: check.sh APP [IMAGE [INIT]]}" && pwd)
+APP=$(cd "${1:?usage: check.sh APP [IMAGE]}" && pwd)
 IMAGE=${2:-}
-INIT=${3:-/opt/fletch/init}
 VM="$APP/Contents/Helpers/fletch-vm"
 
 echo "== signatures"
@@ -50,14 +49,10 @@ set -- --id check --cpus 1 --mem 1024 \
   --vsock-listen "22:$RUN/ssh.sock" --vsock-listen "5000:$RUN/ctl.sock" \
   --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin --env HOME=/root --env TERM=xterm \
   --workdir /
-if [ "$INIT" = /opt/fletch/init ]; then
-  set -- "$@" -- "$INIT"
-else
-  # A test init needs a script that prints the markers and exits.
-  printf 'echo FLETCH_HOSTKEY ssh-ed25519 AAAA\necho FLETCH_READY\nsync; exit 0\n' > "$RUN/script.sh"
-  python3 -I -c 'import sys; d=open(sys.argv[1],"rb").read(); open(sys.argv[2],"wb").write(d+b"\n"*((-len(d))%512))' "$RUN/script.sh" "$RUN/script.img"
-  set -- "$@" --disk-ro "script:$RUN/script.img" -- "$INIT" /bin/sh /dev/vdc
-fi
+# A script that prints the markers and exits, padded to whole sectors.
+printf 'echo FLETCH_HOSTKEY ssh-ed25519 AAAA\necho FLETCH_READY\nsync; exit 0\n' > "$RUN/script.sh"
+python3 -I -c 'import sys; d=open(sys.argv[1],"rb").read(); open(sys.argv[2],"wb").write(d+b"\n"*((-len(d))%512))' "$RUN/script.sh" "$RUN/script.img"
+set -- "$@" --disk-ro "script:$RUN/script.img" -- /usr/bin/env /bin/sh /dev/vdc
 
 echo "== booting $IMAGE with $VM (libkrun from the bundle)"
 mkfifo "$RUN/stdin"
@@ -80,10 +75,6 @@ if ! grep -q '^FLETCH_READY' "$RUN/console.log"; then
   exec 3>&-
   echo "check: FAIL (no FLETCH_READY)" >&2
   exit 1
-fi
-if [ "$INIT" = /opt/fletch/init ]; then
-  # The product init stops on the control port.
-  printf 'stop\n' | "$VM" pipe "$RUN/ctl.sock" || true
 fi
 wait "$pid" || true
 exec 3>&-

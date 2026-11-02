@@ -32,9 +32,6 @@ enum Cmd {
     /// Open a shell in a running box, or run a command in it.
     Ssh {
         id: String,
-        /// Log in as this user instead of `agent` (dev images without that user).
-        #[arg(short = 'l', long)]
-        user: Option<String>,
         #[arg(last = true)]
         cmd: Vec<String>,
     },
@@ -98,7 +95,8 @@ struct BootArgs {
     mem: u32,
     #[arg(long, default_value_t = 2)]
     cpus: u8,
-    /// Guest entrypoint; default /opt/fletch/init. Calina's image: /opt/calina/init.
+    /// Guest entrypoint; default /opt/fletch/init. With --script-disk on the
+    /// product image: /usr/bin/env, which runs the script.
     #[arg(long)]
     init: Option<PathBuf>,
     /// Arguments after the entrypoint.
@@ -128,7 +126,8 @@ enum ImageCmd {
         /// Alternate release base URL (the `box_image_url` setting).
         #[arg(long)]
         url: Option<String>,
-        /// Layers besides the base, comma-separated; default `devtools`.
+        /// Layers besides the base, comma-separated, or `all` (every layer
+        /// the app offers); default `devtools`.
         #[arg(long, value_delimiter = ',')]
         layers: Option<Vec<String>>,
     },
@@ -169,7 +168,7 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
             }
         }
         Cmd::Boot(args) => boot(args).await.map(|()| ExitCode::SUCCESS),
-        Cmd::Ssh { id, user, cmd } => ssh(&id, user.as_deref(), &cmd),
+        Cmd::Ssh { id, cmd } => ssh(&id, &cmd),
         Cmd::Stop { id } => stop(&id).await.map(|()| ExitCode::SUCCESS),
         Cmd::Image { command } => image(command).await.map(|()| ExitCode::SUCCESS),
         Cmd::Tools {
@@ -382,16 +381,13 @@ async fn boot(args: BootArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn ssh(id: &str, user: Option<&str>, cmd: &[String]) -> Result<ExitCode, String> {
+fn ssh(id: &str, cmd: &[String]) -> Result<ExitCode, String> {
     let chan = Channel::open(&box_dir(id)?);
     if !chan.config.exists() {
         return Err(format!("no {}: is the box booted?", chan.config.display()));
     }
     let mut ssh = std::process::Command::new(channel::SSH);
     ssh.arg("-F").arg(&chan.config);
-    if let Some(user) = user {
-        ssh.arg("-l").arg(user);
-    }
     if cmd.is_empty() {
         ssh.arg("-t");
     }
@@ -470,12 +466,13 @@ async fn image(command: ImageCmd) -> Result<(), String> {
         ImageCmd::Install { url, layers } => {
             let store = ImageStore::new(&dev_root()?);
             let pinned = PinnedImage::this_build(url.as_deref());
-            let layers = layers.unwrap_or_else(|| {
-                image_store::DEFAULT_LAYERS
-                    .iter()
-                    .map(|l| l.to_string())
-                    .collect()
-            });
+            let names =
+                |layers: &[&str]| -> Vec<String> { layers.iter().map(|l| l.to_string()).collect() };
+            let layers = match layers {
+                None => names(image_store::DEFAULT_LAYERS),
+                Some(l) if l == ["all"] => names(image_store::OPTIONAL_LAYERS),
+                Some(l) => l,
+            };
             let mut last = 0;
             let installed = store
                 .install(&pinned, &layers, |p| {

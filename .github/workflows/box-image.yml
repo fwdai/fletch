@@ -13,6 +13,9 @@ name: Box image
 # - A push to main that touches it publishes VERSION, or does nothing when the
 #   release with these inputs exists (published from the branch, or by the bump).
 # - Run workflow: build and test on any branch, publishing when asked.
+# Every build is installed with the app's own installer before it can be
+# published (build-docker.sh), and publish.sh makes a release public only once
+# it carries every file.
 on:
   pull_request:
     paths:

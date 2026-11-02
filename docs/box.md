@@ -10,7 +10,7 @@ each part's README has the detail.
 | --- | --- | --- |
 | Runtime | `crates/fletch-box` | libkrun helper (`fletch-vm`), VM spec, SSH channel, egress proxy, image store, tools disks; the `fletch-box` CLI for manual use |
 | Guest agent | `crates/fletch-guest` | Static musl binary in the image: vsock listeners, `exec`, `tail`, the stop hook |
-| Image | `packaging/box-image` | The Debian root every box boots and its layers; `build.sh`, `test.sh`, `bump.sh`, `publish.sh` |
+| Image | `packaging/box-image` | The Debian root every box boots and its layers; `build-docker.sh` (builds, tests, checks), `bump.sh`, `publish.sh` |
 | libkrun | `packaging/libkrun` | libkrun 1.19 + patches and the libkrunfw 6.12 kernel the app ships |
 | Bundle | `packaging/box-bundle` | How the helper and dylibs are signed and placed in the app |
 | Engine | `crates/fletch-core/src/sandbox/boxes` | Boots boxes for agents: registry, setup, settings, the guest-home mechanism (`home.rs`: seeding, credential sync, session mirrors) |
@@ -110,12 +110,21 @@ a release asset without a chunk list, or a server without ranges, falls back
 to a whole download. Installed images live under `<data dir>/box/images/<version>/`.
 
 Two things are coupled and nothing else: the image VERSION and the app's pin.
-One rule governs publishing: **a version names one set of inputs**. `publish.sh`
-records the source trees (`packaging/box-image`, `crates/fletch-guest`) in the
-release as `inputs.json`; publishing the same inputs again is a no-op, other
-inputs under an existing version are an error, so every run of the Box image
-workflow checks this first and a change without a VERSION bump fails at the
-pull request.
+One rule governs publishing: **a version names one set of inputs**. The inputs
+are what the image is made from: `build.sh` (with its pins), `packages/`,
+`dpkg-excludes.cfg`, `rootfs/` and `crates/fletch-guest`. `publish.sh` records
+their git ids in the release as `inputs.json`; publishing the same inputs again
+is a no-op, other inputs under an existing version are an error, so every run
+of the Box image workflow checks this first and a change to the image without
+a VERSION bump fails at the pull request. The scripts around the image
+(`test.sh`, `publish.sh`, the README) are not inputs and need no bump.
+
+A release goes up as a draft, which the app cannot see, and is published only
+once every file is there at its size; a published release missing a file its
+manifest lists is an error too (bump VERSION). Every build is installed with
+the app's own installer before it can be published (`build-docker.sh`), and the
+app release workflow refuses to ship a pin whose release is missing files
+(`scripts/check-box-image.sh`).
 
 ## Workflows
 
@@ -124,17 +133,19 @@ pull request.
 | **Box image** (`box-image.yml`) | PR touching `packaging/box-image`, `crates/fletch-guest` | Checks VERSION is unreleased or released from these inputs; builds and tests; uploads the images as an artifact; publishes nothing |
 | | Push to `main` touching them | Same, then publishes `box-image-v<VERSION>`; a no-op when the release with these inputs exists |
 | | Run workflow | Same on any branch; `publish` to publish from a branch before merging (so the pin never names a missing release) |
-| **Box image bump** (`box-image-bump.yml`) | Mondays 06:00 UTC, or by hand | `bump.sh`: newest Debian snapshot and Node 22 release, VERSION patch bump, app pin bump, committed on `chore/box-image-bump`. Builds and tests that commit. Tests green: publishes the release. Either way opens or refreshes the PR with the report. Merge it to adopt (main's publish then finds the release in place); close it to skip |
+| **Box image bump** (`box-image-bump.yml`) | The 1st of each month, 06:00 UTC, or by hand | `bump.sh`: newest Debian snapshot and Node 22 release, VERSION patch bump, app pin bump, committed on `chore/box-image-bump`. Builds and tests that commit. Tests green: publishes the release. Either way opens or refreshes the PR with the report. Merge it to adopt (main's publish then finds the release in place); close it to skip |
 
-Both run `.github/actions/box-image`: fletch-guest cross-build, `build.sh` in
-a privileged `debian:trixie` container on the arm64 runner, `test.sh` in the
-same container, `fletch-box image chunk` for the delta manifests, the report in
-the job summary. Test failures block publishing.
+Both run `.github/actions/box-image`, which runs `build-docker.sh --test`, the
+same build as on a Mac: fletch-guest cross-build, `build.sh` in a privileged
+`debian:trixie` container on the arm64 runner, `test.sh` in the same container,
+`fletch-box image chunk` for the delta manifests, an install with the app's own
+installer; then the report in the job summary. Any failure blocks publishing.
 
-Changing the image by hand (packages, init, exclusions): edit, bump VERSION,
-open a PR; the PR build is the test. Then either run **Box image** with
-`publish` on the branch and bump the pin in the same PR, or merge and let
-`main` publish, then bump the pin in a follow-up.
+Changing the image by hand (packages, init, exclusions): edit, bump VERSION
+and the pin together (`scripts/check-version.sh` fails CI otherwise), open a
+PR; the PR build is the test. Then either run **Box image** with `publish` on
+the branch before merging, or merge and let `main` publish; until it has, the
+pin names a release that is not there yet.
 
 The bump PR is opened with the Actions token, so the repository's regular CI
 does not run on it; the bump job ran the image tests itself, and the only code
@@ -142,7 +153,7 @@ change is the pin constant.
 
 ## Testing
 
-- `test.sh` (CI, or `build-mac.sh --test`): loop-mounts the images, assembles
+- `test.sh` (CI, or `build-docker.sh --test`): loop-mounts the images, assembles
   the overlay root as init would, and checks from a chroot as `agent`: the base
   tools, sshd, the loader through the overlay, gcc/python/node-gyp from devtools,
   Playwright's own browser on the base libraries, the browser layer's screenshot
@@ -160,7 +171,7 @@ change is the pin constant.
 ## Building locally
 
 ```sh
-packaging/box-image/build-mac.sh --test          # -> packaging/box-image/out, needs Docker Desktop
+packaging/box-image/build-docker.sh --test       # -> packaging/box-image/out, needs Docker Desktop
 packaging/box-image/boot-check.sh                # boots out/ with both layers
 ```
 
