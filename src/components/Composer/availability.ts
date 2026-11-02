@@ -10,15 +10,12 @@
 // the answer decides which facts are even relevant. An agent spawns where the
 // active environment is, so:
 //
-//   - This Mac: this Mac's probe (`providerPaths`) and this Mac's sandbox
-//     engine (`isDockerSupported`) — the rules that have always applied.
+//   - This Mac: this Mac's probe (`providerPaths`).
 //   - A paired host: the host's own `host_providers` answer, and nothing else.
-//     This Mac's sandbox preference governs sandboxes *here*; it has no say
-//     over a process on someone else's machine, and letting it veto one would
-//     hide an agent the host can run perfectly well.
+//     This Mac's probe has no say over a process on someone else's machine,
+//     and letting it veto one would hide an agent the host can run perfectly
+//     well.
 
-import { isDockerSupported, providerLabel } from "@/data/providers";
-import { isContainerEngine, type SandboxEngine, sandboxEngineLabel } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { activeEntry, providerReason } from "@/store/capabilities";
 import type { EnvironmentEntry } from "@/store/environments";
@@ -54,7 +51,6 @@ export interface AvailabilityFacts {
    *  which of the rest apply. */
   env: EnvironmentEntry;
   /** This Mac's, and only ever consulted for This Mac. */
-  sandboxEngine: SandboxEngine;
   providerPaths: Record<string, string | undefined>;
   providerVersions: Record<string, string | undefined>;
   providersProbed: boolean;
@@ -89,26 +85,12 @@ function onHost(env: EnvironmentEntry, providerId: string): Availability {
 }
 
 function onThisMac(facts: AvailabilityFacts, providerId: string): Availability {
-  const { sandboxEngine, providerPaths, providerVersions, providersProbed } = facts;
+  const { providerPaths, providerVersions, providersProbed } = facts;
   // Fail open on the install gate: only enforce it once a probe has actually
   // succeeded (`providersProbed`). While probing, or if the probe failed,
   // treat as installed so a transient detection error never disables an agent
   // the user really has.
   const installed = !providersProbed || !!providerPaths[providerId];
-  // The container gate is checked first: a non-container provider is blocked
-  // regardless of install state, and that's the more useful reason. Mirrors
-  // `ensure_engine_supports_provider`, which gates on `is_container()` rather
-  // than on one runtime — container support is a property of the image set
-  // both Docker and Podman build.
-  if (isContainerEngine(sandboxEngine) && !isDockerSupported(providerId)) {
-    const label = sandboxEngineLabel(sandboxEngine);
-    return {
-      reason: `${providerLabel(providerId)} isn't available in ${label} sandboxes yet`,
-      note: `Not in ${label} yet`,
-      fix: "switch to Claude to send",
-      installed,
-    };
-  }
   if (!installed) {
     return {
       reason: "Not installed — see Settings › Providers",
@@ -131,7 +113,6 @@ export function blockedSentence(a: Availability): string | null {
 export function useAgentAvailability(): (providerId: string) => Availability {
   const facts: AvailabilityFacts = {
     env: useAppStore(activeEntry),
-    sandboxEngine: useAppStore((s) => s.sandboxEngine),
     providerPaths: useAppStore((s) => s.providerPaths),
     providerVersions: useAppStore((s) => s.providerVersions),
     providersProbed: useAppStore((s) => s.providersProbed),

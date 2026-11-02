@@ -90,7 +90,6 @@ export const GATES = {
       "set_notify_pr_activity",
       "set_auto_archive_idle_days",
       "set_code_indexing_enabled",
-      "set_sandbox_engine",
       "set_docker_launch_settings",
       "set_podman_launch_settings",
       "set_agent_bin_override",

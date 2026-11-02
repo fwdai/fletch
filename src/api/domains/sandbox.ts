@@ -1,4 +1,3 @@
-import type { SandboxEngine } from "@/storage/preferences";
 import { invoke, invokeLocal } from "../invoke";
 import type {
   ContainerAuthStatus,
@@ -9,9 +8,6 @@ import type {
 } from "../types/sandbox";
 
 export const sandboxApi = {
-  // Sandbox engine selection. The setting is host-owned (`sandbox_engine`,
-  // written by `settingsApi.setSandboxEngine`).
-  getSandboxEngine: () => invoke<SandboxEngine>("get_sandbox_engine"),
   probeDockerEngine: () => invoke<DockerProbe>("probe_docker_engine"),
   probePodmanEngine: () => invoke<PodmanProbe>("probe_podman_engine"),
   // What each engine actually guarantees, for the picker (`sandbox::guarantees`).

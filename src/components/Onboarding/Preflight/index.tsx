@@ -33,9 +33,8 @@ export function Preflight({
   // the download starts when onboarding closes and the first workspaces run
   // in the macOS sandbox meanwhile, which is worth a sentence so the title
   // bar's "macOS sandbox" never reads as the rule.
-  const boxesEnabled = useAppStore((s) => s.boxesEnabled);
   const boxProbe = useAppStore((s) => s.boxProbe);
-  const vmComing = boxesEnabled && !!boxProbe?.runtime_ok && boxProbe.image.phase !== "installed";
+  const vmComing = !!boxProbe?.runtime_ok && boxProbe.image.phase !== "installed";
 
   // Enter opens the app once it is offered. Buttons and fields keep Enter
   // for themselves (a focused "Not now" must not open the app instead).
@@ -100,7 +99,7 @@ export function Preflight({
         </div>
         {pf.done && vmComing && (
           <p className="pf-vm-note text-xs">
-            Workspaces start in the macOS sandbox. An isolated VM is prepared in the background and
+            Workspaces start in the macOS sandbox. A Linux VM is prepared in the background and
             takes over once it&rsquo;s ready.
           </p>
         )}

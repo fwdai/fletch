@@ -9,7 +9,7 @@ import { Button } from "./ui/Button";
 const LINGER_MS = 12_000;
 
 /**
- * Bottom-left toast, once: the isolated VM this session watched being set up
+ * Bottom-left toast, once: the Linux VM this session watched being set up
  * (the image download, the tools disk) is ready, so new workspaces run in it
  * from now on. Only after a setup seen in flight — a launch that finds the VM
  * already ready has nothing to announce — and never for a failure, which
@@ -17,11 +17,9 @@ const LINGER_MS = 12_000;
  * through the store.
  */
 export function BoxReadyToast() {
-  const enabled = useAppStore((s) => s.boxesEnabled);
   const probe = useAppStore((s) => s.boxProbe);
   const image = useAppStore((s) => s.boxImage);
   const tools = useAppStore((s) => s.boxTools);
-  const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
   const environmentId = useAppStore((s) => s.activeEnvironmentId);
   const [open, setOpen] = useState(false);
   // The image was seen on its way this session; the next "ready" is news. A
@@ -36,7 +34,7 @@ export function BoxReadyToast() {
     setOpen(false);
   }, [environmentId]);
 
-  const state = enabled && probe?.runtime_ok && image ? boxSetup(probe, image, tools).state : null;
+  const state = probe?.runtime_ok && image ? boxSetup(probe, image, tools).state : null;
   const downloading = state === "busy" && image?.phase !== "installed";
   useEffect(() => {
     if (downloading) sawDownload.current = true;
@@ -59,22 +57,10 @@ export function BoxReadyToast() {
         <Icon name="cube" />
         <div className="update-toast-body">
           <div className="update-toast-text">
-            <strong>Isolated VMs are ready</strong>
-            <span>
-              New workspaces now run in a micro-VM that shares nothing with your Mac. The ones you
-              have stay where they are.
-            </span>
+            <strong>Linux VM is ready</strong>
+            <span>New workspaces run in it. The ones you have stay where they are.</span>
           </div>
           <div className="update-toast-actions">
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setOpen(false);
-                openSettingsScreen("sandbox");
-              }}
-            >
-              Settings
-            </Button>
             <Button variant="primary" onClick={() => setOpen(false)}>
               OK
             </Button>

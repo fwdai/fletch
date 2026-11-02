@@ -12,7 +12,6 @@ import {
   parseAutoArchiveIdleDays,
   parseProviderPathOverrides,
   parsePublishApprovalWait,
-  parseSandboxEngine,
 } from "@/storage/preferences";
 import { getAllSettings } from "@/storage/settings";
 import { newestWins } from "@/util/newestWins";
@@ -21,9 +20,6 @@ import { activeEnvironment, forActiveEnvironment } from "./environments";
 import type { AppState } from "./types";
 
 type Patch = (patch: Partial<AppState>) => void;
-
-/** What an absent `boxes_enabled` row means: `boxes::settings::DEFAULT_ENABLED`. */
-export const BOXES_DEFAULT_ENABLED = false;
 
 /** The store fields the host-owned keys decide. Every default here is the one
  *  the host's own parser applies to an absent or unreadable value, so a key the
@@ -40,7 +36,6 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
     codeIndexingEnabled: s.code_indexing_enabled !== "false",
     // Opt-in: the project context layer is piloted behind Settings › Developer.
     contextLayerEnabled: s.context_layer_enabled === "true",
-    sandboxEngine: parseSandboxEngine(s.sandbox_engine),
     // Opt-in, unlike the alerts: autopilot publishes unattended, so defaulting
     // it on would hang every unattended run until the decision timeout.
     publishConfirmation: s.publish_confirmation === "true",
@@ -55,12 +50,7 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
     podmanImage: s.podman_image || "",
     podmanMemory: s.podman_memory || "",
     podmanCpus: s.podman_cpus || "",
-    // An explicit "true" or "false" wins; absent is the host's default, off
-    // while boxes are rolled out behind the developer unlock — the mirror of
-    // `boxes::settings::DEFAULT_ENABLED`, flipped together with it at the
-    // public release. The knobs are blank when unset, as the container ones are.
-    boxesEnabled:
-      s.boxes_enabled === undefined ? BOXES_DEFAULT_ENABLED : s.boxes_enabled === "true",
+    // The box knobs are blank when unset, as the container ones are.
     boxMemoryMib: s.box_memory_mib || "",
     boxCpus: s.box_cpus || "",
     boxImageUrl: s.box_image_url || "",

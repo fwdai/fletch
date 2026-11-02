@@ -120,7 +120,7 @@ describe("host-owned settings", () => {
   });
 
   it("include every key the host reads, and no secret", () => {
-    for (const key of ["notify_turn_complete", "sandbox_engine", "agent_bin_path_codex"]) {
+    for (const key of ["notify_turn_complete", "box_layers", "agent_bin_path_codex"]) {
       expect(isHostSettingKey(key)).toBe(true);
     }
     for (const key of [
@@ -146,7 +146,7 @@ describe("host-owned settings", () => {
     for (const key of ["autopilot.enabled", "roadmap.code_seq", "roadmap.code_prefix", "run."]) {
       expect(isHostProjectSettingKey(key)).toBe(false);
     }
-    expect(HOST_SETTING_KEYS).toHaveLength(23);
+    expect(HOST_SETTING_KEYS).toHaveLength(21);
     expect(HOST_PROJECT_SETTING_KEYS).toHaveLength(14);
   });
 });

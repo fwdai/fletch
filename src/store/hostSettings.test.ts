@@ -32,8 +32,6 @@ describe("host settings", () => {
       notifyPrActivity: true,
       agentAttributionRemoved: false,
       codeIndexingEnabled: true,
-      sandboxEngine: "auto",
-      boxesEnabled: false,
       publishConfirmation: false,
       branchPrefix: "",
       draftPrs: false,
