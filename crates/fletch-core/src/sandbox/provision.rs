@@ -530,20 +530,27 @@ pub async fn relink_alternates(checkout: &Path, source_repo: &Path) -> Result<bo
         return Ok(false);
     }
 
-    let out = git::git_output(
+    // A repository whose folder is gone too fails the spawn itself (git's
+    // working directory), not just the command: both are "cannot be read".
+    let store = match git::git_output(
         source_repo,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )
-    .await?;
-    let store = Path::new(String::from_utf8_lossy(&out.stdout).trim()).join("objects");
-    if !out.status.success() || !store.is_dir() {
+    .await
+    {
+        Ok(out) if out.status.success() => {
+            Some(Path::new(String::from_utf8_lossy(&out.stdout).trim()).join("objects"))
+        }
+        _ => None,
+    };
+    let Some(store) = store.filter(|store| store.is_dir()) else {
         return Err(Error::Git(format!(
             "{} borrows objects from {}, which is gone, and its repository {} cannot be read",
             checkout.display(),
             gone.join(", "),
             source_repo.display()
         )));
-    }
+    };
     let store = path_str(&store)?;
     if !kept
         .iter()
@@ -2045,7 +2052,13 @@ mod tests {
         let before = std::fs::read(dest.join(ALTERNATES)).unwrap();
         std::fs::remove_dir_all(&repo).unwrap();
 
-        assert!(relink_alternates(&dest, &repo).await.is_err());
+        // The repository's folder is gone, so git can't even start in it; the
+        // error still says what is wrong rather than surfacing that ENOENT.
+        let err = relink_alternates(&dest, &repo).await.unwrap_err();
+        assert!(
+            err.to_string().contains("cannot be read"),
+            "unexpected error: {err}"
+        );
         assert_eq!(std::fs::read(dest.join(ALTERNATES)).unwrap(), before);
     }
 

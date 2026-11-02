@@ -1805,7 +1805,7 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
 /// an archive the app died in the middle of (`begin_archive` has already
 /// marked the row). Each holds a whole data disk, so nothing else would ever
 /// reclaim it. Only a directory with a data disk counts — the root also holds
-/// a tools build's throwaway `tools-<pid>` box — and the directories are
+/// a tools build's throwaway `tools-…` box — and the directories are
 /// listed before the agents are read, so a box made in between belongs to a
 /// row that is already live.
 fn leaked_box_dirs(workspace: &crate::workspace::WorkspaceManager) -> Vec<PathBuf> {

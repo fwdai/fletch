@@ -1277,8 +1277,7 @@ impl BoxRegistry {
         provider: &str,
     ) -> watch::Receiver<ToolsBuild> {
         let version = tools_version(provider);
-        // One key for both variants, so they never build (and share the build
-        // box's run dir) at once.
+        // One key for both variants, so they never build at once.
         let key = format!("{provider}-{version}");
         let claimed = claim_tools_build(&mut self.tools_builds.lock(), &key, Instant::now());
         let tx = match claimed {
