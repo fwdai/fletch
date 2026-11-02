@@ -6,7 +6,8 @@ something it cannot do itself, send a JSON request through the mailbox at
 
 Protocol shape:
 
-1. Pick a unique id, usually a UUID.
+1. Pick a unique id of letters, digits, `-` and `_`, usually a UUID. Not every
+   sandbox has `uuidgen`, so the examples fall back to the kernel's.
 2. Write the request atomically to `$FLETCH_RPC_DIR/requests/<id>.json.tmp`,
    then rename it to `$FLETCH_RPC_DIR/requests/<id>.json`.
 3. Poll `$FLETCH_RPC_DIR/responses/<id>.json` until it appears, then read it.
@@ -36,7 +37,7 @@ A failure response is:
 Example:
 
 ```sh
-ID=$(uuidgen)
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 printf '{"id":"%s","op":"ping"}' "$ID" > "$FLETCH_RPC_DIR/requests/$ID.json.tmp"
 mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"
 until [ -f "$FLETCH_RPC_DIR/responses/$ID.json" ]; do sleep 0.2; done
@@ -48,7 +49,7 @@ are escaped correctly. The current dispatcher exposes a harmless `echo` op for
 round-trip testing:
 
 ```sh
-ID=$(uuidgen)
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 MSG=$(cat <<'EOF'
 hello from the agent
 EOF
@@ -160,7 +161,7 @@ a log. Fire-and-forget, like `set_title`.
 double quotes. Fire-and-forget — do not wait for the response:
 
 ```sh
-ID=$(uuidgen); printf '{"id":"%s","op":"set_title","args":{"title":"Swap sidebar title and prompt"}}' "$ID" > "$FLETCH_RPC_DIR/requests/$ID.json.tmp" && mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid); printf '{"id":"%s","op":"set_title","args":{"title":"Swap sidebar title and prompt"}}' "$ID" > "$FLETCH_RPC_DIR/requests/$ID.json.tmp" && mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"
 ```
 
 - First tool call of the first turn, if the user has asked for a change,

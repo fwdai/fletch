@@ -189,21 +189,49 @@ impl Mailbox {
         matches!(self.responses.entry(name), Ok(Entry::Other))
     }
 
-    /// Write `<key>.json` in one rename: a link at the name is replaced,
-    /// never written through.
+    /// Write `<key>.json` in one rename. The name is the host's: whatever the
+    /// agent left there is replaced, a link without being written through and
+    /// a directory by removing it first (what is in it unlinked, never
+    /// followed). So nothing the agent leaves at the name keeps an answer
+    /// out: what is left to fail the write is the filesystem, the mailbox
+    /// removed under the tick, or an agent breaking its own mailbox (a chmod).
     fn respond(&self, key: &str, resp: &Response) -> Result<()> {
+        let name = format!("{key}.json");
         let json = serde_json::to_vec_pretty(resp)
             .map_err(|e| Error::Other(format!("serialize rpc response: {e}")))?;
+        if matches!(self.responses.entry(&name), Ok(Entry::Dir)) {
+            self.responses
+                .remove(&name)
+                .map_err(|e| Error::Other(format!("clear rpc response slot: {e}")))?;
+        }
         self.responses
-            .write_file(&format!("{key}.json"), &json, 0o600)
+            .write_file(&name, &json, 0o600)
             .map_err(|e| Error::Other(format!("write rpc response: {e}")))
     }
 
+    /// Answer a request that is not dispatched with `error`, and only then
+    /// remove it. A refusal runs nothing, so when the answer can't be written
+    /// the request stays and the next tick refuses it again: the file is the
+    /// retry, and it goes with the mailbox. Logged once, when it lands.
+    fn refuse(&self, key: &str, name: &str, why: &str, error: String) {
+        match self.respond(key, &Response::err(key, error.as_str())) {
+            Ok(()) => {
+                tracing::warn!(file = %name, %error, "rpc: {why}, answered with error");
+                self.remove_request(name);
+            }
+            Err(e) => {
+                tracing::debug!(file = %name, error = %e, "rpc: {why}, answer not written (will retry)")
+            }
+        }
+    }
+
     /// Removes the entry itself, a link included, never what it points at.
-    /// Gone already is fine: a concurrent trigger beat us to it.
+    /// Gone already is fine: a concurrent trigger beat us to it. A failure is
+    /// retried by the next tick (an answered request is only removed), so it
+    /// is logged quietly.
     fn remove_request(&self, name: &str) {
         if let Err(e) = self.requests.remove(name) {
-            tracing::warn!(error = %e, file = %name, "rpc: remove request failed");
+            tracing::debug!(error = %e, file = %name, "rpc: remove request failed (will retry)");
         }
     }
 
@@ -263,8 +291,20 @@ pub(crate) fn sweep_orphan_mailboxes_in(root: &Path, live: &HashSet<String>) {
 }
 
 /// One bad request file is logged and isolated, never stalls the rest.
+///
+/// Every request is answered at `responses/<id>.json`, and no op runs twice.
+/// The response name is the host's, so nothing the agent plants there keeps
+/// an answer out ([`Mailbox::respond`]). A request that is not dispatched
+/// leaves only once its refusal is written ([`Mailbox::refuse`]), so a failed
+/// write is retried by the next tick; a dispatched one leaves at once, and an
+/// answer the filesystem refuses is lost rather than its op run again.
+///
+/// The host keeps nothing about a mailbox between ticks: its files are the
+/// whole state, so nothing outlives the mailbox or grows with what the agent
+/// asks. Without that memory, an outcome (once per request) is logged as a
+/// warning and a retry, which recurs every tick, only at debug.
 pub async fn process_pending(rpc_dir: &Path, dispatcher: &dyn RpcDispatcher) -> Vec<RpcEvent> {
-    // Polled twice a second, so a tampered mailbox is logged quietly.
+    // Polled ten times a second, so a tampered mailbox is logged quietly.
     let mailbox = match Mailbox::open(rpc_dir) {
         Ok(m) => m,
         Err(e) => {
@@ -294,8 +334,21 @@ async fn handle_request(
     dispatcher: &dyn RpcDispatcher,
 ) -> Vec<RpcEvent> {
     let name = format!("{key}.json");
+    // Never dispatched, only refused: an empty id (`ID=$(uuidgen)` where there
+    // is no uuidgen) was once skipped on every tick, and the agent waited on
+    // `.json` for an answer that never came. The name is still one component,
+    // which is all the response write and the removal need.
     if !is_safe_key(key) {
-        tracing::warn!(file = %name, "rpc: unsafe request filename, skipping");
+        mailbox.refuse(
+            key,
+            &name,
+            "unsafe request filename",
+            format!(
+                "invalid request id {key:?}: use only letters, digits, '-' and '_' \
+                 (an empty id usually means the command that made it, like uuidgen, \
+                 is missing)"
+            ),
+        );
         return Vec::new();
     }
 
@@ -321,17 +374,19 @@ async fn handle_request(
             return Vec::new();
         }
         // A link, a directory or a FIFO at the name: never a request an agent
-        // wrote by the protocol, so answered and dropped rather than retried.
+        // wrote by the protocol, so refused rather than read.
         Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
-            tracing::warn!(file = %name, "rpc: request is not a regular file, answering with error");
-            let resp = Response::err(key, "request is not a regular file");
-            if mailbox.respond(key, &resp).is_ok() {
-                mailbox.remove_request(&name);
-            }
+            mailbox.refuse(
+                key,
+                &name,
+                "request is not a regular file",
+                "request is not a regular file".into(),
+            );
             return Vec::new();
         }
+        // Retried by the next tick, so logged quietly.
         Err(e) => {
-            tracing::warn!(error = %e, file = %name, "rpc: read request failed");
+            tracing::debug!(error = %e, file = %name, "rpc: read request failed (will retry)");
             return Vec::new();
         }
     };
@@ -343,11 +398,12 @@ async fn handle_request(
                 .request_age(&name)
                 .is_some_and(|age| age >= STALE_REQUEST_AGE)
             {
-                tracing::warn!(error = %e, file = %name, "rpc: malformed request, answering with error");
-                let resp = Response::err(key, format!("malformed request JSON: {e}"));
-                if mailbox.respond(key, &resp).is_ok() {
-                    mailbox.remove_request(&name);
-                }
+                mailbox.refuse(
+                    key,
+                    &name,
+                    "malformed request",
+                    format!("malformed request JSON: {e}"),
+                );
             } else {
                 tracing::debug!(error = %e, file = %name, "rpc: unparseable request (will retry)");
             }
@@ -358,7 +414,10 @@ async fn handle_request(
     let (resp, effects) = dispatcher.dispatch(key, &req.op, &req.args).await;
 
     // The op ran; remove the request even if writing the response fails, so it
-    // can't be re-dispatched. A lost response is safer than a doubled push.
+    // can't be re-dispatched. A lost response is safer than a doubled push, and
+    // nothing holds it for later: nothing the agent leaves at the name can
+    // fail the write ([`Mailbox::respond`]), and an answer kept in memory
+    // would outlive its mailbox and grow with what the agent asks.
     if let Err(e) = mailbox.respond(key, &resp) {
         tracing::error!(error = %e, id = %key, "rpc: write response failed after dispatch; dropping request to avoid re-execution");
     }
@@ -696,6 +755,31 @@ mod tests {
         assert!(!is_safe_key("with.dot"));
     }
 
+    /// A request whose id is empty (`ID=$(uuidgen)` with no uuidgen) or
+    /// otherwise unsafe is answered with an error at the name the agent polls
+    /// and removed, never dispatched and never left to be skipped every tick.
+    #[tokio::test]
+    async fn an_unsafe_request_id_is_answered_and_removed() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        for name in [".json", "with.dot.json"] {
+            write_request(&rpc_dir.join("requests"), name, r#"{"op":"ping"}"#);
+        }
+
+        let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
+        process_pending(&rpc_dir, &dispatcher).await;
+
+        assert_eq!(dispatcher.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        for name in [".json", "with.dot.json"] {
+            assert!(!rpc_dir.join("requests").join(name).exists(), "{name} left");
+            let body = std::fs::read_to_string(rpc_dir.join("responses").join(name)).unwrap();
+            let v: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(v["ok"], false);
+            assert!(v["error"].as_str().unwrap().contains("invalid request id"));
+        }
+    }
+
     #[tokio::test]
     async fn ping_round_trips_to_a_response_file() {
         let td = tempfile::tempdir().unwrap();
@@ -870,6 +954,25 @@ mod tests {
         assert_eq!(v["ok"], true);
     }
 
+    /// The mailbox opened as a tick opens it, then its `responses` replaced
+    /// under the open handle: every write through it fails, for root too
+    /// (unlike a read-only directory), while the path holds a fresh one. Unix
+    /// only: elsewhere the mailbox is written by path.
+    #[cfg(unix)]
+    fn mailbox_with_stale_responses(rpc_dir: &Path) -> Mailbox {
+        let mailbox = Mailbox::open(rpc_dir).unwrap();
+        std::fs::remove_dir(rpc_dir.join("responses")).unwrap();
+        std::fs::create_dir(rpc_dir.join("responses")).unwrap();
+        mailbox
+    }
+
+    #[cfg(unix)]
+    fn responses_in(rpc_dir: &Path) -> usize {
+        std::fs::read_dir(rpc_dir.join("responses"))
+            .unwrap()
+            .count()
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn write_failure_after_dispatch_does_not_redispatch() {
@@ -881,15 +984,10 @@ mod tests {
             "req-8.json",
             r#"{"id":"req-8","op":"ping"}"#,
         );
-
-        // A directory at the response's name is no answer, and no file can be
-        // renamed over it, so the write fails (for root too, unlike a
-        // read-only directory).
-        let response = rpc_dir.join("responses/req-8.json");
-        std::fs::create_dir(&response).unwrap();
+        let mailbox = mailbox_with_stale_responses(&rpc_dir);
 
         let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
-        process_pending(&rpc_dir, &dispatcher).await;
+        handle_request(&mailbox, "req-8", &dispatcher).await;
 
         assert_eq!(
             dispatcher.0.load(std::sync::atomic::Ordering::SeqCst),
@@ -900,7 +998,7 @@ mod tests {
             !rpc_dir.join("requests/req-8.json").exists(),
             "request must be removed even when the response write fails"
         );
-        assert!(response.is_dir(), "no response was written");
+        assert_eq!(responses_in(&rpc_dir), 0, "no response was written");
 
         process_pending(&rpc_dir, &dispatcher).await;
         assert_eq!(
@@ -908,6 +1006,113 @@ mod tests {
             1,
             "a write failure must not cause the op to run a second time"
         );
+        assert_eq!(responses_in(&rpc_dir), 0, "nothing kept to write later");
+    }
+
+    /// An archive does not wait for an op already running, so its answer can
+    /// come back after the mailbox is gone, even after a new one is made at
+    /// the same path (agent ids are reused). The answer goes nowhere: the
+    /// tick writes through the handles it opened, and keeps nothing to write
+    /// later.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_answer_never_outlives_its_mailbox() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "req-12.json",
+            r#"{"id":"req-12","op":"ping"}"#,
+        );
+        let dispatcher = std::sync::Arc::new(BlockingDispatcher {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        let (dir, d) = (rpc_dir.clone(), dispatcher.clone());
+        let tick = tokio::spawn(async move { process_pending(&dir, d.as_ref()).await });
+        while dispatcher.calls.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        std::fs::remove_dir_all(&rpc_dir).unwrap();
+        ensure_mailbox(&rpc_dir).unwrap();
+        dispatcher.release.add_permits(1);
+        tick.await.unwrap();
+        process_pending(&rpc_dir, dispatcher.as_ref()).await;
+
+        assert_eq!(
+            dispatcher.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            responses_in(&rpc_dir),
+            0,
+            "the old answer must never land in the new mailbox"
+        );
+    }
+
+    /// The response name is the host's: a directory the agent planted there,
+    /// with a link out of the mailbox inside, is replaced by the answer, and
+    /// what the link points at is never touched. Nothing the agent plants can
+    /// keep an answer out, for a dispatched request or a refused one.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_planted_directory_never_keeps_an_answer_out() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        let precious = td.path().join("precious");
+        std::fs::write(&precious, "keep").unwrap();
+        for name in ["req-13.json", ".json"] {
+            let slot = rpc_dir.join("responses").join(name);
+            std::fs::create_dir_all(slot.join("nested")).unwrap();
+            std::os::unix::fs::symlink(&precious, slot.join("nested/link")).unwrap();
+            write_request(&rpc_dir.join("requests"), name, r#"{"op":"ping"}"#);
+        }
+
+        let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
+        process_pending(&rpc_dir, &dispatcher).await;
+
+        assert_eq!(dispatcher.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read_to_string(&precious).unwrap(), "keep");
+        for (name, ok) in [("req-13.json", true), (".json", false)] {
+            assert!(!rpc_dir.join("requests").join(name).exists(), "{name} left");
+            let body = std::fs::read_to_string(rpc_dir.join("responses").join(name)).unwrap();
+            let v: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(v["ok"], ok, "{name}: {v}");
+        }
+    }
+
+    /// A refusal runs nothing, so a request whose refusal can't be written
+    /// stays for the next tick rather than being dropped unanswered: the agent
+    /// polling for it would otherwise wait forever.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refusal_that_cannot_be_written_is_retried_until_it_lands() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        let request = rpc_dir.join("requests/.json");
+        write_request(&rpc_dir.join("requests"), ".json", r#"{"op":"ping"}"#);
+        let mailbox = mailbox_with_stale_responses(&rpc_dir);
+
+        let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
+        handle_request(&mailbox, "", &dispatcher).await;
+        assert!(
+            request.exists(),
+            "an unanswered refusal must keep its request"
+        );
+        assert_eq!(responses_in(&rpc_dir), 0);
+
+        process_pending(&rpc_dir, &dispatcher).await;
+
+        assert_eq!(dispatcher.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!request.exists());
+        let body = std::fs::read_to_string(rpc_dir.join("responses/.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["ok"], false);
+        assert!(v["error"].as_str().unwrap().contains("invalid request id"));
     }
 
     #[tokio::test]

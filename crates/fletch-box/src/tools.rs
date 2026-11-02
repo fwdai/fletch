@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,10 @@ pub const DISK_BYTES: u64 = 4 << 30;
 /// How long an install may take end to end: npm over the proxy, a cold cache.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Numbers this process's build boxes ([`build`]), so builds running at once
+/// never share a box dir.
+static BUILD_SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// The provider's install script, as `crates/fletch-box/tools/<provider>.sh`.
 pub fn install_script(provider: &str) -> Option<&'static str> {
@@ -475,8 +480,14 @@ pub async fn build(
     }
 
     // A box dir of its own, under the run root like every box's, so socket
-    // paths stay short; removed on every exit path below.
-    let id = format!("tools-{}", std::process::id());
+    // paths stay short; removed on every exit path below. Its own per build,
+    // not per process: the engine builds every provider's disk at once, and
+    // builds sharing a dir wipe each other's ssh key and egress socket.
+    let id = format!(
+        "tools-{provider}-{}-{}",
+        std::process::id(),
+        BUILD_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
     let dir = paths.run_root.join(&id);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(Error::io(format!("create {}", dir.display())))?;
@@ -489,6 +500,7 @@ pub async fn build(
         version,
         script,
         codegraph_bundle.as_deref(),
+        &id,
         &dir,
         &staging,
         &mut log,
@@ -521,6 +533,7 @@ async fn build_in(
     version: &str,
     script: &str,
     codegraph_bundle: Option<&[u8]>,
+    id: &str,
     dir: &Path,
     disk: &Path,
     log: &mut impl FnMut(&str),
@@ -548,12 +561,7 @@ async fn build_in(
     })
     .map_err(Error::io("start the egress proxy"))?;
 
-    let mut spec = VmSpec::new(
-        &format!("tools-{}", std::process::id()),
-        image,
-        disk,
-        &dir.join("console.log"),
-    );
+    let mut spec = VmSpec::new(id, image, disk, &dir.join("console.log"));
     spec.listen_ports = vec![
         (guest::SSH_PORT, dir.join("ssh.sock")),
         (guest::CONTROL_PORT, dir.join("ctl.sock")),
