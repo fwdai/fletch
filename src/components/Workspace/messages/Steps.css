@@ -116,10 +116,12 @@
   margin: 0 7px;
   color: var(--fg-3);
 }
+/* A command or query named in the line is set at the line's own size. At
+   --fs-xs it was the smallest text in the line and the hardest part to read. */
 .steprun-part code {
   margin-left: 5px;
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-size: inherit;
   color: var(--fg-1);
 }
 .steprun-part.danger {
