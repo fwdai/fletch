@@ -1,4 +1,4 @@
-//! App-held secrets (the GitHub OAuth token, the claude container token).
+//! App-held secrets (the GitHub OAuth token, the claude setup token).
 //!
 //! Release macOS builds store secrets in the login Keychain through the
 //! in-process Security.framework API: the item is created and read by the

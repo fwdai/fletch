@@ -1,8 +1,7 @@
 //! Engine-independent **write policy** for sandboxed agents: which host
 //! directories a coding agent is allowed to write. It's the single source of
-//! truth both sandbox engines consume — macOS seatbelt (SBPL `(subpath …)`
-//! rules) and Docker (`-v host:host` bind mounts) — instead of each engine
-//! hand-maintaining its own allow-list and drifting apart.
+//! truth macOS seatbelt (SBPL `(subpath …)` rules) consumes, kept apart from
+//! the engine that enforces it.
 //!
 //! The split is **policy vs mechanism**: this module answers *what* an agent
 //! may write; each engine decides *how* to enforce it. Grants fall into two
@@ -10,19 +9,17 @@
 //!
 //! - **Host-persistence grants** (class 1 — [`provider_state_dirs`] /
 //!   [`all_provider_state_dirs`]): host dirs a provider must persist real state
-//!   to — its session store, auth, config. BOTH engines honor these (Docker as
-//!   read-write mounts, seatbelt as writable subpaths), because that state has
-//!   to land on the *host* to survive the process/container and be read back by
-//!   the host-side transcript/auth readers.
+//!   to — its session store, auth, config. Seatbelt honors these as writable
+//!   subpaths, because that state has to land on the *host* to survive the
+//!   process and be read back by the host-side transcript/auth readers.
 //! - **Host-scratch grants** (class 2 — [`agent_scratch_dirs`]): caches and XDG
 //!   data/state dirs a toolchain needs writable *somewhere*, but not
 //!   necessarily on a host-visible path. Only engines that share the host
-//!   filesystem (seatbelt) consume these; Docker satisfies them with the
-//!   container's own writable filesystem and must NOT mount them back to the
-//!   host.
+//!   filesystem (seatbelt) consume these; a box has its own writable
+//!   filesystem.
 //! - **The toolchain cache** ([`super::toolchain_cache`]): the Fletch-owned
 //!   root every package cache, the cargo overlay and the headless browsers are
-//!   redirected into. BOTH engines grant it, and only ever one project's own
+//!   redirected into. Every engine grants it, and only ever one project's own
 //!   root, never the directory holding every project's (whose writers could
 //!   then plant what another project executes). It meets invariant 1 by
 //!   construction rather than by check: Fletch owns that layout and it is never
@@ -98,10 +95,8 @@
 //! for `~/.config`. So claude's grant is no longer the config-dir *root* but a
 //! set of **writable islands** beneath it ([`claude_write_island_dirs`] + the
 //! [`CLAUDE_CREDENTIALS_FILE`] file): claude-regenerated, non-executable,
-//! non-config state only. This mirrors Docker's invariant 5 (`~/.claude` mounted
-//! read-only with writable exceptions layered on); the shared island-name
-//! constants ([`CLAUDE_PROJECTS_SUBDIR`], [`CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS`],
-//! [`CLAUDE_CREDENTIALS_FILE`]) are the same ones the docker engine mounts.
+//! non-config state only ([`CLAUDE_PROJECTS_SUBDIR`],
+//! [`CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS`], [`CLAUDE_CREDENTIALS_FILE`]).
 //!
 //! One piece of claude's persistence surface is deliberately *not* modeled
 //! here: the top-level `~/.claude.json` state **file**. It's a single file, not
@@ -112,42 +107,33 @@
 use std::path::{Path, PathBuf};
 
 /// Every provider whose host-persistence dirs seatbelt's provider-agnostic
-/// profile grants — the enumeration [`all_provider_state_dirs`] folds over.
-/// A superset of Docker's supported providers (Docker has no `gemini` image
-/// yet, but the seatbelt agent still runs the gemini CLI and must let it
-/// persist `~/.gemini`), so this list, not the container engines'
-/// `ContainerProvider`, is the authority for the seatbelt side.
+/// profile grants — the enumeration [`all_provider_state_dirs`] folds over,
+/// and the authority for the seatbelt side (the gemini CLI included, which
+/// must persist `~/.gemini`).
 const STATE_DIR_PROVIDERS: &[&str] = &["claude", "codex", "cursor", "gemini", "pi", "opencode"];
 
 /// The one **file** under a claude config dir that stays writable when the dir
 /// is otherwise read-only: claude's OAuth refresh rewrites the rotated token
 /// here, and the host-side `CredentialsFile` auth chain needs that write to
-/// land on the host. Docker remounts it read-write over the read-only config
-/// dir; seatbelt grants it as a file rule (see the seatbelt caller). Shared so
-/// the two engines can't drift on the name.
+/// land on the host. Seatbelt grants it as a file rule (see the seatbelt
+/// caller).
 pub const CLAUDE_CREDENTIALS_FILE: &str = ".credentials.json";
 
 /// Claude's session-transcript subdir (`<config-dir>/projects/<slug>/*.jsonl`).
-/// Docker binds it to a persistent per-agent host dir so `--resume` survives
-/// container recreation; seatbelt grants the real one as an island (see the
-/// residual note on [`claude_write_island_dirs`]). Shared so the two engines
-/// agree on the name.
+/// Seatbelt grants the real one as an island (see the residual note on
+/// [`claude_write_island_dirs`]).
 pub const CLAUDE_PROJECTS_SUBDIR: &str = "projects";
 
 /// Subdirs claude creates and writes *afresh every session*: the per-session
 /// env store (`session-env/<id>`) and the shell-environment snapshot the Bash
-/// tool sources (`shell-snapshots`). Docker overlays each with an ephemeral
-/// tmpfs (claude otherwise `mkdir`s them under the read-only config dir and
-/// fails `EROFS`); seatbelt grants the real ones as islands. Shared so the two
-/// engines agree on the names.
+/// tool sources (`shell-snapshots`). Seatbelt grants the real ones as
+/// islands.
 pub const CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS: &[&str] = &["session-env", "shell-snapshots"];
 
-/// Extra pure-state subdirs seatbelt grants writable that docker leaves
-/// read-only. Docker leaves *everything* but the credential file, the projects
-/// bind, and the tmpfs overlays read-only, and claude's writes there are
-/// best-effort (a failed write logs and continues). Seatbelt shares the host
-/// filesystem, so these writes actually land on the real `~/.claude` and are
-/// worth allowing — but only for claude-regenerated, non-executable, non-config
+/// Extra pure-state subdirs seatbelt grants writable. Claude's writes there
+/// are best-effort (a failed write logs and continues), but seatbelt shares
+/// the host filesystem, so these writes actually land on the real `~/.claude`
+/// and are worth allowing — but only for claude-regenerated, non-executable, non-config
 /// state that can neither run code on the host nor steer a later host session:
 /// per-session todo lists, the feature-flag/analytics cache, file edit-history
 /// (undo state), and diagnostic logs. Anything that could influence a later
@@ -173,9 +159,9 @@ const CLAUDE_SEATBELT_STATE_SUBDIRS: &[&str] = &["todos", "statsig", "file-histo
 /// Two DELIBERATE residuals, left writable here and flagged for later hardening
 /// rather than fixed now:
 ///
-/// 1. **`projects/` stays writable.** Docker redirects it to a per-agent host
-///    dir so the shared `~/.claude/projects` (other agents' transcripts, global
-///    memory) is unreachable; seatbelt can't redirect without env surgery, and
+/// 1. **`projects/` stays writable.** The shared `~/.claude/projects` (other
+///    agents' transcripts, global memory) stays reachable: seatbelt can't
+///    redirect it to a per-agent dir without env surgery, and
 ///    the app's host-side transcript reader tails the real dir. Residual: an
 ///    agent can write a `projects/<slug>/memory` entry a later session trusts.
 /// 2. **`~/.claude.json` stays a writable literal** (emitted by the seatbelt
@@ -266,11 +252,10 @@ pub const APP_SUPPORT_EXEC_DIRS: &[&str] = &[
 ];
 
 /// Class-1 host-persistence dirs a single `provider` must write on the host:
-/// its session store, auth, and config. Docker mounts exactly these read-write
-/// at their host paths; the seatbelt profile folds them in provider-agnostically
-/// via [`all_provider_state_dirs`]. An unrecognized provider yields an empty
-/// list — Docker already gates on a known `ContainerProvider`, and
-/// the seatbelt side only ever passes ids from [`STATE_DIR_PROVIDERS`].
+/// its session store, auth, and config. The seatbelt profile folds them in
+/// provider-agnostically via [`all_provider_state_dirs`]. An unrecognized
+/// provider yields an empty list — the seatbelt side only ever passes ids from
+/// [`STATE_DIR_PROVIDERS`].
 ///
 /// Note the omissions this policy makes on purpose: claude's grant is NOT its
 /// config-dir root (that root holds host-executed hooks / plugins / MCP config
@@ -433,9 +418,6 @@ pub fn provider_exec_config_denials(home: &Path) -> ProviderExecConfig {
 /// `~/.local` (which contains `~/.local/bin`, a PATH dir — invariant 1), and
 /// *nothing* under `~/.config` (config poisoning — invariant 2; providers get
 /// their specific config subdirs via [`provider_state_dirs`] instead).
-///
-/// Docker does NOT consume these: a container has its own writable filesystem
-/// for scratch, and mounting these back would needlessly expose host state.
 pub fn agent_scratch_dirs(home: &Path) -> Vec<PathBuf> {
     [
         ".npm",                        // npm's package cache
@@ -492,17 +474,16 @@ pub fn inside_macos_privacy_dir(home: &Path, path: &Path) -> bool {
 }
 
 /// OpenCode's data dir: `$XDG_DATA_HOME/opencode` if set, else
-/// `~/.local/share/opencode`. This is both the dir Docker bind-mounts read-write
-/// and where `agent::opencode_locate` reads its session storage on the host, so
-/// the two must agree — this is the shared resolution.
+/// `~/.local/share/opencode`. This is both the dir seatbelt grants and where
+/// `agent::opencode_locate` reads its session storage on the host, so the two
+/// must agree — this is the shared resolution.
 pub fn opencode_data_dir(home: &Path) -> PathBuf {
     xdg_base(home, "XDG_DATA_HOME", ".local/share").join("opencode")
 }
 
 /// OpenCode's config dir: `$XDG_CONFIG_HOME/opencode` if set, else
 /// `~/.config/opencode` (custom providers + plugin installs). A specific
-/// `~/.config` subdir — never the root (invariant 2). Docker mounts it only
-/// when it already exists (see the docker launch path).
+/// `~/.config` subdir — never the root (invariant 2).
 pub fn opencode_config_dir(home: &Path) -> PathBuf {
     xdg_base(home, "XDG_CONFIG_HOME", ".config").join("opencode")
 }
@@ -612,11 +593,8 @@ fn has_bin_component(p: &Path) -> bool {
 /// resolved write path. Falls back to `p` unchanged if nothing resolves (e.g. a
 /// bogus path).
 ///
-/// Lives here — not in either engine — because both need it: seatbelt to emit a
-/// canonical SBPL allow entry for a non-default config dir, docker to compare a
-/// config/XDG dir against its default. It used to live in `seatbelt` and be
-/// imported *up* into `docker`, a cross-engine dependency pointing the wrong
-/// way; the shared policy module is its correct home.
+/// Seatbelt uses it to emit a canonical SBPL allow entry for a non-default
+/// config dir.
 pub fn resolve_existing_prefix(p: &Path) -> PathBuf {
     let mut cur = p.to_path_buf();
     let mut tail: Vec<std::ffi::OsString> = Vec::new();

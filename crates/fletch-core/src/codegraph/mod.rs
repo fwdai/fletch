@@ -2,14 +2,14 @@
 //! (<https://github.com/colbymchenry/codegraph>) so Fletch's sandboxed agents
 //! can query a repo's symbols and call graph over MCP instead of grepping files.
 //!
-//! **One shape for every engine that can run it.** The MCP server runs next to
+//! **One shape for every engine.** The MCP server runs next to
 //! the agent's checkout, inside the agent's sandbox, as a stdio child of the
 //! agent's CLI: it is what keeps the index in step with the agent's edits (its
 //! file watcher), so it has to live where those edits land. Only *which binary*
 //! differs, resolved per engine the way the agent CLI itself is
 //! ([`server_bin`]): a seatbelt agent runs on this host and execs the host's
 //! bundle; a box's guest runs the Linux build of the same release from its
-//! tools disk (`fletch_box::tools`). A container engine has neither.
+//! tools disk (`fletch_box::tools`).
 //!
 //! **Why the shape here.** The tool is a self-contained release bundle (vendored
 //! Node runtime) installed under `~/.fletch/tools/codegraph/` — deliberately
@@ -128,7 +128,7 @@ fn mcp_server_snapshot(command: String) -> McpServerSnapshot {
 
 /// Pure gate for MCP injection, factored out so the decision is testable
 /// without touching global state or the filesystem. Inject only when indexing
-/// is enabled, the engine can run codegraph at all, the binary is there for
+/// is enabled, the binary is there for
 /// this session's sandbox ([`server_bin`]), the provider can actually *receive*
 /// an MCP server, and no server named `"codegraph"` (case-insensitive) already
 /// exists — a user-defined one must never be shadowed, and its config key would
@@ -141,38 +141,28 @@ fn mcp_server_snapshot(command: String) -> McpServerSnapshot {
 /// (pi and antigravity have no MCP surface at all).
 fn should_inject(
     enabled: bool,
-    engine: EngineKind,
     binary_available: bool,
     can_receive_mcp: bool,
     existing_names: &[&str],
 ) -> bool {
-    wants_codegraph(enabled, engine, can_receive_mcp, existing_names) && binary_available
+    wants_codegraph(enabled, can_receive_mcp, existing_names) && binary_available
 }
 
 /// Everything that decides whether codegraph takes part in a session *except*
-/// whether the binary is there yet: indexing is on, the engine can run
-/// codegraph, the provider's CLI can actually receive an MCP server, and the
+/// whether the binary is there yet: indexing is on, the provider's CLI can
+/// actually receive an MCP server, and the
 /// session hasn't already defined its own `"codegraph"` (case-insensitive) that
 /// we must not shadow.
 ///
 /// Factored out because the injection gate and the index-provisioning gate need
-/// exactly these four and must never drift — a session that won't get the server
-/// must not pay to build an index, and vice versa. They differ on the fifth
+/// exactly these three and must never drift — a session that won't get the server
+/// must not pay to build an index, and vice versa. They differ on the fourth
 /// condition only: `should_inject` requires the binary to already be there,
 /// while provisioning is the code path that *installs* it (on the host) or runs
 /// before the box's disk carries it, so requiring it there would deadlock the
 /// first run.
-fn wants_codegraph(
-    enabled: bool,
-    engine: EngineKind,
-    can_receive_mcp: bool,
-    existing_names: &[&str],
-) -> bool {
-    // The server runs beside the checkout, inside the agent's sandbox: on this
-    // host for seatbelt, in the guest for a box. A container gets no build of
-    // it.
+fn wants_codegraph(enabled: bool, can_receive_mcp: bool, existing_names: &[&str]) -> bool {
     enabled
-        && engine.caps().runs_codegraph
         && can_receive_mcp
         && !existing_names
             .iter()
@@ -182,15 +172,10 @@ fn wants_codegraph(
 /// [`wants_codegraph`] resolved against live state, for the index-provisioning
 /// gate. `session_servers` is the session's own MCP snapshot — the same list
 /// `inject_mcp_server` checks for a user-defined `"codegraph"` collision.
-pub fn session_wants_codegraph(
-    engine: EngineKind,
-    provider: &str,
-    session_servers: &[McpServerSnapshot],
-) -> bool {
+pub fn session_wants_codegraph(provider: &str, session_servers: &[McpServerSnapshot]) -> bool {
     let names: Vec<&str> = session_servers.iter().map(|s| s.name.as_str()).collect();
     wants_codegraph(
         enabled(),
-        engine,
         crate::agent::mcp_delivery(provider).is_some(),
         &names,
     )
@@ -227,10 +212,10 @@ pub fn inject_mcp_server(
         let can_receive_mcp = crate::agent::mcp_delivery(provider).is_some();
         // Looked up only for a session that wants it: in a box that reads the
         // tools disks, whose names need the provider CLI's probed version.
-        let bin = wants_codegraph(enabled, engine, can_receive_mcp, &names)
+        let bin = wants_codegraph(enabled, can_receive_mcp, &names)
             .then(|| server_bin(engine, agent_id, provider))
             .flatten();
-        let allow = should_inject(enabled, engine, bin.is_some(), can_receive_mcp, &names);
+        let allow = should_inject(enabled, bin.is_some(), can_receive_mcp, &names);
         bin.filter(|_| allow).map(mcp_server_snapshot)
     };
     let codegraph_available = server.is_some();
@@ -255,43 +240,12 @@ mod tests {
 
     #[test]
     fn should_inject_happy_path() {
-        assert!(should_inject(
-            true,
-            EngineKind::SandboxExec,
-            true,
-            true,
-            &[]
-        ));
+        assert!(should_inject(true, true, true, &[]));
     }
 
     #[test]
     fn should_inject_requires_enabled() {
-        assert!(!should_inject(
-            false,
-            EngineKind::SandboxExec,
-            true,
-            true,
-            &[]
-        ));
-    }
-
-    #[test]
-    fn should_inject_skips_containers() {
-        // A container can't exec the host macOS binary and gets no other.
-        assert!(!should_inject(true, EngineKind::Docker, true, true, &[]));
-        assert!(!should_inject(true, EngineKind::Podman, true, true, &[]));
-    }
-
-    #[test]
-    fn a_box_takes_part_like_a_seatbelt_agent() {
-        // Same gate for both engines that run the server beside the checkout;
-        // only where the binary comes from differs (`server_bin`).
-        for engine in [EngineKind::SandboxExec, EngineKind::Box] {
-            assert!(wants_codegraph(true, engine, true, &[]), "{engine:?}");
-            assert!(should_inject(true, engine, true, true, &[]), "{engine:?}");
-            // A box whose tools disk doesn't carry it is told nothing.
-            assert!(!should_inject(true, engine, false, true, &[]), "{engine:?}");
-        }
+        assert!(!should_inject(false, true, true, &[]));
     }
 
     #[test]
@@ -299,9 +253,6 @@ mod tests {
         // A provider with no CLI to probe: the box branch reads tools disk
         // names, which carry the CLI's version.
         let provider = "no-such-provider";
-        // A container has no build of codegraph at all.
-        assert!(server_bin(EngineKind::Docker, "a", provider).is_none());
-        assert!(server_bin(EngineKind::Podman, "a", provider).is_none());
         // A seatbelt agent execs the host's install, if there is one.
         if let Some(bin) = server_bin(EngineKind::SandboxExec, "a", provider) {
             assert_eq!(PathBuf::from(bin), bin_path().unwrap());
@@ -323,13 +274,7 @@ mod tests {
 
     #[test]
     fn should_inject_requires_installed_binary() {
-        assert!(!should_inject(
-            true,
-            EngineKind::SandboxExec,
-            false,
-            true,
-            &[]
-        ));
+        assert!(!should_inject(true, false, true, &[]));
     }
 
     #[test]
@@ -337,13 +282,7 @@ mod tests {
         // pi and antigravity can't consume MCP at all, so a snapshot pushed at
         // them is dropped on the floor — don't index for them and don't tell
         // them the tool exists.
-        assert!(!should_inject(
-            true,
-            EngineKind::SandboxExec,
-            true,
-            false,
-            &[]
-        ));
+        assert!(!should_inject(true, true, false, &[]));
         for provider in ["pi", "antigravity"] {
             assert!(
                 crate::agent::mcp_delivery(provider).is_none(),
@@ -355,67 +294,37 @@ mod tests {
     #[test]
     fn should_inject_skips_user_defined_collision() {
         // Case-insensitive: a user-defined "CodeGraph" must not be shadowed.
-        assert!(!should_inject(
-            true,
-            EngineKind::SandboxExec,
-            true,
-            true,
-            &["github", "CodeGraph"]
-        ));
+        assert!(!should_inject(true, true, true, &["github", "CodeGraph"]));
     }
 
     #[test]
     fn provisioning_and_injection_agree_on_every_shared_condition() {
         // The index-provisioning gate must reject everything injection rejects,
         // or we pay for a mirror clone + parse the agent can never query. Both
-        // go through `wants_codegraph`, so this pins the four shared conditions
+        // go through `wants_codegraph`, so this pins the three shared conditions
         // rather than trusting two hand-written copies to stay in step.
         // A session that defines its own "codegraph" suppresses injection — and
         // so must suppress indexing. This is the case that shipped broken.
-        assert!(!wants_codegraph(
-            true,
-            EngineKind::SandboxExec,
-            true,
-            &["CodeGraph"]
-        ));
-        assert!(!should_inject(
-            true,
-            EngineKind::SandboxExec,
-            true,
-            true,
-            &["CodeGraph"]
-        ));
+        assert!(!wants_codegraph(true, true, &["CodeGraph"]));
+        assert!(!should_inject(true, true, true, &["CodeGraph"]));
 
-        // The other three shared conditions, same answer on both sides.
-        for (enabled, engine, can_mcp) in [
-            (false, EngineKind::SandboxExec, true),
-            (false, EngineKind::Box, true),
-            (true, EngineKind::Docker, true),
-            (true, EngineKind::Podman, true),
-            (true, EngineKind::SandboxExec, false),
-            (true, EngineKind::Box, false),
-        ] {
-            assert!(!wants_codegraph(enabled, engine, can_mcp, &[]));
-            assert!(!should_inject(enabled, engine, true, can_mcp, &[]));
+        // The other two shared conditions, same answer on both sides.
+        for (enabled, can_mcp) in [(false, true), (true, false)] {
+            assert!(!wants_codegraph(enabled, can_mcp, &[]));
+            assert!(!should_inject(enabled, true, can_mcp, &[]));
         }
 
-        // All four satisfied: both gates open (injection additionally needs the
+        // All three satisfied: both gates open (injection additionally needs the
         // binary, which provisioning installs itself).
-        assert!(wants_codegraph(true, EngineKind::SandboxExec, true, &[]));
+        assert!(wants_codegraph(true, true, &[]));
     }
 
     #[test]
     fn provisioning_does_not_require_an_installed_binary() {
         // The deliberate asymmetry: provisioning is the install path, so gating
         // it on `is_installed` would stop the first run from ever bootstrapping.
-        assert!(wants_codegraph(true, EngineKind::SandboxExec, true, &[]));
-        assert!(!should_inject(
-            true,
-            EngineKind::SandboxExec,
-            false,
-            true,
-            &[]
-        ));
+        assert!(wants_codegraph(true, true, &[]));
+        assert!(!should_inject(true, false, true, &[]));
     }
 
     #[test]

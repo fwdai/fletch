@@ -819,8 +819,8 @@ fn cleanup_nested_state_roots_in(base: &Path) {
 /// Whether a process with `pid` currently exists — a signal-0 `kill` probe.
 /// `Err` (ESRCH, or EPERM on a reused pid we don't own) is treated as gone,
 /// which only ever under-reclaims; a live Fletch we own always probes `Ok`.
-/// `pub(crate)` so the docker orphan sweep (`sandbox/docker/cleanup.rs`) can
-/// share the exact liveness semantics instead of duplicating them.
+/// `pub(crate)` so the box registry's sweep can share the exact liveness
+/// semantics instead of duplicating them.
 #[cfg(unix)]
 pub(crate) fn pid_alive(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
@@ -926,7 +926,7 @@ pub fn build_profile(
 
     // Claude's config dir is NOT granted whole (its `settings.json` defines
     // host-executed hooks, and it holds `plugins`/`skills`/`CLAUDE.md`/MCP
-    // config — the config-poisoning surface Docker's invariant 5 closes). Only
+    // config — the config-poisoning surface). Only
     // the writable *islands* beneath it ([`policy::claude_write_island_dirs`])
     // plus the `.credentials.json` file are granted. The default `~/.claude`
     // islands flow through the policy state-dir list (`policy_dirs` below); its
@@ -947,9 +947,7 @@ pub fn build_profile(
     // itself a symlink and the config dir points at its resolved target,
     // resolving the leaf here too would treat it as default and drop the grant,
     // yet the literal state-dir rule's islands wouldn't cover the target,
-    // denying claude's writes. (Docker can resolve both sides because its
-    // `~/.claude` bind mount follows the symlink source; the SBPL allow-list
-    // can't.) The `~/.claude.json` top-level state *file* stays a seatbelt-local
+    // denying claude's writes. The `~/.claude.json` top-level state *file* stays a seatbelt-local
     // literal grant: it's a file, not a dir, so the dir-oriented policy API
     // doesn't model it (see the policy module doc).
     // The relocated claude dir this launch grants, resolved — `None` for the
@@ -4557,7 +4555,7 @@ mod tests {
             project_id: PROJECT,
             provider: "claude",
             writable_root: &root,
-            // Seatbelt ignores source_repos (host-shared filesystem, no mounts).
+            // No source repo in a privacy-guarded folder to read back.
             source_repos: &[],
             rpc_dir: &rpc,
             cwd: &root,

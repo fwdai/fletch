@@ -6,7 +6,7 @@ use std::path::Path;
 use Keying::{PerPlatform, Shared};
 
 /// Whether a row's contents differ per platform. A macOS agent and a Linux
-/// container of one project share the root, so a per-platform row lands in a
+/// guest of one project share the root, so a per-platform row lands in a
 /// [`BoxPlatform::key`] subdir of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Keying {
@@ -134,7 +134,7 @@ impl BoxPlatform {
         }
     }
 
-    /// A Linux container, which runs on the host's CPU.
+    /// A Linux guest, which runs on the host's CPU.
     pub fn linux() -> Self {
         Self {
             os: "linux",
@@ -181,7 +181,7 @@ mod tests {
     }
 
     /// A per-platform row (Playwright) must diverge between a macOS agent and a
-    /// Linux container while every shared row stays shared; otherwise the Linux
+    /// Linux guest while every shared row stays shared; otherwise the Linux
     /// box trusts the Mac's install marker.
     #[test]
     fn per_platform_rows_split_host_and_linux_and_nothing_else() {

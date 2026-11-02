@@ -162,8 +162,8 @@ mod tests {
     use crate::workspace::Anchor;
 
     /// Workspace `id` of `provider`, working in `<td>/<id>/repo`, continuing
-    /// `lineage`. In a container sandbox, so its claude transcripts are in the
-    /// per-agent projects dir beside the checkout.
+    /// `lineage`. On seatbelt, so its claude transcripts are in claude's own
+    /// projects dir, under the checkout's path.
     fn agent(
         sup: &Supervisor,
         td: &Path,
@@ -175,7 +175,6 @@ mod tests {
         std::fs::create_dir_all(checkout.join(".git")).unwrap();
         let mut record = record_in_checkouts(sup, id, &[checkout]);
         record.provider = provider.into();
-        record.sandbox_engine = Some("docker".into());
         record.lineage = lineage;
         sup.workspace.add_agent(&mut record).unwrap();
     }
@@ -308,7 +307,9 @@ mod tests {
         );
         let session = andes.session_id.clone().unwrap();
         assert!(written.iter().all(|l| l["sessionId"] == session.as_str()));
-        assert_eq!(written[1]["cwd"], cwd.to_string_lossy().as_ref());
+        // Claude goes by its directory as the OS reports it, symlinks resolved.
+        let run_dir = std::fs::canonicalize(&cwd).unwrap();
+        assert_eq!(written[1]["cwd"], run_dir.to_string_lossy().as_ref());
         assert_eq!(sup.workspace.session_transcript_prefix("andes").unwrap(), 3);
         assert!(crate::agent::claude_session_has_messages(&session, &cwd));
         assert_eq!(

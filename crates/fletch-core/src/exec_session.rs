@@ -368,18 +368,12 @@ impl ExecSession {
         let turn_seq = self.turn_seq.clone();
         let on_exit = self.on_exit.clone();
         let interrupted = self.interrupted.clone();
-        let kill_plan = self.kill_plan.clone();
         child_io::spawn_reaper(slot, "agent", move |status| {
             let interrupted = interrupted.load(Ordering::SeqCst);
             let exit = match status {
                 Ok(status) => {
                     let stderr = drain_stderr(&stderr_rx).join("\n");
-                    // The engine may reserve launcher exit codes with a clearer
-                    // meaning than the raw status (docker CLI 125/126/127).
-                    let base = status
-                        .code()
-                        .and_then(|c| kill_plan.describe_exit(c))
-                        .unwrap_or_else(|| status.to_string());
+                    let base = status.to_string();
                     ExecExit {
                         success: status.success(),
                         interrupted,
@@ -434,8 +428,8 @@ impl ExecSession {
     pub fn kill(&self) -> Result<()> {
         // Tear the engine down first, but never let a failed teardown strand the
         // local wrapper process: reap the child unconditionally, then surface the
-        // engine error. Otherwise a Docker-backed session whose container kill
-        // errors would leave the host-side wrapper running.
+        // engine error. Otherwise a session whose engine teardown errors would
+        // leave the host-side wrapper running.
         let engine_result = self.kill_plan.kill();
         if let Some(current) = self.child.lock().take() {
             current.kill_and_reap("agent");

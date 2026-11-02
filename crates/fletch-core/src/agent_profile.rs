@@ -9,8 +9,9 @@
 //! instruction text — riding the same per-provider delivery `instructions.rs`
 //! already implements. The agent reads a skill file when the task matches
 //! (progressive disclosure), so the per-turn token cost is one line per skill.
-//! The writable root is bind-mounted at its host path under docker (path
-//! identity), so the index paths are valid in both sandbox engines.
+//! The writable root sits at its host path under every engine (a box's guest
+//! uses the host's paths), so the index paths are valid wherever the agent
+//! runs.
 //!
 //! **MCP servers** are delivered per provider, but through one shared shape:
 //! every provider that has an MCP surface implements an [`McpDeliveryBuilder`]
@@ -104,8 +105,8 @@ pub struct McpTarget<'a> {
     /// The session's servers, resolved by value at spawn.
     pub servers: &'a [McpServerSnapshot],
     /// Sandbox writable root. Fletch-owned artifacts go under
-    /// `<sandbox_root>/.fletch-profile/`, which is bind-mounted at its host
-    /// path under docker, so a path written here is valid in both engines.
+    /// `<sandbox_root>/.fletch-profile/`, which sits at its host path under
+    /// every engine, so a path written here is valid wherever the agent runs.
     pub sandbox_root: &'a Path,
 }
 

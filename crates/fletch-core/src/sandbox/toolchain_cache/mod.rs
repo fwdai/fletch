@@ -13,8 +13,7 @@
 //! Redirecting inverts both problems. The sandbox grants exactly one path, and
 //! adding a toolchain is a row in [`vars`] with no policy change; invariant 1
 //! stops applying rather than needing to be checked, since Fletch owns this
-//! layout and it is never on the user's PATH. A container binds the same root
-//! at its host path, so the engines share one warm cache. A box points the
+//! layout and it is never on the user's PATH. A box points the
 //! same variables at the same path inside its guest, a directory on the
 //! guest's own disk with no cargo overlay (`boxes::guest_toolchain_cache`).
 //!
@@ -25,7 +24,7 @@
 //! A root shared across projects let an agent of project A plant code that
 //! project B's Run command then executed under the looser Run profile, with
 //! B's shared `.env`. Keyed by project, the trust domain, no other project can
-//! write what this one executes: every profile and container mount names the
+//! write what this one executes: every profile names the
 //! project's own root, never [`toolchain_cache_dir`]. Within a project the
 //! agents and the Run panel share the root on purpose: one warm cache, and
 //! pnpm's store still dedupes across the project's many workspaces. That
@@ -45,7 +44,7 @@
 //! segment is appended to an overridden base too, so neither path can bypass
 //! the split.
 //!
-//! **What is platform-keyed.** A macOS agent and a Linux container of one
+//! **What is platform-keyed.** A macOS agent and a Linux guest of one
 //! project share the root, so the rows whose contents differ per platform land
 //! in a [`BoxPlatform::key`] subdir ([`vars`] says which and why), and so does
 //! the cargo overlay ([`super::cargo_home`]).
@@ -136,7 +135,7 @@ pub struct ToolchainCache {
 /// returned root, so the env and the grant can't name two different paths.
 /// `cwd` is where the child's commands run (the agent's checkout, the Run
 /// target); `platform` is what it runs on, [`BoxPlatform::host`] for seatbelt
-/// and [`BoxPlatform::linux`] for a container.
+/// and [`BoxPlatform::linux`] for a Linux guest.
 ///
 /// Creating the root is part of the launch, on every engine: a seatbelt grant
 /// of `(subpath <root>)` lets a tool create the root but not its parent, and a

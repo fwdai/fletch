@@ -252,7 +252,7 @@ pub fn existing_account_dir(provider: &str, account: Option<&str>) -> Result<Opt
 /// a launch under a managed account removes them from the child's env: the
 /// CLI must authenticate with that account's own login or not at all. Proxy
 /// endpoint vars (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`) are not here and
-/// still pass through. The container auth chain filters the same claude set.
+/// still pass through. The box's auth chain filters the same claude set.
 pub fn ambient_credential_vars(provider: &str) -> &'static [&'static str] {
     match provider {
         "claude" => &[
@@ -298,8 +298,7 @@ pub fn ensure_account_dir(provider: &str, id: &str) -> Result<PathBuf> {
 }
 
 /// A fresh claude config dir has no `.claude.json`, so claude would open its
-/// first-run onboarding (the theme pick) in the agent's terminal — and in a
-/// container, where the account dir is mounted read-only, on every launch.
+/// first-run onboarding (the theme pick) in the agent's terminal.
 /// Seed the one flag that skips it, plus the theme the user already chose,
 /// when the file is absent. Nothing else is copied: the identity and OAuth
 /// account live in that file too, and they are exactly what differs per

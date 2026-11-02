@@ -113,9 +113,7 @@ impl ManagedSession {
         // `Command::spawn` reports a missing program and a missing working
         // directory identically as ENOENT ("No such file or directory (os
         // error 2)"), which is impossible to act on. Check both up front and
-        // name the broken precondition instead. For docker agents `cwd` is the
-        // freshly-cloned workspace, so a missing one means provisioning didn't
-        // leave it where the launch expects — not a docker problem at all.
+        // name the broken precondition instead.
         if spec.program.is_absolute() && !spec.program.exists() {
             return Err(Error::Other(format!(
                 "managed spawn: program not found at {}",
@@ -179,18 +177,11 @@ impl ManagedSession {
 
         child_io::spawn_stderr_reader(stderr, "managed", |_| {});
 
-        let kill_plan_for_exit = spec.kill_plan.clone();
         child_io::spawn_reaper(child_arc.clone(), "managed", move |status| {
             let exit = match status {
                 Ok(status) => ManagedExit {
                     success: status.success(),
-                    // The engine may reserve launcher exit codes with a clearer
-                    // meaning than the raw status (docker CLI 125/126/127 —
-                    // daemon/image failures); otherwise report the status as-is.
-                    message: status
-                        .code()
-                        .and_then(|c| kill_plan_for_exit.describe_exit(c))
-                        .unwrap_or_else(|| format!("{status}")),
+                    message: format!("{status}"),
                 },
                 Err(e) => ManagedExit {
                     success: false,
@@ -286,7 +277,7 @@ impl ManagedSession {
     pub fn kill(&self) -> Result<()> {
         // Tear the sandbox down first, but never let a failed engine teardown
         // skip reaping the local child / closing stdin (see exec_session): an
-        // errored container kill must not strand the host-side wrapper.
+        // errored engine teardown must not strand the host-side wrapper.
         let engine_result = self.kill_plan.kill();
         // Kill+reap the child *before* touching stdin. A wedged writer holding
         // the stdin mutex would otherwise stall teardown here — and the child

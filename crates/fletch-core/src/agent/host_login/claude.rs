@@ -1,6 +1,6 @@
 //! The host owns every claude login. A sandboxed claude can't refresh its own
 //! OAuth token (the refresh needs lock files and a Keychain write the sandbox
-//! denies, and a container has no Keychain at all), and it must never hold the
+//! denies, and a box has no Keychain at all), and it must never hold the
 //! long-lived refresh token anyway. So the app reads each account's stored
 //! login, refreshes it when it is about to lapse, writes the rotated pair back
 //! where claude keeps it, and hands the agent only the short-lived access
@@ -181,8 +181,8 @@ async fn credential(account_dir: Option<&Path>, demand: Demand) -> Result<Access
 /// account without a usable login fails the launch: running it under any
 /// other credential would be running it as someone else. The default account
 /// degrades to no token only when something else can sign the launch in — an
-/// auth var in the user's shell, or for a `containerized` launch the stored
-/// setup-token the container chain forwards. Otherwise it fails with the
+/// auth var in the user's shell, or for a `containerized` (box) launch the
+/// stored setup-token the auth chain forwards. Otherwise it fails with the
 /// reason: every sandbox closes the Keychain and the credential files to the
 /// agent, so a claude launched with nothing would only end each turn on its
 /// own "Not logged in · Please run /login", which the user can't act on from

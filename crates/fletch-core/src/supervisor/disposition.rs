@@ -69,7 +69,6 @@ impl Supervisor {
         crate::capture::extract::on_archive(ctx.clone(), agent_id.to_string());
 
         self.detach_runtime(agent_id);
-        sandbox::reap_agent_containers(agent_id, Some(stamped_engine(&record)), "archive");
 
         // Snapshot SHAs + diff stats before any destructive step, then tear
         // down the checkouts/branches (best-effort — a single git failure
@@ -290,13 +289,12 @@ impl Supervisor {
             };
 
             // Warm the codegraph index for the restored checkout too (best-effort;
-            // no-op when indexing is off or under a container engine).
+            // no-op when indexing is off).
             provision_codegraph_index(
                 record.project_id.clone(),
                 snap.repo_path.clone(),
                 checkout.clone(),
                 Some(tip_sha.to_string()),
-                engine,
                 &record.provider,
                 &record.mcp_servers,
             )
@@ -352,7 +350,6 @@ impl Supervisor {
         let repos = record.as_ref().map(|r| r.repos.clone()).unwrap_or_default();
 
         self.detach_runtime(agent_id);
-        sandbox::reap_agent_containers(agent_id, record.as_ref().map(stamped_engine), "discard");
         // Discard deletes the row, so there is nowhere to record failures;
         // the helper has already logged them.
         let _ = teardown_agent_checkouts(agent_id, &repos, "discard").await;

@@ -638,7 +638,7 @@ mod tests {
         "git_dist.rs",
         "exec.rs",
         // The agent launcher itself: the cwd is the sandbox engine's program's
-        // (`sandbox-exec`, `docker`, or `ssh` for a box), not a host git.
+        // (`sandbox-exec`, or `ssh` for a box), not a host git.
         "managed_session.rs",
         "exec_session.rs",
         // A provider CLI run for a one-shot handoff summary; a box would run

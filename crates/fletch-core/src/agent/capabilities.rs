@@ -88,8 +88,7 @@ pub struct PerTurnDescriptor {
 }
 
 impl PerTurnDescriptor {
-    /// Human-facing product name, for error copy (e.g. the docker-sandbox
-    /// refusal in `supervisor::lifecycle`).
+    /// Human-facing product name, for error copy.
     pub fn label(&self) -> &'static str {
         self.label
     }

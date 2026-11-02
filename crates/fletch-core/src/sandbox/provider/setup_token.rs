@@ -1,7 +1,7 @@
 //! Automated `claude setup-token` capture (the auto path for [`super::auth`]).
 //!
 //! Manually running `claude setup-token` and pasting the `sk-ant-oat…` output
-//! into settings is the main "it doesn't just work" gap for docker agents. This
+//! into settings is the main "it doesn't just work" gap for box agents. This
 //! module drives that flow for the user: it spawns `claude setup-token` under a
 //! PTY, surfaces the consent URL, relays the CLI's auth-code prompt to the UI,
 //! writes the code the user pastes back, and captures the emitted token — no

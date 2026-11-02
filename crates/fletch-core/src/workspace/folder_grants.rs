@@ -1,8 +1,7 @@
 //! Folders on the user's machine granted to one workspace's agent: the user
 //! @-mentions or drops a folder in the composer, and every sandbox engine
 //! exposes it to that agent live, at its own path — read-only unless the user
-//! made it writable. Seatbelt re-allows it in the profile, a container binds
-//! it, a box mounts it as a virtiofs share (`AgentLaunchCtx::folder_grants`).
+//! made it writable. Seatbelt re-allows it in the profile, a box mounts it as a virtiofs share (`AgentLaunchCtx::folder_grants`).
 //!
 //! A grant widens a sandbox on purpose, so [`check`] runs on the host before
 //! one is stored, and refuses the folders no single grant should expose:
@@ -184,7 +183,7 @@ pub async fn check_all(grants: Vec<FolderGrant>, engine: EngineKind) -> Result<V
 /// folders macOS guards with a privacy prompt, so a read-only grant elsewhere
 /// adds no rule to the profile: granting it takes effect at once (the agent
 /// could read it before) and revoking it takes nothing away. Every grant is a
-/// container mount or a box share. `home` is canonical, as the profile's is.
+/// box share. `home` is canonical, as the profile's is.
 pub fn launch_relevant(
     engine: EngineKind,
     grants: &[FolderGrant],
@@ -207,8 +206,7 @@ pub fn launch_relevant(
 
 /// The grants a launch applies: those whose folder is still there. A folder
 /// deleted or moved since it was granted would otherwise fail every launch —
-/// a container refuses a bind with no source, a box a share with no directory
-/// — so it is skipped (and logged) until the user grants it again or takes it
+/// a box refuses a share with no directory — so it is skipped (and logged) until the user grants it again or takes it
 /// back; the stored grant is left as it is.
 pub fn present(grants: &[FolderGrant]) -> Vec<FolderGrant> {
     grants
@@ -436,10 +434,6 @@ mod tests {
                 refused("/Users/u/Projects/app", writable, EngineKind::Box),
                 None
             );
-            assert_eq!(
-                refused("/Users/u/Documents/specs", writable, EngineKind::Docker),
-                None
-            );
         }
     }
 
@@ -523,7 +517,7 @@ mod tests {
 
     /// Under seatbelt only a writable grant or one inside a privacy-guarded
     /// folder changes the profile, so only those relaunch the agent; every
-    /// grant changes a container's or a box's launch.
+    /// grant changes a box's launch.
     #[test]
     fn only_grants_the_launch_sees_need_a_relaunch() {
         let home = Path::new(HOME);
@@ -533,9 +527,10 @@ mod tests {
         };
         let readable_anyway = [grant("/Users/u/Projects/lib", false)];
         assert!(launch_relevant(EngineKind::SandboxExec, &readable_anyway, home).is_empty());
-        for engine in [EngineKind::Docker, EngineKind::Podman, EngineKind::Box] {
-            assert_eq!(launch_relevant(engine, &readable_anyway, home).len(), 1);
-        }
+        assert_eq!(
+            launch_relevant(EngineKind::Box, &readable_anyway, home).len(),
+            1
+        );
         let guarded = [
             grant("/Users/u/Projects/out", true),
             grant("/Users/u/Documents/specs", false),

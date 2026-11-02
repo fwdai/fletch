@@ -319,8 +319,8 @@ mod tests {
     const AGENT: &str = "denali";
 
     /// Workspace `id` of `provider`, working in `checkout`, continuing
-    /// `lineage`. In a container sandbox, so a claude transcript written for
-    /// it goes to the per-agent projects dir beside the checkout.
+    /// `lineage`. On seatbelt, so a claude transcript written for it goes to
+    /// claude's own projects dir.
     fn agent(
         sup: &Supervisor,
         id: &str,
@@ -331,7 +331,6 @@ mod tests {
         let mut record = record_in_checkouts(sup, id, &[checkout.to_path_buf()]);
         record.provider = provider.into();
         record.lineage = lineage;
-        record.sandbox_engine = Some("docker".into());
         sup.workspace.add_agent(&mut record).unwrap();
     }
 
@@ -609,13 +608,15 @@ mod tests {
     }
 
     /// `denali`'s current session's transcript file, where claude looks for
-    /// it from the checkout: the container's per-agent projects dir.
+    /// it from the checkout.
     fn transcript_file(sup: &Supervisor, td: &Path) -> PathBuf {
         let record = sup.workspace.agent(AGENT).unwrap();
-        let checkout = td.join(AGENT);
-        td.join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME)
-            .join(crate::transcripts::claude_project_dirname(&checkout).unwrap())
-            .join(format!("{}.jsonl", record.session_id.unwrap()))
+        crate::transcripts::find_session_jsonl(
+            &record.session_id.unwrap(),
+            &td.join(AGENT),
+            &mut crate::agent::ReadDiagnostics::default(),
+        )
+        .expect("the session's transcript is where claude looks")
     }
 
     fn append_lines(path: &Path, lines: &[Value]) {
@@ -717,31 +718,6 @@ mod tests {
         );
         let turns = sup.workspace.read_history_turns(AGENT).unwrap();
         assert_eq!(turns.last().unwrap().native_id.as_deref(), Some("n1-u"));
-    }
-
-    /// A rewind whose history can't be written changes nothing.
-    #[tokio::test]
-    async fn a_history_that_cant_be_written_leaves_the_conversation_as_it_was() {
-        let td = tempfile::tempdir().unwrap();
-        let (sup, _) = talked(td.path()).await;
-        let (ctx, sink, _dir) = test_ctx();
-        let record = sup.workspace.agent(AGENT).unwrap();
-        // Something already sits where the projects dir goes.
-        std::fs::write(
-            td.path()
-                .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME),
-            "",
-        )
-        .unwrap();
-
-        let plan = plan(&sup, AGENT, "t2", None);
-        assert!(sup.rewind_conversation(&ctx, &record, plan).await.is_err());
-
-        assert_eq!(
-            sup.workspace.agent(AGENT).unwrap().session_id,
-            record.session_id
-        );
-        assert!(sink.events().is_empty());
     }
 
     #[tokio::test]

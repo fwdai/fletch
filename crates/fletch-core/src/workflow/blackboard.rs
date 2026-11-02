@@ -23,8 +23,8 @@
 //! (spec §8.4 — prompt-enforced ownership, this is the detector).
 //!
 //! The sandbox *grant* that makes the blackboard writable from inside a step
-//! agent is plumbed separately through [`crate::sandbox`] (seatbelt subpath /
-//! Docker bind mount + the [`WF_BLACKBOARD_ENV`] env var); this module only
+//! agent is plumbed separately through [`crate::sandbox`] (seatbelt subpath +
+//! the [`WF_BLACKBOARD_ENV`] env var); this module only
 //! computes the paths.
 
 use std::path::{Path, PathBuf};
@@ -34,9 +34,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Env var naming the blackboard directory inside a step agent's environment.
-/// Both sandbox engines set it to the path the agent should read/write (the
-/// same host path under either engine — Docker bind-mounts the blackboard at
-/// its identical host path, mirroring the RPC mailbox mount). The step-protocol
+/// Seatbelt sets it to the path the agent should read/write (a workflow step
+/// never runs in a box). The step-protocol
 /// prompt (S4) points the agent at `$WF_BLACKBOARD`.
 pub const WF_BLACKBOARD_ENV: &str = "WF_BLACKBOARD";
 

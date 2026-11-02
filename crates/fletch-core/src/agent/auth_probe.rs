@@ -14,7 +14,7 @@
 //! [`ProviderAuthProbe`] — `detail` is always one of the `&'static str` reasons
 //! in this file.
 //!
-//! The layouts are the ones the container launch path already depends on (see
+//! The layouts are the ones the box launch path already depends on (see
 //! [`crate::sandbox::provider::auth`]), so the two can't drift. Where a
 //! layout isn't knowable from a cheap check we return [`AuthStatus::Unknown`]
 //! rather than guess: a wrong "Not signed in" sends the user chasing a login
@@ -146,9 +146,9 @@ fn probe_one(id: &'static str) -> ProviderAuthProbe {
 
 // ── Per-provider probes ───────────────────────────────────────────────────────
 
-/// claude reuses the host half of the container auth chain (Keychain login,
+/// claude reuses the host half of the box's auth chain (Keychain login,
 /// `~/.claude/.credentials.json`, or an Anthropic key in the login shell). The
-/// container-only pasted setup token is excluded there, and the Keychain step is
+/// box-only pasted setup token is excluded there, and the Keychain step is
 /// a presence check that never reads the credential — see
 /// [`crate::sandbox::provider::auth::host_login_present`].
 fn claude_probe() -> ProviderAuthProbe {
@@ -210,7 +210,7 @@ fn opencode_probe(home: &Path) -> ProviderAuthProbe {
 }
 
 /// pi writes one provider-keyed credential map at `~/.pi/agent/auth.json` — the
-/// same file the container launch path treats as its login.
+/// same file the box launch path treats as its login.
 fn pi_probe(home: &Path) -> ProviderAuthProbe {
     let auth = read_file(&home.join(".pi/agent/auth.json"));
     detailed(
@@ -223,7 +223,7 @@ fn pi_probe(home: &Path) -> ProviderAuthProbe {
 /// `cursor-agent login` stores its tokens in the OS keychain, not on disk
 /// (`~/.cursor` carries only identity metadata) — so on macOS we check for the
 /// Keychain item's *presence*, and elsewhere we can't tell. `CURSOR_API_KEY`
-/// is the keyless alternative, same as the container path uses.
+/// is the keyless alternative, same as the box path uses.
 fn cursor_probe() -> ProviderAuthProbe {
     if env_key_present("CURSOR_API_KEY") {
         return entry_ok("cursor");
@@ -349,7 +349,7 @@ fn non_empty_file(path: &Path) -> bool {
 }
 
 /// Whether `var` is set non-blank in the app's process env or the user's login
-/// shell — the same two sources the container auth chain consults, so a key that
+/// shell — the same two sources the box's auth chain consults, so a key that
 /// only exists in `~/.zshrc` still counts. The value is tested for emptiness and
 /// dropped; it is never returned or logged.
 pub(crate) fn env_key_present(var: &str) -> bool {

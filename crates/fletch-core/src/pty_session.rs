@@ -4,7 +4,7 @@
 //! full interactive terminal (readline, ANSI colors, resize, ^C, etc.).
 
 use parking_lot::Mutex;
-use portable_pty::{ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize};
+use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
@@ -114,8 +114,8 @@ impl PtySession {
         cmd.env("COLORTERM", "truecolor");
         // Removals strip the inherited and login-shell layers above — exactly
         // where an ambient credential comes from — and go before the caller's
-        // own env, so a value the launch plan set on purpose (a container
-        // engine's resolved account token) survives a removal of the same name.
+        // own env, so a value the launch plan set on purpose (a resolved
+        // account token) survives a removal of the same name.
         for k in spec.env_remove {
             cmd.env_remove(k);
         }
@@ -180,7 +180,6 @@ impl PtySession {
         });
         thread::spawn(move || coalesce_output(rx, on_output));
 
-        let kill_plan_for_exit = spec.kill_plan.clone();
         let after_exit = spec.after_exit.clone();
         thread::spawn(move || match child.wait() {
             Ok(status) => {
@@ -189,7 +188,10 @@ impl PtySession {
                         tracing::warn!(error = %e, "after-exit step failed");
                     }
                 }
-                let exit = exit_from_status(status, &kill_plan_for_exit);
+                let exit = PtyExit {
+                    success: status.success(),
+                    message: status.to_string(),
+                };
                 tracing::info!(
                     success = exit.success,
                     message = %exit.message,
@@ -409,19 +411,6 @@ fn coalesce_output<F: Fn(Vec<u8>)>(rx: mpsc::Receiver<Vec<u8>>, on_output: F) {
     }
 }
 
-/// Build the exit outcome, letting the sandbox engine translate launcher exit
-/// codes it reserves (docker CLI 125/126/127 — daemon/image failures) into
-/// user-readable messages; anything else reports the raw status.
-fn exit_from_status(status: ExitStatus, kill_plan: &KillHandle) -> PtyExit {
-    let message = kill_plan
-        .describe_exit(status.exit_code() as i32)
-        .unwrap_or_else(|| status.to_string());
-    PtyExit {
-        success: status.success(),
-        message,
-    }
-}
-
 impl Drop for PtySession {
     fn drop(&mut self) {
         let _ = self.kill();
@@ -516,8 +505,8 @@ mod tests {
     }
 
     /// A removal only strips what the child would have inherited: a value the
-    /// caller sets explicitly under the same name — a container launch plan's
-    /// resolved account token — reaches the child.
+    /// caller sets explicitly under the same name — a launch plan's resolved
+    /// account token — reaches the child.
     #[test]
     fn env_remove_leaves_a_callers_own_value() {
         let td = tempfile::tempdir().unwrap();

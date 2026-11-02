@@ -293,7 +293,8 @@ async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
 /// A project pinned to boxes must not make providers boxes cannot run
 /// unsendable: they are stamped seatbelt. A provider boxes run — one with a
 /// guest-home adapter and a tools-disk script — lands in a box once one can
-/// boot, and a headless host's container engine wins outright.
+/// boot.
+#[cfg(target_os = "macos")]
 #[test]
 fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
     use crate::sandbox::placement::Placement;
@@ -301,19 +302,32 @@ fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
     for supported in ["claude", "codex", "cursor", "opencode", "pi"] {
         assert!(super::supports_provider(supported), "{supported}");
         assert_eq!(
-            super::engine_for_new_agent_with(None, supported, Placement::Auto, || true),
+            super::engine_for_new_agent_with(supported, Placement::Auto, || true),
             EngineKind::Box
         );
     }
     assert!(!super::supports_provider("antigravity"));
     assert_eq!(
-        super::engine_for_new_agent_with(None, "antigravity", Placement::Box, || false),
+        super::engine_for_new_agent_with("antigravity", Placement::Box, || false),
         EngineKind::SandboxExec
     );
-    assert_eq!(
-        super::engine_for_new_agent(Some(EngineKind::Docker), "antigravity", Placement::Auto),
-        EngineKind::Docker
-    );
+}
+
+/// Off macOS there is no seatbelt: every new agent is a box, whatever the
+/// placement and whether one can boot right now.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn off_macos_every_new_agent_is_a_box() {
+    use crate::sandbox::placement::Placement;
+    use crate::sandbox::EngineKind;
+    for placement in [Placement::Auto, Placement::Host, Placement::Box] {
+        for ready in [true, false] {
+            assert_eq!(
+                super::engine_for_new_agent_with("claude", placement, || ready),
+                EngineKind::Box
+            );
+        }
+    }
 }
 
 /// A box launch's env file points every toolchain into the project's cache

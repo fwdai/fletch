@@ -9,7 +9,7 @@
 //!
 //! The login is whichever of `auth.json` (legacy) and `opencode.db` (the
 //! accounts database) the user's data dir holds, shipped to the guest's data
-//! dir before every launch and turn, as the container engines mount it; a
+//! dir before every launch and turn; a
 //! provider API key from the login shell does as well. The session blobs are
 //! whole files opencode rewrites as a turn proceeds, so the relay's
 //! append-only tail cannot carry them: the host pulls the store instead
@@ -78,8 +78,7 @@ impl ProviderHome for OpenCode {
 
     /// The login files the user's data dir (wherever their `XDG_DATA_HOME`
     /// puts it) holds, for the guest's data dir, and every provider API key
-    /// the login shell exports; one of the two is required, as for a
-    /// container.
+    /// the login shell exports; one of the two is required.
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
         credential_from(
             ctx.home,

@@ -358,7 +358,7 @@ pub const EVENT_POLICY: &str = "box:policy";
 static SINK: OnceLock<Sink> = OnceLock::new();
 
 /// Where the engine's `box:*` events go. Installed once at boot, like the
-/// container build sink: the registry emits from paths with no ctx.
+/// other host sinks: the registry emits from paths with no ctx.
 pub fn set_event_sink(sink: Sink) {
     if SINK.set(sink).is_err() {
         tracing::warn!("box event sink already set");
@@ -462,8 +462,8 @@ struct PendingLaunch {
     credentials: Arc<Mutex<home::CredentialSync>>,
 }
 
-/// `EngineKind::Box`. One instance per process ([`BoxEngine::shared`]), like
-/// the container engines; launches park an `Arc` of it in their `KillHandle`.
+/// `EngineKind::Box`. One instance per process ([`BoxEngine::shared`]);
+/// launches park an `Arc` of it in their `KillHandle`.
 pub struct BoxEngine {
     pending: Mutex<std::collections::HashMap<String, PendingLaunch>>,
 }
@@ -536,34 +536,33 @@ pub fn asleep_for_path(path: &Path) -> bool {
 }
 
 /// The engine a new agent of `provider` is stamped with, from the project's
-/// placement (and `container`, the container engine a headless host off
-/// macOS pins at boot, `sandbox::container_override`, which wins outright).
+/// placement.
 ///
-/// The project's placement decides first — a project that runs on this Mac
+/// Off macOS there is no seatbelt, so the box is the only engine: every new
+/// agent is a box, its launch waiting for the image as a box-pinned
+/// project's does (a Host placement means nothing there), and a machine that
+/// cannot boot one refuses the spawn with why ([`availability`]).
+///
+/// On macOS the project's placement decides first — a project that runs on this Mac
 /// (a macOS or iOS app, or the user's say-so) is seatbelt — then a box when
 /// one can boot right now ([`ready_for`]) and seatbelt otherwise, so the
 /// first workspace of a fresh install starts at once and the ones after the
 /// download land in boxes. A project pinned to boxes on a machine that can
 /// boot one waits at launch for an image still on its way (`setup::ready`).
-pub fn engine_for_new_agent(
-    container: Option<EngineKind>,
-    provider: &str,
-    placement: Placement,
-) -> EngineKind {
-    engine_for_new_agent_with(container, provider, placement, || ready_for(provider))
+pub fn engine_for_new_agent(provider: &str, placement: Placement) -> EngineKind {
+    engine_for_new_agent_with(provider, placement, || ready_for(provider))
 }
 
 /// [`engine_for_new_agent`] with [`ready_for`] supplied by a caller that has
 /// already answered part of it, so the runtime is probed once (asked only
 /// when automatic gets that far).
 pub fn engine_for_new_agent_with(
-    container: Option<EngineKind>,
     provider: &str,
     placement: Placement,
     ready: impl Fn() -> bool,
 ) -> EngineKind {
-    if let Some(kind) = container {
-        return kind;
+    if cfg!(not(target_os = "macos")) {
+        return EngineKind::Box;
     }
     match placement {
         Placement::Host => EngineKind::SandboxExec,
@@ -1422,10 +1421,7 @@ impl SandboxEngine for BoxEngine {
         let KillPlan::Box {
             agent_id,
             launch_id,
-        } = plan
-        else {
-            return Ok(());
-        };
+        } = plan;
         self.pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())

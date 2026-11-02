@@ -15,8 +15,8 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::host::EngineCtx;
 use crate::rpc;
+use crate::sandbox;
 use crate::sandbox::provision::{self, CheckoutSpec};
-use crate::sandbox::{self, EngineKind};
 use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir,
     folder_grants::{FolderGranted, FolderGrantsUpdate},
@@ -51,8 +51,7 @@ fn active_account(ctx: &EngineCtx, provider: &str) -> Option<String> {
 }
 
 /// Wire codegraph indexing into a freshly-provisioned checkout — best-effort and
-/// never fatal to a spawn. Skipped entirely when indexing is off or the engine
-/// is Docker (a container can't exec the host binary).
+/// never fatal to a spawn. Skipped entirely when indexing is off.
 ///
 /// The cheap, synchronous part runs inline before the agent starts: register
 /// the `.git/info/exclude` entry, and — if the repo's mirror already holds a
@@ -67,7 +66,6 @@ pub(super) async fn provision_codegraph_index(
     source_repo: PathBuf,
     checkout: PathBuf,
     base_sha: Option<String>,
-    engine: EngineKind,
     provider: &str,
     session_servers: &[crate::agent_profile::McpServerSnapshot],
 ) {
@@ -76,7 +74,7 @@ pub(super) async fn provision_codegraph_index(
     // Don't build an index this session will never be able to query. Shares
     // `codegraph::session_wants_codegraph` with the injection gate rather than
     // re-stating its conditions, so the two can't drift: a provider with no MCP
-    // delivery, a Docker engine, indexing switched off, or a session that
+    // delivery, indexing switched off, or a session that
     // already defines its own `"codegraph"` server all mean the built-in server
     // is never injected — and cloning the mirror, indexing it, and copying the
     // db in would be minutes of background git and parse work per spawn for a
@@ -85,7 +83,7 @@ pub(super) async fn provision_codegraph_index(
     // The one condition deliberately *not* shared is `binary_installed`: this is
     // the path that installs it (see `ensure_installed` below), so requiring it
     // up front would mean the first run never bootstraps.
-    if !codegraph::session_wants_codegraph(engine, provider, session_servers) {
+    if !codegraph::session_wants_codegraph(provider, session_servers) {
         return;
     }
     let mirror = match codegraph::mirror_dir(&project_id, &source_repo) {
@@ -863,7 +861,6 @@ impl Supervisor {
                         &record_for_task,
                         &spec,
                         &parent_for_fork,
-                        true,
                     )
                     .await
                     .map(|freshness| base_freshness = Some(freshness))
@@ -899,8 +896,8 @@ impl Supervisor {
             }
 
             // Warm the codegraph index for this checkout (best-effort; no-op when
-            // indexing is off or under Docker). Runs the cheap copy inline and
-            // advances the mirror in the background.
+            // indexing is off). Runs the cheap copy inline and advances the
+            // mirror in the background.
             if !progress(SpawnStage::Indexing, None) {
                 discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
                 return;
@@ -910,7 +907,6 @@ impl Supervisor {
                 repo_path.clone(),
                 primary_checkout.clone(),
                 base_sha.clone(),
-                engine_kind,
                 &provider_for_task,
                 &mcp_servers_for_task,
             )
@@ -919,8 +915,7 @@ impl Supervisor {
             // Multi-repo project: fork a checkout of every *other* repo of the
             // project too, so the agent works across all of them from turn one
             // (untouched repos are just clean clones). Runs before
-            // start_process so the Docker engine's mounts and the git RPC
-            // dispatcher see the full repo set. Workflow step agents stay
+            // start_process so the git RPC dispatcher sees the full repo set. Workflow step agents stay
             // single-repo — a run targets one repo (see `wf_launch`), which
             // covers both the forking and the adopting shape of a step spawn.
             if run_repo_for_task.is_none() && !adopted_for_task {
@@ -936,7 +931,7 @@ impl Supervisor {
                         return;
                     }
                     if let Err(e) = sup
-                        .attach_repo_checkout(&ctx_for_task, &id_for_task, source.clone(), false)
+                        .attach_repo_checkout(&ctx_for_task, &id_for_task, source.clone())
                         .await
                     {
                         discard_failed_spawn(&id_for_task, owned_checkout.as_deref(), &parent_dir)
@@ -1038,33 +1033,16 @@ impl Supervisor {
         agent_id: &str,
         repo_path: PathBuf,
     ) -> Result<TrackedRepo> {
-        // A repo added to a *live* agent can't get a new bind mount: the Docker
-        // container's mounts are fixed at `docker run`, so a `--shared` clone's
-        // borrowed object store would be unreachable in-container. Provision it
-        // self-contained (full object copy, no alternates) so it needs no mount
-        // and in-container git works immediately. Seatbelt has no container and
-        // uses the normal (`--shared`) clone path. A later restore relaunches
-        // the container and re-provisions via `--shared` + mount.
-        let record = self.workspace.agent(agent_id)?;
-        let self_contained = sandbox::stamped_engine(&record)
-            .caps()
-            .added_repos_self_contained;
-        self.attach_repo_checkout(&ctx, agent_id, repo_path, self_contained)
-            .await
+        self.attach_repo_checkout(&ctx, agent_id, repo_path).await
     }
 
     /// Shared core of "give this agent a checkout of another repo": validate,
     /// allocate a sibling subdir, fork a checkout, and append the TrackedRepo.
-    /// `self_contained` selects a full object copy over a `--shared` clone —
-    /// required only when the checkout appears after a Docker container's
-    /// mounts are fixed (see `add_repo_to_agent`); spawn-time secondaries run
-    /// before the container exists, so they always use shared clones.
     async fn attach_repo_checkout(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
         agent_id: &str,
         repo_path: PathBuf,
-        self_contained: bool,
     ) -> Result<TrackedRepo> {
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -1104,20 +1082,17 @@ impl Supervisor {
             &record,
             &spec,
             &parent_branch,
-            !self_contained,
         )
         .await?;
         let base_sha = git::rev_parse(&checkout, "HEAD").await.ok();
 
         // Warm the codegraph index for this additional checkout too, so a
-        // multi-repo workspace (and a live "+ Repo") indexes every repo. Uses
-        // the agent's stamped engine — a docker-stamped agent is skipped inside.
+        // multi-repo workspace (and a live "+ Repo") indexes every repo.
         provision_codegraph_index(
             record.project_id.clone(),
             repo_path.clone(),
             checkout.clone(),
             base_sha.clone(),
-            sandbox::stamped_engine(&record),
             &record.provider,
             &record.mcp_servers,
         )
@@ -1284,8 +1259,8 @@ impl Supervisor {
 
         // A session from before claude accounts became token sources lives in
         // the account's dir; this launch resumes in the default one. Only a
-        // seatbelt agent's sessions are in the host's dirs at all: a container
-        // keeps them beside the checkout, a box inside its guest.
+        // seatbelt agent's sessions are in the host's dirs at all: a box keeps
+        // them inside its guest.
         let sessions_on_host = sandbox::stamped_engine(&record).caps().shares_host_fs;
         if record.provider == "claude" && sessions_on_host {
             if let Some(session) = record.session_id.as_deref() {
@@ -1448,8 +1423,7 @@ impl Supervisor {
 
         let engine = sandbox::stamped_engine(record);
         // Re-checked on every launch path (resume, view switch, binary-swap
-        // respawn), not just fresh spawns: not every provider is wired up to run
-        // under a container engine.
+        // respawn), not just fresh spawns: not every provider runs in a box.
         sandbox::ensure_supports_provider(engine, &record.provider)?;
         // Before the profile is materialized under `sandbox_root` below, so
         // those writes land where the agent will run (a tenant's, in the box
@@ -1460,8 +1434,8 @@ impl Supervisor {
         crate::attribution::refresh_hooks(agent_id, &record.repos).await;
 
         // Dynamically fold the codegraph MCP server into the session's snapshot
-        // for this launch, when code indexing is on, the engine isn't a
-        // container engine, the binary is there for this agent's sandbox (the
+        // for this launch, when code indexing is on, the binary is there for
+        // this agent's sandbox (the
         // host's install, or the box's tools disk), and this provider can
         // actually receive an MCP server at all. Injected here (not persisted
         // onto the session snapshot) so this runs identically for fresh spawns
@@ -1581,10 +1555,9 @@ impl Supervisor {
 
         // The authoritative source repos each checkout was forked from — the
         // user's own repos, which the agent cannot write. Threaded into the
-        // sandbox engine so the Docker borrowed-object-store mounts derive from
-        // these (never from the agent-writable checkout alternates a container
-        // agent could rewrite to smuggle an arbitrary read-only host mount into
-        // a reused-checkout relaunch). See `sandbox::engine::AgentLaunchCtx`.
+        // sandbox engine, which derives what it reads back from these, never
+        // from the agent-writable checkout alternates. See
+        // `sandbox::engine::AgentLaunchCtx`.
         let source_repos: Vec<PathBuf> = record.repos.iter().map(|r| r.repo_path.clone()).collect();
         // The folders the user granted, minus any that are gone since.
         let folder_grants = crate::workspace::folder_grants::present(&record.folder_grants);
@@ -2828,7 +2801,7 @@ mod tests {
     }
 
     /// Where the claude agent's current session writes its transcript: the
-    /// docker per-agent dir beside the checkout, which the locator checks
+    /// container-era per-agent dir beside the checkout, which the locator checks
     /// first (the session's random id keeps the real `~/.claude` scan from
     /// ever matching).
     fn transcript_of(sup: &Supervisor, td: &Path) -> PathBuf {

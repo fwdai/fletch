@@ -3,7 +3,7 @@
 //! Claude is the lone persistent-runner agent (not in PER_TURN_AGENTS), launched
 //! `--session-id <uuid>` / `--resume <uuid>`, so it writes
 //! `<config-dir>/projects/<slug>/<uuid>.jsonl` (config-dir = CLAUDE_CONFIG_DIR or
-//! `~/.claude`). find_session_jsonl locates it, honoring the Docker sandbox's
+//! `~/.claude`). find_session_jsonl locates it, honoring an engine's
 //! per-agent transcript dir (derived from `cwd`). Content lines carry a top-level
 //! `uuid`; metadata lines (mode/permission-mode/…) don't → positional fallback.
 //! Nearly every line also names its session (`sessionId`), and message lines
@@ -214,8 +214,8 @@ fn tag_body<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 
 /// Write `bodies` as claude session `session_id`, run in `cwd`: the file
 /// `--resume <session_id>` opens, `<projects>/<cwd as a dirname>/<id>.jsonl`
-/// in the projects dir claude uses there (the per-agent one in a container,
-/// else the config dir claude runs with — [`crate::transcripts::claude_projects_dir`]). Each line's `sessionId` and
+/// in the projects dir claude uses there (a box's mirror, else the config
+/// dir claude runs with — [`crate::transcripts::claude_projects_dir`]). Each line's `sessionId` and
 /// `cwd`, where it has them, name the new session; the rest, `uuid` and
 /// `parentUuid` chain included, is copied as is, so claude resumes the same
 /// conversation, compactions and all.
@@ -237,8 +237,7 @@ fn claude_write(
     let projects = crate::transcripts::claude_projects_dir(cwd, engine)
         .ok_or_else(|| Error::Other("claude's projects directory can't be resolved".into()))?;
     // Claude goes by its working directory as the OS reports it, symlinks
-    // resolved; in a container, that is the path the checkout is mounted at,
-    // and in a box the guest's path, which is the host's by identity (the
+    // resolved; in a box, the guest's path, which is the host's by identity (the
     // host has only a placeholder there, so nothing of its own to resolve).
     let run_dir = if engine.caps().shares_host_fs {
         std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf())
@@ -534,58 +533,10 @@ mod tests {
         lines
     }
 
-    /// An agent's checkout in a container sandbox, whose projects dir is the
-    /// per-agent one beside it, under `td`.
-    fn container_cwd(td: &Path) -> PathBuf {
-        td.join("ws").join("repo")
-    }
-
-    #[test]
-    fn a_written_session_is_where_claude_resumes_it_with_only_its_identity_changed() {
-        let td = tempfile::tempdir().unwrap();
-        let cwd = container_cwd(td.path());
-        let lines = session_lines();
-
-        let path = claude_write(NEW, "a", &cwd, crate::sandbox::EngineKind::Docker, &lines)
-            .unwrap()
-            .unwrap();
-
-        // Claude's own dir for the new checkout, under the container's mount.
-        assert_eq!(
-            path,
-            td.path()
-                .join("ws")
-                .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME)
-                .join(crate::transcripts::claude_project_dirname(&cwd).unwrap())
-                .join(format!("{NEW}.jsonl"))
-        );
-        let mut diag = ReadDiagnostics::default();
-        let located = (CLAUDE_TRANSCRIPT.locate)(NEW, "a", &cwd, &mut diag);
-        assert_eq!(located, [path]);
-        let read = (CLAUDE_TRANSCRIPT.read)(&located, &mut diag);
-        assert_eq!(read.len(), lines.len());
-        for (back, line) in read.iter().zip(&lines) {
-            let mut expected = line.clone();
-            expected["sessionId"] = json!(NEW);
-            if line.get("cwd").is_some() {
-                expected["cwd"] = json!(cwd.to_string_lossy());
-            }
-            assert_eq!(back.body, expected);
-        }
-        // The same records under the same ids, so the chain is intact.
-        let ids = |records: &[RawRecord]| -> Vec<String> {
-            records.iter().map(|r| r.native_id.clone()).collect()
-        };
-        let original = records_with_id(lines, Some("uuid"));
-        assert_eq!(ids(&read), ids(&original));
-        // And a launch resumes it rather than starting it fresh.
-        assert!(claude_session_has_messages(NEW, &cwd));
-    }
-
     #[test]
     fn a_history_claude_cant_resume_writes_nothing() {
         let td = tempfile::tempdir().unwrap();
-        let cwd = container_cwd(td.path());
+        let cwd = td.path().join("ws").join("repo");
         let metadata = [json!({ "type": "mode", "mode": "normal", "sessionId": "old" })];
 
         assert_eq!(
@@ -593,38 +544,17 @@ mod tests {
                 NEW,
                 "a",
                 &cwd,
-                crate::sandbox::EngineKind::Docker,
+                crate::sandbox::EngineKind::SandboxExec,
                 &metadata
             )
             .unwrap(),
             None
         );
         assert_eq!(
-            claude_write(NEW, "a", &cwd, crate::sandbox::EngineKind::Docker, &[]).unwrap(),
+            claude_write(NEW, "a", &cwd, crate::sandbox::EngineKind::SandboxExec, &[]).unwrap(),
             None
         );
         assert!(!claude_session_has_messages(NEW, &cwd));
-    }
-
-    #[test]
-    fn a_session_is_never_written_over() {
-        let td = tempfile::tempdir().unwrap();
-        let cwd = container_cwd(td.path());
-        let lines = session_lines();
-        let path = claude_write(NEW, "a", &cwd, crate::sandbox::EngineKind::Docker, &lines)
-            .unwrap()
-            .unwrap();
-        let before = std::fs::read(&path).unwrap();
-
-        assert!(claude_write(
-            NEW,
-            "a",
-            &cwd,
-            crate::sandbox::EngineKind::Docker,
-            &lines[..2]
-        )
-        .is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]
