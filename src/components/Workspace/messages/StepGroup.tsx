@@ -1,8 +1,9 @@
 // One run of steps — the agent working between two things it said — as one
 // line. Live, the line says what it's doing now ("Reading index.tsx"), shimmer
-// and all; settled, what it did ("Changed 9 files +53 −20 · ran 2 commands").
-// Either way it opens to the steps, and each step to its detail; a run of one
-// opens straight to that detail.
+// and all; between two calls, what it has done so far, trailed by dots; settled,
+// what it did ("Changed 9 files +53 −20 · ran 2 commands"). Either way it opens
+// to the steps, and each step to its detail; a run of one opens straight to
+// that detail.
 //
 // Shared by the desktop chat and the phone: the steps themselves (tool rows,
 // thoughts) render here, through the presenters; anything else that lands in a
@@ -245,6 +246,13 @@ export const StepGroup = memo(function StepGroup({
   const activity = useSteady(raw, raw.label, raw.idle);
   const label = activity.label;
   const running = summary.running;
+  // Between two calls (the last came back, the next hasn't begun) nothing is
+  // in flight to name, and a generic "Working" would only repeat the strip
+  // above the composer. So the line says what the run has done so far, with
+  // dots for the rest to come, and settles into that same line, minus the
+  // dots, when the run ends.
+  const between = live && activity.idle;
+  const doing = live && !between;
 
   // A run that appears live rises in; one already there on load doesn't.
   const [fresh] = useState(live);
@@ -254,7 +262,7 @@ export const StepGroup = memo(function StepGroup({
     parts.length === 1 && parts[0].key === "thought" && summary.firstThought
       ? firstLine(summary.firstThought.trimStart(), 140)
       : undefined;
-  const icon = live ? activity.icon : runIcon(items, summary);
+  const icon = doing ? activity.icon : runIcon(items, summary);
 
   const cls = ["steprun", live && "is-live", shown && "is-open", fresh && "is-fresh"]
     .filter(Boolean)
@@ -263,20 +271,25 @@ export const StepGroup = memo(function StepGroup({
     <div className={cls} data-steprun={run.key}>
       <button type="button" className="steprun-head" aria-expanded={shown} onClick={toggle}>
         <StepGlyph icon={icon} />
-        <Ticker k={live ? `live:${label}` : "settled"} className="steprun-text">
-          {live ? (
+        <Ticker k={doing ? `live:${label}` : "settled"} className="steprun-text">
+          {doing ? (
             <span className="steprun-live">{label}</span>
           ) : (
             <SummaryLine parts={parts} note={note} />
           )}
         </Ticker>
+        {between && (
+          <span className="steprun-aside steprun-more">
+            <Loader variant="muted" size="sm" aria-hidden />
+          </span>
+        )}
         {running > 0 && (
           <span className="steprun-aside">
             <Loader variant="muted" size="sm" />
             {running} running
           </span>
         )}
-        {live && summary.calls > 1 && (
+        {doing && summary.calls > 1 && (
           <span className="steprun-aside steps-count">{summary.calls} steps</span>
         )}
       </button>

@@ -5,14 +5,22 @@
    surface (`.tb-*`). Motion is short and soft: bodies grow open, labels
    crossfade, the live line shimmers. Under reduced motion all of it is still. */
 
-/* ── The one-line header ─────────────────────────────────────────────────── */
+/* ── Rhythm: narration, then the work it introduced ──────────────────────────
+   The agent narrates and then acts ("Now the tests:" and its tool calls are
+   one model response), so a run of steps belongs to the words above it, not
+   the words below. Each app pulls a run up under the message before it (Chat.css,
+   the phone's agent.css); here the run keeps a full beat of space after it, so
+   the next thing the agent says starts a new beat. Proximity does the grouping,
+   with no rail or box. */
 .steprun,
 .turnfold {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  margin: -2px 0 6px;
+  margin: 0 0 12px;
 }
+
+/* ── The one-line header ─────────────────────────────────────────────────── */
 .steprun-head {
   appearance: none;
   display: flex;
@@ -131,6 +139,11 @@
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   color: var(--fg-3);
+}
+/* "…and more to come": a live run between two calls. Set close to the text
+   it continues, 6px rather than the header's 8px gap. */
+.steprun-more {
+  margin-left: -2px;
 }
 
 /* The live line: present tense with a slow sweep of light through it. */

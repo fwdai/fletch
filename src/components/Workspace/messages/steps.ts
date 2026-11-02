@@ -269,7 +269,8 @@ export function runIcon(items: ViewItem[], summary: StepSummary): IconName {
 
 /** What a live run is doing right now. `idle` marks the in-between — the last
  *  call came back and nothing new has started — which the header holds back
- *  briefly so it doesn't flash "Working" between every pair of calls. */
+ *  briefly, so a quick gap between two calls doesn't flicker, and then shows
+ *  as what the run has done so far rather than this label (StepGroup). */
 export interface LiveActivity {
   label: string;
   icon: IconName;

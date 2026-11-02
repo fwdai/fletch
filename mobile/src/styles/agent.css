@@ -28,6 +28,16 @@
 .chat > * {
   flex-shrink: 0;
 }
+/* A run of steps hangs right under the words that introduced it: 2px past the
+   message rather than the list's 12px gap, and the usual beat after it (see
+   the desktop's Steps.css). */
+.msg-text + .steprun {
+  margin-top: -10px;
+}
+.chat > .steprun,
+.chat > .turnfold {
+  margin-bottom: 6px;
+}
 /* Transcript text is arbitrary: a URL, a $PATH dump, a base64 blob, a stack
    frame. Those carry no space to break at, and `.msg-user` is sized to
    fit-content — so its min-content width (the whole token) beats its 88%
