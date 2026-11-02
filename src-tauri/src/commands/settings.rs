@@ -56,28 +56,6 @@ pub fn set_context_layer_enabled(ctx: State<'_, Arc<EngineCtx>>, enabled: bool) 
     engine::set_context_layer_enabled_impl(&ctx, enabled)
 }
 
-/// The docker launch knobs, written together; blank clears one.
-#[tauri::command]
-pub fn set_docker_launch_settings(
-    ctx: State<'_, Arc<EngineCtx>>,
-    image: Option<String>,
-    memory: Option<String>,
-    cpus: Option<String>,
-) -> Result<()> {
-    engine::set_docker_launch_settings_impl(&ctx, engine::LaunchKnobs::new(image, memory, cpus))
-}
-
-/// The podman twin of [`set_docker_launch_settings`].
-#[tauri::command]
-pub fn set_podman_launch_settings(
-    ctx: State<'_, Arc<EngineCtx>>,
-    image: Option<String>,
-    memory: Option<String>,
-    cpus: Option<String>,
-) -> Result<()> {
-    engine::set_podman_launch_settings_impl(&ctx, engine::LaunchKnobs::new(image, memory, cpus))
-}
-
 /// Set or clear a per-agent custom binary path, then respawn that provider's
 /// live agents so they exec it.
 #[tauri::command]

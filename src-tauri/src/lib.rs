@@ -171,9 +171,8 @@ fn init_logging() {
     // structured field. Fields are dropped before egress unless their key is
     // allowlisted in `sentry_scrub` — the message is what reaches Sentry.
     // Interpolating dynamic data into the message string would leak it. This
-    // applies to every macro form, including `target:`-prefixed ones (e.g.
-    // streaming docker build output) — those produce breadcrumbs like any
-    // other sub-WARN event.
+    // applies to every macro form, including `target:`-prefixed ones — those
+    // produce breadcrumbs like any other sub-WARN event.
     let sentry_layer = sentry::integrations::tracing::layer().event_filter(|md| {
         use sentry::integrations::tracing::EventFilter;
         match *md.level() {
@@ -517,9 +516,9 @@ fn track_event(event: String, props: Option<serde_json::Value>) {
 /// What each sandbox engine actually guarantees — one report per engine, so the
 /// settings picker can show the trade rather than just the names.
 ///
-/// Every engine rather than the selected one: neither is a superset of the other
-/// (each is stronger on a different claim), so "which engine am I on" doesn't
-/// answer "what am I protected from". Each report carries its `engine` spelling.
+/// Every engine rather than one: a workspace may run under either, so "which
+/// engine am I on" doesn't answer "what am I protected from". Each report
+/// carries its `engine` spelling.
 #[tauri::command]
 fn describe_sandbox_isolation() -> Vec<sandbox::IsolationReport> {
     sandbox::EngineKind::ALL
@@ -541,26 +540,8 @@ fn answer_publish_approval(id: String, approved: bool) {
     rpc::approval::answer(&id, approved);
 }
 
-/// Probe the local Docker installation for the settings UI. Async +
-/// `spawn_blocking` because the probe can block up to its 2s timeout.
-#[tauri::command]
-async fn probe_docker_engine() -> Result<sandbox::DockerAvailability, String> {
-    tauri::async_runtime::spawn_blocking(sandbox::docker_availability)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Probe the local Podman installation for the settings UI. Async +
-/// `spawn_blocking` because the probe can block up to its 2s timeout.
-#[tauri::command]
-async fn probe_podman_engine() -> Result<sandbox::PodmanAvailability, String> {
-    tauri::async_runtime::spawn_blocking(sandbox::podman_availability)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Which step of the container auth chain would supply Anthropic credentials
-/// to a docker agent right now — the settings UI status row. Async +
+/// Which step of the claude auth chain would supply Anthropic credentials
+/// to a box agent right now — the settings UI status row. Async +
 /// `spawn_blocking` because the first resolution may load the login-shell env
 /// (runs a shell).
 #[tauri::command]
@@ -571,7 +552,7 @@ async fn get_container_auth_status() -> Result<sandbox::provider::auth::Containe
         .map_err(|e| e.to_string())
 }
 
-/// Store a pasted `claude setup-token` for containerized agents under the
+/// Store a pasted `claude setup-token` for box agents under the
 /// `claude_container_token` secret — the OS keychain on release macOS builds
 /// (see `secrets`), the same posture as `github_token`. Trims; rejects empty;
 /// unexpected shapes are accepted with a warning (which, like every log line
@@ -590,13 +571,13 @@ async fn set_container_auth_token(
 /// ([`connect_claude_container_auth`]): normalize + shape-check (warning, never
 /// logging the token, on an unrecognized shape), store the
 /// `claude_container_token` secret, then update the in-process mirror the
-/// spawn path reads — so a change applies to the next docker spawn without a
+/// spawn path reads — so a change applies to the next box spawn without a
 /// restart. Same shape as `github::set_token`.
 fn store_container_token(db: &DbState, raw_token: &str) -> Result<(), String> {
     let (token, recognized) = sandbox::provider::auth::normalize_token(raw_token)?;
     if !recognized {
         tracing::warn!(
-            "container auth token doesn't look like a `claude setup-token` value \
+            "claude setup token doesn't look like a `claude setup-token` value \
              (sk-ant-oat…); storing it anyway"
         );
     }
@@ -1364,8 +1345,6 @@ pub fn run() {
             commands::set_agent_attribution_removed,
             commands::set_notify_turn_complete,
             commands::set_notify_pr_activity,
-            commands::set_docker_launch_settings,
-            commands::set_podman_launch_settings,
             commands::get_project_settings,
             commands::set_project_setting,
             // The box sandbox, shared with the remote dispatcher.
@@ -1398,8 +1377,6 @@ pub fn run() {
             commands::context_resolve_contradiction,
             commands::context_bootstrap,
             commands::context_tidy,
-            probe_docker_engine,
-            probe_podman_engine,
             get_container_auth_status,
             set_container_auth_token,
             clear_container_auth_token,
@@ -1593,7 +1570,6 @@ pub fn run() {
             commands::scan_usage_transcripts,
             commands::probe_provider_auth,
             commands::reveal_logs,
-            commands::start_docker_desktop,
             commands::detect_editors,
             commands::open_in_editor,
             commands::submit_feedback,

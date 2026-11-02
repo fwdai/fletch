@@ -55,8 +55,7 @@ async fn the_admin_socket_refuses_what_it_does_not_know() {
     );
 
     // The engine facts an operator with no window checks first. On a host that
-    // has just booted with an empty data dir all three are known: no agents, a
-    // sandbox engine (automatic, or the container engine `serve` found), and no
+    // has just booted with an empty data dir both are known: no agents, and no
     // GitHub token.
     let status = admin::call(&data_dir, "status", json!({}))
         .await
@@ -65,11 +64,6 @@ async fn the_admin_socket_refuses_what_it_does_not_know() {
         status["agents"],
         json!({ "total": 0, "running": 0 }),
         "{status}"
-    );
-    assert!(
-        ["auto", "docker", "podman"]
-            .contains(&status["sandboxEngine"].as_str().unwrap_or_default()),
-        "sandboxEngine names one of the engines: {status}"
     );
     assert_eq!(
         status["githubConnected"],

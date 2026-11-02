@@ -278,15 +278,12 @@ pub struct Engine {
 }
 
 /// Why the engine could not start. The database is fatal for every host; the
-/// other two are only reachable under [`RemoteBoot::Headless`], where they are
-/// fatal because a host that cannot isolate an agent, or cannot be reached by
-/// any client, has nothing left to do. Every other step is best-effort and logs.
+/// listener is only reachable under [`RemoteBoot::Headless`], where it is
+/// fatal because a host that cannot be reached by any client has nothing left
+/// to do. Every other step is best-effort and logs.
 #[derive(Debug)]
 pub enum BootError {
     Database(crate::error::Error),
-    /// No sandbox engine is available and none is configured. Off macOS only:
-    /// there is no `sandbox-exec` to fall back to.
-    Sandbox(String),
     /// The listener could not bind (the port is taken, most likely).
     Remote(crate::error::Error),
 }
@@ -295,7 +292,6 @@ impl std::fmt::Display for BootError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Database(e) => write!(f, "database init failed: {e}"),
-            Self::Sandbox(e) => write!(f, "{e}"),
             Self::Remote(e) => write!(f, "{e}"),
         }
     }
@@ -385,22 +381,19 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // points. So it comes from the boot config, the one place that knows.
     sandbox::set_data_dir(data_dir.clone());
 
-    // The engine of a new agent is chosen automatically (a box when one can
-    // boot, seatbelt otherwise), except on a headless host off macOS, where
-    // neither exists: there it is the container engine
-    // (`headless_container_engine`). The retired `sandbox_engine` setting is
-    // no longer read; a row that pinned a container engine is logged, so the
-    // change is visible.
-    if let Some(pinned) = database::get_setting(&db.lock(), "sandbox_engine")
-        .filter(|v| matches!(v.as_str(), "docker" | "podman"))
-    {
-        tracing::info!(
-            pinned,
-            "the sandbox_engine setting is no longer read; new agents get the automatic engine"
-        );
-    }
-    if headless && !cfg!(target_os = "macos") {
-        sandbox::set_container_override(headless_container_engine()?);
+    // The engine of a new agent is chosen automatically: a box when one can
+    // boot, seatbelt otherwise on macOS, and always a box off macOS, where
+    // there is no seatbelt (`boxes::engine_for_new_agent`). A host off macOS
+    // that cannot boot one still comes up: it says why here, and every spawn
+    // refuses with the same reason.
+    if !cfg!(target_os = "macos") {
+        if let Some(problem) = sandbox::boxes::runtime_refusal() {
+            tracing::warn!(
+                problem,
+                "no box can boot on this host, and off macOS the box is the only sandbox: \
+                 agents will not start"
+            );
+        }
     }
 
     {
@@ -460,61 +453,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         }
     }
 
-    // Seed the per-runtime launch knobs (image override + resource limits) the
-    // same way — mirrored in-process for the spawn path, which has no DB handle.
-    // Kept in sync mid-run by `set_docker_launch_settings` /
-    // `set_podman_launch_settings`.
-    {
-        let conn = db.lock();
-        sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
-            image_override: database::get_setting(&conn, sandbox::docker::IMAGE_SETTING),
-            memory: database::get_setting(&conn, sandbox::docker::MEMORY_SETTING),
-            cpus: database::get_setting(&conn, sandbox::docker::CPUS_SETTING),
-        });
-        sandbox::podman::set_launch_settings(sandbox::podman::LaunchSettings {
-            image_override: database::get_setting(&conn, sandbox::podman::IMAGE_SETTING),
-            memory: database::get_setting(&conn, sandbox::podman::MEMORY_SETTING),
-            cpus: database::get_setting(&conn, sandbox::podman::CPUS_SETTING),
-        });
-    }
-
-    // Seed each runtime's version-refresh loop guard (mirrors of the
-    // `docker_version_refresh_guard` / `podman_version_refresh_guard` settings —
-    // private bookkeeping, not user-facing) and wire their write-backs, so a
-    // host CLI pinned away from the registry's latest triggers at most one
-    // version-parity rebuild ever, not one per app run. Same mirror idiom as the
-    // launch knobs above; the guards are consulted and recorded on
-    // spawn/background threads that have no DB handle. Per runtime because the
-    // image stores are separate: a rebuild that settled docker's mismatch proves
-    // nothing about podman's store.
-    {
-        let seed = |key: &'static str| -> std::collections::HashMap<String, String> {
-            database::get_setting(&db.lock(), key)
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
-        };
-        let persister = |key: &'static str| {
-            let guard_db = db.clone();
-            move |attempted: &std::collections::HashMap<String, String>| {
-                if let Ok(json) = serde_json::to_string(attempted) {
-                    let _ = database::set_setting(&guard_db.lock(), key, &json);
-                }
-            }
-        };
-        sandbox::docker::init_version_refresh_guard(
-            seed(sandbox::docker::VERSION_GUARD_SETTING),
-            persister(sandbox::docker::VERSION_GUARD_SETTING),
-        );
-        sandbox::podman::init_version_refresh_guard(
-            seed(sandbox::podman::VERSION_GUARD_SETTING),
-            persister(sandbox::podman::VERSION_GUARD_SETTING),
-        );
-    }
-
-    // Seed the in-process container auth token (mirror of the stored
+    // Seed the in-process claude setup token (mirror of the stored
     // `claude_container_token` secret, same pattern as the GitHub token below)
-    // so the docker auth chain — resolved at spawn time with no DB handle — sees
-    // a token pasted in a previous run.
+    // so the box launch's auth chain — resolved at spawn time with no DB
+    // handle — sees a token pasted in a previous run.
     seed_secret_mirror(
         &db,
         sandbox::provider::auth::TOKEN_SETTING,
@@ -555,20 +497,6 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         crate::host::spawn(git_dist::startup(move |payload| {
             crate::host::emit(sink.as_ref(), "git-dist:state", &payload);
         }));
-    }
-
-    // Forward container image-build progress to the UI — either runtime's,
-    // through one sink. The build runs deep in the spawn path (no ctx there), so
-    // it emits through a process-wide sink installed here — mirroring the
-    // git-dist emitter above. Every phase carries its `runtime` and the frontend
-    // routes on it: with two runtimes sharing this stream it's the lifecycle key,
-    // not decoration. The `docker:build-progress` event name is the established
-    // wire contract and stays as-is.
-    {
-        let sink = sink.clone();
-        sandbox::docker::set_build_sink(move |event| {
-            crate::host::emit(sink.as_ref(), "docker:build-progress", &event);
-        });
     }
 
     // One-time move of the legacy on-disk checkouts root
@@ -800,15 +728,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // and skipped, so a side-by-side Fletch is left untouched.
     sandbox::cleanup_nested_rpc_roots();
     sandbox::cleanup_nested_checkouts_roots();
-    // Same reclamation for containers left by dead instances, one sweep per
-    // container runtime — each probe-gated and on its own thread, so startup
-    // never waits on either.
-    sandbox::docker::sweep_orphans_at_startup();
-    sandbox::podman::sweep_orphans_at_startup();
-    // The box engine: its settings mirrored like the container knobs, its
-    // `box:*` events through the fanout, every live box-stamped agent's root
-    // routed to its box, and the helpers of dead instances swept — on a
-    // thread, like the container sweeps.
+    // The box engine: its settings mirrored in-process, its `box:*` events
+    // through the fanout, every live box-stamped agent's root routed to its
+    // box, and the helpers of dead instances swept — on a thread, so startup
+    // never waits on it.
     sandbox::boxes::settings::seed(&db.lock());
     sandbox::boxes::set_event_sink(sink.clone());
     sandbox::boxes::startup(&workspace);
@@ -870,35 +793,6 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         remote,
         events,
     })
-}
-
-/// The sandbox a headless host uses off macOS: Docker if the daemon answers,
-/// else Podman, else nothing.
-///
-/// There is no safe default to fall back to. `sandbox-exec` — the engine the
-/// desktop starts with — is a macOS binary, and `engine_for` deliberately fails
-/// closed rather than launching an agent outside the boundary the record claims,
-/// so a host that guessed wrong here would accept spawns and refuse every one of
-/// them at the last moment. Refusing to boot says the same thing at the one
-/// moment an operator is watching.
-fn headless_container_engine() -> Result<crate::sandbox::EngineKind, BootError> {
-    use crate::sandbox::{DockerAvailability, EngineKind, PodmanAvailability};
-
-    let docker = sandbox::docker::availability();
-    if matches!(docker, DockerAvailability::Available { .. }) {
-        tracing::info!("using docker as the sandbox engine");
-        return Ok(EngineKind::Docker);
-    }
-    let podman = sandbox::podman::availability();
-    if matches!(podman, PodmanAvailability::Available { .. }) {
-        tracing::info!("using podman as the sandbox engine");
-        return Ok(EngineKind::Podman);
-    }
-    Err(BootError::Sandbox(format!(
-        "no container runtime is available, and this host off macOS has no other sandbox. \
-         Docker: {docker:?}. Podman: {podman:?}. Install and start one of them, then start \
-         fletch-host again."
-    )))
 }
 
 /// The frontend-owned flag (camelCase) written when the user finishes the

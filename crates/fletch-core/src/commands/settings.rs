@@ -1,6 +1,6 @@
 //! The host-owned global settings: the `settings` rows the engine itself reads
-//! (alerts, the idle sweep, code indexing, the container engines' launch
-//! knobs, provider binary overrides, the publishing preferences), and the one
+//! (alerts, the idle sweep, code indexing, the box's knobs, provider binary
+//! overrides, the publishing preferences), and the one
 //! setter per group that persists a value *and* updates the in-memory mirror
 //! the spawn and publish paths read. The desktop's Tauri commands are thin
 //! wrappers over these, and the remote dispatcher calls them directly, so the
@@ -28,12 +28,6 @@ const HOST_SETTING_KEYS: &[&str] = &[
     remote::push::PR_ACTIVITY_SETTING,
     supervisor::auto_archive::IDLE_DAYS_SETTING,
     codegraph::SETTING,
-    sandbox::docker::IMAGE_SETTING,
-    sandbox::docker::MEMORY_SETTING,
-    sandbox::docker::CPUS_SETTING,
-    sandbox::podman::IMAGE_SETTING,
-    sandbox::podman::MEMORY_SETTING,
-    sandbox::podman::CPUS_SETTING,
     sandbox::boxes::settings::MEMORY_SETTING,
     sandbox::boxes::settings::CPUS_SETTING,
     sandbox::boxes::settings::IMAGE_URL_SETTING,
@@ -243,86 +237,6 @@ async fn warm_codegraph_index(repos: Vec<(String, PathBuf)>) {
     }
 }
 
-/// One runtime's three launch knobs, normalized: blank is `None`, because a
-/// cleared field must not be stored as a launch override (an empty `--memory`
-/// or image would break the launch) and the mirror reads blank as "default".
-pub struct LaunchKnobs {
-    pub image: Option<String>,
-    pub memory: Option<String>,
-    pub cpus: Option<String>,
-}
-
-impl LaunchKnobs {
-    pub fn new(image: Option<String>, memory: Option<String>, cpus: Option<String>) -> Self {
-        let norm = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        Self {
-            image: norm(image),
-            memory: norm(memory),
-            cpus: norm(cpus),
-        }
-    }
-}
-
-/// Write three keys in one transaction, then announce each. Written one by one,
-/// a mid-way failure would leave a mixed config committed that the UI never
-/// shows (it reverts all three), and a restart would hydrate it.
-fn store_launch_knobs(ctx: &EngineCtx, keys: [&str; 3], knobs: &LaunchKnobs) -> Result<()> {
-    let values = [&knobs.image, &knobs.memory, &knobs.cpus];
-    {
-        let conn = ctx.db.lock();
-        let tx = conn.unchecked_transaction()?;
-        for (key, value) in keys.iter().zip(values) {
-            database::set_setting(&tx, key, value.as_deref().unwrap_or(""))?;
-        }
-        tx.commit()?;
-    }
-    for (key, value) in keys.iter().zip(values) {
-        announce(ctx, key, Some(value.as_deref().unwrap_or("")));
-    }
-    Ok(())
-}
-
-/// Persist the docker launch knobs (`docker_image` override + `docker_memory`
-/// / `docker_cpus` limits) and update the mirror the spawn path reads, so a
-/// change applies to the next docker spawn without a restart.
-pub fn set_docker_launch_settings_impl(ctx: &EngineCtx, knobs: LaunchKnobs) -> Result<()> {
-    store_launch_knobs(
-        ctx,
-        [
-            sandbox::docker::IMAGE_SETTING,
-            sandbox::docker::MEMORY_SETTING,
-            sandbox::docker::CPUS_SETTING,
-        ],
-        &knobs,
-    )?;
-    sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
-        image_override: knobs.image,
-        memory: knobs.memory,
-        cpus: knobs.cpus,
-    });
-    Ok(())
-}
-
-/// The podman twin of [`set_docker_launch_settings_impl`], over its own keys
-/// and mirror — a user running both points each at its own image and limits.
-pub fn set_podman_launch_settings_impl(ctx: &EngineCtx, knobs: LaunchKnobs) -> Result<()> {
-    store_launch_knobs(
-        ctx,
-        [
-            sandbox::podman::IMAGE_SETTING,
-            sandbox::podman::MEMORY_SETTING,
-            sandbox::podman::CPUS_SETTING,
-        ],
-        &knobs,
-    )?;
-    sandbox::podman::set_launch_settings(sandbox::podman::LaunchSettings {
-        image_override: knobs.image,
-        memory: knobs.memory,
-        cpus: knobs.cpus,
-    });
-    Ok(())
-}
-
 /// Set or clear (blank/`None`) a per-agent custom binary path — a path on this
 /// host. Writes or deletes `agent_bin_path_<id>`, refreshes the in-memory
 /// registry binary resolution reads, then restarts any live agents on that
@@ -374,12 +288,6 @@ mod tests {
             "publish_approval_wait",
             "agent_attribution_removed",
             "code_indexing_enabled",
-            "docker_image",
-            "docker_memory",
-            "docker_cpus",
-            "podman_image",
-            "podman_memory",
-            "podman_cpus",
             "box_memory_mib",
             "box_cpus",
             "box_image_url",
@@ -391,8 +299,14 @@ mod tests {
         }
         assert!(!is_host_setting_key("agent_bin_path_"));
         // Retired: nothing reads them any more.
-        assert!(!is_host_setting_key("sandbox_engine"));
-        assert!(!is_host_setting_key("boxes_enabled"));
+        for key in [
+            "sandbox_engine",
+            "boxes_enabled",
+            "docker_image",
+            "podman_image",
+        ] {
+            assert!(!is_host_setting_key(key), "{key}");
+        }
     }
 
     /// The point of the allowlist: secrets, this machine's remote-access state,
@@ -465,27 +379,5 @@ mod tests {
         assert!(set_branch_prefix_impl(&ctx, "has space/").is_err());
         assert!(get_settings_impl(&ctx).unwrap().is_empty());
         assert!(sink.events().is_empty());
-    }
-
-    /// The persisting half only: the process-wide launch mirror is left alone
-    /// so this cannot race the sandbox tests that read it.
-    #[test]
-    fn launch_knobs_land_together_with_blank_as_default() {
-        let (ctx, sink, _dir) = test_ctx();
-        store_launch_knobs(
-            &ctx,
-            [
-                sandbox::podman::IMAGE_SETTING,
-                sandbox::podman::MEMORY_SETTING,
-                sandbox::podman::CPUS_SETTING,
-            ],
-            &LaunchKnobs::new(Some(" img:1 ".into()), Some("  ".into()), None),
-        )
-        .unwrap();
-        let got = get_settings_impl(&ctx).unwrap();
-        assert_eq!(got.get("podman_image"), Some(&"img:1".to_string()));
-        assert_eq!(got.get("podman_memory"), Some(&String::new()));
-        assert_eq!(got.get("podman_cpus"), Some(&String::new()));
-        assert_eq!(sink.events().len(), 3);
     }
 }
