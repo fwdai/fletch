@@ -8,8 +8,8 @@
 //!
 //! The tests do not run the product init: `/usr/bin/env` runs their script
 //! disk instead, which prints the `FLETCH_HOSTKEY` and `FLETCH_READY` markers
-//! the product init does and listens on the control port the way
-//! `fletch-guest wait-stop` does. The runtime is what is under test.
+//! the product init does and stops on the control port through the same
+//! `fletch-guest wait-stop`. The runtime is what is under test.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -18,17 +18,21 @@ use fletch_box::{disks, guest, RuntimePaths, StopOutcome, Vm, VmSpec};
 
 const FAKE_KEY: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIFakeFakeFakeFakeFakeFakeFakeFakeFakeFakeFak";
 
-/// Runs as `/usr/bin/env /bin/sh /dev/vdc`: the markers, then wait for `stop`
-/// on vsock 5000 (socat is in the base image), then a clean exit, which
-/// libkrun's init turns into a VM exit.
+/// Runs as `/usr/bin/env /bin/sh /dev/vdc`: the host key marker, then the
+/// image's own control listener (`fletch-guest wait-stop`), with the ready
+/// marker printed only after the line it writes once it listens, as the
+/// product init does: a host that stops the box the moment it is ready must
+/// find the listener there. A clean exit after `stop`, which libkrun's init
+/// turns into a VM exit.
 fn guest_script() -> String {
     format!(
-        "echo \"{} ssh-ed25519 {FAKE_KEY}\"\necho {}\n\
-         socat -u VSOCK-LISTEN:{},reuseaddr - | while read line; do [ \"$line\" = stop ] && break; done\n\
+        "echo \"{} ssh-ed25519 {FAKE_KEY}\"\n\
+         {} wait-stop {} | {{ read -r line && echo \"$line\" && echo {}; }}\n\
          sync; exit 0\n",
         guest::MARK_HOSTKEY,
+        guest::GUEST_AGENT,
+        guest::CONTROL_PORT,
         guest::MARK_READY,
-        guest::CONTROL_PORT
     )
 }
 
