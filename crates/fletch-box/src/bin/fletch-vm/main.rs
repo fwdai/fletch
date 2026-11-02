@@ -15,7 +15,7 @@
 #[allow(dead_code)]
 mod launch;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod krun;
 mod pipe;
 
@@ -42,7 +42,7 @@ fn main() {
     run(&config);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run(config: &launch::LaunchConfig) -> ! {
     let krun = match krun::Krun::load(config.lib_dir.as_deref()) {
         Ok(krun) => krun,
@@ -52,9 +52,9 @@ fn run(config: &launch::LaunchConfig) -> ! {
     fail(&krun.run(config))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn run(_config: &launch::LaunchConfig) -> ! {
-    fail("VMs run on macOS only")
+    fail("VMs run on macOS and Linux only")
 }
 
 fn fail(err: &str) -> ! {

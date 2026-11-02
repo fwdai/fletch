@@ -33,6 +33,9 @@ qr = ["qrcode"]
 # the admin socket happens in here, through the same `host::boot` the desktop
 # calls — no Tauri anywhere in the graph, which `cargo tree -i tauri` proves.
 fletch-core = { path = "../fletch-core" }
+# The box runtime's file names (`runtime::RUNTIME_FILES`): what a Linux
+# tarball carries beside the binary and `update` installs as one unit.
+fletch-box = { path = "../fletch-box" }
 # The wire protocol. Not used by the binary itself (the engine owns the
 # listener); the end-to-end test dials the host with it, as a client would.
 fletch-proto = { path = "../fletch-proto" }

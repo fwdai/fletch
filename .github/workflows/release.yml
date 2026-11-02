@@ -205,6 +205,12 @@ jobs:
   # (which is what `cargo tree -i tauri` being empty is for), and its only
   # native build is SQLite, which `rusqlite`'s `bundled` feature compiles with
   # `cc` — everything needed is already on the runner images.
+  #
+  # A Linux tarball also carries the box runtime beside the binary, where
+  # `RuntimePaths::bundled` looks on Linux: `fletch-vm`, `libkrun.so.1` (built
+  # here from packaging/libkrun, same pin and patches as the app's dylibs) and
+  # `libkrunfw.so.5` (upstream's kernel bundle for the arch). The install
+  # script and `fletch-host update` put them next to `fletch-host`.
   host:
     needs: release
     permissions:
@@ -247,7 +253,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crates/fletch-host
+          workspaces: |
+            crates/fletch-host
+            crates/fletch-box
 
       - name: Build
         env:
@@ -259,6 +267,23 @@ jobs:
           cargo build --release
           --manifest-path crates/fletch-host/Cargo.toml
           --target ${{ matrix.target }}
+
+      # Cached like the app's dylibs: ensure.sh is a no-op when dist/ was
+      # built from the same build.sh and patches.
+      - name: Cache libkrun
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: packaging/libkrun/dist
+          key: libkrun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packaging/libkrun/build.sh', 'packaging/libkrun/patches/*') }}
+
+      - name: Build the box runtime
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          packaging/libkrun/ensure.sh
+          cargo build --release --manifest-path crates/fletch-box/Cargo.toml \
+            --bin fletch-vm --target ${{ matrix.target }}
 
       - name: Package
         id: package
@@ -294,6 +319,14 @@ jobs:
           cp "$BIN" crates/fletch-host/README.md "stage/$NAME/"
           cp packaging/fletch-host.service packaging/com.fletch.host.plist \
              "stage/$NAME/packaging/"
+          # The box runtime, flat beside the binary (see the comment on this job).
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            VM="crates/fletch-box/target/${{ matrix.target }}/release/fletch-vm"
+            strip "$VM"
+            install -m 755 "$VM" "stage/$NAME/fletch-vm"
+            install -m 644 packaging/libkrun/dist/libkrun.so.1 \
+              packaging/libkrun/dist/libkrunfw.so.5 "stage/$NAME/"
+          fi
           tar -czf "$NAME.tar.gz" -C "stage/$NAME" .
           if command -v sha256sum >/dev/null; then
             sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"

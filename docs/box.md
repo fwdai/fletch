@@ -1,6 +1,7 @@
 # Boxes: the VM sandbox
 
-A box is a libkrun micro-VM per agent on Apple silicon: no network device, no
+A box is a libkrun micro-VM per agent on Apple silicon (Hypervisor.framework)
+or on an x86-64 or arm64 Linux host (KVM, for `fletch-host`): no network device, no
 shared folder unless the user grants one, reached from the host only over SSH
 on vsock and an HTTP CONNECT egress proxy with an allow-list. The guest holds
 the agent's tree at the same absolute paths the host uses. This page is the map;
@@ -11,8 +12,8 @@ each part's README has the detail.
 | Runtime | `crates/fletch-box` | libkrun helper (`fletch-vm`), VM spec, SSH channel, egress proxy, image store, tools disks; the `fletch-box` CLI for manual use |
 | Guest agent | `crates/fletch-guest` | Static musl binary in the image: vsock listeners, `exec`, `tail`, the stop hook |
 | Image | `packaging/box-image` | The Debian root every box boots and its layers; `build-docker.sh` (builds, tests, checks), `bump.sh`, `publish.sh` |
-| libkrun | `packaging/libkrun` | libkrun 1.19 + patches and the libkrunfw 6.12 kernel the app ships |
-| Bundle | `packaging/box-bundle` | How the helper and dylibs are signed and placed in the app |
+| libkrun | `packaging/libkrun` | libkrun 1.19 + patches and the libkrunfw 6.12 kernel the app ships (dylibs) and Linux `fletch-host` ships (`.so`) |
+| Bundle | `packaging/box-bundle` | How the helper and dylibs are signed and placed in the app; the flat Linux layout beside `fletch-host` |
 | Engine | `crates/fletch-core/src/sandbox/boxes` | Boots boxes for agents: registry, setup, settings, the guest-home mechanism (`home.rs`: seeding, credential sync, session mirrors) |
 | Provider adapters | `crates/fletch-core/src/sandbox/provider` | What each provider CLI keeps outside the checkout and how its credential reaches a launch (`ProviderHome`), shared with every engine, and the provider support gate (`supports`) |
 
@@ -99,7 +100,10 @@ attached to every box from its next boot.
 ## Releases and updates
 
 An image release is the GitHub release `box-image-v<VERSION>` (VERSION file in
-`packaging/box-image`): `manifest.json` (per image: file, size, sha256,
+`packaging/box-image`) for aarch64, and `box-image-v<VERSION>-x86_64` for
+x86-64 Linux hosts, built from the same inputs with the same file names (a box
+never emulates, so each host downloads its own architecture's; the manifest's
+`arch` must match): `manifest.json` (per image: file, size, sha256,
 packages), the `.erofs` files, and `<file>.chunks.json` delta manifests. The
 app boots the one version `PinnedImage::VERSION` names
 (`crates/fletch-box/src/image_store/mod.rs`) and downloads it on first use:
@@ -130,14 +134,15 @@ app release workflow refuses to ship a pin whose release is missing files
 
 | Workflow | When | Does |
 | --- | --- | --- |
-| **Box image** (`box-image.yml`) | PR touching `packaging/box-image`, `crates/fletch-guest` | Checks VERSION is unreleased or released from these inputs; builds and tests; uploads the images as an artifact; publishes nothing |
-| | Push to `main` touching them | Same, then publishes `box-image-v<VERSION>`; a no-op when the release with these inputs exists |
+| **Box image** (`box-image.yml`) | PR touching `packaging/box-image`, `crates/fletch-guest` | Per architecture: checks VERSION is unreleased or released from these inputs; builds and tests; uploads the images as an artifact; publishes nothing |
+| | Push to `main` touching them | Same, then publishes `box-image-v<VERSION>` and `box-image-v<VERSION>-x86_64`; each a no-op when its release with these inputs exists |
 | | Run workflow | Same on any branch; `publish` to publish from a branch before merging (so the pin never names a missing release) |
-| **Box image bump** (`box-image-bump.yml`) | The 1st of each month, 06:00 UTC, or by hand | `bump.sh`: newest Debian snapshot and Node 22 release, VERSION patch bump, app pin bump, committed on `chore/box-image-bump`. Builds and tests that commit. Tests green: publishes the release. Either way opens or refreshes the PR with the report. Merge it to adopt (main's publish then finds the release in place); close it to skip |
+| **Box image bump** (`box-image-bump.yml`) | The 1st of each month, 06:00 UTC, or by hand | `bump.sh`: newest Debian snapshot and Node 22 release, VERSION patch bump, app pin bump, committed and pushed on `chore/box-image-bump`. Builds and tests that commit on both architectures. Tests green: publishes that architecture's release. Either way opens or refreshes the PR with both reports. Merge it to adopt (main's publish then finds the releases in place); close it to skip |
 
 Both run `.github/actions/box-image`, which runs `build-docker.sh --test`, the
 same build as on a Mac: fletch-guest cross-build, `build.sh` in a privileged
-`debian:trixie` container on the arm64 runner, `test.sh` in the same container,
+`debian:trixie` container on the arm64 runner (and on the x86-64 runner for
+the x86_64 release), `test.sh` in the same container,
 `fletch-box image chunk` for the delta manifests, an install with the app's own
 installer; then the report in the job summary. Any failure blocks publishing.
 
@@ -159,9 +164,10 @@ change is the pin constant.
   Playwright's own browser on the base libraries, the browser layer's screenshot
   without Mesa/LLVM, fontconfig, every agent CLI installing and starting on the
   base alone.
-- `boot-check.sh`: boots a built image with its layers on a Mac through
-  `fletch-box boot --layer` and checks the mounts, the tools and a screenshot
-  over ssh. What CI cannot run: init, libkrun, the real kernel.
+- `boot-check.sh`: boots a built image with its layers on a Mac, or on a Linux
+  host with KVM, through `fletch-box boot --layer` and checks the mounts, the
+  tools and a screenshot over ssh. What CI cannot run: init, libkrun, the real
+  kernel.
 - `crates/fletch-box`: unit tests for the image store (manifests, installs,
   delta downloads against a local HTTP server, chunking); VM tests behind
   `--ignored` need the dev runtime.
@@ -173,6 +179,19 @@ change is the pin constant.
 ```sh
 packaging/box-image/build-docker.sh --test       # -> packaging/box-image/out, needs Docker Desktop
 packaging/box-image/boot-check.sh                # boots out/ with both layers
+```
+
+The build is for the machine's own architecture: a Mac or an arm64 Linux host
+builds the aarch64 image, an x86-64 Linux host (with Docker) the x86_64 one.
+
+On a Linux host the box needs KVM: `/dev/kvm` writable by the user
+(`sudo usermod -aG kvm $USER`, then log in again). To boot the released image
+there without building one:
+
+```sh
+eval "$(scripts/box-dev.sh)"                     # builds libkrun.so.1, stages out/, builds the CLI
+fletch-box image install --layers all            # this host's architecture's release, pinned version
+packaging/box-image/boot-check.sh ~/.fletch/box-dev/images/<version>
 ```
 
 Point the `box_image_url` setting at `file://<path to out>` to run the app on

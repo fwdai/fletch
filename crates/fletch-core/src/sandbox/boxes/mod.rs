@@ -221,7 +221,9 @@ pub fn pinned_image() -> PinnedImage {
 
 /// Where the helper and libkrun are, in order: the `FLETCH_BOX_HELPER` /
 /// `FLETCH_BOX_LIB_DIR` override, the app bundle (`Contents/Helpers`,
-/// `Contents/Frameworks`), else the dev checkout the running binary is inside
+/// `Contents/Frameworks`; on Linux, `fletch-vm` and the libraries beside the
+/// running binary, as a `fletch-host` release installs them), else the dev
+/// checkout the running binary is inside
 /// (`packaging/box-bundle/out`, staged by `ensure-dev.sh` on `tauri dev`).
 /// `None` only outside all three; a dev checkout resolves even before the
 /// runtime is built, so the probe can say what to run.
@@ -242,8 +244,16 @@ pub struct Ready {
 }
 
 /// The sentence for a host with no runtime location at all.
+#[cfg(not(target_os = "linux"))]
 pub const RUNTIME_NOT_FOUND: &str = "the box runtime was not found: no fletch-vm helper in the \
                                      app bundle, in packaging/box-bundle/out (run \
+                                     packaging/box-bundle/ensure-dev.sh), or named by \
+                                     FLETCH_BOX_HELPER";
+#[cfg(target_os = "linux")]
+pub const RUNTIME_NOT_FOUND: &str = "the box runtime was not found: no fletch-vm helper beside \
+                                     this executable (a fletch-host release installs it there \
+                                     with libkrun.so.1 and libkrunfw.so.5), in \
+                                     packaging/box-bundle/out (run \
                                      packaging/box-bundle/ensure-dev.sh), or named by \
                                      FLETCH_BOX_HELPER";
 

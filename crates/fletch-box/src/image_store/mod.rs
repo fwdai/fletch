@@ -57,7 +57,8 @@ const STAGING_PREFIX: &str = ".staging-";
 const IMAGES_DIR: &str = "images";
 
 /// Where image releases are downloaded from: one GitHub release per image on
-/// the public repository, tagged `box-image-v<version>`, holding
+/// the public repository, tagged `box-image-v<version>` (with `-<arch>` on
+/// any architecture but aarch64, [`release_url_for`]), holding
 /// `manifest.json` and the files it lists.
 pub const RELEASES_URL: &str = "https://github.com/fwdai/fletch/releases/download";
 
@@ -100,17 +101,28 @@ impl ImageManifest {
     }
 
     /// Holds the manifest to what the store relies on: it describes
-    /// `version`; exactly one entry is the base and its file is `base.erofs`
-    /// ([`InstalledImage::path`]); every entry has a distinct name, a distinct
-    /// plain file name that is not the manifest's, a non-zero size and a
-    /// well-formed sha256 (lowercased here). A fetched manifest and one read
-    /// back from an installed directory both pass through this, so nothing
-    /// downstream re-checks.
+    /// `version` for this host's architecture; exactly one entry is the base
+    /// and its file is `base.erofs` ([`InstalledImage::path`]); every entry
+    /// has a distinct name, a distinct plain file name that is not the
+    /// manifest's, a non-zero size and a well-formed sha256 (lowercased
+    /// here). A fetched manifest and one read back from an installed
+    /// directory both pass through this, so nothing downstream re-checks:
+    /// an image is identified by version *and* architecture, and another
+    /// architecture's build (a `box_image_url` naming it, or a data
+    /// directory carried over from another machine) is never an installed
+    /// image here, whatever its version.
     pub fn validate(&mut self, version: &str) -> std::result::Result<(), String> {
         if self.version != version {
             return Err(format!(
                 "describes image {}, not the {version} this build boots",
                 self.version
+            ));
+        }
+        let arch = std::env::consts::ARCH;
+        if self.arch != arch {
+            return Err(format!(
+                "is an image for {}, and this host is {arch}",
+                self.arch
             ));
         }
         let bases = self.images.iter().filter(|e| e.name == BASE).count();
@@ -193,7 +205,7 @@ impl PinnedImage {
     /// launch agents the host-side contract no longer matches. A push to main
     /// that changes the image publishes this version (`box-image.yml`), so a
     /// merged build finds its image.
-    pub const VERSION: &'static str = "0.3.2";
+    pub const VERSION: &'static str = "0.3.3";
 
     /// This build's image, from `base_url` (the `box_image_url` setting) or
     /// the GitHub release.
@@ -228,8 +240,21 @@ impl PinnedImage {
     }
 }
 
+/// This host's release of `version`: images are per architecture, since a
+/// box never emulates.
 pub fn release_url(version: &str) -> String {
-    format!("{RELEASES_URL}/box-image-v{version}")
+    release_url_for(version, std::env::consts::ARCH)
+}
+
+/// `box-image-v<version>` for aarch64, whose releases predate every other
+/// architecture's, `box-image-v<version>-<arch>` otherwise
+/// (`packaging/box-image/publish.sh` tags them the same way).
+pub fn release_url_for(version: &str, arch: &str) -> String {
+    if arch == "aarch64" {
+        format!("{RELEASES_URL}/box-image-v{version}")
+    } else {
+        format!("{RELEASES_URL}/box-image-v{version}-{arch}")
+    }
 }
 
 /// A layer file installed next to its base.
@@ -500,8 +525,9 @@ impl ImageStore {
     }
 }
 
-/// The image in `dir`, if it has a manifest for `version` and a non-empty
-/// base file; the layers are the manifest's other entries whose file is there.
+/// The image in `dir`, if it has a manifest for `version` on this
+/// architecture ([`ImageManifest::validate`]) and a non-empty base file; the
+/// layers are the manifest's other entries whose file is there.
 fn image_at(dir: PathBuf, version: &str) -> Option<InstalledImage> {
     let mut manifest: ImageManifest =
         serde_json::from_slice(&fs::read(dir.join(MANIFEST)).ok()?).ok()?;
@@ -622,7 +648,8 @@ mod tests {
                 "sha256": sha(bytes), "dirs": ["usr", "etc", "var"], "tree_bytes": 1, "packages": [],
             }));
         }
-        serde_json::json!({ "version": version, "arch": "aarch64", "images": images }).to_string()
+        serde_json::json!({ "version": version, "arch": std::env::consts::ARCH, "images": images })
+            .to_string()
     }
 
     /// A local release directory.
@@ -648,20 +675,33 @@ mod tests {
         ControlFlow::Continue(())
     }
 
+    /// aarch64 keeps the unsuffixed release every installed Mac already
+    /// downloads from; x86_64 has its own.
+    #[test]
+    fn each_architecture_has_its_release() {
+        assert_eq!(
+            release_url_for("0.1.0", "aarch64"),
+            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0"
+        );
+        assert_eq!(
+            release_url_for("0.1.0", "x86_64"),
+            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0-x86_64"
+        );
+        assert_eq!(
+            release_url("0.1.0"),
+            release_url_for("0.1.0", std::env::consts::ARCH)
+        );
+    }
+
     #[test]
     fn a_pin_names_its_release_files() {
         let pinned = PinnedImage::new("0.1.0", None);
-        assert_eq!(
-            pinned.url(),
-            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/base.erofs"
-        );
-        assert_eq!(
-            pinned.manifest_url(),
-            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/manifest.json"
-        );
+        let release = release_url("0.1.0");
+        assert_eq!(pinned.url(), format!("{release}/base.erofs"));
+        assert_eq!(pinned.manifest_url(), format!("{release}/manifest.json"));
         assert_eq!(
             pinned.file_url("layer-devtools.erofs"),
-            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/layer-devtools.erofs"
+            format!("{release}/layer-devtools.erofs")
         );
         let mirrored = PinnedImage::new("0.1.0", Some("https://mirror.test/images/"));
         assert_eq!(mirrored.url(), "https://mirror.test/images/base.erofs");
@@ -840,7 +880,14 @@ mod tests {
             Err(Error::Manifest { .. })
         ));
         let malformed = tempfile::tempdir().unwrap();
-        fs::write(malformed.path().join(MANIFEST), r#"{"version":"3.0.0","arch":"aarch64","images":[{"name":"base","file":"base.erofs","size":5,"sha256":"nope"}]}"#).unwrap();
+        fs::write(
+            malformed.path().join(MANIFEST),
+            format!(
+                r#"{{"version":"3.0.0","arch":"{}","images":[{{"name":"base","file":"base.erofs","size":5,"sha256":"nope"}}]}}"#,
+                std::env::consts::ARCH
+            ),
+        )
+        .unwrap();
         assert!(matches!(
             store.install(&pin_to("3.0.0", &malformed), &[], go).await,
             Err(Error::Manifest { .. })
@@ -850,6 +897,19 @@ mod tests {
             store.install(&pin_to("3.0.0", &missing), &[], go).await,
             Err(Error::Io { .. })
         ));
+        let foreign = local_release("3.0.0", b"hello", &[]);
+        let path = foreign.path().join(MANIFEST);
+        let mut manifest: ImageManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest.arch = "riscv64".into();
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(
+            matches!(
+                store.install(&pin_to("3.0.0", &foreign), &[], go).await,
+                Err(Error::Manifest { .. })
+            ),
+            "another architecture's image"
+        );
         let good = local_release("3.0.0", b"hello", &[]);
         assert!(
             matches!(
@@ -861,6 +921,44 @@ mod tests {
             "a layer the release lacks"
         );
         assert!(store.installed().unwrap().is_empty());
+    }
+
+    /// An installed directory holding another architecture's build of the
+    /// pinned version (a data directory carried from an arm64 Mac to an
+    /// x86-64 server, say) is not an installed image: the same gate the
+    /// download passes refuses it on read, so nothing boots it, and the
+    /// install replaces it with this host's build.
+    #[tokio::test]
+    async fn an_installed_image_of_another_architecture_is_not_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(root.path());
+        let release = local_release("3.0.0", b"hello", &[]);
+        store
+            .install(&pin_to("3.0.0", &release), &[], go)
+            .await
+            .unwrap();
+        assert!(store.find("3.0.0").is_some());
+
+        let path = store.dir().join("3.0.0").join(MANIFEST);
+        let mut manifest: ImageManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest.arch = "riscv64".into();
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(
+            store.find("3.0.0").is_none(),
+            "another architecture's image"
+        );
+        assert!(store.installed().unwrap().is_empty());
+
+        let installed = store
+            .install(&pin_to("3.0.0", &release), &[], go)
+            .await
+            .unwrap();
+        assert_eq!(installed.version, "3.0.0");
+        assert!(
+            store.find("3.0.0").is_some(),
+            "replaced by this host's build"
+        );
     }
 
     /// This build names a real release on the public repository.

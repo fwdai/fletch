@@ -17,6 +17,8 @@ OUT=$(cd "$OUT" && pwd)
 WITH_AGENTS=${WITH_AGENTS:-1}
 MNT=/mnt/box-image-test
 M=$MNT/merged
+# The multiarch library directory: the images are this host's architecture.
+LIB=$M/usr/lib/$(uname -m)-linux-gnu
 REPORT=$OUT/report.md
 LOG=$OUT/test.log
 : > "$LOG"
@@ -112,7 +114,7 @@ check T-guest "fletch-guest is in the image and answers" -- \
 check T-mkfs "mkfs.ext4 and e2fsck for the data disk" -- \
   runroot sh -c 'mkfs.ext4 -V 2>&1 | head -1 && e2fsck -V 2>&1 | head -1'
 check T-nollvm-files "Mesa/LLVM files are excluded; libgbm stays" -- \
-  sh -c "! ls $M/usr/lib/aarch64-linux-gnu/libLLVM* $M/usr/lib/aarch64-linux-gnu/libgallium* $M/usr/lib/aarch64-linux-gnu/libz3* 2>/dev/null && ls $M/usr/lib/aarch64-linux-gnu/libgbm.so.1 && echo 'libgbm present, backend absent'"
+  sh -c "! ls $LIB/libLLVM* $LIB/libgallium* $LIB/libz3* 2>/dev/null && ls $LIB/libgbm.so.1 && echo 'libgbm present, backend absent'"
 check T-locale "no /usr/share/locale; C.UTF-8 works" -- \
   agent_sh 'test ! -d /usr/share/locale/de && python3 -c "import sys; print(sys.getfilesystemencoding())"'
 check T-fonts "fontconfig resolves sans-serif, emoji and CJK on the base fonts" -- \

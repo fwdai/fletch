@@ -24,11 +24,27 @@ Fletch.app/Contents/
   Frameworks/libkrunfw.5.dylib  (@executable_path/../Frameworks)
 ```
 
+## Layout on Linux (`fletch-host`)
+
+No bundle and no signing: the Linux `fletch-host` release tarball carries the
+helper and the two shared objects flat beside the binary, and the install
+script and `fletch-host update` install them into the binary's directory:
+
+```
+~/.local/bin/                   (or wherever fletch-host is installed)
+  fletch-host
+  fletch-vm                     RuntimePaths::bundled finds it beside the running executable
+  libkrun.so.1                  what fletch-vm dlopens from its own directory
+  libkrunfw.so.5                (loaded first by full path; libkrun asks for it by soname)
+```
+
 ## Where the app looks (`fletch_core::sandbox::boxes::runtime_paths`)
 
 1. `FLETCH_BOX_HELPER` and `FLETCH_BOX_LIB_DIR` (`scripts/box-dev.sh` prints
    them, for the CLI and the VM tests).
 2. The bundle: `Contents/Helpers/fletch-vm`, dylibs in `Contents/Frameworks`.
+   On Linux: `fletch-vm` beside the running executable, with the libraries
+   (only when it is there).
 3. A dev checkout: `packaging/box-bundle/out/` of the repository the running
    binary is inside (`RuntimePaths::dev`; `src-tauri/target/debug/fletch` under
    `tauri dev`). It resolves whether or not `out/` exists, so the probe can say
@@ -42,6 +58,8 @@ an ad hoc signature into `out/`. Needs Xcode, not only the Command Line Tools
 (bindgen wants libclang). Inside a Fletch sandbox `~/.cargo/registry` is
 read-only; the hook then sets `CARGO_HOME` under `$TMPDIR` by itself. Running
 it by hand is the same command: `packaging/box-bundle/ensure-dev.sh`.
+On Linux the same hook builds `libkrun.so.1`, takes `libkrunfw.so.5`, and
+stages them with an unsigned `fletch-vm` in `out/`.
 
 ## Release build
 

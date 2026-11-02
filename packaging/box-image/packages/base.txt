@@ -1,4 +1,4 @@
-# Base layer: Debian trixie (arm64) packages every box boots. Node is not here:
+# Base layer: Debian trixie (arm64, amd64) packages every box boots. Node is not here:
 # it comes from the pinned nodejs.org tarball (build-layers.sh).
 
 # Shell and base tools. bash is a contract: Claude Code's Bash tool needs it.

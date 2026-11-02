@@ -20,9 +20,22 @@ pub use console::HostKey;
 use launch::{Disk, LaunchConfig, RootDisk, Share, VsockPort};
 
 pub const HELPER: &str = "fletch-vm";
+#[cfg(not(target_os = "linux"))]
 pub const LIBKRUN: &str = "libkrun.1.dylib";
+#[cfg(not(target_os = "linux"))]
 pub const LIBKRUNFW: &str = "libkrunfw.5.dylib";
-/// macOS `sun_path` is 104 bytes including the NUL.
+/// libkrun's soname, and the soname libkrun dlopens its kernel bundle by.
+#[cfg(target_os = "linux")]
+pub const LIBKRUN: &str = "libkrun.so.1";
+#[cfg(target_os = "linux")]
+pub const LIBKRUNFW: &str = "libkrunfw.so.5";
+/// The runtime as one unit: the helper and the two libraries it loads. A
+/// host that ships or installs the runtime carries all of these or none of
+/// them (`fletch-host update`, `scripts/install-host.sh`), since a helper
+/// without its libraries, or the other way round, is a sandbox that
+/// advertises itself and never boots.
+pub const RUNTIME_FILES: &[&str] = &[HELPER, LIBKRUN, LIBKRUNFW];
+/// macOS `sun_path` is 104 bytes including the NUL (Linux allows 108).
 pub const MAX_SOCKET_PATH: usize = 103;
 /// How much console is kept in an error.
 const CONSOLE_TAIL: usize = 4096;
@@ -38,13 +51,20 @@ const DEV_MARKER: &str = "crates/fletch-box/Cargo.toml";
 /// What a dev checkout runs to stage the runtime into [`DEV_OUT_DIR`]; named in
 /// the probe's message when the helper is missing.
 const DEV_BUILD_HOOK: &str = "packaging/box-bundle/ensure-dev.sh";
+/// What [`DEV_BUILD_HOOK`] needs, named with it in the probe's message.
+const DEV_BUILD_NEEDS: &str = if cfg!(target_os = "linux") {
+    "needs Rust and a C compiler with static glibc"
+} else {
+    "needs Xcode"
+};
 
 /// Where the runtime's own files live on the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimePaths {
-    /// The `fletch-vm` binary, signed with the hypervisor entitlement.
+    /// The `fletch-vm` binary; on macOS signed with the hypervisor entitlement.
     pub helper: PathBuf,
-    /// Directory with the libkrun dylibs. `None`: the bundle's Frameworks folder.
+    /// Directory with the libkrun libraries. `None`: the bundle's Frameworks
+    /// folder on macOS, the helper's own directory on Linux.
     pub lib_dir: Option<PathBuf>,
     /// Default parent of box directories. Keep it short: socket paths live under it.
     pub run_root: PathBuf,
@@ -54,6 +74,7 @@ impl RuntimePaths {
     /// The helper inside the macOS app whose executable is `exe`
     /// (`<name>.app/Contents/MacOS/<exe>`): `Contents/Helpers/fletch-vm`, with
     /// libkrun in `Contents/Frameworks`, where the helper looks when `lib_dir` is `None`.
+    #[cfg(not(target_os = "linux"))]
     pub fn bundled(exe: &Path, run_root: PathBuf) -> Option<RuntimePaths> {
         let macos = exe.parent().filter(|dir| dir.ends_with("MacOS"))?;
         let contents = macos.parent().filter(|dir| dir.ends_with("Contents"))?;
@@ -67,7 +88,23 @@ impl RuntimePaths {
         })
     }
 
-    /// A dev checkout: `<repo>/packaging/box-bundle/out/{fletch-vm,*.dylib}`
+    /// The runtime a Linux release installs beside the executable `exe`
+    /// (`fletch-host`): `fletch-vm`, `libkrun.so.1` and `libkrunfw.so.5` in
+    /// the same directory. Only when the helper is there, so a build without
+    /// it (a dev checkout) falls through to [`dev`](Self::dev).
+    #[cfg(target_os = "linux")]
+    pub fn bundled(exe: &Path, run_root: PathBuf) -> Option<RuntimePaths> {
+        let dir = exe.parent()?;
+        let helper = dir.join(HELPER);
+        helper.is_file().then(|| RuntimePaths {
+            helper,
+            lib_dir: Some(dir.to_path_buf()),
+            run_root,
+        })
+    }
+
+    /// A dev checkout: `<repo>/packaging/box-bundle/out/` (`fletch-vm` and the
+    /// two libkrun libraries)
     /// for the repo some ancestor of `exe` is (`src-tauri/target/debug/fletch`
     /// under `tauri dev`). Resolves as soon as the checkout is recognised, built
     /// or not, so [`probe`](Self::probe) can name the missing build.
@@ -96,13 +133,18 @@ impl RuntimePaths {
         })
     }
 
-    /// Where the helper will look for the dylibs.
+    /// Where the helper will look for the libkrun libraries.
     pub fn lib_dir(&self) -> PathBuf {
         self.lib_dir.clone().unwrap_or_else(|| {
-            self.helper
+            let helper_dir = self
+                .helper
                 .parent()
-                .map_or_else(|| PathBuf::from(".."), Path::to_path_buf)
-                .join("../Frameworks")
+                .map_or_else(|| PathBuf::from(".."), Path::to_path_buf);
+            if cfg!(target_os = "linux") {
+                helper_dir
+            } else {
+                helper_dir.join("../Frameworks")
+            }
         })
     }
 
@@ -115,7 +157,13 @@ impl RuntimePaths {
             helper_entitled: helper_entitled(&self.helper),
             dylibs_present: lib_dir.join(LIBKRUN).is_file() && lib_dir.join(LIBKRUNFW).is_file(),
             lib_dir,
-            arch_ok: cfg!(all(target_os = "macos", target_arch = "aarch64")),
+            arch_ok: cfg!(any(
+                all(target_os = "macos", target_arch = "aarch64"),
+                all(
+                    target_os = "linux",
+                    any(target_arch = "x86_64", target_arch = "aarch64")
+                )
+            )),
             hypervisor: hypervisor_available(),
         }
     }
@@ -126,13 +174,15 @@ impl RuntimePaths {
 pub struct Probe {
     pub helper: PathBuf,
     pub helper_present: bool,
-    /// Signed with `com.apple.security.hypervisor`.
+    /// Signed with `com.apple.security.hypervisor`; always true on Linux,
+    /// which has no such thing.
     pub helper_entitled: bool,
     pub lib_dir: PathBuf,
     pub dylibs_present: bool,
-    /// Apple silicon running macOS; libkrun's macOS backend runs nowhere else.
+    /// Apple silicon running macOS (libkrun's Hypervisor.framework backend),
+    /// or x86-64 or arm64 Linux (its KVM backend).
     pub arch_ok: bool,
-    /// `kern.hv_support`.
+    /// `kern.hv_support` on macOS; `/dev/kvm` opens read-write on Linux.
     pub hypervisor: bool,
 }
 
@@ -145,15 +195,25 @@ impl Probe {
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
         if !self.arch_ok {
-            out.push("boxes need an Apple silicon Mac".to_owned());
+            out.push(if cfg!(target_os = "linux") {
+                "boxes need an x86-64 or arm64 Linux host".to_owned()
+            } else {
+                "boxes need an Apple silicon Mac".to_owned()
+            });
         } else if !self.hypervisor {
-            out.push("this Mac reports no hypervisor support".to_owned());
+            out.push(if cfg!(target_os = "linux") {
+                "boxes need KVM: /dev/kvm must exist and be writable by this user (the kvm \
+                 group); on a virtual server the provider must enable nested virtualization"
+                    .to_owned()
+            } else {
+                "this Mac reports no hypervisor support".to_owned()
+            });
         }
         if !self.helper_present {
             // In a dev checkout the runtime is staged by the hook `tauri dev`
             // runs; the one way to end up here is that it could not build.
             out.push(format!(
-                "box runtime not built; run {DEV_BUILD_HOOK} (needs Xcode); no helper at {}",
+                "box runtime not built; run {DEV_BUILD_HOOK} ({DEV_BUILD_NEEDS}); no helper at {}",
                 self.helper.display()
             ));
         } else if !self.helper_entitled {
@@ -194,12 +254,23 @@ fn hypervisor_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Only macOS gates the hypervisor on a code signature.
 #[cfg(not(target_os = "macos"))]
 fn helper_entitled(_helper: &Path) -> bool {
-    false
+    true
 }
 
-#[cfg(not(target_os = "macos"))]
+/// What libkrun opens first: KVM, read-write, as this user.
+#[cfg(target_os = "linux")]
+fn hypervisor_available() -> bool {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kvm")
+        .is_ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn hypervisor_available() -> bool {
     false
 }
@@ -794,6 +865,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn finds_the_helper_in_an_app_bundle_only() {
         let run_root = PathBuf::from("/r");
@@ -815,6 +887,25 @@ mod tests {
                 "{exe}"
             );
         }
+    }
+
+    /// A Linux release puts the helper and both libraries beside the binary;
+    /// without the helper there, nothing is found, so a dev build falls
+    /// through to its checkout.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finds_the_helper_beside_the_executable_on_linux() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("fletch-host");
+        assert!(RuntimePaths::bundled(&exe, "/r".into()).is_none());
+        std::fs::write(dir.path().join(HELPER), b"").unwrap();
+        let paths = RuntimePaths::bundled(&exe, "/r".into()).unwrap();
+        assert_eq!(paths.helper, dir.path().join(HELPER));
+        assert_eq!(paths.lib_dir(), dir.path());
+        let probe = paths.probe();
+        assert!(probe.helper_entitled, "no signature to check on Linux");
+        assert!(!probe.dylibs_present);
+        assert!(probe.problems().join("\n").contains(LIBKRUN));
     }
 
     #[test]

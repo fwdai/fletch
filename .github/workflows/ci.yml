@@ -168,10 +168,10 @@ jobs:
         run: cargo test --manifest-path crates/fletch-host/Cargo.toml
 
       # `fletch-box` is the micro-VM sandbox runtime (libkrun guests reached
-      # over SSH on vsock). Its
+      # over SSH on vsock), on macOS and on Linux (KVM). Its
       # VM tests are `#[ignore]`d — hosted runners have no nested
       # virtualisation — so this gate is the unit tests plus the proof that the
-      # crate's macOS-only calls are properly cfg-gated for the Linux host.
+      # Linux side of the crate builds and its macOS-only calls are cfg-gated.
       - name: Rustfmt (fletch-box)
         run: cargo fmt --manifest-path crates/fletch-box/Cargo.toml --check
 
@@ -197,11 +197,13 @@ jobs:
       - name: Test (fletch-guest)
         run: cargo test --manifest-path crates/fletch-guest/Cargo.toml
 
-      - name: Cross-build (fletch-guest, aarch64 musl)
+      - name: Cross-build (fletch-guest, aarch64 and x86_64 musl)
         # From inside the crate: its linker settings live in
         # crates/fletch-guest/.cargo/config.toml, which cargo reads from the
-        # working directory, not from --manifest-path.
+        # working directory, not from --manifest-path. One image per
+        # architecture, so one guest agent per architecture.
         working-directory: crates/fletch-guest
         run: |
-          rustup target add aarch64-unknown-linux-musl
+          rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl
           cargo build --release --target aarch64-unknown-linux-musl
+          cargo build --release --target x86_64-unknown-linux-musl

@@ -8,8 +8,9 @@ same engine the desktop app runs, booted by the same function
 microphone or a window.
 
 Unix only: **Linux** (x86-64 and arm64) and **macOS** (Apple silicon). On Linux
-you need Docker or Podman — there is no `sandbox-exec` to fall back to, and the
-host refuses to start rather than run an agent outside the boundary it promised.
+agents run in boxes, one KVM micro-VM each, so the machine needs KVM (see "The
+sandbox") — there is no `sandbox-exec` to fall back to, and the host refuses to
+start rather than run an agent outside the boundary it promised.
 
 ## Install
 
@@ -59,11 +60,18 @@ tar xzf fletch-host-$V-$T.tar.gz
 install -Dm755 fletch-host ~/.local/bin/fletch-host
 ```
 
+On Linux, install the box runtime the tarball carries beside the binary, where
+the host looks for it:
+
+```sh
+install -m755 fletch-vm libkrun.so.1 libkrunfw.so.5 ~/.local/bin/
+```
+
 `~/.local/bin` is a directory you own, which is what makes `fletch-host update`
-able to replace the binary without `sudo`. Make sure it is on your `PATH`
-(`export PATH="$HOME/.local/bin:$PATH"`). The tarball also carries this README
-and both service templates, so the paths under "Run it as a service" work from
-the extracted directory as well as from a checkout.
+able to replace the binary (and the runtime beside it) without `sudo`. Make sure
+it is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH"`). The tarball also
+carries this README and both service templates, so the paths under "Run it as a
+service" work from the extracted directory as well as from a checkout.
 
 From a checkout instead:
 
@@ -109,8 +117,8 @@ fletch-host service uninstall
 ```
 
 Either way the host runs **as your own user**, never as root: everything it
-touches is yours, and on Linux the container sandbox maps the agent's files
-back to that same user (see "The sandbox" below).
+touches is yours, and on Linux that user is the one who needs KVM access (see
+"The sandbox" below).
 
 `install` writes the service definition, enables it and starts it, printing
 every file it wrote and every command it ran. Running it again rewrites the
@@ -237,24 +245,28 @@ manual rollback uses.
 ## The sandbox
 
 On macOS an agent runs under `sandbox-exec` by default, exactly as it does on
-the desktop. On Linux there is no such thing, so the host needs **Docker or
-Podman** and refuses to start without one — it will not silently run an agent
-outside the boundary it promised. With no stored preference it picks Docker if
-the daemon answers, else Podman.
+the desktop. On Linux there is no such thing, so an agent runs in a **box**: a
+libkrun micro-VM of its own with no network device, reached over SSH on vsock,
+whose only way out is the host's egress proxy and its allow-list
+([docs/box.md](../../docs/box.md)). The runtime (`fletch-vm`, `libkrun.so.1`,
+`libkrunfw.so.5`) comes in the release tarball and sits beside `fletch-host`;
+the Debian image the boxes boot (about 300 MB with the default devtools layer)
+downloads on first use, for this machine's architecture.
 
-Two consequences of running containers on Linux, where (unlike macOS) the
-container's root really is the machine's root:
+A box needs **KVM**: `/dev/kvm` must exist and be readable and writable by the
+user the host runs as, which on most distributions means the `kvm` group:
 
-- With a **rootful Docker daemon** the launch adds `--user <uid>:<gid>` so the
-  agent's checkout, its RPC replies and claude's transcripts come back owned by
-  the service user instead of by root. It also binds a generated `/etc/passwd`
-  (kept under the host's data dir, where no agent can touch it) so the service
-  user's uid resolves inside the container, and sets `no-new-privileges` so
-  the image's setuid binaries stay inert. Running as that user also means an agent cannot
-  `apt-get install` inside its own container: bake what your project needs into
-  a custom image (`docker_image` in Settings) instead.
-- **Rootless Docker and Podman** already map the container's root to your user,
-  so they are left exactly as they are.
+```sh
+ls -l /dev/kvm                  # crw-rw---- root kvm: KVM is there
+sudo usermod -aG kvm $USER      # then log in again, and restart the service
+```
+
+On a virtual server there is a `/dev/kvm` only if the provider passes
+virtualization through to your VM (nested virtualization): Hetzner Cloud,
+DigitalOcean and most KVM-based VPS do; on AWS only the bare-metal (`*.metal`)
+instances do; on GCP it is a per-instance flag (`--enable-nested-virtualization`).
+Without KVM the host refuses to start rather than run an agent unsandboxed;
+the message names what is missing.
 
 ## Pair a phone
 
@@ -374,8 +386,8 @@ machine, so `provider status` says so instead of offering a command.
 
 Those logins persist in each tool's own config, so this is once per host (per
 provider), not once per run — but they must be the logins of **the user the
-service runs as**, since that is whose home directory the agent (and the
-container sandbox, which mounts `~/.claude`) reads. That is a requirement, not
+service runs as**, since that is whose home directory the host reads them from
+to hand them to an agent. That is a requirement, not
 a preference: `provider login` refuses to run as anyone else (a login as root
 would drop root-owned credential files into that user's home) and prints the
 `sudo -u <user> fletch-host provider login <id>` that does it properly.
@@ -399,8 +411,7 @@ filesystem instead:
   it takes no credential, because anyone who can open it can already read the
   database beside it;
 - RPC mailboxes are `0700` too, and agent checkouts are whatever your `umask`
-  makes them — on Linux the container writes them as your uid, which is the
-  whole point of the mapping above.
+  makes them.
 
 So: **run the host as its own user, and let nothing else read that directory.**
 Anyone who can read it can push as you.
@@ -419,8 +430,8 @@ PATH, and is an unpacked upstream tarball, not a secret) but not write it. The
 desktop app carries the same read-only exception against its own data dir, since
 a shell's PATH search has to `stat` the binary before it will run it. A Run panel
 command gets the same deny, with its checkout re-allowed. On Linux the question
-does not arise: a container sees only the paths bound into it, and the data dir
-is not one of them. None of this helps against anything *outside* the sandbox,
+does not arise: a box is a VM that sees its own disks and nothing of the host's
+filesystem, the data dir included. None of this helps against anything *outside* the sandbox,
 though — a `--data-dir` left world-readable is still world-readable, which is
 what the `0700` above is for.
 
@@ -483,6 +494,9 @@ them when they are unset, and then keeping them unique per host is yours to do.
 
 - **No PTY streaming**: a remote client sees agent status and events, not a live
   terminal. That is Phase 5 of the multi-host plan.
+- **No shared folders in a box on Linux**: a box mounts a folder shared with it
+  only under `/Users` or `/Volumes`, the macOS roots, so on Linux an agent sees
+  its own checkout and nothing else of the host's.
 - **No unattended upgrades and no rollback**: `fletch-host update` exists (see
   "Update"), but running it is yours to do, and undoing one is restoring the
   database copy it left behind by hand.

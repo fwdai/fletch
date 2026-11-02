@@ -1,6 +1,9 @@
 #!/bin/sh
-# The GitHub release of a built image, `box-image-v<VERSION>`: manifest.json,
-# the images, their delta manifests, sizes.md, and inputs.json. Idempotent on
+# The GitHub release of a built image, `box-image-v<VERSION>` for aarch64 and
+# `box-image-v<VERSION>-<arch>` for any other architecture (x86_64): the
+# manifest's `arch` picks it, and each architecture's release is published on
+# its own. It holds manifest.json, the images, their delta manifests, sizes.md,
+# and inputs.json. Idempotent on
 # one rule: a version names one set of inputs. The inputs are the git ids at
 # HEAD of what the image is made from ($INPUTS: what build.sh reads, and the
 # guest agent), recorded in the release as inputs.json. The scripts around it
@@ -14,9 +17,11 @@
 #                                  already released: nothing to do, exit 0.
 #                                  Other inputs under this version, or a
 #                                  release missing files: exit 1.
-#   publish.sh --check VERSION     the same verdicts without publishing, for a
-#                                  pull request: a change to the image without
-#                                  a VERSION bump fails here, not on main.
+#   publish.sh --check VERSION [ARCH]
+#                                  the same verdicts without publishing (ARCH
+#                                  defaults to aarch64), for a pull request: a
+#                                  change to the image without a VERSION bump
+#                                  fails here, not on main.
 #
 # Needs `gh` logged in (GH_TOKEN in CI) and the repository checked out.
 set -eu
@@ -40,10 +45,18 @@ absent() {
     printf '%s\n' "$assets" | grep -qxF "$name $size" || echo "$name"
   done
 }
-# none | draft | same | incomplete (these inputs, but a file its manifest lists
-# is missing) | different | unknown (a release without inputs.json)
+# The release tag of <version> <arch>; aarch64's predates every other
+# architecture's and carries no suffix (PinnedImage's release_url agrees).
+tag_of() {
+  case "$2" in
+    aarch64) echo "box-image-v$1" ;;
+    *) echo "box-image-v$1-$2" ;;
+  esac
+}
+# <tag>: none | draft | same | incomplete (these inputs, but a file its manifest
+# lists is missing) | different | unknown (a release without inputs.json)
 status() {
-  tag="box-image-v$1"
+  tag=$1
   draft=$(gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null) || { echo none; return; }
   [ "$draft" = false ] || { echo draft; return; }
   remote=$(gh release download "$tag" --pattern inputs.json --output - 2>/dev/null || true)
@@ -57,35 +70,41 @@ status() {
     echo incomplete
   fi
 }
-verdict() { # <version> <status>: prints the sentence; exits 1 when the version must be bumped
+verdict() { # <tag> <status>: prints the sentence; exits 1 when the version must be bumped
   case "$2" in
-    none) echo "no release box-image-v$1 yet";;
-    draft) echo "box-image-v$1 is a draft left by a publish that did not finish; publishing replaces it";;
-    same) echo "release box-image-v$1 holds these inputs";;
+    none) echo "no release $1 yet";;
+    draft) echo "$1 is a draft left by a publish that did not finish; publishing replaces it";;
+    same) echo "release $1 holds these inputs";;
     incomplete)
-      echo "::error::release box-image-v$1 lacks files its manifest.json lists, so the app cannot install it; bump packaging/box-image/VERSION"
+      echo "::error::release $1 lacks files its manifest.json lists, so the app cannot install it; bump packaging/box-image/VERSION"
       exit 1;;
     different)
-      echo "::error::release box-image-v$1 exists with other inputs; bump packaging/box-image/VERSION (a version names one set of inputs)"
+      echo "::error::release $1 exists with other inputs; bump packaging/box-image/VERSION (a version names one set of inputs)"
       exit 1;;
     unknown)
-      echo "::error::release box-image-v$1 exists without inputs.json (published before this check); bump packaging/box-image/VERSION"
+      echo "::error::release $1 exists without inputs.json (published before this check); bump packaging/box-image/VERSION"
       exit 1;;
   esac
 }
 
 if [ "${1:-}" = --check ]; then
-  VERSION=${2:?usage: publish.sh --check VERSION}
-  verdict "$VERSION" "$(status "$VERSION")"
+  VERSION=${2:?usage: publish.sh --check VERSION [ARCH]}
+  TAG=$(tag_of "$VERSION" "${3:-aarch64}")
+  verdict "$TAG" "$(status "$TAG")"
   exit 0
 fi
 
-OUT=${1:?usage: publish.sh OUT_DIR VERSION | --check VERSION}
+OUT=${1:?usage: publish.sh OUT_DIR VERSION | --check VERSION [ARCH]}
 VERSION=${2:?usage: publish.sh OUT_DIR VERSION}
-TAG="box-image-v$VERSION"
 M="$OUT/manifest.json"
 [ -f "$M" ] || { echo "publish.sh: no $M" >&2; exit 1; }
 [ "$(jq -r .version "$M")" = "$VERSION" ] || { echo "publish.sh: $M is version $(jq -r .version "$M"), not $VERSION" >&2; exit 1; }
+ARCH=$(jq -r .arch "$M")
+case "$ARCH" in
+  aarch64 | x86_64) ;;
+  *) echo "publish.sh: $M is for arch '$ARCH'; expected aarch64 or x86_64" >&2; exit 1 ;;
+esac
+TAG=$(tag_of "$VERSION" "$ARCH")
 [ -f "$OUT/sizes.md" ] || { echo "publish.sh: no $OUT/sizes.md" >&2; exit 1; }
 # What the release carries, as the positional parameters, each file named: the
 # manifest, sizes.md, inputs.json (written below), then every image the
@@ -101,8 +120,8 @@ for f in $(jq -r '.images[].file' "$M"); do
   fi
 done
 [ $# -gt 3 ] || { echo "publish.sh: $M lists no images" >&2; exit 1; }
-STATUS=$(status "$VERSION")
-verdict "$VERSION" "$STATUS"
+STATUS=$(status "$TAG")
+verdict "$TAG" "$STATUS"
 case "$STATUS" in
   none) ;;
   draft) gh release delete "$TAG" --yes ;;
@@ -124,7 +143,7 @@ inputs > "$OUT/inputs.json"
 NOTES=$(mktemp)
 trap 'rm -f "$NOTES"' EXIT
 {
-  echo "Box image for Fletch (\`packaging/box-image\`): the root filesystem every box boots and the layers it overlays. See docs/box.md."
+  echo "Box image for Fletch (\`packaging/box-image\`), $ARCH: the root filesystem every box boots and the layers it overlays. See docs/box.md."
   echo
   cat "$OUT/sizes.md"
   echo
@@ -137,7 +156,7 @@ trap 'rm -f "$NOTES"' EXIT
 # endpoint serves the repository's *latest* release (docs/RELEASING.md); an
 # image release must never become it.
 gh release create "$TAG" --draft --target "${GITHUB_SHA:-$(git rev-parse HEAD)}" \
-  --title "Box image v$VERSION" --notes-file "$NOTES" --latest=false "$@" ||
+  --title "Box image ${TAG#box-image-}" --notes-file "$NOTES" --latest=false "$@" ||
   abandon "creating the draft of $TAG failed"
 lacking=$(for f in "$@"; do echo "${f##*/} $(($(wc -c < "$f")))"; done | absent "$TAG")
 [ -z "$lacking" ] || abandon "the draft of $TAG lacks $(printf '%s' "$lacking" | tr '\n' ' ')"

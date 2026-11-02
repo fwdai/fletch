@@ -1,10 +1,11 @@
 name: Build and test the box image
 description: >
   Runs packaging/box-image/build-docker.sh --test, the same build as on a Mac:
-  fletch-guest, the images (build.sh in a privileged Debian arm64 container),
-  their tests (test.sh), the delta manifests and an install with the app's
-  installer. Puts report.md in the job summary. Publishes nothing. Needs an
-  arm64 Linux runner.
+  fletch-guest, the images (build.sh in a privileged Debian container of the
+  runner's architecture), their tests (test.sh), the delta manifests and an
+  install with the app's installer. Puts report.md in the job summary.
+  Publishes nothing. Needs an arm64 or x86-64 Linux runner; the images are for
+  its architecture.
 inputs:
   version:
     description: Image version (semver); default the VERSION file
@@ -70,7 +71,7 @@ runs:
         OUT: ${{ inputs.out }}
       run: |
         {
-          echo "## Box image ${{ steps.version.outputs.version }}"
+          echo "## Box image ${{ steps.version.outputs.version }} ($(uname -m))"
           echo
           if [ -f "$OUT/report.md" ]; then cat "$OUT/report.md"; else echo "The build failed before the tests ran."; fi
         } >> "$GITHUB_STEP_SUMMARY"

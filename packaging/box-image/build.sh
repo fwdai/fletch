@@ -1,12 +1,14 @@
 #!/bin/sh
 # Build the box images: the base root filesystem and the layers. Runs as root
-# on Debian trixie arm64 with CAP_SYS_ADMIN (a privileged container: the layer
-# installs chroot and mount /proc): build-docker.sh runs it, on a Mac and in CI.
+# on Debian trixie, arm64 or amd64, with CAP_SYS_ADMIN (a privileged container:
+# the layer installs chroot and mount /proc): build-docker.sh runs it, on a Mac
+# and in CI. The images are for the build host's architecture (`arch` in the
+# manifest): a box never emulates.
 #
 #   build.sh OUT_DIR [VERSION]
 #
 # VERSION is semver (default: the VERSION file). Expects the guest agent
-# cross-built first (crates/fletch-guest, aarch64-unknown-linux-musl);
+# cross-built first (crates/fletch-guest, <arch>-unknown-linux-musl);
 # FLETCH_GUEST overrides its path.
 #
 # Writes to OUT_DIR:
@@ -29,16 +31,23 @@ set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${1:?usage: build.sh OUT_DIR [VERSION]}
 VERSION=${2:-$(cat "$HERE/VERSION")}
-GUEST=${FLETCH_GUEST:-$HERE/../../crates/fletch-guest/target/aarch64-unknown-linux-musl/release/fletch-guest}
 WORK=${WORK:-/work}
 
-ARCH=aarch64
+ARCH=$(uname -m)
 SUITE=trixie
 # --- pins: packaging/box-image/bump.sh moves these ---
 DEBIAN_SNAPSHOT=${DEBIAN_SNAPSHOT:-20261027T000000Z}
 NODE_VERSION=22.23.4
-NODE_SHA256=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b
+NODE_SHA256_ARM64=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b
+NODE_SHA256_X64=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
 # --- end pins ---
+# Debian's and Node's names for $ARCH.
+case "$ARCH" in
+  aarch64) DEB_ARCH=arm64 NODE_ARCH=arm64 NODE_SHA256=$NODE_SHA256_ARM64 ;;
+  x86_64) DEB_ARCH=amd64 NODE_ARCH=x64 NODE_SHA256=$NODE_SHA256_X64 ;;
+  *) echo "build.sh: images are built for aarch64 or x86_64, not $ARCH" >&2; exit 1 ;;
+esac
+GUEST=${FLETCH_GUEST:-$HERE/../../crates/fletch-guest/target/$ARCH-unknown-linux-musl/release/fletch-guest}
 MIRROR=https://snapshot.debian.org/archive/debian/$DEBIAN_SNAPSHOT
 SECURITY=https://snapshot.debian.org/archive/debian-security/$DEBIAN_SNAPSHOT
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1767225600} # 2026-01-01
@@ -57,9 +66,8 @@ MKFS_FLAGS="-zlz4hc,12 -C65536 -Ededupe,fragments,ztailpacking -x -1 -T $SOURCE_
 echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ||
   { echo "build.sh: VERSION must be semver (X.Y.Z or X.Y.Z-tag), got '$VERSION'" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || { echo "build.sh: run as root" >&2; exit 1; }
-[ "$(uname -m)" = "$ARCH" ] || { echo "build.sh: needs an $ARCH host" >&2; exit 1; }
 [ -f "$GUEST" ] || {
-  echo "build.sh: no fletch-guest at $GUEST; build crates/fletch-guest for aarch64-unknown-linux-musl first" >&2
+  echo "build.sh: no fletch-guest at $GUEST; build crates/fletch-guest for $ARCH-unknown-linux-musl first" >&2
   exit 1
 }
 mkdir -p "$OUT" "$WORK"
@@ -96,7 +104,7 @@ rm -rf "$ROOT"
 echo "== installing Debian $SUITE from snapshot $DEBIAN_SNAPSHOT (base)"
 set -f
 # shellcheck disable=SC2086
-mmdebstrap --mode=root --variant=minbase --architectures=arm64 \
+mmdebstrap --mode=root --variant=minbase --architectures="$DEB_ARCH" \
   --aptopt='Acquire::Check-Valid-Until "false"' --aptopt='Acquire::Retries "5"' \
   $DPKGOPTS \
   --include="$(pkgs base)" \
@@ -106,8 +114,8 @@ set +f
 install -D -m 644 "$HERE/dpkg-excludes.cfg" "$ROOT/etc/dpkg/dpkg.cfg.d/fletch-excludes"
 
 echo "== installing Node $NODE_VERSION (headers go to the devtools layer)"
-tarball="$WORK/node-$NODE_VERSION.tar.xz"
-[ -f "$tarball" ] || curl -fsSL -o "$tarball" "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-arm64.tar.xz"
+tarball="$WORK/node-$NODE_VERSION-$NODE_ARCH.tar.xz"
+[ -f "$tarball" ] || curl -fsSL -o "$tarball" "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$NODE_ARCH.tar.xz"
 echo "$NODE_SHA256  $tarball" | sha256sum -c - >/dev/null
 tar -xJf "$tarball" -C "$ROOT/usr/local" --strip-components=1
 rm -f "$ROOT/usr/local/CHANGELOG.md" "$ROOT/usr/local/README.md" "$ROOT/usr/local/LICENSE"

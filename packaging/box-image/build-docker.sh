@@ -1,10 +1,10 @@
 #!/bin/sh
 # Build the box images the one way, on a Mac with Docker Desktop or on the
-# arm64 CI runner: cross-builds fletch-guest, runs build.sh in a Debian arm64
-# container (Docker Desktop runs it natively on Apple silicon; privileged,
-# since the layer builds chroot and mount), optionally test.sh the same way,
-# then writes the delta manifests and installs the result with the app's own
-# installer. OUT_DIR is then exactly what publish.sh releases.
+# arm64 or x86-64 CI runner: cross-builds fletch-guest, runs build.sh in a
+# Debian container of this machine's architecture (natively, never emulated;
+# privileged, since the layer builds chroot and mount), optionally test.sh the
+# same way, then writes the delta manifests and installs the result with the
+# app's own installer. OUT_DIR is then exactly what publish.sh releases.
 #
 #   packaging/box-image/build-docker.sh [OUT_DIR] [VERSION]          # -> packaging/box-image/out
 #   packaging/box-image/build-docker.sh --test [OUT_DIR] [VERSION]   # and run test.sh on it
@@ -20,13 +20,18 @@ TEST=0
 if [ "${1:-}" = --test ]; then TEST=1; shift; fi
 OUT=${1:-$HERE/out}
 VERSION=${2:-$(cat "$HERE/VERSION")}
+case $(uname -m) in
+  arm64 | aarch64) ARCH=aarch64 PLATFORM=linux/arm64 ;;
+  x86_64) ARCH=x86_64 PLATFORM=linux/amd64 ;;
+  *) echo "build-docker.sh: no box image for $(uname -m)" >&2; exit 1 ;;
+esac
 CRATE="$REPO/crates/fletch-guest"
-GUEST="${CARGO_TARGET_DIR:-$CRATE/target}/aarch64-unknown-linux-musl/release/fletch-guest"
+GUEST="${CARGO_TARGET_DIR:-$CRATE/target}/$ARCH-unknown-linux-musl/release/fletch-guest"
 FLETCH_BOX="${CARGO_TARGET_DIR:-$REPO/crates/fletch-box/target}/release/fletch-box"
 
-echo "== building fletch-guest and the fletch-box CLI"
-rustup target add aarch64-unknown-linux-musl >/dev/null
-(cd "$CRATE" && cargo build --quiet --release --target aarch64-unknown-linux-musl)
+echo "== building fletch-guest and the fletch-box CLI ($ARCH)"
+rustup target add "$ARCH-unknown-linux-musl" >/dev/null
+(cd "$CRATE" && cargo build --quiet --release --target "$ARCH-unknown-linux-musl")
 (cd "$REPO/crates/fletch-box" && cargo build --quiet --release --bin fletch-box)
 
 mkdir -p "$OUT"
@@ -37,7 +42,7 @@ echo "== building the images in a debian:trixie container"
 # directory is mounted, not the file: Docker Desktop binds a single file by
 # inode and kept serving the previous build after cargo replaced it.
 run_in_container() {
-  docker run --rm --privileged --platform linux/arm64 \
+  docker run --rm --privileged --platform "$PLATFORM" \
     -v "$HERE:/src:ro" -v "$(dirname "$GUEST"):/guest:ro" -v "$OUT:/out" \
     -e FLETCH_GUEST=/guest/fletch-guest -e "WITH_AGENTS=${WITH_AGENTS:-1}" \
     -e "DEBIAN_SNAPSHOT=${DEBIAN_SNAPSHOT:-}" -e "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-}" \
