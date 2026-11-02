@@ -35,7 +35,7 @@ export interface WorkspaceTypesSlice {
     failedKey: string | null;
   };
   /** Read the options for `repoPath` and `provider` (the picker's mount, its
-   *  inputs or the settings changing, a chip open, a retry). The latest read
+   *  inputs changing, a chip open, a retry). The latest read
    *  wins; a response for other inputs never lands. */
   loadWorkspaceTypes: (repoPath: string, provider: string) => Promise<void>;
   /** Re-read for the picker on screen, if any: an event moved the default. */
@@ -45,30 +45,23 @@ export interface WorkspaceTypesSlice {
   releaseWorkspaceTypes: () => void;
 }
 
-type KeyState = Pick<AppState, "sandboxEngine" | "boxesEnabled">;
-
-/** The key for `repoPath` and `provider` under the current settings. */
-export function workspaceTypesKeyFor(s: KeyState, repoPath: string, provider: string): string {
-  return workspaceTypesKey(repoPath, provider, s.sandboxEngine, s.boxesEnabled);
-}
-
 /** The host's options for these inputs, or null while there is no answer for
  *  them. What the chip draws and what the spawn sends both read this. */
 export function workspaceTypeOptionsFor(
-  s: KeyState & Pick<AppState, "workspaceTypes">,
+  s: Pick<AppState, "workspaceTypes">,
   repoPath: string,
   provider: string,
 ): WorkspaceTypeOption[] | null {
-  return answeredOptions(s.workspaceTypes.answer, workspaceTypesKeyFor(s, repoPath, provider));
+  return answeredOptions(s.workspaceTypes.answer, workspaceTypesKey(repoPath, provider));
 }
 
 /** Whether the latest read for these inputs failed. */
 export function workspaceTypesFailedFor(
-  s: KeyState & Pick<AppState, "workspaceTypes">,
+  s: Pick<AppState, "workspaceTypes">,
   repoPath: string,
   provider: string,
 ): boolean {
-  return s.workspaceTypes.failedKey === workspaceTypesKeyFor(s, repoPath, provider);
+  return s.workspaceTypes.failedKey === workspaceTypesKey(repoPath, provider);
 }
 
 /** One box setup event, as the listeners receive it. */
@@ -102,16 +95,15 @@ let latestRead = 0;
 
 export const createWorkspaceTypesSlice: SliceCreator<WorkspaceTypesSlice> = (set, get) => {
   const currentKey = () => {
-    const s = get();
-    const inputs = s.workspaceTypes.inputs;
-    return inputs ? workspaceTypesKeyFor(s, inputs.repoPath, inputs.provider) : null;
+    const inputs = get().workspaceTypes.inputs;
+    return inputs ? workspaceTypesKey(inputs.repoPath, inputs.provider) : null;
   };
 
   return {
     workspaceTypes: { inputs: null, answer: null, failedKey: null },
 
     loadWorkspaceTypes: async (repoPath, provider) => {
-      const key = workspaceTypesKeyFor(get(), repoPath, provider);
+      const key = workspaceTypesKey(repoPath, provider);
       latestRead += 1;
       const request = { id: latestRead, key };
       set((s) => {

@@ -19,11 +19,12 @@ vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 vi.mock("@/data/slashCommands", () => ({ discoverCommands: vi.fn() }));
 
 import type { AgentRecord, Workspace } from "@/api";
+import { workspaceTypesKey } from "@/components/Composer/workspaceType";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { createDraftsSlice } from "./drafts";
 import { LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import type { AppState } from "./types";
-import { createWorkspaceTypesSlice, workspaceTypesKeyFor } from "./workspaceTypes";
+import { createWorkspaceTypesSlice } from "./workspaceTypes";
 
 const NAME = "chimborazo";
 
@@ -156,7 +157,6 @@ describe("the composer's workspace type at spawn", () => {
     getWorkspace.mockResolvedValue(null);
   });
   afterEach(() => {
-    vi.unstubAllEnvs();
     setEnvironmentsSource(() => ({
       environments: { [LOCAL_ENVIRONMENT_ID]: local },
       activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
@@ -165,15 +165,14 @@ describe("the composer's workspace type at spawn", () => {
 
   // The chip on screen has the host's answer for the draft's inputs and shows
   // the pick: what it declares is sent wherever the control is offered.
-  const spawnWithPick = async (admin: boolean) => {
+  const spawnWithPick = async () => {
     const store = makeStore(workspaceWith([]));
     store.setState((s) => ({
-      admin,
       drafts: s.drafts.map((d) => ({ ...d, workspaceType: "box" as const })),
       workspaceTypes: {
         inputs: { repoPath: "/repos/app", provider: "claude" },
         answer: {
-          key: workspaceTypesKeyFor(s, "/repos/app", "claude"),
+          key: workspaceTypesKey("/repos/app", "claude"),
           options: [
             { kind: "host", available: true, reason: null, default: true },
             { kind: "box", available: true, reason: null, default: false },
@@ -187,7 +186,7 @@ describe("the composer's workspace type at spawn", () => {
   };
 
   it("sends an explicit pick from this Mac", async () => {
-    expect(await spawnWithPick(true)).toBe("box");
+    expect(await spawnWithPick()).toBe("box");
   });
 
   it("does not send a pick while a paired host is active", async () => {
@@ -198,11 +197,6 @@ describe("the composer's workspace type at spawn", () => {
       },
       activeEnvironmentId: "studio",
     }));
-    expect(await spawnWithPick(true)).toBeUndefined();
-  });
-
-  it("does not send a pick once boxes are locked for this user", async () => {
-    vi.stubEnv("DEV", false);
-    expect(await spawnWithPick(false)).toBeUndefined();
+    expect(await spawnWithPick()).toBeUndefined();
   });
 });

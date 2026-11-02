@@ -2,6 +2,7 @@ import type { BoxStateEvent } from "@/api";
 import type { IconName } from "@/components/Icon";
 import type { BoxSetup } from "@/components/SettingsScreen/Sandbox/boxSetup";
 import type { Placement } from "@/util/placement";
+import { LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
 
 /** How a workspace's agent is confined, as the title bar tells it apart. */
 export type IsolationKind = "box" | "container" | "seatbelt";
@@ -17,16 +18,16 @@ export interface Isolation {
 
 const BOX: Isolation = {
   kind: "box",
-  icon: "cube",
-  title: "Isolated VM",
-  hint: "Runs inside a micro-VM reachable only over SSH. The box shares no folder with your Mac and reaches only the project's allowed hosts.",
+  icon: LINUX_VM.icon,
+  title: LINUX_VM.label,
+  hint: "Runs inside a micro-VM reachable only over SSH. It shares no folder with your Mac and reaches only the project's allowed hosts.",
 };
 
 /** Seatbelt is the fallback: every engine the app does not run elsewhere. */
 const SEATBELT: Isolation = {
   kind: "seatbelt",
-  icon: "folderLock",
-  title: "macOS sandbox",
+  icon: MACOS_SANDBOX.icon,
+  title: MACOS_SANDBOX.label,
   hint: "Runs on your Mac under the macOS sandbox (Seatbelt). It writes only inside this workspace, and your Downloads, Desktop, Documents and iCloud Drive stay closed to it.",
 };
 
@@ -50,13 +51,13 @@ export function isolationOf(engine: string | null | undefined): Isolation {
   return SEATBELT;
 }
 
-/** One more line under a seatbelt workspace's hint: where the isolated VM
+/** One more line under a seatbelt workspace's hint: where the Linux VM
  *  stands, for a host that could run one. The workspace itself stays where
  *  it is — the line is about the next one — so it says so. `placement` is
  *  the project's *effective* placement (`util/placement`): a project kept
  *  on this Mac, by the user or by the host's native-app detection, is the
- *  whole answer. Null when there is nothing worth adding: the switch off, a
- *  machine that cannot boot a box, a setup that failed (Settings has that),
+ *  whole answer. Null when there is nothing worth adding: a machine that
+ *  cannot boot a box, a setup that failed (Settings has that),
  *  or no answer yet. */
 export function seatbeltNote(
   vmUsable: boolean,
@@ -64,17 +65,17 @@ export function seatbeltNote(
   placement: { placement: Placement; detected: boolean },
 ): string | null {
   if (placement.detected) {
-    return "This project builds a macOS or iOS app, so its workspaces run on your Mac (Project Settings › Sandbox).";
+    return "This project builds a macOS or iOS app, so its workspaces run in the macOS sandbox (Project Settings › Sandbox).";
   }
   if (placement.placement === "host") {
-    return "This project's workspaces run on your Mac (Project Settings › Sandbox).";
+    return "This project's workspaces run in the macOS sandbox (Project Settings › Sandbox).";
   }
   if (!vmUsable) return null;
   switch (setup.state) {
     case "ready":
-      return "Isolated VMs are ready. New workspaces run in one.";
+      return "The Linux VM is ready. New workspaces run in it.";
     case "busy":
-      return `An isolated VM is being prepared — ${setup.text.replace(/…$/, "").toLowerCase()}. New workspaces will run in it.`;
+      return `The Linux VM is being prepared — ${setup.text.replace(/…$/, "").toLowerCase()}. New workspaces will run in it.`;
     default:
       return null;
   }
@@ -91,8 +92,7 @@ export const BOX_PHASE_LABEL: Record<BoxStateEvent["phase"], string> = {
 };
 
 /** `Preparing · downloading image 43%`: a box waiting on the host's setup
- *  says what for, so a launch right after the flag went on reads as late,
- *  not stuck. */
+ *  says what for, so a launch during the setup reads as late, not stuck. */
 export function boxPhaseLabel(state: BoxStateEvent): string {
   const label = BOX_PHASE_LABEL[state.phase];
   return state.phase === "preparing" && state.detail ? `${label} · ${state.detail}` : label;

@@ -5,7 +5,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 import type { WorkspaceKind, WorkspaceTypeOption } from "@/api";
-import { workspaceTypePickDropped } from "@/components/Composer/workspaceType";
 
 const { availableWorkspaceTypes, spawnAgent, sendUserMessage, getWorkspace } = vi.hoisted(() => ({
   availableWorkspaceTypes: vi.fn(),
@@ -38,7 +37,6 @@ const option = (kind: WorkspaceKind, over: Partial<WorkspaceTypeOption> = {}) =>
 });
 const HOST_DEFAULT = [option("host", { default: true }), option("box")];
 const BOX_DEFAULT = [option("host"), option("box", { default: true })];
-const PINNED = [option("host"), option("box")];
 
 /** A read the test answers by hand, in any order. */
 function deferred() {
@@ -68,7 +66,6 @@ const makeStore = () => {
     skills: [],
     managedLogs: {},
     sending: {},
-    admin: true,
     // biome-ignore lint/suspicious/noExplicitAny: partial store seed
   } as any);
   return store;
@@ -135,23 +132,6 @@ describe("the workspace-type answer", () => {
     fresh.resolve(HOST_DEFAULT);
     await b;
     expect(optionsFor(s, "codex")).toBe(HOST_DEFAULT);
-  });
-
-  it("drops the answer when a setting that moves the default changes", async () => {
-    const s = makeStore();
-    availableWorkspaceTypes.mockResolvedValueOnce(HOST_DEFAULT);
-    await s.getState().loadWorkspaceTypes("/r", "claude");
-    s.setState({ sandboxEngine: "docker" });
-    expect(optionsFor(s)).toBeNull();
-    // And a read started before the change does not land after it.
-    s.setState({ sandboxEngine: "auto" });
-    const inFlight = deferred();
-    availableWorkspaceTypes.mockReturnValueOnce(inFlight.promise);
-    const load = s.getState().loadWorkspaceTypes("/r", "claude");
-    s.setState({ boxesEnabled: !s.getState().boxesEnabled });
-    inFlight.resolve(BOX_DEFAULT);
-    await load;
-    expect(optionsFor(s)).toBeNull();
   });
 
   it("keeps the answer across a failed read, and notes a never-answered failure", async () => {
@@ -250,17 +230,6 @@ describe("spawning from a draft", () => {
     await s.getState().loadWorkspaceTypes("/r", "claude");
     // The send is for another provider than the answer was read for.
     await s.getState().spawnFromDraft("d1", "go", "codex");
-    expect(sent()).toBeUndefined();
-  });
-
-  it("drops the pick and sends nothing when the host pins a container engine", async () => {
-    const s = makeStore();
-    availableWorkspaceTypes.mockResolvedValueOnce(PINNED);
-    await s.getState().loadWorkspaceTypes("/r", "claude");
-    // The picker clears the pick on this answer, and only on it.
-    expect(workspaceTypePickDropped(optionsFor(s))).toBe(true);
-    s.getState().updateDraft("d1", { workspaceType: "box" });
-    await s.getState().spawnFromDraft("d1", "go", "claude");
     expect(sent()).toBeUndefined();
   });
 });

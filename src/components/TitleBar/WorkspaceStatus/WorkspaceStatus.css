@@ -439,7 +439,7 @@
   line-height: 1.45;
   color: var(--fg-2);
 }
-/* where the isolated VM stands, under a seatbelt workspace: about the next
+/* where the Linux VM stands, under a seatbelt workspace: about the next
    workspace, not this one, so a step quieter than the hint */
 .ws-pop-iso-note {
   font-size: 11px;

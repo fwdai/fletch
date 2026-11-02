@@ -3,7 +3,6 @@ import { api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
-import { workspaceTypeOffered } from "@/components/Composer/workspaceType";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
 import { IconButton } from "@/components/ui/IconButton";
@@ -110,12 +109,10 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   // is the whole page, whatever the project remembered.
   const workflowGate = useGate("workflows");
   const workflowMode = mode === "workflow" && !workflowGate;
-  // The workspace type is offered where boxes are rolled out to this user, and
-  // only for an agent on this Mac: a paired host's spawn carries no workspace
-  // type yet. `spawnFromDraft` sends what the chip declares on the same rule.
-  const workspaceTypeShown = useAppStore((s) =>
-    workspaceTypeOffered(s.admin, activeEntry(s).kind !== "remote"),
-  );
+  // The workspace type is offered only for an agent on this Mac: a paired
+  // host's spawn carries no workspace type yet. `spawnFromDraft` sends what
+  // the chip declares on the same rule.
+  const workspaceTypeShown = useAppStore((s) => activeEntry(s).kind !== "remote");
 
   return (
     <div className="pane center">
