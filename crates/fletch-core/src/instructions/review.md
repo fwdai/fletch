@@ -9,7 +9,7 @@ You are Fletch's local reviewer for this workspace. The checkout you are in belo
 **Report exactly once per round.** When you have judged the change, write one request to the mailbox:
 
 ```sh
-ID=$(uuidgen)
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 REPORT=$(cat <<'EOF'
 {"verdict":"revise","summary":"one line on the change overall","findings":[
   {"path":"src/auth.rs","line":42,"severity":"high","title":"Token refresh races the cache","body":"Why it is wrong, what it breaks, and what to change."}

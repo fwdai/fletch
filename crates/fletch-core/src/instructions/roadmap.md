@@ -18,7 +18,7 @@ No args reads everything, including shipped work, so you know what already
 exists before proposing more.
 
 ```sh
-ID=$(uuidgen)
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 printf '{"id":"%s","op":"roadmap_list"}' "$ID" > "$FLETCH_RPC_DIR/requests/$ID.json.tmp"
 mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"
 until [ -f "$FLETCH_RPC_DIR/responses/$ID.json" ]; do sleep 0.2; done
@@ -111,7 +111,7 @@ Fields, per item:
 Build the request with `jq` so free text is escaped correctly:
 
 ```sh
-ID=$(uuidgen)
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 jq -n --arg id "$ID" '{id:$id,op:"roadmap_propose",args:{items:[
   {title:"Add the queue drainer",
    why:"queued items sit forever with nothing to launch them",
@@ -163,7 +163,7 @@ than a duplicate ticket. The ask appears on the item's card as a diff with
 Accept and Decline next to it; nothing changes until the user accepts.
 
 ```sh
-ID=$(uuidgen)
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 jq -n --arg id "$ID" '{id:$id,op:"roadmap_propose_update",args:{
   code:"FLT-142",
   patch:{title:"Add the queue drainer", horizon:"now",
@@ -199,7 +199,7 @@ your reason as the record of why. You are asking to rule out work someone
 agreed to, so write the sentence the decision log should keep.
 
 ```sh
-ID=$(uuidgen)
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 jq -n --arg id "$ID" '{id:$id,op:"roadmap_propose_discard",args:{
   code:"FLT-143", reason:"superseded by FLT-150, which covers both repos"
 }}' > "$FLETCH_RPC_DIR/requests/$ID.json.tmp"
@@ -235,7 +235,7 @@ names what you left out or what doesn't belong, so read `roadmap_list` first and
 send that set, resequenced.
 
 ```sh
-ID=$(uuidgen)
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 jq -n --arg id "$ID" '{id:$id,op:"roadmap_propose_order",args:{
   codes:["FLT-150","FLT-142","FLT-143","FLT-151"],
   note:"FLT-150 unblocks the other three, so it goes first"
@@ -269,7 +269,7 @@ line to the item's durable history, visible on the card and in your next
 `roadmap_list`. Use it to make something survive the conversation.
 
 ```sh
-ID=$(uuidgen)
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 jq -n --arg id "$ID" '{id:$id,op:"roadmap_note",args:{
   code:"FLT-104",
   note:"shipped, but only for the primary repo — the multi-repo case in the acceptance criteria is untouched"
@@ -306,7 +306,7 @@ next to the Release button, so it has to say what must be agreed, not that
 something is wrong.
 
 ```sh
-ID=$(uuidgen)
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 jq -n --arg id "$ID" '{id:$id,op:"roadmap_hold",args:{
   scope:"FLT-142",
   reason:"the run is building the multi-repo case this ticket explicitly scoped out — confirm the scope before more lands"

@@ -294,8 +294,25 @@ async fn handle_request(
     dispatcher: &dyn RpcDispatcher,
 ) -> Vec<RpcEvent> {
     let name = format!("{key}.json");
+    // Never dispatched, so answered and dropped rather than left for the next
+    // tick: an empty id (`ID=$(uuidgen)` where there is no uuidgen) otherwise
+    // logged this ten times a second while the agent waited on `.json` for a
+    // response that never came. The name is still one component, which is all
+    // the response write and the removal need.
     if !is_safe_key(key) {
-        tracing::warn!(file = %name, "rpc: unsafe request filename, skipping");
+        tracing::warn!(file = %name, "rpc: unsafe request filename, answering with error");
+        let resp = Response::err(
+            key,
+            format!(
+                "invalid request id {key:?}: use only letters, digits, '-' and '_' \
+                 (an empty id usually means the command that made it, like uuidgen, \
+                 is missing)"
+            ),
+        );
+        if let Err(e) = mailbox.respond(key, &resp) {
+            tracing::debug!(error = %e, file = %name, "rpc: answering an unsafe request failed");
+        }
+        mailbox.remove_request(&name);
         return Vec::new();
     }
 
@@ -694,6 +711,31 @@ mod tests {
         assert!(!is_safe_key("../escape"));
         assert!(!is_safe_key("a/b"));
         assert!(!is_safe_key("with.dot"));
+    }
+
+    /// A request whose id is empty (`ID=$(uuidgen)` with no uuidgen) or
+    /// otherwise unsafe is answered with an error at the name the agent polls
+    /// and removed, never dispatched and never left to be skipped every tick.
+    #[tokio::test]
+    async fn an_unsafe_request_id_is_answered_and_removed() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        for name in [".json", "with.dot.json"] {
+            write_request(&rpc_dir.join("requests"), name, r#"{"op":"ping"}"#);
+        }
+
+        let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
+        process_pending(&rpc_dir, &dispatcher).await;
+
+        assert_eq!(dispatcher.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        for name in [".json", "with.dot.json"] {
+            assert!(!rpc_dir.join("requests").join(name).exists(), "{name} left");
+            let body = std::fs::read_to_string(rpc_dir.join("responses").join(name)).unwrap();
+            let v: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(v["ok"], false);
+            assert!(v["error"].as_str().unwrap().contains("invalid request id"));
+        }
     }
 
     #[tokio::test]
