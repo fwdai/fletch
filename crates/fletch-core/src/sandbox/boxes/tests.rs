@@ -364,7 +364,7 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
     let images = super::data_root().join("images");
     let manifest = |version: &str| {
         serde_json::json!({
-            "version": version, "arch": "aarch64",
+            "version": version, "arch": std::env::consts::ARCH,
             "images": [
                 {"name": "base", "file": "base.erofs", "size": 5, "sha256": "0".repeat(64)},
                 {"name": "devtools", "file": "layer-devtools.erofs", "size": 5, "sha256": "1".repeat(64)},

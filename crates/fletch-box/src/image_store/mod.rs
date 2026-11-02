@@ -101,17 +101,28 @@ impl ImageManifest {
     }
 
     /// Holds the manifest to what the store relies on: it describes
-    /// `version`; exactly one entry is the base and its file is `base.erofs`
-    /// ([`InstalledImage::path`]); every entry has a distinct name, a distinct
-    /// plain file name that is not the manifest's, a non-zero size and a
-    /// well-formed sha256 (lowercased here). A fetched manifest and one read
-    /// back from an installed directory both pass through this, so nothing
-    /// downstream re-checks.
+    /// `version` for this host's architecture; exactly one entry is the base
+    /// and its file is `base.erofs` ([`InstalledImage::path`]); every entry
+    /// has a distinct name, a distinct plain file name that is not the
+    /// manifest's, a non-zero size and a well-formed sha256 (lowercased
+    /// here). A fetched manifest and one read back from an installed
+    /// directory both pass through this, so nothing downstream re-checks:
+    /// an image is identified by version *and* architecture, and another
+    /// architecture's build (a `box_image_url` naming it, or a data
+    /// directory carried over from another machine) is never an installed
+    /// image here, whatever its version.
     pub fn validate(&mut self, version: &str) -> std::result::Result<(), String> {
         if self.version != version {
             return Err(format!(
                 "describes image {}, not the {version} this build boots",
                 self.version
+            ));
+        }
+        let arch = std::env::consts::ARCH;
+        if self.arch != arch {
+            return Err(format!(
+                "is an image for {}, and this host is {arch}",
+                self.arch
             ));
         }
         let bases = self.images.iter().filter(|e| e.name == BASE).count();
@@ -514,8 +525,9 @@ impl ImageStore {
     }
 }
 
-/// The image in `dir`, if it has a manifest for `version` and a non-empty
-/// base file; the layers are the manifest's other entries whose file is there.
+/// The image in `dir`, if it has a manifest for `version` on this
+/// architecture ([`ImageManifest::validate`]) and a non-empty base file; the
+/// layers are the manifest's other entries whose file is there.
 fn image_at(dir: PathBuf, version: &str) -> Option<InstalledImage> {
     let mut manifest: ImageManifest =
         serde_json::from_slice(&fs::read(dir.join(MANIFEST)).ok()?).ok()?;
@@ -604,15 +616,6 @@ async fn fetch_manifest(image: &PinnedImage) -> Result<ImageManifest> {
     let mut manifest: ImageManifest =
         serde_json::from_slice(&bytes).map_err(|e| bad(e.to_string()))?;
     manifest.validate(&image.version).map_err(bad)?;
-    // A `box_image_url` can name another architecture's build; its root
-    // would not run here.
-    let arch = std::env::consts::ARCH;
-    if manifest.arch != arch {
-        return Err(bad(format!(
-            "is an image for {}, and this host is {arch}",
-            manifest.arch
-        )));
-    }
     Ok(manifest)
 }
 
@@ -877,7 +880,14 @@ mod tests {
             Err(Error::Manifest { .. })
         ));
         let malformed = tempfile::tempdir().unwrap();
-        fs::write(malformed.path().join(MANIFEST), r#"{"version":"3.0.0","arch":"aarch64","images":[{"name":"base","file":"base.erofs","size":5,"sha256":"nope"}]}"#).unwrap();
+        fs::write(
+            malformed.path().join(MANIFEST),
+            format!(
+                r#"{{"version":"3.0.0","arch":"{}","images":[{{"name":"base","file":"base.erofs","size":5,"sha256":"nope"}}]}}"#,
+                std::env::consts::ARCH
+            ),
+        )
+        .unwrap();
         assert!(matches!(
             store.install(&pin_to("3.0.0", &malformed), &[], go).await,
             Err(Error::Manifest { .. })
@@ -911,6 +921,44 @@ mod tests {
             "a layer the release lacks"
         );
         assert!(store.installed().unwrap().is_empty());
+    }
+
+    /// An installed directory holding another architecture's build of the
+    /// pinned version (a data directory carried from an arm64 Mac to an
+    /// x86-64 server, say) is not an installed image: the same gate the
+    /// download passes refuses it on read, so nothing boots it, and the
+    /// install replaces it with this host's build.
+    #[tokio::test]
+    async fn an_installed_image_of_another_architecture_is_not_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(root.path());
+        let release = local_release("3.0.0", b"hello", &[]);
+        store
+            .install(&pin_to("3.0.0", &release), &[], go)
+            .await
+            .unwrap();
+        assert!(store.find("3.0.0").is_some());
+
+        let path = store.dir().join("3.0.0").join(MANIFEST);
+        let mut manifest: ImageManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest.arch = "riscv64".into();
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(
+            store.find("3.0.0").is_none(),
+            "another architecture's image"
+        );
+        assert!(store.installed().unwrap().is_empty());
+
+        let installed = store
+            .install(&pin_to("3.0.0", &release), &[], go)
+            .await
+            .unwrap();
+        assert_eq!(installed.version, "3.0.0");
+        assert!(
+            store.find("3.0.0").is_some(),
+            "replaced by this host's build"
+        );
     }
 
     /// This build names a real release on the public repository.
