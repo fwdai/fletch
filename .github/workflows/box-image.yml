@@ -1,10 +1,12 @@
 name: Box image
 
 # Builds and tests the box images (packaging/box-image) and publishes them as
-# the GitHub release `box-image-v<VERSION>` (the VERSION file): manifest.json,
-# base.erofs, layer-*.erofs and the *.chunks.json delta manifests, which is
-# what `fletch-box`'s ImageStore downloads. The app boots the version
-# `PinnedImage::VERSION` names. See docs/box.md.
+# the GitHub release `box-image-v<VERSION>` (the VERSION file) for aarch64 and
+# `box-image-v<VERSION>-x86_64` for x86-64, one job per architecture on a
+# runner of that architecture: manifest.json, base.erofs, layer-*.erofs and the
+# *.chunks.json delta manifests, which is what `fletch-box`'s ImageStore
+# downloads. The app boots the version `PinnedImage::VERSION` names. See
+# docs/box.md.
 #
 # One rule holds throughout: a version names one set of inputs (publish.sh
 # records the source tree ids in the release). So:
@@ -31,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish the release box-image-v<VERSION> (refused if it exists)"
+        description: "Publish the releases box-image-v<VERSION> and box-image-v<VERSION>-x86_64 (refused if they exist with other inputs)"
         type: boolean
         default: false
       with_agents:
@@ -41,9 +43,18 @@ on:
 
 jobs:
   image:
-    # The image is aarch64 and build.sh wants an aarch64 host: the arm64 runner
-    # builds it natively, no emulation.
-    runs-on: ubuntu-24.04-arm
+    # build.sh builds for the machine it runs on: each runner builds its own
+    # architecture natively, no emulation. Each release publishes on its own,
+    # so one architecture's failure leaves the other's in place.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+          - arch: x86_64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     permissions:
       contents: write
@@ -55,7 +66,7 @@ jobs:
         # fails here, in minutes, rather than after merging.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: packaging/box-image/publish.sh --check "$(cat packaging/box-image/VERSION)"
+        run: packaging/box-image/publish.sh --check "$(cat packaging/box-image/VERSION)" ${{ matrix.arch }}
 
       - name: Build and test
         id: image
@@ -67,7 +78,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: box-image-${{ steps.image.outputs.version }}
+          name: box-image-${{ steps.image.outputs.version }}-${{ matrix.arch }}
           if-no-files-found: warn
           retention-days: 14
           path: |

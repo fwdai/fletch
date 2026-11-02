@@ -57,7 +57,8 @@ const STAGING_PREFIX: &str = ".staging-";
 const IMAGES_DIR: &str = "images";
 
 /// Where image releases are downloaded from: one GitHub release per image on
-/// the public repository, tagged `box-image-v<version>`, holding
+/// the public repository, tagged `box-image-v<version>` (with `-<arch>` on
+/// any architecture but aarch64, [`release_url_for`]), holding
 /// `manifest.json` and the files it lists.
 pub const RELEASES_URL: &str = "https://github.com/fwdai/fletch/releases/download";
 
@@ -193,7 +194,7 @@ impl PinnedImage {
     /// launch agents the host-side contract no longer matches. A push to main
     /// that changes the image publishes this version (`box-image.yml`), so a
     /// merged build finds its image.
-    pub const VERSION: &'static str = "0.3.2";
+    pub const VERSION: &'static str = "0.3.3";
 
     /// This build's image, from `base_url` (the `box_image_url` setting) or
     /// the GitHub release.
@@ -228,8 +229,21 @@ impl PinnedImage {
     }
 }
 
+/// This host's release of `version`: images are per architecture, since a
+/// box never emulates.
 pub fn release_url(version: &str) -> String {
-    format!("{RELEASES_URL}/box-image-v{version}")
+    release_url_for(version, std::env::consts::ARCH)
+}
+
+/// `box-image-v<version>` for aarch64, whose releases predate every other
+/// architecture's, `box-image-v<version>-<arch>` otherwise
+/// (`packaging/box-image/publish.sh` tags them the same way).
+pub fn release_url_for(version: &str, arch: &str) -> String {
+    if arch == "aarch64" {
+        format!("{RELEASES_URL}/box-image-v{version}")
+    } else {
+        format!("{RELEASES_URL}/box-image-v{version}-{arch}")
+    }
 }
 
 /// A layer file installed next to its base.
@@ -590,6 +604,15 @@ async fn fetch_manifest(image: &PinnedImage) -> Result<ImageManifest> {
     let mut manifest: ImageManifest =
         serde_json::from_slice(&bytes).map_err(|e| bad(e.to_string()))?;
     manifest.validate(&image.version).map_err(bad)?;
+    // A `box_image_url` can name another architecture's build; its root
+    // would not run here.
+    let arch = std::env::consts::ARCH;
+    if manifest.arch != arch {
+        return Err(bad(format!(
+            "is an image for {}, and this host is {arch}",
+            manifest.arch
+        )));
+    }
     Ok(manifest)
 }
 
@@ -622,7 +645,8 @@ mod tests {
                 "sha256": sha(bytes), "dirs": ["usr", "etc", "var"], "tree_bytes": 1, "packages": [],
             }));
         }
-        serde_json::json!({ "version": version, "arch": "aarch64", "images": images }).to_string()
+        serde_json::json!({ "version": version, "arch": std::env::consts::ARCH, "images": images })
+            .to_string()
     }
 
     /// A local release directory.
@@ -648,20 +672,33 @@ mod tests {
         ControlFlow::Continue(())
     }
 
+    /// aarch64 keeps the unsuffixed release every installed Mac already
+    /// downloads from; x86_64 has its own.
+    #[test]
+    fn each_architecture_has_its_release() {
+        assert_eq!(
+            release_url_for("0.1.0", "aarch64"),
+            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0"
+        );
+        assert_eq!(
+            release_url_for("0.1.0", "x86_64"),
+            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0-x86_64"
+        );
+        assert_eq!(
+            release_url("0.1.0"),
+            release_url_for("0.1.0", std::env::consts::ARCH)
+        );
+    }
+
     #[test]
     fn a_pin_names_its_release_files() {
         let pinned = PinnedImage::new("0.1.0", None);
-        assert_eq!(
-            pinned.url(),
-            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/base.erofs"
-        );
-        assert_eq!(
-            pinned.manifest_url(),
-            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/manifest.json"
-        );
+        let release = release_url("0.1.0");
+        assert_eq!(pinned.url(), format!("{release}/base.erofs"));
+        assert_eq!(pinned.manifest_url(), format!("{release}/manifest.json"));
         assert_eq!(
             pinned.file_url("layer-devtools.erofs"),
-            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/layer-devtools.erofs"
+            format!("{release}/layer-devtools.erofs")
         );
         let mirrored = PinnedImage::new("0.1.0", Some("https://mirror.test/images/"));
         assert_eq!(mirrored.url(), "https://mirror.test/images/base.erofs");
@@ -850,6 +887,19 @@ mod tests {
             store.install(&pin_to("3.0.0", &missing), &[], go).await,
             Err(Error::Io { .. })
         ));
+        let foreign = local_release("3.0.0", b"hello", &[]);
+        let path = foreign.path().join(MANIFEST);
+        let mut manifest: ImageManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest.arch = "riscv64".into();
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(
+            matches!(
+                store.install(&pin_to("3.0.0", &foreign), &[], go).await,
+                Err(Error::Manifest { .. })
+            ),
+            "another architecture's image"
+        );
         let good = local_release("3.0.0", b"hello", &[]);
         assert!(
             matches!(

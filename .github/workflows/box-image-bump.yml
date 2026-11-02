@@ -4,11 +4,12 @@ name: Box image bump
 # every month, packaging/box-image/bump.sh moves the Debian snapshot and the
 # Node release, bumps the image VERSION and the app's pin, and that is
 # committed on the branch chore/box-image-bump; the images are built and
-# tested from that commit; if the tests pass the release box-image-v<VERSION>
+# tested from that commit on each architecture's runner; where the tests pass
+# that architecture's release (box-image-v<VERSION>, box-image-v<VERSION>-x86_64)
 # is published (idempotent: publish.sh records the inputs); either way one pull
-# request is opened or refreshed with the report. Merging it adopts the new
-# image in the next app release (main's own publish then finds the release in
-# place and does nothing); closing it leaves an unused release behind. See
+# request is opened or refreshed with the reports. Merging it adopts the new
+# image in the next app release (main's own publish then finds the releases in
+# place and does nothing); closing it leaves unused releases behind. See
 # docs/box.md.
 on:
   schedule:
@@ -21,11 +22,12 @@ concurrency:
 
 jobs:
   bump:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
-      pull-requests: write
+    outputs:
+      changed: ${{ steps.bump.outputs.changed }}
+      version: ${{ steps.bump.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,8 +47,9 @@ jobs:
         if: steps.bump.outputs.changed == 'no'
         run: echo "The pins are current; no build, no pull request." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Commit the bump
-        # Before the build, so the inputs publish.sh records are the committed trees.
+      - name: Commit and push the bump
+        # Before the builds, so the inputs publish.sh records are the committed
+        # trees, and both architectures build the same commit.
         if: steps.bump.outputs.changed == 'yes'
         run: |
           set -euo pipefail
@@ -57,51 +60,114 @@ jobs:
           git commit -q -m "chore(box-image): bump to ${{ steps.bump.outputs.version }}
 
           $(sed -n '/->/p' bump.txt)"
+          git push -f origin chore/box-image-bump
+
+      - uses: actions/upload-artifact@v4
+        if: steps.bump.outputs.changed == 'yes'
+        with:
+          name: bump
+          path: bump.txt
+
+  image:
+    needs: bump
+    if: needs.bump.outputs.changed == 'yes'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+          - arch: x86_64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chore/box-image-bump
 
       - name: Build and test
-        if: steps.bump.outputs.changed == 'yes'
         id: image
         continue-on-error: true
         uses: ./.github/actions/box-image
         with:
-          version: ${{ steps.bump.outputs.version }}
+          version: ${{ needs.bump.outputs.version }}
 
       - name: Publish the release
-        if: steps.bump.outputs.changed == 'yes' && steps.image.outcome == 'success'
+        if: steps.image.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUT: ${{ steps.image.outputs.out }}
-          VERSION: ${{ steps.bump.outputs.version }}
+          VERSION: ${{ needs.bump.outputs.version }}
         run: packaging/box-image/publish.sh "$OUT" "$VERSION"
 
+      - name: Keep the report
+        if: always()
+        env:
+          OUT: ${{ steps.image.outputs.out }}
+          OUTCOME: ${{ steps.image.outcome }}
+        run: |
+          mkdir -p report
+          echo "$OUTCOME" > report/outcome
+          for f in sizes.md report.md; do
+            if [ -f "$OUT/$f" ]; then cp "$OUT/$f" report/; fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-${{ matrix.arch }}
+          path: report
+
+  pull-request:
+    needs: [bump, image]
+    if: always() && needs.bump.outputs.changed == 'yes'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chore/box-image-bump
+
+      - uses: actions/download-artifact@v4
+
       - name: Open or refresh the pull request
-        if: steps.bump.outputs.changed == 'yes'
+        id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OUT: ${{ steps.image.outputs.out }}
-          VERSION: ${{ steps.bump.outputs.version }}
-          OUTCOME: ${{ steps.image.outcome }}
+          VERSION: ${{ needs.bump.outputs.version }}
         run: |
           set -euo pipefail
           BRANCH=chore/box-image-bump
-          git push -f origin "$BRANCH"
-          if [ "$OUTCOME" = success ]; then
+          ok=yes
+          for arch in aarch64 x86_64; do
+            [ "$(cat "report-$arch/outcome" 2>/dev/null)" = success ] || ok=no
+          done
+          if [ "$ok" = yes ]; then
             TITLE="chore(box-image): bump to $VERSION"
-            STATUS="Built, tested and published as \`box-image-v$VERSION\`. Merging adopts it (the app's pin is bumped here)."
+            STATUS="Built, tested and published as \`box-image-v$VERSION\` and \`box-image-v$VERSION-x86_64\`. Merging adopts them (the app's pin is bumped here)."
           else
             TITLE="chore(box-image): bump to $VERSION (tests failed)"
-            STATUS="**The build or its tests failed; nothing was published.** Fix forward on this branch or close it. Logs: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            STATUS="**A build or its tests failed; that architecture's release was not published.** Fix forward on this branch or close it. Logs: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           fi
           {
             echo "Monthly dependency bump of the box image (\`packaging/box-image/bump.sh\`)."
             echo
-            sed -n '/->/p' bump.txt | sed 's/^/- /'
+            sed -n '/->/p' bump/bump.txt | sed 's/^/- /'
             echo
             echo "$STATUS"
-            echo
-            [ -f "$OUT/sizes.md" ] && cat "$OUT/sizes.md"
-            echo
-            [ -f "$OUT/report.md" ] && cat "$OUT/report.md"
+            for arch in aarch64 x86_64; do
+              echo
+              echo "## $arch: $(cat "report-$arch/outcome" 2>/dev/null || echo 'did not run')"
+              echo
+              [ -f "report-$arch/sizes.md" ] && cat "report-$arch/sizes.md"
+              echo
+              [ -f "report-$arch/report.md" ] && cat "report-$arch/report.md"
+            done
             echo
             echo "## Decisions"
             echo "- none"
@@ -112,7 +178,7 @@ jobs:
             gh pr create --base main --head "$BRANCH" --title "$TITLE" --body-file body.md
           fi
           gh pr view "$BRANCH" --json url -q .url >> "$GITHUB_STEP_SUMMARY"
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
 
       - name: Result
-        if: steps.bump.outputs.changed == 'yes'
-        run: test "${{ steps.image.outcome }}" = success
+        run: test "${{ steps.pr.outputs.ok }}" = yes
