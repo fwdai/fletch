@@ -66,6 +66,11 @@ pub const UPDATER_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYy
 /// The file inside every host tarball.
 const BINARY_IN_TARBALL: &str = "fletch-host";
 
+/// The box runtime a Linux tarball carries beside the binary and an update
+/// installs beside it, where the engine looks for it on Linux
+/// (`fletch_box::runtime::RuntimePaths::bundled`). A macOS tarball has none.
+const RUNTIME_IN_TARBALL: &[&str] = &["fletch-vm", "libkrun.so.1", "libkrunfw.so.5"];
+
 /// GitHub wants a user agent and will refuse an anonymous client without one.
 const UA: &str = concat!("fletch-host/", env!("CARGO_PKG_VERSION"));
 
@@ -253,8 +258,7 @@ pub async fn run(
     let exe = current_exe()?;
     match ensure_replaceable(&exe) {
         Ok(_) => {
-            let binary = extract_binary(&tarball)?;
-            swap(&exe, &binary)?;
+            install(&exe, &tarball)?;
             println!("installed {} at {}", assets.version, exe.display());
             restart(&exe, Some(data_dir), None).await;
         }
@@ -370,8 +374,7 @@ async fn install_from(tarball_path: &Path) -> Result<(), String> {
 
     let exe = current_exe()?;
     ensure_replaceable(&exe)?;
-    let binary = extract_binary(&tarball)?;
-    swap(&exe, &binary)?;
+    install(&exe, &tarball)?;
     println!("installed {version} at {}", exe.display());
 
     restart(&exe, None, service::sudoer().as_ref()).await;
@@ -515,10 +518,22 @@ pub fn backup_db(data_dir: &Path, from_version: &str) -> Result<Option<PathBuf>,
 }
 
 /// The `fletch-host` file out of a release tarball (a flat archive: the binary,
-/// the README and `packaging/`).
+/// the README and `packaging/`, and on Linux the box runtime).
 pub fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
+    extract_files(tarball, &[BINARY_IN_TARBALL])?
+        .into_iter()
+        .next()
+        .map(|(_, bytes)| bytes)
+        .ok_or_else(|| {
+            format!("the archive has no {BINARY_IN_TARBALL} in it; this is not a host release")
+        })
+}
+
+/// The top-level files among `names` a release tarball has, in archive order.
+pub fn extract_files(tarball: &[u8], names: &[&str]) -> Result<Vec<(String, Vec<u8>)>, String> {
     let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(tarball));
     let mut archive = tar::Archive::new(gz);
+    let mut found = Vec::new();
     for entry in archive
         .entries()
         .map_err(|e| format!("the download is not a tar archive: {e}"))?
@@ -528,9 +543,14 @@ pub fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
             .path()
             .map_err(|e| format!("cannot read the archive: {e}"))?
             .to_path_buf();
-        if path.file_name().and_then(|n| n.to_str()) != Some(BINARY_IN_TARBALL) {
+        let Some(name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| names.contains(n))
+            .map(str::to_owned)
+        else {
             continue;
-        }
+        };
         // `./fletch-host` or `fletch-host`, not `packaging/fletch-host`: the
         // tarball carries a `packaging/` directory, and tar normalises away a
         // leading `./`, so count the components that name something.
@@ -544,12 +564,32 @@ pub fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
         let mut bytes = Vec::new();
         entry
             .read_to_end(&mut bytes)
-            .map_err(|e| format!("cannot read {BINARY_IN_TARBALL} from the archive: {e}"))?;
-        return Ok(bytes);
+            .map_err(|e| format!("cannot read {name} from the archive: {e}"))?;
+        found.push((name, bytes));
     }
-    Err(format!(
-        "the archive has no {BINARY_IN_TARBALL} in it; this is not a host release"
-    ))
+    Ok(found)
+}
+
+/// Installs a verified tarball over `exe`: the box runtime it carries beside
+/// it first, then the binary, each by [`swap`]. A host still running keeps
+/// the files it has open; the restart that follows takes the new ones.
+fn install(exe: &Path, tarball: &[u8]) -> Result<(), String> {
+    let dir = ensure_replaceable(exe)?;
+    let mut wanted = RUNTIME_IN_TARBALL.to_vec();
+    wanted.push(BINARY_IN_TARBALL);
+    let mut files = extract_files(tarball, &wanted)?;
+    let binary = files
+        .iter()
+        .position(|(name, _)| name == BINARY_IN_TARBALL)
+        .map(|at| files.swap_remove(at).1)
+        .ok_or_else(|| {
+            format!("the archive has no {BINARY_IN_TARBALL} in it; this is not a host release")
+        })?;
+    for (name, bytes) in files {
+        swap(&dir.join(&name), &bytes)?;
+        println!("installed {}", dir.join(&name).display());
+    }
+    swap(exe, &binary)
 }
 
 /// Write the new binary beside the old one and `rename` it over.
@@ -940,6 +980,60 @@ mod tests {
 
         assert_eq!(extract_binary(&tarball).unwrap(), b"\x7fELF pretend");
         assert!(extract_binary(b"not a tarball at all").is_err());
+    }
+
+    /// A Linux tarball's box runtime lands beside the binary, and a tarball
+    /// without one (macOS) installs the binary alone.
+    #[test]
+    fn an_update_installs_the_box_runtime_beside_the_binary() {
+        let tarball = |files: &[(&str, &[u8])]| {
+            let mut tar_bytes = Vec::new();
+            {
+                let mut builder = tar::Builder::new(&mut tar_bytes);
+                for (name, body) in files {
+                    let mut header = tar::Header::new_gnu();
+                    header.set_size(body.len() as u64);
+                    header.set_mode(0o755);
+                    header.set_cksum();
+                    builder.append_data(&mut header, name, *body).unwrap();
+                }
+                builder.finish().unwrap();
+            }
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            std::io::Write::write_all(&mut gz, &tar_bytes).unwrap();
+            gz.finish().unwrap()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("fletch-host");
+        std::fs::write(&exe, b"old").unwrap();
+
+        install(&exe, &tarball(&[("./fletch-host", b"mac")])).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"mac");
+        assert!(!dir.path().join("fletch-vm").exists());
+
+        let linux = tarball(&[
+            ("./README.md", b"# fletch-host"),
+            ("./fletch-vm", b"helper"),
+            ("./libkrun.so.1", b"krun"),
+            ("./libkrunfw.so.5", b"kernel"),
+            ("./fletch-host", b"linux"),
+        ]);
+        install(&exe, &linux).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"linux");
+        for (name, body) in [
+            ("fletch-vm", &b"helper"[..]),
+            ("libkrun.so.1", b"krun"),
+            ("libkrunfw.so.5", b"kernel"),
+        ] {
+            assert_eq!(
+                std::fs::read(dir.path().join(name)).unwrap(),
+                body,
+                "{name}"
+            );
+        }
+        assert!(!dir.path().join("README.md").exists());
+
+        assert!(install(&exe, &tarball(&[("./fletch-vm", b"helper")])).is_err());
     }
 
     #[test]

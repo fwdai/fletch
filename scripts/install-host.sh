@@ -299,9 +299,13 @@ main() {
   BIN="$INSTALL_DIR/fletch-host"
   mkdir -p "$INSTALL_DIR"
   # Install beside the target and rename: a running host's binary cannot be
-  # written in place on Linux, but it can be replaced.
-  install -m 755 "$TMP/fletch-host" "$INSTALL_DIR/.fletch-host.new"
-  mv -f "$INSTALL_DIR/.fletch-host.new" "$BIN"
+  # written in place on Linux, but it can be replaced. A Linux tarball also
+  # carries the box runtime, which the host looks for beside its binary.
+  for f in fletch-vm libkrun.so.1 libkrunfw.so.5 fletch-host; do
+    [ -f "$TMP/$f" ] || continue
+    install -m 755 "$TMP/$f" "$INSTALL_DIR/.$f.new"
+    mv -f "$INSTALL_DIR/.$f.new" "$INSTALL_DIR/$f"
+  done
   echo "installed $VERSION at $BIN"
 
   case ":$PATH:" in

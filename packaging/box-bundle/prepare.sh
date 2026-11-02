@@ -13,6 +13,10 @@
 #
 # The dev build runs this too, through ensure-dev.sh, which is what puts the
 # runtime in out/ for a `tauri dev` binary to find (RuntimePaths::dev).
+#
+# On Linux it only stages, for a dev checkout: out/fletch-vm, out/libkrun.so.1
+# and out/libkrunfw.so.5, unsigned (there is nothing to sign). A Linux release
+# ships the same three files in the fletch-host tarball (release.yml).
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -25,7 +29,21 @@ TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/crates/fletch-box/target}
 PROFILE=release
 [ "${TAURI_ENV_DEBUG:-false}" = true ] && PROFILE=debug
 
-[ "$(uname -s)" = Darwin ] || { echo "prepare.sh: the VM runtime is bundled on macOS only" >&2; exit 1; }
+if [ "$(uname -s)" = Linux ]; then
+  [ -n "${FLETCH_LIBKRUN_DIR:-}" ] || "$ROOT/packaging/libkrun/ensure.sh"
+  for lib in libkrun.so.1 libkrunfw.so.5; do
+    [ -f "$LIB_DIR/$lib" ] || { echo "prepare.sh: no $LIB_DIR/$lib (FLETCH_LIBKRUN_DIR)" >&2; exit 1; }
+  done
+  echo "== building fletch-vm ($PROFILE)"
+  flags=
+  [ "$PROFILE" = release ] && flags=--release
+  # shellcheck disable=SC2086
+  cargo build $flags --manifest-path "$ROOT/crates/fletch-box/Cargo.toml" --bin fletch-vm
+  rm -rf "$OUT" && mkdir -p "$OUT"
+  cp "$TARGET_DIR/$PROFILE/fletch-vm" "$LIB_DIR/libkrun.so.1" "$LIB_DIR/libkrunfw.so.5" "$OUT/"
+  exit 0
+fi
+[ "$(uname -s)" = Darwin ] || { echo "prepare.sh: the VM runtime is bundled on macOS and Linux only" >&2; exit 1; }
 if [ -n "${FLETCH_LIBKRUN_DIR:-}" ]; then
   : # a prebuilt dist was named; nothing to build
 elif [ -n "${CI:-}" ] || [ "$IDENTITY" != - ]; then

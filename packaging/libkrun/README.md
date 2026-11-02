@@ -16,6 +16,19 @@ Both dylibs are ad hoc signed; the app bundle re-signs them
 (`packaging/box-bundle/prepare.sh`). `build/`, `dist/` and `dist-unpatched/`
 are build outputs and must stay out of git.
 
+On Linux (x86-64 or arm64) the same script writes the Linux runtime, which the
+`fletch-host` release tarball carries beside the binary:
+
+| File in `dist/`  | What                                                                  |
+| ---------------- | --------------------------------------------------------------------- |
+| `libkrun.so.1`   | libkrun with the same patches and features, soname `libkrun.so.1`     |
+| `libkrunfw.so.5` | upstream's `libkrunfw-<arch>.tgz` (the same 6.12 kernel), pinned by sha256; soname `libkrunfw.so.5`, the name libkrun dlopens |
+| `manifest.txt`   | as above                                                              |
+
+The x86-64 kernel config differs from arm64's in one way the runtime notices:
+no `CONFIG_MAGIC_SYSRQ`, so the engine's sysrq rung of the stop ladder fails
+there and the ladder goes on to SIGTERM.
+
 ## Building
 
 ```sh
@@ -25,15 +38,18 @@ packaging/libkrun/build.sh --unpatched # -> dist-unpatched/, the same without pa
 ```
 
 Runs on macOS on Apple silicon with Xcode (not only the Command Line Tools:
-bindgen needs libclang), rustup and cargo. Sources are pinned by sha256 and
+bindgen needs libclang), rustup and cargo; or on Linux with rustup, cargo, `cc`
+and static glibc (`libc6-dev`; libkrun's init is built with `cc -static`),
+which the GitHub Ubuntu runners have. Sources are pinned by sha256 and
 downloaded into `build/`. The first run takes about a minute, later ones about
 15 s. Two runs in the same checkout give byte-identical dylibs.
 
 Nothing calls `build.sh` by hand in the normal flow: `packaging/box-bundle/prepare.sh`
 runs `ensure.sh` for a dev build (`ensure-dev.sh`, which `bun run tauri dev`
 runs), and the release workflow runs it in its own cached step
-(`.github/workflows/release.yml`). Until the first run `dist/` does not exist
-and the runtime probe reports boxes as not built.
+(`.github/workflows/release.yml`, for the app on macOS and for each Linux
+`fletch-host` tarball). Until the first run `dist/` does not exist and the
+runtime probe reports boxes as not built.
 
 Build environment notes:
 

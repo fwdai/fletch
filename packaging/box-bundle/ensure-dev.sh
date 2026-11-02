@@ -14,10 +14,13 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 TMP=${TMPDIR:-/tmp}
 LOG="${TMP%/}/fletch-box-ensure-dev.log"
 
-if [ "$(uname -sm)" != "Darwin arm64" ]; then
-  echo "box runtime: skipped (boxes run on macOS on Apple silicon)"
-  exit 0
-fi
+case "$(uname -sm)" in
+  "Darwin arm64" | "Linux x86_64" | "Linux aarch64") ;;
+  *)
+    echo "box runtime: skipped (boxes run on macOS on Apple silicon and on x86-64 or arm64 Linux)"
+    exit 0
+    ;;
+esac
 
 # Inside a Fletch sandbox ~/.cargo/registry is read-only; cargo then needs a
 # CARGO_HOME elsewhere (packaging/libkrun/README.md). A fresh one re-downloads
