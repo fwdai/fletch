@@ -3,7 +3,6 @@ import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
 import { Button } from "@/components/ui/Button";
-import { CopyButton } from "@/components/ui/CopyButton";
 import { providerLabel } from "@/data/providers";
 import { EMPTY_AGENTS, useAppStore } from "@/store";
 import { activeEntry, connectionLabel } from "@/store/capabilities";
@@ -104,71 +103,13 @@ export function Workspace() {
   );
 }
 
-/** Fletch can't start a stopped Podman machine itself, so the banner offers
- *  this to copy instead of a button. */
-const PODMAN_START_COMMAND = "podman machine start";
-
-/** Classify a container agent's crash reason so the banner can offer the right
- *  recovery action. Keys off the backend's own error strings (engine exit-code
- *  mapping + launch/build errors in sandbox/docker and sandbox/podman, and the
- *  D1 auth CTA):
- *   - "docker-down": daemon stopped / not installed / build couldn't connect →
- *     "Start Docker Desktop".
- *   - "podman-down": machine stopped / not installed / build couldn't reach it →
- *     copy `podman machine start`.
- *   - "image":       a bad image (missing/broken `claude`, exit 126/127) →
- *     point at the sandbox settings to fix `docker_image`.
- *   - "auth":        no Anthropic credentials in the container → connect Claude.
- *  Order matters: both engine-down arms are checked before "image", since a
- *  down engine also fails while *preparing* the image. Returns null for
- *  non-container crashes (the plain banner). */
-function dockerCrashKind(
-  msg: string | null | undefined,
-): "docker-down" | "podman-down" | "image" | "auth" | null {
-  if (!msg) return null;
-  const m = msg.toLowerCase();
-  if (
-    m.includes("docker desktop") ||
-    m.includes("docker daemon") ||
-    m.includes("docker isn't running") ||
-    m.includes("docker binary not found") ||
-    m.includes("is docker installed") ||
-    m.includes("preparing the docker sandbox image failed")
-  ) {
-    return "docker-down";
-  }
-  if (
-    m.includes("podman machine") ||
-    m.includes("podman binary not found") ||
-    m.includes("is podman installed") ||
-    m.includes("preparing the podman sandbox image failed")
-  ) {
-    return "podman-down";
-  }
-  if (
-    m.includes("connect claude for containers") ||
-    m.includes("setup-token") ||
-    m.includes("no anthropic credentials") ||
-    m.includes("not authenticated")
-  ) {
-    return "auth";
-  }
-  if (m.includes("docker_image") || m.includes("sandbox image")) return "image";
-  return null;
-}
-
 /** Shown when an agent's process exited with an error. Surfaces the crash
  *  reason (otherwise only a red dot in the sidebar) and a Resume action —
  *  both already captured on the record / available in the store, just never
  *  rendered. Sits under the header so the transcript leading up to the crash
- *  stays visible. Container crashes additionally get a targeted recovery action
- *  (start the daemon / start the podman machine / fix the image / connect
- *  Claude). */
+ *  stays visible. */
 function CrashBanner({ agent }: { agent: AgentRecord }) {
   const resume = useAppStore((s) => s.resume);
-  const startDockerDesktop = useAppStore((s) => s.startDockerDesktop);
-  const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
-  const dockerKind = dockerCrashKind(agent.last_error);
   // Guard against a double-click firing two concurrent resumes: status stays
   // "error" until the backend's status event lands, so the banner (and button)
   // linger through that window. `resume` catches internally, so on success the
@@ -178,46 +119,9 @@ function CrashBanner({ agent }: { agent: AgentRecord }) {
   return (
     <div className="crash-banner flex-center" role="alert">
       <div className="crash-text">
-        <span className="crash-title">
-          {dockerKind === "docker-down"
-            ? "Docker isn't available"
-            : dockerKind === "podman-down"
-              ? "Podman isn't available"
-              : dockerKind === "image"
-                ? "Sandbox image problem"
-                : dockerKind === "auth"
-                  ? "Claude isn't connected for containers"
-                  : "Agent stopped unexpectedly"}
-        </span>
+        <span className="crash-title">Agent stopped unexpectedly</span>
         {agent.last_error && <span className="crash-detail">{agent.last_error}</span>}
-        {dockerKind === "podman-down" && (
-          <span className="crash-hint">
-            Fletch can't start Podman for you — run{" "}
-            <span className="mono">{PODMAN_START_COMMAND}</span> in a terminal, then Resume.
-          </span>
-        )}
       </div>
-      {dockerKind === "docker-down" && (
-        <Button variant="outline" onClick={() => void startDockerDesktop()}>
-          <Icon name="play" size={12} />
-          Start Docker Desktop
-        </Button>
-      )}
-      {dockerKind === "podman-down" && (
-        <CopyButton text={PODMAN_START_COMMAND} tip="Copy command" />
-      )}
-      {dockerKind === "image" && (
-        <Button variant="outline" onClick={() => openSettingsScreen("sandbox")}>
-          <Icon name="settings" size={12} />
-          Sandbox settings
-        </Button>
-      )}
-      {dockerKind === "auth" && (
-        <Button variant="outline" onClick={() => openSettingsScreen("sandbox")}>
-          <Icon name="cube" size={12} />
-          Connect Claude for containers
-        </Button>
-      )}
       <Button
         variant="outline"
         disabled={resuming}

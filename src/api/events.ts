@@ -57,7 +57,6 @@ import type {
   BoxPolicyEvent,
   BoxStateEvent,
   BoxToolsStatus,
-  DockerBuildEvent,
   PublishApproval,
   PublishApprovalResolved,
 } from "./types/sandbox";
@@ -434,12 +433,6 @@ export function onPairRequestEnded(cb: (e: { id: string }) => void): Promise<Unl
  *  longer works. */
 export function onPairingClosed(cb: (e: { reason: string }) => void): Promise<UnlistenFn> {
   return onLocal<{ reason: string }>("remote:pairing-closed", cb);
-}
-
-/** Fires per line (and at start/finish/failure) while the embedded docker agent
- *  image builds on a cold first spawn — feeds the build progress toast. */
-export function onDockerBuildProgress(cb: (e: DockerBuildEvent) => void): Promise<UnlistenFn> {
-  return on<DockerBuildEvent>("docker:build-progress", cb);
 }
 
 /** The box image install moved: progress while downloading, then the outcome.

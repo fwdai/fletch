@@ -29,7 +29,6 @@ import {
   onBoxState,
   onBoxTools,
   onDelegationChanged,
-  onDockerBuildProgress,
   onLocalSettingsChanged,
   onPrChecksChanged,
   onPrSetEntryChanged,
@@ -102,7 +101,6 @@ import {
   applyPrThreadsChanged,
 } from "./prEvents";
 import { refreshWorkspace } from "./refreshWorkspace";
-import { applyBuildEvent } from "./sandbox";
 import type { AppSlice, SliceCreator } from "./types";
 import { applyBoxSetupEvent } from "./workspaceTypes";
 
@@ -757,14 +755,6 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   await bind(
     onRunPort((e) => {
       set((s) => ({ runPorts: { ...s.runPorts, [e.agent_id]: String(e.port) } }));
-    }),
-  );
-
-  // Container image-build progress (first spawn under a runtime). Drives the
-  // build toast; `applyBuildEvent` (store/sandbox) owns the per-runtime routing.
-  await bind(
-    onDockerBuildProgress((e) => {
-      set((s) => ({ containerBuilds: applyBuildEvent(s.containerBuilds, e) }));
     }),
   );
 

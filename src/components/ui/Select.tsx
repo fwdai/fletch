@@ -27,8 +27,8 @@ interface Props<T extends string> {
 }
 
 /** Disabled options aren't focusable, so every keyboard path walks only the
- *  enabled ones — otherwise a list whose options are all disabled (both
- *  container engines missing, a common first run) swallows the arrow keys. */
+ *  enabled ones — otherwise a list whose options are all disabled swallows
+ *  the arrow keys. */
 function focusableItems(list: HTMLDivElement | null) {
   return Array.from(
     list?.querySelectorAll<HTMLButtonElement>("[role='option']:not([disabled])") ?? [],

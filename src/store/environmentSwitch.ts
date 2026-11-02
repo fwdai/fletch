@@ -21,7 +21,7 @@
 //     survive a switch untouched.
 //   - `drafts` are stashed but need no namespacing: a draft id is a generated
 //     `draft-<ts>-<rand>`, and nothing persists them.
-//   - Provider versions, model catalogs, installs, container builds, the custom
+//   - Provider versions, model catalogs, installs, the custom
 //     agent / skill / MCP libraries, the account profile, the Linear connection
 //     and the appearance settings are properties of this desktop, keyed by
 //     provider or runtime. `github` is NOT among them any more — it is the

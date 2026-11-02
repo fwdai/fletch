@@ -72,8 +72,8 @@ export function ModelPicker({
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
   const refreshAccounts = useAppStore((s) => s.refreshProviderAccounts);
   // Whether each agent can actually be spawned right now — installed, and
-  // container-ready when the Docker engine is on. Matches the backend refusal
-  // in supervisor/lifecycle.rs.
+  // runnable in the workspace type chosen. Matches the backend refusal in
+  // supervisor/lifecycle.rs.
   const availability = useAgentAvailability();
   // A custom agent's `provider` is already its base, so this is always the
   // provider whose accounts apply.

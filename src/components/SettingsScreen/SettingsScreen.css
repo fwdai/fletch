@@ -560,7 +560,7 @@
   color: var(--fg-2);
 }
 
-/* ── CONTAINER AUTH (Sandbox › Claude auth) ──────────────────────────── */
+/* ── CLAUDE SETUP TOKEN (Sandbox › Claude auth) ─────────────────────── */
 .set-cauth-status {
   color: var(--fg-2);
   white-space: nowrap;

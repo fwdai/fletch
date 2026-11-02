@@ -81,8 +81,7 @@ export function AgentList({
       </div>
       {enabled.length === 0 && emptyState}
       {enabled.map((p) => {
-        // Container-ready if Docker is on — the shared gate the spawn
-        // path enforces.
+        // The shared gate the spawn path enforces.
         const { reason, note } = availability(p.id);
         const disabled = reason !== null;
         const isSelected = p.id === provider && !customAgentId;
@@ -94,7 +93,7 @@ export function AgentList({
             // aria-disabled, not the native `disabled` attr: a disabled
             // <button> swallows hover/pointer events in the WebView, so
             // its tooltip never shows and the user is left with only the
-            // "Not in Docker yet" chip and no reason. aria-disabled keeps
+            // short chip and no reason. aria-disabled keeps
             // the row hover-capable; the guarded handlers below keep it
             // inert. The tooltip is the CSS `.tip`/`data-tip` one
             // (shows on :hover), used only for the disabled explanation.
