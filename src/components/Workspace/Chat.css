@@ -472,6 +472,14 @@
   max-width: 100%;
 }
 
+/* A run of steps hangs right under the words that introduced it: 2px past the
+   message (the pull undoes its 16px margin and the list's 8px gap), against
+   the 20px+ that separates one beat from the next. Read together, "Now the
+   tests:" and "Ran cargo test" are one beat, not two (see Steps.css). */
+.m-msg-wrap:not(.is-user) + .steprun {
+  margin-top: -22px;
+}
+
 .m-actions {
   display: flex;
   gap: 2px;
