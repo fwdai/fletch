@@ -6,10 +6,18 @@ use std::path::{Path, PathBuf};
 
 use crate::launch::LaunchConfig;
 
+#[cfg(target_os = "macos")]
 const LIBKRUN: &str = "libkrun.1.dylib";
+#[cfg(target_os = "macos")]
 const LIBKRUNFW: &str = "libkrunfw.5.dylib";
 /// Where a bundled helper (`Contents/Helpers`) finds the dylibs.
+#[cfg(target_os = "macos")]
 const BUNDLE_LIB_DIR: &str = "@executable_path/../Frameworks";
+/// The sonames: libkrun's own, and the one it dlopens its kernel bundle by.
+#[cfg(target_os = "linux")]
+const LIBKRUN: &str = "libkrun.so.1";
+#[cfg(target_os = "linux")]
+const LIBKRUNFW: &str = "libkrunfw.so.5";
 /// libkrun.h's `KRUN_SEMANTICS_LINUX_SIMPLIFIED`.
 const KRUN_SEMANTICS_LINUX_SIMPLIFIED: u32 = 1;
 
@@ -42,10 +50,15 @@ pub struct Krun {
 
 impl Krun {
     pub fn load(lib_dir: Option<&Path>) -> Result<Krun, String> {
-        let dir = lib_dir.map_or_else(|| PathBuf::from(BUNDLE_LIB_DIR), Path::to_path_buf);
+        let dir = match lib_dir {
+            Some(dir) => dir.to_path_buf(),
+            None => default_lib_dir()?,
+        };
         // libkrun dlopens libkrunfw by leaf name. Loading it first by full path
         // makes that lookup find the already-loaded image, with no
-        // DYLD_LIBRARY_PATH (which the hardened runtime strips anyway).
+        // DYLD_LIBRARY_PATH (which the hardened runtime strips anyway) or
+        // LD_LIBRARY_PATH: glibc matches the name against the loaded
+        // library's soname.
         dlopen(&dir.join(LIBKRUNFW))?;
         let lib = dlopen(&dir.join(LIBKRUN))?;
         // SAFETY: each symbol is cast to its signature in libkrun.h.
@@ -173,6 +186,20 @@ impl Krun {
             Ok(ctx)
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn default_lib_dir() -> Result<PathBuf, String> {
+    Ok(PathBuf::from(BUNDLE_LIB_DIR))
+}
+
+/// A Linux install keeps the libraries beside the helper.
+#[cfg(target_os = "linux")]
+fn default_lib_dir() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("find fletch-vm's own path: {e}"))?;
+    exe.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("{} has no directory", exe.display()))
 }
 
 fn check(what: &str, ret: i32) -> Result<(), String> {
