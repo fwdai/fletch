@@ -485,7 +485,10 @@ mod tests {
     }
 
     /// The spawn is refused before its provisioning (which releases the pin)
-    /// ever runs: the fork releases it itself.
+    /// ever runs: the fork releases it itself. What refuses it depends on
+    /// the host: on macOS the source repository is gone; off macOS the
+    /// parent's stamped engine (seatbelt, which does not exist there) is
+    /// refused first. Either way nothing stays pinned.
     #[tokio::test]
     async fn a_fork_refused_at_spawn_leaves_no_pin() {
         let td = tempfile::tempdir().unwrap();
@@ -508,10 +511,13 @@ mod tests {
                 None,
             )
             .await;
-        assert!(forked
-            .unwrap_err()
-            .to_string()
-            .contains("not a git repository"));
+        let err = forked.unwrap_err().to_string();
+        let expected = if cfg!(target_os = "macos") {
+            "not a git repository"
+        } else {
+            "macOS sandbox"
+        };
+        assert!(err.contains(expected), "{err}");
         assert_eq!(pins(&checkout).await, Vec::<String>::new());
     }
 
