@@ -1,7 +1,7 @@
 name: Box image bump
 
 # Keeps the box image's dependencies current without anyone editing pins:
-# every week, packaging/box-image/bump.sh moves the Debian snapshot and the
+# every month, packaging/box-image/bump.sh moves the Debian snapshot and the
 # Node release, bumps the image VERSION and the app's pin, and that is
 # committed on the branch chore/box-image-bump; the images are built and
 # tested from that commit; if the tests pass the release box-image-v<VERSION>
@@ -12,7 +12,7 @@ name: Box image bump
 # docs/box.md.
 on:
   schedule:
-    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+    - cron: "0 6 1 * *" # the 1st of each month, 06:00 UTC
   workflow_dispatch:
 
 concurrency:
@@ -93,7 +93,7 @@ jobs:
             STATUS="**The build or its tests failed; nothing was published.** Fix forward on this branch or close it. Logs: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           fi
           {
-            echo "Weekly dependency bump of the box image (\`packaging/box-image/bump.sh\`)."
+            echo "Monthly dependency bump of the box image (\`packaging/box-image/bump.sh\`)."
             echo
             sed -n '/->/p' bump.txt | sed 's/^/- /'
             echo

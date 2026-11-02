@@ -24,6 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The app downloads the box image it pins from that image's release on
+      # first use of a box; an app pinned to a release missing files must not
+      # ship. Before the build, so it fails in seconds.
+      - name: The box image the app pins is published
+        run: scripts/check-box-image.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:

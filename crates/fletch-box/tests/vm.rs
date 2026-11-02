@@ -3,12 +3,13 @@
 //!
 //! - `FLETCH_BOX_HELPER`: a built, ad-hoc signed `fletch-vm`
 //! - `FLETCH_BOX_LIB_DIR`: libkrun dylibs
-//! - `FLETCH_BOX_TEST_IMAGE`: a `base.erofs` whose init runs a command, by
-//!   default Calina's (`/opt/calina/init`, override with `FLETCH_BOX_TEST_INIT`)
+//! - `FLETCH_BOX_TEST_IMAGE`: the product `base.erofs`
+//!   (`packaging/box-image/build-docker.sh` writes `out/base.erofs`)
 //!
-//! The runtime does not care which Linux is inside: the guest script prints the
-//! `FLETCH_HOSTKEY` and `FLETCH_READY` markers the product init will, and
-//! listens on the control port the way `fletch-guest wait-stop` will.
+//! The tests do not run the product init: `/usr/bin/env` runs their script
+//! disk instead, which prints the `FLETCH_HOSTKEY` and `FLETCH_READY` markers
+//! the product init does and listens on the control port the way
+//! `fletch-guest wait-stop` does. The runtime is what is under test.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -17,14 +18,14 @@ use fletch_box::{disks, guest, RuntimePaths, StopOutcome, Vm, VmSpec};
 
 const FAKE_KEY: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIFakeFakeFakeFakeFakeFakeFakeFakeFakeFakeFak";
 
-/// Runs under the test init as `/bin/sh /dev/vdc`: the markers, then wait for
-/// `stop` on vsock 5000 (socat is in Calina's image), then a clean exit, which
+/// Runs as `/usr/bin/env /bin/sh /dev/vdc`: the markers, then wait for `stop`
+/// on vsock 5000 (socat is in the base image), then a clean exit, which
 /// libkrun's init turns into a VM exit.
 fn guest_script() -> String {
     format!(
         "echo \"{} ssh-ed25519 {FAKE_KEY}\"\necho {}\n\
          socat -u VSOCK-LISTEN:{},reuseaddr - | while read line; do [ \"$line\" = stop ] && break; done\n\
-         sync; umount /data 2>/dev/null; exit 0\n",
+         sync; exit 0\n",
         guest::MARK_HOSTKEY,
         guest::MARK_READY,
         guest::CONTROL_PORT
@@ -43,7 +44,6 @@ fn setup(name: &str) -> Setup {
         RuntimePaths::from_env().expect("FLETCH_BOX_HELPER (scripts/box-dev.sh prints the env)");
     let image =
         PathBuf::from(std::env::var_os("FLETCH_BOX_TEST_IMAGE").expect("FLETCH_BOX_TEST_IMAGE"));
-    let init = std::env::var("FLETCH_BOX_TEST_INIT").unwrap_or_else(|_| "/opt/calina/init".into());
     let probe = paths.probe();
     assert!(probe.ok(), "{:?}", probe.problems());
 
@@ -62,7 +62,7 @@ fn setup(name: &str) -> Setup {
     let mut spec = VmSpec::new(name, &image, &data, &dir.join("console.log"));
     spec.cpus = 1;
     spec.memory_mib = 1024;
-    spec.init = Some(PathBuf::from(init));
+    spec.init = Some(PathBuf::from("/usr/bin/env"));
     spec.init_args = vec!["/bin/sh".into(), guest::DISK_TOOLS.into()];
     spec.extra_disks.push(("script".into(), script, true));
     spec.listen_ports = vec![
@@ -101,7 +101,7 @@ async fn boot(s: &Setup) -> (Vm, Duration, Duration) {
 #[ignore = "boots a VM; see crates/fletch-box/README.md"]
 async fn clean_stop_clears_dirty() {
     let s = setup("clean");
-    // First boot formats the data disk; the second is the steady state.
+    // Twice: the second boot is the steady state.
     let (vm, spawned, ready) = boot(&s).await;
     let t0 = Instant::now();
     let outcome = vm.stop(Duration::from_secs(10)).await;
@@ -143,7 +143,7 @@ async fn kill_leaves_dirty_and_a_stale_socket_is_removed_on_restart() {
     assert!(s.dir.join("ssh.sock").exists());
     s.dirty.clear().unwrap();
     let (vm, _, ready) = boot(&s).await;
-    eprintln!("boot after kill (init fscks) ready {ready:.2?}");
+    eprintln!("boot after kill ready {ready:.2?}");
     assert_eq!(vm.stop(Duration::from_secs(10)).await, StopOutcome::Control);
     let _ = std::fs::remove_dir_all(&s.dir);
 }

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build the box images: the base root filesystem and the layers. Runs as root
 # on Debian trixie arm64 with CAP_SYS_ADMIN (a privileged container: the layer
-# installs chroot and mount /proc), see build-mac.sh and the Box image workflow.
+# installs chroot and mount /proc): build-docker.sh runs it, on a Mac and in CI.
 #
 #   build.sh OUT_DIR [VERSION]
 #

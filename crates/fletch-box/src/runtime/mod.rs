@@ -233,8 +233,8 @@ pub struct VmSpec {
     /// Kernel-side env for init (identity paths, authorized key). `FLETCH_BOX_ID` is added.
     pub env: BTreeMap<String, String>,
     pub console: PathBuf,
-    /// The guest entrypoint; `None` is [`guest::INIT`]. Tests boot Calina's image
-    /// with `/opt/calina/init`.
+    /// The guest entrypoint; `None` is [`guest::INIT`]. The VM tests boot the
+    /// product image with `/usr/bin/env`, which runs their script disk.
     pub init: Option<PathBuf>,
     /// Arguments after the entrypoint. The product init takes none; a test
     /// init runs a script disk with `/bin/sh /dev/vdc`.
@@ -765,11 +765,11 @@ mod tests {
     #[test]
     fn test_init_overrides_the_entrypoint() {
         let mut spec = spec();
-        spec.init = Some("/opt/calina/init".into());
+        spec.init = Some("/usr/bin/env".into());
         spec.init_args = vec!["/bin/sh".into(), "/dev/vdc".into()];
         assert_eq!(
             spec.launch_config(&paths()).exec,
-            ["/opt/calina/init", "/bin/sh", "/dev/vdc"]
+            ["/usr/bin/env", "/bin/sh", "/dev/vdc"]
         );
     }
 

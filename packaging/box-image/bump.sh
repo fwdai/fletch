@@ -1,6 +1,6 @@
 #!/bin/sh
 # Move the image's dependency pins to the current upstream state and bump the
-# image version: what the weekly "Box image bump" workflow runs before it
+# image version: what the monthly "Box image bump" workflow runs before it
 # builds, tests, publishes and opens its pull request. Safe to run by hand.
 #
 #   packaging/box-image/bump.sh            # edit build.sh, VERSION and the app's pin

@@ -12,16 +12,20 @@ is the pipeline.
 | `rootfs/` | Files copied over the base: `opt/fletch/init`, `etc/ssh/sshd_config.fletch` |
 | `build.sh` | Root, Debian arm64, privileged: mmdebstrap the base, apt the layers into copies of it, rsync the deltas, `mkfs.erofs` each, `manifest.json`, `sizes.md` |
 | `test.sh` | Mounts the output as init would and runs the checks (chroot as `agent`); `report.md` |
-| `build-mac.sh` | The two above on a Mac through Docker Desktop (`--test` runs the tests) |
+| `build-docker.sh` | The one way to build, on a Mac (Docker Desktop) or in CI: fletch-guest, `build.sh` in a container, `test.sh` with `--test`, the delta manifests, an install with the app's installer |
 | `boot-check.sh` | Boots the output on a Mac with its layers and checks the guest over ssh |
 | `bump.sh` | Moves the pins in `build.sh` (Debian snapshot, Node 22), VERSION and the app's pin |
-| `publish.sh` | Creates the GitHub release from an output directory; refuses an existing version |
+| `publish.sh` | Creates the GitHub release from an output directory: a draft, published once every file is there; refuses an existing version |
+
+`build.sh`, `packages/`, `dpkg-excludes.cfg`, `rootfs/` and `crates/fletch-guest`
+are the image's inputs: a change to them needs a VERSION bump (docs/box.md,
+"Releases and updates"). The scripts around them do not.
 
 ## Outputs
 
-`base.erofs`, `layer-<name>.erofs`, `manifest.json`, `sizes.md`, and after
-`fletch-box image chunk out/*.erofs` a `<file>.chunks.json` per image (the CI
-action does this; the app fetches only changed chunks on an update).
+`base.erofs`, `layer-<name>.erofs`, `manifest.json`, `sizes.md` (from
+`build.sh`), and a `<file>.chunks.json` per image (`fletch-box image chunk`, run
+by `build-docker.sh`; the app fetches only changed chunks on an update).
 
 Inputs that pin the result: Debian packages from `snapshot.debian.org` at
 `DEBIAN_SNAPSHOT`, Node from one nodejs.org tarball checked against its

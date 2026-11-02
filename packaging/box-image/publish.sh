@@ -1,13 +1,19 @@
 #!/bin/sh
 # The GitHub release of a built image, `box-image-v<VERSION>`: manifest.json,
 # the images, their delta manifests, sizes.md, and inputs.json. Idempotent on
-# one rule: a version names one set of inputs. The inputs are the git tree ids
-# of packaging/box-image and crates/fletch-guest at HEAD (what build.sh reads),
-# recorded in the release as inputs.json.
+# one rule: a version names one set of inputs. The inputs are the git ids at
+# HEAD of what the image is made from ($INPUTS: what build.sh reads, and the
+# guest agent), recorded in the release as inputs.json. The scripts around it
+# (this one, test.sh, the README) are not inputs: changing them needs no bump.
+#
+# The release goes up as a draft, which the app cannot see, and is published
+# only once it carries every file at its size: a published release is one the
+# app can install. A draft a failed publish left behind is replaced.
 #
 #   publish.sh OUT_DIR VERSION     no release: publish it. The same inputs
 #                                  already released: nothing to do, exit 0.
-#                                  Other inputs under this version: exit 1.
+#                                  Other inputs under this version, or a
+#                                  release missing files: exit 1.
 #   publish.sh --check VERSION     the same verdicts without publishing, for a
 #                                  pull request: a change to the image without
 #                                  a VERSION bump fails here, not on main.
@@ -15,22 +21,50 @@
 # Needs `gh` logged in (GH_TOKEN in CI) and the repository checked out.
 set -eu
 
+INPUTS="packaging/box-image/build.sh packaging/box-image/packages packaging/box-image/dpkg-excludes.cfg
+  packaging/box-image/rootfs crates/fletch-guest"
 inputs() {
-  printf '{"box_image":"%s","fletch_guest":"%s"}\n' \
-    "$(git rev-parse HEAD:packaging/box-image)" "$(git rev-parse HEAD:crates/fletch-guest)"
+  sep='{'
+  for p in $INPUTS; do
+    printf '%s"%s":"%s"' "$sep" "$p" "$(git rev-parse "HEAD:$p")"
+    sep=,
+  done
+  echo '}'
 }
-# none | same | different | unknown (a release without inputs.json)
+# Reads `<name> <size>` lines; prints each name the release $1 does not carry
+# as an uploaded asset of that size (every name when its assets cannot be read).
+absent() {
+  assets=$(gh release view "$1" --json assets \
+    -q '.assets[] | select((.state // "uploaded") == "uploaded") | "\(.name) \(.size)"') || assets=
+  while read -r name size; do
+    printf '%s\n' "$assets" | grep -qxF "$name $size" || echo "$name"
+  done
+}
+# none | draft | same | incomplete (these inputs, but a file its manifest lists
+# is missing) | different | unknown (a release without inputs.json)
 status() {
   tag="box-image-v$1"
-  gh release view "$tag" >/dev/null 2>&1 || { echo none; return; }
+  draft=$(gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null) || { echo none; return; }
+  [ "$draft" = false ] || { echo draft; return; }
   remote=$(gh release download "$tag" --pattern inputs.json --output - 2>/dev/null || true)
   [ -n "$remote" ] || { echo unknown; return; }
-  if [ "$remote" = "$(inputs)" ]; then echo same; else echo different; fi
+  [ "$remote" = "$(inputs)" ] || { echo different; return; }
+  files=$(gh release download "$tag" --pattern manifest.json --output - 2>/dev/null |
+    jq -r '.images[] | "\(.file) \(.size)"' 2>/dev/null || true)
+  if [ -n "$files" ] && [ -z "$(printf '%s\n' "$files" | absent "$tag")" ]; then
+    echo same
+  else
+    echo incomplete
+  fi
 }
 verdict() { # <version> <status>: prints the sentence; exits 1 when the version must be bumped
   case "$2" in
     none) echo "no release box-image-v$1 yet";;
+    draft) echo "box-image-v$1 is a draft left by a publish that did not finish; publishing replaces it";;
     same) echo "release box-image-v$1 holds these inputs";;
+    incomplete)
+      echo "::error::release box-image-v$1 lacks files its manifest.json lists, so the app cannot install it; bump packaging/box-image/VERSION"
+      exit 1;;
     different)
       echo "::error::release box-image-v$1 exists with other inputs; bump packaging/box-image/VERSION (a version names one set of inputs)"
       exit 1;;
@@ -52,16 +86,43 @@ TAG="box-image-v$VERSION"
 M="$OUT/manifest.json"
 [ -f "$M" ] || { echo "publish.sh: no $M" >&2; exit 1; }
 [ "$(jq -r .version "$M")" = "$VERSION" ] || { echo "publish.sh: $M is version $(jq -r .version "$M"), not $VERSION" >&2; exit 1; }
+[ -f "$OUT/sizes.md" ] || { echo "publish.sh: no $OUT/sizes.md" >&2; exit 1; }
+# What the release carries, as the positional parameters, each file named: the
+# manifest, sizes.md, inputs.json (written below), then every image the
+# manifest lists and its chunk list.
+set -- "$M" "$OUT/sizes.md" "$OUT/inputs.json"
 for f in $(jq -r '.images[].file' "$M"); do
   [ -f "$OUT/$f" ] || { echo "publish.sh: $M lists $f, which is not in $OUT" >&2; exit 1; }
-  [ -f "$OUT/$f.chunks.json" ] || echo "publish.sh: no $f.chunks.json; updates to this file will not be deltas" >&2
+  set -- "$@" "$OUT/$f"
+  if [ -f "$OUT/$f.chunks.json" ]; then
+    set -- "$@" "$OUT/$f.chunks.json"
+  else
+    echo "publish.sh: no $f.chunks.json; updates to this file will not be deltas" >&2
+  fi
 done
+[ $# -gt 3 ] || { echo "publish.sh: $M lists no images" >&2; exit 1; }
 STATUS=$(status "$VERSION")
 verdict "$VERSION" "$STATUS"
-[ "$STATUS" = none ] || exit 0
+case "$STATUS" in
+  none) ;;
+  draft) gh release delete "$TAG" --yes ;;
+  *) exit 0 ;;
+esac
+
+# Fails with $1, removing the draft if there is one (never a published release).
+abandon() {
+  if [ "$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null || true)" = true ]; then
+    gh release delete "$TAG" --yes || true
+    echo "::error::$1; the draft is removed, nothing was published"
+  else
+    echo "::error::$1"
+  fi
+  exit 1
+}
 
 inputs > "$OUT/inputs.json"
 NOTES=$(mktemp)
+trap 'rm -f "$NOTES"' EXIT
 {
   echo "Box image for Fletch (\`packaging/box-image\`): the root filesystem every box boots and the layers it overlays. See docs/box.md."
   echo
@@ -72,12 +133,13 @@ NOTES=$(mktemp)
   echo "Package lists with versions are in \`manifest.json\`; each package's licence is in the image under \`/usr/share/doc/<package>/copyright\`."
 } > "$NOTES"
 
-# --latest=false: the app updater's endpoint serves the repository's *latest*
-# release (docs/RELEASING.md); an image release must never become it.
-set -f
-gh release create "$TAG" --target "${GITHUB_SHA:-HEAD}" --title "Box image v$VERSION" \
-  --notes-file "$NOTES" --latest=false \
-  "$M" "$OUT/sizes.md" "$OUT/inputs.json" $(ls "$OUT"/*.erofs "$OUT"/*.chunks.json 2>/dev/null)
-set +f
-rm -f "$NOTES"
-echo "published $TAG"
+# --latest=false, on the draft and again on publishing it: the app updater's
+# endpoint serves the repository's *latest* release (docs/RELEASING.md); an
+# image release must never become it.
+gh release create "$TAG" --draft --target "${GITHUB_SHA:-$(git rev-parse HEAD)}" \
+  --title "Box image v$VERSION" --notes-file "$NOTES" --latest=false "$@" ||
+  abandon "creating the draft of $TAG failed"
+lacking=$(for f in "$@"; do echo "${f##*/} $(($(wc -c < "$f")))"; done | absent "$TAG")
+[ -z "$lacking" ] || abandon "the draft of $TAG lacks $(printf '%s' "$lacking" | tr '\n' ' ')"
+gh release edit "$TAG" --draft=false --latest=false || abandon "publishing $TAG failed"
+echo "published $TAG: $# files"

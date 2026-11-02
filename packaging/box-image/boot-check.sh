@@ -11,7 +11,7 @@ REPO=$(cd "$HERE/../.." && pwd)
 OUT=${1:-$HERE/out}
 OUT=$(cd "$OUT" && pwd)
 for f in base.erofs layer-devtools.erofs layer-browser.erofs; do
-  [ -f "$OUT/$f" ] || { echo "boot-check.sh: no $f in $OUT (build-mac.sh first)" >&2; exit 1; }
+  [ -f "$OUT/$f" ] || { echo "boot-check.sh: no $f in $OUT (build-docker.sh first)" >&2; exit 1; }
 done
 if ! command -v fletch-box >/dev/null 2>&1; then
   echo "== staging the box runtime and building fletch-box (scripts/box-dev.sh)"
