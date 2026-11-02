@@ -69,7 +69,8 @@ waits for `stop` on the control port: clean stop clears `dirty`, kill leaves it
 and the next start removes the stale listen socket, closing the lifeline ends
 the helper. They print boot and stop timings. They boot the product image but
 not its init: `/usr/bin/env` runs the script disk (`/bin/sh /dev/vdc`), which
-uses the base image's `socat` for the control port. The product init is
+stops on the control port through the image's `fletch-guest wait-stop` and
+prints `FLETCH_READY` only once it listens, as init does. The product init is
 exercised end to end by `crates/fletch-core/src/sandbox/boxes/tests.rs`.
 
 Measured on an M-series Mac (macOS 27, from inside a Fletch seatbelt sandbox),
