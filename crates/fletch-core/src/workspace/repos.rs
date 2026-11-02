@@ -362,8 +362,9 @@ impl WorkspaceManager {
     /// Repoint a pinned repo at a new location on disk. The user has already
     /// moved the folder; this only updates the stored reference so future
     /// agents spawn from the right place. Validates the new path is a git repo
-    /// and isn't already pinned. Existing agents' worktrees are NOT relinked —
-    /// they were forked from the old location and keep pointing there.
+    /// and isn't already pinned. Existing agents' checkouts still borrow their
+    /// objects from the old location: `Supervisor::relocate_repo` relinks them
+    /// (`sandbox::provision::relink_alternates`).
     pub fn relocate_repo(&self, old_path: &Path, new_path: &Path) -> Result<Workspace> {
         if !new_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(

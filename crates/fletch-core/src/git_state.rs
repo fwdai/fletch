@@ -916,9 +916,12 @@ async fn rev_list_counts(checkout_path: &Path, base: &str) -> Option<(u32, u32)>
 /// see [`check_for_disposal`].
 async fn run_status(checkout_path: &Path) -> Result<String> {
     match run_status_strict(checkout_path).await {
-        Ok(out) => Ok(out),
+        Ok(out) => {
+            read_failures::clear(checkout_path, "git status");
+            Ok(out)
+        }
         Err(Error::Other(msg)) => {
-            tracing::warn!(error = %msg, "git status --porcelain=v1 failed");
+            read_failures::warn(checkout_path, "git status", &msg);
             Ok(String::new())
         }
         Err(e) => Err(e),
@@ -949,10 +952,73 @@ async fn run_numstat(checkout_path: &Path) -> Result<String> {
         .output()
         .await?;
     if !out.status.success() {
-        tracing::warn!(stderr = %String::from_utf8_lossy(&out.stderr).trim(), "git diff --numstat failed");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        read_failures::warn(checkout_path, "git diff --numstat", stderr.trim());
         return Ok(String::new());
     }
+    read_failures::clear(checkout_path, "git diff --numstat");
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The panel reads' failures, each logged once rather than on every poll: the
+/// focused Git panel asks at 1 Hz, and a checkout git cannot read fails the
+/// same way every time. A read warns again when it fails differently, or after
+/// it has succeeded in between.
+mod read_failures {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+
+    use parking_lot::Mutex;
+
+    type Seen = Mutex<HashMap<(PathBuf, &'static str), String>>;
+
+    fn seen() -> &'static Seen {
+        static SEEN: OnceLock<Seen> = OnceLock::new();
+        SEEN.get_or_init(Default::default)
+    }
+
+    pub(super) fn warn(checkout: &Path, read: &'static str, error: &str) {
+        if is_news(checkout, read, error) {
+            tracing::warn!(checkout = %checkout.display(), error, "{read} failed");
+        }
+    }
+
+    pub(super) fn clear(checkout: &Path, read: &'static str) {
+        let mut seen = seen().lock();
+        if !seen.is_empty() {
+            seen.remove(&(checkout.to_path_buf(), read));
+        }
+    }
+
+    /// Record `error` as `read`'s latest in `checkout`; whether it differs
+    /// from the last one recorded.
+    fn is_news(checkout: &Path, read: &'static str, error: &str) -> bool {
+        let mut seen = seen().lock();
+        let key = (checkout.to_path_buf(), read);
+        if seen.get(&key).is_some_and(|last| last == error) {
+            return false;
+        }
+        seen.insert(key, error.to_string());
+        true
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_failure_is_news_once_until_it_changes_or_clears() {
+            let checkout = Path::new("/checkouts/read-failures-test");
+            assert!(is_news(checkout, "git status", "bad object HEAD"));
+            assert!(!is_news(checkout, "git status", "bad object HEAD"));
+            // Another read of the same checkout is its own.
+            assert!(is_news(checkout, "git diff", "bad object HEAD"));
+            assert!(is_news(checkout, "git status", "index.lock exists"));
+            clear(checkout, "git status");
+            assert!(is_news(checkout, "git status", "index.lock exists"));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

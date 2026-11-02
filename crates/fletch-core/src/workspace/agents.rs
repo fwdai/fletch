@@ -101,6 +101,23 @@ impl WorkspaceManager {
         Ok(ids)
     }
 
+    /// Every live agent's checkouts, each with the repository it was cloned
+    /// from as that repository is pinned now — after a relocate, its new path.
+    /// Hidden agents (run steps, purpose-scoped chats) included: their
+    /// checkouts are on disk like any other.
+    pub fn live_checkouts(&self) -> Result<Vec<(PathBuf, PathBuf)>> {
+        let mut checkouts = Vec::new();
+        for id in self.live_agent_ids()? {
+            let Ok(agent) = self.agent(&id) else {
+                continue;
+            };
+            for repo in agent.repos {
+                checkouts.push((repo.checkout_path(&id)?, repo.repo_path));
+            }
+        }
+        Ok(checkouts)
+    }
+
     /// Every live (non-archived) agent of `provider` with its account stamp,
     /// for the active-account fan-out (`Supervisor::follow_active_account`).
     /// The provider is read off the workspace's sessions, where it lives, the

@@ -47,10 +47,14 @@ pub fn is_run_branch(b: &str) -> bool {
 
 /// Provision the run repository: a host-owned `--shared` clone of the source
 /// repo, with `origin` pointed at the source's real remote so finalize's push/PR
-/// hit it (not the local source path). Idempotent — reused on resume.
+/// hit it (not the local source path). Idempotent — reused on resume, relinked
+/// first to where the source is now in case the user moved it since.
 pub async fn provision_run_repo(source_repo: &Path, run_dir: &Path) -> Result<PathBuf> {
     let dest = run_repo_path(run_dir);
     if dest.join(".git").exists() {
+        if let Err(e) = provision::relink_alternates(&dest, source_repo).await {
+            tracing::warn!(run_repo = %dest.display(), error = %e, "relinking a run repo's objects failed");
+        }
         return Ok(dest);
     }
     tokio::fs::create_dir_all(run_dir).await?;

@@ -608,6 +608,19 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         }
     }
 
+    // Relink checkouts still borrowing objects from where their repository
+    // used to be. A relocate relinks its live checkouts itself; this catches
+    // the ones relocated before it did, or whose relink failed. A cheap read
+    // of one small file per checkout when nothing moved. Not a sweep: it
+    // touches only checkouts the database names, so it runs under inherited
+    // roots too.
+    match workspace.live_checkouts() {
+        Ok(checkouts) => {
+            crate::host::spawn(sandbox::provision::relink_checkouts(checkouts));
+        }
+        Err(e) => tracing::warn!(error = %e, "skipping the checkout relink"),
+    }
+
     let supervisor = Arc::new(Supervisor::new(workspace.clone()));
     ctx.set_supervisor(supervisor.clone());
 
