@@ -92,8 +92,8 @@ cover: scratch outside every bind (`/tmp`, `/var/tmp`, `/run`), which the
 reviewer may write as the guest user, and the network namespace, which is the
 guest's.
 
-Settings (Settings › Sandbox › Box): memory, CPUs, idle stop, image URL, and a
-toggle per layer (`box_layers`). A layer turned on is downloaded once and
+Settings (Settings › Sandbox › Linux VM): memory, CPUs, idle stop, and a
+toggle per layer (`box_layers`); the image URL is on Settings › Developer. A layer turned on is downloaded once and
 attached to every box from its next boot.
 
 ## Releases and updates
