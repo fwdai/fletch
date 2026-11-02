@@ -78,11 +78,18 @@ pub(crate) fn configured_data_dir() -> Option<PathBuf> {
 }
 
 /// Resolve the engine for an agent stamped with `kind`, availability-checked
-/// at spawn time. A box-stamped agent on a machine that cannot boot one is a
-/// hard error, never a quiet fallback to seatbelt.
+/// at spawn time. An agent stamped with an engine this host does not have —
+/// a box on a machine that cannot boot one, seatbelt off macOS — is a hard
+/// error, never a quiet launch under the other.
 pub fn engine_for(kind: EngineKind) -> Result<Arc<dyn SandboxEngine>> {
     match kind {
-        EngineKind::SandboxExec => Ok(seatbelt_engine()),
+        // Behind the platform: `seatbelt::refusal` is the one fact that the
+        // macOS sandbox exists only on macOS, read here, by the spawn
+        // override and by the composer's list alike.
+        EngineKind::SandboxExec => match seatbelt::refusal() {
+            None => Ok(seatbelt_engine()),
+            Some(reason) => Err(Error::SandboxUnavailable(reason)),
+        },
         // Behind the runtime probe: `boxes::availability` refuses with the
         // first thing missing, so a box-stamped agent never launches
         // elsewhere.
@@ -239,14 +246,14 @@ pub fn ensure_supports_provider(engine: EngineKind, provider: &str) -> Result<()
 /// `placement_setting`.
 ///
 /// The override ([`WorkspaceType`]) stands over the project's placement for
-/// this spawn only: `Host` is the macOS sandbox;
-/// `Box` is a box, waiting at launch for an image still on its way as a
-/// project pinned to boxes does, and refused with the reason the user sees
-/// (`box_refusal`: a runtime that cannot boot, a provider boxes do not
-/// run) when there can be no box at all — an explicit choice
-/// never quietly lands somewhere else. `Stamped(kind)` is exactly `kind`: a
-/// stamped box is checked as an explicit `Box` is. Without an override this
-/// never errs.
+/// this spawn only: `Host` is the macOS sandbox, refused with the reason the
+/// user sees where there is none (`seatbelt::refusal`: off macOS); `Box` is
+/// a box, waiting at launch for an image still on its way as a project
+/// pinned to boxes does, and refused with the reason the user sees
+/// (`box_refusal`: a runtime that cannot boot, a provider boxes do not run)
+/// when there can be no box at all — an explicit choice never quietly lands
+/// somewhere else. `Stamped(kind)` is exactly `kind`, checked as the
+/// explicit choice is. Without an override this never errs.
 ///
 /// Blocking: the automatic choice stats the repository and may run the
 /// runtime probe once, so a spawn calls this off the async runtime.
@@ -262,7 +269,10 @@ pub fn engine_for_spawn(
     }
     match override_ {
         Some(WorkspaceType::Host | WorkspaceType::Stamped(EngineKind::SandboxExec)) => {
-            Ok(EngineKind::SandboxExec)
+            match seatbelt::refusal() {
+                Some(reason) => Err(Error::Other(reason)),
+                None => Ok(EngineKind::SandboxExec),
+            }
         }
         Some(WorkspaceType::Box | WorkspaceType::Stamped(EngineKind::Box)) => {
             match box_refusal(provider) {
@@ -306,14 +316,16 @@ pub struct WorkspaceTypeOption {
 
 /// The workspace types a new agent of `provider` in the project at `repo`
 /// (stored placement `placement_setting`) may be given: the one list the UI
-/// reads. The macOS sandbox is always available; a box exactly when
-/// [`engine_for_spawn`] would accept it as an override, with the same
-/// sentence when not. Blocking, like [`engine_for_spawn`].
+/// reads. Each type is available exactly when [`engine_for_spawn`] would
+/// accept it as an override, with the same sentence when not: the macOS
+/// sandbox on macOS (`seatbelt::refusal`), a box where one can boot
+/// (`box_refusal`). Blocking, like [`engine_for_spawn`].
 pub fn workspace_types(
     placement_setting: Option<&str>,
     repo: &Path,
     provider: &str,
 ) -> Vec<WorkspaceTypeOption> {
+    let host_reason = seatbelt::refusal();
     let box_reason = box_refusal(provider);
     let placement = placement::resolve(placement_setting, repo);
     // What `engine_for_spawn` picks with a `None` override: the automatic
@@ -327,9 +339,12 @@ pub fn workspace_types(
     vec![
         WorkspaceTypeOption {
             kind: "host",
-            available: true,
-            reason: host_default
-                .then(|| host_default_reason(placement_setting, placement, box_reason.as_deref())),
+            available: host_reason.is_none(),
+            reason: host_reason.or_else(|| {
+                host_default.then(|| {
+                    host_default_reason(placement_setting, placement, box_reason.as_deref())
+                })
+            }),
             default: host_default,
         },
         WorkspaceTypeOption {
@@ -699,24 +714,26 @@ mod workspace_type_tests {
     }
 
     /// A session's workspace type stands over the host's choice and the
-    /// project's placement, an explicit box is never quietly something else,
-    /// and an adopted tree keeps running where it lives. Written to hold
-    /// whether or not this machine can boot a box.
+    /// project's placement, an explicit choice is never quietly something
+    /// else, and an adopted tree keeps running where it lives. Written to
+    /// hold whether or not this machine can boot a box.
     #[test]
     fn a_session_choice_is_honoured_or_refused() {
         let repo = tempfile::tempdir().unwrap();
-        // A project pinned to boxes still gets this Mac when the session asks.
-        assert_eq!(
-            engine_for_spawn(
-                None,
-                Some("box"),
-                repo.path(),
-                "claude",
-                Some(WorkspaceType::Host)
-            )
-            .unwrap(),
-            EngineKind::SandboxExec
+        // A project pinned to boxes still gets this Mac when the session
+        // asks; off macOS there is no such thing, and the choice is refused
+        // with the sentence the composer's list carries, never a box.
+        let host = engine_for_spawn(
+            None,
+            Some("box"),
+            repo.path(),
+            "claude",
+            Some(WorkspaceType::Host),
         );
+        match seatbelt::refusal() {
+            None => assert_eq!(host.unwrap(), EngineKind::SandboxExec),
+            Some(reason) => assert_eq!(host.unwrap_err().to_string(), reason),
+        }
         // A provider boxes do not run: refused whatever the runtime says,
         // never stamped seatbelt instead.
         assert!(engine_for_spawn(
@@ -743,21 +760,38 @@ mod workspace_type_tests {
     }
 
     /// A stamped engine is kept exactly, whatever the project's placement
-    /// says: a fork of a seatbelt parent stays on this Mac.
+    /// says: a fork of a seatbelt parent stays on this Mac — and off macOS,
+    /// where there is no seatbelt, it is refused rather than moved.
     #[test]
     fn a_stamped_engine_is_kept() {
         let repo = tempfile::tempdir().unwrap();
-        assert_eq!(
-            engine_for_spawn(
-                None,
-                Some("box"),
-                repo.path(),
-                "claude",
-                Some(WorkspaceType::Stamped(EngineKind::SandboxExec))
-            )
-            .unwrap(),
-            EngineKind::SandboxExec
+        let kept = engine_for_spawn(
+            None,
+            Some("box"),
+            repo.path(),
+            "claude",
+            Some(WorkspaceType::Stamped(EngineKind::SandboxExec)),
         );
+        match seatbelt::refusal() {
+            None => assert_eq!(kept.unwrap(), EngineKind::SandboxExec),
+            Some(reason) => assert_eq!(kept.unwrap_err().to_string(), reason),
+        }
+    }
+
+    /// Off macOS the macOS sandbox is not on offer: the list says so with
+    /// the reason, the box is the default, and asking for the sandbox anyway
+    /// is refused at the spawn and at the launch with the same sentence.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn off_macos_the_macos_sandbox_is_not_offered() {
+        let repo = tempfile::tempdir().unwrap();
+        let reason = seatbelt::refusal().expect("no seatbelt off macOS");
+        let options = workspace_types(None, repo.path(), "claude");
+        assert_eq!(options[0].kind, "host");
+        assert!(!options[0].available && !options[0].default);
+        assert_eq!(options[0].reason.as_deref(), Some(reason.as_str()));
+        assert!(options[1].default, "the box is the only engine here");
+        assert!(engine_for(EngineKind::SandboxExec).is_err());
     }
 
     /// A record of a retired engine is refused, naming the engine, never

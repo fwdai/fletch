@@ -93,10 +93,14 @@ engine enforces) and `docs/box.md` is the box runtime.
    seatbelt: every new agent is a box (`boxes::engine_for_new_agent`), and a
    host that cannot boot one says why at boot and refuses each spawn with it.
    The override stands over the placement for that spawn. The composer's choice is
-   `Host` or `Box` (`WorkspaceType::parse`): `Host` is seatbelt; `Box` is a
-   box that waits for its image as a box-pinned project does, and a spawn
-   refused with the user-facing reason when there can be no box (runtime
-   unusable, provider unsupported), never a quiet fallback. A fork
+   `Host` or `Box` (`WorkspaceType::parse`): `Host` is seatbelt, refused with
+   the user-facing reason off macOS, where there is none (`seatbelt::refusal`,
+   the one place that fact lives); `Box` is a box that waits for its image as
+   a box-pinned project does, and a spawn refused with the user-facing reason
+   when there can be no box (runtime unusable, provider unsupported), never a
+   quiet fallback. The same two refusals decide what the composer's list
+   offers as available and what `sandbox::engine_for` launches, so a type the
+   host does not have is never offered, stamped or launched. A fork
    passes its parent's exact engine (`WorkspaceType::stamped`, the
    `Stamped(kind)` variant only `sandbox` builds): the child gets that engine
    whatever the automatic choice says now, a stamped box refused like an explicit `Box`

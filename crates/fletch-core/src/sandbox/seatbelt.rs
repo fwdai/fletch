@@ -169,6 +169,22 @@ const HOST_CREDENTIAL_ENV: &[&str] = &[
 /// travels in argv, never a file; see [`profile_args`].
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
+/// Why this host has no macOS sandbox, in the sentence the user sees, or
+/// `None` on macOS, where it always has one: the engine's own counterpart to
+/// `boxes::runtime_refusal`. The one place the fact "seatbelt exists only on
+/// macOS" lives; `sandbox::engine_for`, `sandbox::engine_for_spawn` and
+/// `sandbox::workspace_types` all read it, so a host without it neither
+/// offers the sandbox, nor stamps an agent with it, nor launches one.
+pub fn refusal() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        None
+    } else {
+        Some(format!(
+            "the macOS sandbox exists only on macOS; this host has no {SANDBOX_EXEC}"
+        ))
+    }
+}
+
 /// PTY / device write rules shared by every profile — terminal programs need
 /// these ttys and null/zero devices regardless of what else they may write.
 const DEVICE_WRITE_RULES: &str = r#";; PTYs and basic device files are required for terminal programs.
