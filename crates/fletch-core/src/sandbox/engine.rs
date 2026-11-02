@@ -6,8 +6,6 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineKind {
     SandboxExec,
-    Docker,
-    Podman,
     /// A libkrun micro-VM per agent, reached only over ssh on vsock and an
     /// egress proxy. Named here so settings, guarantees and the seams can refer
     /// to it; [`super::engine_for`] refuses it on a machine that cannot boot
@@ -20,7 +18,7 @@ impl EngineKind {
     /// notably [`super::guarantees`], which must state each engine's coverage of
     /// each guarantee, so an engine added here without a coverage declaration
     /// fails to compile.
-    pub const ALL: &'static [Self] = &[Self::SandboxExec, Self::Docker, Self::Podman, Self::Box];
+    pub const ALL: &'static [Self] = &[Self::SandboxExec, Self::Box];
 
     /// The `sandbox_engine` settings-value spelling for this kind. Shared with
     /// the frontend's `SandboxEngine` type, so both sides agree on the wire
@@ -28,8 +26,6 @@ impl EngineKind {
     pub fn as_setting(self) -> &'static str {
         match self {
             Self::SandboxExec => "sandbox-exec",
-            Self::Docker => "docker",
-            Self::Podman => "podman",
             Self::Box => "box",
         }
     }
@@ -42,19 +38,7 @@ impl EngineKind {
             Self::SandboxExec => EngineCaps {
                 checkout_on_host: true,
                 shares_host_fs: true,
-                runs_codegraph: true,
                 token_only_launch: false,
-                added_repos_self_contained: false,
-                share_roots: None,
-                run_panel: true,
-                workflow_steps: true,
-            },
-            Self::Docker | Self::Podman => EngineCaps {
-                checkout_on_host: true,
-                shares_host_fs: false,
-                runs_codegraph: false,
-                token_only_launch: true,
-                added_repos_self_contained: true,
                 share_roots: None,
                 run_panel: true,
                 workflow_steps: true,
@@ -62,9 +46,7 @@ impl EngineKind {
             Self::Box => EngineCaps {
                 checkout_on_host: false,
                 shares_host_fs: false,
-                runs_codegraph: true,
                 token_only_launch: true,
-                added_repos_self_contained: false,
                 share_roots: Some(&["/Users", "/Volumes"]),
                 run_panel: false,
                 workflow_steps: false,
@@ -77,8 +59,6 @@ impl EngineKind {
     pub fn from_setting(value: &str) -> Option<Self> {
         match value {
             "sandbox-exec" => Some(Self::SandboxExec),
-            "docker" => Some(Self::Docker),
-            "podman" => Some(Self::Podman),
             "box" => Some(Self::Box),
             _ => None,
         }
@@ -97,20 +77,10 @@ pub struct EngineCaps {
     /// the OS reports for a path (symlinks resolved) is what the agent sees,
     /// and its provider CLI writes the host's own session dirs (seatbelt).
     pub shares_host_fs: bool,
-    /// The codegraph MCP server can run beside the checkout, inside the
-    /// agent's sandbox: the host's build under seatbelt, the tools disk's in
-    /// a box. A container gets no build of it.
-    pub runs_codegraph: bool,
     /// A claude launch can be signed in only by a token the host hands over:
     /// the engine has no view of the host's credential files, so the stored
     /// setup-token is a valid fallback.
     pub token_only_launch: bool,
-    /// A repo added to a live agent must be a self-contained clone (full
-    /// object copy, no alternates): a container's mounts are fixed at launch,
-    /// so a `--shared` clone's borrowed store would be unreachable in it. A
-    /// box checkout is always a full copy pushed into the guest, so the flag
-    /// has nothing to decide there.
-    pub added_repos_self_contained: bool,
     /// The roots a granted folder must lie under, `None` for any: a box guest
     /// mounts shares only under the mountpoints its image ships (both empty
     /// mountpoints; see `packaging/box-image/build.sh`).
@@ -132,22 +102,14 @@ pub struct AgentLaunchCtx<'a> {
     /// no other project's processes can write it.
     pub project_id: &'a str,
     /// The provider launching (`AgentRecord.provider`). Seatbelt ignores it —
-    /// its profile is provider-agnostic — while the Docker engine branches on it
-    /// for the per-provider image, config-dir mount, and auth (see the
-    /// container engines' `ContainerProvider`).
+    /// its profile is provider-agnostic — while the box engine branches on it
+    /// for the provider's home and auth (`sandbox::provider`).
     pub provider: &'a str,
     pub writable_root: &'a Path,
     /// The authoritative source repos each checkout under `writable_root` was
     /// forked from — `AgentRecord.repos[].repo_path`, the user's own repos,
-    /// which the agent cannot write. The Docker engine derives its borrowed git
-    /// object-store mounts from THESE user-owned paths, never from the checkout's
-    /// own `.git/objects/info/alternates`: that file lives inside the container's
-    /// read-write checkout, so a container agent could overwrite it to point a
-    /// read-only bind mount at an arbitrary host path (`~/.ssh`, `~/.aws`, …) on
-    /// the next reused-checkout relaunch (resume / switch_view). Deriving the
-    /// mount set from the trusted source repos keeps that agent-writable file out
-    /// of the trust boundary. Seatbelt ignores it: it shares the host filesystem,
-    /// so borrowed objects need no separate mount/grant here.
+    /// which the agent cannot write. Seatbelt reads one back out of the macOS
+    /// privacy deny, as the `--shared` clone borrows its objects.
     pub source_repos: &'a [PathBuf],
     pub rpc_dir: &'a Path,
     pub cwd: &'a Path,
@@ -156,8 +118,7 @@ pub struct AgentLaunchCtx<'a> {
     /// A workflow step agent's blackboard directory
     /// (`~/.fletch/runs/<run-id>/blackboard/`), granted read-write into the
     /// sandbox on top of the writable root: seatbelt adds it as a writable
-    /// subpath, Docker bind-mounts it at its identical host path. Both engines
-    /// export it as `WF_BLACKBOARD`. `None` for ordinary (non-workflow) agents,
+    /// subpath and exports it as `WF_BLACKBOARD`. `None` for ordinary (non-workflow) agents,
     /// which is every agent until the scheduler (S4) populates it at spawn.
     pub blackboard: Option<&'a Path>,
     /// The config dir of the managed provider account this launch runs under
@@ -169,7 +130,7 @@ pub struct AgentLaunchCtx<'a> {
     pub account_dir: Option<&'a Path>,
     /// The claude access token the host resolved for this launch
     /// (`agent::host_login::claude`), for the account the agent is stamped with.
-    /// Both engines hand it to claude as `CLAUDE_CODE_OAUTH_TOKEN`; the
+    /// Every engine hands it to claude as `CLAUDE_CODE_OAUTH_TOKEN`; the
     /// stored login it came from never enters the sandbox. `None` for other
     /// providers, or a default account with no host login.
     pub oauth_token: Option<&'a crate::agent::host_login::claude::AccessToken>,
@@ -180,15 +141,15 @@ pub struct AgentLaunchCtx<'a> {
     pub codex_home: Option<&'a Path>,
     /// The [`adopted_workspace`](Self::adopted_workspace) is to be read, never
     /// written: the local reviewer reads the coder's checkout it adopts. Seatbelt
-    /// grants it no write and denies writes under it after every grant;
-    /// containers bind it `:ro`. `false` for every other launch, including a
+    /// grants it no write and denies writes under it after every grant.
+    /// `false` for every other launch, including a
     /// workflow step, which adopts its run's tree to change it. Meaningless
     /// without an adopted workspace.
     pub adopted_read_only: bool,
     /// Folders on the user's machine the user granted this workspace
     /// (`AgentRecord::folder_grants`), each exposed at its own path: seatbelt
     /// re-allows it (read, or read-write with the invariant-3 deny over any
-    /// `.git` inside), containers bind it (`:ro` unless writable), a box mounts
+    /// `.git` inside), a box mounts
     /// it as a virtiofs share (read-only enforced by the host). Already
     /// checked (`workspace::folder_grants::check`); empty for most launches.
     pub folder_grants: &'a [crate::workspace::FolderGrant],
@@ -203,11 +164,9 @@ impl<'a> AgentLaunchCtx<'a> {
     /// Derived from `cwd` rather than declared by the caller: an agent always
     /// runs in its own checkout, so a `cwd` outside `writable_root` IS an
     /// adopted tree — and a launch path that forgot to declare it would hand the
-    /// agent a working directory it cannot write (seatbelt) or that the runtime
-    /// invents empty (containers). Both engines grant it the same way they grant
-    /// [`blackboard`](Self::blackboard): seatbelt as a writable subpath (with
-    /// its own invariant-3 deny), a container runtime as a read-write bind at
-    /// the identical host path.
+    /// agent a working directory it cannot write. Seatbelt grants it the same
+    /// way it grants [`blackboard`](Self::blackboard): as a writable subpath
+    /// (with its own invariant-3 deny).
     pub fn adopted_workspace(&self) -> Option<&'a Path> {
         (!self.cwd.starts_with(self.writable_root)).then_some(self.cwd)
     }
@@ -216,14 +175,6 @@ impl<'a> AgentLaunchCtx<'a> {
 /// Engine-specific data describing how to tear down what was launched.
 #[derive(Clone)]
 pub enum KillPlan {
-    Container {
-        name: String,
-        /// The runtime endpoint that launched this container, so teardown
-        /// reaches the same machine even if the runtime's default connection
-        /// changed since (podman: the pinned `--connection`). Always `None` for
-        /// docker — one daemon endpoint, nothing to distinguish.
-        connection: Option<String>,
-    },
     /// One ssh session into a box. The session's own process-group kill ends
     /// the ssh client, and with it the guest PTY; the engine only detaches the
     /// launch, leaving the VM to the registry's idle timer. `agent_id` is the
@@ -242,8 +193,7 @@ pub enum KillHandle {
     /// The session's own child-handle / process-group termination is the whole
     /// story; the sandbox adds no teardown of its own (seatbelt).
     ProcessGroup,
-    /// Engine-managed teardown (e.g. `docker kill` on a container that the
-    /// local CLI child merely attaches to).
+    /// Engine-managed teardown (a box detaches the launch).
     Engine {
         engine: Arc<dyn SandboxEngine>,
         plan: KillPlan,
@@ -252,7 +202,7 @@ pub enum KillHandle {
 
 impl KillHandle {
     /// Engine-side teardown. Callers still run their local child kill after
-    /// this — for containers the local child is just the attached CLI.
+    /// this.
     ///
     /// Note the `Result` is only the *engine* teardown's outcome. Sessions run
     /// their local child/process-group kill unconditionally regardless of it,
@@ -264,19 +214,6 @@ impl KillHandle {
         match self {
             Self::ProcessGroup => Ok(()),
             Self::Engine { engine, plan } => engine.kill(plan),
-        }
-    }
-
-    /// A user-readable replacement for the launcher process's raw exit code,
-    /// when the engine knows what it means (docker CLI 125/126/127 —
-    /// daemon/image failures the user can act on). `None` = no special
-    /// meaning; the session reports the plain exit status. Sessions call this
-    /// when building their exit message and, as everywhere else on this type,
-    /// never inspect the variant.
-    pub fn describe_exit(&self, code: i32) -> Option<String> {
-        match self {
-            Self::ProcessGroup => None,
-            Self::Engine { engine, plan } => engine.describe_exit(plan, code),
         }
     }
 }
@@ -342,7 +279,7 @@ pub struct LaunchPlan {
     pub env: Vec<(String, String)>,
     /// Vars to strip from the child's inherited and login-shell env (merged
     /// into the session's `env_remove`, applied before `env`). Seatbelt drops
-    /// `SSH_AUTH_SOCK` here; the container engines pass no host env to strip.
+    /// `SSH_AUTH_SOCK` here.
     pub env_remove: Vec<String>,
     pub env_delivery: EnvDelivery,
     /// The engine's own step before every turn of a per-turn session, run
@@ -361,7 +298,7 @@ pub struct LaunchPlan {
     pub after_exit: Option<TurnPrep>,
     pub kill: KillHandle,
     /// Whether the claude this plan runs — the binary the engine committed to
-    /// in `launch_agent`: the host's, a container image's, a box's tools
+    /// in `launch_agent`: the host's or a box's tools
     /// disk's — parses `--thinking-display`, so the custom view can ask it for
     /// thinking summaries (`agent::args::prepare_managed_args`). A claude that
     /// doesn't parse the flag refuses to launch with it, so this is evidence
@@ -396,14 +333,6 @@ pub trait SandboxEngine: Send + Sync {
     /// child kill is sufficient.
     fn kill(&self, _plan: &KillPlan) -> Result<()> {
         Ok(())
-    }
-
-    /// A user-readable meaning for the launcher's exit `code`, if this engine
-    /// reserves codes of its own (the docker CLI reserves 125/126/127 for
-    /// daemon and image failures). Default: no reserved codes, sessions
-    /// report the raw exit status.
-    fn describe_exit(&self, _plan: &KillPlan, _code: i32) -> Option<String> {
-        None
     }
 }
 
@@ -458,7 +387,7 @@ mod tests {
     /// The fact table as docs/sandbox-foundation.md states it.
     #[test]
     fn caps_match_the_charter_table() {
-        use EngineKind::{Box, Docker, Podman, SandboxExec};
+        use EngineKind::{Box, SandboxExec};
         let with = |fact: fn(EngineKind) -> bool| -> Vec<EngineKind> {
             EngineKind::ALL
                 .iter()
@@ -472,15 +401,7 @@ mod tests {
             "only a box keeps the checkout off the host"
         );
         assert_eq!(with(|k| k.caps().shares_host_fs), vec![SandboxExec]);
-        assert_eq!(with(|k| k.caps().runs_codegraph), vec![SandboxExec, Box]);
-        assert_eq!(
-            with(|k| k.caps().token_only_launch),
-            vec![Docker, Podman, Box]
-        );
-        assert_eq!(
-            with(|k| k.caps().added_repos_self_contained),
-            vec![Docker, Podman]
-        );
+        assert_eq!(with(|k| k.caps().token_only_launch), vec![Box]);
         assert_eq!(with(|k| k.caps().share_roots.is_some()), vec![Box]);
         assert_eq!(Box.caps().share_roots, Some(&["/Users", "/Volumes"][..]));
         assert_eq!(with(|k| !k.caps().run_panel), vec![Box]);
@@ -490,6 +411,7 @@ mod tests {
     #[test]
     fn engine_kind_rejects_unknown_setting_values() {
         assert_eq!(EngineKind::from_setting("containerd"), None);
+        assert_eq!(EngineKind::from_setting("docker"), None);
         assert_eq!(EngineKind::from_setting(""), None);
     }
 

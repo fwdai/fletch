@@ -147,11 +147,10 @@ impl Admin {
     /// doing. Flattened into one object so `fletch-host status` prints one
     /// document.
     ///
-    /// The engine facts are the three an operator with no window checks first —
-    /// whether any agent is alive, whether the sandbox is the one they meant on
-    /// this box, and whether pushes will work — and each is the cheapest read
-    /// available: the workspace snapshot the `get_workspace` op already serves,
-    /// and two process-global reads.
+    /// The engine facts are the two an operator with no window checks first —
+    /// whether any agent is alive, and whether pushes will work — and each is
+    /// the cheapest read available: the workspace snapshot the `get_workspace`
+    /// op already serves, and a process-global read.
     fn status(&self, engine: &Engine) -> Result<Value, String> {
         let mut status = value(&remote(engine)?.status())?;
         let Some(object) = status.as_object_mut() else {
@@ -161,11 +160,6 @@ impl Admin {
         object.insert("pid".into(), json!(std::process::id()));
         object.insert("version".into(), json!(env!("CARGO_PKG_VERSION")));
         object.insert("agents".into(), agent_counts(engine));
-        object.insert(
-            "sandboxEngine".into(),
-            json!(fletch_core::sandbox::container_override()
-                .map_or("auto", fletch_core::sandbox::EngineKind::as_setting)),
-        );
         object.insert(
             "githubConnected".into(),
             json!(fletch_core::github::client::token().is_some()),

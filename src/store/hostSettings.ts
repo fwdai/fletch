@@ -43,14 +43,7 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
     autoArchiveIdleDays: parseAutoArchiveIdleDays(s.auto_archive_idle_days),
     branchPrefix: s.git_branch_prefix || "",
     draftPrs: s.github_draft_prs === "true",
-    // Blank = unset (launch defaults apply).
-    dockerImage: s.docker_image || "",
-    dockerMemory: s.docker_memory || "",
-    dockerCpus: s.docker_cpus || "",
-    podmanImage: s.podman_image || "",
-    podmanMemory: s.podman_memory || "",
-    podmanCpus: s.podman_cpus || "",
-    // The box knobs are blank when unset, as the container ones are.
+    // The box knobs are blank when unset (the engine's defaults apply).
     boxMemoryMib: s.box_memory_mib || "",
     boxCpus: s.box_cpus || "",
     boxImageUrl: s.box_image_url || "",

@@ -46,7 +46,7 @@ If you want to fire off a dozen agents and merge whatever comes back, there are 
 
 ## What you get
 
-**Real isolation.** Every agent gets its own full clone of your repo (shared git objects make spawning effectively free), sandboxed by macOS Seatbelt by default or by an opt-in Docker container per agent. Either way, an agent can't touch your repo, your machine, or another agent's work.
+**Real isolation.** Every agent gets its own full clone of your repo (shared git objects make spawning effectively free), sandboxed in its own Linux VM where the Mac can run one, or by macOS Seatbelt. Either way, an agent can't touch your repo, your machine, or another agent's work.
 
 **Agents that know your codebase.** Isolation has a cost nobody mentions: an agent alone in a fresh clone has to rediscover your project by grepping. So Fletch indexes your repo's symbols and call graph and serves it to every agent as an MCP server — an agent asks where a symbol is defined and what calls it instead of reading files until it finds out. The index is built in a throwaway mirror clone and copied into each workspace, so nothing is ever written to your repo, and a file watcher keeps it current as the agent edits. Built on [codegraph](https://github.com/colbymchenry/codegraph), which Fletch vendors and drives rather than reimplements. Best-effort by design: if indexing fails, the agent falls back to searching files and the run continues. On by default, with a toggle in Settings.
 
@@ -66,7 +66,7 @@ If you want to fire off a dozen agents and merge whatever comes back, there are 
 2. Onboarding checks the three things you need — `git`, GitHub access, and at least one agent CLI — and can set each up in place: install git or an agent CLI for you, and connect GitHub with a device code (no GitHub CLI involved).
 3. Point Fletch at a repo and spawn an agent with a task, or define a workflow and launch it.
 
-Requires macOS 13+. No VM, no required containers: Docker is an optional isolation engine, not a prerequisite.
+Requires macOS 13+. Nothing else to install: the Linux VM image downloads itself in the background, and agents run under Seatbelt until it is in.
 
 ## Supported harnesses
 
@@ -83,14 +83,14 @@ Fletch detects installed CLIs automatically and normalizes their transcripts int
 
 ## Sandboxing
 
-Fletch ships two isolation engines. The guarantee is the same under both: an agent's writes stay inside its own workspace. The trade-off is friction versus depth.
+Fletch ships two isolation engines and picks one per workspace itself. The guarantee is the same under both: an agent's writes stay inside its own workspace.
 
-- **Seatbelt (default).** Each agent runs under a per-agent macOS `sandbox-exec` profile that denies writes outside its workspace. Nothing to install, nothing to configure, no startup cost. But it's write protection, not a VM: the agent runs as your user, reads what you can read, and has network access.
-- **Docker (opt-in).** Switch the engine and each agent runs in its own container. Truer sandboxing: the agent sees only what's mounted into its container, so the rest of your filesystem isn't reachable even for reads. It requires Docker on your machine (and every harness except Antigravity supports it), and it's still not a silver bullet: the network is open, and a container is not a VM.
+- **Linux VM (the box).** Where the Mac can run one, each agent gets its own micro-VM with its checkout inside the guest. It sees nothing of your machine but the folders you hand it, and reaches the network only through an allow-list you control. Every harness except Antigravity runs there.
+- **Seatbelt.** Each agent runs under a per-agent macOS `sandbox-exec` profile that denies writes outside its workspace: for projects that build a macOS app, for Antigravity, and while the VM image downloads. It's write protection, not a VM: the agent runs as your user, reads what you can read, and has network access.
 
 Under both engines, workspaces are full shared-object clones, so an agent's writable `.git` lives entirely inside its sandbox; your repo's `.git` is never writable by an agent. Pushes and PR creation run host-side through a brokered RPC, so credentials never enter the sandbox, and each agent's capability grant constrains where it may publish: no agent can push the branch its work is reviewed against (nor `main`/`master`), and a workflow step agent can't publish at all. For its own branch, an agent publishes under your identity without asking — unless you turn on Settings › Git › "Ask before publishing" (off by default; it leaves autopilot and clicked Git actions alone, prompting only when an agent publishes on its own). Choose tasks and repos accordingly.
 
-The full write-up is [`docs/isolation.md`](docs/isolation.md) — the canonical, code-accurate account of both engines, the clone model, and the honest threat model. The code is canonical too: [`sandbox/seatbelt.rs`](src-tauri/src/sandbox/seatbelt.rs), [`sandbox/docker/`](src-tauri/src/sandbox/docker), and [`sandbox/provision.rs`](src-tauri/src/sandbox/provision.rs).
+The full write-up is [`docs/isolation.md`](docs/isolation.md) — the canonical, code-accurate account of both engines, the clone model, and the honest threat model. The code is canonical too: [`sandbox/seatbelt.rs`](crates/fletch-core/src/sandbox/seatbelt.rs), [`sandbox/boxes/`](crates/fletch-core/src/sandbox/boxes), and [`sandbox/provision.rs`](crates/fletch-core/src/sandbox/provision.rs).
 
 ## Documentation
 

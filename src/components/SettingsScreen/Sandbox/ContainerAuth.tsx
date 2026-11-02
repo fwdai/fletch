@@ -9,8 +9,8 @@ import { useAppStore } from "@/store";
 import { useClaudeSetup } from "@/util/useClaudeSetup";
 import { SetRow } from "../primitives";
 
-/** Human labels for each container-auth chain step (see the backend chain in
- *  `sandbox/docker/auth.rs` — first hit wins, so exactly one is active). */
+/** Human labels for each claude auth chain step (see the backend chain in
+ *  `sandbox/provider/auth.rs` — first hit wins, so exactly one is active). */
 const STATUS_LABELS: Record<string, string> = {
   keychain: "Using your Claude login (Keychain)",
   "stored-token": "Using stored token",
@@ -21,8 +21,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 const SETUP_COMMAND = "claude setup-token";
 
-/** Settings › Sandbox: how claude in a Linux VM (and in a legacy container)
- *  authenticates to Anthropic (`sandbox::provider::auth`, the chain every
+/** Settings › Sandbox: how claude in a Linux VM authenticates to Anthropic (`sandbox::provider::auth`, the chain every
  *  engine that cannot read the user's own login shares). Shows which chain
  *  step is active and opens the connect modal — the path for Keychain-only
  *  claude logins. Seatbelt agents keep the user's own login. */
@@ -61,7 +60,7 @@ export function ContainerAuth() {
   );
 }
 
-/** "Connect Claude for containers" modal. The primary path is automated: it
+/** "Connect Claude for Linux VMs" modal. The primary path is automated: it
  *  runs `claude setup-token` for the user (backend PTY flow via `useClaudeSetup`
  *  — surfaces the consent URL, collects the auth code, captures + stores the
  *  token). A manual paste field remains as a fallback (e.g. the `claude` CLI
@@ -92,7 +91,7 @@ function ContainerAuthModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal
       icon="cube"
-      title="Connect Claude for containers"
+      title="Connect Claude for Linux VMs"
       onClose={close}
       size="sm"
       layer="overlay"
@@ -156,7 +155,7 @@ function AutoConnect({
     return (
       <>
         <div className="ghc-lede text-sm">
-          Connect your Claude account so containerized agents can authenticate. This opens your
+          Connect your Claude account so agents in Linux VMs can authenticate. This opens your
           browser once to sign in — no copy-paste.
         </div>
         <div className="modal-actions">
@@ -200,7 +199,7 @@ function AutoConnect({
     return (
       <div className="ghc-lede flex-center text-sm">
         <Icon name="check" size={14} />
-        <span>Connected. Containers can now authenticate to Claude.</span>
+        <span>Connected. Linux VMs can now authenticate to Claude.</span>
       </div>
     );
   }

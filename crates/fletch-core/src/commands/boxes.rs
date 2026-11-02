@@ -305,8 +305,6 @@ mod tests {
     use crate::host::ctx::test_ctx;
     use serde_json::json;
 
-    use settings::TEST_LOCK as ENGINE_LOCK;
-
     #[test]
     fn a_box_setting_is_validated_persisted_mirrored_and_announced() {
         let (ctx, sink, _dir) = test_ctx();
@@ -330,34 +328,30 @@ mod tests {
         assert_eq!(settings::current().memory_mib, settings::DEFAULT_MEMORY_MIB);
     }
 
-    /// The engine a new agent gets: a headless host's container engine is
-    /// what it is, and otherwise seatbelt whenever a box cannot boot right
-    /// now — a project placed on this Mac, no image yet — never waiting.
+    /// The engine a new agent gets on a Mac: seatbelt whenever a box cannot
+    /// boot right now — a project placed on this Mac, no image yet — never
+    /// waiting.
+    #[cfg(target_os = "macos")]
     #[test]
-    fn a_new_agent_gets_the_container_engine_or_what_can_run_now() {
+    fn a_new_agent_gets_what_can_run_now() {
         use crate::sandbox::placement::Placement;
-        let _serial = ENGINE_LOCK.blocking_lock();
+        let _serial = settings::TEST_LOCK.blocking_lock();
         settings::set(settings::BoxSettings::default());
         let engine = boxes::engine_for_new_agent;
 
         assert_eq!(
-            engine(Some(sandbox::EngineKind::Docker), "claude", Placement::Host),
-            sandbox::EngineKind::Docker,
-            "a headless host's container engine ignores the placement"
-        );
-        assert_eq!(
-            engine(None, "claude", Placement::Host),
+            engine("claude", Placement::Host),
             sandbox::EngineKind::SandboxExec
         );
         // Automatic is whatever can boot right now and nothing else: on a
         // developer's Mac with the runtime, the image and the disk in place
-        // that is a box, on every other machine (CI, a Linux host) seatbelt.
+        // that is a box, on every other Mac seatbelt.
         let now = if boxes::ready_for("claude") {
             sandbox::EngineKind::Box
         } else {
             sandbox::EngineKind::SandboxExec
         };
-        assert_eq!(engine(None, "claude", Placement::Auto), now);
+        assert_eq!(engine("claude", Placement::Auto), now);
         // A project pinned to boxes waits for the image wherever a box can
         // boot at all.
         let pinned = if boxes::runtime_usable() {
@@ -365,9 +359,9 @@ mod tests {
         } else {
             sandbox::EngineKind::SandboxExec
         };
-        assert_eq!(engine(None, "claude", Placement::Box), pinned);
+        assert_eq!(engine("claude", Placement::Box), pinned);
         assert_eq!(
-            engine(None, "antigravity", Placement::Box),
+            engine("antigravity", Placement::Box),
             sandbox::EngineKind::SandboxExec
         );
     }

@@ -35,9 +35,7 @@
 //!   `CARGO_HOME` only, holds tokens and no paths, so it is linked in. Reads
 //!   are unrestricted; a write through the link resolves to the ungranted real
 //!   file and is denied, so a token rotation fails closed rather than landing
-//!   in the overlay. In a Linux container the host `~/.cargo` is not mounted,
-//!   so the links dangle and cargo treats the credentials as absent (no image
-//!   ships cargo today).
+//!   in the overlay.
 //! - **`config.toml`** is deliberately **not** linked. Cargo resolves every
 //!   relative value in a config file — `include`, `paths`, `[patch]` paths,
 //!   `target-dir`, runners, `[env] relative = true` — against the parent of
@@ -112,7 +110,7 @@ pub const OVERLAY_ENV: &str = "FLETCH_CARGO_OVERLAY";
 /// Keyed by the child's [`BoxPlatform`], like the Playwright and npm rows of
 /// the cache table: `cargo install` puts its binaries and install records
 /// (`bin/`, `.crates.toml`) in the home, so a macOS agent and a Linux
-/// container of one project would otherwise overwrite each other's tools. The
+/// guest of one project would otherwise overwrite each other's tools. The
 /// registry and git caches beside them are platform-neutral and could be
 /// shared, but cargo has no variable to split one from the other, and a
 /// second download of a project's crates per platform is the cheaper price.

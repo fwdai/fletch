@@ -4,8 +4,7 @@ Fletch's differentiator is that every agent runs sandboxed by default, and
 that the sandbox is invisible to the user: no images to manage, no containers
 to babysit. Two engines ship: **seatbelt** (the macOS sandbox, the agent's
 checkout on the host filesystem) and the **box** (a micro-VM per agent, the
-checkout inside the guest). Docker and Podman still exist and are on their way
-out (see "Retiring the container engines").
+checkout inside the guest). Off macOS the box is the only engine.
 
 This page is the charter for how the engines are integrated into the rest of
 the app: the rules every feature follows so that a feature written once works
@@ -90,18 +89,24 @@ engine enforces) and `docs/box.md` is the box runtime.
    workspace runs in a box; seatbelt is what it gets when no box can be had
    right now (image still downloading, download failed, a machine that cannot
    boot one) or when the project or the workspace is told to stay on the Mac.
-   There is no global engine setting and no switch; a headless host off macOS
-   pins its container engine at boot (`sandbox::container_override`) until
-   boxes boot there. The override stands over the placement for that spawn. The composer's choice is
-   `Host` or `Box` (`WorkspaceType::parse`): `Host` is seatbelt; `Box` is a
-   box that waits for its image as a box-pinned project does, and a spawn
-   refused with the user-facing reason when there can be no box (runtime
-   unusable, provider unsupported), never a quiet fallback. A fork
+   There is no global engine setting and no switch. Off macOS there is no
+   seatbelt: every new agent is a box (`boxes::engine_for_new_agent`), and a
+   host that cannot boot one says why at boot and refuses each spawn with it.
+   The override stands over the placement for that spawn. The composer's choice is
+   `Host` or `Box` (`WorkspaceType::parse`): `Host` is seatbelt, refused with
+   the user-facing reason off macOS, where there is none (`seatbelt::refusal`,
+   the one place that fact lives); `Box` is a box that waits for its image as
+   a box-pinned project does, and a spawn refused with the user-facing reason
+   when there can be no box (runtime unusable, provider unsupported), never a
+   quiet fallback. The same two refusals decide what the composer's list
+   offers as available and what `sandbox::engine_for` launches, so a type the
+   host does not have is never offered, stamped or launched. A fork
    passes its parent's exact engine (`WorkspaceType::stamped`, the
    `Stamped(kind)` variant only `sandbox` builds): the child gets that engine
    whatever the automatic choice says now, a stamped box refused like an explicit `Box`
-   when it cannot be had, a stamped container engine kept as it is (its
-   launch fails closed when the daemon is down). The project's placement
+   when it cannot be had. A record stamped with a retired engine (`docker`,
+   `podman`) is refused at every launch and fork
+   (`sandbox::ensure_engine_not_retired`), never moved to another engine. The project's placement
    (`sandbox::placement::Placement`) is a project setting only and never a
    spawn's override. An adopting agent ignores the override and runs where
    its tree lives. The UI reads one host-computed list of
@@ -112,16 +117,14 @@ engine enforces) and `docs/box.md` is the box runtime.
 
 ## What `caps()` says today
 
-| capability | seatbelt | box | docker/podman |
-| --- | --- | --- | --- |
-| `checkout_on_host` | yes | no | yes |
-| `shares_host_fs` | yes | no | no |
-| `runs_codegraph` | yes | yes | no |
-| `token_only_launch` | no | yes | yes |
-| `added_repos_self_contained` | no | no | yes |
-| `share_roots` | any | `/Users`, `/Volumes` | any |
-| `run_panel` | yes | no | yes |
-| `workflow_steps` | yes | no | yes |
+| capability | seatbelt | box |
+| --- | --- | --- |
+| `checkout_on_host` | yes | no |
+| `shares_host_fs` | yes | no |
+| `token_only_launch` | no | yes |
+| `share_roots` | any | `/Users`, `/Volumes` |
+| `run_panel` | yes | no |
+| `workflow_steps` | yes | no |
 
 The struct holds only these facts. A `no` has its user-facing reason at the
 feature's refusal site, beside the cap read (rule 7), not in `caps()`.
@@ -129,104 +132,6 @@ feature's refusal site, beside the cap read (rule 7), not in `caps()`.
 The verify checks are not a row: they take a checkout path, not an agent
 record, so `verify.rs` skips them for a checkout its executor says is in a
 box. The handoff summary is not a row either: nothing reads such a fact yet.
-
-## Retiring the container engines
-
-Docker and Podman are retired when the box covers their use. The retirement
-is a deletion: nothing depends on `sandbox/container/`, `sandbox/docker/` and
-`sandbox/podman/` but the few files the guard test
-`sandbox::tests::container_engines_are_a_leaf` pins (`sandbox/mod.rs`,
-`sandbox/guarantees.rs`, `commands/settings.rs`, `host/boot.rs`). Provider
-knowledge the box shares with them, credential resolution and the claude
-setup-token capture included, lives under `sandbox::provider`. What the
-deletion touches:
-
-**Rust (`crates/fletch-core/src/` unless named otherwise)**
-
-- [ ] Delete `sandbox/container/`, `sandbox/docker/`, `sandbox/podman/` and
-  their `mod` lines and re-exports in `sandbox/mod.rs` (`docker_availability`,
-  `DockerAvailability`, `podman_availability`, `podman_launch_blocker`,
-  `PodmanAvailability`).
-- [ ] Drop `EngineKind::Docker` and `EngineKind::Podman` (`sandbox/engine.rs`)
-  and every exhaustive match on them:
-  - `sandbox/engine.rs`: `ALL`, `as_setting`, `caps()` (the `Docker | Podman`
-    row), `from_setting`;
-  - `sandbox/mod.rs`: `engine_for`, `transcript_root`, `create_session_file`,
-    `provision_checkout`, `restore_checkout`, `before_launch`,
-    `setup_allowance`, `agent_bin`, `codegraph_bin`,
-    `reap_agent_containers` (and with it `runs_in_container`), and the
-    `WorkspaceType::Stamped(Docker | Podman)` arm of `engine_for_spawn`;
-  - `sandbox/provider/mod.rs`: the `Docker | Podman` arm of `supports`;
-  - `sandbox/guarantees.rs`: every `Docker` / `Podman` coverage row;
-  - `host/boot.rs`: `headless_container_engine`.
-- [ ] Delete the `caps()` table's docker/podman column above.
-- [ ] `supervisor/disposition.rs` calls `sandbox::reap_agent_containers` at
-  archive and discard; the calls go with the function.
-- [ ] `transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME` (`.fletch-claude-projects`,
-  bound over the container's claude `projects` dir) stays for as long as
-  container-era workspaces are readable: `transcript_root` and the claude
-  session locators read old transcripts from it.
-- [ ] Settings keys: `docker_image`, `docker_memory`, `docker_cpus`,
-  `docker_version_refresh_guard` (`sandbox/docker/engine/settings.rs`),
-  `podman_image`, `podman_memory`, `podman_cpus`,
-  `podman_version_refresh_guard` (`sandbox/podman/settings.rs`). Drop them
-  from `HOST_SETTING_KEYS` and the `set_docker_launch_settings_impl` /
-  `set_podman_launch_settings_impl` setters in `commands/settings.rs`, and
-  from boot's seeding in `host/boot.rs` (`set_launch_settings`,
-  `init_version_refresh_guard`, `set_build_sink`, `sweep_orphans_at_startup`).
-  Stored rows are left in the database, unread.
-- [ ] `claude_container_token` (`sandbox::provider::auth::TOKEN_SETTING`) is
-  not a container key: the claude auth chain offers it to a box launch too.
-  Its fate goes with its Settings UI (`ContainerAuth.tsx` below).
-- [ ] The desktop commands in `src-tauri/src/lib.rs`: `probe_docker_engine`,
-  `probe_podman_engine`, `set_docker_launch_settings`,
-  `set_podman_launch_settings`, `start_docker_desktop`
-  (`src-tauri/src/commands/app.rs`), and the container-auth commands if the
-  setup-token UI goes.
-
-**Records stamped `docker` or `podman`**
-
-- [ ] `sandbox_engine` on an agent row keeps its stored value. Once the
-  variants are gone `EngineKind::from_setting` no longer recognises it and
-  `sandbox::stamped_engine` would fall back to seatbelt, a silent change of
-  engine. Instead the record fails closed: a spawn, resume or view switch
-  refuses with a message naming the workspace and the retired engine, and a
-  re-stamp to seatbelt or box happens only on an explicit user action.
-- [x] The host's own `sandbox_engine` setting is no longer read (boot logs a
-  row that pinned `docker` or `podman`); new agents get the automatic engine.
-  Existing records are covered by the item above.
-
-**The headless host**
-
-- [ ] `host/boot.rs::headless_container_engine` is how `fletch-host` off
-  macOS picks an engine today, and the box runs on Apple silicon only.
-  Retiring containers either ends Linux host support or waits for a box
-  runtime there. This is decided before the deletion, not during it.
-
-**Frontend (`src/`)**
-
-- [ ] `components/SettingsScreen/Sandbox/ContainerAuth.tsx`,
-  `components/SettingsScreen/Sandbox/ContainerLaunchKnobs.tsx`, and the
-  container rows of `components/SettingsScreen/Sandbox/index.tsx` (the
-  Docker and Podman engine options, their probes and hints, the knobs).
-- [ ] `components/DockerBuildToast.tsx`.
-- [ ] `store/sandbox.ts`: `applyBuildEvent`, `containerBuilds`, the docker and
-  podman probes, `containerAuth`, `startDockerDesktop`, and the
-  `DockerBuildProgress` type (re-exported from `store/types.ts`; tests in
-  `store/buildEvents.test.ts`).
-- [ ] The `docker:build-progress` stream: `onDockerBuildProgress` in
-  `api/events.ts`, its listener in `store/eventListeners.ts`, the
-  `DockerBuildEvent` type in `api/types/sandbox.ts`; the probe, container-auth
-  and `startDockerDesktop` calls in `api/domains/sandbox.ts`.
-- [ ] The `dockerCrashKind` banner in `components/Workspace/index.tsx`.
-- [ ] `dockerSupported` / `isDockerSupported` in `data/providers.ts` and its
-  check in `components/Composer/availability.ts`.
-- [ ] `isContainerEngine`, and `docker` / `podman` in `SandboxEngine`, in
-  `storage/preferences.ts`; the Docker label in
-  `components/TitleBar/WorkspaceStatus/isolation.ts`.
-- [ ] The `set_docker_launch_settings` / `set_podman_launch_settings` ops in
-  `store/gates.ts`.
-- [ ] The `docker` variant of `components/ui/Badge.tsx`.
 
 ## Not done on purpose
 

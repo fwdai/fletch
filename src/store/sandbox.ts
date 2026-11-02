@@ -7,9 +7,6 @@ import {
   type BoxStateEvent,
   type BoxToolsStatus,
   type ContainerAuthStatus,
-  type DockerBuildEvent,
-  type DockerProbe,
-  type PodmanProbe,
   type PublishApproval,
   type PublishApprovalResolved,
 } from "@/api";
@@ -18,23 +15,6 @@ import { newestWins } from "@/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@/util/publishApprovals";
 import { activeEnvironment, forActiveEnvironment } from "./environments";
 import type { SliceCreator } from "./types";
-
-/** Live state of one embedded container image build (first spawn under a
- *  runtime). `building` streams the latest output line; `failed` stays up
- *  (with `error`) until dismissed; success removes the entry. The runtime is
- *  the `containerBuilds` key rather than a field here — Docker and Podman
- *  builds run on independent locks and can overlap. */
-export interface DockerBuildProgress {
-  status: "building" | "failed";
-  /** Most recent `build` output line (building only). */
-  lastLine: string | null;
-  /** Failure reason (failed only). */
-  error: string | null;
-}
-
-/** `containerBuilds` key for events that didn't name a runtime — the toast
- *  shows neutral copy for it instead of guessing. */
-export const NEUTRAL_BUILD_RUNTIME = "container";
 
 /** Every handshake starts an `approvals_list` without waiting for the last, so
  *  two can be out at once and answer out of order. One order for all of them,
@@ -48,68 +28,10 @@ const approvalLoads = newestWins();
  *  is outstanding, which is nearly always. */
 let approvalsInFlight: ApprovalEvent[] | null = null;
 
-/** Fold one `docker:build-progress` event into the keyed build state that
- *  drives the toast. Every phase touches only its own runtime's key, so
- *  overlapping builds don't clear each other. */
-export function applyBuildEvent(
-  builds: Record<string, DockerBuildProgress>,
-  e: DockerBuildEvent,
-): Record<string, DockerBuildProgress> {
-  const key = e.runtime ?? NEUTRAL_BUILD_RUNTIME;
-  switch (e.phase) {
-    case "started":
-      // Overwrites, so a retry clears the previous attempt's displayed error.
-      return { ...builds, [key]: { status: "building", lastLine: null, error: null } };
-    case "line": {
-      // Materializes a missing entry: a reload mid-build loses the `started`,
-      // and the toast would stay hidden for the rest of a minutes-long build.
-      const build: DockerBuildProgress = builds[key] ?? {
-        status: "building",
-        lastLine: null,
-        error: null,
-      };
-      return { ...builds, [key]: { ...build, lastLine: e.line ?? build.lastLine } };
-    }
-    case "finished": {
-      if (!(key in builds)) return builds;
-      const { [key]: _done, ...rest } = builds;
-      return rest;
-    }
-    case "failed":
-      return {
-        ...builds,
-        [key]: { status: "failed", lastLine: null, error: e.error ?? "Image build failed" },
-      };
-    default:
-      return builds;
-  }
-}
-
 export interface SandboxSlice {
-  /** Latest Docker availability probe; `null` until the first probe lands. */
-  dockerProbe: DockerProbe | null;
-  /** Latest Podman availability probe; `null` until the first probe lands. */
-  podmanProbe: PodmanProbe | null;
-  /** Which container auth chain step is active (Anthropic credentials for
-   *  docker agents); `null` until the first refresh lands. */
+  /** Which claude auth chain step is active (Anthropic credentials for box
+   *  agents); `null` until the first refresh lands. */
   containerAuth: ContainerAuthStatus | null;
-  /** Live image-build progress for the build toast, keyed by the runtime
-   *  display name from the event stream ("Docker" / "Podman", or
-   *  [`NEUTRAL_BUILD_RUNTIME`]) so one runtime's `finished` can't clear the
-   *  other's still-running toast. Empty = no build in flight. */
-  containerBuilds: Record<string, DockerBuildProgress>;
-  /** Advanced docker launch knobs, mirrored from the backend-owned
-   *  `docker_image` / `docker_memory` / `docker_cpus` settings. Empty string =
-   *  unset (the launch path uses its defaults: 4g memory, 2 cpus, embedded
-   *  image). */
-  dockerImage: string;
-  dockerMemory: string;
-  dockerCpus: string;
-  /** The same three knobs for podman, under separate settings keys so a user
-   *  running both engines configures each. */
-  podmanImage: string;
-  podmanMemory: string;
-  podmanCpus: string;
   /** Whether an agent must get the user's approval before publishing. Mirrors
    *  the backend-owned `publish_confirmation` setting. Off by default. */
   publishConfirmation: boolean;
@@ -164,31 +86,15 @@ export interface SandboxSlice {
    *  else answered it, or nobody did before the host's wait ran out. No call
    *  back to the engine: the verdict is already made. */
   resolvePublishApproval: (e: PublishApprovalResolved) => void;
-  /** Re-probe Docker availability into `dockerProbe` (settings pane open).
-   *  Returns the probe result so callers can poll until the daemon answers. */
-  refreshDockerProbe: () => Promise<DockerProbe>;
-  /** Re-probe Podman availability into `podmanProbe`. */
-  refreshPodmanProbe: () => Promise<PodmanProbe>;
-  /** Re-resolve the container auth chain into `containerAuth`. */
+  /** Re-resolve the claude auth chain into `containerAuth`. */
   refreshContainerAuth: () => Promise<void>;
-  /** Persist a pasted `claude setup-token` for containers, then refresh the
+  /** Persist a pasted `claude setup-token` for boxes, then refresh the
    *  status. Throws on backend refusal (empty token) so the connect modal
    *  can show the error inline. */
   setContainerAuthToken: (token: string) => Promise<void>;
-  /** Drop the stored container token, then refresh the status (a later chain
+  /** Drop the stored setup token, then refresh the status (a later chain
    *  step — shell env / credentials file — may take over). */
   clearContainerAuthToken: () => Promise<void>;
-  /** Dismiss one runtime's build toast (used after a failed build). */
-  dismissDockerBuild: (runtime: string) => void;
-  /** Persist the advanced docker launch knobs (image / memory / cpus) via the
-   *  backend, which writes the settings AND updates the spawn-path mirror.
-   *  Reverts the store on failure. */
-  saveDockerLaunchSettings: (image: string, memory: string, cpus: string) => Promise<void>;
-  /** The podman twin of `saveDockerLaunchSettings`. */
-  savePodmanLaunchSettings: (image: string, memory: string, cpus: string) => Promise<void>;
-  /** Launch Docker Desktop (daemon-down error action); surfaces failures via
-   *  `lastError`. */
-  startDockerDesktop: () => Promise<void>;
   /** Read where the host's box setup stands — the runtime probe (with the
    *  tools disks) and the image — once per environment; `box:image` and
    *  `box:tools` carry every change after. What the title bar's popover,
@@ -266,36 +172,7 @@ export function foldBlocked(blocked: BlockedHost[], e: BoxEgressEvent): BlockedH
   return [...blocked, entry].slice(-MAX_BLOCKED);
 }
 
-type StoreSet = Parameters<SliceCreator<SandboxSlice>>[0];
-
-/** Apply an optimistic `patch`, reverting to `prev` (and surfacing the error)
- *  if the backend write rejects. These settings persist through a backend
- *  command that can refuse — e.g. the docker engine racing a daemon shutdown —
- *  so the UI must never keep a value that didn't stick. */
-async function optimistic(
-  set: StoreSet,
-  patch: Partial<SandboxSlice>,
-  prev: Partial<SandboxSlice>,
-  persist: () => Promise<void>,
-) {
-  set(patch);
-  try {
-    await persist();
-  } catch (e) {
-    set({ ...prev, lastError: String(e) });
-  }
-}
-
 export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
-  dockerProbe: null,
-  podmanProbe: null,
-  containerBuilds: {},
-  dockerImage: "",
-  dockerMemory: "",
-  dockerCpus: "",
-  podmanImage: "",
-  podmanMemory: "",
-  podmanCpus: "",
   publishConfirmation: false,
   pendingPublishApprovals: [],
   boxMemoryMib: "",
@@ -356,31 +233,6 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     }));
   },
 
-  refreshDockerProbe: async () => {
-    let probe: DockerProbe;
-    try {
-      probe = await api.probeDockerEngine();
-    } catch {
-      // A failed probe means we can't confirm docker — treat as not installed
-      // so the option gates off rather than dangling enabled.
-      probe = { status: "not-installed" };
-    }
-    set({ dockerProbe: probe });
-    return probe;
-  },
-  refreshPodmanProbe: async () => {
-    let probe: PodmanProbe;
-    try {
-      probe = await api.probePodmanEngine();
-    } catch {
-      // A failed probe means we can't confirm podman — treat as not installed
-      // so the option gates off rather than dangling enabled.
-      probe = { status: "not-installed" };
-    }
-    set({ podmanProbe: probe });
-    return probe;
-  },
-
   containerAuth: null,
   refreshContainerAuth: async () => {
     try {
@@ -404,44 +256,6 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
       set({ lastError: String(e) });
     }
     await get().refreshContainerAuth();
-  },
-
-  dismissDockerBuild: (runtime) =>
-    set((s) => {
-      const { [runtime]: _, ...rest } = s.containerBuilds;
-      return { containerBuilds: rest };
-    }),
-
-  saveDockerLaunchSettings: (image, memory, cpus) =>
-    optimistic(
-      set,
-      { dockerImage: image, dockerMemory: memory, dockerCpus: cpus },
-      {
-        dockerImage: get().dockerImage,
-        dockerMemory: get().dockerMemory,
-        dockerCpus: get().dockerCpus,
-      },
-      () => api.setDockerLaunchSettings(image || null, memory || null, cpus || null),
-    ),
-
-  savePodmanLaunchSettings: (image, memory, cpus) =>
-    optimistic(
-      set,
-      { podmanImage: image, podmanMemory: memory, podmanCpus: cpus },
-      {
-        podmanImage: get().podmanImage,
-        podmanMemory: get().podmanMemory,
-        podmanCpus: get().podmanCpus,
-      },
-      () => api.setPodmanLaunchSettings(image || null, memory || null, cpus || null),
-    ),
-
-  startDockerDesktop: async () => {
-    try {
-      await api.startDockerDesktop();
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
   },
 
   saveBoxSetting: async (key, value) => {

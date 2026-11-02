@@ -1,11 +1,8 @@
 pub mod boxes;
 pub mod cargo_home;
-pub(crate) mod container;
-pub mod docker;
 mod engine;
 pub mod guarantees;
 pub mod placement;
-pub mod podman;
 pub mod policy;
 pub mod provider;
 pub mod provision;
@@ -25,16 +22,11 @@ use crate::workspace::AgentRecord;
 // private copies of what it shares with its host: Fletch's own, which no
 // checkout may take (`workspace::allocate_repo_subdir`).
 pub(crate) use boxes::COW_DIR;
-pub use docker::{availability as docker_availability, DockerAvailability};
 pub use engine::{
     AgentLaunchCtx, EngineCaps, EngineKind, EnvDelivery, KillGuard, KillHandle, LaunchPlan,
     SandboxEngine, TurnPrep,
 };
 pub use guarantees::{describe as describe_isolation, IsolationReport};
-pub use podman::{
-    availability as podman_availability, launch_blocker as podman_launch_blocker,
-    PodmanAvailability,
-};
 pub(crate) use seatbelt::pid_alive;
 pub use seatbelt::{
     build_run_profile, cleanup_nested_checkouts_roots, cleanup_nested_rpc_roots,
@@ -45,45 +37,23 @@ pub use toolchain_cache::{
     toolchain_cache_root, BoxPlatform, ToolchainCache, TOOLCHAIN_CACHE_ROOT_ENV,
 };
 
-/// The container engine a headless `fletch-host` off macOS runs every new
-/// agent under, until a box can boot there: set once by its boot
-/// (`host::boot`), `None` everywhere else. Not a setting — nothing stores it
-/// and no command changes it; on macOS the engine is always chosen
-/// automatically (`boxes::engine_for_new_agent`). Teardown never consults
-/// this — sessions carry a `KillHandle` bound to the engine that launched
-/// them.
-static CONTAINER_OVERRIDE: RwLock<Option<EngineKind>> = RwLock::new(None);
-
-/// Pin new agents to `kind`, a container engine: headless boot off macOS only.
-pub fn set_container_override(kind: EngineKind) {
-    *CONTAINER_OVERRIDE.write() = Some(kind);
-}
-
-/// The container engine a headless host off macOS pinned, else `None`.
-/// Existing agents keep the kind stamped on their record at creation (see
-/// `supervisor::lifecycle::spawn_agent`).
-pub fn container_override() -> Option<EngineKind> {
-    *CONTAINER_OVERRIDE.read()
-}
-
 /// The engine an agent that *adopts* `tree` — works in an existing checkout
 /// instead of provisioning one (the local reviewer in a coder's checkout) —
 /// is stamped with: **where the tree lives**. A tree inside a box is
 /// reachable only from that box, so the agent runs there as its tenant; a
-/// host tree is invisible to a guest, so it lands on seatbelt (or a headless
-/// host's container engine, [`container_override`]). The caller still gates
-/// the provider against the result.
+/// host tree is invisible to a guest, so it lands on seatbelt. The caller
+/// still gates the provider against the result.
 pub fn engine_for_adopted_tree(tree: &Path) -> EngineKind {
     if boxes::box_holding(tree).is_some() {
         return EngineKind::Box;
     }
-    container_override().unwrap_or(EngineKind::SandboxExec)
+    EngineKind::SandboxExec
 }
 
 /// This engine's own data directory ([`crate::host::BootConfig::data_dir`]),
 /// mirrored process-wide so the macOS profile builder — reached on the spawn
 /// path, with no handle on the boot config — can carve it out of what a confined
-/// agent may read or write. Same mirror idiom as [`set_container_override`].
+/// agent may read or write.
 ///
 /// It cannot be derived. [`crate::data_dir`] is the *desktop's* directory, keyed
 /// by [`crate::BUNDLE_ID`]; a `fletch-host` keeps its database (the GitHub token
@@ -108,64 +78,34 @@ pub(crate) fn configured_data_dir() -> Option<PathBuf> {
 }
 
 /// Resolve the engine for an agent stamped with `kind`, availability-checked
-/// at spawn time. A docker-stamped agent whose daemon is unreachable is a hard
-/// error: silently falling back to seatbelt would launch the process *outside*
-/// the container boundary the user selected, while the record and UI keep
-/// showing Docker — an isolation downgrade the caller never sees. Fail closed
-/// instead so the spawn surfaces the unavailability rather than degrading.
+/// at spawn time. An agent stamped with an engine this host does not have —
+/// a box on a machine that cannot boot one, seatbelt off macOS — is a hard
+/// error, never a quiet launch under the other.
 pub fn engine_for(kind: EngineKind) -> Result<Arc<dyn SandboxEngine>> {
     match kind {
-        EngineKind::SandboxExec => Ok(seatbelt_engine()),
+        // Behind the platform: `seatbelt::refusal` is the one fact that the
+        // macOS sandbox exists only on macOS, read here, by the spawn
+        // override and by the composer's list alike.
+        EngineKind::SandboxExec => match seatbelt::refusal() {
+            None => Ok(seatbelt_engine()),
+            Some(reason) => Err(Error::SandboxUnavailable(reason)),
+        },
         // Behind the runtime probe: `boxes::availability` refuses with the
         // first thing missing, so a box-stamped agent never launches
         // elsewhere.
         EngineKind::Box => boxes::availability().map(|_| boxes::BoxEngine::shared() as Arc<_>),
-        EngineKind::Docker => match docker::availability() {
-            DockerAvailability::Available { .. } => Ok(docker::DockerEngine::shared()),
-            status => {
-                tracing::warn!(
-                    ?status,
-                    "docker engine selected but unavailable; refusing to launch outside the container boundary"
-                );
-                Err(Error::SandboxUnavailable(format!(
-                    "Docker sandbox is selected but unavailable ({status:?}); \
-                     start Docker or switch the sandbox engine before launching."
-                )))
-            }
-        },
-        EngineKind::Podman => match podman::availability() {
-            PodmanAvailability::Available { .. } => Ok(podman::PodmanEngine::shared()),
-            status => {
-                tracing::warn!(
-                    ?status,
-                    "podman engine selected but unavailable; refusing to launch outside the container boundary"
-                );
-                let remedy = match status {
-                    PodmanAvailability::MachineDown => "run `podman machine start`",
-                    _ => "install Podman",
-                };
-                Err(Error::SandboxUnavailable(format!(
-                    "Podman sandbox is selected but unavailable ({status:?}); \
-                     {remedy} or switch the sandbox engine before launching."
-                )))
-            }
-        },
     }
 }
 
 /// The `projects` dir `kind` gives claude in place of the shared
 /// `~/.claude/projects`, for the agent whose writable root is `writable_root`;
 /// `None` when the engine lets claude write the shared one (seatbelt). The
-/// container engines bind this dir over the image's config dir
-/// (`container::launch`); the box engine mirrors the guest's projects dir into
+/// box engine mirrors the guest's projects dir into
 /// `<box dir>/claude-projects` over its transcript relay. The transcript
 /// writer (`transcripts::claude_projects_dir`) and reader (`transcripts::
 /// find_session_jsonl`) consult this, so neither names an engine.
 pub(crate) fn transcript_root(kind: EngineKind, writable_root: &Path) -> Option<PathBuf> {
     match kind {
-        EngineKind::Docker | EngineKind::Podman => {
-            Some(writable_root.join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME))
-        }
         // The box dir is a sibling of the writable root, named by the same
         // agent id (its last component).
         EngineKind::Box => boxes::transcript_dir_for_root(writable_root),
@@ -175,17 +115,12 @@ pub(crate) fn transcript_root(kind: EngineKind, writable_root: &Path) -> Option<
 
 /// Every per-agent transcript root some engine keeps under `writable_root`
 /// ([`transcript_root`]), for a reader that does not know the agent's
-/// engine. Deduped: the container engines share one.
+/// engine.
 pub(crate) fn all_transcript_roots(writable_root: &Path) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    for &kind in EngineKind::ALL {
-        if let Some(dir) = transcript_root(kind, writable_root) {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
-            }
-        }
-    }
-    dirs
+    EngineKind::ALL
+        .iter()
+        .filter_map(|&kind| transcript_root(kind, writable_root))
+        .collect()
 }
 
 /// Where the host reads `provider`'s sessions for `agent_id` when they live
@@ -216,19 +151,42 @@ pub(crate) fn create_session_file(
             let home = self::provider::require(provider)?;
             boxes::home::create_session_file(home, agent_id, cwd, rel, lines).map(Some)
         }
-        EngineKind::SandboxExec | EngineKind::Docker | EngineKind::Podman => Ok(None),
+        EngineKind::SandboxExec => Ok(None),
     }
 }
 
 /// The engine stamped on an agent's record at creation. Records from before
 /// engine selection existed (NULL) always ran under sandbox-exec, so that
-/// stays their permanent kind — never re-derived from the live setting.
+/// stays their permanent kind — never re-derived from the live setting. A
+/// record of a retired engine reads as seatbelt here; every launch and fork
+/// refuses it first ([`ensure_engine_not_retired`]).
 pub fn stamped_engine(record: &AgentRecord) -> EngineKind {
     record
         .sandbox_engine
         .as_deref()
         .and_then(EngineKind::from_setting)
         .unwrap_or(EngineKind::SandboxExec)
+}
+
+/// The engines Fletch no longer runs, by their stored spelling, with where a
+/// workspace of theirs ran.
+const RETIRED_ENGINES: &[(&str, &str)] = &[
+    ("docker", "a Docker container"),
+    ("podman", "a Podman container"),
+];
+
+/// Refuse `record` when it is stamped with a retired engine: launching it
+/// under another would be a silent change of its isolation. Checked before
+/// every launch ([`before_launch`]) and fork ([`WorkspaceType::stamped`]).
+pub fn ensure_engine_not_retired(record: &AgentRecord) -> Result<()> {
+    let stored = record.sandbox_engine.as_deref().unwrap_or_default();
+    match RETIRED_ENGINES.iter().find(|(name, _)| *name == stored) {
+        Some((_, ran_in)) => Err(Error::SandboxUnavailable(format!(
+            "This workspace ran in {ran_in}, which Fletch no longer supports; \
+             start a new workspace."
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// A spawn's per-session engine override (`SpawnRequest::workspace_type`,
@@ -264,9 +222,10 @@ impl WorkspaceType {
     }
 
     /// The engine `record` was stamped with, as an override: what a fork
-    /// passes for its parent.
-    pub fn stamped(record: &AgentRecord) -> Self {
-        Self::Stamped(stamped_engine(record))
+    /// passes for its parent. Refused for a retired engine.
+    pub fn stamped(record: &AgentRecord) -> Result<Self> {
+        ensure_engine_not_retired(record)?;
+        Ok(Self::Stamped(stamped_engine(record)))
     }
 }
 
@@ -278,15 +237,6 @@ pub fn ensure_supports_provider(engine: EngineKind, provider: &str) -> Result<()
     self::provider::supports(engine, provider).map_err(Error::Other)
 }
 
-/// Whether the container engines run `provider`: it has a wired-up container
-/// image, config mount and auth (`container::ContainerProvider`) — claude,
-/// codex, opencode, pi and cursor so far. The container half of
-/// [`provider::supports`], kept here with the engine registry so the provider
-/// adapter names no container module.
-pub(crate) fn runs_in_container(provider: &str) -> bool {
-    container::ContainerProvider::from_id(provider).is_some()
-}
-
 /// The engine a new agent is stamped with (docs/sandbox-foundation.md rule
 /// 8). An agent adopting `adopted_tree` runs where the tree lives
 /// ([`engine_for_adopted_tree`]) and ignores `override_`: a tree in a box is
@@ -296,15 +246,14 @@ pub(crate) fn runs_in_container(provider: &str) -> bool {
 /// `placement_setting`.
 ///
 /// The override ([`WorkspaceType`]) stands over the project's placement for
-/// this spawn only: `Host` is the macOS sandbox;
-/// `Box` is a box, waiting at launch for an image still on its way as a
-/// project pinned to boxes does, and refused with the reason the user sees
-/// (`box_refusal`: a runtime that cannot boot, a provider boxes do not
-/// run) when there can be no box at all — an explicit choice
-/// never quietly lands somewhere else. `Stamped(kind)` is exactly `kind`: a
-/// stamped box is checked as an explicit `Box` is, and a stamped container
-/// engine is returned as it is (its launch fails closed when the daemon is
-/// down, [`engine_for`]). Without an override this never errs.
+/// this spawn only: `Host` is the macOS sandbox, refused with the reason the
+/// user sees where there is none (`seatbelt::refusal`: off macOS); `Box` is
+/// a box, waiting at launch for an image still on its way as a project
+/// pinned to boxes does, and refused with the reason the user sees
+/// (`box_refusal`: a runtime that cannot boot, a provider boxes do not run)
+/// when there can be no box at all — an explicit choice never quietly lands
+/// somewhere else. `Stamped(kind)` is exactly `kind`, checked as the
+/// explicit choice is. Without an override this never errs.
 ///
 /// Blocking: the automatic choice stats the repository and may run the
 /// runtime probe once, so a spawn calls this off the async runtime.
@@ -320,7 +269,10 @@ pub fn engine_for_spawn(
     }
     match override_ {
         Some(WorkspaceType::Host | WorkspaceType::Stamped(EngineKind::SandboxExec)) => {
-            Ok(EngineKind::SandboxExec)
+            match seatbelt::refusal() {
+                Some(reason) => Err(Error::Other(reason)),
+                None => Ok(EngineKind::SandboxExec),
+            }
         }
         Some(WorkspaceType::Box | WorkspaceType::Stamped(EngineKind::Box)) => {
             match box_refusal(provider) {
@@ -328,14 +280,9 @@ pub fn engine_for_spawn(
                 None => Ok(EngineKind::Box),
             }
         }
-        Some(WorkspaceType::Stamped(kind @ (EngineKind::Docker | EngineKind::Podman))) => Ok(kind),
         None => {
             let placement = placement::resolve(placement_setting, repo);
-            Ok(boxes::engine_for_new_agent(
-                container_override(),
-                provider,
-                placement,
-            ))
+            Ok(boxes::engine_for_new_agent(provider, placement))
         }
     }
 }
@@ -363,38 +310,41 @@ pub struct WorkspaceTypeOption {
     /// the default option, why it is the default when that is worth saying
     /// (the macOS sandbox standing in for a box: [`host_default_reason`]).
     pub reason: Option<String>,
-    /// What [`engine_for_spawn`] picks with no override. Neither option is
-    /// the default on a headless host that pins a container engine.
+    /// What [`engine_for_spawn`] picks with no override.
     pub default: bool,
 }
 
 /// The workspace types a new agent of `provider` in the project at `repo`
 /// (stored placement `placement_setting`) may be given: the one list the UI
-/// reads. The macOS sandbox is always available; a box exactly when
-/// [`engine_for_spawn`] would accept it as an override, with the same
-/// sentence when not. Blocking, like [`engine_for_spawn`].
+/// reads. Each type is available exactly when [`engine_for_spawn`] would
+/// accept it as an override, with the same sentence when not: the macOS
+/// sandbox on macOS (`seatbelt::refusal`), a box where one can boot
+/// (`box_refusal`). Blocking, like [`engine_for_spawn`].
 pub fn workspace_types(
     placement_setting: Option<&str>,
     repo: &Path,
     provider: &str,
 ) -> Vec<WorkspaceTypeOption> {
+    let host_reason = seatbelt::refusal();
     let box_reason = box_refusal(provider);
     let placement = placement::resolve(placement_setting, repo);
     // What `engine_for_spawn` picks with a `None` override: the automatic
     // choice over the project's placement. A box refused above is never
     // ready, and a passing runtime is remembered, so the runtime is probed at
     // most once for the whole answer.
-    let default =
-        boxes::engine_for_new_agent_with(container_override(), provider, placement, || {
-            box_reason.is_none() && boxes::ready_for(provider)
-        });
+    let default = boxes::engine_for_new_agent_with(provider, placement, || {
+        box_reason.is_none() && boxes::ready_for(provider)
+    });
     let host_default = default == EngineKind::SandboxExec;
     vec![
         WorkspaceTypeOption {
             kind: "host",
-            available: true,
-            reason: host_default
-                .then(|| host_default_reason(placement_setting, placement, box_reason.as_deref())),
+            available: host_reason.is_none(),
+            reason: host_reason.or_else(|| {
+                host_default.then(|| {
+                    host_default_reason(placement_setting, placement, box_reason.as_deref())
+                })
+            }),
             default: host_default,
         },
         WorkspaceTypeOption {
@@ -447,14 +397,12 @@ fn host_default_reason(
 /// branch `parent_branch` as `origin` has it, falling back to `spec.base_ref`.
 /// A box's checkout goes into its guest (`git init` there, the base pushed
 /// over the channel, the same fixups), the box booting with the shares the
-/// agent's launch will ask for; every other engine's is a host clone,
-/// `--shared` when `shared`.
+/// agent's launch will ask for; seatbelt's is a `--shared` host clone.
 pub async fn provision_checkout(
     engine: EngineKind,
     record: &AgentRecord,
     spec: &provision::CheckoutSpec<'_>,
     parent_branch: &str,
-    shared: bool,
 ) -> Result<provision::BaseFreshness> {
     match engine {
         EngineKind::Box => {
@@ -467,9 +415,7 @@ pub async fn provision_checkout(
             )
             .await
         }
-        EngineKind::SandboxExec | EngineKind::Docker | EngineKind::Podman => {
-            provision::provision_at_remote_base(spec, parent_branch, shared).await
-        }
+        EngineKind::SandboxExec => provision::provision_at_remote_base(spec, parent_branch).await,
     }
 }
 
@@ -479,8 +425,8 @@ pub async fn provision_checkout(
 /// `fetch_from` when it must be; without one it lands detached. When the tip
 /// is gone for good it opens detached at `parent_branch_sha`. Returns whether
 /// it landed on the branch. A box rebuilds the checkout inside its guest from
-/// what the source repository holds; every other engine walks the host
-/// clone's restore ladder.
+/// what the source repository holds; seatbelt walks the host clone's restore
+/// ladder.
 pub async fn restore_checkout(
     engine: EngineKind,
     record: &AgentRecord,
@@ -494,7 +440,7 @@ pub async fn restore_checkout(
             let name = branch.map(|(name, _)| name);
             boxes::provision::restore(&identity, spec, name, parent_branch_sha).await
         }
-        EngineKind::SandboxExec | EngineKind::Docker | EngineKind::Podman => match branch {
+        EngineKind::SandboxExec => match branch {
             Some((name, fetch_from)) => {
                 provision::provision_on_branch(spec, name, fetch_from, parent_branch_sha).await
             }
@@ -508,11 +454,13 @@ pub async fn restore_checkout(
 /// The engine's step before every launch of `record`, run before the launch
 /// writes anything under the agent's writable root. A box-stamped agent that
 /// adopted its tree runs in the box that holds it (tenants), so it is routed
-/// there first and the profile lands in the guest it will run in.
+/// there first and the profile lands in the guest it will run in. A record
+/// of a retired engine is refused here ([`ensure_engine_not_retired`]).
 pub fn before_launch(record: &AgentRecord) -> Result<()> {
+    ensure_engine_not_retired(record)?;
     match stamped_engine(record) {
         EngineKind::Box => boxes::route_tenant(record).map(|_| ()),
-        EngineKind::SandboxExec | EngineKind::Docker | EngineKind::Podman => Ok(()),
+        EngineKind::SandboxExec => Ok(()),
     }
 }
 
@@ -523,7 +471,7 @@ pub fn before_launch(record: &AgentRecord) -> Result<()> {
 pub fn setup_allowance(record: &AgentRecord) -> Duration {
     match stamped_engine(record) {
         EngineKind::Box => boxes::setup::setup_allowance(&record.provider),
-        EngineKind::SandboxExec | EngineKind::Docker | EngineKind::Podman => Duration::ZERO,
+        EngineKind::SandboxExec => Duration::ZERO,
     }
 }
 
@@ -532,75 +480,6 @@ pub fn setup_allowance(record: &AgentRecord) -> Duration {
 /// directory probe for every other agent, so callers run it unconditionally.
 pub async fn discard_agent_state(agent_id: &str) -> Result<()> {
     boxes::discard_if_any(agent_id).await
-}
-
-/// Best-effort teardown of any container still bearing this agent's
-/// `fletch.agent-id` label, for an agent stamped `engine` (`None` when its
-/// record is gone). The container counterpart to the disposal's checkout
-/// teardown, and like it, failures never abort disposal — the caller's intent
-/// is to get rid of the agent; `op` tags the logs.
-///
-/// Why it exists: `Supervisor::detach_runtime` reaches the container only
-/// *indirectly*, through the in-memory `agents` entry — no entry, no
-/// `KillHandle`, no runtime command at all. `run --rm` covers the ordinary exit
-/// and the startup pid-liveness sweep covers a crashed instance, but neither
-/// makes disposal itself self-sufficient. The label sweep does: it needs nothing
-/// but the agent id. (Container names can't serve here — they carry a
-/// launch-time nonce, see `container::util::container_name` — which is why the
-/// id label exists.)
-///
-/// Three gates, cheapest first:
-/// 1. The stamped engine, which also picks the runtime: an agent is reaped by
-///    the runtime that launched it, never by whichever is selected now. A
-///    seatbelt agent never had a container, so it never pays for a probe.
-///    `engine: None` (discard tolerates a missing row) can't prove which
-///    runtime launched it, so it asks both — the label match is exact, so
-///    looking costs nothing but the queries.
-/// 2. The runtime's own availability probe — a machine without that runtime
-///    installed must never see one of its invocations, the same precedent the
-///    startup sweeps set.
-/// 3. Off the caller's path entirely. `spawn_blocking` rather than a bare
-///    thread: the CLI call is a blocking process wait (up to the probe's 2s
-///    plus the sweep's own timeouts) issued from inside the tokio runtime,
-///    which is precisely the blocking pool's job — and unlike the startup
-///    sweep, which runs before any runtime is a given, we always have one
-///    here. Detached on purpose: archive must not wait on a container
-///    round-trip to report success to the user.
-pub fn reap_agent_containers(agent_id: &str, engine: Option<EngineKind>, op: &'static str) {
-    // Seatbelt runs no container; neither does a box, whose VM goes with
-    // [`discard_agent_state`] in the checkout teardown instead.
-    if matches!(engine, Some(EngineKind::SandboxExec | EngineKind::Box)) {
-        return;
-    }
-    let agent_id = agent_id.to_string();
-    tokio::task::spawn_blocking(move || {
-        let report = |runtime: &'static str, removed: crate::error::Result<usize>| match removed {
-            Ok(0) => {}
-            Ok(n) => {
-                tracing::info!(agent_id = %agent_id, op, runtime, removed = n, "removed agent containers")
-            }
-            Err(e) => {
-                tracing::warn!(agent_id = %agent_id, op, runtime, error = %e, "agent container removal failed")
-            }
-        };
-        // A stamped engine narrows to one runtime; a rowless agent asks both.
-        if engine != Some(EngineKind::Podman)
-            && matches!(
-                docker::availability(),
-                docker::DockerAvailability::Available { .. }
-            )
-        {
-            report("docker", docker::remove_agent_containers(&agent_id));
-        }
-        if engine.map_or(true, |k| k == EngineKind::Podman)
-            && matches!(
-                podman::availability(),
-                podman::PodmanAvailability::Available { .. }
-            )
-        {
-            report("podman", podman::remove_agent_containers(&agent_id));
-        }
-    });
 }
 
 /// Stop every engine-held VM cleanly as the app quits, once the agents'
@@ -747,13 +626,9 @@ pub fn checkout_awake(path: &Path) -> bool {
     boxes::running_for_path(path)
 }
 
-/// The agent binary handed to `launch_agent` under `engine`: under a
-/// container engine the provider's in-image command name (the image carries
-/// its own install; a host path would be meaningless, or missing, inside the
-/// container), in a box the CLI on its tools disk, under seatbelt what
-/// `host_resolve` finds on this host. `label` names the provider in a
-/// refusal. A container engine reaches here only for a provider
-/// [`ensure_supports_provider`] accepts, so its refusal is defensive.
+/// The agent binary handed to `launch_agent` under `engine`: in a box the CLI
+/// on its tools disk, under seatbelt what `host_resolve` finds on this host.
+/// `label` names the provider in a refusal.
 pub fn agent_bin(
     engine: EngineKind,
     provider: &str,
@@ -761,13 +636,6 @@ pub fn agent_bin(
     host_resolve: impl FnOnce() -> Result<String>,
 ) -> Result<String> {
     match engine {
-        EngineKind::Docker | EngineKind::Podman => docker::DockerProvider::from_id(provider)
-            .map(|p| p.image_bin().to_string())
-            .ok_or_else(|| {
-                Error::Other(format!(
-                    "{label} isn't available in container sandboxes yet"
-                ))
-            }),
         // The CLI on the box's tools disk; a host path would mean nothing in
         // the guest.
         EngineKind::Box => fletch_box::tools::bin_path(provider)
@@ -778,9 +646,7 @@ pub fn agent_bin(
 
 /// The codegraph launcher as `agent_id`'s sandbox sees it under `engine`,
 /// when it has one: what `host_bin` finds for a seatbelt agent, which runs on
-/// this host; the Linux build on the tools disk the agent's box runs with;
-/// nothing for a container, which can't exec the host's macOS binary and has
-/// no other.
+/// this host; the Linux build on the tools disk the agent's box runs with.
 pub fn codegraph_bin(
     engine: EngineKind,
     agent_id: &str,
@@ -790,7 +656,6 @@ pub fn codegraph_bin(
     match engine {
         EngineKind::SandboxExec => host_bin(),
         EngineKind::Box => boxes::codegraph_bin(agent_id, provider),
-        EngineKind::Docker | EngineKind::Podman => None,
     }
 }
 
@@ -843,30 +708,32 @@ mod workspace_type_tests {
     fn only_host_and_box_parse() {
         assert_eq!(WorkspaceType::parse("host"), Some(WorkspaceType::Host));
         assert_eq!(WorkspaceType::parse(" box "), Some(WorkspaceType::Box));
-        for raw in ["", "auto", "docker", "podman", "sandbox-exec", "vm"] {
+        for raw in ["", "auto", "sandbox-exec", "vm"] {
             assert_eq!(WorkspaceType::parse(raw), None, "{raw}");
         }
     }
 
     /// A session's workspace type stands over the host's choice and the
-    /// project's placement, an explicit box is never quietly something else,
-    /// and an adopted tree keeps running where it lives. Written to hold
-    /// whether or not this machine can boot a box.
+    /// project's placement, an explicit choice is never quietly something
+    /// else, and an adopted tree keeps running where it lives. Written to
+    /// hold whether or not this machine can boot a box.
     #[test]
     fn a_session_choice_is_honoured_or_refused() {
         let repo = tempfile::tempdir().unwrap();
-        // A project pinned to boxes still gets this Mac when the session asks.
-        assert_eq!(
-            engine_for_spawn(
-                None,
-                Some("box"),
-                repo.path(),
-                "claude",
-                Some(WorkspaceType::Host)
-            )
-            .unwrap(),
-            EngineKind::SandboxExec
+        // A project pinned to boxes still gets this Mac when the session
+        // asks; off macOS there is no such thing, and the choice is refused
+        // with the sentence the composer's list carries, never a box.
+        let host = engine_for_spawn(
+            None,
+            Some("box"),
+            repo.path(),
+            "claude",
+            Some(WorkspaceType::Host),
         );
+        match seatbelt::refusal() {
+            None => assert_eq!(host.unwrap(), EngineKind::SandboxExec),
+            Some(reason) => assert_eq!(host.unwrap_err().to_string(), reason),
+        }
         // A provider boxes do not run: refused whatever the runtime says,
         // never stamped seatbelt instead.
         assert!(engine_for_spawn(
@@ -893,27 +760,74 @@ mod workspace_type_tests {
     }
 
     /// A stamped engine is kept exactly, whatever the project's placement
-    /// says: a fork of a container-stamped parent stays in its container
-    /// engine, and one of a seatbelt parent on this Mac.
+    /// says: a fork of a seatbelt parent stays on this Mac — and off macOS,
+    /// where there is no seatbelt, it is refused rather than moved.
     #[test]
     fn a_stamped_engine_is_kept() {
         let repo = tempfile::tempdir().unwrap();
-        for kind in [
-            EngineKind::Docker,
-            EngineKind::Podman,
-            EngineKind::SandboxExec,
-        ] {
-            assert_eq!(
-                engine_for_spawn(
-                    None,
-                    Some("box"),
-                    repo.path(),
-                    "claude",
-                    Some(WorkspaceType::Stamped(kind))
-                )
-                .unwrap(),
-                kind
-            );
+        let kept = engine_for_spawn(
+            None,
+            Some("box"),
+            repo.path(),
+            "claude",
+            Some(WorkspaceType::Stamped(EngineKind::SandboxExec)),
+        );
+        match seatbelt::refusal() {
+            None => assert_eq!(kept.unwrap(), EngineKind::SandboxExec),
+            Some(reason) => assert_eq!(kept.unwrap_err().to_string(), reason),
+        }
+    }
+
+    /// Off macOS the macOS sandbox is not on offer: the list says so with
+    /// the reason, the box is the default, and asking for the sandbox anyway
+    /// is refused at the spawn and at the launch with the same sentence.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn off_macos_the_macos_sandbox_is_not_offered() {
+        let repo = tempfile::tempdir().unwrap();
+        let reason = seatbelt::refusal().expect("no seatbelt off macOS");
+        let options = workspace_types(None, repo.path(), "claude");
+        assert_eq!(options[0].kind, "host");
+        assert!(!options[0].available && !options[0].default);
+        assert_eq!(options[0].reason.as_deref(), Some(reason.as_str()));
+        assert!(options[1].default, "the box is the only engine here");
+        assert!(engine_for(EngineKind::SandboxExec).is_err());
+    }
+
+    /// A record of a retired engine is refused, naming the engine, never
+    /// launched or forked under another.
+    #[test]
+    fn a_retired_engine_is_refused() {
+        let mut record = crate::workspace::new_agent_record(
+            "retired".into(),
+            "retired".into(),
+            "claude".into(),
+            crate::workspace::TrackedRepo {
+                repo_path: PathBuf::from("/r"),
+                subdir: "repo".into(),
+                branch: None,
+                parent_branch: None,
+                base_sha: None,
+                pr_number: None,
+                pr_url: None,
+                pr_title: None,
+                pr_state: None,
+                label: None,
+                adopted_checkout: None,
+            },
+            String::new(),
+            crate::workspace::AgentView::Custom,
+        );
+        record.sandbox_engine = Some("docker".into());
+        let err = ensure_engine_not_retired(&record).unwrap_err().to_string();
+        assert!(err.contains("Docker container"), "{err}");
+        assert!(WorkspaceType::stamped(&record).is_err());
+        assert!(before_launch(&record).is_err());
+        record.sandbox_engine = Some("podman".into());
+        assert!(ensure_engine_not_retired(&record).is_err());
+        for kept in [None, Some("sandbox-exec"), Some("box")] {
+            record.sandbox_engine = kept.map(Into::into);
+            assert!(ensure_engine_not_retired(&record).is_ok(), "{kept:?}");
         }
     }
 
@@ -935,6 +849,7 @@ mod workspace_type_tests {
 
     /// The list offers both types, this Mac always, and a box only when the
     /// override would be accepted, with the refusal as its reason.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_list_says_why_a_box_is_not_offered() {
         let repo = tempfile::tempdir().unwrap();
@@ -957,6 +872,7 @@ mod workspace_type_tests {
 
     /// A project that stays on this Mac says so, in the words of where that
     /// was decided: its detection, or its settings.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_default_says_why_it_stays_on_this_mac() {
         let repo = tempfile::tempdir().unwrap();
@@ -974,37 +890,6 @@ mod workspace_type_tests {
             reason(Some("host")).as_deref(),
             Some("set in the project's settings")
         );
-    }
-}
-
-#[cfg(test)]
-mod provider_gate_tests {
-    use super::*;
-
-    #[test]
-    fn docker_supports_wired_providers_but_refuses_the_rest() {
-        // All wired-up providers launch under docker.
-        for provider in ["claude", "codex", "opencode", "pi", "cursor"] {
-            assert!(
-                ensure_supports_provider(EngineKind::Docker, provider).is_ok(),
-                "{provider} should be docker-supported",
-            );
-        }
-        // antigravity is the last still-gated provider — no container auth path.
-        let err = ensure_supports_provider(EngineKind::Docker, "antigravity")
-            .expect_err("antigravity must refuse under docker");
-        assert!(
-            err.to_string()
-                .ends_with("isn't available in container sandboxes yet"),
-            "unexpected refusal copy: {err}",
-        );
-        // The copy uses the human-facing product name, not the provider id.
-        assert!(err.to_string().starts_with("Antigravity "), "{err}");
-
-        // Seatbelt is unaffected.
-        for provider in ["claude", "codex", "cursor", "antigravity"] {
-            assert!(ensure_supports_provider(EngineKind::SandboxExec, provider).is_ok());
-        }
     }
 }
 
@@ -1061,61 +946,6 @@ mod tests {
             "engine knowledge outside sandbox/ must go through sandbox (docs/sandbox-foundation.md \
              rule 1).\nnew files naming engine internals: {added:?}\nno longer naming them, \
              strike from sandbox::tests::ALLOWED: {gone:?}"
-        );
-    }
-
-    /// The container engines' own modules: what retiring Docker and Podman
-    /// deletes (docs/sandbox-foundation.md, "Retiring the container engines").
-    const CONTAINER_MODULES: &[&str] =
-        &["sandbox/container/", "sandbox/docker/", "sandbox/podman/"];
-
-    /// Files outside [`CONTAINER_MODULES`] that name them today: the engine
-    /// registry and its availability re-exports (`sandbox/mod.rs`), the
-    /// isolation report's container rows (`sandbox/guarantees.rs`), the
-    /// container settings surface (`commands/settings.rs`) and boot
-    /// (`host/boot.rs`). This list may only shrink. Paths are relative to
-    /// this crate's `src/`.
-    const CONTAINER_NAMERS: &[&str] = &[
-        "commands/settings.rs",
-        "host/boot.rs",
-        "sandbox/guarantees.rs",
-        "sandbox/mod.rs",
-    ];
-
-    /// What marks a line as naming a container module: a path into one of
-    /// them, absolute (`sandbox::docker::…`) or relative (`docker::…`,
-    /// `super::container::…`).
-    const CONTAINER_TOKENS: &[&str] = &["container::", "docker::", "podman::"];
-
-    /// Nothing depends on the container engines but the files in
-    /// [`CONTAINER_NAMERS`], so retiring them is a deletion plus edits to
-    /// those files. Like [`engine_knowledge_stays_in_sandbox`], every
-    /// production line counts, comments included; a file that gains a
-    /// reference fails this, and so does one that loses its last.
-    #[test]
-    fn container_engines_are_a_leaf() {
-        let found: Vec<String> = crate::source_scan::production_sources()
-            .into_iter()
-            .filter(|(rel, text)| {
-                !CONTAINER_MODULES.iter().any(|m| rel.starts_with(m))
-                    && CONTAINER_TOKENS.iter().any(|t| text.contains(t))
-            })
-            .map(|(rel, _)| rel)
-            .collect();
-        let added: Vec<&String> = found
-            .iter()
-            .filter(|rel| !CONTAINER_NAMERS.contains(&rel.as_str()))
-            .collect();
-        let gone: Vec<&&str> = CONTAINER_NAMERS
-            .iter()
-            .filter(|rel| !found.iter().any(|f| f == *rel))
-            .collect();
-        assert!(
-            added.is_empty() && gone.is_empty(),
-            "the container engines must stay a leaf (docs/sandbox-foundation.md, \"Retiring the \
-             container engines\").\nnew files naming sandbox::container, docker or podman: \
-             {added:?}\nno longer naming them, strike from sandbox::tests::CONTAINER_NAMERS: \
-             {gone:?}"
         );
     }
 }

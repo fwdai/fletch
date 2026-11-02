@@ -50,7 +50,7 @@ const GIT_ACTIONS: &str = include_str!("instructions/git_actions.md");
 /// server over a grep/read loop, and tell delegated subagents to do the same.
 ///
 /// Deliberately *not* in [`text`]. The codegraph server reaches only some
-/// sessions — indexing off, a Docker engine, a missing binary, a user-defined
+/// sessions — indexing off, a missing binary, a user-defined
 /// `codegraph` server, or a provider with no MCP surface at all each suppress
 /// it (see `codegraph::inject_mcp_server`) — and instructing an agent to call
 /// a tool it was never given is worse than staying quiet.

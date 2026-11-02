@@ -68,13 +68,6 @@
   max-height: 4.5em;
   overflow: auto;
 }
-/* Prose recovery guidance under the raw crash reason (e.g. the terminal command
-   to bring a stopped Podman machine back), so it reads as instruction rather
-   than as more of the mono error text above it. */
-.crash-hint {
-  color: var(--fg-2);
-  font-size: var(--fs-sm);
-}
 .crash-banner .btn-t {
   flex-shrink: 0;
 }
@@ -200,11 +193,10 @@
   justify-content: flex-end;
 }
 
-/* Container image-build toasts — reuse the update-toast chrome but anchor
-   bottom-left so they never overlap a concurrent update toast (bottom-right).
-   The stack holds one toast per runtime: Docker and Podman build on
-   independent locks, so both can be live at once and must not overlap each
-   other either. */
+/* Bottom-left toasts (the box's ready and egress toasts, project file
+   prompts) — reuse the update-toast chrome but anchor bottom-left so they
+   never overlap a concurrent update toast (bottom-right). The stack keeps
+   several live at once from overlapping each other. */
 .docker-build-stack {
   position: fixed;
   left: 16px;
@@ -220,13 +212,4 @@
 }
 .docker-build-toast > svg {
   color: var(--info);
-}
-/* The streamed build line: a single truncated row of docker output. */
-.docker-build-line {
-  max-height: 2.6em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg-3);
-  font-size: var(--fs-xs);
 }

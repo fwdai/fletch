@@ -6,7 +6,6 @@ export type BadgeVariant =
   | "ok"
   | "err"
   | "warn"
-  | "docker"
   | "pr-open"
   | "pr-merged"
   | "pr-closed"

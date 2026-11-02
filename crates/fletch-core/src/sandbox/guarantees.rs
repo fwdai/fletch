@@ -2,9 +2,8 @@
 //!
 //! The engines are **not equally capable**, and the differences are rooted in
 //! their mechanisms rather than in how much work has gone into each. Seatbelt
-//! rules are path-based and cover reads only nominally (`allow default`); Docker
-//! sees nothing it wasn't mounted but enforces through *inode*-based mounts, so
-//! a rename moves the guard. Neither is a superset of the other.
+//! rules are path-based and cover reads only nominally (`allow default`); a box
+//! sees nothing of the host but the folders the user granted it.
 //!
 //! Left implicit, that asymmetry degrades silently: a policy expressed once and
 //! enforced by one engine reads, from the outside, as enforced by both. This
@@ -22,33 +21,11 @@ use serde::Serialize;
 
 use super::EngineKind;
 
-/// The engine-independent half of [`Guarantee::WithheldGitConfig`]'s shortfall,
-/// shared by every container runtime: each one hands the agent a read-write
-/// checkout, so each one leans on the same host-side refusal.
-///
-/// A macro rather than a `const` because [`Coverage::Partial`] carries a
-/// `&'static str` and only `concat!` of literals can prepend a runtime-specific
-/// lead-in to it. Shared rather than duplicated per runtime because this text is
-/// what the isolation panel shows the user: two copies would drift, and the
-/// drift would be silent — a copy that no longer matches the hardening it
-/// describes still compiles and still renders.
-macro_rules! git_config_host_backstop {
-    () => {
-        "Instead host-side git refuses to run in a checkout whose config would execute a program \
-         (crate::git::hardening), which is engine-independent. It reads every scope the agent can \
-         write (local and worktree, via --show-scope), so a key smuggled into .git/config.worktree \
-         is caught too. That refusal covers every command that can trigger one: the git::cmd \
-         helper seam plus the read, pull and push/fetch paths that build a command directly. \
-         push/fetch run no filter or merge driver but do run the transport-executing keys \
-         core.sshCommand, core.gitProxy and remote.<name>.uploadpack/receivepack, which the -c \
-         overrides omit, so the refusal covers them there too"
-    };
-}
-
 /// The engine-independent half of [`Guarantee::HostHeldCredentials`]'s
-/// shortfall: what gates the brokered publish ops. A macro for the same reason
-/// as [`git_config_host_backstop`]: one copy of user-facing text, prefixed per
-/// engine.
+/// shortfall: what gates the brokered publish ops. A macro rather than a
+/// `const` because [`Coverage::Partial`] carries a `&'static str` and only
+/// `concat!` of literals can prepend an engine's lead-in to it: one copy of
+/// user-facing text, prefixed per engine.
 macro_rules! brokered_publish_gating {
     () => {
         "The brokered publish ops are capability-gated (crate::rpc::caps): a workflow step \
@@ -123,11 +100,10 @@ impl Guarantee {
     /// memory, is what forces a new guarantee or a new engine to declare its
     /// coverage. That is this module's whole job.
     pub fn coverage(self, engine: EngineKind) -> Coverage {
-        use EngineKind::{Box, Docker, Podman, SandboxExec};
+        use EngineKind::{Box, SandboxExec};
         match (self, engine) {
-            // Every engine's primary job: seatbelt by SBPL deny-then-allow, the
-            // container runtimes by mounting nothing else writable, a box by
-            // having no shared folder at all.
+            // Every engine's primary job: seatbelt by SBPL deny-then-allow, a
+            // box by having no shared folder at all.
             (Self::ConfinedWrites, _) => Coverage::Enforced,
 
             // Policy invariant 3 (`super::policy::GIT_EXEC_CONFIG_FILES`).
@@ -135,36 +111,12 @@ impl Guarantee {
             // Host git never runs in a box's checkout: the checkout is in the
             // guest, and the host reaches it only over the ssh transport.
             (Self::WithheldGitConfig, Box) => Coverage::Enforced,
-            (Self::WithheldGitConfig, Docker) => Coverage::Partial(concat!(
-                "the checkout is bind-mounted read-write, so an agent can still write its own \
-                 .git/config — nested read-only binds would stop a direct write but not a \
-                 rename, because Docker mounts follow the inode where seatbelt's path rules do \
-                 not. ",
-                git_config_host_backstop!(),
-            )),
-            // Same mount model as Docker (`container::run_args`): identical-path
-            // binds, the checkout read-write. Rootlessness is worth stating
-            // because it is the difference a Podman user expects to matter — and
-            // worth bounding, because it does not matter here. Hedged: a machine
-            // can be rootful, and the conclusion is the same either way.
-            (Self::WithheldGitConfig, Podman) => Coverage::Partial(concat!(
-                "the checkout is bind-mounted read-write, so an agent can still write its own \
-                 .git/config — nested read-only binds would stop a direct write but not a \
-                 rename, because a Podman bind mount follows the inode just as Docker's does, \
-                 where seatbelt's path rules do not. Where Podman runs rootless it narrows what \
-                 a container escape would own on the host, but it does not narrow this — and a \
-                 rootful machine does not change it either: the agent is handed that checkout \
-                 read-write by design. ",
-                git_config_host_backstop!(),
-            )),
-
-            // Seatbelt denies the app-data dir explicitly; a container runtime
-            // never mounts it; a box has no host filesystem to reach it on.
+            // Seatbelt denies the app-data dir explicitly; a box has no host
+            // filesystem to reach it on.
             (Self::OpaqueAppData, _) => Coverage::Enforced,
 
-            // Agents work in a clone with its own .git; under a container runtime
-            // the source .git is never mounted, only its object store and only
-            // read-only; a box holds a full copy and no mount at all.
+            // Agents work in a clone with its own .git; a box holds a full copy
+            // and no mount at all.
             (Self::UntouchableSourceGit, _) => Coverage::Enforced,
 
             (Self::ConfinedReads, SandboxExec) => Coverage::Unenforced(
@@ -174,14 +126,12 @@ impl Guarantee {
                  Keychain, and the folders macOS guards with a privacy prompt (Downloads, \
                  Desktop, Documents, iCloud Drive, other apps' containers)",
             ),
-            // Both container runtimes mount only the paths `container::run_args`
-            // lists, so nothing else on the disk is reachable to read; a box
-            // sees only its own disks.
-            (Self::ConfinedReads, Docker | Podman | Box) => Coverage::Enforced,
+            // A box sees only its own disks.
+            (Self::ConfinedReads, Box) => Coverage::Enforced,
 
-            (Self::ConfinedNetwork, SandboxExec | Docker | Podman) => Coverage::Unenforced(
-                "no engine restricts egress: seatbelt's (allow default) leaves it open and the \
-                 container launches set no --network. Treat every agent as network-capable",
+            (Self::ConfinedNetwork, SandboxExec) => Coverage::Unenforced(
+                "seatbelt does not restrict egress: its (allow default) leaves it open. Treat \
+                 every agent on this Mac as network-capable",
             ),
             // No network device: egress only through the host proxy's
             // allow-list, per project. `Enforced` carries no note, so the
@@ -193,7 +143,7 @@ impl Guarantee {
             // (`crate::rpc::git`), so no credential enters an agent's process.
             // Seatbelt shares the host filesystem and env, so it has to withhold
             // the user's own git credentials by name (`seatbelt::
-            // deny_host_git_credentials`); a container never had them.
+            // deny_host_git_credentials`).
             (Self::HostHeldCredentials, SandboxExec) => Coverage::Partial(concat!(
                 "credentials stay host-side: the profile also withholds your own at their \
                  standard locations — ~/.ssh and the launchd ssh-agent socket, the gh login \
@@ -206,12 +156,6 @@ impl Guarantee {
                  sandbox has no credential path. Not covered: a credential store or cache \
                  socket at a path only your git config names, or an ssh-agent at another \
                  socket path (1Password, gpg-agent). ",
-                brokered_publish_gating!(),
-            )),
-            (Self::HostHeldCredentials, Docker | Podman) => Coverage::Partial(concat!(
-                "credentials stay host-side: no GitHub credential is mounted or passed in, and \
-                 sandbox clones use an HTTPS GitHub origin, so git in the sandbox has no \
-                 credential path. ",
                 brokered_publish_gating!(),
             )),
             // Nothing of the host's is in the guest: no mount, no inherited env,
@@ -311,62 +255,6 @@ mod tests {
             Guarantee::ALL.len(),
             7,
             "a new Guarantee must be added to ALL"
-        );
-    }
-
-    /// The asymmetries are the point of this module, so they are pinned rather
-    /// than left to be rediscovered: each engine is stronger than the other on a
-    /// different claim, and neither is a superset.
-    #[test]
-    fn the_engines_are_each_stronger_on_a_different_claim() {
-        use EngineKind::{Docker, SandboxExec};
-        assert_eq!(
-            Guarantee::WithheldGitConfig.coverage(SandboxExec),
-            Coverage::Enforced
-        );
-        // Asserted as "not fully enforced" rather than as one exact variant: the
-        // property being pinned is the *asymmetry*, and Docker's coverage here has
-        // already moved once (Unenforced → Partial, once the engine-independent
-        // config refusal landed). Should it ever reach Enforced, this failing is
-        // the correct outcome — the asymmetry would be gone and the claim's whole
-        // treatment wants rethinking.
-        assert_ne!(
-            Guarantee::WithheldGitConfig.coverage(Docker),
-            Coverage::Enforced
-        );
-        assert_eq!(
-            Guarantee::ConfinedReads.coverage(Docker),
-            Coverage::Enforced
-        );
-        assert!(matches!(
-            Guarantee::ConfinedReads.coverage(SandboxExec),
-            Coverage::Unenforced(_)
-        ));
-    }
-
-    /// Golden: Docker's isolation-panel copy for this claim, byte for byte. The
-    /// engine-independent half comes from a shared macro, so a Podman-side edit
-    /// to it would silently rewrite what a Docker user reads.
-    #[test]
-    fn docker_withheld_git_config_note_is_pinned() {
-        let Coverage::Partial(note) = Guarantee::WithheldGitConfig.coverage(EngineKind::Docker)
-        else {
-            panic!("Docker's coverage for this claim is Partial");
-        };
-        assert_eq!(
-            note,
-            "the checkout is bind-mounted read-write, so an agent can still write its own \
-             .git/config — nested read-only binds would stop a direct write but not a rename, \
-             because Docker mounts follow the inode where seatbelt's path rules do not. \
-             Instead host-side git refuses to run in a checkout whose config would execute a \
-             program (crate::git::hardening), which is engine-independent. It reads every scope \
-             the agent can write (local and worktree, via --show-scope), so a key smuggled into \
-             .git/config.worktree is caught too. That refusal covers every command that can \
-             trigger one: the git::cmd helper seam plus the read, pull and push/fetch paths that \
-             build a command directly. push/fetch run no filter or merge driver but do run the \
-             transport-executing keys core.sshCommand, core.gitProxy and \
-             remote.<name>.uploadpack/receivepack, which the -c overrides omit, so the refusal \
-             covers them there too",
         );
     }
 

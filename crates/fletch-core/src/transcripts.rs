@@ -11,12 +11,10 @@ use serde_json::Value;
 use crate::agent::ReadDiagnostics;
 use crate::sandbox::{transcript_root, EngineKind};
 
-/// Directory (under an agent's writable root) that the container sandboxes
-/// bind over the container's read-only `<config-dir>/projects`, so claude's
-/// session transcripts persist on a per-agent host dir instead of the shared,
-/// read-only `~/.claude` (see the container launch). Shared with the mount side
-/// so the writer and this reader agree on one name; [`transcript_root`] is
-/// where an engine is mapped to it.
+/// Directory (under an agent's writable root) where the retired container
+/// engines had claude write its session transcripts. Nothing writes it any
+/// more; [`find_session_jsonl`] still reads it, so a container-era
+/// workspace's sessions stay readable.
 pub(crate) const DOCKER_CLAUDE_PROJECTS_DIRNAME: &str = ".fletch-claude-projects";
 
 /// Locate the claude session JSONL by scanning the candidate `projects/*/`
@@ -41,11 +39,15 @@ pub(crate) fn find_session_jsonl(
 }
 
 /// Every per-agent `projects` dir some engine keeps for the agent working in
-/// `cwd` — for a reader that does not know the agent's engine. Deduped: the
-/// container engines share one.
+/// `cwd` — for a reader that does not know the agent's engine — and the one
+/// the retired container engines kept.
 fn per_agent_projects_dirs(cwd: &Path) -> Vec<PathBuf> {
-    cwd.parent()
-        .map_or_else(Vec::new, crate::sandbox::all_transcript_roots)
+    let Some(root) = cwd.parent() else {
+        return Vec::new();
+    };
+    let mut dirs = crate::sandbox::all_transcript_roots(root);
+    dirs.push(root.join(DOCKER_CLAUDE_PROJECTS_DIRNAME));
+    dirs
 }
 
 /// The `projects` directory claude keeps its sessions in when it runs in
@@ -64,7 +66,7 @@ pub(crate) fn claude_projects_dir(cwd: &Path, engine: EngineKind) -> Option<Path
 /// `CLAUDE_CONFIG_DIR` there — into the default projects dir, transcript and
 /// subagent dir both, so `--resume` (which now runs in the default dir) finds
 /// it. `Ok(Some(new path))` when something moved. A session already in the
-/// default dir (or a container's per-agent dir) is left alone, and nothing at
+/// default dir (or an engine's per-agent dir) is left alone, and nothing at
 /// the destination is overwritten.
 pub(crate) fn adopt_account_session(
     session_id: &str,
@@ -85,7 +87,7 @@ pub(crate) fn adopt_account_session(
 
 /// Pure-path core of [`adopt_account_session`]: `found` is where the locator
 /// found the transcript, which lies under an account dir only when no copy
-/// exists in the default or container dirs it searches first.
+/// exists in the default or per-agent dirs it searches first.
 fn adopt_session_from(
     found: &Path,
     account_projects: &[PathBuf],
@@ -702,7 +704,7 @@ mod tests {
 
     #[test]
     fn find_session_jsonl_prefers_docker_per_agent_dir() {
-        // A Docker-sandboxed agent writes its transcript to
+        // A container-era agent wrote its transcript to
         // `<writable_root>/<DOCKER_CLAUDE_PROJECTS_DIRNAME>/<slug>/<sid>.jsonl`,
         // where the agent's cwd is `<writable_root>/<repo>`. The locator derives
         // that dir from `cwd.parent()` and scans it first — no dependency on the

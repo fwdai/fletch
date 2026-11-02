@@ -3,8 +3,8 @@
 //! the sessions (`sessions/<cwd slug>/<time>_<id>.jsonl`, append-only JSONL
 //! that `agent::providers::pi` reads and the relay tails). The settings file
 //! is copied in from the user's before every launch; the login is shipped as
-//! the credential, and a provider API key from the login shell does as well,
-//! as for a container. Extensions a `pi install` put under the user's
+//! the credential, and a provider API key from the login shell does as well.
+//! Extensions a `pi install` put under the user's
 //! `~/.pi` are not copied: their layout is not enumerated (see the seatbelt
 //! policy's residual note), so a guest pi runs with the built-in tools.
 

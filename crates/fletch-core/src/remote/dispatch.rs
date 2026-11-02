@@ -281,8 +281,6 @@ pub const OPS: &[&str] = &[
     "set_auto_archive_idle_days",
     "set_code_indexing_enabled",
     "set_context_layer_enabled",
-    "set_docker_launch_settings",
-    "set_podman_launch_settings",
     "set_agent_bin_override",
     "set_branch_prefix",
     "set_draft_prs",
@@ -608,8 +606,6 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("set_auto_archive_idle_days", Scope::Projects),
     ("set_code_indexing_enabled", Scope::Projects),
     ("set_context_layer_enabled", Scope::Projects),
-    ("set_docker_launch_settings", Scope::Projects),
-    ("set_podman_launch_settings", Scope::Projects),
     ("set_agent_bin_override", Scope::Projects),
     ("set_project_setting", Scope::Projects),
     // The box sandbox: three reads; the image, the settings and a project's
@@ -1863,8 +1859,6 @@ impl Dispatch for SupervisorDispatch {
                 | "set_auto_archive_idle_days"
                 | "set_code_indexing_enabled"
                 | "set_context_layer_enabled"
-                | "set_docker_launch_settings"
-                | "set_podman_launch_settings"
                 | "set_agent_bin_override"
                 | "set_branch_prefix"
                 | "set_draft_prs"
@@ -2057,14 +2051,6 @@ pub(super) async fn settings_op(
         "set_context_layer_enabled" => {
             let a: EnabledArgs = parse(args)?;
             res(c::set_context_layer_enabled_impl(ctx, a.enabled))
-        }
-        "set_docker_launch_settings" => {
-            let a: LaunchArgs = parse(args)?;
-            res(c::set_docker_launch_settings_impl(ctx, a.into()))
-        }
-        "set_podman_launch_settings" => {
-            let a: LaunchArgs = parse(args)?;
-            res(c::set_podman_launch_settings_impl(ctx, a.into()))
         }
         // A path on *this* host; the client never validates it against its
         // own disk.
@@ -2747,23 +2733,6 @@ struct WaitArgs {
 #[derive(Deserialize)]
 struct BranchPrefixArgs {
     prefix: String,
-}
-
-/// Blank or `null` clears a knob back to the launch default.
-#[derive(Deserialize)]
-struct LaunchArgs {
-    #[serde(default)]
-    image: Option<String>,
-    #[serde(default)]
-    memory: Option<String>,
-    #[serde(default)]
-    cpus: Option<String>,
-}
-
-impl From<LaunchArgs> for crate::commands::LaunchKnobs {
-    fn from(a: LaunchArgs) -> Self {
-        Self::new(a.image, a.memory, a.cpus)
-    }
 }
 
 /// `path: null` (or blank) clears the override.

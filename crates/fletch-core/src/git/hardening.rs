@@ -23,7 +23,7 @@
 //!
 //! Withholding write access to the config
 //! ([`crate::sandbox::policy::GIT_EXEC_CONFIG_FILES`]) is still the primary
-//! defence, but it is seatbelt-only and rename-bypassable under Docker. (2) is
+//! defence, but it is seatbelt-only. (2) is
 //! engine-independent: it reads whatever config git is about to read, so it does
 //! not care how that config got there.
 //!
@@ -354,8 +354,8 @@ async fn steerable_config_under(dir: &Path, checkouts_root: &Path) -> Result<Vec
     // but omits them from the listing unless asked, so without it an agent could
     // smuggle the whole payload behind one innocuous-looking key.
     // `--show-scope` (not `--local`): git honours `.git/config.worktree` whenever
-    // `extensions.worktreeConfig=true`, and that file is as agent-writable as
-    // `.git/config` under Docker — yet `--local` never lists it, so a
+    // `extensions.worktreeConfig=true`, and that file can be as agent-writable
+    // as `.git/config` — yet `--local` never lists it, so a
     // `filter.*.clean` planted there was invisible to this check. Listing every
     // scope and filtering to the agent-writable ones (`local`/`worktree`, in
     // `steerable_keys`) closes that gap without hard-coding a single worktree key,
@@ -765,7 +765,7 @@ mod tests {
     }
 
     /// The worktree-config evasion: git honours `.git/config.worktree` whenever
-    /// `extensions.worktreeConfig=true`, and under Docker that file is as
+    /// `extensions.worktreeConfig=true`, and that file can be as
     /// agent-writable as `.git/config` — yet `git config --local --list` never
     /// shows it, so a `filter.*.clean` planted there used to run on the next diff
     /// poll while the refusal saw only the innocuous `extensions.worktreeconfig`.

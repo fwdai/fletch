@@ -19,12 +19,6 @@ export interface Provider {
   /** Agent manages its own model and ignores a per-session selection, so the
    *  picker offers no model choice (e.g. antigravity's `agy --print` runner). */
   fixedModel?: boolean;
-  /** Runs inside a Docker sandbox: the backend has this provider's container
-   *  image, config mount, and auth wired (see `sandbox::docker::DockerProvider`).
-   *  Providers without it are seatbelt-only for now and the picker blocks them
-   *  when the Docker engine is selected. Mirror the backend capability when a
-   *  new provider is ported. */
-  dockerSupported?: boolean;
   /** Fletch can write this provider's session files, so a new session can
    *  continue a conversation natively: a fork's full conversation, a rewind
    *  that resumes rather than summarizes. Providers without it carry a
@@ -37,26 +31,12 @@ export interface Provider {
 // real versions into the store (`providerVersions`, see refreshProviderVersions),
 // and honest, non-user-specific model routing lives in PROVIDER_DETAIL.
 export const PROVIDERS: Provider[] = [
-  {
-    id: "claude",
-    label: "Claude Code",
-    short: "CC",
-    hue: 28,
-    dockerSupported: true,
-    transcriptWriter: true,
-  },
-  {
-    id: "codex",
-    label: "Codex",
-    short: "CX",
-    hue: 145,
-    dockerSupported: true,
-    transcriptWriter: true,
-  },
-  { id: "cursor", label: "Cursor Agent", short: "CR", hue: 215, dockerSupported: true },
+  { id: "claude", label: "Claude Code", short: "CC", hue: 28, transcriptWriter: true },
+  { id: "codex", label: "Codex", short: "CX", hue: 145, transcriptWriter: true },
+  { id: "cursor", label: "Cursor Agent", short: "CR", hue: 215 },
   { id: "antigravity", label: "Antigravity", short: "AG", hue: 260, fixedModel: true },
-  { id: "opencode", label: "OpenCode", short: "OC", hue: 195, dockerSupported: true },
-  { id: "pi", label: "Pi", short: "PI", hue: 320, dockerSupported: true, transcriptWriter: true },
+  { id: "opencode", label: "OpenCode", short: "OC", hue: 195 },
+  { id: "pi", label: "Pi", short: "PI", hue: 320, transcriptWriter: true },
 ];
 
 export const DEFAULT_PROVIDER_ID = "claude";
@@ -65,15 +45,6 @@ export const DEFAULT_PROVIDER_ID = "claude";
  *  natively (`Provider.transcriptWriter`). Unknown ids can't. */
 export function hasTranscriptWriter(id: string | null | undefined): boolean {
   return !!PROVIDERS.find((p) => p.id === id)?.transcriptWriter;
-}
-
-/** Whether a provider (or a custom agent's base provider) can run under the
- *  Docker sandbox engine. Mirrors the backend's
- *  `ensure_engine_supports_provider` gate so the picker and the spawn path agree
- *  on which providers are container-ready. Unknown ids are treated as
- *  unsupported. */
-export function isDockerSupported(id: string | null | undefined): boolean {
-  return !!PROVIDERS.find((p) => p.id === id)?.dockerSupported;
 }
 
 /** Which MCP transports each provider can attach — mirrors the backend

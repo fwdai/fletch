@@ -26,12 +26,6 @@ export const settingsApi = {
   /** The project context layer's developer gate (`context_layer_enabled`). */
   setContextLayerEnabled: (enabled: boolean) =>
     invoke<void>("set_context_layer_enabled", { enabled }),
-  /** Docker launch knobs, written together; blank/null clears one. */
-  setDockerLaunchSettings: (image: string | null, memory: string | null, cpus: string | null) =>
-    invoke<void>("set_docker_launch_settings", { image, memory, cpus }),
-  /** The podman twin, over its own keys. */
-  setPodmanLaunchSettings: (image: string | null, memory: string | null, cpus: string | null) =>
-    invoke<void>("set_podman_launch_settings", { image, memory, cpus }),
   /** Set (or clear, with a null/blank path) a per-agent custom binary path —
    *  a path on the host. The host respawns that provider's live agents. */
   setAgentBinOverride: (id: string, path: string | null) =>

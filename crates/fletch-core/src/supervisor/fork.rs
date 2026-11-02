@@ -126,6 +126,11 @@ impl Supervisor {
         // the others then start the checkouts from a snapshot, resolved — and
         // for the parent's current code, taken — before anything is created.
         let fork_base = Some(primary.base_branch().await);
+        // The child runs under exactly its parent's engine, whichever it is,
+        // even where the automatic choice would now pick another: a parent
+        // kept on this Mac (it needs Xcode, say) must not fork into a box. A
+        // parent of a retired engine is refused before anything is pinned.
+        let workspace_type = crate::sandbox::WorkspaceType::stamped(&parent)?;
         let code_from = self.fork_code(&parent, code, turn_id).await?;
         let pin = code_from.clone();
 
@@ -164,12 +169,7 @@ impl Supervisor {
             // it, checked again for the fork's engine — those still there: a
             // folder deleted since must not stop the fork.
             folder_grants: crate::workspace::folder_grants::present(&parent.folder_grants),
-            // The child runs under exactly its parent's engine, whichever it
-            // is, even where the automatic choice would now pick another: a
-            // parent kept on this Mac (it needs Xcode, say) must not fork into
-            // a box, nor a container-stamped parent's child move off its
-            // container engine after Settings change.
-            workspace_type: Some(crate::sandbox::WorkspaceType::stamped(&parent)),
+            workspace_type: Some(workspace_type),
         };
         let spawned = self.spawn_agent(ctx, req).await;
         // Once spawned, its provisioning releases the code's pin; a spawn
@@ -485,7 +485,10 @@ mod tests {
     }
 
     /// The spawn is refused before its provisioning (which releases the pin)
-    /// ever runs: the fork releases it itself.
+    /// ever runs: the fork releases it itself. What refuses it depends on
+    /// the host: on macOS the source repository is gone; off macOS the
+    /// parent's stamped engine (seatbelt, which does not exist there) is
+    /// refused first. Either way nothing stays pinned.
     #[tokio::test]
     async fn a_fork_refused_at_spawn_leaves_no_pin() {
         let td = tempfile::tempdir().unwrap();
@@ -508,10 +511,13 @@ mod tests {
                 None,
             )
             .await;
-        assert!(forked
-            .unwrap_err()
-            .to_string()
-            .contains("not a git repository"));
+        let err = forked.unwrap_err().to_string();
+        let expected = if cfg!(target_os = "macos") {
+            "not a git repository"
+        } else {
+            "macOS sandbox"
+        };
+        assert!(err.contains(expected), "{err}");
         assert_eq!(pins(&checkout).await, Vec::<String>::new());
     }
 

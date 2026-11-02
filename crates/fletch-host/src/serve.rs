@@ -86,17 +86,16 @@ pub fn data_dir_under(base: PathBuf) -> PathBuf {
 /// `sandbox::set_data_dir`; see `sandbox::seatbelt`'s `deny_engine_data_dir`) and
 /// then re-allows exactly the roots below — so the database, `remote/` and
 /// the admin socket stay unreachable while the agent keeps its checkout, its
-/// mailbox and its project's caches. A container sees nothing but the paths bound into it and needs none
-/// of this.
+/// mailbox and its project's caches. A box sees nothing of the host but what
+/// it is handed and needs none of this.
 ///
 /// Anything already set — an operator's own layout, a disk with room for
 /// checkouts — is left alone, and then uniqueness across hosts is theirs to
 /// keep. Called before the engine boots, and before anything else in the
 /// process could be reading the environment.
 fn claim_state_roots(data_dir: &Path) {
-    // Absolute: a `--data-dir` may be relative, but a seatbelt profile and a
-    // container bind mount are both built from these paths and neither takes a
-    // relative one. Spelled out rather than `std::path::absolute` (1.79, past
+    // Absolute: a `--data-dir` may be relative, but a seatbelt profile is
+    // built from these paths and takes no relative one. Spelled out rather than `std::path::absolute` (1.79, past
     // this package's MSRV), and deliberately without the filesystem: the dir
     // does not exist yet on a first start, and the sandbox canonicalizes what
     // it is handed anyway.

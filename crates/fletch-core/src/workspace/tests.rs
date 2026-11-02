@@ -488,11 +488,11 @@ fn sandbox_engine_stamp_round_trips() {
         "t".into(),
         AgentView::Custom,
     );
-    stamped.sandbox_engine = Some("docker".into());
+    stamped.sandbox_engine = Some("box".into());
     wm.add_agent(&mut stamped).unwrap();
     assert_eq!(
         wm.agent("yosemite").unwrap().sandbox_engine.as_deref(),
-        Some("docker")
+        Some("box")
     );
 
     // An unstamped record (pre-selection agents) stays NULL, which spawn

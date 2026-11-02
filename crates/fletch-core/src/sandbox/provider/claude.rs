@@ -1,10 +1,10 @@
 //! Claude Code's home in the guest: `~/.claude` under the user's home (the
 //! guest's `HOME` by path identity), with no `CLAUDE_CONFIG_DIR`, so the CLI
 //! lays it out itself on first run. Seeded with the onboarding state the
-//! container entrypoint and the managed account dirs seed, so the first turn
-//! is not a setup wizard; the login is the access token the host resolved for
-//! the launch (`agent::host_login::claude`), as the container auth chain
-//! spells it, in the env file.
+//! managed account dirs seed, so the first turn is not a setup wizard; the
+//! login is the access token the host resolved for the launch
+//! (`agent::host_login::claude`), as the auth chain (`super::auth`) spells it,
+//! in the env file.
 
 use std::path::{Path, PathBuf};
 
@@ -59,7 +59,7 @@ impl ProviderHome for Claude {
     }
 
     /// The claude login the host resolved (`agent::host_login`), as the
-    /// seatbelt engine passes it; the container auth chain adds the stored
+    /// seatbelt engine passes it; the auth chain adds the stored
     /// setup-token or the shell's own key when there is no host login.
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
         use super::auth::{resolve, ContainerAuth};

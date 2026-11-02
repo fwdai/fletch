@@ -1,15 +1,7 @@
 import { invoke, invokeLocal } from "../invoke";
-import type {
-  ContainerAuthStatus,
-  DockerProbe,
-  IsolationReport,
-  PodmanProbe,
-  PublishApproval,
-} from "../types/sandbox";
+import type { ContainerAuthStatus, IsolationReport, PublishApproval } from "../types/sandbox";
 
 export const sandboxApi = {
-  probeDockerEngine: () => invoke<DockerProbe>("probe_docker_engine"),
-  probePodmanEngine: () => invoke<PodmanProbe>("probe_podman_engine"),
   // What each engine actually guarantees, for the picker (`sandbox::guarantees`).
   describeSandboxIsolation: () => invoke<IsolationReport[]>("describe_sandbox_isolation"),
   // Whether an agent must get the user's approval before publishing. Backend-owned
@@ -24,8 +16,8 @@ export const sandboxApi = {
   // that has just (re)connected to a host learns of one — gate it on
   // `hostSupports("approvals_list")`, since an older host answers `unknown op`.
   listPublishApprovals: () => invoke<PublishApproval[]>("approvals_list"),
-  // Anthropic auth for containerized agents. Docker-only: seatbelt agents keep
-  // the user's own claude login. The token is backend-owned
+  // Anthropic auth for box agents: seatbelt agents keep the user's own claude
+  // login. The token is backend-owned
   // (`claude_container_token` in the backend secret store, written by the
   // set/clear commands below — never via a frontend `setSetting`).
   getContainerAuthStatus: () => invoke<ContainerAuthStatus>("get_container_auth_status"),
@@ -38,14 +30,10 @@ export const sandboxApi = {
   //
   // Local whatever environment is active: this is a sign-in the user completes
   // in this window, against a PTY on this machine, and its events arrive over
-  // the local bus. A remote host has its own container token and its own way in
+  // the local bus. A remote host has its own setup token and its own way in
   // (`fletch-host github login`), so following the active environment here would
   // strand the flow the moment the user switched hosts.
   connectClaudeContainerAuth: () => invokeLocal<void>("connect_claude_container_auth"),
   submitClaudeSetupCode: (code: string) => invokeLocal<void>("submit_claude_setup_code", { code }),
   cancelClaudeContainerAuth: () => invokeLocal<void>("cancel_claude_container_auth"),
-  /** Launch Docker Desktop (the daemon-down error state's action). macOS-only;
-   *  rejects elsewhere. Local whatever environment is active: it opens an app on
-   *  this Mac, and there is no screen on a remote host to open one on. */
-  startDockerDesktop: () => invokeLocal<void>("start_docker_desktop"),
 };

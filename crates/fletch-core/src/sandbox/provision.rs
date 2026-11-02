@@ -1,11 +1,10 @@
 //! Workspace provisioning: how an agent's checkout comes into existence.
 //!
 //! Every workspace is a self-contained clone with its own real, writable
-//! `.git`. This is required by the Docker engine — a linked worktree's `.git`
-//! file references the origin repo's `.git/worktrees/<name>` by absolute path,
-//! so containerizing it would mean mounting the user's real `.git`, a sandbox
-//! escape (a writable `.git/hooks` executes on the host the next time the user
-//! runs git) — and seatbelt uses the same model so both engines converge.
+//! `.git`. A linked worktree's `.git` file references the origin repo's
+//! `.git/worktrees/<name>` by absolute path, so sandboxing it would mean
+//! exposing the user's real `.git`, a sandbox escape (a writable `.git/hooks`
+//! executes on the host the next time the user runs git).
 //!
 //! The clone is made with `git clone --shared`: it borrows the source's object
 //! store via `.git/objects/info/alternates` (an absolute path to the source's
@@ -17,10 +16,9 @@
 //! commits the source has never seen transfer, and they never touch the user's
 //! object store. Because the clone lives at the normal
 //! host path, all host-side git (diff polling, RPC commit/push,
-//! archive/restore) operates on it unchanged. For Docker the borrowed object
-//! store is mounted read-only at its identical host path (see the docker
-//! engine); under seatbelt no mount is needed (same
-//! filesystem, reads open, writes blocked outside the workspace by policy).
+//! archive/restore) operates on it unchanged. Under seatbelt no grant is
+//! needed for the borrowed store (same filesystem, reads open, writes blocked
+//! outside the workspace by policy).
 //! The source object store must therefore remain present for the clone's
 //! lifetime — Fletch owns the source repo lifecycle, so this holds, with one
 //! exception: the user moving the repository. Relocating the project to follow
@@ -52,9 +50,7 @@ pub struct CheckoutSpec<'a> {
 /// restore wants [`provision_recovering`] or [`provision_on_branch`], whose
 /// archived tip is usually *not* in the source.
 ///
-/// `--shared`: objects borrowed from the source. For Docker the borrowed store
-/// is mounted RO at launch — safe for the primary workspace and any repo
-/// present when the container starts.
+/// `--shared`: objects borrowed from the source.
 pub async fn provision(spec: &CheckoutSpec<'_>) -> Result<()> {
     clone_detached(spec).await
 }
@@ -96,18 +92,11 @@ pub enum BaseFreshness {
 /// Degrades instead of failing: an unreachable remote leaves the workspace at
 /// `spec.base_ref` (the inherited, possibly stale ref) and reports
 /// [`BaseFreshness::Stale`] rather than killing the spawn.
-///
-/// `shared` picks the object strategy, exactly as in [`clone_base`]. Pass
-/// `false` for a repo added to an *already-running* Docker agent: the
-/// container's bind mounts are fixed at `docker run`, so a `--shared` clone's
-/// borrowed object store could never be mounted and in-container git would fail
-/// with missing objects. Seatbelt has no such constraint and always shares.
 pub async fn provision_at_remote_base(
     spec: &CheckoutSpec<'_>,
     base_branch: &str,
-    shared: bool,
 ) -> Result<BaseFreshness> {
-    clone_base(spec, shared).await?;
+    clone_base(spec).await?;
     let base_branch = base_branch.to_string();
     fixups(spec, |dest| async move {
         // `rewrite_origin` *removes* the clone's local-path `origin` when the
@@ -162,7 +151,7 @@ pub async fn provision_at_remote_base(
 /// out `spec.base_ref` detached. No recovery ladder: the ref is taken as
 /// something the source already has.
 async fn clone_detached(spec: &CheckoutSpec<'_>) -> Result<()> {
-    clone_base(spec, true).await?;
+    clone_base(spec).await?;
     fixups(spec, |dest| async move {
         checkout_detached(&dest, spec.base_ref).await
     })
@@ -186,7 +175,7 @@ async fn clone_detached(spec: &CheckoutSpec<'_>) -> Result<()> {
 /// base means the run itself is broken, not that the workspace should open
 /// somewhere else.
 pub async fn provision_forking_run_repo(spec: &CheckoutSpec<'_>, run_repo: &Path) -> Result<()> {
-    clone_base(spec, true).await?;
+    clone_base(spec).await?;
     fixups(spec, |dest| async move {
         let remote = path_str(run_repo)?;
         // `<ref>:<ref>`, not a bare source ref: step N's base is the pinned
@@ -245,9 +234,7 @@ pub async fn provision_on_branch(
     origin_branch: &str,
     fallback_ref: Option<&str>,
 ) -> Result<bool> {
-    // Restore always relaunches the container, so the RO mount for a `--shared`
-    // clone's borrowed store is re-established at launch.
-    clone_base(spec, true).await?;
+    clone_base(spec).await?;
     let branch = branch.to_string();
     let origin_branch = origin_branch.to_string();
     let fallback = fallback_ref.map(str::to_string);
@@ -280,7 +267,7 @@ pub async fn provision_recovering(
     spec: &CheckoutSpec<'_>,
     fallback_ref: Option<&str>,
 ) -> Result<()> {
-    clone_base(spec, true).await?;
+    clone_base(spec).await?;
     let fallback = fallback_ref.map(str::to_string);
     fixups(spec, |dest| async move {
         recover_detached(&dest, spec.source_repo, spec.base_ref, fallback.as_deref()).await
@@ -421,20 +408,14 @@ pub async fn teardown(dest: &Path) -> Result<()> {
 /// by every clone-arm entry point. Leaves HEAD wherever the clone put it;
 /// callers do their own checkout.
 ///
-/// `shared` picks the object strategy:
-/// - `true` → `git clone --shared`: borrows the source's object store via
-///   `.git/objects/info/alternates` (an absolute path to the source's objects)
-///   and copies no objects, so the clone is kilobytes on disk. The source
-///   object store must stay present for the clone's lifetime (Fletch owns the
-///   source repo lifecycle). Borrowed objects are only ever *referenced* —
-///   never written — and for Docker the store is mounted read-only, so a
-///   container can't reach through the alternates link to mutate the source.
-/// - `false` → `git clone --no-hardlinks`: a full, self-contained object copy
-///   with no alternates. Used when the clone can't rely on the borrowed store
-///   being mounted — a repo added to an already-running Docker container, whose
-///   bind mounts are fixed at `docker run` (see [`provision_at_remote_base`]).
+/// `git clone --shared` borrows the source's object store via
+/// `.git/objects/info/alternates` (an absolute path to the source's objects)
+/// and copies no objects, so the clone is kilobytes on disk. The source object
+/// store must stay present for the clone's lifetime (Fletch owns the source
+/// repo lifecycle). Borrowed objects are only ever *referenced*, never
+/// written.
 ///
-/// Caveat — gc/prune on the source (`shared` only): `--shared` breaks only if
+/// Caveat — gc/prune on the source: `--shared` breaks only if
 /// the source prunes an object the clone references. Base history stays
 /// reachable from the source's own refs, so ordinary `git gc --auto` (prunes
 /// only unreachable objects past the grace period) is safe. The real risk is an
@@ -442,7 +423,7 @@ pub async fn teardown(dest: &Path) -> Result<()> {
 /// live and referencing a since-deleted base branch*. Not hardened against here
 /// (the common case is safe); if that becomes a problem, disable gc on the
 /// source while any agent is active (crash-safe, via transient env-config).
-async fn clone_base(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
+async fn clone_base(spec: &CheckoutSpec<'_>) -> Result<()> {
     let source = path_str(spec.source_repo)?;
     let dest = path_str(spec.dest)?;
 
@@ -456,17 +437,12 @@ async fn clone_base(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
         tokio::fs::remove_dir_all(spec.dest).await?;
     }
 
-    // `--shared` borrows objects via an alternates file (cheap, RO for Docker);
-    // `--no-hardlinks` makes a full self-contained copy (no shared inodes, so a
-    // container can't corrupt the source even without the RO mount).
-    //
     // No timeout: `--shared` is near-instant and a local copy can legitimately
     // take minutes, so keep the unbounded shape (and `kill_on_drop`) consistent
     // with `new_project::clone`; the child is still reaped if the spawn task is
     // aborted.
-    let object_flag = if shared { "--shared" } else { "--no-hardlinks" };
     let out = crate::git_dist::command(spec.source_repo)
-        .args(["clone", object_flag, &source, &dest])
+        .args(["clone", "--shared", &source, &dest])
         .kill_on_drop(true)
         .output()
         .await?;
@@ -475,7 +451,7 @@ async fn clone_base(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
         // "already exists" (mirrors `new_project::clone`).
         let _ = tokio::fs::remove_dir_all(spec.dest).await;
         return Err(Error::Git(format!(
-            "clone {object_flag} failed: {}",
+            "clone --shared failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
@@ -828,7 +804,7 @@ async fn prune_inherited_heads(dest: &Path, inherited: &[String]) {
 /// `.git/hooks`.
 ///
 /// With local git mutations (commit, merge, conflict-resolve) now running as
-/// native in-container git rather than host RPC ops, the old "a mutating RPC op
+/// native sandboxed git rather than host RPC ops, the old "a mutating RPC op
 /// succeeded" delegation signal is gone for those actions. These hooks restore
 /// it without teaching the agent anything: on the agent's own `git commit` /
 /// `git merge`, git runs the hook, which pings the RPC mailbox
@@ -892,8 +868,8 @@ const POST_COMMIT_ACTION: &str = concat!(
 
 /// The body of a delegation hook. `set_action` is a shell fragment that assigns
 /// the reported op to `$action` (a literal for post-merge, a merge-commit test
-/// for post-commit). POSIX `sh`, no bashisms: runs in the container image's
-/// shell, a box's guest and macOS `/bin/sh` alike. Writes the mailbox request
+/// for post-commit). POSIX `sh`, no bashisms: runs in a box's guest and
+/// macOS `/bin/sh` alike. Writes the mailbox request
 /// atomically (`.tmp` then `mv`) so the watcher never reads a half-written
 /// file, and swallows every error — the git op must not depend on the signal
 /// landing.
@@ -917,8 +893,8 @@ exit 0
 }
 
 /// Seed the checkout with a git identity it can commit under **without** the
-/// host's global gitconfig. A container can't see that file, so with local git
-/// mutations now running as native in-container `git commit`, a clone that
+/// host's global gitconfig. A box can't see that file, so with local git
+/// mutations now running as native sandboxed `git commit`, a clone that
 /// inherited its identity only from the host's global config would die with
 /// git's "Please tell me who you are" — the retired host-side commit path used
 /// to paper over this via `git::identity_env`.
@@ -928,7 +904,7 @@ exit 0
 /// into `dest`'s own config, and fill any half the host can't resolve from
 /// the signed-in profile / neutral default. This is the same fallback
 /// `git::identity_env` applied, but persisted into the checkout so
-/// in-container git sees it. Checkouts are ephemeral, so freezing the value
+/// sandboxed git sees it. Checkouts are ephemeral, so freezing the value
 /// here is harmless. Also what a workflow run repo gets
 /// (`workflow::gitops::provision_run_repo`).
 pub(crate) async fn seed_identity(source_repo: &Path, dest: &Path) -> Result<()> {
@@ -949,13 +925,13 @@ pub(crate) async fn seed_identity(source_repo: &Path, dest: &Path) -> Result<()>
 }
 
 /// Freeze commit signing **off** in the checkout. The seatbelt engine, unlike
-/// a container, lets git read the host's global gitconfig, so a user with
+/// a box, lets git read the host's global gitconfig, so a user with
 /// `commit.gpgsign=true` hands the sandbox a signing *policy* without the key:
 /// `~/.ssh` and the ssh-agent socket are denied to agents (`seatbelt::
 /// deny_host_git_credentials`), and gpg's keyring is nothing the sandbox should
 /// hold either. Every `git commit` would then die with "failed to write commit
 /// object". The checkout's local scope outranks global, so this one key makes
-/// the sandbox match the container engines — unsigned — while the user's own
+/// the sandbox match the box — unsigned — while the user's own
 /// repos keep signing. Where a signature is wanted, the host — which holds the
 /// key — is the place to make it.
 async fn freeze_unsigned(dest: &Path) -> Result<()> {
@@ -1166,7 +1142,7 @@ mod tests {
             dest: &dest,
         };
 
-        let freshness = provision_at_remote_base(&spec, "main", true).await.unwrap();
+        let freshness = provision_at_remote_base(&spec, "main").await.unwrap();
 
         assert_eq!(freshness, BaseFreshness::Fetched);
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), fresh);
@@ -1218,7 +1194,7 @@ mod tests {
             dest: &dest,
         };
 
-        provision_at_remote_base(&spec, "main", true).await.unwrap();
+        provision_at_remote_base(&spec, "main").await.unwrap();
 
         assert_eq!(
             run(&dest, &["rev-parse", "refs/heads/feat/x"]),
@@ -1245,7 +1221,7 @@ mod tests {
             base_ref: &stale,
             dest: &dest,
         };
-        provision_at_remote_base(&spec, "main", true).await.unwrap();
+        provision_at_remote_base(&spec, "main").await.unwrap();
 
         // A local head with no `refs/remotes/origin/orphan` beside it.
         run(&dest, &["branch", "-q", "orphan", "HEAD"]);
@@ -1273,7 +1249,7 @@ mod tests {
             dest: &dest,
         };
 
-        let freshness = provision_at_remote_base(&spec, "main", true).await.unwrap();
+        let freshness = provision_at_remote_base(&spec, "main").await.unwrap();
 
         assert_eq!(freshness, BaseFreshness::Stale);
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), stale);
@@ -1302,7 +1278,7 @@ mod tests {
             dest: &dest,
         };
 
-        let err = provision_at_remote_base(&spec, "develop", true)
+        let err = provision_at_remote_base(&spec, "develop")
             .await
             .expect_err("no fetch and no local copy must not silently pick a commit");
 
@@ -1327,7 +1303,7 @@ mod tests {
             dest: &dest,
         };
 
-        let freshness = provision_at_remote_base(&spec, "main", true).await.unwrap();
+        let freshness = provision_at_remote_base(&spec, "main").await.unwrap();
 
         assert_eq!(freshness, BaseFreshness::NoRemote);
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
@@ -1586,9 +1562,7 @@ mod tests {
             base_ref: &develop_tip,
             dest: &dest,
         };
-        provision_at_remote_base(&spec, "develop", true)
-            .await
-            .unwrap();
+        provision_at_remote_base(&spec, "develop").await.unwrap();
 
         assert_eq!(origin_head(&dest).as_deref(), Some("origin/develop"));
         assert_eq!(git::default_branch(&dest).await, "develop");
@@ -1883,7 +1857,7 @@ mod tests {
         provision(&spec).await.unwrap();
 
         // Whatever the host's ambient config, the clone must resolve a non-empty
-        // identity in its OWN config so a native in-container `git commit` never
+        // identity in its OWN config so a native sandboxed `git commit` never
         // dies with "Please tell me who you are".
         assert!(!run(&dest, &["config", "--local", "user.name"]).is_empty());
         assert!(!run(&dest, &["config", "--local", "user.email"]).is_empty());
@@ -2205,52 +2179,6 @@ mod tests {
         );
         assert_eq!(run(&dest2, &["rev-parse", "HEAD"]), tip);
         assert!(ref_exists(&dest2, "refs/heads/feat-restored"));
-    }
-
-    #[tokio::test]
-    async fn provision_self_contained_copies_objects_without_alternates() {
-        // A repo added to a live Docker agent must not borrow via alternates
-        // (the container can't mount the borrowed store): it gets a full,
-        // self-contained object copy instead.
-        let td = tempfile::tempdir().unwrap();
-        let (repo, _first, head) = fixture_repo(td.path());
-        let dest = td.path().join("clone");
-        let spec = CheckoutSpec {
-            source_repo: &repo,
-            base_ref: &head,
-            dest: &dest,
-        };
-
-        // No `origin` on the fixture, so there is nothing to fetch — the point
-        // here is purely the object strategy (`shared = false`).
-        assert_eq!(
-            provision_at_remote_base(&spec, "main", false)
-                .await
-                .unwrap(),
-            BaseFreshness::NoRemote
-        );
-
-        // No alternates file — objects live in the clone itself.
-        assert!(!dest.join(".git/objects/info/alternates").exists());
-        // Objects were actually copied in (loose objects present).
-        let mut loose = 0usize;
-        let mut stack = vec![dest.join(".git/objects")];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).unwrap() {
-                let entry = entry.unwrap();
-                let name = entry.file_name();
-                if name == "info" || name == "pack" {
-                    continue;
-                }
-                if entry.metadata().unwrap().is_dir() {
-                    stack.push(entry.path());
-                } else {
-                    loose += 1;
-                }
-            }
-        }
-        assert!(loose > 0, "self-contained clone must copy objects in");
-        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
     }
 
     #[tokio::test]

@@ -20,8 +20,7 @@
 //! babysit (one more thing to kill on quit), reports a user-visible name in
 //! `pmset -g assertions` / Activity Monitor, and is pure in-process FFI — no new
 //! crate, just a tiny `extern "C"` block linked against the `IOKit` /
-//! `CoreFoundation` frameworks (mirrors how `sandbox/docker/auth.rs` gates
-//! macOS-only native calls behind `cfg`). `PreventUserIdleSystemSleep` lets the
+//! `CoreFoundation` frameworks, macOS-only and gated behind `cfg`. `PreventUserIdleSystemSleep` lets the
 //! *display* sleep — we only keep the *system* awake — so a closed-lid clamshell
 //! still suspends (expected; that's a hard power event, not idle).
 //!
@@ -68,7 +67,7 @@ pub fn load_keep_awake_on_power(conn: &rusqlite::Connection) -> bool {
 type ChangeCb = Arc<dyn Fn(usize, usize) + Send + Sync>;
 
 /// Process-wide activity monitor. Mirrors the in-process singleton idiom used
-/// elsewhere (e.g. `sandbox::set_container_override`) so code deep in the
+/// elsewhere (e.g. `sandbox::set_data_dir`) so code deep in the
 /// spawn/scheduler paths — which has no `AppHandle` — can report activity
 /// without threading state through.
 pub struct ActivityMonitor {

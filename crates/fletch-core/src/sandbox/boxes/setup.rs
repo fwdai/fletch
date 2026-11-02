@@ -169,6 +169,14 @@ pub fn start_install() -> Result<()> {
             Ok(image) => {
                 FAILURES.store(0, Ordering::Relaxed);
                 status.phase = "installed";
+                // Only this build's version ever boots (`installed_image`),
+                // so every older one is dead weight on disk.
+                let keep = image.version.clone();
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = super::image_store().prune(&keep) {
+                        tracing::warn!(error = %e, "pruning old box images failed");
+                    }
+                });
                 status.progress = None;
                 status.version = Some(image.version);
                 publish(&status);

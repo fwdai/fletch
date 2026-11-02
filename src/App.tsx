@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { BootScreen } from "./components/BootScreen";
 import { BoxEgressToast } from "./components/BoxEgressToast";
 import { BoxReadyToast } from "./components/BoxReadyToast";
-import { DockerBuildToast } from "./components/DockerBuildToast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Feedback } from "./components/Feedback";
 import { FeedbackNudge } from "./components/FeedbackNudge";
@@ -193,7 +192,6 @@ function AppShell() {
       )}
 
       <UpdateToast />
-      <DockerBuildToast />
       <BoxEgressToast />
       <BoxReadyToast />
       <PublishApproval />

@@ -39,9 +39,9 @@ pub struct PerTurnSpec {
     /// too, so they need it to build the profile.
     pub sandbox_root: PathBuf,
     /// The authoritative source repos this agent's checkouts were forked from
-    /// (`AgentRecord.repos[].repo_path`). Threaded to the sandbox engine so the
-    /// Docker borrowed-object-store mounts derive from these user-owned paths,
-    /// never from the agent-writable checkout alternates (see `AgentLaunchCtx`).
+    /// (`AgentRecord.repos[].repo_path`). Threaded to the sandbox engine, which
+    /// derives what it reads back from these user-owned paths, never from the
+    /// agent-writable checkout alternates (see `AgentLaunchCtx`).
     pub source_repos: Vec<PathBuf>,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
@@ -105,9 +105,9 @@ pub struct SpawnSpec<'a> {
     /// are allowed anywhere under this path.
     pub sandbox_root: PathBuf,
     /// The authoritative source repos this agent's checkouts were forked from
-    /// (`AgentRecord.repos[].repo_path`). Threaded to the sandbox engine so the
-    /// Docker borrowed-object-store mounts derive from these user-owned paths,
-    /// never from the agent-writable checkout alternates (see `AgentLaunchCtx`).
+    /// (`AgentRecord.repos[].repo_path`). Threaded to the sandbox engine, which
+    /// derives what it reads back from these user-owned paths, never from the
+    /// agent-writable checkout alternates (see `AgentLaunchCtx`).
     pub source_repos: &'a [PathBuf],
     pub session_id: &'a str,
     /// How claude attaches to `session_id`: fresh until its transcript holds a
@@ -153,7 +153,7 @@ pub struct SpawnSpec<'a> {
     pub oauth_token: Option<&'a AccessToken>,
     /// The run blackboard dir to grant this agent write access to, when it is a
     /// workflow step agent (§8). `None` for a normal spawn. The sandbox engine
-    /// turns it into the seatbelt subpath / Docker mount + `WF_BLACKBOARD`.
+    /// turns it into the seatbelt subpath + `WF_BLACKBOARD`.
     pub blackboard: Option<&'a Path>,
     /// The adopted checkout is read-only to this agent (the local reviewer):
     /// `AgentLaunchCtx::adopted_read_only`.
@@ -221,8 +221,8 @@ fn launcher_env(
 /// account's dir, naming the login the agent's [`CodexHome`] copies from (no
 /// CLI runs in it; a claude account signs in by token instead), and the default
 /// account's credential vars to strip from the child so the CLI can only
-/// authenticate as that account (the container engines filter the same vars
-/// in their auth chain; host-side launches inherit the login shell, so they
+/// authenticate as that account (the box's auth chain filters the same
+/// vars; host-side launches inherit the login shell, so they
 /// must drop them here — an ambient `ANTHROPIC_API_KEY` would outrank the
 /// account's token). The sessions apply `unset` to the inherited layers only,
 /// before the launch plan's own env: the account's token, which the plan
@@ -358,7 +358,7 @@ fn resolve_mcp(
 struct ExecLaunch<'a> {
     /// Provider id, forwarded to the sandbox engine's launch context.
     provider: &'a str,
-    /// Resolved agent binary (host path under seatbelt, image bin under docker).
+    /// Resolved agent binary (host path under seatbelt, the tools disk's in a box).
     program: PathBuf,
     /// Extra environment from the provider's MCP delivery, layered on after the
     /// engine's launch env and `FLETCH_RPC_DIR`.
@@ -473,8 +473,8 @@ impl Agent {
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let engine = sandbox::engine_for(spec.engine)?;
-        // Under docker this is the provider's in-image bin (`codex`); under
-        // seatbelt the host-resolved path — same decision claude makes.
+        // In a box this is the tools disk's bin; under seatbelt the
+        // host-resolved path — same decision claude makes.
         let bin = agent_bin_for(desc.id, desc.bin, desc.label, engine.as_ref(), &home)?;
         // Provider MCP delivery, rebuilt from the session's snapshot so the TUI
         // resumes with the same tool set the Custom-view turns had.
@@ -619,7 +619,7 @@ impl Agent {
         let kill = KillGuard::new(kill);
         account.unset.extend(env_remove);
         // After the plan: only the engine knows which claude actually runs —
-        // the host's, a container image's, a box's — and whether that one
+        // the host's or a box's — and whether that one
         // takes the thinking flag (`LaunchPlan::claude_thinking_summaries`).
         let agent_args = prepare_managed_args(&spec, &mcp.args, claude_thinking_summaries);
         let mut args = prefix_args;
@@ -681,8 +681,8 @@ impl Agent {
     {
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        // Under docker this resolves to the provider's in-image bin (`codex`);
-        // under seatbelt the host path — same decision claude makes. Resolved
+        // In a box this resolves to the tools disk's bin; under seatbelt the
+        // host path — same decision claude makes. Resolved
         // here (not in `spawn_exec`) since the agent bin is provider-specific.
         let engine = sandbox::engine_for(spec.engine)?;
         let program = PathBuf::from(agent_bin_for(
@@ -1035,10 +1035,10 @@ fn push_typed(out: &mut String, s: &str) {
 /// The agent binary handed to `launch_agent` (`sandbox::agent_bin`), decided
 /// by the *resolved* engine's kind: the host-resolved absolute path for an
 /// engine that runs it on this host, the engine's own otherwise. Keyed off the
-/// resolved engine rather than the stamped setting; a docker-stamped agent
-/// whose daemon is down never reaches here — `sandbox::engine_for` fails the
-/// spawn instead of degrading to seatbelt — so the resolved engine always
-/// matches the launch boundary.
+/// resolved engine rather than the stamped setting; a box-stamped agent on a
+/// machine that cannot boot one never reaches here — `sandbox::engine_for`
+/// fails the spawn instead of degrading to seatbelt — so the resolved engine
+/// always matches the launch boundary.
 fn agent_bin_for(
     provider: &str,
     bin: &str,

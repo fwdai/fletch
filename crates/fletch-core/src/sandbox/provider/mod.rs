@@ -10,8 +10,8 @@
 //! them), the sessions dir and how it reaches the host ([`Transport`]). The
 //! box engine applies those answers over its channel (`sandbox::boxes::home`);
 //! nothing here touches a guest. The credential resolution the adapters
-//! share with the container launch — the claude auth chain, the stored
-//! setup-token, the provider API keys a shell exports — is [`auth`].
+//! share — the claude auth chain, the stored setup-token, the provider API
+//! keys a shell exports — is [`auth`].
 //!
 //! Adding a provider to the box is one adapter plus its tools-disk script
 //! (`fletch_box::tools`); nothing in the engine names a provider.
@@ -216,11 +216,6 @@ pub fn require(provider: &str) -> Result<&'static dyn ProviderHome> {
 ///   without Fletch.
 /// - A box runs a provider with an adapter here and a tools-disk install
 ///   script (`fletch_box::tools`).
-/// - The container engines run a provider with a wired-up container image,
-///   config mount and auth (`sandbox::runs_in_container`). antigravity stays
-///   gated: its CLI has no non-interactive credential path (browser OAuth
-///   only, tokens in the host keychain, no API-key env fallback), so a
-///   container can't authenticate.
 pub fn supports(engine: EngineKind, provider: &str) -> std::result::Result<(), String> {
     match engine {
         EngineKind::SandboxExec => Ok(()),
@@ -232,17 +227,6 @@ pub fn supports(engine: EngineKind, provider: &str) -> std::result::Result<(), S
             }
             let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
             Err(format!("{label} isn't available in Linux VMs yet"))
-        }
-        EngineKind::Docker | EngineKind::Podman => {
-            if super::runs_in_container(provider) {
-                return Ok(());
-            }
-            let label = crate::agent::per_turn_descriptor(provider)
-                .map(|d| d.label())
-                .unwrap_or(provider);
-            Err(format!(
-                "{label} isn't available in container sandboxes yet"
-            ))
         }
     }
 }
@@ -376,8 +360,8 @@ mod tests {
     use super::*;
 
     /// Every provider with an adapter runs under every engine; antigravity
-    /// runs under seatbelt only, and each other engine refuses it with its
-    /// own copy and the provider's product name.
+    /// runs under seatbelt only, and a box refuses it with the provider's
+    /// product name.
     #[test]
     fn the_gate_refuses_with_each_engines_copy() {
         for provider in ["claude", "codex", "cursor", "opencode", "pi"] {
@@ -391,12 +375,6 @@ mod tests {
             refusal(EngineKind::Box),
             "Antigravity isn't available in Linux VMs yet"
         );
-        for engine in [EngineKind::Docker, EngineKind::Podman] {
-            assert_eq!(
-                refusal(engine),
-                "Antigravity isn't available in container sandboxes yet"
-            );
-        }
     }
 
     #[test]

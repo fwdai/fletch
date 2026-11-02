@@ -1,4 +1,4 @@
-//! Misc app-level handlers: workspace snapshot, log/Docker/editor launchers,
+//! Misc app-level handlers: workspace snapshot, log/editor launchers,
 //! and an agent's HEAD sha.
 
 use serde::Serialize;
@@ -60,26 +60,6 @@ pub fn reveal_logs() -> Result<()> {
         .spawn()
         .map_err(|e| Error::Other(format!("open log dir: {e}")))?;
     Ok(())
-}
-
-/// Launch Docker Desktop — the "Start Docker Desktop" action on a docker
-/// agent's daemon-down error state. macOS-only, like the rest of the sandbox
-/// feature (`open -a Docker`); other platforms error so the UI can
-/// report it rather than silently no-op. The daemon then takes a few seconds to
-/// answer, which the settings pane's probe-retry loop already covers.
-#[tauri::command]
-pub fn start_docker_desktop() -> Result<()> {
-    if cfg!(target_os = "macos") {
-        std::process::Command::new("open")
-            .args(["-a", "Docker"])
-            .spawn()
-            .map_err(|e| Error::Other(format!("open Docker Desktop: {e}")))?;
-        Ok(())
-    } else {
-        Err(Error::Other(
-            "Starting Docker Desktop from Fletch is only supported on macOS.".into(),
-        ))
-    }
 }
 
 /// The code editors installed on this machine, for the title-bar

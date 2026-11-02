@@ -1,41 +1,10 @@
 import type { ProjectFileStatus } from "./settings";
 
-/** Result of probing the local Docker installation (Settings › Sandbox).
- *  `version` is the daemon's server version, present only when available. */
-export interface DockerProbe {
-  status: "available" | "not-installed" | "daemon-down";
-  version?: string;
-}
-
-/** Result of probing the local Podman installation (Settings › Sandbox).
- *  `version` is the machine's podman version, present only when available.
- *  `machine-down` is Podman's analogue of Docker's `daemon-down`, named for
- *  what the user fixes: Podman needs a running `podman machine` on macOS. */
-export interface PodmanProbe {
-  status: "available" | "not-installed" | "machine-down";
-  version?: string;
-}
-
-/** Which step of the container auth chain (pasted token → shell env →
- *  claude credentials file) would supply Anthropic credentials to a docker
+/** Which step of the claude auth chain (pasted token → shell env →
+ *  claude credentials file) would supply Anthropic credentials to a box
  *  agent right now (Settings › Sandbox status row). */
 export interface ContainerAuthStatus {
   status: "keychain" | "stored-token" | "shell-env" | "credentials-file" | "none";
-}
-
-/** One image-build lifecycle event from the `docker:build-progress` stream —
- *  both container runtimes emit on it (the event name predates Podman and is
- *  kept as the wire contract). The embedded agent image is built on the first
- *  spawn under a runtime (a slow `build`); these feed the build toast. `line`
- *  is set only on `"line"`, `error` only on `"failed"`. `runtime` (the display
- *  name, e.g. `"Podman"`) rides every phase: it keys the build state, so two
- *  runtimes' overlapping lifecycles can't clear or overwrite each other —
- *  optional so an event without it still renders, under a neutral key. */
-export interface DockerBuildEvent {
-  phase: "started" | "line" | "finished" | "failed";
-  line?: string;
-  error?: string;
-  runtime?: string;
 }
 
 /** One isolation claim and how completely the selected engine delivers it.

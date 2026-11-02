@@ -2,7 +2,7 @@
 //! `cursor-agent` keeps its state and writes its session transcripts
 //! (`projects/<slug>/agent-transcripts/<id>/<id>.jsonl`, which
 //! `agent::providers::cursor` reads). Its login lives in the host's OS
-//! keychain, which no guest can read, so — as in a container — the one
+//! keychain, which no guest can read, so the one
 //! credential is `CURSOR_API_KEY`, taken from the login shell and put in the
 //! launch's env file; without it the launch is refused up front rather than
 //! failing on the first turn.
@@ -46,7 +46,7 @@ impl ProviderHome for Cursor {
         MIRROR_DIR
     }
 
-    /// `~/.cursor` itself, as the container launch creates it; cursor lays
+    /// `~/.cursor` itself; cursor lays
     /// the rest out on first run. No shared config: `accounts::shared_items`
     /// names none for cursor.
     fn seed(&self, home: &Path, _writable_root: &Path) -> Result<Vec<GuestEntry>> {

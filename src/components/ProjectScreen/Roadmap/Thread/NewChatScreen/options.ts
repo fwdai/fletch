@@ -20,7 +20,7 @@ export interface AgentOption {
   custom?: CustomAgent;
   provider?: Provider;
   /** Why this agent can't be started right now (not installed, or not
-   *  container-ready under the Docker engine); null when it can. */
+   *  runnable in the workspace type chosen); null when it can. */
   disabled: string | null;
   /** Its short status word — the probed CLI version, or the refusal in brief. */
   note: string;

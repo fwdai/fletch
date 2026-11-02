@@ -24,7 +24,7 @@ import type { ProvidersSlice } from "./providers";
 import type { ReposSlice } from "./repos";
 import type { ReviewSlice } from "./review";
 import type { RewindSlice } from "./rewind";
-import type { DockerBuildProgress, SandboxSlice } from "./sandbox";
+import type { SandboxSlice } from "./sandbox";
 import type { SkillsSlice } from "./skills";
 import type { RightPanelTab, UiSlice } from "./ui";
 import type { PromoteSeed, SyncHealthInfo, WorkspaceSlice } from "./workspace";
@@ -39,7 +39,6 @@ export type {
   BackgroundTasksSlice,
   ComposerSlice,
   CustomAgentsSlice,
-  DockerBuildProgress,
   DraftsSlice,
   EnvironmentEntry,
   EnvironmentId,

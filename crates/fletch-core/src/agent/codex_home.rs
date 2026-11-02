@@ -10,9 +10,7 @@ use super::host_login::codex::{self, CodexLoginError, Refresher};
 use crate::agent::accounts;
 use crate::error::{Error, Result};
 
-/// The per-agent `CODEX_HOME`, under the agent's own checkouts dir, the way
-/// the container claude path keeps a per-agent `projects` dir
-/// (`transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME`).
+/// The per-agent `CODEX_HOME`, under the agent's own checkouts dir.
 pub(crate) const OVERLAY_DIRNAME: &str = ".fletch-codex-home";
 
 const AUTH_FILE: &str = "auth.json";

@@ -123,8 +123,8 @@ fn home() -> Result<PathBuf, String> {
 /// The user a `--system` unit runs as: the explicit `--user`, else whoever
 /// invoked `sudo`. A system unit is installed as root, so "whoever runs this
 /// command" is the one answer that must never be given — the host runs as the
-/// user whose agents these are, never as root (the README's invariant; the
-/// container UID mapping and every file it writes assume it).
+/// user whose agents these are, never as root (the README's invariant; every
+/// file it writes assumes it).
 pub fn system_user(flag: Option<String>, sudo_user: Option<String>) -> Result<String, String> {
     let spec = flag.or(sudo_user).ok_or_else(|| {
         "`--system` needs the user the host runs as: pass `--user NAME`, or run this \

@@ -331,11 +331,10 @@ impl Supervisor {
         // kill-induced process exit is recognized as our own intentional
         // teardown and ignored by `apply_exit_if_current` (stale gen), rather
         // than recorded as a crash — the same guard the timeout/resume teardown
-        // paths use. Without it a docker agent's `docker run` exits 143 (SIGTERM
-        // from container teardown), which persists a `last_error` and makes the
-        // agent derive to `Error` on the next launch, forcing a manual Resume;
-        // seatbelt happens to exit 0 on stdin close and slips past. Bumping here
-        // makes both engines resume silently.
+        // paths use. Without it a launcher killed by the engine's teardown
+        // exits non-zero, which persists a `last_error` and makes the agent
+        // derive to `Error` on the next launch, forcing a manual Resume.
+        // Bumping here makes every engine resume silently.
         let agents = std::mem::take(&mut *self.agents.lock());
         for (id, agent) in agents {
             self.bump_generation(&id);

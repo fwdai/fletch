@@ -1,6 +1,6 @@
 //! One entry per box-stamped agent: its identity (the paths the guest mirrors),
-//! its phase, and while the VM runs the channel, proxy and relays. Process-wide
-//! like the container engines.
+//! its phase, and while the VM runs the channel, proxy and relays.
+//! Process-wide.
 //!
 //! A box's writable root is routed to its executor for as long as the registry
 //! knows the box, not only while the VM runs: a routed operation on a stopped
@@ -1722,8 +1722,7 @@ async fn wait_tools_build(mut build: watch::Receiver<ToolsBuild>, timeout: Durat
     }
 }
 
-/// The CLI version a provider's tools disk installs: the host CLI's, as the
-/// container engines' version-parity check reads it, else
+/// The CLI version a provider's tools disk installs: the host CLI's, else
 /// [`tools::LATEST_VERSION`].
 pub fn tools_version(provider: &str) -> String {
     crate::agent::cached_provider_version(provider)

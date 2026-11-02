@@ -278,12 +278,6 @@ export function Composer({
     return modelLevels.length > 0 ? modelLevels : (providerLevels ?? []);
   }, [modelReasoningLevels, providerLevels]);
 
-  // A new-agent draft can still hold a container-unsupported provider chosen
-  // before the sandbox engine was switched to Docker or Podman. Block the send
-  // here — otherwise the stale selection reaches spawnAgent and fails in the
-  // backend. `provider` mirrors a custom agent's base, so this covers custom
-  // agents too. Existing sessions already spawned with their engine and keep a
-  // locked picker, so they're exempt.
   // Why this draft cannot be sent, in the words the send button shows — or
   // null when it can. The *single* rule: the same `useAgentAvailability` the
   // provider picker greys its rows with, so the button, the picker and the

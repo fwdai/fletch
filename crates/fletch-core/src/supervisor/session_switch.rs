@@ -98,8 +98,8 @@ mod tests {
     const AGENT: &str = "denali";
 
     /// An idle claude agent whose checkout is `<td>/ws/repo`, and the file its
-    /// current session's transcript goes to: the docker per-agent dir beside
-    /// the checkout, which the locator checks first.
+    /// current session's transcript goes to: the container-era per-agent dir
+    /// beside the checkout, which the locator checks first.
     fn fixture(td: &Path) -> (Supervisor, PathBuf) {
         let sup = test_supervisor();
         let checkout = td.join("ws").join("repo");

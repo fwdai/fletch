@@ -1,20 +1,17 @@
-//! Provider credential resolution, shared by the launches of every engine
-//! that cannot read the user's own login where it lives (the box, the
-//! container engines): the claude auth chain, the stored setup-token, the
-//! provider API keys a shell exports.
+//! Provider credential resolution for the launches of an engine that cannot
+//! read the user's own login where it lives (the box): the claude auth chain,
+//! the stored setup-token, the provider API keys a shell exports.
 //!
 //! Anthropic: [`resolve`] walks a first-hit-wins chain — the host's claude
 //! login (an access token `agent::host_login::claude` resolved, and
 //! refreshed, for this launch), stored setup-token, shell/process env, else
 //! [`ContainerAuth::Unavailable`] — and is re-evaluated on every spawn, so a
-//! `claude` re-login lands immediately. It returns env for the launch (the
-//! container CLI process, which bare `-e VAR` flags forward, or a box's env
-//! file), so token values never appear in argv (invariant 3); nor in logs,
+//! `claude` re-login lands immediately. It returns env for the launch (a
+//! box's env file), so token values never appear in argv (invariant 3); nor in logs,
 //! since [`ContainerAuth`]'s `Debug` prints var names only.
 //!
-//! The other providers: [`present_api_keys`] and the per-provider rules
-//! ([`codex_auth_env`], [`cursor_auth_env`], [`multi_provider_auth_env`])
-//! that decide whether a launch has a credential at all.
+//! The other providers: [`present_api_keys`] and [`multi_provider_auth_env`],
+//! which decide whether a launch has a credential at all.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -112,8 +109,8 @@ pub enum AuthSource {
     ShellEnv,
 }
 
-/// Outcome of the chain: the env to set on the container CLI process (forwarded
-/// via bare `-e VAR`), or nothing usable.
+/// Outcome of the chain: the env to set for the launched CLI (written to a
+/// box's env file), or nothing usable.
 pub enum ContainerAuth {
     Resolved {
         env: Vec<(String, String)>,
@@ -422,20 +419,6 @@ pub fn normalize_token(raw: &str) -> Result<(String, bool), String> {
     Ok((token.to_string(), token.starts_with(SETUP_TOKEN_PREFIX)))
 }
 
-/// Launch-blocking message when codex has no credential: no `auth.json` in its
-/// config dir, no `OPENAI_API_KEY`. Fail fast like the claude chain's
-/// `NO_CONTAINER_AUTH_MSG` — an unauthenticated container boots into a login
-/// prompt it can't answer.
-pub(crate) const NO_CODEX_AUTH_MSG: &str =
-    "No Codex credentials for containers — sign in with `codex` on the host (writes ~/.codex/auth.json) or set OPENAI_API_KEY.";
-
-/// Launch-blocking message when cursor has no credential. There is no
-/// mount-based fallback: `cursor-agent login` stores its tokens in the host OS
-/// keychain, which a Linux container can't read, and `~/.cursor` carries only
-/// identity metadata — so `CURSOR_API_KEY` is the sole container credential.
-pub(crate) const NO_CURSOR_AUTH_MSG: &str =
-    "No Cursor credentials for containers — set CURSOR_API_KEY (create one at cursor.com/dashboard). `cursor-agent login` stores its token in the host keychain, which containers can't read.";
-
 /// Provider API-key env vars the multi-provider CLIs (opencode, pi) read to
 /// authenticate; any one set in the app's process env satisfies auth on its own.
 /// Curated to the mainstream providers both CLIs honor, not exhaustive. Codex is
@@ -450,23 +433,6 @@ const MULTI_PROVIDER_API_KEY_ENV: &[&str] = &[
     "DEEPSEEK_API_KEY",
     "MISTRAL_API_KEY",
 ];
-
-/// Codex's credential rule (the container launch's `prepare_codex_launch`):
-/// a non-blank key is forwarded trimmed, a mounted `auth.json` needs nothing
-/// injected, neither is the blocking error.
-pub(crate) fn codex_auth_env(
-    api_key: Option<&str>,
-    auth_file: bool,
-) -> crate::error::Result<Vec<(String, String)>> {
-    let api_key = api_key.map(str::trim).filter(|k| !k.is_empty());
-    if let Some(key) = api_key {
-        return Ok(vec![("OPENAI_API_KEY".to_string(), key.to_string())]);
-    }
-    if auth_file {
-        return Ok(Vec::new());
-    }
-    Err(Error::Other(NO_CODEX_AUTH_MSG.to_string()))
-}
 
 /// The subset of [`MULTI_PROVIDER_API_KEY_ENV`] present and non-blank via
 /// `lookup`, in constant order so forwarding is deterministic.
@@ -493,18 +459,6 @@ pub(crate) fn multi_provider_auth_env(
         Ok(api_keys)
     } else {
         Err(Error::Other(no_auth_msg.to_string()))
-    }
-}
-
-/// Cursor's credential rule (the container launch's `prepare_cursor_launch`):
-/// a non-blank `CURSOR_API_KEY` is forwarded trimmed, unset or blank is the
-/// launch-blocking error.
-pub(crate) fn cursor_auth_env(
-    api_key: Option<&str>,
-) -> crate::error::Result<Vec<(String, String)>> {
-    match api_key.map(str::trim).filter(|k| !k.is_empty()) {
-        Some(key) => Ok(vec![("CURSOR_API_KEY".to_string(), key.to_string())]),
-        None => Err(Error::Other(NO_CURSOR_AUTH_MSG.to_string())),
     }
 }
 
