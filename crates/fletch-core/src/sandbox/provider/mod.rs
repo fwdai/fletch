@@ -231,7 +231,7 @@ pub fn supports(engine: EngineKind, provider: &str) -> std::result::Result<(), S
                 return Ok(());
             }
             let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
-            Err(format!("{label} isn't available in box sandboxes yet"))
+            Err(format!("{label} isn't available in Linux VMs yet"))
         }
         EngineKind::Docker | EngineKind::Podman => {
             if super::runs_in_container(provider) {
@@ -389,7 +389,7 @@ mod tests {
         let refusal = |engine| supports(engine, "antigravity").unwrap_err();
         assert_eq!(
             refusal(EngineKind::Box),
-            "Antigravity isn't available in box sandboxes yet"
+            "Antigravity isn't available in Linux VMs yet"
         );
         for engine in [EngineKind::Docker, EngineKind::Podman] {
             assert_eq!(

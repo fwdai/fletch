@@ -56,12 +56,6 @@ pub fn set_context_layer_enabled(ctx: State<'_, Arc<EngineCtx>>, enabled: bool) 
     engine::set_context_layer_enabled_impl(&ctx, enabled)
 }
 
-/// Change the sandbox engine stamped onto new agents, after a live probe.
-#[tauri::command]
-pub async fn set_sandbox_engine(ctx: State<'_, Arc<EngineCtx>>, engine: String) -> Result<()> {
-    engine::set_sandbox_engine_impl(&ctx, &engine).await
-}
-
 /// The docker launch knobs, written together; blank clears one.
 #[tauri::command]
 pub fn set_docker_launch_settings(

@@ -35,13 +35,12 @@ fn env_path(name: &str) -> PathBuf {
 }
 
 /// Points the engine at a temp data dir, installs the image from
-/// `FLETCH_BOX_IMAGE_DIR`, and turns the flag on. Returns the data dir guard.
+/// `FLETCH_BOX_IMAGE_DIR`. Returns the data dir guard.
 async fn setup() -> tempfile::TempDir {
     let data = tempfile::tempdir().unwrap();
     crate::sandbox::set_data_dir(data.path().to_path_buf());
     let image_dir = env_path("FLETCH_BOX_IMAGE_DIR");
     settings::set(BoxSettings {
-        enabled: true,
         image_url: Some(format!("file://{}", image_dir.display())),
         idle_stop: Some(Duration::from_secs(600)),
         ..BoxSettings::default()
@@ -291,10 +290,10 @@ async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
     }
 }
 
-/// A pinned `box` must not make providers boxes cannot run unsendable: they
-/// are stamped with the default engine, and nothing else is touched. A
-/// provider boxes run — one with a guest-home adapter and a tools-disk
-/// script — is stamped `Box`.
+/// A project pinned to boxes must not make providers boxes cannot run
+/// unsendable: they are stamped seatbelt. A provider boxes run — one with a
+/// guest-home adapter and a tools-disk script — lands in a box once one can
+/// boot, and a headless host's container engine wins outright.
 #[test]
 fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
     use crate::sandbox::placement::Placement;
@@ -302,13 +301,13 @@ fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
     for supported in ["claude", "codex", "cursor", "opencode", "pi"] {
         assert!(super::supports_provider(supported), "{supported}");
         assert_eq!(
-            super::engine_for_new_agent(Some(EngineKind::Box), supported, Placement::Auto),
+            super::engine_for_new_agent_with(None, supported, Placement::Auto, || true),
             EngineKind::Box
         );
     }
     assert!(!super::supports_provider("antigravity"));
     assert_eq!(
-        super::engine_for_new_agent(Some(EngineKind::Box), "antigravity", Placement::Auto),
+        super::engine_for_new_agent_with(None, "antigravity", Placement::Box, || false),
         EngineKind::SandboxExec
     );
     assert_eq!(

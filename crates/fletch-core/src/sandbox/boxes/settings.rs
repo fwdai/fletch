@@ -1,5 +1,4 @@
-//! The box engine's settings (the `boxes_enabled` switch and the `box_*`
-//! knobs), mirrored in-process the way the container engines' launch knobs
+//! The box engine's settings (the `box_*` knobs), mirrored in-process the way the container engines' launch knobs
 //! are (the docker and podman engines' own `settings`):
 //! the spawn path and the registry have no DB handle. Seeded at boot and kept
 //! in sync by `commands::set_box_setting_impl` / `box_egress_allow_impl`.
@@ -13,18 +12,6 @@ use rusqlite::Connection;
 use crate::database;
 use crate::error::{Error, Result};
 
-/// The switch: "use isolated VMs when available". An explicit `true` or
-/// `false` wins; absent is [`DEFAULT_ENABLED`]. With it off no box code path
-/// is reachable and the automatic engine choice lands on seatbelt. On a
-/// machine that cannot boot a box the switch changes nothing: the runtime
-/// probe refuses first.
-pub const ENABLED_SETTING: &str = "boxes_enabled";
-/// What an absent `boxes_enabled` row means. Off while boxes are rolled out
-/// behind the developer unlock (the desktop mirrors this in
-/// `store/hostSettings.ts`); flipping both to `true` is the public release —
-/// every host then downloads the image on its own and moves new agents to
-/// boxes, and nothing else has to change.
-pub const DEFAULT_ENABLED: bool = false;
 /// Guest RAM cap per box, MiB.
 pub const MEMORY_SETTING: &str = "box_memory_mib";
 /// vCPUs per box.
@@ -42,7 +29,6 @@ pub const EGRESS_ALLOW_KEY: &str = "box.egress_allow";
 
 /// Every global key, for the host-owned allowlist.
 pub const KEYS: &[&str] = &[
-    ENABLED_SETTING,
     MEMORY_SETTING,
     CPUS_SETTING,
     IMAGE_URL_SETTING,
@@ -57,7 +43,6 @@ pub const DEFAULT_IDLE_STOP_MINUTES: u64 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoxSettings {
-    pub enabled: bool,
     pub memory_mib: u32,
     pub cpus: u8,
     /// `None` is the GitHub release for this build's pin.
@@ -72,7 +57,6 @@ pub struct BoxSettings {
 impl Default for BoxSettings {
     fn default() -> Self {
         Self {
-            enabled: DEFAULT_ENABLED,
             memory_mib: DEFAULT_MEMORY_MIB,
             cpus: DEFAULT_CPUS,
             image_url: None,
@@ -83,7 +67,6 @@ impl Default for BoxSettings {
 }
 
 static SETTINGS: RwLock<BoxSettings> = RwLock::new(BoxSettings {
-    enabled: DEFAULT_ENABLED,
     memory_mib: DEFAULT_MEMORY_MIB,
     cpus: DEFAULT_CPUS,
     image_url: None,
@@ -106,18 +89,14 @@ static EGRESS: RwLock<Option<HashMap<String, Vec<String>>>> = RwLock::new(None);
 /// (`allowlist::GLOBAL_SETTING`).
 static GLOBAL_EGRESS: RwLock<Option<super::allowlist::Delta>> = RwLock::new(None);
 
-/// Held by every test that flips the flag or the selected engine: both are
-/// process-wide, so such tests run one at a time. Async-aware so an async test
+/// Held by every test that sets the box settings: they are process-wide, so
+/// such tests run one at a time. Async-aware so an async test
 /// may hold it across its awaits; a sync test takes `blocking_lock`.
 #[cfg(test)]
 pub(crate) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub fn current() -> BoxSettings {
     SETTINGS.read().clone()
-}
-
-pub fn enabled() -> bool {
-    SETTINGS.read().enabled
 }
 
 pub fn set(settings: BoxSettings) {
@@ -130,7 +109,6 @@ pub fn set(settings: BoxSettings) {
 pub fn load(conn: &Connection) -> BoxSettings {
     let raw = |key: &str| database::get_setting(conn, key);
     BoxSettings {
-        enabled: parse_enabled(raw(ENABLED_SETTING).as_deref()),
         memory_mib: parse_memory(raw(MEMORY_SETTING).as_deref()).unwrap_or(DEFAULT_MEMORY_MIB),
         cpus: parse_cpus(raw(CPUS_SETTING).as_deref()).unwrap_or(DEFAULT_CPUS),
         image_url: parse_image_url(raw(IMAGE_URL_SETTING).as_deref()).unwrap_or(None),
@@ -160,15 +138,6 @@ pub fn seed(conn: &Connection) {
         }
     }
     *EGRESS.write() = Some(map);
-}
-
-/// An explicit `true` or `false`; anything else is [`DEFAULT_ENABLED`].
-pub fn parse_enabled(raw: Option<&str>) -> bool {
-    match raw.map(str::trim) {
-        Some("true") => true,
-        Some("false") => false,
-        _ => DEFAULT_ENABLED,
-    }
 }
 
 /// A whole number of MiB, at least [`MIN_MEMORY_MIB`]; `None` when absent or
@@ -257,7 +226,6 @@ pub fn parse_layers(raw: Option<&str>) -> Result<Vec<String>> {
 /// is refused. `None` for a key that is not a box setting.
 pub fn validate(key: &str, value: &str) -> Option<Result<String>> {
     Some(match key {
-        ENABLED_SETTING => Ok(parse_enabled(Some(value)).to_string()),
         MEMORY_SETTING => parse_memory(Some(value)).map(|v| v.to_string()),
         CPUS_SETTING => parse_cpus(Some(value)).map(|v| v.to_string()),
         IMAGE_URL_SETTING => parse_image_url(Some(value)).map(Option::unwrap_or_default),
@@ -321,16 +289,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_explicit_value_wins_and_anything_else_is_the_default() {
-        assert!(parse_enabled(Some("true")));
-        assert!(parse_enabled(Some(" true ")));
-        assert!(!parse_enabled(Some("false")));
-        for raw in [None, Some(""), Some("1"), Some("TRUE"), Some("yes")] {
-            assert_eq!(parse_enabled(raw), DEFAULT_ENABLED, "{raw:?}");
-        }
-    }
-
-    #[test]
     fn knobs_parse_with_their_floors_and_defaults() {
         assert_eq!(parse_memory(None).unwrap(), DEFAULT_MEMORY_MIB);
         assert_eq!(parse_memory(Some(" 4096 ")).unwrap(), 4096);
@@ -367,13 +325,9 @@ mod tests {
             "browser"
         );
         assert_eq!(validate("box_layers", "none").unwrap().unwrap(), "none");
-        assert_eq!(
-            validate("boxes_enabled", "false").unwrap().unwrap(),
-            "false"
-        );
-        assert_eq!(
-            validate("boxes_enabled", "nope").unwrap().unwrap(),
-            DEFAULT_ENABLED.to_string()
+        assert!(
+            validate("boxes_enabled", "true").is_none(),
+            "the retired switch is no longer a box setting"
         );
         assert_eq!(
             validate("box_idle_stop_minutes", "0").unwrap().unwrap(),
@@ -400,18 +354,10 @@ mod tests {
         let db = crate::database::init(dir.path()).unwrap();
         let conn = db.lock();
         assert_eq!(load(&conn), BoxSettings::default());
-        assert_eq!(
-            load(&conn).enabled,
-            DEFAULT_ENABLED,
-            "absent is the default"
-        );
-        let flipped = if DEFAULT_ENABLED { "false" } else { "true" };
-        database::set_setting(&conn, ENABLED_SETTING, flipped).unwrap();
         database::set_setting(&conn, MEMORY_SETTING, "3072").unwrap();
         database::set_setting(&conn, IDLE_STOP_SETTING, "0").unwrap();
         database::set_setting(&conn, CPUS_SETTING, "bogus").unwrap();
         let loaded = load(&conn);
-        assert_eq!(loaded.enabled, !DEFAULT_ENABLED);
         assert_eq!(loaded.memory_mib, 3072);
         assert_eq!(loaded.idle_stop, None);
         assert_eq!(loaded.cpus, DEFAULT_CPUS, "a bad row reads as the default");

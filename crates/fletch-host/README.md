@@ -285,8 +285,9 @@ reachable `addresses`, the paired `devices`, the `relay` link, any standing
 - `dataDir`, `pid`, `version` — which host you are talking to.
 - `agents: { total, running }` — live agents (archived ones are not counted)
   and how many are mid-turn right now.
-- `sandboxEngine` — the selected engine, `sandbox-exec` / `docker` / `podman`.
-  Worth a look on a Linux box, where seatbelt does not exist.
+- `sandboxEngine` — `docker` / `podman` on a host off macOS, which runs every
+  agent in the container engine it found at boot; `auto` on a Mac, where each
+  new agent gets a Linux VM when one can boot and the macOS sandbox otherwise.
 - `githubConnected` — whether a GitHub token is loaded, i.e. whether pushes and
   PRs will work. See "GitHub" below if it is `false`.
 - `providers: { signedIn, signedOut }` — the installed agent CLIs, by whether
