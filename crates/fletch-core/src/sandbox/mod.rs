@@ -24,7 +24,7 @@ use crate::workspace::AgentRecord;
 pub(crate) use boxes::COW_DIR;
 pub use engine::{
     AgentLaunchCtx, EngineCaps, EngineKind, EnvDelivery, KillGuard, KillHandle, LaunchPlan,
-    SandboxEngine, TurnPrep,
+    LauncherArgs, SandboxEngine, StageArgs, TurnPrep,
 };
 pub use guarantees::{describe as describe_isolation, IsolationReport};
 pub(crate) use seatbelt::pid_alive;

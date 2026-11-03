@@ -27,9 +27,11 @@ const USAGE: &str = "\
 usage: fletch-guest <subcommand> ...
   vsock-listen <port> -- <cmd...>            inetd: one <cmd> per connection, socket as stdin/stdout
   egress-loopback <tcp port> <vsock port>    127.0.0.1:<tcp port> -> host vsock <vsock port>
-  exec --env-file <path> [--cwd <dir>] [--read-only <dir>]... [--writable <path>]...
-       [--cow <dir> <store>]... [--cow-file <file> <copy>]... -- <cmd...>
+  exec --env-file <path> [--args-file <file>] [--cwd <dir>] [--read-only <dir>]...
+       [--writable <path>]... [--cow <dir> <store>]... [--cow-file <file> <copy>]... -- <cmd...>
                                              clear the environment, load the file, chdir, exec;
+                                             <cmd> takes the NUL-ended arguments in --args-file
+                                             after its own, and the file is removed;
                                              each --read-only <dir> is read-only to <cmd>, mounts
                                              below it included, bar each --writable <path> (a
                                              directory or file inside one); each --cow <dir>
