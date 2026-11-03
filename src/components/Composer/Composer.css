@@ -355,7 +355,7 @@
 
 /* composer · the run rail
    One framed strip for everything that decides how the agent runs, read as a
-   chain: where › agent › account › model › effort. Groups part with a short
+   chain: agent › account › model › effort. Groups part with a short
    hairline and anchor their own menus; inside the agent group the pieces part
    with a `›`. Every piece is a control of its own — the frame is what makes
    the row read as one setting. Sized to the 28px insert actions beside it. */
@@ -469,17 +469,6 @@ button.run-piece:hover,
 }
 .run-effort {
   font-variant-numeric: tabular-nums;
-}
-/* The rail's small menu (where it runs): rows with a trailing check. */
-.run-menu {
-  min-width: 190px;
-  white-space: nowrap;
-}
-.run-menu .dd-item > svg:last-child {
-  color: var(--accent);
-}
-.run-menu .dd-item.active {
-  color: var(--fg-0);
 }
 
 /* composer · the effort scale

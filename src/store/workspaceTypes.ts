@@ -1,5 +1,5 @@
 // The host's answer to "where may a new agent run" for the draft on screen:
-// one read at a time, keyed by its inputs. The composer's chip draws it and
+// one read at a time, keyed by its inputs. The sandbox pill draws it and
 // `spawnFromDraft` sends what the chip declares from it, so both read the one
 // answer, and neither ever reads an answer for other inputs.
 

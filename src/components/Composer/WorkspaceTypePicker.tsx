@@ -5,34 +5,30 @@ import { DropdownItem, DropdownMenu, DropdownSection } from "@/components/ui/Dro
 import { Scrim } from "@/components/ui/Scrim";
 import { useAppStore } from "@/store";
 import { workspaceTypeOptionsFor, workspaceTypesFailedFor } from "@/store/workspaceTypes";
-import { RailGroup, RailPiece } from "./RunRail";
 import { workspaceTypeChip, workspaceTypeIcon, workspaceTypeLabel } from "./workspaceType";
 
-/** The composer's workspace type for a new agent draft. Existing sessions keep
- *  the engine stamped at their creation and get no control. */
-export interface WorkspaceTypeControl {
-  /** The repo the agent will be started in: the project's placement and its
-   *  native-app detection are read against it. */
+interface Props {
+  /** The repo the workspace will be created for: the project's placement and
+   *  its native-app detection are read against it. */
   repoPath: string;
-  /** The user's explicit pick; `undefined` until they make one. */
-  current?: WorkspaceKind;
-  /** Store a pick, or `undefined` to leave it to the host again. */
-  onPick: (kind: WorkspaceKind | undefined) => void;
-}
-
-interface Props extends WorkspaceTypeControl {
   /** The draft's provider: a VM runs only the providers boxes support. */
   provider: string;
+  /** The user's explicit pick; `undefined` until they make one. */
+  current?: WorkspaceKind;
+  /** Store a pick. */
+  onPick: (kind: WorkspaceKind) => void;
 }
 
-/** The run rail's first piece: where a new agent runs, as an icon with the
- *  menu of places behind it. The piece declares it: the spawn sends the kind
- *  shown here, read from the store's one answer for this repo and provider
+/** Where a new workspace runs, a Linux VM or the macOS sandbox: a pill in the
+ *  new-workspace row beside the project and the branch. It is a property of
+ *  the workspace, chosen once at its creation, so it lives with them and not
+ *  in the composer. The pill declares it: the spawn sends the kind shown
+ *  here, read from the store's one answer for this repo and provider
  *  (`store/workspaceTypes`), which is loaded on mount, when those inputs
  *  change, on every open and when a box setup event moves the default; an
  *  answer for other inputs is never shown. Nothing is drawn until the answer
  *  for these inputs lands; a failed read keeps the answer and the pick, and
- *  with no answer yet the piece offers a retry instead. */
+ *  with no answer yet the pill offers a retry instead. */
 export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Props) {
   const [open, setOpen] = useState(false);
   const options = useAppStore((s) => workspaceTypeOptionsFor(s, repoPath, provider));
@@ -55,33 +51,37 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
 
   if (chip.kind === "retry") {
     return (
-      <RailGroup>
-        <RailPiece glyph tip={chip.tip} onClick={load}>
-          <Icon name={chip.pick ? workspaceTypeIcon(chip.pick) : "refresh"} size={14} />
-        </RailPiece>
-      </RailGroup>
+      <button type="button" className="pill is-action tip" data-tip={chip.tip} onClick={load}>
+        <Icon name="refresh" />
+        <span className="v">{chip.pick ? workspaceTypeLabel(chip.pick) : "sandbox"}</span>
+      </button>
     );
   }
   const { shown } = chip;
 
   return (
-    <RailGroup>
-      <RailPiece
-        glyph
-        tip={chip.tip}
-        open={open}
+    <span style={{ position: "relative" }}>
+      <button
+        type="button"
+        className="pill is-action tip"
+        data-tip={chip.tip}
+        aria-haspopup="menu"
+        aria-expanded={open}
         onClick={() => {
           if (!open) load();
           setOpen((v) => !v);
         }}
       >
-        <Icon name={workspaceTypeIcon(shown.kind)} size={14} />
-      </RailPiece>
+        <Icon name={workspaceTypeIcon(shown.kind)} />
+        <span style={{ color: "var(--fg-2)" }}>in</span>
+        <span className="v">{workspaceTypeLabel(shown.kind)}</span>
+        <Icon name="chevD" size={9} />
+      </button>
 
       {open && (
         <>
           <Scrim onClose={() => setOpen(false)} />
-          <DropdownMenu className="run-menu" style={{ bottom: "calc(100% + 8px)", left: 0 }}>
+          <DropdownMenu className="ws-type-menu" style={{ bottom: "calc(100% + 6px)", left: 0 }}>
             <DropdownSection>Runs in</DropdownSection>
             {chip.options.map((o) => (
               <DropdownItem
@@ -93,8 +93,8 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
                 disabled={!o.available}
                 title={o.available ? undefined : (o.reason ?? undefined)}
                 onClick={() => {
-                  // Every click is kept, the default included: the agent
-                  // lands where the piece says even if the default moves
+                  // Every click is kept, the default included: the workspace
+                  // lands where the pill says even if the default moves
                   // before the draft is sent.
                   onPick(o.kind);
                   setOpen(false);
@@ -109,6 +109,6 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
           </DropdownMenu>
         </>
       )}
-    </RailGroup>
+    </span>
   );
 }

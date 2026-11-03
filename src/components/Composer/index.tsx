@@ -26,7 +26,6 @@ import { PrimaryControl, primaryState } from "./PrimaryControl";
 import { RunRail } from "./RunRail";
 import { UsageMeter } from "./UsageMeter";
 import { useComposerInput } from "./useComposerInput";
-import { type WorkspaceTypeControl, WorkspaceTypePicker } from "./WorkspaceTypePicker";
 
 /** System Settings › Privacy & Security › Microphone — where a denied grant is
  *  undone. The shell plugin's open scope admits this scheme (tauri.conf.json). */
@@ -92,10 +91,6 @@ interface Props {
   /** The provider account the agent runs (or will run) under, and how to move
    *  it. The picker offers it only when the provider has several accounts. */
   account?: AccountControl;
-  /** For a new agent only: where it runs, a Linux VM or the macOS sandbox, from
-   *  the host's list of workspace types. Omit to hide the control; existing
-   *  sessions keep the engine stamped at their creation. */
-  workspaceType?: WorkspaceTypeControl;
   /** Supplies candidate checkout-relative file paths for the "@" mention
    *  autocomplete. Called each time a mention opens, so the list stays fresh
    *  as the agent edits files. Omit it (e.g. new sessions with no checkout
@@ -210,7 +205,6 @@ export function Composer({
   projectDir,
   onChangeSelection,
   account,
-  workspaceType,
   mentionSource,
   listDir,
   listPrs,
@@ -476,12 +470,10 @@ export function Composer({
       foot={
         <>
           {/* The run rail: one framed chain of how the agent runs, read
-           *  Where › Agent › Account › Model › Effort. Each piece opens its
-           *  own menu; the frame is shared. */}
+           *  Agent › Account › Model › Effort. Each piece opens its own menu;
+           *  the frame is shared. Where the workspace runs is not the
+           *  agent's: the new-workspace row picks it (WorkspaceTypePicker). */}
           <RunRail>
-            {workspaceType && !existingSession && (
-              <WorkspaceTypePicker {...workspaceType} provider={provider} />
-            )}
             <ModelPicker
               provider={provider}
               model={model}
