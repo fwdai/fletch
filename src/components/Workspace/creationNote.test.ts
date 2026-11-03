@@ -10,44 +10,34 @@ const option = (over: Partial<WorkspaceTypeOption>): WorkspaceTypeOption => ({
   ...over,
 });
 
-const sentence = (note: ReturnType<typeof creationNote>, path = "~/.fletch/workspaces/bryce") =>
-  note.kind === "path" ? `${note.before}${path}${note.after}` : note.text;
+const line = (note: ReturnType<typeof creationNote>) =>
+  note.kind === "path" ? `${note.before}~/.fletch/workspaces/bryce` : note.text;
 
 describe("creation note", () => {
-  it("says a VM is created and nothing lands on this Mac", () => {
-    expect(sentence(creationNote(option({ kind: "box" }), 1))).toBe(
-      "A Linux VM will be created for this workspace, with the checkout on the VM's own disk at ~/.fletch/workspaces/bryce. Nothing is checked out on this Mac.",
+  it("names where the checkout is created", () => {
+    expect(line(creationNote(option({ kind: "box" }), 1))).toBe(
+      "A checkout will be created in a Linux VM at ~/.fletch/workspaces/bryce",
     );
-    expect(sentence(creationNote(option({ kind: "box" }), 3))).toContain(
-      "with checkouts of all 3 repositories on the VM's own disk at",
+    expect(line(creationNote(option({ kind: "host" }), 1))).toBe(
+      "A checkout will be created on this Mac at ~/.fletch/workspaces/bryce",
     );
-  });
-
-  it("says the macOS sandbox checks out on this Mac", () => {
-    expect(sentence(creationNote(option({ kind: "host" }), 1))).toBe(
-      "A checkout will be created on this Mac at ~/.fletch/workspaces/bryce, and the agent will run there in the macOS sandbox.",
-    );
-    expect(sentence(creationNote(option({ kind: "host" }), 2))).toMatch(
-      /^Checkouts of all 2 repositories will be created on this Mac at /,
+    expect(line(creationNote(option({ kind: "box" }), 3))).toBe(
+      "Checkouts of all 3 repositories will be created in a Linux VM at ~/.fletch/workspaces/bryce",
     );
   });
 
-  it("says why when the declared sandbox can't be had, with no path", () => {
+  it("says why when the declared sandbox can't be had", () => {
     expect(
-      creationNote(option({ kind: "box", available: false, reason: "No VM runtime." }), 1),
-    ).toEqual({ kind: "blocked", text: "The Linux VM isn't available: No VM runtime." });
-    expect(creationNote(option({ kind: "box", available: false }), 1)).toEqual({
-      kind: "blocked",
-      text: "The Linux VM isn't available.",
-    });
+      line(creationNote(option({ kind: "box", available: false, reason: "No VM runtime." }), 1)),
+    ).toBe("Linux VM isn't available: No VM runtime");
+    expect(line(creationNote(option({ kind: "box", available: false }), 1))).toBe(
+      "Linux VM isn't available",
+    );
   });
 
-  it("keeps to the general shape while the host decides", () => {
-    expect(sentence(creationNote(null, 1))).toBe(
+  it("keeps the general line while the host decides", () => {
+    expect(line(creationNote(null, 1))).toBe(
       "A checkout and sandbox will be created at ~/.fletch/workspaces/bryce",
-    );
-    expect(sentence(creationNote(null, 2))).toMatch(
-      /^Checkouts of all 2 repositories and a sandbox/,
     );
   });
 });

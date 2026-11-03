@@ -215,7 +215,6 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                     <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
                       ~/.fletch/workspaces/{draft.name}
                     </span>
-                    {note.after}
                   </>
                 )}
               </p>
