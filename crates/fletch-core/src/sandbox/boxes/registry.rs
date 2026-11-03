@@ -1113,11 +1113,20 @@ impl BoxRegistry {
         if others > 0 {
             return Err(refusal(others));
         }
-        let ready = setup::ready(|detail| {
-            self.set_phase(agent_id, BoxPhase::Preparing { detail });
-        })
-        .await?;
-        let _lease = self.tools_disk(&ready, agent_id, provider).await?;
+        // The wait reports what it waits on as `Preparing`, over a VM that
+        // keeps running meanwhile; whatever comes of it, the phase is settled
+        // after, so a refusal or a failed build never leaves a running VM
+        // reported as preparing.
+        let prepared = async {
+            let ready = setup::ready(|detail| {
+                self.set_phase(agent_id, BoxPhase::Preparing { detail });
+            })
+            .await?;
+            self.tools_disk(&ready, agent_id, provider).await
+        }
+        .await;
+        self.settle_phase_after_wait(agent_id, prepared.as_ref().err());
+        let _lease = prepared?;
         match self.take_running(agent_id, |entry| only_attached(entry, launch_id)) {
             Some(taken) => {
                 self.stop_taken(agent_id, StopReason::Reattach, taken)
@@ -1134,6 +1143,35 @@ impl BoxRegistry {
             }
         }
         self.ensure_running(identity).await
+    }
+
+    /// The phase of `agent_id`'s box once a wait that reported `Preparing`
+    /// over it is done ([`Self::reattach_with_tools`]): a VM still running is
+    /// `Running` again; with none, a failed wait reads `Failed` with why (as
+    /// a failed boot does) and a successful one `Stopped`. Only a `Preparing`
+    /// phase is touched — a stop or boot that moved it meanwhile stands.
+    fn settle_phase_after_wait(&self, agent_id: &str, failed: Option<&Error>) {
+        let settled = {
+            let mut entries = self.entries.lock();
+            let Some(entry) = entries.get_mut(agent_id) else {
+                return;
+            };
+            if !matches!(entry.phase, BoxPhase::Preparing { .. }) {
+                return;
+            }
+            entry.phase = match (&entry.running, failed) {
+                (Some(running), _) => BoxPhase::Running {
+                    since: running.since,
+                },
+                (None, Some(e)) => BoxPhase::Failed {
+                    reason: e.to_string(),
+                },
+                (None, None) => BoxPhase::Stopped,
+            };
+            entry.phase.clone()
+        };
+        tracing::debug!(agent_id, phase = ?settled, "phase settled after a tools wait");
+        self.emit_state(agent_id);
     }
 
     /// How many launches other than `launch_id` are attached to `agent_id`'s
@@ -3228,6 +3266,52 @@ mod tests {
             crate::exec::for_path(&tenant_root.join(".fletch-profile")),
             crate::exec::Executor::Local
         ));
+    }
+
+    /// A tools wait that reported `Preparing` leaves the box in a settled
+    /// phase whatever came of it: with no VM, `Failed` with the wait's error
+    /// or `Stopped`; a phase a stop or boot moved meanwhile is left alone.
+    /// (A VM still running goes back to `Running`; that needs a VM.)
+    #[tokio::test]
+    async fn a_tools_wait_settles_the_phase_it_reported() {
+        let registry = BoxRegistry::global();
+        let id = "settle-phase-test";
+        registry.register(BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from("/settle-phase-test/root"),
+            rpc_dir: PathBuf::from("/settle-phase-test/rpc"),
+            home: PathBuf::from("/settle-phase-test/home"),
+            shares: Vec::new(),
+        });
+        let preparing = || {
+            registry.set_phase(
+                id,
+                BoxPhase::Preparing {
+                    detail: "installing codex".into(),
+                },
+            )
+        };
+        preparing();
+        registry.settle_phase_after_wait(id, Some(&Error::Other("npm failed".into())));
+        assert_eq!(
+            registry.state(id),
+            BoxPhase::Failed {
+                reason: "npm failed".into()
+            }
+        );
+        preparing();
+        registry.settle_phase_after_wait(id, None);
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
+        registry.set_phase(id, BoxPhase::Starting);
+        registry.settle_phase_after_wait(id, None);
+        assert_eq!(
+            registry.state(id),
+            BoxPhase::Starting,
+            "a boot's phase stands"
+        );
+        registry.discard(id).await.unwrap();
     }
 
     /// A launch that needs a disk the running box lacks never restarts the
