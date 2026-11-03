@@ -1090,29 +1090,49 @@ impl BoxRegistry {
     /// would end their sessions (the coder's, when a reviewer tenant asks),
     /// and a background launch must not do that to a live one. The disk
     /// is aboard at the box's next start — its idle stop, or the user's.
+    /// Checked once up front, so a refusal costs no wait, and again when the
+    /// VM is taken for the stop, under the entries lock with the take
+    /// ([`Self::take_running`]): the waits in between can last minutes, and a
+    /// session attaching during them keeps its VM.
     pub async fn reattach_with_tools(
         &'static self,
         identity: &BoxIdentity,
         provider: &str,
         launch_id: &str,
     ) -> Result<Arc<RunningBox>> {
-        let others = self.others_attached(&identity.agent_id, launch_id);
-        if others > 0 {
+        let agent_id = &identity.agent_id;
+        let refusal = |others: usize| {
             let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
-            return Err(Error::SandboxUnavailable(format!(
+            Error::SandboxUnavailable(format!(
                 "{label} isn't in this VM yet (its CLI was installed after the VM started), and \
                  restarting the VM now would end the {others} session(s) running in it. It's \
                  picked up at the VM's next start: stop the VM, or try again once it is idle"
-            )));
+            ))
+        };
+        let others = self.others_attached(agent_id, launch_id);
+        if others > 0 {
+            return Err(refusal(others));
         }
         let ready = setup::ready(|detail| {
-            self.set_phase(&identity.agent_id, BoxPhase::Preparing { detail });
+            self.set_phase(agent_id, BoxPhase::Preparing { detail });
         })
         .await?;
-        let _lease = self
-            .tools_disk(&ready, &identity.agent_id, provider)
-            .await?;
-        self.stop(&identity.agent_id, StopReason::Reattach).await?;
+        let _lease = self.tools_disk(&ready, agent_id, provider).await?;
+        match self.take_running(agent_id, |entry| only_attached(entry, launch_id)) {
+            Some(taken) => {
+                self.stop_taken(agent_id, StopReason::Reattach, taken)
+                    .await?;
+            }
+            // Not taken: a session attached during the wait (refused), or the
+            // VM stopped meanwhile (nothing to stop; the boot below takes
+            // the disk).
+            None => {
+                let others = self.others_attached(agent_id, launch_id);
+                if others > 0 {
+                    return Err(refusal(others));
+                }
+            }
+        }
         self.ensure_running(identity).await
     }
 
@@ -2219,6 +2239,14 @@ fn on_egress(agent_id: &str, event: EgressEvent) {
 /// The ladder, rung by rung. The sysrq rung needs root in the guest, which the
 /// product image's `agent` user is not, so on it the rung is inert and only
 /// its wait is skipped; it stays for an image that allows it.
+/// Whether `launch_id` is the only launch attached to `entry`'s box (or none
+/// is): what a reattach restart may take the VM under
+/// ([`BoxRegistry::reattach_with_tools`]), decided under the entries lock
+/// with the take.
+fn only_attached(entry: &Entry, launch_id: &str) -> bool {
+    entry.attached.iter().all(|held| held == launch_id)
+}
+
 fn discarded_error(agent_id: &str) -> Error {
     Error::SandboxUnavailable(format!("the box for {agent_id} was discarded"))
 }
@@ -3239,7 +3267,26 @@ mod tests {
 
         registry.detach(id, "coder-launch");
         assert_eq!(registry.others_attached(id, "reviewer-launch"), 0);
+
+        // The take after the waits decides under the entries lock, by the
+        // same rule: a session that attached meanwhile keeps its VM, the
+        // asking launch's own hold does not count, and an idle box is free.
+        let may_take = |launch: &str| {
+            let entries = registry.entries.lock();
+            only_attached(entries.get(id).unwrap(), launch)
+        };
+        assert!(may_take("reviewer-launch"));
+        registry.attach(id, "late-launch");
+        assert!(!may_take("reviewer-launch"));
+        assert!(
+            registry
+                .take_running(id, |e| only_attached(e, "reviewer-launch"))
+                .is_none(),
+            "nothing is taken under the late session"
+        );
+        registry.detach(id, "late-launch");
         registry.detach(id, "reviewer-launch");
+        assert!(may_take("reviewer-launch"));
         registry.discard(id).await.unwrap();
     }
 
