@@ -135,21 +135,15 @@ export function ModelPicker({
   const restartOnChange =
     modelOnly && !!PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL]?.restartToApply;
   const agentName = activeCustom?.name ?? selected.label;
-  // Line one is the chain in full; line two, what a click does.
-  const tip = [
-    chainTip(
-      agentName,
-      activeCustom && providerLabel(activeCustom.base),
-      accountView?.label,
-      accountView?.spent && "limit reached",
-      modelName,
-    ),
-    modelOnly
-      ? restartOnChange
-        ? "Click to change the model — that restarts the agent (rebuilds cache)"
-        : "Click to change the model"
-      : "Click to change",
-  ].join("\n");
+  // One line: the chain in full, plus the restart warning where it applies.
+  const tip = chainTip(
+    agentName,
+    activeCustom && providerLabel(activeCustom.base),
+    accountView?.label,
+    accountView?.spent && "limit reached",
+    modelName,
+    restartOnChange && "changing restarts the agent",
+  );
 
   function pickModel(providerId: string, id: string | undefined) {
     // A model-only pick (existing session) keeps the session's custom-agent
