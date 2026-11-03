@@ -616,17 +616,19 @@ pub(crate) fn create_session_file(
 }
 
 /// How long [`create_session_file`] waits for the transcript tail to mirror a
-/// session it wrote in the guest. The tail polls every 100 ms; this covers a
-/// relay that is reconnecting.
-const RELAY_WAIT: Duration = Duration::from_secs(5);
+/// session it wrote in the guest. The tail polls every 100 ms; a relay that is
+/// reconnecting waits out a backoff of at most 5 s, then re-sends what the
+/// mirror lacks.
+const RELAY_WAIT: Duration = Duration::from_secs(15);
 
 /// Wait until `mirror` holds `bytes`, a session file just created in the
 /// guest, and is ready to read. The transcript tail copies it there on its
-/// own, emptying the file as it starts, so the tail is its one writer: this
-/// waits for it rather than writing beside it, which raced it into "file
-/// exists" and could read back a half-copied file. A tail that hasn't
-/// delivered it within `wait` (still reconnecting) is stood in for: the whole
-/// file is written here, which a later copy by the tail only repeats.
+/// own, emptying the file as it starts and appending in pieces, so the tail
+/// is its one writer: nothing is written beside it, which raced it into "file
+/// exists", could read back a half-copied file, and, from a tail partway
+/// through, would have its last pieces appended to a whole copy. A tail that
+/// hasn't delivered it within `wait` is an error; the file in the guest stays,
+/// and the tail still mirrors it when it can.
 fn await_mirror(mirror: &Path, bytes: &[u8], wait: Duration) -> Result<()> {
     let deadline = std::time::Instant::now() + wait;
     loop {
@@ -634,16 +636,13 @@ fn await_mirror(mirror: &Path, bytes: &[u8], wait: Duration) -> Result<()> {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
-            break;
+            return Err(Error::Other(format!(
+                "the Linux VM's transcript relay didn't bring the session back within {}s",
+                wait.as_secs()
+            )));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    tracing::info!(mirror = %mirror.display(), "the transcript tail didn't mirror a written session in time; writing it");
-    if let Some(dir) = mirror.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(mirror, bytes)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -653,7 +652,7 @@ mod tests {
     /// A session written in the guest is left for the tail to mirror, and read
     /// only once it has all of it: the tail empties the file as it starts and
     /// appends in pieces, and a writer beside it is what failed with "file
-    /// exists". A tail that never comes is stood in for.
+    /// exists". A tail that never comes is an error, nothing written.
     #[test]
     fn a_written_session_waits_for_the_tail_to_mirror_it() {
         let td = tempfile::tempdir().unwrap();
@@ -677,8 +676,36 @@ mod tests {
         tail.join().unwrap();
 
         let untailed = td.path().join("other").join("s.jsonl");
-        await_mirror(&untailed, &bytes, Duration::from_millis(100)).unwrap();
-        assert_eq!(std::fs::read(&untailed).unwrap(), bytes);
+        assert!(await_mirror(&untailed, &bytes, Duration::from_millis(100)).is_err());
+        assert!(!untailed.exists());
+    }
+
+    /// A tail still partway through when the wait ends is left to finish
+    /// alone: its last piece lands on what it wrote, never on a copy written
+    /// beside it, so the mirror ends as the guest's file, not longer.
+    #[test]
+    fn a_tail_partway_through_at_the_deadline_finishes_alone() {
+        let td = tempfile::tempdir().unwrap();
+        let mirror = td.path().join("s.jsonl");
+        let bytes = b"{\"a\":1}\n{\"b\":2}\n".to_vec();
+
+        let tail = {
+            let (mirror, bytes) = (mirror.clone(), bytes.clone());
+            std::thread::spawn(move || {
+                std::fs::write(&mirror, &bytes[..8]).unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+                use std::io::Write as _;
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&mirror)
+                    .unwrap()
+                    .write_all(&bytes[8..])
+                    .unwrap();
+            })
+        };
+        assert!(await_mirror(&mirror, &bytes, Duration::from_millis(100)).is_err());
+        tail.join().unwrap();
+        assert_eq!(std::fs::read(&mirror).unwrap(), bytes);
     }
 
     #[test]
