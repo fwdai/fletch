@@ -13,9 +13,11 @@ import { WorkspaceActions } from "./WorkspaceActions";
  *  the one action it takes here — and the move to the other sandbox. */
 export function WorkspacePopover({ agent, status }: { agent: AgentRecord; status: DotStatus }) {
   const boxState = useAppStore((s) => s.boxStates[agent.id]);
-  const moving = useAppStore((s) => s.movingWorkspace[agent.id] === true);
-  const isolation = isolationOf(agent.sandbox_engine);
-  const isBox = isolation.kind === "box";
+  const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
+  const stamped = isolationOf(agent.sandbox_engine);
+  // While it moves, everything here is about where it's going.
+  const isolation = shownIsolation(agent.sandbox_engine, movingTo);
+  const isBox = !movingTo && isolation.kind === "box";
   const failure = isBox && boxState?.phase === "failed" ? boxState.reason : null;
 
   return (
@@ -36,14 +38,15 @@ export function WorkspacePopover({ agent, status }: { agent: AgentRecord; status
 
       <div className="ws-pop-iso">
         <IsolationIcon
-          isolation={shownIsolation(agent.sandbox_engine, moving)}
+          isolation={isolation}
           boxPhase={boxState?.phase}
-          moving={moving}
+          moving={movingTo !== null}
           size={14}
         />
         <div className="ws-pop-iso-text">
           <div className="ws-pop-iso-title">
             {isolation.title}
+            {movingTo && <span className="ws-pop-iso-phase starting">Moving</span>}
             {isBox && boxState && (
               <span className={`ws-pop-iso-phase ${boxState.phase}`}>
                 {boxPhaseLabel(boxState)}
@@ -55,7 +58,9 @@ export function WorkspacePopover({ agent, status }: { agent: AgentRecord; status
         </div>
       </div>
 
-      {isolation.kind !== "container" && <WorkspaceActions agent={agent} onBox={isBox} />}
+      {stamped.kind !== "container" && (
+        <WorkspaceActions agent={agent} onBox={stamped.kind === "box"} />
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import type { BoxStateEvent } from "@/api";
+import type { BoxStateEvent, WorkspaceKind } from "@/api";
 import type { IconName } from "@/components/Icon";
 import { LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
 
@@ -50,10 +50,14 @@ export function isolationOf(engine: string | null | undefined): Isolation {
 }
 
 /** What the title bar shows for a workspace: where it runs, or, while it
- *  moves, where it's going. */
-export function shownIsolation(engine: string | null | undefined, moving: boolean): Isolation {
-  if (!moving) return isolationOf(engine);
-  return engine === "box" ? SEATBELT : BOX;
+ *  moves, where it's going (`movingTo`, as asked: the record is restamped
+ *  before the move is over). */
+export function shownIsolation(
+  engine: string | null | undefined,
+  movingTo: WorkspaceKind | null,
+): Isolation {
+  if (movingTo) return movingTo === "box" ? BOX : SEATBELT;
+  return isolationOf(engine);
 }
 
 /** The box's phase as the title bar spells it. */

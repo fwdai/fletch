@@ -94,7 +94,7 @@ describe("moveWorkspace", () => {
     const store = makeStore([agent("a")]);
 
     const moving = store.getState().moveWorkspace("a", "host");
-    expect(store.getState().movingWorkspace.a).toBe(true);
+    expect(store.getState().movingWorkspace.a).toBe("host");
     expect(await store.getState().moveWorkspace("a", "host")).toBeNull();
     const sending = store.getState().sendUserMessage("a", "carry on");
     await flush();
@@ -102,8 +102,23 @@ describe("moveWorkspace", () => {
 
     pending.resolve(agent("a", "sandbox-exec"));
     await Promise.all([moving, sending]);
-    expect(store.getState().movingWorkspace.a).toBe(false);
+    expect(store.getState().movingWorkspace.a).toBeNull();
     expect(moveWorkspace).toHaveBeenCalledTimes(1);
     expect(sendUserMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps where the move is going when the host restamps the record mid-move", async () => {
+    const pending = deferred<AgentRecord>();
+    moveWorkspace.mockReturnValue(pending.promise);
+    const store = makeStore([agent("a", "sandbox-exec")]);
+
+    const moving = store.getState().moveWorkspace("a", "box");
+    // The host restamps, then refreshes the workspace, before it answers.
+    store.setState({ workspace: { agents: [agent("a", "box")] } as never });
+    expect(store.getState().movingWorkspace.a).toBe("box");
+
+    pending.resolve(agent("a", "box"));
+    await moving;
+    expect(store.getState().movingWorkspace.a).toBeNull();
   });
 });

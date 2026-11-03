@@ -32,7 +32,7 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   // Only a box agent has an entry; its icon carries the phase.
   const boxPhase = useAppStore((s) => s.boxStates[agent.id]?.phase);
-  const moving = useAppStore((s) => s.movingWorkspace[agent.id] === true);
+  const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
   const { shortstats, gitState, prState, checks, prs } = useCapsuleData(agent.id);
   const { lanes } = useWorkspaceLanes(agent);
 
@@ -53,9 +53,9 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
           <span className="ws-ctx">
             {!hasProject && <StatusDot status={status} />}
             <IsolationIcon
-              isolation={shownIsolation(agent.sandbox_engine, moving)}
+              isolation={shownIsolation(agent.sandbox_engine, movingTo)}
               boxPhase={boxPhase}
-              moving={moving}
+              moving={movingTo !== null}
             />
             <span className="ws-agent-name">{agent.name}</span>
           </span>

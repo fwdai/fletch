@@ -157,9 +157,11 @@ export interface WorkspaceSlice {
   /** True while an account switch is in flight, so the header picker and the
    *  composer hint cannot both start one. */
   switchingAccount: Record<string, boolean>;
-  /** True while the agent's workspace is moving to the other sandbox: its
-   *  agent is down, and the workspace popover says so wherever it opens. */
-  movingWorkspace: Record<string, boolean>;
+  /** The sandbox the agent's workspace is moving to, while it moves (`null`
+   *  or absent otherwise): its agent is down, and the title bar shows where
+   *  it's going. Kept as asked, since the host restamps the record before
+   *  the move is over. */
+  movingWorkspace: Record<string, WorkspaceKind | null>;
   /** True while a folder grant (or revoke) waits for the agent's running turn
    *  to end before it relaunches with it — the composer offers to apply it
    *  now. Set from the grant's reply and `agent:folder-grants`; cleared once
@@ -581,7 +583,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   },
   moveWorkspace: async (id, kind) => {
     if (get().movingWorkspace[id]) return null;
-    set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: true } }));
+    set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: kind } }));
     try {
       const record = await configOps.run(id, () => api.moveWorkspace(id, kind));
       // Only the stamp: the host relaunches the agent, and its status events
@@ -592,7 +594,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       set({ lastError: String(e) });
       return null;
     } finally {
-      set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: false } }));
+      set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: null } }));
     }
   },
 
