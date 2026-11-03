@@ -27,7 +27,7 @@ use serde_json::Value;
 
 use crate::child_io;
 use crate::error::{Error, Result};
-use crate::sandbox::KillHandle;
+use crate::sandbox::{KillHandle, LauncherArgs};
 
 type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
 type SessionIdCb = Arc<dyn Fn(String) + Send + Sync>;
@@ -41,14 +41,15 @@ type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 pub type TurnPrep = crate::sandbox::TurnPrep;
 
 pub struct ExecSpawn {
-    /// Program to launch each turn. Normally `sandbox-exec`, with the real
-    /// agent binary carried in `prefix_args`; tests pass the agent directly.
+    /// Program to launch each turn. Normally the sandbox engine's launcher
+    /// (`sandbox-exec`, a box's ssh), with the real agent binary carried in
+    /// `launcher_args`; tests pass the agent directly.
     pub program: PathBuf,
-    /// Args inserted before the per-turn args on every spawn — e.g.
-    /// `["-p", <profile>, <agent_bin>]` when `program` is `sandbox-exec`. Empty
-    /// when the agent runs unwrapped. Self-contained: the sandbox engine embeds
-    /// no external resource here, so per-turn respawns need nothing kept alive.
-    pub prefix_args: Vec<String>,
+    /// How each turn's per-turn args reach its process: after a prefix (e.g.
+    /// `["-p", <profile>, <agent_bin>]` when `program` is `sandbox-exec`, empty
+    /// when the agent runs unwrapped), or staged by the engine before the
+    /// process starts (a box), which then gives the launcher's whole argv.
+    pub launcher_args: LauncherArgs,
     /// The agent's primary checkout — set as the child's cwd.
     pub cwd: PathBuf,
     /// Session id to resume, if one has been captured already.
@@ -75,7 +76,7 @@ pub struct ExecSpawn {
 
 pub struct ExecSession {
     program: PathBuf,
-    prefix_args: Vec<String>,
+    launcher_args: LauncherArgs,
     cwd: PathBuf,
     stdout_is_json: bool,
     env: Vec<(String, String)>,
@@ -185,7 +186,7 @@ impl ExecSession {
     {
         Self {
             program: spec.program,
-            prefix_args: spec.prefix_args,
+            launcher_args: spec.launcher_args,
             cwd: spec.cwd,
             stdout_is_json: spec.stdout_is_json,
             env: spec.env,
@@ -248,9 +249,11 @@ impl ExecSession {
             let id = self.session_id.lock();
             (self.build_args)(&prompt, id.as_deref(), effort, model)
         };
+        // After the prep: a box writes this turn's arguments into its guest
+        // here, and a failure fails the turn before anything launches.
+        let launcher_args = self.launcher_args.for_process(&invocation.args)?;
         let mut cmd = Command::new(&self.program);
-        cmd.args(&self.prefix_args);
-        cmd.args(&invocation.args);
+        cmd.args(&launcher_args);
         cmd.current_dir(&self.cwd);
         crate::bin_resolve::apply_login_shell_env(&mut cmd);
         // Portable-git PATH/env so the child's own `git` calls work on a
@@ -543,7 +546,7 @@ mod tests {
         let session = ExecSession::new(
             ExecSpawn {
                 program: script,
-                prefix_args: vec![],
+                launcher_args: LauncherArgs::Prefix(vec![]),
                 cwd: dir.to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,
@@ -597,7 +600,7 @@ mod tests {
         let session = ExecSession::new(
             ExecSpawn {
                 program: script,
-                prefix_args: vec![],
+                launcher_args: LauncherArgs::Prefix(vec![]),
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,
@@ -655,7 +658,7 @@ mod tests {
         let session = ExecSession::new(
             ExecSpawn {
                 program: script,
-                prefix_args: vec![],
+                launcher_args: LauncherArgs::Prefix(vec![]),
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,
@@ -715,7 +718,7 @@ mod tests {
         let session = ExecSession::new_with_invocation(
             ExecSpawn {
                 program: script,
-                prefix_args: vec![],
+                launcher_args: LauncherArgs::Prefix(vec![]),
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,
@@ -750,6 +753,86 @@ mod tests {
         );
     }
 
+    /// A staged launch (a box) hands every turn's args to the engine, which
+    /// puts them where the launch reads them before the turn's process starts,
+    /// and runs the launcher with what the engine gave back; a stage that
+    /// fails fails the turn before anything is spawned.
+    #[test]
+    fn a_staged_launch_stages_each_turns_args_before_its_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("launcher.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s' \"$*\" >> argv.txt; echo >> argv.txt\necho '{\"type\":\"turn.completed\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let staged: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        let fail = Arc::new(AtomicBool::new(false));
+        let stage: crate::sandbox::StageArgs = {
+            let (staged, fail) = (staged.clone(), fail.clone());
+            Arc::new(move |args: &[String]| {
+                if fail.load(Ordering::SeqCst) {
+                    return Err(Error::Other("the box is gone".into()));
+                }
+                let mut staged = staged.lock();
+                staged.push(args.to_vec());
+                Ok(vec!["--args-file".into(), format!("turn-{}", staged.len())])
+            })
+        };
+        let (xtx, xrx) = mpsc::channel();
+        let session = ExecSession::new_with_invocation(
+            ExecSpawn {
+                program: script,
+                launcher_args: LauncherArgs::Staged(stage),
+                cwd: dir.path().to_path_buf(),
+                session_id: None,
+                stdout_is_json: true,
+                env: vec![],
+                env_remove: Vec::new(),
+                kill_plan: KillHandle::ProcessGroup,
+                before_turn: None,
+                after_exit: None,
+            },
+            stdin_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: |_| {},
+                on_session_id: |_| {},
+                on_exit: move |exit| {
+                    let _ = xtx.send(exit);
+                },
+            },
+        );
+
+        for _ in 0..2 {
+            session.send_user_message("hi", &[], None, None).unwrap();
+            assert!(xrx.recv_timeout(Duration::from_secs(5)).unwrap().success);
+        }
+        assert_eq!(*staged.lock(), vec![vec!["--json".to_string()]; 2]);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("argv.txt")).unwrap(),
+            "--args-file turn-1\n--args-file turn-2\n",
+            "the launcher got the engine's argv, never the agent's own"
+        );
+
+        fail.store(true, Ordering::SeqCst);
+        let err = session
+            .send_user_message("hi", &[], None, None)
+            .unwrap_err();
+        assert!(err.to_string().contains("the box is gone"), "{err}");
+        assert!(xrx.recv_timeout(Duration::from_millis(300)).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("argv.txt"))
+                .unwrap()
+                .lines()
+                .count(),
+            2,
+            "nothing ran for the failed turn"
+        );
+    }
+
     #[test]
     fn resume_turn_passes_the_session_id_via_the_args_builder() {
         let dir = tempfile::tempdir().unwrap();
@@ -765,7 +848,7 @@ mod tests {
         let session = ExecSession::new(
             ExecSpawn {
                 program: script,
-                prefix_args: vec![],
+                launcher_args: LauncherArgs::Prefix(vec![]),
                 cwd: dir.path().to_path_buf(),
                 session_id: Some("prev-thread".into()),
                 stdout_is_json: true,
@@ -807,7 +890,7 @@ mod tests {
         let session = ExecSession::new(
             ExecSpawn {
                 program: script,
-                prefix_args: vec![],
+                launcher_args: LauncherArgs::Prefix(vec![]),
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,
@@ -882,7 +965,7 @@ mod tests {
         let session = ExecSession::new(
             ExecSpawn {
                 program: script,
-                prefix_args: vec![],
+                launcher_args: LauncherArgs::Prefix(vec![]),
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,
@@ -937,7 +1020,7 @@ mod tests {
         let session = ExecSession::new(
             ExecSpawn {
                 program: script,
-                prefix_args: vec![],
+                launcher_args: LauncherArgs::Prefix(vec![]),
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,

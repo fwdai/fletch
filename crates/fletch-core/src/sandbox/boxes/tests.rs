@@ -865,43 +865,41 @@ fn a_confined_launch_renders_the_view_it_was_given() {
     );
 }
 
-/// An agent's launcher writes its args file and runs the launch over the
-/// box's shared connection, the launch with a tty only for the PTY view. A
-/// launch command too long for that connection (a view of very many paths)
-/// takes one of its own; the write's command is short whatever the launch.
+/// An agent's launcher is ssh running the launch's command, which names the
+/// process's args file: over the box's shared connection, with a tty only for
+/// the PTY view. A command too long for that connection (a view of very many
+/// paths) takes one of its own.
 #[test]
 fn an_agent_launch_shares_the_box_connection_unless_its_command_is_long() {
     let launch_id = "8a0c4f2e-1d3b-4c5a-9e7f-0123456789ab";
     let config = Path::new("/b/ssh_config");
-    let stem = super::launch_files_stem(launch_id);
-    assert_eq!(stem, Path::new("/data/run").join(launch_id));
+    let args_file = super::launch_files::stem(launch_id).with_extension("7.args");
+    assert_eq!(
+        args_file,
+        Path::new(&format!("/data/run/{launch_id}.7.args"))
+    );
     let tree = Path::new(CODER_ROOT).join("repo");
-    let env_file = super::env_file_path(launch_id);
+    let env_file = super::launch_files::env_file(launch_id);
     let claude = "/opt/fletch/tools/claude/bin/claude";
     let command = super::agent_remote_command(&tree, &env_file, None, claude);
-    // `-c <script> $0 <transport> <put> <head> <tail> <stem>`, then the
-    // write's four fixed transport arguments, then the launch's.
-    let fixed = |args: &[String]| (args[8..12].to_vec(), args[12..].to_vec());
-    let launcher = super::agent_launcher(config, false, &stem, &command);
-    assert_eq!(launcher[5], command.head.join(" "));
-    assert_eq!(launcher[6], command.tail.join(" "));
-    assert_eq!(launcher[7], stem.to_string_lossy());
-    let (put, run) = fixed(&launcher);
-    assert_eq!(put, ["-F", "/b/ssh_config", "-T", "box"]);
-    assert_eq!(run, ["-F", "/b/ssh_config", "-T", "box"]);
-    let (put, run) = fixed(&super::agent_launcher(config, true, &stem, &command));
-    assert_eq!(put, ["-F", "/b/ssh_config", "-T", "box"]);
-    assert_eq!(run, ["-F", "/b/ssh_config", "-tt", "box"]);
-
-    // The bound holds for the longest name the launcher can give its file.
-    let longest = format!(
-        "{} '{}.9999999.32767.args' {}",
-        command.head.join(" "),
-        stem.display(),
-        command.tail.join(" ")
+    let remote = command.with_args_file(&args_file);
+    assert_eq!(
+        remote,
+        format!(
+            "/opt/fletch/bin/fletch-guest exec --args-file {} {}",
+            args_file.display(),
+            command.tail.join(" ")
+        )
     );
-    assert!(command.max_len(&stem) >= longest.len());
-    assert!(command.max_len(&stem) < super::executor::SHARED_CONNECTION_COMMAND_MAX);
+    assert!(remote.len() < super::executor::SHARED_CONNECTION_COMMAND_MAX);
+    assert_eq!(
+        super::agent_launcher(config, false, &args_file, &command),
+        ["-F", "/b/ssh_config", "-T", "box", remote.as_str()]
+    );
+    assert_eq!(
+        super::agent_launcher(config, true, &args_file, &command),
+        ["-F", "/b/ssh_config", "-tt", "box", remote.as_str()]
+    );
 
     let view = super::ConfinedView {
         read_only: vec![PathBuf::from(HOME)],
@@ -911,41 +909,53 @@ fn an_agent_launch_shares_the_box_connection_unless_its_command_is_long() {
         ..Default::default()
     };
     let long = super::agent_remote_command(&tree, &env_file, Some(&view), claude);
-    assert!(long.max_len(&stem) > super::executor::SHARED_CONNECTION_COMMAND_MAX);
-    let (put, run) = fixed(&super::agent_launcher(config, false, &stem, &long));
-    assert_eq!(put, ["-F", "/b/ssh_config", "-T", "box"]);
-    assert_eq!(run, ["-F", "/b/ssh_config", "-S", "none", "-T", "box"]);
+    let launcher = super::agent_launcher(config, false, &args_file, &long);
+    assert!(launcher.last().unwrap().len() > super::executor::SHARED_CONNECTION_COMMAND_MAX);
+    assert_eq!(&launcher[..5], ["-F", "/b/ssh_config", "-S", "none", "-T"]);
 }
 
-/// A launch's kill removes its env file and every args file left behind, and
-/// nothing of another launch's; with nothing left, it is no error.
+/// The launch command reaches the guest shell as the words it was built from,
+/// the args file's path one of them however it is spelled: a fake guest agent
+/// stands in for `fletch-guest` and prints the words it was given.
 #[test]
-fn a_launchs_kill_removes_its_files_and_no_others() {
+fn an_agent_launchs_command_reaches_the_guest_shell_word_for_word() {
+    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    let stem = dir.path().join("8a0c4f2e-1d3b-4c5a-9e7f-0123456789ab");
-    let other = dir.path().join("1b2c3d4e-5f60-4718-8a9b-abcdef012345");
-    let named = |stem: &Path, suffixes: &[&str]| -> Vec<PathBuf> {
-        suffixes
-            .iter()
-            .map(|s| PathBuf::from(format!("{}{s}", stem.display())))
-            .collect()
+    let guest = dir.path().join("guest exec");
+    std::fs::write(&guest, "#!/bin/sh\nprintf '%s\\0' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&guest, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let quote = fletch_box::channel::shell_quote;
+    let command = super::AgentCommand {
+        head: vec![quote(&guest.to_string_lossy())],
+        tail: ["--cwd", "/w s/it's", "--", "claude"].map(quote).to_vec(),
     };
-    let mine = named(&stem, &[".env", ".123.4567.args", ".9.1.args"]);
-    let theirs = named(&other, &[".env", ".123.4567.args"]);
-    for file in mine.iter().chain(&theirs) {
-        std::fs::write(file, b"").unwrap();
-    }
-    let remove = || {
-        std::process::Command::new("/bin/sh")
-            .args(["-c", super::REMOVE_LAUNCH_FILES, "sh"])
-            .arg(&stem)
-            .status()
-            .unwrap()
-    };
-    assert!(remove().success());
-    assert!(mine.iter().all(|f| !f.exists()), "{mine:?}");
-    assert!(theirs.iter().all(|f| f.exists()), "{theirs:?}");
-    assert!(remove().success());
+    let args_file = Path::new("/data/run/a b's.1.args");
+    let out = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command.with_args_file(args_file))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let words: Vec<String> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|w| !w.is_empty())
+        .map(|w| String::from_utf8_lossy(w).into_owned())
+        .collect();
+    assert_eq!(
+        words,
+        [
+            "/data/run/a b's.1.args",
+            "--cwd",
+            "/w s/it's",
+            "--",
+            "claude"
+        ]
+    );
 }
 
 /// What the host does in the guest for a launch, its seed and its credential
