@@ -228,43 +228,67 @@ fn adopt_into(
 /// Carry the attachments a workspace adopted from `from_workspace`, its dir on
 /// the side it leaves, to `to_workspace`, its dir on the side it moves to (a
 /// move between sandboxes, `supervisor::sandbox_move`), each at the same path
-/// below: the conversation names them by path. Placed as [`adopt`] places
-/// them: written into the guest when `to_workspace` is a box's tree, and
-/// always copied on the host, the copy the transcript shows. `from_workspace`
-/// is a host dir either way, since a box workspace keeps its host copies at
-/// the same paths. Nothing to do when none were adopted.
+/// below: the conversation names them by path. Read where the workspace
+/// keeps them: in the guest for a box, which holds every one (adoption writes
+/// it there first, the host copy only best-effort). Placed as [`adopt`]
+/// places them: written into the guest when `to_workspace` is a box's tree,
+/// and always copied on the host, the copy the transcript shows. Nothing to
+/// do when none were adopted.
 ///
-/// Blocking: a stopped box is booted to receive the files.
+/// Blocking: a stopped box is booted to give or receive the files.
 pub fn carry(from_workspace: &Path, to_workspace: &Path) -> Result<()> {
+    let from = from_workspace.join(WORKSPACE_ATTACHMENTS_DIR);
     let to = to_workspace.join(WORKSPACE_ATTACHMENTS_DIR);
-    let exec = crate::exec::for_path(&to);
-    carry_into(&from_workspace.join(WORKSPACE_ATTACHMENTS_DIR), &to, &exec)
+    carry_into(
+        &from,
+        &crate::exec::for_path(&from),
+        &to,
+        &crate::exec::for_path(&to),
+    )
 }
 
-/// Core of [`carry`], with the workspace's executor passed explicitly so it's
-/// testable without a box. Regular files and dirs only: a link is not an
-/// attachment, and following one could copy whatever it names.
-fn carry_into(from: &Path, to: &Path, exec: &Executor) -> Result<()> {
-    let entries = match std::fs::read_dir(from) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e.into()),
-    };
-    for entry in entries {
-        let entry = entry?;
-        let (src, dest) = (entry.path(), to.join(entry.file_name()));
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            carry_into(&src, &dest, exec)?;
-        } else if kind.is_file() {
-            if matches!(exec, Executor::Remote(_)) {
-                exec.write(&dest, &std::fs::read(&src)?)?;
-            }
-            std::fs::create_dir_all(to)?;
-            std::fs::copy(&src, &dest)?;
+/// Core of [`carry`], with each side's executor passed explicitly so it's
+/// testable without a box.
+fn carry_into(from: &Path, source: &Executor, to: &Path, dest: &Executor) -> Result<()> {
+    if !source.exists(from)? {
+        return Ok(());
+    }
+    for entry in carried_entries(from, source)? {
+        let (src, out) = (from.join(&entry.name), to.join(&entry.name));
+        if entry.is_dir {
+            carry_into(&src, source, &out, dest)?;
+            continue;
         }
+        let bytes = source.read(&src)?;
+        if matches!(dest, Executor::Remote(_)) {
+            dest.write(&out, &bytes)?;
+        }
+        std::fs::create_dir_all(to)?;
+        std::fs::write(&out, &bytes)?;
     }
     Ok(())
+}
+
+/// The entries of `dir` a move carries. On the host, regular files and dirs
+/// only: the agent can write here, and a link it planted would have the host
+/// copy whatever it names. In a guest, what the guest lists, read there.
+fn carried_entries(dir: &Path, exec: &Executor) -> Result<Vec<crate::exec::DirEntry>> {
+    if matches!(exec, Executor::Remote(_)) {
+        return Ok(exec.list(dir)?);
+    }
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() || kind.is_file() {
+            entries.push(crate::exec::DirEntry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                is_dir: kind.is_dir(),
+                len: 0,
+            });
+        }
+    }
+    Ok(entries)
 }
 
 /// The canonical form of `path` when it resolves to a **regular file at the
@@ -347,19 +371,24 @@ mod tests {
     }
 
     /// A box's tree as the host sees it through `exec`: records every write,
-    /// or refuses them all.
+    /// or refuses them all, and serves the files the guest holds.
     #[derive(Debug, Default)]
     struct FakeBox {
         writes: Mutex<Vec<(PathBuf, Vec<u8>)>>,
         unreachable: bool,
+        files: Vec<(PathBuf, Vec<u8>)>,
     }
 
     impl RemoteExecutor for FakeBox {
         fn command(&self, _: &str, _: &Path, _: &[(String, String)]) -> std::process::Command {
             unreachable!("adoption runs no command in the box")
         }
-        fn read(&self, _: &Path) -> io::Result<Vec<u8>> {
-            unreachable!("adoption reads nothing from the box")
+        fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+            self.files
+                .iter()
+                .find(|(p, _)| p == path)
+                .map(|(_, bytes)| bytes.clone())
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
         }
         fn write(&self, path: &Path, bytes: &[u8], _: u32) -> io::Result<()> {
             if self.unreachable {
@@ -370,11 +399,32 @@ mod tests {
                 .push((path.to_path_buf(), bytes.to_vec()));
             Ok(())
         }
-        fn stat(&self, _: &Path) -> io::Result<Option<Stat>> {
-            Ok(None)
+        fn stat(&self, path: &Path) -> io::Result<Option<Stat>> {
+            let file = self.files.iter().any(|(p, _)| p == path);
+            let dir = self.files.iter().any(|(p, _)| p != path && p.starts_with(path));
+            Ok((file || dir).then_some(Stat {
+                is_dir: dir,
+                is_file: file,
+                len: 0,
+            }))
         }
-        fn list(&self, _: &Path) -> io::Result<Vec<DirEntry>> {
-            Ok(Vec::new())
+        fn list(&self, dir: &Path) -> io::Result<Vec<DirEntry>> {
+            let mut entries: Vec<DirEntry> = Vec::new();
+            for (path, _) in &self.files {
+                let Ok(rel) = path.strip_prefix(dir) else {
+                    continue;
+                };
+                let mut parts = rel.components();
+                let Some(first) = parts.next() else {
+                    continue;
+                };
+                let name = first.as_os_str().to_string_lossy().into_owned();
+                if !entries.iter().any(|e| e.name == name) {
+                    let is_dir = parts.next().is_some();
+                    entries.push(DirEntry { name, is_dir, len: 0 });
+                }
+            }
+            Ok(entries)
         }
         fn create_dir_all(&self, _: &Path) -> io::Result<()> {
             Ok(())
@@ -431,21 +481,58 @@ mod tests {
         let shot = Path::new("abc").join("shot.png");
         std::fs::create_dir_all(from.join("abc")).unwrap();
         std::fs::write(from.join(&shot), b"pixels").unwrap();
+        let local = Executor::Local;
 
-        carry_into(&from, &to, &Executor::Local).unwrap();
+        carry_into(&from, &local, &to, &local).unwrap();
         assert_eq!(std::fs::read(to.join(&shot)).unwrap(), b"pixels");
         assert_eq!(std::fs::read(from.join(&shot)).unwrap(), b"pixels");
 
         let boxed = td.path().join("boxed");
         let guest = Arc::new(FakeBox::default());
-        carry_into(&from, &boxed, &Executor::Remote(guest.clone())).unwrap();
+        carry_into(&from, &local, &boxed, &Executor::Remote(guest.clone())).unwrap();
         assert_eq!(
             *guest.writes.lock(),
             vec![(boxed.join(&shot), b"pixels".to_vec())]
         );
         assert_eq!(std::fs::read(boxed.join(&shot)).unwrap(), b"pixels");
 
-        carry_into(&td.path().join("none"), &to, &Executor::Local).unwrap();
+        carry_into(&td.path().join("none"), &local, &to, &local).unwrap();
+    }
+
+    /// Out of a box, the guest is read: it holds every attachment, while the
+    /// host copy adoption keeps is best-effort and may be missing.
+    #[test]
+    fn a_box_workspace_carries_attachments_only_its_guest_holds() {
+        let td = tempfile::tempdir().unwrap();
+        let (from, to) = (td.path().join("box-ws"), td.path().join("mac-ws"));
+        let shot = from.join("abc").join("shot.png");
+        let guest = Arc::new(FakeBox {
+            files: vec![(shot, b"pixels".to_vec())],
+            ..FakeBox::default()
+        });
+
+        carry_into(&from, &Executor::Remote(guest), &to, &Executor::Local).unwrap();
+
+        assert_eq!(
+            std::fs::read(to.join("abc").join("shot.png")).unwrap(),
+            b"pixels"
+        );
+    }
+
+    /// A link in the host's attachments dir is not an attachment: the move
+    /// never follows one to copy what it names.
+    #[test]
+    fn a_link_among_the_attachments_is_left_behind() {
+        let td = tempfile::tempdir().unwrap();
+        let (from, to) = (td.path().join("from"), td.path().join("to"));
+        std::fs::create_dir_all(&from).unwrap();
+        let secret = td.path().join("secret.txt");
+        std::fs::write(&secret, b"key").unwrap();
+        std::os::unix::fs::symlink(&secret, from.join("link.txt")).unwrap();
+
+        carry_into(&from, &Executor::Local, &to, &Executor::Local).unwrap();
+
+        assert!(!to.join("link.txt").exists());
     }
 
     /// A box that cannot take the files fails the send, naming the file, and
