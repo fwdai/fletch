@@ -537,6 +537,10 @@
   gap: 6px;
   margin-top: 11px;
 }
+/* nothing to offer (a host that can't run a VM, a remote one) */
+.ws-pop-actions:empty {
+  display: none;
+}
 .ws-act {
   flex: 1;
   display: inline-flex;

@@ -2,12 +2,11 @@ import type { AgentRecord } from "@/api";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { providerChip } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { BoxActions } from "./BoxActions";
 import { type DotStatus, STATUS_LABEL } from "./derive";
 import { IsolationIcon } from "./IsolationIcon";
 import { boxPhaseLabel, isolationOf, shownIsolation } from "./isolation";
-import { MoveSandbox } from "./MoveSandbox";
 import { StatusDot } from "./StatusDot";
+import { WorkspaceActions } from "./WorkspaceActions";
 
 /** The workspace segment's hover/focus popover: who + what, then where it
  *  runs — the isolation in two lines at most, for a box its live phase and
@@ -56,8 +55,7 @@ export function WorkspacePopover({ agent, status }: { agent: AgentRecord; status
         </div>
       </div>
 
-      {isBox && <BoxActions agent={agent} />}
-      {isolation.kind !== "container" && <MoveSandbox agent={agent} onBox={isBox} />}
+      {isolation.kind !== "container" && <WorkspaceActions agent={agent} onBox={isBox} />}
     </div>
   );
 }
