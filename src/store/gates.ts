@@ -201,6 +201,13 @@ export const GATES = {
     label: "Rewinding",
     reason: "Rewinding isn't available on a remote host yet.",
   },
+  /** Moving a workspace between the Linux VM and the macOS sandbox. Not on
+   *  the wire yet, like rewinding. */
+  moveSandbox: {
+    op: "move_workspace",
+    label: "Moving a workspace",
+    reason: "Moving a workspace isn't available on a remote host yet.",
+  },
   /** Moving an agent onto another provider account. The picker lists the
    *  host's accounts, so the gate stays closed until the list is on the wire
    *  too; otherwise a remote agent would be offered this Mac's accounts. */

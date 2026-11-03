@@ -18,6 +18,7 @@ pub mod pr_watch;
 mod rewind;
 mod rpc_watch;
 pub(crate) mod run;
+mod sandbox_move;
 mod session_switch;
 mod session_sync;
 mod shell;
@@ -33,6 +34,7 @@ pub use live_turn::LiveTurnSnapshot;
 pub use pr_set::sync_pr_set_links;
 pub use rewind::{RewindOutcome, RewindScope};
 pub use run::ProjectRunConfig;
+pub use sandbox_move::settle_interrupted_moves;
 pub use session_sync::{
     bind_pr_snapshot, pr_map_key, resolve_all_pr_status, resolve_pr_state, AgentPrStatus,
     Discovery, PrSetEntry,

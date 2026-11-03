@@ -439,13 +439,6 @@
   line-height: 1.45;
   color: var(--fg-2);
 }
-/* where the Linux VM stands, under a seatbelt workspace: about the next
-   workspace, not this one, so a step quieter than the hint */
-.ws-pop-iso-note {
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--fg-3);
-}
 
 /* the checkout's lanes — the Git panel's own rows (`LaneRow`), flush with the
    popover's padding rather than the panel's, and never pickable here */
@@ -560,9 +553,19 @@
     border-color 0.12s,
     color 0.12s;
 }
-.ws-act:hover {
+.ws-act:hover:not(:disabled) {
   background: var(--hover);
   color: var(--fg-0);
+}
+.ws-act:disabled {
+  color: var(--fg-3);
+}
+/* the move's confirmation: its one line, then cancel and move */
+.ws-pop-move {
+  margin-top: 11px;
+}
+.ws-pop-move .ws-pop-actions {
+  margin-top: 8px;
 }
 .ws-act.primary {
   flex: 1;

@@ -1,21 +1,17 @@
 import type { AgentRecord } from "@/api";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { boxSetup } from "@/components/SettingsScreen/Sandbox/boxSetup";
 import { providerChip } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { effectivePlacement, PLACEMENT_KEY } from "@/util/placement";
-import { useProjectSettings } from "@/util/useProjectSettings";
 import { BoxActions } from "./BoxActions";
 import { type DotStatus, STATUS_LABEL } from "./derive";
 import { IsolationIcon } from "./IsolationIcon";
-import { boxPhaseLabel, isolationOf, seatbeltNote } from "./isolation";
+import { boxPhaseLabel, isolationOf } from "./isolation";
+import { MoveSandbox } from "./MoveSandbox";
 import { StatusDot } from "./StatusDot";
 
 /** The workspace segment's hover/focus popover: who + what, then where it
- *  runs — the isolation, and for a box its live phase and the one action it
- *  takes here; for a seatbelt workspace, where the Linux VM stands, so a
- *  workspace that started before the download reads as early rather than
- *  as the rule. */
+ *  runs — the isolation in two lines at most, for a box its live phase and
+ *  the one action it takes here — and the move to the other sandbox. */
 export function WorkspacePopover({ agent, status }: { agent: AgentRecord; status: DotStatus }) {
   const boxState = useAppStore((s) => s.boxStates[agent.id]);
   const isolation = isolationOf(agent.sandbox_engine);
@@ -51,29 +47,11 @@ export function WorkspacePopover({ agent, status }: { agent: AgentRecord; status
           </div>
           {failure && <div className="ws-pop-iso-fail">{failure}</div>}
           <div className="ws-pop-iso-hint">{isolation.hint}</div>
-          {isolation.kind === "seatbelt" && <VmNote repoPath={agent.repos[0]?.repo_path} />}
         </div>
       </div>
 
       {isBox && <BoxActions agent={agent} />}
+      {isolation.kind !== "container" && <MoveSandbox agent={agent} onBox={isBox} />}
     </div>
   );
-}
-
-/** Where the Linux VM stands, under a seatbelt workspace. The project's
- *  placement is the effective one — the stored choice over the host's
- *  native-app detection, which rides the workspace snapshot — so the line
- *  never promises a VM to a project the spawn path keeps on this Mac. */
-function VmNote({ repoPath }: { repoPath: string | undefined }) {
-  const probe = useAppStore((s) => s.boxProbe);
-  const image = useAppStore((s) => s.boxImage);
-  const tools = useAppStore((s) => s.boxTools);
-  const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
-  const { settings } = useProjectSettings(project?.project_id);
-  const note = seatbeltNote(
-    !!probe?.runtime_ok,
-    boxSetup(probe, image, tools),
-    effectivePlacement(settings?.[PLACEMENT_KEY], project),
-  );
-  return note ? <div className="ws-pop-iso-note">{note}</div> : null;
 }

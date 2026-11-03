@@ -650,6 +650,20 @@ impl WorkspaceManager {
     /// Restamp the workspace's provider account (`None` for the default).
     /// Every later launch reads it back, and so do usage attribution and the
     /// account-removal gate (see `Supervisor::switch_account`).
+    /// Restamp an agent with the engine its workspace now runs under, in its
+    /// `sandbox_engine` spelling: the commit point of a move between
+    /// sandboxes. The Run panel's setup is cleared with it, as on archive: the
+    /// checkouts on the other side have none of what setup installed.
+    pub fn update_agent_engine(&self, id: &str, engine: &str) -> Result<()> {
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE workspaces SET sandbox_engine = ?1, setup_completed_at = NULL WHERE id = ?2",
+            rusqlite::params![engine, id],
+        )?;
+        Ok(())
+    }
+
     pub fn update_agent_account(&self, id: &str, account: Option<&str>) -> Result<()> {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;

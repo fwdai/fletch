@@ -13,6 +13,7 @@ import {
   type SpawnStage,
   type UserTurn,
   type Workspace,
+  type WorkspaceKind,
 } from "@/api";
 import { discoverCommands } from "@/data/slashCommands";
 import {
@@ -156,6 +157,9 @@ export interface WorkspaceSlice {
   /** True while an account switch is in flight, so the header picker and the
    *  composer hint cannot both start one. */
   switchingAccount: Record<string, boolean>;
+  /** True while the agent's workspace is moving to the other sandbox: its
+   *  agent is down, and the workspace popover says so wherever it opens. */
+  movingWorkspace: Record<string, boolean>;
   /** True while a folder grant (or revoke) waits for the agent's running turn
    *  to end before it relaunches with it — the composer offers to apply it
    *  now. Set from the grant's reply and `agent:folder-grants`; cleared once
@@ -236,6 +240,11 @@ export interface WorkspaceSlice {
    *  stamp; on refusal sets `lastError` and resolves to null, as it does when
    *  a switch for the agent is already in flight. */
   switchAgentAccount: (id: string, account: string) => Promise<AgentRecord | null>;
+  /** Move the agent's workspace to the sandbox `kind` names, keeping its code,
+   *  branch and conversation. Queued with the config changes, so a send right
+   *  after it reaches the moved agent. On refusal sets `lastError` and
+   *  resolves to null, as it does when a move is already in flight. */
+  moveWorkspace: (id: string, kind: WorkspaceKind) => Promise<AgentRecord | null>;
   /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
    *  Looks up the held control-protocol request for `toolUseId` and delivers
    *  `updatedInput` (the tool's input with the user's `answers` merged in) as
@@ -326,6 +335,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   spawnStage: {},
   switchInFlight: {},
   switchingAccount: {},
+  movingWorkspace: {},
   folderChangeWaiting: {},
   unseenResults: {},
   syncHealth: {},
@@ -567,6 +577,22 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       return null;
     } finally {
       set((state) => ({ switchingAccount: { ...state.switchingAccount, [id]: false } }));
+    }
+  },
+  moveWorkspace: async (id, kind) => {
+    if (get().movingWorkspace[id]) return null;
+    set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: true } }));
+    try {
+      const record = await configOps.run(id, () => api.moveWorkspace(id, kind));
+      // Only the stamp: the host relaunches the agent, and its status events
+      // are newer than the record's.
+      set((state) => patchAgentRecord(state, id, { sandbox_engine: record.sandbox_engine }));
+      return record;
+    } catch (e) {
+      set({ lastError: String(e) });
+      return null;
+    } finally {
+      set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: false } }));
     }
   },
 

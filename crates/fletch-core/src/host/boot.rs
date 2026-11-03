@@ -735,6 +735,11 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     sandbox::boxes::settings::seed(&db.lock());
     sandbox::boxes::set_event_sink(sink.clone());
     sandbox::boxes::startup(&workspace);
+    // A move between sandboxes the last run didn't finish: each workspace's
+    // stamp says which side is it, and the other is cleared.
+    crate::host::spawn(crate::supervisor::settle_interrupted_moves(
+        workspace.clone(),
+    ));
     // And the image, downloaded on its own so boxes become the engine
     // without anyone asking for them. The desktop waits for onboarding to
     // have been completed once (its welcome carries the data-sharing

@@ -300,6 +300,26 @@ impl Supervisor {
             }
         }
     }
+
+    /// Continue `record`'s conversation in a new session through `lineage`,
+    /// natively: `history` is written as that session's own transcript where
+    /// `record`'s engine keeps it, its agent told `context`, then launched.
+    /// What a move between sandboxes does once the code is across; the same
+    /// steps, and outcomes, as a rewind's conversation.
+    pub(super) async fn continue_natively(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        record: &AgentRecord,
+        lineage: SessionLineage,
+        history: Vec<Value>,
+        context: Option<String>,
+    ) -> Result<()> {
+        let plan = ConversationPlan {
+            lineage,
+            handoff: Handoff::Native { history, context },
+        };
+        self.rewind_conversation(ctx, record, plan).await
+    }
 }
 
 #[cfg(test)]
