@@ -10,18 +10,28 @@ name: Release
 #
 # The jobs, and what runs at the same time:
 #
-#   app (arm64) ─┐
-#   app (x86_64) ┴─ release ─┐
-#   host (×3) ───────────────┴─ host-upload
+#   app (arm64) ─┬─ release ─────┬─ host-upload
+#   app (x86_64) ┴─ host (×3) ───┘
 #
 # `app` compiles the app's binary once per architecture, on its own runner,
 # which is most of a release's time; `release` joins the two into a universal
 # binary, then bundles, signs, notarizes and publishes. `host` builds the
-# headless `fletch-host` tarballs alongside, and `host-upload` adds them to the
-# release once it exists. The host side is deliberately separate: it shares
-# nothing with the desktop build but the version number and the updater signing
-# key, it needs no Apple identity, and a failure there must not take the app
+# headless `fletch-host` tarballs, and `host-upload` adds them to the release
+# once it exists. The host side is deliberately separate: it shares nothing
+# with the desktop build but the version number and the updater signing key,
+# it needs no Apple identity, and a failure there must not take the app
 # release with it.
+#
+# At most two macOS runners at a time: the two `app` builds, then `release`
+# beside `host`'s one macOS target. `host` waits for `app` only for that — its
+# builds take a few minutes, less than `release`, so starting them earlier
+# would not finish the run sooner but would hold a third macOS runner. The
+# repository is public, so standard runners cost nothing; what is limited is
+# concurrency (5 macOS jobs on the Free plan) and GitHub's arm64 capacity,
+# which is what a job left "not acquired" ran into.
+#
+# Every job has a timeout well above its slowest cold run, so a hung step
+# releases its runner instead of holding it for the 6-hour default.
 #
 # `dry_run` runs every build and the signing and notarization exactly as a
 # release does but publishes nothing: no release, no uploads, no website
@@ -34,6 +44,11 @@ on:
         type: boolean
         default: false
 
+# One release (or dry run) per branch at a time; a second dispatch queues.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # `tauri build --no-bundle` for one architecture is exactly the compile a
   # universal `tauri build` runs for it (same features, env and
@@ -43,6 +58,8 @@ jobs:
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     runs-on: macos-latest
+    # A cold build (every dependency) has taken up to 25 minutes.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -110,6 +127,8 @@ jobs:
     permissions:
       contents: write
     runs-on: macos-latest
+    # Bundling takes minutes; the margin is for Apple's notary service.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -302,10 +321,11 @@ jobs:
         run: curl -fsS -X POST "${{ secrets.WEB_DEPLOY_HOOK }}"
 
   # `fletch-host`, the headless engine (crates/fletch-host/README.md): one
-  # stripped tarball plus checksum per target, built while the app builds and
-  # handed to `host-upload`, which adds them to the release once `release` has
-  # published it. Every target builds natively — no `cross`, no sysroot — so
-  # each one is a plain `cargo build`:
+  # stripped tarball plus checksum per target, built while `release` bundles
+  # (see the top of this file for why not earlier) and handed to `host-upload`,
+  # which adds them to the release once `release` has published it. Every
+  # target builds natively — no `cross`, no sysroot — so each one is a plain
+  # `cargo build`:
   #
   #   x86_64-unknown-linux-gnu    ubuntu-latest
   #   aarch64-unknown-linux-gnu   ubuntu-24.04-arm   (GitHub's arm64 runner,
@@ -323,6 +343,9 @@ jobs:
   # `libkrunfw.so.5` (upstream's kernel bundle for the arch). The install
   # script and `fletch-host update` put them next to `fletch-host`.
   host:
+    needs: app
+    # A cold build has taken about 6 minutes.
+    timeout-minutes: 30
     strategy:
       # One target's failure leaves the others' assets on the release.
       fail-fast: false
@@ -490,6 +513,7 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
