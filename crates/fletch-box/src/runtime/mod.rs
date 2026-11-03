@@ -286,9 +286,12 @@ pub struct VmSpec {
     pub memory_mib: u32,
     pub base_image: PathBuf,
     pub data_disk: PathBuf,
-    pub tools_disk: Option<PathBuf>,
+    /// Tools disks, one per provider CLI the box carries, attached read-only
+    /// in this order; init mounts them all at [`guest::TOOLS_MOUNT`], the
+    /// first on top.
+    pub tools_disks: Vec<PathBuf>,
     /// Layer images (`layer-<name>.erofs`), attached read-only after the tools
-    /// disk; init overlays them on the root ([`guest::LAYER_MARKER`]).
+    /// disks; init overlays them on the root ([`guest::LAYER_MARKER`]).
     pub layers: Vec<PathBuf>,
     /// Further raw disks after the layers: `(block id, path, read-only)`.
     /// For script disks in tests and the CLI; the product attaches none.
@@ -321,7 +324,7 @@ impl VmSpec {
             memory_mib: 2048,
             base_image: base_image.into(),
             data_disk: data_disk.into(),
-            tools_disk: None,
+            tools_disks: Vec::new(),
             layers: Vec::new(),
             extra_disks: Vec::new(),
             shares: Vec::new(),
@@ -403,13 +406,11 @@ impl VmSpec {
                 read_only: false,
             },
         ];
-        if let Some(tools) = &self.tools_disk {
-            disks.push(Disk {
-                id: "tools".into(),
-                path: tools.clone(),
-                read_only: true,
-            });
-        }
+        disks.extend(self.tools_disks.iter().enumerate().map(|(i, path)| Disk {
+            id: format!("tools{i}"),
+            path: path.clone(),
+            read_only: true,
+        }));
         disks.extend(self.layers.iter().enumerate().map(|(i, path)| Disk {
             id: format!("layer{i}"),
             path: path.clone(),
@@ -744,7 +745,7 @@ mod tests {
     #[test]
     fn spec_becomes_helper_argv() {
         let mut spec = spec();
-        spec.tools_disk = Some("/t/claude.img".into());
+        spec.tools_disks = vec!["/t/claude.img".into(), "/t/codex.img".into()];
         spec.layers = vec!["/img/layer-devtools.erofs".into()];
         spec.extra_disks
             .push(("script".into(), "/b/script.img".into(), true));
@@ -762,7 +763,8 @@ mod tests {
             [
                 ("base", "/img/base.erofs", true),
                 ("data", "/b/data.img", false),
-                ("tools", "/t/claude.img", true),
+                ("tools0", "/t/claude.img", true),
+                ("tools1", "/t/codex.img", true),
                 ("layer0", "/img/layer-devtools.erofs", true),
                 ("script", "/b/script.img", true),
             ]

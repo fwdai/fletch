@@ -51,7 +51,7 @@ from the kernel environment (`krun_set_env`), never from argv:
 | `/` | `base.erofs`, read-only (`/dev/vda`) |
 | `/data` | the workspace disk (`/dev/vdb`, ext4), formatted on first boot, `e2fsck` when it does not mount |
 | `/run/layers/<n>` | each layer image (an erofs after the data disk with `/.fletch-layer`), whose `usr`, `etc`, `var` are overlaid read-only on the root, later disks on top |
-| `/opt/fletch/tools` | the `tools/` directory of the tools disk (the ext4 after the data disk), when one is attached |
+| `/opt/fletch/tools` | the `tools/` directories of the tools disks (the ext4 disks after the data disk), when any are attached: one bound, several overlaid with the first on top |
 | `/tmp`, `/run`, `/var/tmp` | tmpfs |
 | vsock 22 | `fletch-guest vsock-listen 22 -- sshd -i`: one sshd per connection, no TCP listener |
 | vsock 6000 | the host's egress proxy, exposed as `http://127.0.0.1:8899` |
@@ -69,7 +69,9 @@ public key only. Host paths are shadowed with a tmpfs at their first component
 into `/data/tools/<provider>` from inside a guest booted on the base alone with
 a fresh disk as `/data` and the proxy variables set. After a clean stop the host
 marks the disk read-only and attaches it; init exposes its `tools/` as
-`/opt/fletch/tools`. The host side is `fletch_box::tools::build`.
+`/opt/fletch/tools`, overlaying several disks when a box carries more than one
+provider's CLI (the first attached on top). The host side is
+`fletch_box::tools::build`.
 
 ## By hand
 

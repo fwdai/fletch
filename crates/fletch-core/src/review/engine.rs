@@ -1137,6 +1137,9 @@ async fn fail(
     reason: String,
     code: Option<CodeState>,
 ) {
+    // The table is what the Review row shows; the log is for whoever has
+    // only the logs (a refused reviewer launch is otherwise invisible there).
+    tracing::warn!(agent_id = %key.0, ?origin, %reason, "review round failed");
     global().update_existing(key, |t| t.record_failure(origin, reason, code));
     refresh(ctx, sup, key).await;
 }

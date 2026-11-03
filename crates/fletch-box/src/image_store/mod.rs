@@ -205,7 +205,7 @@ impl PinnedImage {
     /// launch agents the host-side contract no longer matches. A push to main
     /// that changes the image publishes this version (`box-image.yml`), so a
     /// merged build finds its image.
-    pub const VERSION: &'static str = "0.3.4";
+    pub const VERSION: &'static str = "0.3.5";
 
     /// This build's image, from `base_url` (the `box_image_url` setting) or
     /// the GitHub release.

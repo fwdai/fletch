@@ -20,13 +20,20 @@ each part's README has the detail.
 ## What a box boots
 
 Disks, in order: `base.erofs` read-only as `/`; a per-box sparse ext4 data disk
-as `/data` (the agent's tree, home and ssh key live there); the provider's
-tools disk (the agent CLI, built once per CLI version); then the image layers.
-Init (`packaging/box-image/rootfs/opt/fletch/init`) tells the disks after the
-data disk apart by content: ext4 is the tools disk, an erofs with a
-`/.fletch-layer` marker is a layer. Each layer's directories (`usr`, `etc`,
-`var`) become a read-only overlay on the root. Folders the user shares arrive
-as virtio-fs at their own paths.
+as `/data` (the agent's tree, home and ssh key live there); the tools disks
+(one per provider CLI, built once per CLI version: the owner's provider's,
+waited for, then every other provider's that is built by boot time, so a
+tenant of another provider — the local reviewer — runs from the same box); then
+the image layers. Init (`packaging/box-image/rootfs/opt/fletch/init`) tells
+the disks after the data disk apart by content: ext4 is a tools disk, an erofs
+with a `/.fletch-layer` marker is a layer. The tools disks' `tools/` are
+mounted at `/opt/fletch/tools` (one bound, several overlaid with the first on
+top, image 0.3.5 and later). Each layer's directories (`usr`, `etc`, `var`)
+become a read-only overlay on the root. Folders the user shares arrive as
+virtio-fs at their own paths. Block devices are fixed at boot: a launch whose
+provider's disk is not aboard (built after the boot) restarts the box with it,
+unless another launch's session is attached — then it is refused with why, and
+the disk is aboard at the box's next start.
 
 | Image | Content | Packed |
 | --- | --- | ---: |

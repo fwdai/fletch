@@ -162,7 +162,9 @@ pub enum StopReason {
     Discard,
     /// App exit.
     Shutdown,
-    /// A launch needs the tools disk that was built since this box booted.
+    /// A launch needs a tools disk that was built since this box booted: the
+    /// owner's, or another provider's for a tenant
+    /// ([`BoxRegistry::reattach_with_tools`]).
     Reattach,
     /// A launch needs the folders the user shares with this box now, which
     /// differ from the ones it booted with.
@@ -231,9 +233,10 @@ pub struct RunningBox {
     pub dir: PathBuf,
     pub channel: Arc<Channel>,
     pub since: i64,
-    /// The provider's CLI disk, held against the tools sweep for as long as
-    /// this box lives, its stop included.
-    tools_lease: Option<ToolsLease>,
+    /// The CLI disks this box booted with — the owner's provider's first, then
+    /// every other provider's that was built by boot time — each held against
+    /// the tools sweep for as long as this box lives, its stop included.
+    tools_leases: Vec<ToolsLease>,
     vm: Vm,
     proxy: Mutex<Option<EgressProxy>>,
     relays: relay::Relays,
@@ -249,9 +252,21 @@ impl RunningBox {
         &self.identity.agent_id
     }
 
-    /// The provider's CLI disk, when one was built by boot time.
-    pub fn tools_disk(&self) -> Option<&Path> {
-        self.tools_lease.as_ref().map(|lease| lease.path.as_path())
+    /// `provider`'s CLI disk, when one was built by boot time and so is
+    /// attached: the owner's, or another provider's a tenant runs from.
+    pub fn tools_disk_for(&self, provider: &str) -> Option<&Path> {
+        self.tools_leases
+            .iter()
+            .find(|lease| lease.provider == provider)
+            .map(|lease| lease.path.as_path())
+    }
+
+    /// The providers whose CLI disks are attached, the owner's first.
+    pub fn tools_providers(&self) -> Vec<String> {
+        self.tools_leases
+            .iter()
+            .map(|lease| lease.provider.clone())
+            .collect()
     }
 
     /// `box:<path>` for git over the channel.
@@ -523,13 +538,16 @@ impl Drop for StopOnDrop<'_> {
     }
 }
 
-/// One box's hold on its tools disk, from the moment [`BoxRegistry::tools_disk`]
-/// picks it until its [`RunningBox`] is dropped or its boot fails. The sweep
-/// never deletes a leased disk, and picking and leasing happen under the lock
-/// the sweep holds, so a disk handed to a boot cannot vanish before it opens.
+/// One box's hold on one tools disk, from the moment [`BoxRegistry::tools_disk`]
+/// (or [`BoxRegistry::other_tools_disks`]) picks it until its [`RunningBox`]
+/// is dropped or its boot fails. The sweep never deletes a leased disk, and
+/// picking and leasing happen under the lock the sweep holds, so a disk handed
+/// to a boot cannot vanish before it opens.
 #[derive(Debug)]
 struct ToolsLease {
     leases: Leases,
+    /// Whose CLI the disk carries.
+    provider: String,
     path: PathBuf,
 }
 
@@ -843,13 +861,18 @@ impl BoxRegistry {
             })
             .await?;
             self.verify_image_once(&ready).await?;
-            let tools_disk = self
-                .tools_disk(&ready, agent_id, &identity.provider)
-                .await?;
-            Ok::<_, Error>((ready, tools_disk))
+            // The owner's disk is waited for; every other provider's rides
+            // along when it is built, so a tenant of that provider (the
+            // local reviewer) finds its CLI here without a restart.
+            let mut tools_disks = vec![
+                self.tools_disk(&ready, agent_id, &identity.provider)
+                    .await?,
+            ];
+            tools_disks.extend(self.other_tools_disks(&identity.provider));
+            Ok::<_, Error>((ready, tools_disks))
         }
         .await;
-        let (ready, tools_disk) = match prepared {
+        let (ready, tools_disks) = match prepared {
             Ok(prepared) => prepared,
             Err(e) => {
                 self.set_phase(
@@ -868,7 +891,7 @@ impl BoxRegistry {
             return Err(refused);
         }
         self.set_phase(agent_id, BoxPhase::Starting);
-        let booted = boot(identity, &ready, Some(tools_disk)).await;
+        let booted = boot(identity, &ready, tools_disks).await;
         drop(slot);
         match booted {
             Ok(running) => {
@@ -982,7 +1005,7 @@ impl BoxRegistry {
         let root = tools_root();
         let built =
             || tools::built_disk_in(&root, provider, &version, CODEGRAPH_VERSION).map(|d| d.path);
-        if let Some(lease) = self.lease_tools_disk(built) {
+        if let Some(lease) = self.lease_tools_disk(provider, built) {
             if !tools_disk_settled(provider) {
                 drop(self.start_tools_build(ready, provider));
             }
@@ -992,7 +1015,7 @@ impl BoxRegistry {
         let bootable = || {
             tools::bootable_disk_in(&root, provider, &version, CODEGRAPH_VERSION).map(|d| d.path)
         };
-        if let Some(lease) = self.lease_tools_disk(bootable) {
+        if let Some(lease) = self.lease_tools_disk(provider, bootable) {
             tracing::info!(
                 agent_id,
                 provider,
@@ -1024,7 +1047,7 @@ impl BoxRegistry {
             },
         );
         wait_tools_build(build, setup::tools_wait()).await?;
-        self.lease_tools_disk(built).ok_or_else(|| {
+        self.lease_tools_disk(provider, built).ok_or_else(|| {
             Error::SandboxUnavailable(format!(
                 "the {provider} tools disk was reported built but {} is missing",
                 fletch_box::tools::disk_path(&root, provider, &version, None).display()
@@ -1032,15 +1055,151 @@ impl BoxRegistry {
         })
     }
 
-    /// Lease the disk `pick` names, picked under the lease lock so a sweep
-    /// cannot delete it between the pick and the lease. `pick` only reads the
-    /// file system: it must not probe the CLI version.
-    fn lease_tools_disk(&self, pick: impl FnOnce() -> Option<PathBuf>) -> Option<ToolsLease> {
+    /// The tools disks a box of `owner` attaches besides its own: every other
+    /// provider's newest disk ([`tools::newest_disk_in`]), so an agent of that
+    /// provider can run in the box as a tenant. Nothing is waited for, built
+    /// or probed here (no CLI version is asked, so a boot runs no host CLI):
+    /// a provider with no disk yet is simply not aboard, and a launch that
+    /// needs it restarts the box once it is ([`Self::reattach_with_tools`]).
+    fn other_tools_disks(&self, owner: &str) -> Vec<ToolsLease> {
+        self.other_tools_disks_in(&tools_root(), owner)
+    }
+
+    fn other_tools_disks_in(&self, root: &Path, owner: &str) -> Vec<ToolsLease> {
+        fletch_box::tools::PROVIDERS
+            .iter()
+            .filter(|provider| **provider != owner)
+            .filter_map(|provider| {
+                self.lease_tools_disk(provider, || {
+                    tools::newest_disk_in(root, provider, CODEGRAPH_VERSION).map(|d| d.path)
+                })
+            })
+            .collect()
+    }
+
+    /// Restart `identity`'s box with `provider`'s tools disk aboard, for a
+    /// launch `launch_id` of `provider` that found no CLI of its own in the
+    /// running box (the box booted before the disk was built, or before this
+    /// provider had one). Waits for the disk as a boot of that provider would
+    /// ([`Self::tools_disk`]), then stops the box and boots it again, which
+    /// takes every built disk ([`Self::other_tools_disks`]). The lease taken
+    /// here outlives the restart, so the sweep cannot take the disk in
+    /// between.
+    ///
+    /// Refused while any other launch is attached to the box: a restart
+    /// would end their sessions (the coder's, when a reviewer tenant asks),
+    /// and a background launch must not do that to a live one. The disk
+    /// is aboard at the box's next start — its idle stop, or the user's.
+    /// Checked once up front, so a refusal costs no wait, and again when the
+    /// VM is taken for the stop, under the entries lock with the take
+    /// ([`Self::take_running`]): the waits in between can last minutes, and a
+    /// session attaching during them keeps its VM.
+    pub async fn reattach_with_tools(
+        &'static self,
+        identity: &BoxIdentity,
+        provider: &str,
+        launch_id: &str,
+    ) -> Result<Arc<RunningBox>> {
+        let agent_id = &identity.agent_id;
+        let refusal = |others: usize| {
+            let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
+            Error::SandboxUnavailable(format!(
+                "{label} isn't in this VM yet (its CLI was installed after the VM started), and \
+                 restarting the VM now would end the {others} session(s) running in it. It's \
+                 picked up at the VM's next start: stop the VM, or try again once it is idle"
+            ))
+        };
+        let others = self.others_attached(agent_id, launch_id);
+        if others > 0 {
+            return Err(refusal(others));
+        }
+        // The wait reports what it waits on as `Preparing`, over a VM that
+        // keeps running meanwhile; whatever comes of it, the phase is settled
+        // after, so a refusal or a failed build never leaves a running VM
+        // reported as preparing.
+        let prepared = async {
+            let ready = setup::ready(|detail| {
+                self.set_phase(agent_id, BoxPhase::Preparing { detail });
+            })
+            .await?;
+            self.tools_disk(&ready, agent_id, provider).await
+        }
+        .await;
+        self.settle_phase_after_wait(agent_id, prepared.as_ref().err());
+        let _lease = prepared?;
+        match self.take_running(agent_id, |entry| only_attached(entry, launch_id)) {
+            Some(taken) => {
+                self.stop_taken(agent_id, StopReason::Reattach, taken)
+                    .await?;
+            }
+            // Not taken: a session attached during the wait (refused), or the
+            // VM stopped meanwhile (nothing to stop; the boot below takes
+            // the disk).
+            None => {
+                let others = self.others_attached(agent_id, launch_id);
+                if others > 0 {
+                    return Err(refusal(others));
+                }
+            }
+        }
+        self.ensure_running(identity).await
+    }
+
+    /// The phase of `agent_id`'s box once a wait that reported `Preparing`
+    /// over it is done ([`Self::reattach_with_tools`]): a VM still running is
+    /// `Running` again; with none, a failed wait reads `Failed` with why (as
+    /// a failed boot does) and a successful one `Stopped`. Only a `Preparing`
+    /// phase is touched — a stop or boot that moved it meanwhile stands.
+    fn settle_phase_after_wait(&self, agent_id: &str, failed: Option<&Error>) {
+        let settled = {
+            let mut entries = self.entries.lock();
+            let Some(entry) = entries.get_mut(agent_id) else {
+                return;
+            };
+            if !matches!(entry.phase, BoxPhase::Preparing { .. }) {
+                return;
+            }
+            entry.phase = match (&entry.running, failed) {
+                (Some(running), _) => BoxPhase::Running {
+                    since: running.since,
+                },
+                (None, Some(e)) => BoxPhase::Failed {
+                    reason: e.to_string(),
+                },
+                (None, None) => BoxPhase::Stopped,
+            };
+            entry.phase.clone()
+        };
+        tracing::debug!(agent_id, phase = ?settled, "phase settled after a tools wait");
+        self.emit_state(agent_id);
+    }
+
+    /// How many launches other than `launch_id` are attached to `agent_id`'s
+    /// box: the sessions a restart would end.
+    fn others_attached(&self, agent_id: &str, launch_id: &str) -> usize {
+        self.entries.lock().get(agent_id).map_or(0, |entry| {
+            entry
+                .attached
+                .iter()
+                .filter(|held| held.as_str() != launch_id)
+                .count()
+        })
+    }
+
+    /// Lease `provider`'s disk `pick` names, picked under the lease lock so a
+    /// sweep cannot delete it between the pick and the lease. `pick` only
+    /// reads the file system: it must not probe the CLI version.
+    fn lease_tools_disk(
+        &self,
+        provider: &str,
+        pick: impl FnOnce() -> Option<PathBuf>,
+    ) -> Option<ToolsLease> {
         let mut leases = self.tools_leases.lock();
         let path = pick()?;
         *leases.entry(path.clone()).or_default() += 1;
         Some(ToolsLease {
             leases: self.tools_leases.clone(),
+            provider: provider.to_string(),
             path,
         })
     }
@@ -1199,9 +1358,13 @@ impl BoxRegistry {
         }
     }
 
-    /// The tools disk `agent_id`'s box runs with, while it runs with one.
-    pub fn attached_tools_disk(&self, agent_id: &str) -> Option<PathBuf> {
-        Some(self.running(agent_id)?.tools_disk()?.to_path_buf())
+    /// `provider`'s tools disk in `agent_id`'s box, while the box runs with it.
+    pub fn attached_tools_disk(&self, agent_id: &str, provider: &str) -> Option<PathBuf> {
+        Some(
+            self.running(agent_id)?
+                .tools_disk_for(provider)?
+                .to_path_buf(),
+        )
     }
 
     /// Where `provider`'s tools disk stands, for the probe: the disk for the
@@ -1470,14 +1633,15 @@ impl BoxRegistry {
             self.finish_stop(&running, kill_rungs(&running.vm)).await
         };
         tracing::info!(agent_id, ?reason, ?outcome, "box stopped");
-        // Its disk's lease goes with it (unless another holder of the box
+        // Its disks' leases go with it (unless another holder of the box
         // outlives this), so a disk an update superseded can go now rather
         // than at the next app start. Not on app exit: the next start sweeps.
-        let provider = running.identity.provider.clone();
-        let had_disk = running.tools_disk().is_some();
+        let providers = running.tools_providers();
         drop(running);
-        if had_disk && reason != StopReason::Shutdown {
-            sweep_tools_disks_in_background(provider);
+        if reason != StopReason::Shutdown {
+            for provider in providers {
+                sweep_tools_disks_in_background(provider);
+            }
         }
         Ok(outcome)
     }
@@ -1881,7 +2045,7 @@ pub fn egress_policy(project_id: &str) -> EgressPolicy {
 async fn boot(
     identity: &BoxIdentity,
     ready: &super::Ready,
-    tools_lease: Option<ToolsLease>,
+    tools_leases: Vec<ToolsLease>,
 ) -> Result<RunningBox> {
     let agent_id = identity.agent_id.clone();
     let dir = identity.box_dir()?;
@@ -1925,7 +2089,10 @@ async fn boot(
     let mut spec = VmSpec::new(&agent_id, &ready.image.path(), &data, &dir.join(CONSOLE));
     spec.cpus = knobs.cpus;
     spec.memory_mib = knobs.memory_mib;
-    spec.tools_disk = tools_lease.as_ref().map(|lease| lease.path.clone());
+    spec.tools_disks = tools_leases
+        .iter()
+        .map(|lease| lease.path.clone())
+        .collect();
     spec.layers = ready.image.layer_paths();
     spec.shares = identity
         .shares
@@ -2028,7 +2195,7 @@ async fn boot(
         dir,
         channel,
         since: chrono::Utc::now().timestamp_millis(),
-        tools_lease,
+        tools_leases,
         vm,
         proxy: Mutex::new(Some(proxy)),
         relays,
@@ -2110,6 +2277,14 @@ fn on_egress(agent_id: &str, event: EgressEvent) {
 /// The ladder, rung by rung. The sysrq rung needs root in the guest, which the
 /// product image's `agent` user is not, so on it the rung is inert and only
 /// its wait is skipped; it stays for an image that allows it.
+/// Whether `launch_id` is the only launch attached to `entry`'s box (or none
+/// is): what a reattach restart may take the VM under
+/// ([`BoxRegistry::reattach_with_tools`]), decided under the entries lock
+/// with the take.
+fn only_attached(entry: &Entry, launch_id: &str) -> bool {
+    entry.attached.iter().all(|held| held == launch_id)
+}
+
 fn discarded_error(agent_id: &str) -> Error {
     Error::SandboxUnavailable(format!("the box for {agent_id} was discarded"))
 }
@@ -2396,7 +2571,9 @@ mod tests {
         installed(&good);
         installed(&bad);
         damage(&bad);
-        let lease = registry.lease_tools_disk(|| Some(bad.clone())).unwrap();
+        let lease = registry
+            .lease_tools_disk("claude", || Some(bad.clone()))
+            .unwrap();
         assert!(!registry.verify_tools_disks_in(root, "claude", "v2.1.314"));
         assert!(bad.exists(), "a box runs on it");
         drop(lease);
@@ -2501,14 +2678,62 @@ mod tests {
     fn a_lease_lasts_until_its_last_holder_is_gone() {
         let registry = test_registry();
         let disk = PathBuf::from("/tools/claude-v2.1.312.img");
-        let first = registry.lease_tools_disk(|| Some(disk.clone())).unwrap();
-        let second = registry.lease_tools_disk(|| Some(disk.clone())).unwrap();
-        assert!(registry.lease_tools_disk(|| None).is_none());
+        let first = registry
+            .lease_tools_disk("claude", || Some(disk.clone()))
+            .unwrap();
+        let second = registry
+            .lease_tools_disk("claude", || Some(disk.clone()))
+            .unwrap();
+        assert!(registry.lease_tools_disk("claude", || None).is_none());
         assert_eq!(registry.tools_leases.lock().get(&disk), Some(&2));
         drop(first);
         assert_eq!(registry.tools_leases.lock().get(&disk), Some(&1));
         drop(second);
         assert!(registry.tools_leases.lock().is_empty());
+    }
+
+    /// A boot takes every other provider's bootable disk along, each leased
+    /// and named for its provider, and never the owner's own (which the boot
+    /// waits for separately) or a provider with no disk.
+    #[test]
+    fn a_boot_takes_every_other_providers_built_disk_along() {
+        let registry = test_registry();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let codex = root.join(format!("codex-{}.img", tools_version("codex")));
+        let pi = root.join(format!("pi-{}.img", tools_version("pi")));
+        let claude = root.join(format!("claude-{}.img", tools_version("claude")));
+        for disk in [&codex, &pi, &claude] {
+            installed(disk);
+        }
+
+        let leases = registry.other_tools_disks_in(root, "claude");
+        let mut aboard: Vec<(&str, &Path)> = leases
+            .iter()
+            .map(|lease| (lease.provider.as_str(), lease.path.as_path()))
+            .collect();
+        aboard.sort();
+        assert_eq!(aboard, [("codex", codex.as_path()), ("pi", pi.as_path())]);
+        {
+            let held = registry.tools_leases.lock();
+            assert_eq!(held.get(&codex), Some(&1));
+            assert_eq!(held.get(&pi), Some(&1));
+            assert!(
+                !held.contains_key(&claude),
+                "the owner's disk is leased by `tools_disk`"
+            );
+        }
+        drop(leases);
+        assert!(registry.tools_leases.lock().is_empty());
+
+        assert!(registry
+            .other_tools_disks_in(root, "codex")
+            .iter()
+            .all(|l| l.provider != "codex"));
+        let empty = tempfile::tempdir().unwrap();
+        assert!(registry
+            .other_tools_disks_in(empty.path(), "claude")
+            .is_empty());
     }
 
     #[test]
@@ -3041,6 +3266,112 @@ mod tests {
             crate::exec::for_path(&tenant_root.join(".fletch-profile")),
             crate::exec::Executor::Local
         ));
+    }
+
+    /// A tools wait that reported `Preparing` leaves the box in a settled
+    /// phase whatever came of it: with no VM, `Failed` with the wait's error
+    /// or `Stopped`; a phase a stop or boot moved meanwhile is left alone.
+    /// (A VM still running goes back to `Running`; that needs a VM.)
+    #[tokio::test]
+    async fn a_tools_wait_settles_the_phase_it_reported() {
+        let registry = BoxRegistry::global();
+        let id = "settle-phase-test";
+        registry.register(BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from("/settle-phase-test/root"),
+            rpc_dir: PathBuf::from("/settle-phase-test/rpc"),
+            home: PathBuf::from("/settle-phase-test/home"),
+            shares: Vec::new(),
+        });
+        let preparing = || {
+            registry.set_phase(
+                id,
+                BoxPhase::Preparing {
+                    detail: "installing codex".into(),
+                },
+            )
+        };
+        preparing();
+        registry.settle_phase_after_wait(id, Some(&Error::Other("npm failed".into())));
+        assert_eq!(
+            registry.state(id),
+            BoxPhase::Failed {
+                reason: "npm failed".into()
+            }
+        );
+        preparing();
+        registry.settle_phase_after_wait(id, None);
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
+        registry.set_phase(id, BoxPhase::Starting);
+        registry.settle_phase_after_wait(id, None);
+        assert_eq!(
+            registry.state(id),
+            BoxPhase::Starting,
+            "a boot's phase stands"
+        );
+        registry.discard(id).await.unwrap();
+    }
+
+    /// A launch that needs a disk the running box lacks never restarts the
+    /// box under another launch's session: with the coder attached, a
+    /// reviewer tenant's reattach is refused (and nothing is stopped); its
+    /// own hold does not count.
+    #[tokio::test]
+    async fn a_reattach_is_refused_while_another_launch_is_attached() {
+        let registry = BoxRegistry::global();
+        let id = "reattach-attached-test";
+        let identity = BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from("/reattach-attached-test/root"),
+            rpc_dir: PathBuf::from("/reattach-attached-test/rpc"),
+            home: PathBuf::from("/reattach-attached-test/home"),
+            shares: Vec::new(),
+        };
+        registry.register(identity.clone());
+        registry.attach(id, "coder-launch");
+        registry.attach(id, "reviewer-launch");
+        assert_eq!(registry.others_attached(id, "reviewer-launch"), 1);
+        assert_eq!(registry.others_attached(id, "coder-launch"), 1);
+        assert_eq!(registry.others_attached(id, "someone-else"), 2);
+
+        let refused = match registry
+            .reattach_with_tools(&identity, "codex", "reviewer-launch")
+            .await
+        {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("the reattach ran under the coder's session"),
+        };
+        assert!(refused.contains("1 session(s)"), "{refused}");
+        assert!(refused.contains("Codex"), "{refused}");
+        assert_eq!(registry.state(id), BoxPhase::Stopped, "nothing was touched");
+
+        registry.detach(id, "coder-launch");
+        assert_eq!(registry.others_attached(id, "reviewer-launch"), 0);
+
+        // The take after the waits decides under the entries lock, by the
+        // same rule: a session that attached meanwhile keeps its VM, the
+        // asking launch's own hold does not count, and an idle box is free.
+        let may_take = |launch: &str| {
+            let entries = registry.entries.lock();
+            only_attached(entries.get(id).unwrap(), launch)
+        };
+        assert!(may_take("reviewer-launch"));
+        registry.attach(id, "late-launch");
+        assert!(!may_take("reviewer-launch"));
+        assert!(
+            registry
+                .take_running(id, |e| only_attached(e, "reviewer-launch"))
+                .is_none(),
+            "nothing is taken under the late session"
+        );
+        registry.detach(id, "late-launch");
+        registry.detach(id, "reviewer-launch");
+        assert!(may_take("reviewer-launch"));
+        registry.discard(id).await.unwrap();
     }
 
     /// A session's hold keeps its box attached until the session's kill, or

@@ -85,10 +85,12 @@ struct BootArgs {
     /// The data disk; created sparse (8 GiB) if absent.
     #[arg(long)]
     data: PathBuf,
-    #[arg(long)]
-    tools: Option<PathBuf>,
+    /// Tools disks (one provider's CLI each), attached read-only in this order;
+    /// init mounts them all at /opt/fletch/tools, the first on top.
+    #[arg(long = "tools")]
+    tools: Vec<PathBuf>,
     /// Layer images (erofs with a /.fletch-layer marker), attached read-only
-    /// after the tools disk; an init that knows layers overlays them on the root.
+    /// after the tools disks; an init that knows layers overlays them on the root.
     #[arg(long = "layer")]
     layers: Vec<PathBuf>,
     #[arg(long, default_value_t = 2048)]
@@ -285,7 +287,7 @@ async fn boot(args: BootArgs) -> Result<(), String> {
     let mut spec = VmSpec::new(&args.id, &args.image, &args.data, &dir.join("console.log"));
     spec.cpus = args.cpus;
     spec.memory_mib = args.mem;
-    spec.tools_disk = args.tools.clone();
+    spec.tools_disks = args.tools.clone();
     spec.init = args.init.clone();
     spec.init_args = args.init_args.clone();
     spec.listen_ports = vec![
@@ -309,8 +311,8 @@ async fn boot(args: BootArgs) -> Result<(), String> {
         let bytes = std::fs::read(script).map_err(|e| format!("read {}: {e}", script.display()))?;
         let disk = dir.join("script.img");
         disks::write_script_disk(&bytes, &disk).map_err(|e| e.to_string())?;
-        // vda base, vdb data, then the tools disk if any, the layers, then this one.
-        let letter = (b'c' + u8::from(args.tools.is_some()) + args.layers.len() as u8) as char;
+        // vda base, vdb data, then the tools disks, the layers, then this one.
+        let letter = (b'c' + args.tools.len() as u8 + args.layers.len() as u8) as char;
         if spec.init_args.is_empty() {
             spec.init_args = vec!["/bin/sh".into(), format!("/dev/vd{letter}")];
         }
