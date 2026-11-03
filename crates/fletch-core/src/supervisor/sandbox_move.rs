@@ -21,10 +21,15 @@
 //!
 //! While a move runs, and for as long as one is left unsettled (its staging
 //! dir still there), the workspace's checkouts are not at rest, and nothing
-//! may put work into them: every entry point that would asks
-//! [`Supervisor::checkouts_at_rest`] first. A launch goes further and settles
-//! what is left first, so a workspace recovers at the next message, not only
-//! at the next boot.
+//! may put work into them. One mechanism keeps it so: whatever acts in a
+//! workspace's checkouts holds them ([`CheckoutHold`]) for as long as it acts,
+//! or, for something long-lived (an agent, a shell, the Run app), for as long
+//! as it takes to start; a hold is refused while they are not at rest. A move
+//! takes them exclusively, after every hold has gone, and then stops what
+//! runs there. A hold is taken on the workspace that owns a checkout, whoever
+//! works in it: a reviewer in its coder's tree holds the coder's. A launch
+//! first settles what a move left, so a workspace recovers at its next
+//! message, not only at the next boot.
 //!
 //! What doesn't travel: ignored files (`node_modules`, `.env`), which no
 //! snapshot holds, and earlier turns' checkpoints, so the code can't be
@@ -58,27 +63,44 @@ const UNSETTLED: &str = "The workspace's last move between sandboxes didn't fini
 /// what a move left.
 static SETTLING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// A move under way, from its start until the disk is settled: the workspace
-/// is out of rest (`Supervisor::moving`) for as long as this lives.
-struct InFlight<'a> {
+/// A move's hold on a workspace's checkouts, exclusive, from its start until
+/// the disk is settled: flagged first (`Supervisor::moving`), so no new hold
+/// is granted, then taken once every hold already granted has gone. Both go
+/// when this is dropped.
+struct MoveLock<'a> {
     sup: &'a Supervisor,
     agent_id: String,
+    exclusive: Option<tokio::sync::OwnedRwLockWriteGuard<()>>,
 }
 
-impl<'a> InFlight<'a> {
-    fn begin(sup: &'a Supervisor, agent_id: &str) -> Result<Self> {
+impl<'a> MoveLock<'a> {
+    async fn take(sup: &'a Supervisor, agent_id: &str) -> Result<Self> {
         if !sup.moving.lock().insert(agent_id.to_string()) {
             return Err(Error::Other(MOVING.into()));
         }
-        Ok(Self {
+        let mut lock = Self {
             sup,
             agent_id: agent_id.to_string(),
-        })
+            exclusive: None,
+        };
+        let exclusive =
+            tokio::time::timeout(QUIESCE_WAIT, sup.checkout_lock(agent_id).write_owned())
+                .await
+                .map_err(|_| {
+                    Error::Other(
+                        "Something is still starting or working in the workspace's checkouts. \
+                         Try again once it's done."
+                            .into(),
+                    )
+                })?;
+        lock.exclusive = Some(exclusive);
+        Ok(lock)
     }
 }
 
-impl Drop for InFlight<'_> {
+impl Drop for MoveLock<'_> {
     fn drop(&mut self) {
+        self.exclusive.take();
         self.sup.moving.lock().remove(&self.agent_id);
     }
 }
@@ -91,25 +113,20 @@ struct Conversation {
     context: Option<String>,
 }
 
-/// How long a move waits for the one-shot actions already at work in the
-/// checkouts (a commit, a pull, a verification) before it refuses.
+/// How long a move waits for the holds already granted on the checkouts (a
+/// commit, a verification, an agent or a shell starting) before it refuses.
 const QUIESCE_WAIT: Duration = Duration::from_secs(10);
 
-/// A one-shot action's hold on an agent's checkouts, for as long as it acts
-/// in them ([`Supervisor::hold_checkouts`]): no move starts on them until it
-/// is dropped.
+/// A hold on a workspace's checkouts ([`Supervisor::hold_checkouts`]): no
+/// move starts on them while it lives. Kept for as long as an action acts in
+/// them, or a long-lived thing takes to start there.
 pub struct CheckoutHold(#[allow(dead_code)] tokio::sync::OwnedRwLockReadGuard<()>);
 
 impl Supervisor {
     /// Whether work may be put into `agent_id`'s checkouts now, or why not: a
-    /// move between sandboxes is under way, or one didn't finish. Asked by
-    /// every entry point that would. What starts something long-lived there
-    /// asks on entry and again as it registers, under the lock the move's
-    /// sweep takes ([`Self::refuse_if_moving`]): the agent's launch
-    /// ([`Self::settle_before_launch`]), the user's shell, the Run panel's
-    /// app. A one-shot action holds them instead ([`Self::hold_checkouts`]):
-    /// the Git panel's (`commands::agent_repo_checkout`). A local review
-    /// waits for them (`review::engine`).
+    /// move between sandboxes is under way, or one didn't finish. A sample:
+    /// what then acts in them holds them ([`Self::hold_checkouts`]), which
+    /// asks this once held.
     pub fn checkouts_at_rest(&self, agent_id: &str) -> Result<()> {
         if self.moving.lock().contains(agent_id) {
             return Err(Error::Other(MOVING.into()));
@@ -122,19 +139,14 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Refuse while a move is under way: what something long-lived checks as
-    /// it registers, under the same lock the move's sweep (`take_down`)
-    /// takes, so it is either refused here or swept there.
-    pub(super) fn refuse_if_moving(&self, agent_id: &str) -> Result<()> {
-        if self.moving.lock().contains(agent_id) {
-            return Err(Error::Other(MOVING.into()));
-        }
-        Ok(())
-    }
-
-    /// Hold `agent_id`'s checkouts for a one-shot action in them, or why not
-    /// ([`Self::checkouts_at_rest`]). A move waits for the hold to go
-    /// before it touches them.
+    /// Hold `agent_id`'s checkouts, or why not ([`Self::checkouts_at_rest`]):
+    /// what every entry point that acts in them takes first, and keeps for as
+    /// long as it acts, or a long-lived thing takes to start there. The
+    /// resolvers that hand out a checkout to act in hand it out held
+    /// (`commands::agent_repo_checkout`, `commands::checkout_scope_for_path`);
+    /// a launch, the shell and the Run app take theirs; a local review takes
+    /// its coder's before it decides to start (`review::engine`). A move
+    /// waits for every hold to go, and refuses new ones.
     pub fn hold_checkouts(&self, agent_id: &str) -> Result<CheckoutHold> {
         let hold = self
             .checkout_lock(agent_id)
@@ -143,6 +155,27 @@ impl Supervisor {
         // Checked once held: a move flags itself before it waits for holds.
         self.checkouts_at_rest(agent_id)?;
         Ok(CheckoutHold(hold))
+    }
+
+    /// [`Self::hold_checkouts`] on every workspace whose checkouts `record`
+    /// works in: its own, and for a tree it adopts, the workspace that owns
+    /// it (a reviewer's coder). A tree outside every workspace (a workflow
+    /// run's) has nothing to hold.
+    pub(super) fn hold_checkouts_of(&self, record: &AgentRecord) -> Result<Vec<CheckoutHold>> {
+        let mut owners: Vec<String> = Vec::new();
+        for repo in &record.repos {
+            let owner = match &repo.adopted_checkout {
+                Some(tree) => crate::workspace::checkout_owner(tree),
+                None => Some(record.id.clone()),
+            };
+            if let Some(owner) = owner.filter(|o| !owners.contains(o)) {
+                owners.push(owner);
+            }
+        }
+        owners
+            .iter()
+            .map(|owner| self.hold_checkouts(owner))
+            .collect()
     }
 
     fn checkout_lock(&self, agent_id: &str) -> Arc<tokio::sync::RwLock<()>> {
@@ -185,20 +218,10 @@ impl Supervisor {
         self.workspace.agent(agent_id)?;
         let _delivering = self.lock_delivery(agent_id).await;
         let _route = self.open_route(agent_id)?;
-        // Out of rest from here: no shell, Run app, Git action or review
-        // starts in the checkouts until the disk is settled. The actions
-        // already at work in them finish first.
-        let in_flight = InFlight::begin(self, agent_id)?;
-        let _exclusive =
-            tokio::time::timeout(QUIESCE_WAIT, self.checkout_lock(agent_id).write_owned())
-                .await
-                .map_err(|_| {
-                    Error::Other(
-                        "A Git action or a verification is still running in the workspace. \
-                 Try again once it's done."
-                            .into(),
-                    )
-                })?;
+        // Out of rest from here: no hold is granted on the checkouts until
+        // the disk is settled, and whatever holds them now finishes first.
+        // Then what runs there (`take_down`) is stopped.
+        let move_lock = MoveLock::take(self, agent_id).await?;
         // A move the app didn't finish is put right before another starts.
         settle(&self.workspace, agent_id).await?;
         let record = self.workspace.agent(agent_id)?;
@@ -214,7 +237,7 @@ impl Supervisor {
         let conversation = match carried {
             Ok(conversation) => conversation,
             Err(e) => {
-                drop(in_flight);
+                drop(move_lock);
                 return Err(self.give_up(ctx, agent_id, was_up, e).await);
             }
         };
@@ -243,7 +266,7 @@ impl Supervisor {
             fail_spawn(self, ctx, agent_id, why.clone());
             return Err(Error::Other(why));
         }
-        drop(in_flight);
+        drop(move_lock);
         warm_indexes(&moved).await;
         switched.map_err(|e| {
             Error::Other(format!(
@@ -685,35 +708,60 @@ mod tests {
         );
     }
 
-    /// While a move is under way nothing gets into the checkouts, through any
-    /// door: the rest check, the check at registration, a one-shot hold, a
-    /// second move. A hold already taken keeps the move off them until it
-    /// goes. Once the move is over, they are at rest again.
+    /// A move takes the checkouts only once every hold on them has gone, and
+    /// grants none from the moment it begins: whatever was starting or acting
+    /// there when it began has finished before it looks, and nothing begins
+    /// after. Once it is over they are held again as usual.
     #[tokio::test]
-    async fn a_move_under_way_keeps_all_work_out_of_the_checkouts() {
+    async fn a_move_waits_for_every_hold_and_grants_none() {
         let sup = test_supervisor();
         let id = "move-gate-test";
-        sup.checkouts_at_rest(id).unwrap();
-        let hold = sup.hold_checkouts(id).unwrap();
+        let starting = sup.hold_checkouts(id).unwrap();
 
-        let moving = InFlight::begin(&sup, id).unwrap();
-        assert!(sup.checkouts_at_rest(id).is_err());
-        assert!(sup.refuse_if_moving(id).is_err());
-        assert!(sup.hold_checkouts(id).is_err());
-        assert!(InFlight::begin(&sup, id).is_err(), "one move at a time");
-        let lock = sup.checkout_lock(id);
+        let take = MoveLock::take(&sup, id);
+        tokio::pin!(take);
         assert!(
-            lock.clone().try_write_owned().is_err(),
-            "the action already at work finishes first"
+            tokio::time::timeout(Duration::from_millis(50), &mut take)
+                .await
+                .is_err(),
+            "not while something is still starting there"
         );
-        drop(hold);
-        let exclusive = lock.try_write_owned().unwrap();
-        drop(exclusive);
-        drop(moving);
+        assert!(sup.hold_checkouts(id).is_err(), "nothing new begins");
+        assert!(sup.checkouts_at_rest(id).is_err());
+        drop(starting);
+        let moving = take.await.unwrap();
 
+        assert!(sup.hold_checkouts(id).is_err());
+        assert!(
+            MoveLock::take(&sup, id).await.is_err(),
+            "one move at a time"
+        );
+        drop(moving);
         sup.checkouts_at_rest(id).unwrap();
-        sup.refuse_if_moving(id).unwrap();
         drop(sup.hold_checkouts(id).unwrap());
+    }
+
+    /// What works in another workspace's tree (a reviewer in its coder's)
+    /// holds that workspace's checkouts: the coder's move waits for it.
+    #[tokio::test]
+    async fn a_tree_is_held_on_the_workspace_that_owns_it() {
+        let sup = test_supervisor();
+        let coder = "move-owner-test";
+        let td = tempfile::tempdir().unwrap();
+        let repo = committed_repo(td.path(), "src").await;
+        let mut reviewer =
+            record_in_checkouts(&sup, "move-reviewer-test", std::slice::from_ref(&repo));
+        reviewer.repos[0].adopted_checkout = Some(agent_parent_dir(coder).unwrap().join("repo"));
+        let held = sup.hold_checkouts_of(&reviewer).unwrap();
+        assert_eq!(held.len(), 1);
+
+        let take = MoveLock::take(&sup, coder);
+        tokio::pin!(take);
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut take)
+            .await
+            .is_err());
+        drop(held);
+        drop(take.await.unwrap());
     }
 
     /// Stamped for a VM, the staged checkouts on this Mac are scrap; stamped

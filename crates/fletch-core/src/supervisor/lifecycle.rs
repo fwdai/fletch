@@ -1128,9 +1128,12 @@ impl Supervisor {
         agent_id: &str,
     ) -> Result<()> {
         // Never into checkouts a move has, or left unsettled: what a move
-        // left is finished first, when it can be (`sandbox_move`).
+        // left is finished first, when it can be, and the checkouts it runs
+        // in are held until it is up, so no move starts under the launch
+        // (`sandbox_move`).
         self.settle_before_launch(agent_id).await?;
         let record = self.workspace.agent(agent_id)?;
+        let _held = self.hold_checkouts_of(&record)?;
         let per_turn = is_per_turn_provider(&record.provider);
         // `None` only for a per-turn agent before its first turn
         // (`AgentRecord::launch_session`).
@@ -1323,18 +1326,9 @@ impl Supervisor {
             )
             .await?;
 
-        {
-            // Registered under the lock a move sweeps with: one that began
-            // during the launch refuses it here, or finds it there.
-            let mut agents = self.agents.lock();
-            if let Err(e) = self.refuse_if_moving(&agent_id_str) {
-                drop(agents);
-                let _ = agent.shutdown();
-                self.activities.lock().remove(&agent_id_str);
-                return Err(e);
-            }
-            agents.insert(agent_id_str.clone(), Arc::new(agent));
-        }
+        self.agents
+            .lock()
+            .insert(agent_id_str.clone(), Arc::new(agent));
 
         // Initial status is always Idle now — at process start there's
         // never an in-flight turn (we no longer pass a task as a spawn

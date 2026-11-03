@@ -36,7 +36,7 @@ use super::model::{Finding, ReplyAuthor};
 use super::{now_ms, persist, store, Key};
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
-use crate::supervisor::{SpawnRequest, StatusEvent, Supervisor};
+use crate::supervisor::{CheckoutHold, SpawnRequest, StatusEvent, Supervisor};
 use crate::workspace::{AgentRecord, AgentStatus, AgentView, TrackedRepo, PURPOSE_REVIEWER};
 
 /// One `ReviewState`, whenever a checkout's review changes.
@@ -1334,15 +1334,24 @@ async fn round_prompt(
 // ── the ops ──────────────────────────────────────────────────────────────────
 
 /// Whether the coder is free for a review to read its checkout: not mid-turn
-/// (or coming up) and no delegation live on the checkout.
+/// (or coming up), no delegation live on the checkout, and its checkouts at
+/// rest (no move between sandboxes has them). A sample, for deciding what to
+/// queue; a round starts only on [`claim_coder`].
 fn coder_free(sup: &Supervisor, key: &Key) -> bool {
     !matches!(
         sup.status_of(&key.0),
         Some(AgentStatus::Running | AgentStatus::Spawning)
     ) && !crate::supervisor::delegation::is_live(key)
-        // Nor while a move between sandboxes has the checkouts, or left them
-        // unsettled: the review waits, queued, as it does for a turn.
         && sup.checkouts_at_rest(&key.0).is_ok()
+}
+
+/// The coder's checkouts, held for a round's start, when the coder is free:
+/// held first, so no move starts on them between this decision and the
+/// reviewer coming up in them. `None` when the coder isn't free, or the
+/// checkouts can't be held (a move has them): the review waits, queued.
+fn claim_coder(sup: &Supervisor, key: &Key) -> Option<CheckoutHold> {
+    let hold = sup.hold_checkouts(&key.0).ok()?;
+    coder_free(sup, key).then_some(hold)
 }
 
 /// Ask for a review of `agent_id`'s checkout `subdir`. Runs now when the
@@ -1383,14 +1392,14 @@ pub async fn start(
             "No reviewer is set up — pick one in Settings › Review".into(),
         ));
     }
-    if !coder_free(sup, &key) {
+    let Some(held) = claim_coder(sup, &key) else {
         table.update(&key, |t| {
             t.queue(trigger, custom_agent_id.map(str::to_string))
         });
         return refresh(ctx, sup, &key)
             .await
             .ok_or_else(|| Error::Other("review state vanished".into()));
-    }
+    };
     run_round(
         ctx,
         sup,
@@ -1398,6 +1407,7 @@ pub async fn start(
         custom_agent_id,
         trigger,
         FailureOrigin::Start,
+        held,
     )
     .await
 }
@@ -1407,11 +1417,14 @@ pub async fn start(
 /// A failure is recorded by the round as a queued start's; one beaten by a
 /// round already on the checkout waits again.
 fn drain(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, key: &Key) {
-    let free = coder_free(sup, key);
+    let held = claim_coder(sup, key);
     let Some(pending) = global()
-        .update_existing(key, |t| t.take_pending(free))
+        .update_existing(key, |t| t.take_pending(held.is_some()))
         .flatten()
     else {
+        return;
+    };
+    let Some(held) = held else {
         return;
     };
     let (ctx, sup, key) = (ctx.clone(), sup.clone(), key.clone());
@@ -1423,6 +1436,7 @@ fn drain(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, key: &Key) {
             pending.custom_agent_id.as_deref(),
             pending.trigger,
             FailureOrigin::Queued,
+            held,
         )
         .await;
         if matches!(&result, Err(e) if e.to_string() == ALREADY_RUNNING) {
@@ -1433,7 +1447,8 @@ fn drain(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, key: &Key) {
 }
 
 /// Run one round now: claim the checkout, read the change, spawn or resume
-/// its reviewer, and send it the round's prompt. Every failure is recorded
+/// its reviewer, and send it the round's prompt, the coder's checkouts held
+/// (`_held`, [`claim_coder`]) until the reviewer is up in them. Every failure is recorded
 /// here, before returning — `before` (a start's or a queued start's origin)
 /// for one that stops the round from beginning, [`FailureOrigin::Round`]
 /// after it began. Only a claim lost to a round already running records
@@ -1445,6 +1460,7 @@ async fn run_round(
     custom_agent_id: Option<&str>,
     trigger: Trigger,
     before: FailureOrigin,
+    _held: CheckoutHold,
 ) -> Result<ReviewState> {
     let table = global();
     // Claimed first, before anything awaits: a second start meanwhile — the

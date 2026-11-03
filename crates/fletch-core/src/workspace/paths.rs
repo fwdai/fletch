@@ -127,6 +127,18 @@ pub fn repo_checkout_path(agent_id: &str, subdir: &str) -> Result<PathBuf> {
     Ok(agent_parent_dir(agent_id)?.join(subdir))
 }
 
+/// The agent whose dir under the checkouts root holds `path`, if one does:
+/// whose checkouts a tree is, adopted by another agent or not (a reviewer
+/// works in its coder's). `None` for a tree outside the root, a workflow run's.
+pub fn checkout_owner(path: &Path) -> Option<String> {
+    let root = checkouts_root().ok()?;
+    let rel = path.strip_prefix(&root).ok()?;
+    match rel.components().next()? {
+        std::path::Component::Normal(name) => name.to_str().map(str::to_string),
+        _ => None,
+    }
+}
+
 /// Where workspaces moving between sandboxes keep their checkouts on this Mac
 /// while those are not at [`agent_parent_dir`]: `~/.fletch/workspaces.moving/`.
 /// A sibling of the checkouts root, as [`discard_root`] is and for the same

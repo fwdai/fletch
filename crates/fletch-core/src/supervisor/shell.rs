@@ -39,7 +39,9 @@ impl Supervisor {
     /// Open `agent_id`'s shell, unless one is open or opening already. Blocks
     /// while a stopped box boots: call it off the UI thread.
     pub fn open_agent_shell(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
-        self.checkouts_at_rest(agent_id)?;
+        // Held until the shell is up: no move starts under the open, and
+        // one under way refuses it (`sandbox_move`).
+        let _held = self.hold_checkouts(agent_id)?;
         let Some(gen) = self.reserve_shell(agent_id) else {
             // Open, or an open is under way (the panel's mount effect runs
             // twice in dev, and a tab switch remounts it): that one delivers.
@@ -145,14 +147,6 @@ impl Supervisor {
             drop(shells);
             drop(started);
             return Ok(());
-        }
-        // Under the lock a move's sweep ends shells with: one that began while
-        // this shell opened refuses it here, or ends it there.
-        if let Err(e) = self.refuse_if_moving(agent_id) {
-            shells.remove(agent_id);
-            drop(shells);
-            drop(started);
-            return Err(e);
         }
         match started {
             Ok(session) => {

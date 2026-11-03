@@ -298,17 +298,22 @@ tracking ref; the conversation as a rewind's `Exact` through `End`.
   with the stamp: the move's last step, its rollback, and at boot the finish
   of a move the app didn't live through.
 - **At rest:** while a move runs, and for as long as one is left unsettled
-  (its staging dir still there), the workspace's checkouts are not at rest
-  (`Supervisor::checkouts_at_rest`), and nothing may put work into them.
-  Something long-lived checks on entry and again as it registers, under the
-  lock the move's sweep takes (the agent's launch, the shell, the Run app); a
-  one-shot action holds them (`hold_checkouts`, through
-  `commands::agent_repo_checkout`), which a move waits for; a local review
-  waits, queued. A launch first settles what a move left, so a workspace
-  recovers at its next message, not only at boot. A move switches the
-  conversation right after its restamp and launches only once the disk is
-  settled. Any new entry point into a workspace's checkouts must go through
-  the same check.
+  (its staging dir still there), the workspace's checkouts are not at rest,
+  and nothing may put work into them. One mechanism keeps it so: whatever
+  acts in a workspace's checkouts holds them (`Supervisor::hold_checkouts`)
+  for as long as it acts, or, for something long-lived (the agent's launch,
+  the shell, the Run app), for as long as it takes to start; a hold is
+  refused while they aren't at rest. A move takes them exclusively once every
+  hold has gone, granting none meanwhile, and then stops what runs there. A
+  hold is taken on the workspace that owns a tree, whoever works in it: a
+  reviewer launching in its coder's tree holds the coder's, and a review
+  decides to start only with the coder's checkouts held. Commands get a
+  checkout to act in only from resolvers that hand it out held
+  (`agent_repo_checkout`, `checkout_scope_for_path`), which a guard test pins
+  (`commands_reach_checkouts_through_the_resolvers`). A launch first settles
+  what a move left, so a workspace recovers at its next message, not only at
+  boot. A move switches the conversation right after its restamp and launches
+  only once the disk is settled.
 - **Not carried:** ignored files, and earlier turns' checkpoints (the code
   can't be rewound past the move; the conversation can).
 

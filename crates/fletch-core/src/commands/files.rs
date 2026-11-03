@@ -369,12 +369,28 @@ fn split_repo_path<'a>(repos: &'a [TrackedRepo], path: &str) -> Result<(&'a Trac
     Ok((repo, rest.to_string()))
 }
 
-/// Resolve a Code-tab path to the checkout it lives in: `(checkout root,
-/// resolved base, checkout-relative path)`. Single-repo agents use the primary
-/// checkout with the path unchanged — the exact legacy behavior. For a
-/// multi-repo agent every tree path is prefixed with the repo's `subdir`
-/// (see `list_checkout_tree`), so the first segment picks the checkout.
+/// Resolve a Code-tab path to the checkout it lives in, to act in it:
+/// `(checkout root, resolved base, checkout-relative path, hold)`. Handed out
+/// held, as [`agent_repo_checkout`] is: keep the hold for as long as the
+/// action runs, and no move between sandboxes starts under it; while one has
+/// the checkouts, or left them unsettled, this refuses. Reading only, without
+/// a hold: [`checkout_scope_for_read`].
 pub async fn checkout_scope_for_path(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    path: &str,
+) -> Result<(PathBuf, git::ResolvedBase, String, CheckoutHold)> {
+    let hold = supervisor.hold_checkouts(agent_id)?;
+    let (checkout, base, rel) = checkout_scope_for_read(supervisor, agent_id, path).await?;
+    Ok((checkout, base, rel, hold))
+}
+
+/// [`checkout_scope_for_path`] for a read, which no move needs to wait for:
+/// single-repo agents use the primary checkout with the path unchanged — the
+/// exact legacy behavior. For a multi-repo agent every tree path is prefixed
+/// with the repo's `subdir` (see `list_checkout_tree`), so the first segment
+/// picks the checkout.
+pub async fn checkout_scope_for_read(
     supervisor: &Supervisor,
     agent_id: &str,
     path: &str,
@@ -616,7 +632,7 @@ pub async fn read_checkout_file_impl(
     path: &str,
     base_mode: Option<DiffBaseMode>,
 ) -> Result<CheckoutFileContents> {
-    let (checkout, base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let (checkout, base, path) = checkout_scope_for_read(supervisor, agent_id, path).await?;
     let diff_ref = base_mode.unwrap_or_default().diff_ref(&base);
     let abs = safe_join(&checkout, &path)?;
     let lang = lang_for(&path);
@@ -687,7 +703,7 @@ pub async fn get_file_diff_impl(
     path: &str,
     base_mode: Option<DiffBaseMode>,
 ) -> Result<String> {
-    let (checkout, base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let (checkout, base, path) = checkout_scope_for_read(supervisor, agent_id, path).await?;
     let diff_ref = base_mode.unwrap_or_default().diff_ref(&base);
     git::file_diff(&checkout, &diff_ref, &path).await
 }
@@ -716,7 +732,8 @@ pub async fn write_checkout_file_impl(
     path: &str,
     contents: &str,
 ) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let (checkout, _base, path, _held_path) =
+        checkout_scope_for_path(supervisor, agent_id, path).await?;
     let abs = safe_join(&checkout, &path)?;
     let exec = crate::exec::for_path(&checkout);
     if let Some(dir) = abs.parent() {
@@ -737,8 +754,10 @@ pub async fn rename_checkout_path_impl(
     from: &str,
     to: &str,
 ) -> Result<()> {
-    let (checkout_from, _base, from) = checkout_scope_for_path(supervisor, agent_id, from).await?;
-    let (checkout_to, _base, to) = checkout_scope_for_path(supervisor, agent_id, to).await?;
+    let (checkout_from, _base, from, _held_from) =
+        checkout_scope_for_path(supervisor, agent_id, from).await?;
+    let (checkout_to, _base, to, _held_to) =
+        checkout_scope_for_path(supervisor, agent_id, to).await?;
     let src = safe_join(&checkout_from, &from)?;
     let dst = resolve_new_path(&checkout_to, &to).await?;
     let exec = crate::exec::for_path(&checkout_from);
@@ -754,7 +773,8 @@ pub async fn delete_checkout_path_impl(
     agent_id: &str,
     path: &str,
 ) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let (checkout, _base, path, _held_path) =
+        checkout_scope_for_path(supervisor, agent_id, path).await?;
     let abs = safe_join(&checkout, &path)?;
     let exec = crate::exec::for_path(&checkout);
     exec.remove_async(&abs).await?;
@@ -768,7 +788,8 @@ pub async fn create_checkout_file_impl(
     agent_id: &str,
     path: &str,
 ) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let (checkout, _base, path, _held_path) =
+        checkout_scope_for_path(supervisor, agent_id, path).await?;
     let abs = resolve_new_path(&checkout, &path).await?;
     let exec = crate::exec::for_path(&checkout);
     exec.write_async(&abs, b"").await?;
@@ -781,7 +802,8 @@ pub async fn create_checkout_dir_impl(
     agent_id: &str,
     path: &str,
 ) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let (checkout, _base, path, _held_path) =
+        checkout_scope_for_path(supervisor, agent_id, path).await?;
     let abs = resolve_new_path(&checkout, &path).await?;
     let exec = crate::exec::for_path(&checkout);
     exec.create_dir_all_async(&abs).await?;
@@ -796,8 +818,10 @@ pub async fn copy_checkout_file_impl(
     from: &str,
     to: &str,
 ) -> Result<()> {
-    let (checkout_from, _base, from) = checkout_scope_for_path(supervisor, agent_id, from).await?;
-    let (checkout_to, _base, to) = checkout_scope_for_path(supervisor, agent_id, to).await?;
+    let (checkout_from, _base, from, _held_from) =
+        checkout_scope_for_path(supervisor, agent_id, from).await?;
+    let (checkout_to, _base, to, _held_to) =
+        checkout_scope_for_path(supervisor, agent_id, to).await?;
     let src = safe_join(&checkout_from, &from)?;
     let dst = resolve_new_path(&checkout_to, &to).await?;
     let exec = crate::exec::for_path(&checkout_from);
@@ -1272,5 +1296,44 @@ mod checkout_pending_tests {
         let sup = supervisor_with_agent("yosemite");
         assert!(!checkout_pending(&sup, "yosemite"));
         assert!(!checkout_pending(&sup, "no-such-agent"));
+    }
+}
+
+#[cfg(test)]
+mod held_checkout_tests {
+    /// Command modules that may resolve a checkout path themselves rather
+    /// than through a resolver: this one, which holds them, and the fleet
+    /// polls, which only read. May only shrink.
+    const ALLOWED: &[&str] = &["commands/files.rs", "commands/git_state.rs"];
+
+    /// A command acts in a checkout only through a resolver that hands it out
+    /// held (`agent_repo_checkout`, `checkout_scope_for_path`), or reads it
+    /// through one named for reading, so no command can act in a checkout a
+    /// move between sandboxes has (`Supervisor::hold_checkouts`). A command
+    /// module that resolves a path itself fails this until it goes through a
+    /// resolver; one that stops doing so fails it until struck from
+    /// [`ALLOWED`], so the list can't go stale.
+    #[test]
+    fn commands_reach_checkouts_through_the_resolvers() {
+        let found: Vec<String> = crate::source_scan::production_sources()
+            .into_iter()
+            .filter(|(rel, text)| rel.starts_with("commands/") && text.contains("checkout_path("))
+            .map(|(rel, _)| rel)
+            .collect();
+        let added: Vec<&String> = found
+            .iter()
+            .filter(|rel| !ALLOWED.contains(&rel.as_str()))
+            .collect();
+        let gone: Vec<&&str> = ALLOWED
+            .iter()
+            .filter(|rel| !found.iter().any(|f| f == *rel))
+            .collect();
+        assert!(
+            added.is_empty() && gone.is_empty(),
+            "a command reaches a checkout through a resolver that holds it \
+             (agent_repo_checkout, checkout_scope_for_path) or one named for reading.\n\
+             resolving a checkout path itself: {added:?}\n\
+             no longer doing so, strike from ALLOWED: {gone:?}"
+        );
     }
 }
