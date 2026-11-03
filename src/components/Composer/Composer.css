@@ -287,6 +287,21 @@
   color: var(--accent);
   background: color-mix(in oklch, var(--accent), transparent 90%);
 }
+/* How many folders the agent can use, on the folder-access trigger's corner. */
+.composer-foot .composer-action .folder-access-count {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font-size: 9px;
+  line-height: 12px;
+  text-align: center;
+}
 /* Hairline between the insert actions and the usage/primary-control group. */
 .composer-foot-sep {
   width: 1px;

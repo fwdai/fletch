@@ -19,7 +19,7 @@ import { blockedSentence, useAgentAvailability } from "./availability";
 import { ComposerFrame } from "./ComposerFrame";
 import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
 import { EffortPicker } from "./EffortPicker";
-import { FolderList } from "./FolderList";
+import { FolderAccess } from "./FolderAccess";
 import { IssuePicker } from "./IssuePicker";
 import { type AccountControl, ModelPicker } from "./ModelPicker";
 import { PrimaryControl, primaryState } from "./PrimaryControl";
@@ -71,9 +71,12 @@ interface Props {
     /** The selected custom agent's id, or undefined for a built-in spawn. */
     customAgentId: string | undefined;
     attachments: string[];
-    /** Folder chips to grant the agent before (or, for a new agent, at the
-     *  spawn of) this message. Empty unless `folders` is set. */
-    folders: FolderGrant[];
+    /** The folders to grant the agent before (or, for a new agent, at the
+     *  spawn of) this message: its chips, and the folders its `@~/…` and
+     *  `@/…` paths name, which are still being looked up when this fires. A
+     *  promise so the send is handed off at once and takes its place in line;
+     *  the receiver awaits it there. Empty unless `folders` is set. */
+    folders: Promise<FolderGrant[]>;
   }) => undefined | Promise<boolean>;
   /** Fired when the composer is showing an active stop control. */
   onStop?: () => void;
@@ -106,8 +109,9 @@ interface Props {
   /** Folders can be attached — from the `@` listing or a drop — and are given
    *  to the agent live, at their own paths, through `onSend`'s `folders`. */
   folders?: boolean;
-  /** The folders the agent already has, shown above the input with their mode
-   *  and a way to take each back. Omit for a new agent (none yet). */
+  /** The folders the agent can already use, listed beside the attach button
+   *  (`FolderAccess`) with their mode and a way to take each back. Omit for
+   *  a new agent (none yet). */
   grantedFolders?: FolderGrant[];
   /** Change a granted folder's mode (`writable` is the new one). */
   onChangeGrantedFolder?: (path: string, writable: boolean) => void;
@@ -380,14 +384,17 @@ export function Composer({
     // started.
     if (!hasContent || disabled || sendBlocked) return;
     const draft = { text: input.text, attachments: input.attachments, folders: input.folders };
+    // Handed off at once, its folders still resolving: the receiver puts the
+    // send in line before awaiting anything (`sendOrder`), so a later send
+    // can't overtake it.
     const sent = onSend({
       text: trimmed,
       provider,
       model,
       thinking: thinkingValue,
       customAgentId,
-      attachments: input.attachments,
-      folders: input.folders,
+      attachments: draft.attachments,
+      folders: input.foldersToSend(trimmed, draft.folders),
     });
     input.clear();
     if (sent instanceof Promise) {
@@ -444,16 +451,6 @@ export function Composer({
   return (
     <ComposerFrame
       input={input}
-      top={
-        grantedFolders && grantedFolders.length > 0 ? (
-          <FolderList
-            granted
-            folders={grantedFolders}
-            onToggle={(f) => onChangeGrantedFolder?.(f.path, !f.writable)}
-            onRemove={(path) => onRevokeFolder?.(path)}
-          />
-        ) : undefined
-      }
       placeholder={
         placeholder ||
         defaultPlaceholder(
@@ -516,7 +513,15 @@ export function Composer({
           {/* Insert actions live on the right, beside the primary control: what
            *  runs (agent/model/effort) reads left, what goes into this message
            *  reads right. The mic is not among them — it belongs beside send,
-           *  one step left, inside the control. */}
+           *  one step left, inside the control. The folders the agent can
+           *  already use sit beside attach: what it has been given so far. */}
+          {grantedFolders && (
+            <FolderAccess
+              folders={grantedFolders}
+              onToggle={(f) => onChangeGrantedFolder?.(f.path, !f.writable)}
+              onRevoke={(path) => onRevokeFolder?.(path)}
+            />
+          )}
           <IconButton className="composer-action" tip="Attach files" onClick={input.browse}>
             <Icon name="attach" size={15} />
           </IconButton>

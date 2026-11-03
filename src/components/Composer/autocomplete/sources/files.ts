@@ -6,6 +6,7 @@ import {
   filterFiles,
   isFsPath,
   joinTypedDir,
+  offersFolder,
   splitFsPath,
 } from "@/components/Composer/mentions";
 
@@ -159,21 +160,18 @@ export function useFileSource({
 }
 
 /** The row that attaches the listed directory itself: offered only when
- *  folders can be attached and nothing is typed after the trailing slash (a
- *  partial name means the user is looking for something inside it), and never
- *  for `/`, a top-level folder like `/Users`, or home as typed (`@~/`). The
- *  rest of what a grant may not name (home by another path, hidden folders, …)
- *  is the backend's to refuse, with why. `typed` is the directory as the user
- *  typed it, `base` as the listing resolved it. */
+ *  folders can be attached, nothing is typed after the trailing slash (a
+ *  partial name means the user is looking for something inside it), and the
+ *  folder is one the composer offers at all (`offersFolder`). `typed` is the
+ *  directory as the user typed it, `base` as the listing resolved it. */
 export function folderRow(
   base: string,
   typed: string,
   partial: string,
   enabled: boolean,
 ): AcSource["rows"][number] | null {
+  if (!enabled || partial !== "" || !offersFolder(base, typed)) return null;
   const dir = base.replace(/\/+$/, "");
-  const home = typed.replace(/\/+$/, "") === "~";
-  if (!enabled || partial !== "" || home || dir.split("/").length < 3) return null;
   const name = dir.slice(dir.lastIndexOf("/") + 1);
   return {
     title: `${name}/`,

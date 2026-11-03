@@ -1,15 +1,41 @@
-// Fold a `turn:sent` event into a chat log, so a message sent from one device
-// shows on every other one while the turn is still running. Pure and free of
-// store types so the phone imports it as-is.
-
 import type { ChatItem } from "@/adapters/types";
 import type { TurnSentEvent } from "@/api/types/session";
 
+/** The bubble a client drew for turn `turnId`. */
+function isTurnBubble(it: ChatItem, turnId: string): boolean {
+  return (it.kind === "user_message" || it.kind === "queued_message") && it.turnId === turnId;
+}
+
 /** The log already carries this turn — the sender's own optimistic bubble. */
 export function hasSentTurn(items: ChatItem[], turnId: string): boolean {
-  return items.some(
-    (it) => (it.kind === "user_message" || it.kind === "queued_message") && it.turnId === turnId,
-  );
+  return items.some((it) => isTurnBubble(it, turnId));
+}
+
+/** The bubble of a message sent but not yet delivered — waiting for its place
+ *  in its agent's line or its folders (`store/sendOrder`). A store-only
+ *  `queued_message`, which a transcript rebuild keeps until its turn is drawn
+ *  (`carryForwardStoreOnly`); without the badge, which says the host is
+ *  holding it, so it reads as the plain bubble it most often becomes. */
+export function waitingBubble(text: string, turnId: string, attachments: string[]): ChatItem {
+  return attachments.length > 0
+    ? { kind: "queued_message", text, attachments, turnId }
+    : { kind: "queued_message", text, turnId };
+}
+
+/** `items` with turn `turnId`'s bubble replaced in place by `next`, or taken
+ *  out for `null`. `next` is appended when the bubble is gone (a reload
+ *  cleared the log meanwhile). */
+export function replaceTurnBubble(
+  items: ChatItem[],
+  turnId: string,
+  next: ChatItem | null,
+): ChatItem[] {
+  const at = items.findIndex((it) => isTurnBubble(it, turnId));
+  if (at < 0) return next ? [...items, next] : items;
+  const out = [...items];
+  if (next) out[at] = next;
+  else out.splice(at, 1);
+  return out;
 }
 
 /** The bubble a sent turn draws: a follow-up as the same `queued_message` the
