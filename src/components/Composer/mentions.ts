@@ -9,6 +9,31 @@ export function isFsPath(query: string): boolean {
   return /^(~|\/|\.\/|\.\.\/)/.test(query);
 }
 
+/** The `@~/…` and `@/…` paths written into `text`, tokenized like the `@`
+ *  trigger (`triggerQueryAt`): mentions typed out, or left as text when the
+ *  menu closed without a pick. Relative ones (`./`, `../`) are left out, since
+ *  in a message they mean the checkout, not a folder on this Mac. Sentence
+ *  punctuation after a path is not part of it. */
+export function pathMentions(text: string): string[] {
+  const found = new Set<string>();
+  for (const m of text.matchAll(/(?:^|\s)@([^\s@#]+)/g)) {
+    const path = m[1].replace(/[.,;:!?)\]}'"]+$/, "");
+    if (path === "~" || path.startsWith("~/") || path.startsWith("/")) found.add(path);
+  }
+  return [...found];
+}
+
+/** Whether the directory a listing resolved to `base`, typed as `typed`, may
+ *  be given to the agent from the composer: never `/`, a top-level folder like
+ *  `/Users`, or home as typed (`~`). The rest of what a grant may not name
+ *  (home by another path, hidden folders, …) is the backend's to refuse, with
+ *  why. */
+export function offersFolder(base: string, typed: string): boolean {
+  const dir = base.replace(/\/+$/, "");
+  const home = typed.replace(/\/+$/, "") === "~";
+  return !home && dir.split("/").length >= 3;
+}
+
 /** Split a typed filesystem path into the directory to list and the partial
  *  basename to filter by. The `dir` keeps the user's prefix (e.g. `~`) so we
  *  can re-display it; `list_dir` resolves the real path. */

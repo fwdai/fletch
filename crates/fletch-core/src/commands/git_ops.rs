@@ -31,7 +31,7 @@ pub async fn push_agent_impl(
     agent_id: String,
     subdir: Option<&str>,
 ) -> Result<String> {
-    let (repo, checkout) = agent_repo_checkout(supervisor, &agent_id, subdir)?;
+    let (repo, checkout, _hold) = agent_repo_checkout(supervisor, &agent_id, subdir)?;
     let branch = repo_branch(&repo)?.to_string();
     // Through the publication layer, like every push: signed when the user's
     // repo signs, with the key and config of that repo.
@@ -59,7 +59,7 @@ pub async fn commit_agent_impl(
     message: &str,
     subdir: Option<&str>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    let (_repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     git::commit(&checkout, message).await
 }
 
@@ -70,7 +70,7 @@ pub async fn pull_agent_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<()> {
-    let (repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    let (repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     git::pull(&checkout, &repo.repo_path).await
 }
 
@@ -82,7 +82,7 @@ pub async fn rebase_agent_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<()> {
-    let (repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    let (repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     // Onto the base's resolved tip, not its name: the clone's local
     // `refs/heads/<base>` is a stale snapshot from clone time.
     let base = repo.resolve_base(&checkout).await;
@@ -96,7 +96,7 @@ pub async fn stash_agent_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    let (_repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     git::stash_push(&checkout).await
 }
 
@@ -107,7 +107,7 @@ pub async fn discard_agent_changes_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    let (_repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     git::discard_all(&checkout).await
 }
 
@@ -118,7 +118,7 @@ pub async fn abort_merge_agent_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    let (_repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     git::merge_abort(&checkout).await
 }
 
@@ -130,6 +130,6 @@ pub async fn clear_checkout_config_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    let (_repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     git::hardening::remove_steerable_config(&checkout).await
 }

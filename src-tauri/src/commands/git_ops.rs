@@ -206,7 +206,7 @@ pub async fn delete_branch_agent(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<()> {
-    let (repo, _checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
+    let (repo, _checkout, _hold) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     let branch = repo_branch(&repo)?;
     git::branch_delete(&repo.repo_path, branch).await
 }

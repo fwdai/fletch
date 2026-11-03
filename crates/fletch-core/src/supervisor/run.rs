@@ -24,6 +24,9 @@ impl Supervisor {
     ///
     /// No-op if a run is already in progress for this agent.
     pub fn run_start(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
+        // Held until its command is spawned: no move starts under the start,
+        // and one under way refuses it (`sandbox_move`).
+        let _held = self.hold_checkouts(agent_id)?;
         let record = self.workspace.agent(agent_id)?;
         if record.archive.is_some() {
             return Err(Error::Other("agent is archived".into()));

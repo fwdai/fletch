@@ -54,7 +54,7 @@
 use std::path::{Path, PathBuf};
 
 use super::engine::{
-    AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, LaunchPlan, SandboxEngine,
+    AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, LaunchPlan, LauncherArgs, SandboxEngine,
 };
 use super::policy;
 use crate::error::{Error, Result};
@@ -135,7 +135,7 @@ impl SandboxEngine for SandboxExecEngine {
             // The host binary this launch runs, probed once per path.
             claude_thinking_summaries: ctx.provider == "claude"
                 && crate::agent::claude_supports_thinking_display(agent_bin),
-            prefix_args,
+            launcher_args: LauncherArgs::Prefix(prefix_args),
             env,
             env_remove: HOST_CREDENTIAL_ENV.iter().map(|v| v.to_string()).collect(),
             env_delivery: EnvDelivery::Process,
@@ -1556,6 +1556,14 @@ mod tests {
     /// The project every test launch is for.
     const PROJECT: &str = "project-a";
 
+    /// The launcher argv a seatbelt plan puts ahead of the agent's own.
+    fn prefix_of(plan: &LaunchPlan) -> &[String] {
+        let LauncherArgs::Prefix(prefix) = &plan.launcher_args else {
+            panic!("seatbelt plans carry a prefix");
+        };
+        prefix
+    }
+
     /// The toolchain cache root a test profile grants. The builders take it as
     /// computed, so any path will do; the layout is pinned in
     /// `sandbox::toolchain_cache`.
@@ -2885,11 +2893,10 @@ mod tests {
                 adopted_read_only: false,
                 folder_grants: &[],
             };
-            SandboxExecEngine
+            let plan = SandboxExecEngine
                 .launch_agent(&ctx, "/usr/local/bin/agent")
-                .unwrap()
-                .prefix_args[1]
-                .clone()
+                .unwrap();
+            prefix_of(&plan)[1].clone()
         };
         let whole = format!("(subpath \"{}\")", canonical_account.display());
 
@@ -3123,7 +3130,10 @@ mod tests {
         };
         let mut plan = SandboxExecEngine.launch_agent(&ctx, &codex).unwrap();
         if std::env::var_os("FLETCH_LIVE_WITHOUT_KEYCHAIN_DENY").is_some() {
-            plan.prefix_args[1] = plan.prefix_args[1].replace(KEYCHAIN_MACH_DENY, "");
+            let LauncherArgs::Prefix(prefix) = &mut plan.launcher_args else {
+                panic!("seatbelt plans carry a prefix");
+            };
+            prefix[1] = prefix[1].replace(KEYCHAIN_MACH_DENY, "");
         }
         if std::env::var_os("FLETCH_LIVE_WITHOUT_CA_BUNDLE").is_some() {
             plan.env.retain(|(k, _)| k != "CODEX_CA_CERTIFICATE");
@@ -3145,7 +3155,7 @@ mod tests {
         let log = td.path().join("codex.stderr");
         let stdout = td.path().join("codex.stdout");
         let mut child = std::process::Command::new(&plan.program)
-            .args(&plan.prefix_args)
+            .args(prefix_of(&plan))
             .args([
                 "exec",
                 "--skip-git-repo-check",
@@ -3569,8 +3579,7 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == "sk-ant-oat-test"));
         assert!(!plan.env.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"));
-        assert!(!plan
-            .prefix_args
+        assert!(!prefix_of(&plan)
             .iter()
             .any(|a| a.contains("sk-ant-oat-test")));
 
@@ -4589,25 +4598,26 @@ mod tests {
             .unwrap();
 
         assert_eq!(plan.program, PathBuf::from(SANDBOX_EXEC));
-        assert_eq!(plan.prefix_args[0], "-p");
+        let prefix = prefix_of(&plan);
+        assert_eq!(prefix[0], "-p");
         assert!(
-            plan.prefix_args[1].contains("(deny file-write*)"),
+            prefix[1].contains("(deny file-write*)"),
             "argv must carry the policy itself, got: {}",
-            plan.prefix_args[1]
+            prefix[1]
         );
-        assert_eq!(plan.prefix_args[2], "/usr/local/bin/claude");
-        assert_eq!(plan.prefix_args.len(), 3);
+        assert_eq!(prefix[2], "/usr/local/bin/claude");
+        assert_eq!(prefix.len(), 3);
 
         // No argument may *be* a path under a tree the policy makes writable —
         // that is precisely the file an agent could swap out. (The policy text
         // mentions those trees as grants, but never starts with one.)
         assert!(
-            !plan.prefix_args.iter().any(|a| a == "-f"),
+            !prefix.iter().any(|a| a == "-f"),
             "a file-backed profile is exactly the race this avoids"
         );
         for writable in ["/private/var/folders", "/private/tmp", "/private/var/tmp"] {
             assert!(
-                !plan.prefix_args.iter().any(|a| a.starts_with(writable)),
+                !prefix.iter().any(|a| a.starts_with(writable)),
                 "no argv element may be a path under the agent-writable {writable}"
             );
         }

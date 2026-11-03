@@ -1,7 +1,5 @@
-import type { BoxStateEvent } from "@/api";
+import type { BoxStateEvent, WorkspaceKind } from "@/api";
 import type { IconName } from "@/components/Icon";
-import type { BoxSetup } from "@/components/SettingsScreen/Sandbox/boxSetup";
-import type { Placement } from "@/util/placement";
 import { LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
 
 /** How a workspace's agent is confined, as the title bar tells it apart. */
@@ -16,11 +14,13 @@ export interface Isolation {
   hint: string;
 }
 
+// Each hint is at most two short lines in the popover: what the agent can
+// reach, nothing else.
 const BOX: Isolation = {
   kind: "box",
   icon: LINUX_VM.icon,
   title: LINUX_VM.label,
-  hint: "Runs inside a micro-VM reachable only over SSH. It shares no folder with your Mac and reaches only the project's allowed hosts.",
+  hint: "Its own disk. Sees only folders you grant; reaches only allowed hosts.",
 };
 
 /** Seatbelt is the fallback: every engine the app does not run elsewhere. */
@@ -28,18 +28,16 @@ const SEATBELT: Isolation = {
   kind: "seatbelt",
   icon: MACOS_SANDBOX.icon,
   title: MACOS_SANDBOX.label,
-  hint: "Runs on your Mac under the macOS sandbox (Seatbelt). It writes only inside this workspace, and your Downloads, Desktop, Documents and iCloud Drive stay closed to it.",
+  hint: "On your Mac. Writes only inside this workspace; personal folders stay closed.",
 };
 
-/** Container agents bind-mount the workspace at its exact host path ("path
- *  identity"), so their paths look like the host's even though the process is
- *  confined to the container — said here, since it is not obvious. */
+/** A retired engine's workspace, which no longer launches. */
 function container(runtime: string): Isolation {
   return {
     kind: "container",
     icon: "container",
     title: `${runtime} container`,
-    hint: `Runs inside a ${runtime} container. Paths mirror your host exactly by design, but the agent is confined to its mounted workspace — it can't reach the rest of your machine.`,
+    hint: "Fletch no longer runs containers. Start a new workspace.",
   };
 }
 
@@ -51,34 +49,15 @@ export function isolationOf(engine: string | null | undefined): Isolation {
   return SEATBELT;
 }
 
-/** One more line under a seatbelt workspace's hint: where the Linux VM
- *  stands, for a host that could run one. The workspace itself stays where
- *  it is — the line is about the next one — so it says so. `placement` is
- *  the project's *effective* placement (`util/placement`): a project kept
- *  on this Mac, by the user or by the host's native-app detection, is the
- *  whole answer. Null when there is nothing worth adding: a machine that
- *  cannot boot a box, a setup that failed (Settings has that),
- *  or no answer yet. */
-export function seatbeltNote(
-  vmUsable: boolean,
-  setup: BoxSetup,
-  placement: { placement: Placement; detected: boolean },
-): string | null {
-  if (placement.detected) {
-    return "This project builds a macOS or iOS app, so its workspaces run in the macOS sandbox (Project Settings › Sandbox).";
-  }
-  if (placement.placement === "host") {
-    return "This project's workspaces run in the macOS sandbox (Project Settings › Sandbox).";
-  }
-  if (!vmUsable) return null;
-  switch (setup.state) {
-    case "ready":
-      return "The Linux VM is ready. New workspaces run in it.";
-    case "busy":
-      return `The Linux VM is being prepared — ${setup.text.replace(/…$/, "").toLowerCase()}. New workspaces will run in it.`;
-    default:
-      return null;
-  }
+/** What the title bar shows for a workspace: where it runs, or, while it
+ *  moves, where it's going (`movingTo`, as asked: the record is restamped
+ *  before the move is over). */
+export function shownIsolation(
+  engine: string | null | undefined,
+  movingTo: WorkspaceKind | null,
+): Isolation {
+  if (movingTo) return movingTo === "box" ? BOX : SEATBELT;
+  return isolationOf(engine);
 }
 
 /** The box's phase as the title bar spells it. */

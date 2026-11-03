@@ -398,7 +398,7 @@ impl Agent {
         };
         let LaunchPlan {
             program,
-            prefix_args,
+            launcher_args,
             env: launch_env,
             env_remove,
             env_delivery,
@@ -411,8 +411,7 @@ impl Agent {
         // Released on any failure before the session owns it (`KillGuard`).
         let kill = KillGuard::new(kill);
         account.unset.extend(env_remove);
-        let mut args = prefix_args;
-        args.extend(agent_args);
+        let args = launcher_args.for_process(&agent_args)?;
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
@@ -518,7 +517,7 @@ impl Agent {
         };
         let LaunchPlan {
             program,
-            prefix_args,
+            launcher_args,
             env: launch_env,
             env_remove,
             env_delivery,
@@ -531,8 +530,7 @@ impl Agent {
         // Released on any failure before the session owns it (`KillGuard`).
         let kill = KillGuard::new(kill);
         account.unset.extend(env_remove);
-        let mut args = prefix_args;
-        args.extend(agent_args);
+        let args = launcher_args.for_process(&agent_args)?;
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
@@ -605,7 +603,7 @@ impl Agent {
         };
         let LaunchPlan {
             program,
-            prefix_args,
+            launcher_args,
             env: launch_env,
             env_remove,
             env_delivery,
@@ -636,8 +634,7 @@ impl Agent {
             claude_thinking_summaries,
             system_prompt.as_deref(),
         );
-        let mut args = prefix_args;
-        args.extend(agent_args);
+        let args = launcher_args.for_process(&agent_args)?;
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
@@ -811,7 +808,7 @@ impl Agent {
         let engine = sandbox::engine_for(spec.engine)?;
         let LaunchPlan {
             program: launch_program,
-            prefix_args,
+            launcher_args,
             env: launch_env,
             env_remove,
             env_delivery,
@@ -848,7 +845,7 @@ impl Agent {
             Ok(ExecSession::new_with_invocation(
                 ExecSpawn {
                     program: launch_program,
-                    prefix_args,
+                    launcher_args,
                     cwd: spec.cwd,
                     session_id: spec.session_id,
                     stdout_is_json,
@@ -1264,15 +1261,15 @@ mod tests {
                 .filter(|v| std::env::var_os(v).is_some())
                 .collect::<Vec<_>>()
         );
+        let mut agent_args: Vec<String> = ["exec", "--json", "--skip-git-repo-check"]
+            .map(String::from)
+            .to_vec();
+        if let Ok(model) = std::env::var("FLETCH_LIVE_CODEX_MODEL") {
+            agent_args.extend(["-m".to_string(), model]);
+        }
+        agent_args.push("Reply with exactly the word: pong".into());
         let mut cmd = std::process::Command::new(&plan.program);
-        cmd.args(&plan.prefix_args)
-            .args(["exec", "--json", "--skip-git-repo-check"])
-            .args(
-                std::env::var("FLETCH_LIVE_CODEX_MODEL")
-                    .map(|m| vec!["-m".to_string(), m])
-                    .unwrap_or_default(),
-            )
-            .arg("Reply with exactly the word: pong")
+        cmd.args(plan.launcher_args.for_process(&agent_args).unwrap())
             .current_dir(&cwd)
             .stdin(std::process::Stdio::null());
         crate::bin_resolve::apply_login_shell_env(&mut cmd);

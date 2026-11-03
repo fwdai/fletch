@@ -79,7 +79,8 @@
 }
 .ws-iso.box.preparing,
 .ws-iso.box.starting,
-.ws-iso.box.stopping {
+.ws-iso.box.stopping,
+.ws-iso.moving {
   color: var(--info);
   animation: ws-iso-pulse 1.4s ease-in-out infinite;
 }
@@ -92,7 +93,8 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ws-iso.box {
+  .ws-iso.box,
+  .ws-iso.moving {
     animation: none;
   }
 }
@@ -439,13 +441,6 @@
   line-height: 1.45;
   color: var(--fg-2);
 }
-/* where the Linux VM stands, under a seatbelt workspace: about the next
-   workspace, not this one, so a step quieter than the hint */
-.ws-pop-iso-note {
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--fg-3);
-}
 
 /* the checkout's lanes — the Git panel's own rows (`LaneRow`), flush with the
    popover's padding rather than the panel's, and never pickable here */
@@ -542,6 +537,12 @@
   gap: 6px;
   margin-top: 11px;
 }
+/* nothing to offer (a host that can't run a VM, a remote one) */
+.ws-pop-actions:empty {
+  display: none;
+}
+/* Side by side at equal widths; labels are kept short enough to fit, and
+   never wrap. */
 .ws-act {
   flex: 1;
   display: inline-flex;
@@ -549,6 +550,8 @@
   justify-content: center;
   gap: 6px;
   height: 30px;
+  padding: 0 10px;
+  white-space: nowrap;
   border-radius: 8px;
   font-size: 11.5px;
   font-weight: 550;
@@ -560,9 +563,19 @@
     border-color 0.12s,
     color 0.12s;
 }
-.ws-act:hover {
+.ws-act:hover:not(:disabled) {
   background: var(--hover);
   color: var(--fg-0);
+}
+.ws-act:disabled {
+  color: var(--fg-3);
+}
+/* the move's confirmation: its one line, then cancel and move */
+.ws-pop-move {
+  margin-top: 11px;
+}
+.ws-pop-move .ws-pop-actions {
+  margin-top: 8px;
 }
 .ws-act.primary {
   flex: 1;

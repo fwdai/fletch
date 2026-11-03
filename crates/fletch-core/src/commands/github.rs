@@ -67,7 +67,7 @@ pub async fn create_pr_impl(
     body: &str,
     subdir: Option<&str>,
 ) -> Result<PrState> {
-    let (repo, checkout) = agent_repo_checkout(supervisor, &agent_id, subdir)?;
+    let (repo, checkout, _hold) = agent_repo_checkout(supervisor, &agent_id, subdir)?;
     let base = repo.base_branch().await;
     let pr = gh::pr_create(&checkout, title, body, &base).await?;
     crate::telemetry::track("pr_opened", serde_json::json!({ "source": "manual" }));
@@ -93,7 +93,7 @@ pub async fn merge_pr_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    let (_repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     gh::pr_merge(&checkout).await
 }
 

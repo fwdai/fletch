@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
 use fletch_core::exec_session::{ExecCallbacks, ExecSession, ExecSpawn, TurnInvocation};
-use fletch_core::sandbox::KillHandle;
+use fletch_core::sandbox::{KillHandle, LauncherArgs};
 
 fn spawn() -> ExecSpawn {
     ExecSpawn {
         program: PathBuf::from("unused"),
-        prefix_args: Vec::new(),
+        launcher_args: LauncherArgs::Prefix(Vec::new()),
         cwd: std::env::current_dir().unwrap(),
         session_id: None,
         stdout_is_json: true,

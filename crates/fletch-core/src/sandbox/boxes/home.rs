@@ -576,13 +576,14 @@ pub(crate) async fn pull_before_stop(running: &super::RunningBox) {
 
 /// Create the session file `rel` (relative to `home`'s sessions dir) with
 /// `lines`, for agent `agent_id` working in `tree` — a session the host
-/// wrote: a fork, a rewind. In the guest that holds `tree` (the agent's own
-/// box, or its host's when it adopted the tree as a tenant), under the
-/// agent's *own* sessions dir, where the CLI that resumes it looks; and in
-/// the agent's mirror of that dir, which the relay fills guest → host only,
-/// so the launch that follows sees a resumable session at once rather than
-/// after the tail relays it back. Fails when something is already there on
-/// either side. Returns the mirror path, the one the host's locators read.
+/// wrote: a fork, a rewind, a move. In the guest that holds `tree` (the
+/// agent's own box, or its host's when it adopted the tree as a tenant),
+/// under the agent's *own* sessions dir, where the CLI that resumes it looks;
+/// then in the agent's mirror of that dir, before this returns, so the launch
+/// that follows sees a resumable session at once. A tailed provider's mirror
+/// is the relay's to fill, so that is awaited ([`await_mirror`]); a pulled
+/// one's is written here. Fails when something is already there in the guest.
+/// Returns the mirror path, the one the host's locators read.
 pub(crate) fn create_session_file(
     home: &dyn ProviderHome,
     agent_id: &str,
@@ -607,13 +608,109 @@ pub(crate) fn create_session_file(
         bytes.push(b'\n');
     }
     super::write_new_guest_file(tree, &guest_path, &bytes)?;
-    crate::agent::write_new_jsonl(&mirror, lines)?;
+    match home.transport() {
+        Transport::Tail => await_mirror(&mirror, &bytes, RELAY_WAIT)?,
+        Transport::Pull => crate::agent::write_new_jsonl(&mirror, lines)?,
+    }
     Ok(mirror)
+}
+
+/// How long [`create_session_file`] waits for the transcript tail to mirror a
+/// session it wrote in the guest. The tail polls every 100 ms; a relay that is
+/// reconnecting waits out a backoff of at most 5 s, then re-sends what the
+/// mirror lacks.
+const RELAY_WAIT: Duration = Duration::from_secs(15);
+
+/// Wait until `mirror` holds `bytes`, a session file just created in the
+/// guest, and is ready to read. The transcript tail copies it there on its
+/// own, emptying the file as it starts and appending in pieces, so the tail
+/// is its one writer: nothing is written beside it, which raced it into "file
+/// exists", could read back a half-copied file, and, from a tail partway
+/// through, would have its last pieces appended to a whole copy. A tail that
+/// hasn't delivered it within `wait` is an error; the file in the guest stays,
+/// and the tail still mirrors it when it can.
+fn await_mirror(mirror: &Path, bytes: &[u8], wait: Duration) -> Result<()> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if std::fs::read(mirror).is_ok_and(|held| held == bytes) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::Other(format!(
+                "the Linux VM's transcript relay didn't bring the session back within {}s",
+                wait.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session written in the guest is left for the tail to mirror, and read
+    /// only once it has all of it: the tail empties the file as it starts and
+    /// appends in pieces, and a writer beside it is what failed with "file
+    /// exists". A tail that never comes is an error, nothing written.
+    #[test]
+    fn a_written_session_waits_for_the_tail_to_mirror_it() {
+        let td = tempfile::tempdir().unwrap();
+        let mirror = td
+            .path()
+            .join("claude-projects")
+            .join("dir")
+            .join("s.jsonl");
+        let bytes = b"{\"a\":1}\n{\"b\":2}\n".to_vec();
+
+        let tail = {
+            let (mirror, bytes) = (mirror.clone(), bytes.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(120));
+                std::fs::create_dir_all(mirror.parent().unwrap()).unwrap();
+                std::fs::write(&mirror, b"").unwrap();
+                std::thread::sleep(Duration::from_millis(80));
+                std::fs::write(&mirror, &bytes[..8]).unwrap();
+                std::thread::sleep(Duration::from_millis(80));
+                std::fs::write(&mirror, &bytes).unwrap();
+            })
+        };
+        await_mirror(&mirror, &bytes, Duration::from_secs(5)).unwrap();
+        assert_eq!(std::fs::read(&mirror).unwrap(), bytes);
+        tail.join().unwrap();
+
+        let untailed = td.path().join("other").join("s.jsonl");
+        assert!(await_mirror(&untailed, &bytes, Duration::from_millis(100)).is_err());
+        assert!(!untailed.exists());
+    }
+
+    /// A tail still partway through when the wait ends is left to finish
+    /// alone: its last piece lands on what it wrote, never on a copy written
+    /// beside it, so the mirror ends as the guest's file, not longer.
+    #[test]
+    fn a_tail_partway_through_at_the_deadline_finishes_alone() {
+        let td = tempfile::tempdir().unwrap();
+        let mirror = td.path().join("s.jsonl");
+        let bytes = b"{\"a\":1}\n{\"b\":2}\n".to_vec();
+
+        let tail = {
+            let (mirror, bytes) = (mirror.clone(), bytes.clone());
+            std::thread::spawn(move || {
+                std::fs::write(&mirror, &bytes[..8]).unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+                use std::io::Write as _;
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&mirror)
+                    .unwrap()
+                    .write_all(&bytes[8..])
+                    .unwrap();
+            })
+        };
+        assert!(await_mirror(&mirror, &bytes, Duration::from_millis(100)).is_err());
+        tail.join().unwrap();
+        assert_eq!(std::fs::read(&mirror).unwrap(), bytes);
+    }
 
     #[test]
     fn mirror_for_root_is_under_the_box_dir_of_the_roots_agent() {

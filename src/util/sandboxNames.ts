@@ -7,11 +7,17 @@ import type { IconName } from "@/components/Icon";
 
 export interface SandboxName {
   label: string;
+  /** The label where a control has room for a word or two: "Move to …". */
+  short: string;
   icon: IconName;
 }
 
 /** A box: one micro-VM per workspace. */
-export const LINUX_VM: SandboxName = { label: "Linux VM", icon: "cube" };
+export const LINUX_VM: SandboxName = { label: "Linux VM", short: "Linux VM", icon: "cube" };
 
 /** Seatbelt, on this Mac. */
-export const MACOS_SANDBOX: SandboxName = { label: "macOS sandbox", icon: "folderLock" };
+export const MACOS_SANDBOX: SandboxName = {
+  label: "macOS sandbox",
+  short: "macOS",
+  icon: "folderLock",
+};

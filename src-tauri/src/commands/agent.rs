@@ -127,6 +127,23 @@ pub async fn rewind_agent(
         .await
 }
 
+/// Move an agent's workspace to the sandbox `kind` names (`host`, the macOS
+/// sandbox, or `box`, a Linux VM), keeping its code, branch and conversation.
+/// Resolves to the moved record once its agent is launching there; an error
+/// says why it couldn't move, or what didn't follow it.
+#[tauri::command]
+pub async fn move_workspace(
+    supervisor: State<'_, Arc<Supervisor>>,
+    ctx: State<'_, Arc<EngineCtx>>,
+    agent_id: String,
+    kind: String,
+) -> Result<AgentRecord> {
+    supervisor
+        .inner()
+        .move_workspace(ctx.inner(), &agent_id, &kind)
+        .await
+}
+
 /// What rewinding an agent's code to before turn `turn_id` would do — the
 /// commits that would leave each branch — for the confirmation; an error says
 /// why its code can't be rewound.

@@ -18,6 +18,7 @@ import { track } from "@/util/track";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { activeEnvironment, activeEnvironmentId } from "./environments";
 import { refreshWorkspace } from "./refreshWorkspace";
+import { sendOrder } from "./sendOrder";
 import { activeSurface } from "./surface";
 import type { AppState, SliceCreator } from "./types";
 import { workspaceTypeOptionsFor } from "./workspaceTypes";
@@ -125,9 +126,11 @@ export interface DraftsSlice {
   setNewDraftSelection: (provider: string, model?: string, customAgentId?: string) => void;
   rerollDraftName: (id: string) => Promise<void>;
   /** Spawn the real agent for a draft and dispatch the first message.
-   *  `folders` are granted from the agent's first launch. Resolves false when
-   *  the spawn failed (`lastError` says why), so the composer can put the
-   *  draft back. */
+   *  `folders` (or a promise of them, while the composer's path mentions
+   *  resolve) are granted from the agent's first launch. Sent again while
+   *  the spawn is in flight, the message goes to that agent after the first.
+   *  Resolves false when the spawn failed (`lastError` says why), so the
+   *  composer can put the draft back. */
   spawnFromDraft: (
     id: string,
     text: string,
@@ -136,9 +139,14 @@ export interface DraftsSlice {
     attachments?: string[],
     thinking?: string,
     customAgentId?: string,
-    folders?: FolderGrant[],
+    folders?: FolderGrant[] | Promise<FolderGrant[]>,
   ) => Promise<boolean>;
 }
+
+/** Each draft's spawn in flight, by draft id: resolves to the new agent's id
+ *  once its first prompt has its place in line (`sendOrder`), or null when no
+ *  agent came of it. A send made meanwhile awaits it and goes to that agent. */
+const draftSpawns = new Map<string, Promise<string | null>>();
 
 const NEW_DRAFT_SELECTION_SETTING = "newDraftSelection";
 const LAST_REPO_PATH_SETTING = "lastRepoPath";
@@ -378,12 +386,30 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     customAgentId?,
     folders = [],
   ) => {
+    // Sent again while this draft's agent is still being spawned: the message
+    // follows the first prompt to that agent, in order, rather than spawning a
+    // second agent from the same draft.
+    const spawning = draftSpawns.get(id);
+    if (spawning) {
+      const agentId = await spawning;
+      return agentId ? get().sendUserMessage(agentId, text, attachments, folders) : false;
+    }
     const draft = get().drafts.find((d) => d.id === id);
     if (!draft) return false;
+    let settle: (agentId: string | null) => void = () => {};
+    draftSpawns.set(
+      id,
+      new Promise((resolve) => {
+        settle = resolve;
+      }),
+    );
     get().setLastRepoPath(draft.repoPath);
     set({ busy: true, lastError: null });
     const turnId = crypto.randomUUID();
     try {
+      // The composer's folders, still resolving its path mentions when the
+      // send was made.
+      const grants = await folders;
       // Every agent starts in the custom view. Native is entered per agent via
       // the header toggle, never as a spawn default — a per-turn provider has
       // no session id before its first turn, and the backend's native path
@@ -449,9 +475,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // already carry it, so the sidebar row never reads empty in between.
         prompt,
         draft.account,
-        // The composer's folder chips, checked by the backend and in place
-        // from the first launch.
-        folders,
+        // The composer's folders, checked by the backend and in place from
+        // the first launch.
+        grants,
         // What the sandbox pill declares, the pick or the default alike,
         // read from the host's answer for this repo and provider only: the
         // agent lands where the chip says, or the spawn fails with why. With
@@ -516,12 +542,19 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         };
         return patches;
       });
-      await refreshWorkspace(set);
-      // In-flight across the whole wait for the agent to come up: a snapshot of
-      // the spawn's resting `idle` must not settle the `sending` flag early.
-      await whileSending(rec.id, () =>
-        sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, sent)),
-      );
+      // The first prompt takes the new agent's first place in line before
+      // anything sent meanwhile is let through to it (`draftSpawns`), so it is
+      // the first message the agent gets.
+      const first = sendOrder.run(rec.id, async () => {
+        await refreshWorkspace(set);
+        // In-flight across the whole wait for the agent to come up: a snapshot
+        // of the spawn's resting `idle` must not settle the `sending` flag early.
+        await whileSending(rec.id, () =>
+          sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, sent)),
+        );
+      });
+      settle(rec.id);
+      await first;
       return true;
     } catch (e) {
       const selected = get().selectedAgentId;
@@ -533,6 +566,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // exists its chat is open, and the composer the draft came from is gone.
       return !get().drafts.some((d) => d.id === id);
     } finally {
+      // No agent came of it, unless one was already announced.
+      settle(null);
+      draftSpawns.delete(id);
       set({ busy: false });
     }
   },

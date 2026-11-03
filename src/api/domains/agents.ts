@@ -177,6 +177,12 @@ export const agentsApi = {
    *  provider without accounts. */
   switchAgentAccount: (agentId: string, account: string) =>
     invoke<AgentRecord>("switch_agent_account", { agentId, account }),
+  /** Move the agent's workspace to the sandbox `kind` names, keeping its code
+   *  (committed and not, on its branch) and its conversation. Resolves to the
+   *  moved record once its agent is launching there; rejects with why it
+   *  couldn't move, or what didn't follow it. Ignored files stay behind. */
+  moveWorkspace: (agentId: string, kind: WorkspaceKind) =>
+    invoke<AgentRecord>("move_workspace", { agentId, kind }),
   resumeAgent: (agentId: string) => invoke<void>("resume_agent", { agentId }),
   stopAgent: (agentId: string) => invoke<void>("stop_agent", { agentId }),
   discardAgent: (agentId: string) => invoke<void>("discard_agent", { agentId }),

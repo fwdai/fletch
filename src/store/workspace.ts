@@ -13,6 +13,7 @@ import {
   type SpawnStage,
   type UserTurn,
   type Workspace,
+  type WorkspaceKind,
 } from "@/api";
 import { discoverCommands } from "@/data/slashCommands";
 import {
@@ -28,9 +29,11 @@ import {
   reconcileSending,
   recordWorkspaceUsage,
   reduceRecords,
+  replaceTurnBubble,
   repoPathFor,
   resolveBaseBranch,
   unsupportedManagedCommand,
+  waitingBubble,
   whileSending,
 } from "@/helpers";
 import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
@@ -44,6 +47,7 @@ import {
   PENDING_ARCHIVE,
 } from "./pendingHides";
 import { refreshWorkspace } from "./refreshWorkspace";
+import { sendOrder } from "./sendOrder";
 import type { AppState, SliceCreator } from "./types";
 
 // Per-agent serialization of session-config mutations (effort/model). Config
@@ -156,6 +160,11 @@ export interface WorkspaceSlice {
   /** True while an account switch is in flight, so the header picker and the
    *  composer hint cannot both start one. */
   switchingAccount: Record<string, boolean>;
+  /** The sandbox the agent's workspace is moving to, while it moves (`null`
+   *  or absent otherwise): its agent is down, and the title bar shows where
+   *  it's going. Kept as asked, since the host restamps the record before
+   *  the move is over. */
+  movingWorkspace: Record<string, WorkspaceKind | null>;
   /** True while a folder grant (or revoke) waits for the agent's running turn
    *  to end before it relaunches with it — the composer offers to apply it
    *  now. Set from the grant's reply and `agent:folder-grants`; cleared once
@@ -211,7 +220,19 @@ export interface WorkspaceSlice {
     code: ForkCode,
     context: ForkContext,
   ) => Promise<AgentRecord | null>;
-  sendUserMessage: (id: string, text: string, attachments?: string[]) => Promise<void>;
+  /** Send a message to the agent, in the order sends are made (`sendOrder`).
+   *  Its bubble is drawn at once, whatever it waits on before delivery.
+   *  `folders` (the composer's chips, or a promise of them while its path
+   *  mentions resolve) are granted first, in the message's place, so the agent
+   *  can see them when it reads it; each then rides as an attachment. Resolves
+   *  false when one was refused (`lastError` says why): nothing was sent and
+   *  the bubble is taken down. */
+  sendUserMessage: (
+    id: string,
+    text: string,
+    attachments?: string[],
+    folders?: FolderGrant[] | Promise<FolderGrant[]>,
+  ) => Promise<boolean>;
   /** Persist a mid-session reasoning-effort change and (for claude) restart to
    *  apply it. Serialized per agent so a subsequent send waits for it to land —
    *  the next turn then reads the new value from the record. */
@@ -236,6 +257,11 @@ export interface WorkspaceSlice {
    *  stamp; on refusal sets `lastError` and resolves to null, as it does when
    *  a switch for the agent is already in flight. */
   switchAgentAccount: (id: string, account: string) => Promise<AgentRecord | null>;
+  /** Move the agent's workspace to the sandbox `kind` names, keeping its code,
+   *  branch and conversation. Queued with the config changes, so a send right
+   *  after it reaches the moved agent. On refusal sets `lastError` and
+   *  resolves to null, as it does when a move is already in flight. */
+  moveWorkspace: (id: string, kind: WorkspaceKind) => Promise<AgentRecord | null>;
   /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
    *  Looks up the held control-protocol request for `toolUseId` and delivers
    *  `updatedInput` (the tool's input with the user's `answers` merged in) as
@@ -326,6 +352,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   spawnStage: {},
   switchInFlight: {},
   switchingAccount: {},
+  movingWorkspace: {},
   folderChangeWaiting: {},
   unseenResults: {},
   syncHealth: {},
@@ -569,135 +596,181 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       set((state) => ({ switchingAccount: { ...state.switchingAccount, [id]: false } }));
     }
   },
+  moveWorkspace: async (id, kind) => {
+    if (get().movingWorkspace[id]) return null;
+    set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: kind } }));
+    try {
+      const record = await configOps.run(id, () => api.moveWorkspace(id, kind));
+      // Only the stamp: the host relaunches the agent, and its status events
+      // are newer than the record's.
+      set((state) => patchAgentRecord(state, id, { sandbox_engine: record.sandbox_engine }));
+      return record;
+    } catch (e) {
+      set({ lastError: String(e) });
+      return null;
+    } finally {
+      set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: null } }));
+    }
+  },
 
-  sendUserMessage: async (id, text, attachments = []) => {
-    // Wait for any in-flight effort/model change for this agent to land before
-    // dispatching, so the turn reads the intended config from the record (the
-    // backend resolves per-turn config at dispatch). See `configOps`.
-    await configOps.pending(id)?.catch(() => {});
-    // Guard: some Claude built-in control commands (e.g. /usage, /agents,
-    // /login) only work in its interactive TUI and don't resolve over this
-    // view's stream-json transport. Dispatched as a plain message they'd
-    // produce a transient reply that never persists, so the turn reconciles
-    // away and flashes out (see onSessionRecordsAppended). Intercept them here
-    // and leave a command_output notice pointing to the Native view instead of
-    // sending a doomed turn. The notice is store-only but survives reconciles
-    // (carryForwardStoreOnly), so the explanation persists for the session.
-    const unsupported = await unsupportedManagedCommand(
-      providerFor(get(), id),
-      text,
-      repoPathFor(get(), id),
-    );
-    if (unsupported) {
+  sendUserMessage: (id, text, given = [], folders = []) => {
+    // Stable per-turn id: the bubble drawn now, the backend's
+    // session_user_turns write (idempotent across the agent-not-ready retry)
+    // and the `turn:sent` mirror all name the turn by it.
+    const turnId = crypto.randomUUID();
+    // The bubble goes up now, before the message waits for its place in line
+    // or its folders, so it never seems lost while an earlier send — or its
+    // own folder grant, a box restart — takes seconds. Each outcome below
+    // redraws it in place (`draw`).
+    const draw = (next: ChatItem | null) =>
       set((state) => ({
         managedLogs: {
           ...state.managedLogs,
-          [id]: [
-            ...(state.managedLogs[id] ?? []),
-            {
-              kind: "notice",
-              subtype: "command_output",
-              label: `/${unsupported}`,
-              text: `/${unsupported} isn't available in this chat view — it only works in Claude's interactive TUI. Switch to the Native view to use it.`,
-              is_error: true,
-            },
-          ],
+          [id]: replaceTurnBubble(state.managedLogs[id] ?? [], turnId, next),
         },
       }));
-      return;
-    }
-    // App-expanded commands (codex prompts): the CLI receives the prompt as a
-    // positional arg and never resolves `/name` itself, so substitute the
-    // prompt body here and send that instead. The typed text stays first in
-    // the expansion, so the transcript's user message still carries it — the
-    // render fold (MessageItem) and the queued-follow-up matcher both key off
-    // that prefix. Discovery is awaited first so a send racing the composer's
-    // async cache fill still expands; the round-trip only happens for
-    // slash-shaped text.
-    let sendText = text;
-    {
-      const provider = providerFor(get(), id);
-      if (provider && text.startsWith("/")) {
-        await discoverCommands(provider, repoPathFor(get(), id));
-        sendText = expandSlashCommand(provider, text, repoPathFor(get(), id)) ?? text;
+    set((state) => ({
+      managedLogs: {
+        ...state.managedLogs,
+        [id]: [...(state.managedLogs[id] ?? []), waitingBubble(text, turnId, given)],
+      },
+    }));
+    return sendOrder.run(id, async () => {
+      // The message's folders, granted in its place in line: the agent
+      // relaunches with them before this reaches it, and a refused one sends
+      // nothing — its bubble comes down and the composer puts the draft back.
+      // Each rides by the path the backend stored, which can differ from the
+      // one picked (a link, `~`).
+      const granted: string[] = [];
+      for (const folder of await folders) {
+        const path = await get().grantAgentFolder(id, folder.path, folder.writable);
+        if (path === null) {
+          draw(null);
+          return false;
+        }
+        granted.push(path);
       }
-    }
-    // Stable per-turn id, reused across the agent-not-ready retry below so the
-    // backend's session_user_turns write is idempotent (one row per turn).
-    const turnId = crypto.randomUUID();
-    // Sent mid-turn? Then this is a follow-up: render it as a queued_message
-    // and leave the running turn's busy state untouched. The backend decides
-    // whether to inject it live (claude) or queue it (per-turn agents); the
-    // store never drives delivery.
-    const wasBusy = isAgentBusy(get(), id);
-    try {
-      set((state) => {
-        const slashName = wasBusy
-          ? null
-          : passthroughSlashName(providerFor(state, id), text, repoPathFor(state, id));
-        // Optimistic mid-turn follow-up: default to no badge (the common case is
-        // immediate live injection). If the backend reports it was enqueued, we
-        // flip `queued` on below — carried by `turnId` so we can find it again.
-        // The turn-opening bubble carries `turnId` too, so the `turn:sent`
-        // mirror (see eventListeners) recognizes it as ours and skips it.
-        const entry: ChatItem = wasBusy
-          ? attachments.length > 0
-            ? { kind: "queued_message", text, attachments, turnId }
-            : { kind: "queued_message", text, turnId }
-          : slashName
-            ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
-            : attachments.length > 0
-              ? { kind: "user_message", text, attachments, turnId }
-              : { kind: "user_message", text, turnId };
-        return {
-          managedLogs: {
-            ...state.managedLogs,
-            [id]: [...(state.managedLogs[id] ?? []), entry],
-          },
-          // Only a turn-*starting* send is ours to bridge until the backend's
-          // `running` lands; a follow-up rides a turn that is already busy.
-          ...(wasBusy
-            ? {}
-            : {
-                sending: { ...state.sending, [id]: true },
-                busyLabel: {
-                  ...state.busyLabel,
-                  [id]: slashName ? SLASH_BUSY_LABELS[slashName] : undefined,
-                },
-              }),
-        };
-      });
-      // A dead session (one whose process exited when it last went idle, or any
-      // session after an app restart) needs no special handling here: the
-      // backend revives it in --resume mode and delivers this message onto the
-      // fresh process. That used to live here, keyed off an "agent not found"
-      // error, but the backend no longer surfaces one — it holds the message
-      // instead — and keeping the revive there covers every other sender
-      // (autopilot, delegation, drafts) rather than just this one.
-      // In-flight for the round trip, so a snapshot landing meanwhile can't
-      // settle the `sending` flag this send just raised (see helpers/sending).
-      const enqueued = await whileSending(id, () =>
-        api.sendUserMessage(id, turnId, sendText, attachments),
+      const attachments = [...given, ...granted];
+      // Wait for any in-flight effort/model change for this agent to land before
+      // dispatching, so the turn reads the intended config from the record (the
+      // backend resolves per-turn config at dispatch). See `configOps`.
+      await configOps.pending(id)?.catch(() => {});
+      // Guard: some Claude built-in control commands (e.g. /usage, /agents,
+      // /login) only work in its interactive TUI and don't resolve over this
+      // view's stream-json transport. Dispatched as a plain message they'd
+      // produce a transient reply that never persists, so the turn reconciles
+      // away and flashes out (see onSessionRecordsAppended). Intercept them here
+      // and leave a command_output notice pointing to the Native view instead of
+      // sending a doomed turn. The notice is store-only but survives reconciles
+      // (carryForwardStoreOnly), so the explanation persists for the session.
+      const unsupported = await unsupportedManagedCommand(
+        providerFor(get(), id),
+        text,
+        repoPathFor(get(), id),
       );
-      // Only a genuinely-held message wears the badge; a delivered one stays a
-      // plain bubble. Match by turnId — agent output may have appended since.
-      if (wasBusy && enqueued) {
+      if (unsupported) {
+        draw({
+          kind: "notice",
+          subtype: "command_output",
+          label: `/${unsupported}`,
+          text: `/${unsupported} isn't available in this chat view — it only works in Claude's interactive TUI. Switch to the Native view to use it.`,
+          is_error: true,
+        });
+        return true;
+      }
+      // App-expanded commands (codex prompts): the CLI receives the prompt as a
+      // positional arg and never resolves `/name` itself, so substitute the
+      // prompt body here and send that instead. The typed text stays first in
+      // the expansion, so the transcript's user message still carries it — the
+      // render fold (MessageItem) and the queued-follow-up matcher both key off
+      // that prefix. Discovery is awaited first so a send racing the composer's
+      // async cache fill still expands; the round-trip only happens for
+      // slash-shaped text.
+      let sendText = text;
+      {
+        const provider = providerFor(get(), id);
+        if (provider && text.startsWith("/")) {
+          await discoverCommands(provider, repoPathFor(get(), id));
+          sendText = expandSlashCommand(provider, text, repoPathFor(get(), id)) ?? text;
+        }
+      }
+      // Delivered mid-turn (a turn running, or one an earlier send in line
+      // just started)? Then this is a follow-up: it stays a queued_message and
+      // leaves the running turn's busy state untouched. The backend decides
+      // whether to inject it live (claude) or queue it (per-turn agents); the
+      // store never drives delivery.
+      const wasBusy = isAgentBusy(get(), id);
+      try {
+        set((state) => {
+          const slashName = wasBusy
+            ? null
+            : passthroughSlashName(providerFor(state, id), text, repoPathFor(state, id));
+          // Optimistic mid-turn follow-up: default to no badge (the common case is
+          // immediate live injection). If the backend reports it was enqueued, we
+          // flip `queued` on below — carried by `turnId` so we can find it again.
+          // The turn-opening bubble carries `turnId` too, so the `turn:sent`
+          // mirror (see eventListeners) recognizes it as ours and skips it.
+          const entry: ChatItem = wasBusy
+            ? attachments.length > 0
+              ? { kind: "queued_message", text, attachments, turnId }
+              : { kind: "queued_message", text, turnId }
+            : slashName
+              ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
+              : attachments.length > 0
+                ? { kind: "user_message", text, attachments, turnId }
+                : { kind: "user_message", text, turnId };
+          return {
+            // In place of the bubble drawn at send time, now with its folders.
+            managedLogs: {
+              ...state.managedLogs,
+              [id]: replaceTurnBubble(state.managedLogs[id] ?? [], turnId, entry),
+            },
+            // Only a turn-*starting* send is ours to bridge until the backend's
+            // `running` lands; a follow-up rides a turn that is already busy.
+            ...(wasBusy
+              ? {}
+              : {
+                  sending: { ...state.sending, [id]: true },
+                  busyLabel: {
+                    ...state.busyLabel,
+                    [id]: slashName ? SLASH_BUSY_LABELS[slashName] : undefined,
+                  },
+                }),
+          };
+        });
+        // A dead session (one whose process exited when it last went idle, or any
+        // session after an app restart) needs no special handling here: the
+        // backend revives it in --resume mode and delivers this message onto the
+        // fresh process. That used to live here, keyed off an "agent not found"
+        // error, but the backend no longer surfaces one — it holds the message
+        // instead — and keeping the revive there covers every other sender
+        // (autopilot, delegation, drafts) rather than just this one.
+        // In-flight for the round trip, so a snapshot landing meanwhile can't
+        // settle the `sending` flag this send just raised (see helpers/sending).
+        const enqueued = await whileSending(id, () =>
+          api.sendUserMessage(id, turnId, sendText, attachments),
+        );
+        // Only a genuinely-held message wears the badge; a delivered one stays a
+        // plain bubble. Match by turnId — agent output may have appended since.
+        if (wasBusy && enqueued) {
+          set((state) => ({
+            managedLogs: {
+              ...state.managedLogs,
+              [id]: (state.managedLogs[id] ?? []).map((it) =>
+                it.kind === "queued_message" && it.turnId === turnId ? { ...it, queued: true } : it,
+              ),
+            },
+          }));
+        }
+      } catch (e) {
         set((state) => ({
-          managedLogs: {
-            ...state.managedLogs,
-            [id]: (state.managedLogs[id] ?? []).map((it) =>
-              it.kind === "queued_message" && it.turnId === turnId ? { ...it, queued: true } : it,
-            ),
-          },
+          lastError: String(e),
+          // The send never reached the backend, so no status will discharge it.
+          ...(wasBusy ? {} : { sending: { ...state.sending, [id]: false } }),
         }));
       }
-    } catch (e) {
-      set((state) => ({
-        lastError: String(e),
-        // The send never reached the backend, so no status will discharge it.
-        ...(wasBusy ? {} : { sending: { ...state.sending, [id]: false } }),
-      }));
-    }
+      return true;
+    });
   },
 
   answerToolUse: async (id, toolUseId, updatedInput, behavior = "allow", message) => {

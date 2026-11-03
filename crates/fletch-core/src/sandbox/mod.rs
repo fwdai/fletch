@@ -24,7 +24,7 @@ use crate::workspace::AgentRecord;
 pub(crate) use boxes::COW_DIR;
 pub use engine::{
     AgentLaunchCtx, EngineCaps, EngineKind, EnvDelivery, KillGuard, KillHandle, LaunchPlan,
-    SandboxEngine, TurnPrep,
+    LauncherArgs, SandboxEngine, StageArgs, TurnPrep,
 };
 pub use guarantees::{describe as describe_isolation, IsolationReport};
 pub(crate) use seatbelt::pid_alive;
@@ -285,6 +285,24 @@ pub fn engine_for_spawn(
             Ok(boxes::engine_for_new_agent(provider, placement))
         }
     }
+}
+
+/// The engine a workspace of `provider` moves to for the user's choice
+/// `kind` (`host` or `box`, as [`WorkspaceType::parse`] reads it), or why it
+/// can't move there now, in the sentence the user sees. The spawn override's
+/// refusals ([`engine_for_spawn`]), plus one: the workspace is down while it
+/// moves, so a box still being set up (its image, the provider's tools) is
+/// refused rather than waited for. Blocking: the runtime probe.
+pub fn engine_to_move_to(kind: &str, provider: &str) -> Result<EngineKind> {
+    let choice = WorkspaceType::parse(kind)
+        .ok_or_else(|| Error::Other(format!("Unknown workspace type `{kind}`.")))?;
+    let engine = engine_for_spawn(None, None, Path::new(""), provider, Some(choice))?;
+    if engine == EngineKind::Box && !boxes::ready_for(provider) {
+        return Err(Error::Other(
+            "The Linux VM is still being set up. Try again once it's ready.".into(),
+        ));
+    }
+    Ok(engine)
 }
 
 /// Why a new agent of `provider` cannot run in a box, in the sentence the

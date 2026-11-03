@@ -135,6 +135,6 @@ pub async fn agent_head_sha(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<String> {
-    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
+    let (_repo, checkout, _hold) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     git::rev_parse(&checkout, "HEAD").await
 }

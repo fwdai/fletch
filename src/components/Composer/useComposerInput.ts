@@ -10,6 +10,7 @@ import { useFileSource } from "./autocomplete/sources/files";
 import { usePrSource } from "./autocomplete/sources/prs";
 import { triggerQueryAt } from "./autocomplete/triggers";
 import { useAutocomplete } from "./autocomplete/useAutocomplete";
+import { offersFolder, pathMentions } from "./mentions";
 import { stageAttachmentPath, stageEnvironmentPath } from "./stageAttachment";
 import { useFileDrop } from "./useFileDrop";
 
@@ -119,6 +120,33 @@ export function useComposerInput(cfg: ComposerInputConfig) {
 
   function toggleFolder(path: string) {
     setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, writable: !f.writable } : f)));
+  }
+
+  /** The folders a message of `text` with `chips` gives the agent: the chips,
+   *  then each folder `text` names as an `@~/…` or `@/…` path — the chip
+   *  picking it from the `@` menu would have added (read-only). A path goes
+   *  out as a grant because an agent sees only granted folders (a box mounts
+   *  nothing else). Resolved on the environment being driven, as the menu's
+   *  listing is; a path that is no folder there stays plain text, and a chip
+   *  already there keeps its mode. Just the chips where folders can't be
+   *  attached. Never rejects. */
+  async function foldersToSend(text: string, chips: FolderGrant[]): Promise<FolderGrant[]> {
+    const listDir = cfg.listDir;
+    const mentions = cfg.folders && listDir ? pathMentions(text) : [];
+    if (!listDir || mentions.length === 0) return chips;
+    const resolved = await Promise.all(
+      mentions.map((typed) =>
+        listDir(typed).then(
+          (res) => (offersFolder(res.base, typed) ? res.base.replace(/\/+$/, "") : null),
+          () => null,
+        ),
+      ),
+    );
+    const chipped = new Set(chips.map((f) => f.path.replace(/\/+$/, "")));
+    const mentioned = [...new Set(resolved.filter((p) => p !== null))]
+      .filter((path) => !chipped.has(path))
+      .map((path) => ({ path, writable: false }));
+    return [...chips, ...mentioned];
   }
 
   /** Attach whatever each job stages, and say so once for the ones that
@@ -294,6 +322,7 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     acceptsFolders: !!cfg.folders,
     removeFolder,
     toggleFolder,
+    foldersToSend,
     ta,
     autocomplete,
     isDropTarget,
