@@ -48,7 +48,8 @@
 //! ssh session, env file, mailbox relay and profile dir, no box of its own.
 //! It need not share the owner's provider: a box boots with every provider's
 //! tools disk that is built, the owner's on top, so each CLI is at its usual
-//! path; a tenant whose disk was not aboard restarts the box with it
+//! path; a tenant whose disk was not aboard restarts the box with it when no
+//! other session is attached, and is refused otherwise
 //! (`BoxRegistry::reattach_with_tools`).
 //! Conversely an agent adopting a host tree never runs in a box, which cannot
 //! see it ([`crate::sandbox::engine_for_adopted_tree`]). Inside the guest both
@@ -1200,9 +1201,9 @@ impl SandboxEngine for BoxEngine {
         if running.tools_disk_for(ctx.provider).is_none() {
             // Booted before this provider's disk existed (an older build, a
             // host CLI upgrade since, or a tenant of a provider the box had no
-            // disk for): a restart attaches the disk, once it is built
-            // (`reattach_with_tools`).
-            running = block_on(registry.reattach_with_tools(&identity, ctx.provider))?;
+            // disk for): a restart attaches the disk, once it is built — but
+            // never under another launch's session (`reattach_with_tools`).
+            running = block_on(registry.reattach_with_tools(&identity, ctx.provider, &launch_id))?;
             if running.tools_disk_for(ctx.provider).is_none() {
                 let label =
                     crate::agent::provider_bin_label(ctx.provider).map_or(ctx.provider, |(_, l)| l);

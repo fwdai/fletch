@@ -31,7 +31,9 @@ mounted at `/opt/fletch/tools` (one bound, several overlaid with the first on
 top, image 0.3.4 and later). Each layer's directories (`usr`, `etc`, `var`)
 become a read-only overlay on the root. Folders the user shares arrive as
 virtio-fs at their own paths. Block devices are fixed at boot: a launch whose
-provider's disk is not aboard (built after the boot) restarts the box with it.
+provider's disk is not aboard (built after the boot) restarts the box with it,
+unless another launch's session is attached — then it is refused with why, and
+the disk is aboard at the box's next start.
 
 | Image | Content | Packed |
 | --- | --- | ---: |

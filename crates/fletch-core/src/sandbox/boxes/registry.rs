@@ -1078,18 +1078,33 @@ impl BoxRegistry {
     }
 
     /// Restart `identity`'s box with `provider`'s tools disk aboard, for a
-    /// launch of `provider` that found no CLI of its own in the running box
-    /// (the box booted before the disk was built, or before this provider
-    /// had one). Waits for the disk as a boot of that provider would
+    /// launch `launch_id` of `provider` that found no CLI of its own in the
+    /// running box (the box booted before the disk was built, or before this
+    /// provider had one). Waits for the disk as a boot of that provider would
     /// ([`Self::tools_disk`]), then stops the box and boots it again, which
     /// takes every built disk ([`Self::other_tools_disks`]). The lease taken
     /// here outlives the restart, so the sweep cannot take the disk in
     /// between.
+    ///
+    /// Refused while any other launch is attached to the box: a restart
+    /// would end their sessions (the coder's, when a reviewer tenant asks),
+    /// and a background launch must not do that to a live one. The disk
+    /// is aboard at the box's next start — its idle stop, or the user's.
     pub async fn reattach_with_tools(
         &'static self,
         identity: &BoxIdentity,
         provider: &str,
+        launch_id: &str,
     ) -> Result<Arc<RunningBox>> {
+        let others = self.others_attached(&identity.agent_id, launch_id);
+        if others > 0 {
+            let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
+            return Err(Error::SandboxUnavailable(format!(
+                "{label} isn't in this VM yet (its CLI was installed after the VM started), and \
+                 restarting the VM now would end the {others} session(s) running in it. It's \
+                 picked up at the VM's next start: stop the VM, or try again once it is idle"
+            )));
+        }
         let ready = setup::ready(|detail| {
             self.set_phase(&identity.agent_id, BoxPhase::Preparing { detail });
         })
@@ -1099,6 +1114,18 @@ impl BoxRegistry {
             .await?;
         self.stop(&identity.agent_id, StopReason::Reattach).await?;
         self.ensure_running(identity).await
+    }
+
+    /// How many launches other than `launch_id` are attached to `agent_id`'s
+    /// box: the sessions a restart would end.
+    fn others_attached(&self, agent_id: &str, launch_id: &str) -> usize {
+        self.entries.lock().get(agent_id).map_or(0, |entry| {
+            entry
+                .attached
+                .iter()
+                .filter(|held| held.as_str() != launch_id)
+                .count()
+        })
     }
 
     /// Lease `provider`'s disk `pick` names, picked under the lease lock so a
@@ -3173,6 +3200,47 @@ mod tests {
             crate::exec::for_path(&tenant_root.join(".fletch-profile")),
             crate::exec::Executor::Local
         ));
+    }
+
+    /// A launch that needs a disk the running box lacks never restarts the
+    /// box under another launch's session: with the coder attached, a
+    /// reviewer tenant's reattach is refused (and nothing is stopped); its
+    /// own hold does not count.
+    #[tokio::test]
+    async fn a_reattach_is_refused_while_another_launch_is_attached() {
+        let registry = BoxRegistry::global();
+        let id = "reattach-attached-test";
+        let identity = BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from("/reattach-attached-test/root"),
+            rpc_dir: PathBuf::from("/reattach-attached-test/rpc"),
+            home: PathBuf::from("/reattach-attached-test/home"),
+            shares: Vec::new(),
+        };
+        registry.register(identity.clone());
+        registry.attach(id, "coder-launch");
+        registry.attach(id, "reviewer-launch");
+        assert_eq!(registry.others_attached(id, "reviewer-launch"), 1);
+        assert_eq!(registry.others_attached(id, "coder-launch"), 1);
+        assert_eq!(registry.others_attached(id, "someone-else"), 2);
+
+        let refused = match registry
+            .reattach_with_tools(&identity, "codex", "reviewer-launch")
+            .await
+        {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("the reattach ran under the coder's session"),
+        };
+        assert!(refused.contains("1 session(s)"), "{refused}");
+        assert!(refused.contains("Codex"), "{refused}");
+        assert_eq!(registry.state(id), BoxPhase::Stopped, "nothing was touched");
+
+        registry.detach(id, "coder-launch");
+        assert_eq!(registry.others_attached(id, "reviewer-launch"), 0);
+        registry.detach(id, "reviewer-launch");
+        registry.discard(id).await.unwrap();
     }
 
     /// A session's hold keeps its box attached until the session's kill, or
