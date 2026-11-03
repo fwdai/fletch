@@ -320,6 +320,11 @@ pub struct WorkspaceTypeOption {
 /// accept it as an override, with the same sentence when not: the macOS
 /// sandbox on macOS (`seatbelt::refusal`), a box where one can boot
 /// (`box_refusal`). Blocking, like [`engine_for_spawn`].
+///
+/// The box comes first, always: it is the default engine and the macOS
+/// sandbox its fallback. The order stays fixed even when the default moves
+/// to this Mac, so a menu never reshuffles under the user; the `default`
+/// flag says which one a spawn gets.
 pub fn workspace_types(
     placement_setting: Option<&str>,
     repo: &Path,
@@ -336,24 +341,22 @@ pub fn workspace_types(
         box_reason.is_none() && boxes::ready_for(provider)
     });
     let host_default = default == EngineKind::SandboxExec;
-    vec![
-        WorkspaceTypeOption {
-            kind: "host",
-            available: host_reason.is_none(),
-            reason: host_reason.or_else(|| {
-                host_default.then(|| {
-                    host_default_reason(placement_setting, placement, box_reason.as_deref())
-                })
-            }),
-            default: host_default,
-        },
-        WorkspaceTypeOption {
-            kind: "box",
-            available: box_reason.is_none(),
-            reason: box_reason,
-            default: default == EngineKind::Box,
-        },
-    ]
+    let host = WorkspaceTypeOption {
+        kind: "host",
+        available: host_reason.is_none(),
+        reason: host_reason.or_else(|| {
+            host_default
+                .then(|| host_default_reason(placement_setting, placement, box_reason.as_deref()))
+        }),
+        default: host_default,
+    };
+    let vm = WorkspaceTypeOption {
+        kind: "box",
+        available: box_reason.is_none(),
+        reason: box_reason,
+        default: default == EngineKind::Box,
+    };
+    vec![vm, host]
 }
 
 /// The default macOS sandbox's reason while the VM image downloads. The
@@ -787,10 +790,10 @@ mod workspace_type_tests {
         let repo = tempfile::tempdir().unwrap();
         let reason = seatbelt::refusal().expect("no seatbelt off macOS");
         let options = workspace_types(None, repo.path(), "claude");
-        assert_eq!(options[0].kind, "host");
-        assert!(!options[0].available && !options[0].default);
-        assert_eq!(options[0].reason.as_deref(), Some(reason.as_str()));
-        assert!(options[1].default, "the box is the only engine here");
+        let [vm, host] = [option(&options, "box"), option(&options, "host")];
+        assert!(!host.available && !host.default);
+        assert_eq!(host.reason.as_deref(), Some(reason.as_str()));
+        assert!(vm.default, "the box is the only engine here");
         assert!(engine_for(EngineKind::SandboxExec).is_err());
     }
 
@@ -847,6 +850,28 @@ mod workspace_type_tests {
         assert_eq!(Some(err.to_string()), box_refusal("antigravity"));
     }
 
+    /// The option of `kind` in a list, wherever it sits.
+    fn option<'a>(options: &'a [WorkspaceTypeOption], kind: &str) -> &'a WorkspaceTypeOption {
+        options
+            .iter()
+            .find(|o| o.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind} option"))
+    }
+
+    /// The box is listed first and the macOS sandbox second, whichever is
+    /// the default: the order never moves under the user.
+    #[test]
+    fn the_box_is_listed_first_whatever_the_default() {
+        let repo = tempfile::tempdir().unwrap();
+        for provider in ["claude", "antigravity"] {
+            let kinds: Vec<&str> = workspace_types(None, repo.path(), provider)
+                .iter()
+                .map(|o| o.kind)
+                .collect();
+            assert_eq!(kinds, ["box", "host"], "{provider}");
+        }
+    }
+
     /// The list offers both types, this Mac always, and a box only when the
     /// override would be accepted, with the refusal as its reason.
     #[cfg(target_os = "macos")]
@@ -854,20 +879,18 @@ mod workspace_type_tests {
     fn the_list_says_why_a_box_is_not_offered() {
         let repo = tempfile::tempdir().unwrap();
         let options = workspace_types(None, repo.path(), "antigravity");
-        let kinds: Vec<&str> = options.iter().map(|o| o.kind).collect();
-        assert_eq!(kinds, ["host", "box"]);
-        assert!(kinds.iter().all(|k| WorkspaceType::parse(k).is_some()));
-        assert!(options[0].available && options[0].default);
+        assert!(options
+            .iter()
+            .all(|o| WorkspaceType::parse(o.kind).is_some()));
+        let [vm, host] = [option(&options, "box"), option(&options, "host")];
+        assert!(host.available && host.default);
         assert!(
-            options[0].reason.as_deref().is_some_and(|r| !r.is_empty()),
+            host.reason.as_deref().is_some_and(|r| !r.is_empty()),
             "the default says why it is not a box"
         );
-        assert!(!options[1].available);
-        assert!(options[1].reason.as_deref().is_some_and(|r| !r.is_empty()));
-        assert!(
-            !options[1].default,
-            "nothing defaults to a refused box here"
-        );
+        assert!(!vm.available);
+        assert!(vm.reason.as_deref().is_some_and(|r| !r.is_empty()));
+        assert!(!vm.default, "nothing defaults to a refused box here");
     }
 
     /// A project that stays on this Mac says so, in the words of where that
@@ -878,7 +901,7 @@ mod workspace_type_tests {
         let repo = tempfile::tempdir().unwrap();
         std::fs::create_dir(repo.path().join("App.xcodeproj")).unwrap();
         let reason = |setting| {
-            workspace_types(setting, repo.path(), "claude")[0]
+            option(&workspace_types(setting, repo.path(), "claude"), "host")
                 .reason
                 .clone()
         };

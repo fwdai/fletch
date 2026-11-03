@@ -1,6 +1,6 @@
 /* A provider account's badge (AccountAvatar.tsx). Tinted the way a provider
-   icon's tile is (`.chip-mono`), so the two halves of the chip's split token
-   weigh the same: a light wash of the account's hue, the initial in it. */
+   icon's tile is (`.chip-mono`), so the two weigh the same side by side in
+   the picker: a light wash of the account's hue, the initial in it. */
 .acct-avatar {
   justify-content: center;
   flex-shrink: 0;
@@ -18,10 +18,4 @@
   color: var(--warn);
   background: color-mix(in oklch, var(--warn) 18%, var(--bg-2));
   border-color: color-mix(in oklch, var(--warn) 55%, transparent);
-}
-/* The right half of a split token: the token draws the frame. */
-.acct-avatar.is-segment {
-  border: 0;
-  border-left: 1px solid var(--bd);
-  border-radius: 0;
 }

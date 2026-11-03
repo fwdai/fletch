@@ -3,7 +3,6 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
 import { hasUsage } from "@/adapters/usage";
 import type { DirListing, FolderGrant, IssueComment, PrSummary, TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
-import { Chip } from "@/components/ui/Chip";
 import { IconButton } from "@/components/ui/IconButton";
 import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { lookupModel, lookupModelInList } from "@/data/modelCatalog";
@@ -19,10 +18,12 @@ import { useAppStore } from "@/store";
 import { blockedSentence, useAgentAvailability } from "./availability";
 import { ComposerFrame } from "./ComposerFrame";
 import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
+import { EffortPicker } from "./EffortPicker";
 import { FolderList } from "./FolderList";
 import { IssuePicker } from "./IssuePicker";
 import { type AccountControl, ModelPicker } from "./ModelPicker";
 import { PrimaryControl, primaryState } from "./PrimaryControl";
+import { RunRail } from "./RunRail";
 import { UsageMeter } from "./UsageMeter";
 import { useComposerInput } from "./useComposerInput";
 import { type WorkspaceTypeControl, WorkspaceTypePicker } from "./WorkspaceTypePicker";
@@ -474,54 +475,51 @@ export function Composer({
       }}
       foot={
         <>
-          {/* Where first: the row reads Where · Provider · Account · Model · Effort. */}
-          {workspaceType && !existingSession && (
-            <WorkspaceTypePicker {...workspaceType} provider={provider} />
-          )}
-          <ModelPicker
-            provider={provider}
-            model={model}
-            customAgentId={customAgentId}
-            modelOnly={existingSession}
-            account={account}
-            onChange={(nextProvider, nextModel, nextCustomAgentId) => {
-              // Effort follows from the selection via the effect above (a custom
-              // agent's reasoning budget, else the per-provider default).
-              setProvider(nextProvider);
-              setModel(nextModel);
-              setCustomAgentId(nextCustomAgentId);
-              if (existingSession) {
-                // Model-only change on an existing session: provider/custom-agent
-                // are unchanged; persist the new model (backend restarts claude
-                // to re-apply --model, per-turn agents pick it up next turn).
-                onChangeModel?.(nextModel);
-              } else {
-                onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
-              }
-            }}
-          />
-          {features.thinkingBudget && thinkingLevels.length > 0 && modelSupportsThinking && (
-            <Chip
-              tip={
-                existingSession && detail?.restartToApply
-                  ? "Thinking effort — changing restarts the agent (rebuilds cache)"
-                  : "Thinking budget"
-              }
-              onClick={() => {
-                const idx = thinkingLevels.findIndex((l) => l.value === thinkingValue);
-                const next = thinkingLevels[(idx + 1) % thinkingLevels.length];
-                setThinkingValue(next.value);
-                localStorage.setItem(`thinkingBudget.${provider}`, next.value);
-                // Existing sessions persist the change (and, for claude, trigger
-                // the session-preserving restart) via the backend; new-session
-                // composers just carry it into spawnAgent through `onSend`.
-                onChangeEffort?.(next.value);
+          {/* The run rail: one framed chain of how the agent runs, read
+           *  Where › Agent › Account › Model › Effort. Each piece opens its
+           *  own menu; the frame is shared. */}
+          <RunRail>
+            {workspaceType && !existingSession && (
+              <WorkspaceTypePicker {...workspaceType} provider={provider} />
+            )}
+            <ModelPicker
+              provider={provider}
+              model={model}
+              customAgentId={customAgentId}
+              modelOnly={existingSession}
+              account={account}
+              onChange={(nextProvider, nextModel, nextCustomAgentId) => {
+                // Effort follows from the selection via the effect above (a custom
+                // agent's reasoning budget, else the per-provider default).
+                setProvider(nextProvider);
+                setModel(nextModel);
+                setCustomAgentId(nextCustomAgentId);
+                if (existingSession) {
+                  // Model-only change on an existing session: provider/custom-agent
+                  // are unchanged; persist the new model (backend restarts claude
+                  // to re-apply --model, per-turn agents pick it up next turn).
+                  onChangeModel?.(nextModel);
+                } else {
+                  onChangeSelection?.(nextProvider, nextModel, nextCustomAgentId);
+                }
               }}
-            >
-              <Icon name="sparkle" size={11} />
-              <span>{thinkingLevels.find((l) => l.value === thinkingValue)?.label ?? ""}</span>
-            </Chip>
-          )}
+            />
+            {features.thinkingBudget && thinkingLevels.length > 0 && modelSupportsThinking && (
+              <EffortPicker
+                levels={thinkingLevels}
+                value={thinkingValue}
+                restarts={existingSession && !!detail?.restartToApply}
+                onPick={(value) => {
+                  setThinkingValue(value);
+                  localStorage.setItem(`thinkingBudget.${provider}`, value);
+                  // Existing sessions persist the change (and, for claude, trigger
+                  // the session-preserving restart) via the backend; new-session
+                  // composers just carry it into spawnAgent through `onSend`.
+                  onChangeEffort?.(value);
+                }}
+              />
+            )}
+          </RunRail>
           <span style={{ flex: 1 }} />
           {/* Insert actions live on the right, beside the primary control: what
            *  runs (agent/model/effort) reads left, what goes into this message
