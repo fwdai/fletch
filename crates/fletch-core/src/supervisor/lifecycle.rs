@@ -1131,7 +1131,7 @@ impl Supervisor {
         // left is finished first, when it can be, and the checkouts it runs
         // in are held until it is up, so no move starts under the launch
         // (`sandbox_move`).
-        self.settle_before_launch(agent_id).await?;
+        self.settle_before_acting(agent_id).await?;
         let record = self.workspace.agent(agent_id)?;
         let _held = self.hold_checkouts_of(&record)?;
         let per_turn = is_per_turn_provider(&record.provider);

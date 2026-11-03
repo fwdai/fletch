@@ -54,6 +54,10 @@ impl Supervisor {
         if record.archive.is_some() {
             return Err(Error::Other("agent is already archived".into()));
         }
+        // A move between sandboxes left unsettled is finished first: until it
+        // is, the staged checkouts may be the only copy of the code, which
+        // the teardown below would delete (`sandbox_move`).
+        self.settle_before_acting(agent_id).await?;
         // Held to the end: input that arrives from here on is refused rather
         // than delivered into — or queued behind — a runtime about to go.
         let _disposal = self.reserve_disposal(agent_id, &record, trigger)?;

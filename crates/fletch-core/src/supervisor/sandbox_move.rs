@@ -28,8 +28,9 @@
 //! takes them exclusively, after every hold has gone, and then stops what
 //! runs there. A hold is taken on the workspace that owns a checkout, whoever
 //! works in it: a reviewer in its coder's tree holds the coder's. A launch
-//! first settles what a move left, so a workspace recovers at its next
-//! message, not only at the next boot.
+//! and an archive first settle what a move left, so a workspace recovers at
+//! its next message, not only at the next boot, and nothing tears down the
+//! staged checkouts while they may be the only copy.
 //!
 //! What doesn't travel: ignored files (`node_modules`, `.env`), which no
 //! snapshot holds, and earlier turns' checkpoints, so the code can't be
@@ -186,9 +187,11 @@ impl Supervisor {
             .clone()
     }
 
-    /// [`Self::checkouts_at_rest`] for the agent's launch, which first
-    /// finishes a move that didn't, when it can.
-    pub(super) async fn settle_before_launch(&self, agent_id: &str) -> Result<()> {
+    /// [`Self::checkouts_at_rest`] for the agent's launch and its archive,
+    /// which first finish a move that didn't, when they can. An archive that
+    /// skipped this would tear down the staged checkouts, which until the
+    /// move is settled may be the only copy of the code.
+    pub(super) async fn settle_before_acting(&self, agent_id: &str) -> Result<()> {
         if self.moving.lock().contains(agent_id) {
             return Err(Error::Other(MOVING.into()));
         }
@@ -288,7 +291,9 @@ impl Supervisor {
             Some("agent is archived")
         } else if record.owner_run_id.is_some() {
             Some("A workflow step runs where its run does.")
-        } else if record.repos.is_empty() || record.repos.iter().any(TrackedRepo::is_adopted) {
+        } else if record.repos.is_empty() {
+            Some("This workspace has no checkout to move.")
+        } else if record.repos.iter().any(TrackedRepo::is_adopted) {
             Some("This workspace works in another's checkout, so it can't move.")
         } else if self.is_busy(&record.id) {
             Some(BUSY)

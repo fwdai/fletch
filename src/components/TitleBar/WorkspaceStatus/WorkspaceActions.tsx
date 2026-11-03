@@ -25,6 +25,8 @@ export function WorkspaceActions({ agent, onBox }: { agent: AgentRecord; onBox: 
   const kind: WorkspaceKind = movingTo ?? (onBox ? "host" : "box");
   const target = kind === "box" ? LINUX_VM : MACOS_SANDBOX;
   const busy = agent.status === "running" || agent.status === "spawning";
+  const wait =
+    agent.status === "spawning" ? "Wait for the agent to start." : "Wait for the turn to finish.";
 
   if (confirming && !moving) {
     return (
@@ -59,7 +61,7 @@ export function WorkspaceActions({ agent, onBox }: { agent: AgentRecord; onBox: 
           type="button"
           className="ws-act"
           disabled={busy || moving}
-          title={busy ? "Wait for the turn to finish." : undefined}
+          title={busy ? wait : undefined}
           onClick={() => setConfirming(true)}
         >
           <Icon name={target.icon} size={12} />
