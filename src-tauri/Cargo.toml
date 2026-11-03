@@ -139,13 +139,8 @@ tempfile = "3"
 
 [profile.release]
 opt-level = "z"
-# Thin LTO over 16 codegen units, not fat LTO over one: fat LTO with a single
-# unit funnels the final optimisation of our own crates through one thread,
-# which made the universal release build (two arches, back to back) the bulk
-# of a 20–50 minute release. Thin trades a somewhat larger binary for parallel
-# codegen.
-lto = "thin"
-codegen-units = 16
+lto = true
+codegen-units = 1
 strip = true
 # The shipped binary stays stripped; its symbols go to a separate `.dSYM`
 # (line tables only: function names and lines, no variable info), which the
