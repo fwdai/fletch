@@ -285,6 +285,12 @@ impl Supervisor {
                 )
                 .await?;
             }
+            // The files the workspace adopted (`attachments`): outside every
+            // checkout, and the conversation names them by path.
+            let (from, into) = (from.clone(), into.clone());
+            tokio::task::spawn_blocking(move || crate::attachments::carry(&from, &into))
+                .await
+                .map_err(|e| Error::Other(format!("carrying attachments failed: {e}")))??;
             self.workspace
                 .update_agent_engine(&record.id, to.as_setting())
         }
@@ -400,8 +406,8 @@ async fn settle_at(agent_id: &str, on_mac: bool, here: &Path, staged: &Path) -> 
     Ok(())
 }
 
-/// At boot: settle every move the app didn't live to finish. Agents rest at
-/// boot, so nothing launches into a workspace before its move is settled.
+/// At boot: settle every move the app didn't live to finish. Boot waits for
+/// it, so nothing launches into a workspace before its move is settled.
 pub async fn settle_interrupted_moves(workspace: Arc<WorkspaceManager>) {
     let Ok(root) = moving_root() else {
         return;

@@ -736,8 +736,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     sandbox::boxes::set_event_sink(sink.clone());
     sandbox::boxes::startup(&workspace);
     // A move between sandboxes the last run didn't finish: each workspace's
-    // stamp says which side is it, and the other is cleared.
-    crate::host::spawn(crate::supervisor::settle_interrupted_moves(
+    // stamp says which side is it, and the other is cleared. Waited for, so
+    // nothing launches into a workspace before its checkouts are in place;
+    // with no move left over it is one missing-directory read.
+    sandbox::boxes::block_on(crate::supervisor::settle_interrupted_moves(
         workspace.clone(),
     ));
     // And the image, downloaded on its own so boxes become the engine

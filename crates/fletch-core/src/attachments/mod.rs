@@ -225,6 +225,48 @@ fn adopt_into(
         .collect())
 }
 
+/// Carry the attachments a workspace adopted from `from_workspace`, its dir on
+/// the side it leaves, to `to_workspace`, its dir on the side it moves to (a
+/// move between sandboxes, `supervisor::sandbox_move`), each at the same path
+/// below: the conversation names them by path. Placed as [`adopt`] places
+/// them: written into the guest when `to_workspace` is a box's tree, and
+/// always copied on the host, the copy the transcript shows. `from_workspace`
+/// is a host dir either way, since a box workspace keeps its host copies at
+/// the same paths. Nothing to do when none were adopted.
+///
+/// Blocking: a stopped box is booted to receive the files.
+pub fn carry(from_workspace: &Path, to_workspace: &Path) -> Result<()> {
+    let to = to_workspace.join(WORKSPACE_ATTACHMENTS_DIR);
+    let exec = crate::exec::for_path(&to);
+    carry_into(&from_workspace.join(WORKSPACE_ATTACHMENTS_DIR), &to, &exec)
+}
+
+/// Core of [`carry`], with the workspace's executor passed explicitly so it's
+/// testable without a box. Regular files and dirs only: a link is not an
+/// attachment, and following one could copy whatever it names.
+fn carry_into(from: &Path, to: &Path, exec: &Executor) -> Result<()> {
+    let entries = match std::fs::read_dir(from) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let (src, dest) = (entry.path(), to.join(entry.file_name()));
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            carry_into(&src, &dest, exec)?;
+        } else if kind.is_file() {
+            if matches!(exec, Executor::Remote(_)) {
+                exec.write(&dest, &std::fs::read(&src)?)?;
+            }
+            std::fs::create_dir_all(to)?;
+            std::fs::copy(&src, &dest)?;
+        }
+    }
+    Ok(())
+}
+
 /// The canonical form of `path` when it resolves to a **regular file at the
 /// exact shape [`save_pasted`] writes**: `<staging>/<uuid>/<filename>`. `None`
 /// leaves the caller's original string in place, which is the safe outcome for
@@ -377,6 +419,33 @@ mod tests {
         );
         assert_eq!(std::fs::read(&handed).unwrap(), b"pixels");
         assert!(!staged.exists());
+    }
+
+    /// A moving workspace's attachments land at the same paths on the other
+    /// side: into the guest when it is a box's, and on the host either way,
+    /// the source left as it was. With none adopted there is nothing to do.
+    #[test]
+    fn a_moving_workspace_carries_its_attachments_to_the_same_paths() {
+        let td = tempfile::tempdir().unwrap();
+        let (from, to) = (td.path().join("from"), td.path().join("to"));
+        let shot = Path::new("abc").join("shot.png");
+        std::fs::create_dir_all(from.join("abc")).unwrap();
+        std::fs::write(from.join(&shot), b"pixels").unwrap();
+
+        carry_into(&from, &to, &Executor::Local).unwrap();
+        assert_eq!(std::fs::read(to.join(&shot)).unwrap(), b"pixels");
+        assert_eq!(std::fs::read(from.join(&shot)).unwrap(), b"pixels");
+
+        let boxed = td.path().join("boxed");
+        let guest = Arc::new(FakeBox::default());
+        carry_into(&from, &boxed, &Executor::Remote(guest.clone())).unwrap();
+        assert_eq!(
+            *guest.writes.lock(),
+            vec![(boxed.join(&shot), b"pixels".to_vec())]
+        );
+        assert_eq!(std::fs::read(boxed.join(&shot)).unwrap(), b"pixels");
+
+        carry_into(&td.path().join("none"), &to, &Executor::Local).unwrap();
     }
 
     /// A box that cannot take the files fails the send, naming the file, and
