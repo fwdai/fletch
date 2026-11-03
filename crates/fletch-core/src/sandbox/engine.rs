@@ -263,7 +263,7 @@ pub enum EnvDelivery {
     #[default]
     Process,
     /// Shipped into the guest by [`SandboxEngine::deliver_env`] as a file the
-    /// plan's `prefix_args` already name, because the launcher is an ssh
+    /// plan's launch command already names, because the launcher is an ssh
     /// client whose env never reaches the remote. `launch_id` is the engine's
     /// name for this launch, chosen when it built the plan.
     GuestFile { launch_id: String },
@@ -273,9 +273,42 @@ pub enum EnvDelivery {
 /// spawned; an error fails the turn before anything launches.
 pub type TurnPrep = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 
+/// Puts the agent's own arguments for one process of a launch where that
+/// launch reads them, and returns the launcher's whole argv. Run on the host,
+/// by the spawn, before that process starts; an error fails the spawn before
+/// anything launches.
+pub type StageArgs = Arc<dyn Fn(&[String]) -> Result<Vec<String>> + Send + Sync>;
+
+/// How each process of a launch gets the agent's own arguments (its CLI's
+/// flags, the system prompt among them). Every spawn shape goes through
+/// [`LauncherArgs::for_process`], so none can hand a staged launch's arguments
+/// to its launcher directly.
+#[derive(Clone)]
+pub enum LauncherArgs {
+    /// On the launcher's argv, after these: an engine whose launcher runs
+    /// where the agent runs (seatbelt: `sandbox-exec`'s profile and the agent
+    /// binary).
+    Prefix(Vec<String>),
+    /// Staged by the engine, for each process, before it is spawned: a box
+    /// writes them into its guest itself (`boxes::launch_files`), and what
+    /// comes back is the launcher's whole argv. The launcher writes nothing,
+    /// so the engine's teardown is ordered after every write it made.
+    Staged(StageArgs),
+}
+
+impl LauncherArgs {
+    /// The launcher's argv for one process whose agent takes `agent`.
+    pub fn for_process(&self, agent: &[String]) -> Result<Vec<String>> {
+        match self {
+            Self::Prefix(prefix) => Ok(prefix.iter().chain(agent).cloned().collect()),
+            Self::Staged(stage) => stage(agent),
+        }
+    }
+}
+
 pub struct LaunchPlan {
     pub program: std::path::PathBuf,
-    pub prefix_args: Vec<String>,
+    pub launcher_args: LauncherArgs,
     pub env: Vec<(String, String)>,
     /// Vars to strip from the child's inherited and login-shell env (merged
     /// into the session's `env_remove`, applied before `env`). Seatbelt drops
@@ -314,7 +347,7 @@ pub trait SandboxEngine: Send + Sync {
 
     /// Ship `env` into the guest for launch `launch_id` of `agent_id`, and
     /// return the guest path it was written to — the one the plan's
-    /// `prefix_args` already name. Called by the spawn shapes in
+    /// launch command already names. Called by the spawn shapes in
     /// `agent::spawn` only for a plan whose delivery is
     /// [`EnvDelivery::GuestFile`], so an engine that delivers in-process never
     /// implements it; the box engine does.

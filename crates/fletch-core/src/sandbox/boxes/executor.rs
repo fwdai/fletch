@@ -18,6 +18,13 @@
 //! script single-quotes every positional argument for the remote shell and
 //! `exec`s ssh ([`quoting_wrapper`]). The fixed part — `cd <cwd> && exec env
 //! K=V… <program>` — is quoted here, before the shell ever sees it.
+//!
+//! An agent launch's arguments do not travel that way. sshd runs the command
+//! string as one argument to the guest shell, which Linux caps at 128 KiB,
+//! and an agent's arguments (its system prompt, a forked conversation, MCP
+//! config) can come near that. The host writes them into the guest as a file
+//! before each process starts (`super::launch_files`), which
+//! `fletch-guest exec --args-file` hands to the agent one by one.
 
 use std::io;
 use std::path::Path;
@@ -83,6 +90,16 @@ pub(crate) fn quoting_wrapper(transport: &str, fixed: &[String], remote: &[Strin
     args.extend(fixed.iter().cloned());
     args
 }
+
+/// The longest remote command an agent launch sends over the box's shared
+/// connection. The multiplexing client passes the command and its three file
+/// descriptors to the master through one AF_UNIX socket, and macOS refuses
+/// that once the message is large (seen when the agent's arguments, system
+/// prompt included, were part of the command); half the default local stream
+/// buffer (`net.local.stream.sendspace`, 8 KiB) leaves room. A longer one — a
+/// confined view of very many paths — takes a connection of its own
+/// (`ssh -S none`), which costs a handshake and nothing else.
+pub(crate) const SHARED_CONNECTION_COMMAND_MAX: usize = 4096;
 
 /// `ssh -F <cfg> box <words…>`, each word quoted for the guest shell, with
 /// `stdin` fed to it when given. Synchronous; the caller is on a thread that

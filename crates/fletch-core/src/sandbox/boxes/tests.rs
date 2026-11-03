@@ -798,10 +798,12 @@ fn a_confined_launch_renders_the_view_it_was_given() {
     let remote = super::agent_remote_command(&tree, env_file, Some(&view), "claude");
     let stores = "/Users/u/.fletch/workspaces/reviewer/.fletch-cow";
     assert_eq!(
-        remote,
+        remote.head,
+        ["/opt/fletch/bin/fletch-guest", "exec", "--args-file"]
+    );
+    assert_eq!(
+        remote.tail,
         [
-            "/opt/fletch/bin/fletch-guest",
-            "exec",
             "--env-file",
             "/data/run/1.env",
             "--read-only",
@@ -826,7 +828,8 @@ fn a_confined_launch_renders_the_view_it_was_given() {
     );
     let plain = super::agent_remote_command(&tree, env_file, None, "claude");
     let options = ["--read-only", "--writable", "--cow", "--cow-file"].map(String::from);
-    assert!(!plain.iter().any(|w| options.contains(w)), "{plain:?}");
+    assert!(!plain.tail.iter().any(|w| options.contains(w)), "{plain:?}");
+    assert_eq!(plain.head, remote.head);
 
     assert_eq!(
         super::probe_words(&view),
@@ -859,6 +862,99 @@ fn a_confined_launch_renders_the_view_it_was_given() {
         super::carve_out_script(&view),
         "umask 077 && mkdir -p -- /Users/u/.fletch/workspaces/reviewer '/Volumes/my data/own' \
          '/Users/u/Library/Application Support'"
+    );
+}
+
+/// An agent's launcher is ssh running the launch's command, which names the
+/// process's args file: over the box's shared connection, with a tty only for
+/// the PTY view. A command too long for that connection (a view of very many
+/// paths) takes one of its own.
+#[test]
+fn an_agent_launch_shares_the_box_connection_unless_its_command_is_long() {
+    let launch_id = "8a0c4f2e-1d3b-4c5a-9e7f-0123456789ab";
+    let config = Path::new("/b/ssh_config");
+    let args_file = super::launch_files::stem(launch_id).with_extension("7.args");
+    assert_eq!(
+        args_file,
+        Path::new(&format!("/data/run/{launch_id}.7.args"))
+    );
+    let tree = Path::new(CODER_ROOT).join("repo");
+    let env_file = super::launch_files::env_file(launch_id);
+    let claude = "/opt/fletch/tools/claude/bin/claude";
+    let command = super::agent_remote_command(&tree, &env_file, None, claude);
+    let remote = command.with_args_file(&args_file);
+    assert_eq!(
+        remote,
+        format!(
+            "/opt/fletch/bin/fletch-guest exec --args-file {} {}",
+            args_file.display(),
+            command.tail.join(" ")
+        )
+    );
+    assert!(remote.len() < super::executor::SHARED_CONNECTION_COMMAND_MAX);
+    assert_eq!(
+        super::agent_launcher(config, false, &args_file, &command),
+        ["-F", "/b/ssh_config", "-T", "box", remote.as_str()]
+    );
+    assert_eq!(
+        super::agent_launcher(config, true, &args_file, &command),
+        ["-F", "/b/ssh_config", "-tt", "box", remote.as_str()]
+    );
+
+    let view = super::ConfinedView {
+        read_only: vec![PathBuf::from(HOME)],
+        writable_dirs: (0..100)
+            .map(|n| PathBuf::from(format!("{OWN_ROOT}/granted/a-folder-with-a-long-name-{n}")))
+            .collect(),
+        ..Default::default()
+    };
+    let long = super::agent_remote_command(&tree, &env_file, Some(&view), claude);
+    let launcher = super::agent_launcher(config, false, &args_file, &long);
+    assert!(launcher.last().unwrap().len() > super::executor::SHARED_CONNECTION_COMMAND_MAX);
+    assert_eq!(&launcher[..5], ["-F", "/b/ssh_config", "-S", "none", "-T"]);
+}
+
+/// The launch command reaches the guest shell as the words it was built from,
+/// the args file's path one of them however it is spelled: a fake guest agent
+/// stands in for `fletch-guest` and prints the words it was given.
+#[test]
+fn an_agent_launchs_command_reaches_the_guest_shell_word_for_word() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let guest = dir.path().join("guest exec");
+    std::fs::write(&guest, "#!/bin/sh\nprintf '%s\\0' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&guest, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let quote = fletch_box::channel::shell_quote;
+    let command = super::AgentCommand {
+        head: vec![quote(&guest.to_string_lossy())],
+        tail: ["--cwd", "/w s/it's", "--", "claude"].map(quote).to_vec(),
+    };
+    let args_file = Path::new("/data/run/a b's.1.args");
+    let out = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command.with_args_file(args_file))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let words: Vec<String> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|w| !w.is_empty())
+        .map(|w| String::from_utf8_lossy(w).into_owned())
+        .collect();
+    assert_eq!(
+        words,
+        [
+            "/data/run/a b's.1.args",
+            "--cwd",
+            "/w s/it's",
+            "--",
+            "claude"
+        ]
     );
 }
 

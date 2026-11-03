@@ -133,8 +133,11 @@ fn seatbelt_run(
         .unwrap()
         .launch_agent(&ctx, &claude)
         .unwrap();
+    let crate::sandbox::LauncherArgs::Prefix(prefix) = &plan.launcher_args else {
+        panic!("seatbelt plans carry a prefix");
+    };
     let out = std::process::Command::new(&plan.program)
-        .args(&plan.prefix_args)
+        .args(prefix)
         .args(args)
         .args([
             "--output-format",

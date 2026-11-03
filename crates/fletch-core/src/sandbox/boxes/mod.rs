@@ -93,6 +93,7 @@
 pub mod allowlist;
 pub mod executor;
 pub mod home;
+mod launch_files;
 pub mod mirror;
 pub mod provision;
 pub mod registry;
@@ -124,8 +125,10 @@ pub use registry::{BoxIdentity, BoxPhase, BoxRegistry, RunningBox, StopReason};
 
 /// The ssh client every launch runs through.
 const SSH: &str = fletch_box::channel::SSH;
-/// The bash that quotes a launch's arguments for the guest shell (see
-/// [`executor::quoting_wrapper`]).
+/// The bash that quotes the arguments of a program run in the guest for the
+/// user or for git for the guest shell ([`executor::quoting_wrapper`]). An
+/// agent launch has none to quote: its arguments are staged as a file
+/// ([`launch_files`]) and its launcher is ssh itself.
 pub(crate) const BASH: &str = "/bin/bash";
 
 /// Where this host keeps its boxes: `<checkouts base>/boxes`, next to the
@@ -471,6 +474,9 @@ struct PendingLaunch {
 /// launches park an `Arc` of it in their `KillHandle`.
 pub struct BoxEngine {
     pending: Mutex<std::collections::HashMap<String, PendingLaunch>>,
+    /// Every live launch's files in its guest, by launch id: written and
+    /// removed under each one's own lock ([`launch_files::LaunchFiles`]).
+    files: Mutex<std::collections::HashMap<String, Arc<launch_files::LaunchFiles>>>,
 }
 
 impl BoxEngine {
@@ -480,6 +486,7 @@ impl BoxEngine {
             .get_or_init(|| {
                 Arc::new(BoxEngine {
                     pending: Mutex::new(std::collections::HashMap::new()),
+                    files: Mutex::new(std::collections::HashMap::new()),
                 })
             })
             .clone()
@@ -1116,25 +1123,81 @@ fn read_only_probe_answer(success: bool, stderr: &str) -> Option<bool> {
     }
 }
 
+/// The remote command of an agent launch, `head <args file> tail`, each word
+/// quoted for the guest shell: around the path of the file its arguments
+/// arrive in, which is one of each process's own
+/// ([`launch_files::LaunchFiles::stage`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentCommand {
+    /// `fletch-guest exec --args-file`.
+    head: Vec<String>,
+    /// The rest of `exec`'s options, `--` and the agent.
+    tail: Vec<String>,
+}
+
+impl AgentCommand {
+    /// The command for the process whose arguments are in `args_file`.
+    fn with_args_file(&self, args_file: &Path) -> String {
+        let file = fletch_box::channel::shell_quote(&args_file.to_string_lossy());
+        format!("{} {file} {}", self.head.join(" "), self.tail.join(" "))
+    }
+}
+
 /// The remote command of an agent launch: `agent_bin` under `fletch-guest
-/// exec` with the launch's env file, in `cwd`, confined to `view`.
+/// exec` with the launch's env file and an args file, in `cwd`, confined to
+/// `view`.
 fn agent_remote_command(
     cwd: &Path,
     env_file: &Path,
     view: Option<&ConfinedView>,
     agent_bin: &str,
-) -> Vec<String> {
+) -> AgentCommand {
+    let quote = fletch_box::channel::shell_quote;
     let unconfined = ConfinedView::default();
     let view = view.unwrap_or(&unconfined);
-    fletch_box::Channel::remote_command_confined(
+    let head = [
+        fletch_box::guest::GUEST_AGENT,
+        fletch_box::guest::EXEC,
+        fletch_box::guest::EXEC_ARGS_FILE,
+    ];
+    let mut tail = fletch_box::Channel::exec_options(
         Some(cwd),
         Some(env_file),
         &view.read_only(),
         &view.writable(),
         &view.cow_dirs(),
         &view.cow_files(),
-        &[agent_bin],
-    )
+    );
+    tail.extend(["--".to_string(), agent_bin.to_string()]);
+    AgentCommand {
+        head: head.map(quote).to_vec(),
+        tail: tail.iter().map(|w| quote(w)).collect(),
+    }
+}
+
+/// The argv after [`SSH`] for one process of an agent launch, whose
+/// arguments were staged in `args_file`: `command` run in the guest (`-tt`
+/// when `interactive`, the PTY view), over the box's shared connection unless
+/// the command is too long for it ([`executor::SHARED_CONNECTION_COMMAND_MAX`]).
+/// The launcher is ssh itself: it writes nothing in the guest.
+fn agent_launcher(
+    ssh_config: &Path,
+    interactive: bool,
+    args_file: &Path,
+    command: &AgentCommand,
+) -> Vec<String> {
+    let remote = command.with_args_file(args_file);
+    let mut args = vec!["-F".to_string(), ssh_config.to_string_lossy().into_owned()];
+    if remote.len() > executor::SHARED_CONNECTION_COMMAND_MAX {
+        args.extend(["-S".to_string(), "none".to_string()]);
+    }
+    let tty = if interactive { "-tt" } else { "-T" };
+    args.extend([
+        tty.to_string(),
+        fletch_box::guest::SSH_HOST_ALIAS.to_string(),
+        remote,
+    ]);
+    args
 }
 
 impl SandboxEngine for BoxEngine {
@@ -1144,8 +1207,8 @@ impl SandboxEngine for BoxEngine {
 
     /// Boot (or reuse) the agent's box and plan an ssh session into it running
     /// `agent_bin` under `fletch-guest exec` with the env file [`deliver_env`]
-    /// writes next. The launcher is `bash -c` quoting the agent's arguments for
-    /// the guest shell, then `exec ssh`.
+    /// writes next. The launcher is ssh; each process's arguments are written
+    /// into the guest first, by the host ([`agent_launcher`], [`launch_files`]).
     ///
     /// An agent whose cwd is a tree it adopted runs in the box that holds the
     /// tree, as that box's tenant (module docs): the host's VM, with the
@@ -1299,27 +1362,8 @@ impl SandboxEngine for BoxEngine {
             }
             _ => false,
         };
-        let env_file = env_file_path(&launch_id);
-        let remote = agent_remote_command(ctx.cwd, &env_file, view.as_ref(), agent_bin);
-        let tty = if ctx.interactive { "-tt" } else { "-T" };
-        let prefix_args = executor::quoting_wrapper(
-            SSH,
-            &[
-                "-F".to_string(),
-                running.channel.config.to_string_lossy().into_owned(),
-                // Agent commands can carry substantial provider configuration.
-                // A multiplexed session has to send that command and three file
-                // descriptors through one AF_UNIX message; macOS rejects large
-                // messages before OpenSSH can pass the descriptors. Keep the
-                // shared connection for small box operations, but give the agent
-                // process its own SSH transport.
-                "-S".to_string(),
-                "none".to_string(),
-                tty.to_string(),
-                fletch_box::guest::SSH_HOST_ALIAS.to_string(),
-            ],
-            &remote,
-        );
+        let env_file = launch_files::env_file(&launch_id);
+        let command = agent_remote_command(ctx.cwd, &env_file, view.as_ref(), agent_bin);
 
         // The login as the host resolved it for this launch, the way the
         // provider's adapter spells it: in the env file, and/or files kept
@@ -1348,6 +1392,28 @@ impl SandboxEngine for BoxEngine {
             )
         });
 
+        // Each process's arguments, written into the guest by the host before
+        // the process starts, under the launch's lock, never by its launcher
+        // (`launch_files`): the launcher is ssh running a command that names
+        // the file.
+        let files = Arc::new(launch_files::LaunchFiles::new(&launch_id));
+        let stage_args: crate::sandbox::StageArgs = {
+            let (files, box_agent_id) = (files.clone(), box_agent_id.clone());
+            let (ssh_config, interactive) = (running.channel.config.clone(), ctx.interactive);
+            Arc::new(move |args: &[String]| {
+                let channel = BoxRegistry::global().channel_for(&box_agent_id)?;
+                let args_file = files.stage(args, |path, bytes| {
+                    executor::put(&channel, bytes, path, 0o600)
+                })?;
+                Ok(agent_launcher(
+                    &ssh_config,
+                    interactive,
+                    &args_file,
+                    &command,
+                ))
+            })
+        };
+
         self.pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1361,10 +1427,14 @@ impl SandboxEngine for BoxEngine {
                     credentials,
                 },
             );
+        self.files
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(launch_id.clone(), files);
         Ok(LaunchPlan {
-            program: PathBuf::from(BASH),
+            program: PathBuf::from(SSH),
             claude_thinking_summaries,
-            prefix_args,
+            launcher_args: crate::sandbox::LauncherArgs::Staged(stage_args),
             env,
             env_remove: ENV_DENY.iter().map(|v| v.to_string()).collect(),
             env_delivery: EnvDelivery::GuestFile { launch_id },
@@ -1376,7 +1446,10 @@ impl SandboxEngine for BoxEngine {
 
     /// Write the launch's env file into the guest (`/data/run/<launch>.env`,
     /// 0600) and return its path. This file is the only way host state reaches
-    /// the agent's process: sshd accepts no client environment.
+    /// the agent's process, bar the arguments staged beside it for each of its
+    /// processes (`/data/run/<launch>.<n>.args`): sshd accepts no client
+    /// environment. Written under the launch's lock, as they are
+    /// ([`launch_files`]).
     fn deliver_env(
         &self,
         agent_id: &str,
@@ -1396,9 +1469,17 @@ impl SandboxEngine for BoxEngine {
             )));
         }
         let contents = render_env_file(env, &pending.provider, &pending.home, ENV_DENY)?;
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(launch_id)
+            .cloned()
+            .ok_or_else(|| Error::Other(format!("box launch {launch_id} was torn down")))?;
         let channel = BoxRegistry::global().channel_for(&pending.box_agent_id)?;
-        let path = env_file_path(launch_id);
-        executor::put(&channel, contents.as_bytes(), &path, 0o600)?;
+        let path = files.write_env(contents.as_bytes(), |path, bytes| {
+            executor::put(&channel, bytes, path, 0o600)
+        })?;
         pending
             .credentials
             .lock()
@@ -1409,9 +1490,13 @@ impl SandboxEngine for BoxEngine {
 
     /// The session's own kill ends the ssh client (and so the guest PTY); the
     /// engine detaches the launch so the idle timer may stop the VM, and
-    /// removes the env file the launch's token sat in. The CLI's credential
-    /// changes were written back as each process exited (`after_exit`),
-    /// never here, where the process may still be running.
+    /// removes the env file the launch's token sat in, with any args file no
+    /// `fletch-guest exec` took (its ssh failed, or its turn was superseded in
+    /// between). The removal waits for a write under way and refuses every
+    /// later one ([`launch_files::LaunchFiles::close`]), so it holds whatever
+    /// the session's processes are doing: none of them writes those files.
+    /// The CLI's credential changes were written back as each process exited
+    /// (`after_exit`), never here, where the process may still be running.
     fn kill(&self, plan: &KillPlan) -> Result<()> {
         let KillPlan::Box {
             agent_id,
@@ -1421,11 +1506,21 @@ impl SandboxEngine for BoxEngine {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(launch_id);
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(launch_id)
+            .unwrap_or_else(|| Arc::new(launch_files::LaunchFiles::new(launch_id)));
         let registry = BoxRegistry::global();
-        if let Ok(channel) = registry.channel_for_running(agent_id) {
-            let path = env_file_path(launch_id);
-            let _ = executor::run(&channel, &["rm", "-f", &path.to_string_lossy()], None);
-        }
+        let channel = registry.channel_for_running(agent_id).ok();
+        files.close(|stem| {
+            if let Some(channel) = &channel {
+                let stem = stem.to_string_lossy();
+                let words = ["sh", "-c", launch_files::REMOVE, "sh", &stem];
+                let _ = executor::run(channel, &words, None);
+            }
+        });
         registry.detach(agent_id, launch_id);
         Ok(())
     }
@@ -1447,11 +1542,6 @@ fn guest_toolchain_cache(
         crate::sandbox::BoxPlatform::linux(),
     );
     Ok((root, env))
-}
-
-/// `/data/run/<launch id>.env`.
-fn env_file_path(launch_id: &str) -> PathBuf {
-    PathBuf::from(fletch_box::guest::ENV_FILE_DIR).join(format!("{launch_id}.env"))
 }
 
 /// The env file for a launch: the assembled env minus the deny-list, plus what
