@@ -13,8 +13,17 @@ name: Release
 # deliberately a separate job: it shares nothing with the desktop build but the
 # version number and the updater signing key, it needs no Apple identity, and a
 # failure there must not take the app release with it.
+#
+# `dry_run` builds, signs and notarizes the app exactly as a release does but
+# publishes nothing: no release, no host job, no website redeploy. It is how a
+# change to the build itself (profile, bundling, signing) is tried from a branch.
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build, sign and notarize without publishing anything
+        type: boolean
+        default: false
 
 jobs:
   release:
@@ -101,8 +110,9 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN"
 
       - name: Build, sign, notarize and publish release
+        if: ${{ !inputs.dry_run }}
         uses: tauri-apps/tauri-action@v0
-        env:
+        env: &tauri-build-env
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater artifact signing (minisign keypair generated for Fletch).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -137,6 +147,13 @@ jobs:
           tauriScript: bun run tauri
           args: --target universal-apple-darwin
 
+      # The same build through the Tauri CLI directly, with the same signing and
+      # notarization env, and nowhere to publish to.
+      - name: Build, sign and notarize (dry run)
+        if: ${{ inputs.dry_run }}
+        env: *tauri-build-env
+        run: bun run tauri build --target universal-apple-darwin
+
       # The app as built: only Helpers/fletch-vm carries the hypervisor
       # entitlement and the runtime's signatures verify. No image argument:
       # hosted runners cannot boot a VM, so the boot half of the check is
@@ -151,6 +168,7 @@ jobs:
       # arm64 -l <load address> <address>` (docs/debugging-crashes.md). The release is
       # already published, so a missing dSYM or failed upload only warns.
       - name: Attach debug symbols to the release
+        if: ${{ !inputs.dry_run }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -175,6 +193,7 @@ jobs:
       # release notes (the same "What's Changed" list the UI button produces),
       # built from PRs/commits since the previous release.
       - name: Generate release notes
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -189,6 +208,7 @@ jobs:
       # (fwdai/quorum-web) so it rebuilds against the freshly published release.
       # WEB_DEPLOY_HOOK is the deploy-hook URL from the Worker's Settings > Builds.
       - name: Trigger website redeploy
+        if: ${{ !inputs.dry_run }}
         run: curl -fsS -X POST "${{ secrets.WEB_DEPLOY_HOOK }}"
 
   # `fletch-host`, the headless engine (crates/fletch-host/README.md): one
@@ -213,6 +233,7 @@ jobs:
   # script and `fletch-host update` put them next to `fletch-host`.
   host:
     needs: release
+    if: ${{ !inputs.dry_run }}
     permissions:
       contents: write
     strategy:
