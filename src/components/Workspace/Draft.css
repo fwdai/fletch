@@ -121,6 +121,12 @@
   border-color: var(--bd);
   color: var(--fg-0);
 }
+/* A pill that is a button shows where the keyboard is: the base reset drops
+   the outline. */
+.empty-meta .pill:focus-visible {
+  border-color: var(--accent);
+  color: var(--fg-0);
+}
 .empty-meta .pill svg {
   width: 11px;
   height: 11px;

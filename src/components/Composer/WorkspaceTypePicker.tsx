@@ -51,17 +51,18 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
 
   if (chip.kind === "retry") {
     return (
-      <span className="pill is-action tip" data-tip={chip.tip} onClick={load}>
+      <button type="button" className="pill is-action tip" data-tip={chip.tip} onClick={load}>
         <Icon name="refresh" />
         <span className="v">{chip.pick ? workspaceTypeLabel(chip.pick) : "sandbox"}</span>
-      </span>
+      </button>
     );
   }
   const { shown } = chip;
 
   return (
     <span style={{ position: "relative" }}>
-      <span
+      <button
+        type="button"
         className="pill is-action tip"
         data-tip={chip.tip}
         aria-haspopup="menu"
@@ -75,7 +76,7 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
         <span style={{ color: "var(--fg-2)" }}>in</span>
         <span className="v">{workspaceTypeLabel(shown.kind)}</span>
         <Icon name="chevD" size={9} />
-      </span>
+      </button>
 
       {open && (
         <>
