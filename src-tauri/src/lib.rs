@@ -1451,6 +1451,7 @@ pub fn run() {
             commands::spawn_agent,
             commands::fork_agent,
             commands::rewind_agent,
+            commands::move_workspace,
             commands::preview_rewind_code,
             commands::undo_code_restore,
             commands::discard_code_undo,

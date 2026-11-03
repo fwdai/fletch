@@ -18,6 +18,7 @@ pub mod pr_watch;
 mod rewind;
 mod rpc_watch;
 pub(crate) mod run;
+mod sandbox_move;
 mod session_switch;
 mod session_sync;
 mod shell;
@@ -33,6 +34,7 @@ pub use live_turn::LiveTurnSnapshot;
 pub use pr_set::sync_pr_set_links;
 pub use rewind::{RewindOutcome, RewindScope};
 pub use run::ProjectRunConfig;
+pub use sandbox_move::{settle_interrupted_moves, CheckoutHold};
 pub use session_sync::{
     bind_pr_snapshot, pr_map_key, resolve_all_pr_status, resolve_pr_state, AgentPrStatus,
     Discovery, PrSetEntry,
@@ -114,6 +116,13 @@ pub struct Supervisor {
     /// Archive reservations and open input routes, per agent — the per-agent
     /// counterpart of `deleting_projects`. See `disposition::Disposal`.
     pub(super) disposal: Mutex<disposition::Disposal>,
+    /// Agents whose workspace is moving between sandboxes right now: their
+    /// checkouts are not at rest (`Supervisor::checkouts_at_rest`).
+    pub(super) moving: Mutex<HashSet<String>>,
+    /// Per agent, what a one-shot action in its checkouts holds shared for
+    /// its duration (`Supervisor::hold_checkouts`) and a move holds
+    /// exclusively, so it never snapshots a checkout an action is changing.
+    pub(super) checkout_locks: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
     /// One delivery at a time per agent. Each top-level entry point that can
     /// start a turn — `send_user_message`, and the queue flushes at turn end,
     /// after a spawn, a revive or a respawn — holds its agent's lock from the
@@ -195,6 +204,8 @@ impl Supervisor {
             agent_lifecycle: tokio::sync::Mutex::new(()),
             deleting_projects: Mutex::new(HashSet::new()),
             disposal: Mutex::new(disposition::Disposal::default()),
+            moving: Mutex::new(HashSet::new()),
+            checkout_locks: Mutex::new(HashMap::new()),
             delivery_locks: Mutex::new(HashMap::new()),
             respawn_pending: Mutex::new(HashSet::new()),
             message_queue: Mutex::new(MessageQueue::new()),

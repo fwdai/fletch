@@ -7,7 +7,7 @@ import { agentDotStatus } from "./derive";
 import { ChecksChip, GitBadge } from "./GitBadge";
 import { GitPopover } from "./GitPopover";
 import { IsolationIcon } from "./IsolationIcon";
-import { isolationOf } from "./isolation";
+import { shownIsolation } from "./isolation";
 import { ProjectPill } from "./ProjectPill";
 import { StatusDot } from "./StatusDot";
 import { useCapsuleData } from "./useCapsuleData";
@@ -32,6 +32,7 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   // Only a box agent has an entry; its icon carries the phase.
   const boxPhase = useAppStore((s) => s.boxStates[agent.id]?.phase);
+  const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
   const { shortstats, gitState, prState, checks, prs } = useCapsuleData(agent.id);
   const { lanes } = useWorkspaceLanes(agent);
 
@@ -51,7 +52,11 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
         <div className="ws-cap" tabIndex={0}>
           <span className="ws-ctx">
             {!hasProject && <StatusDot status={status} />}
-            <IsolationIcon isolation={isolationOf(agent.sandbox_engine)} boxPhase={boxPhase} />
+            <IsolationIcon
+              isolation={shownIsolation(agent.sandbox_engine, movingTo)}
+              boxPhase={boxPhase}
+              moving={movingTo !== null}
+            />
             <span className="ws-agent-name">{agent.name}</span>
           </span>
           <Icon name="chevD" size={11} className="ws-caret" />

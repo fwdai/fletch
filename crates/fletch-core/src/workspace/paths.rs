@@ -127,6 +127,38 @@ pub fn repo_checkout_path(agent_id: &str, subdir: &str) -> Result<PathBuf> {
     Ok(agent_parent_dir(agent_id)?.join(subdir))
 }
 
+/// The agent whose dir under the checkouts root holds `path`, if one does:
+/// whose checkouts a tree is, adopted by another agent or not (a reviewer
+/// works in its coder's). `None` for a tree outside the root, a workflow run's.
+pub fn checkout_owner(path: &Path) -> Option<String> {
+    let root = checkouts_root().ok()?;
+    let rel = path.strip_prefix(&root).ok()?;
+    match rel.components().next()? {
+        std::path::Component::Normal(name) => name.to_str().map(str::to_string),
+        _ => None,
+    }
+}
+
+/// Where workspaces moving between sandboxes keep their checkouts on this Mac
+/// while those are not at [`agent_parent_dir`]: `~/.fletch/workspaces.moving/`.
+/// A sibling of the checkouts root, as [`discard_root`] is and for the same
+/// reasons: every entry inside that root is read as an agent's, and a rename
+/// between the two stays on one filesystem.
+pub fn moving_root() -> Result<PathBuf> {
+    let root = checkouts_root()?;
+    let name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "workspaces".to_string());
+    Ok(root.with_file_name(format!("{name}.moving")))
+}
+
+/// One moving workspace's dir under [`moving_root`], laid out like its
+/// [`agent_parent_dir`].
+pub fn moving_dir(agent_id: &str) -> Result<PathBuf> {
+    Ok(moving_root()?.join(agent_id))
+}
+
 /// One-time rename of the legacy on-disk root. The provisioned-checkout root
 /// used to live at `~/.fletch/worktrees`; the default is now
 /// `~/.fletch/workspaces`. Existing installs still have their checkouts under

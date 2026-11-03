@@ -40,7 +40,7 @@ pub async fn run_verification_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<VerificationReport> {
-    let (repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    let (repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     // Serialize against the turn-end verification (`trigger_turn_end_verification`)
     // and any other in-flight run for this agent: both drive the same commands
     // in the agent's checkout and would race on the tree and any shared build

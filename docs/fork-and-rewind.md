@@ -278,6 +278,45 @@ for a workspace's first session). Otherwise it's `Summary`: the client renders
 the history before T (`handoffTranscriptBefore`), and the summary of it falls
 back to its tail. With nothing before T, nothing is told.
 
+### Move `(agent, host | box)`
+`Supervisor::move_workspace`, from the workspace popover in the title bar:
+the escape hatch between the Linux VM and the macOS sandbox, in place. Same
+record, name and row; the code from each checkout's snapshot (as a fork's
+"current code"), on the branch the checkout is on, with its `origin`
+tracking ref; the conversation as a rewind's `Exact` through `End`.
+
+- **Refused** before anything changes: a turn under way, a workflow step, an
+  adopted tree, a local review at work, a target the host can't run now (a VM
+  still being set up included), folders or a login the target can't have, a
+  provider without a transcript writer.
+- **Order:** take down the process, shell and Run panel app; ingest the last
+  reply and read the history to `End` while the old sandbox holds it; carry
+  the code; restamp; clear the old side; launch the new session.
+- **Commit point:** the stamp. Both sandboxes keep checkouts at the same path,
+  so the side on this Mac waits in `workspaces.moving/<id>`: set aside there on
+  the way into a VM, built there on the way out. `settle` makes the disk agree
+  with the stamp: the move's last step, its rollback, and at boot the finish
+  of a move the app didn't live through.
+- **At rest:** while a move runs, and for as long as one is left unsettled
+  (its staging dir still there), the workspace's checkouts are not at rest,
+  and nothing may put work into them. One mechanism keeps it so: whatever
+  acts in a workspace's checkouts holds them (`Supervisor::hold_checkouts`)
+  for as long as it acts, or, for something long-lived (the agent's launch,
+  the shell, the Run app), for as long as it takes to start; a hold is
+  refused while they aren't at rest. A move takes them exclusively once every
+  hold has gone, granting none meanwhile, and then stops what runs there. A
+  hold is taken on the workspace that owns a tree, whoever works in it: a
+  reviewer launching in its coder's tree holds the coder's, and a review
+  decides to start only with the coder's checkouts held. Commands get a
+  checkout to act in only from resolvers that hand it out held
+  (`agent_repo_checkout`, `checkout_scope_for_path`), which a guard test pins
+  (`commands_reach_checkouts_through_the_resolvers`). A launch first settles
+  what a move left, so a workspace recovers at its next message, not only at
+  boot. A move switches the conversation right after its restamp and launches
+  only once the disk is settled.
+- **Not carried:** ignored files, and earlier turns' checkpoints (the code
+  can't be rewound past the move; the conversation can).
+
 ## Module map
 
 **Backend** (`crates/fletch-core/src`)
@@ -294,6 +333,7 @@ back to its tail. With nothing before T, nothing is told.
 | `supervisor/fork.rs` | fork orchestration only |
 | `supervisor/session_switch.rs` | starting a new session in place: the runtime half of the switch |
 | `supervisor/rewind.rs` | rewind orchestration only, and the code preview its confirmation reads |
+| `supervisor/sandbox_move.rs` | moving a workspace between sandboxes, and `settle` |
 | `handoff/` | the summarizer: the one-shot runner (per-provider flags are `agent::OneShot` descriptors), the fallback tail |
 | `agent` | `SessionStart { Fresh, Resume }`, chosen from the session's own transcript; each provider's transcript writer beside its reader, and the `transcript_writer` capability |
 

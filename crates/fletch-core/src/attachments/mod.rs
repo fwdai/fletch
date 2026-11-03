@@ -225,6 +225,102 @@ fn adopt_into(
         .collect())
 }
 
+/// Carry the attachments a workspace adopted from `from_workspace`, its dir on
+/// the side it leaves, to `to_workspace`, its dir on the side it moves to (a
+/// move between sandboxes, `supervisor::sandbox_move`), each at the same path
+/// below: the conversation names them by path. Read where the workspace
+/// keeps them: in the guest for a box, which holds every one (adoption writes
+/// it there first, the host copy only best-effort). Placed as [`adopt`]
+/// places them: written into the guest when `to_workspace` is a box's tree,
+/// and always copied on the host, the copy the transcript shows. Nothing to
+/// do when none were adopted.
+///
+/// Blocking: a stopped box is booted to give or receive the files.
+pub fn carry(from_workspace: &Path, to_workspace: &Path) -> Result<()> {
+    let from = from_workspace.join(WORKSPACE_ATTACHMENTS_DIR);
+    let to = to_workspace.join(WORKSPACE_ATTACHMENTS_DIR);
+    carry_into(
+        &from,
+        &crate::exec::for_path(&from),
+        &to,
+        &crate::exec::for_path(&to),
+    )
+}
+
+/// Core of [`carry`], with each side's executor passed explicitly so it's
+/// testable without a box.
+fn carry_into(from: &Path, source: &Executor, to: &Path, dest: &Executor) -> Result<()> {
+    for rel in carried_files(from, source)? {
+        let bytes = source.read(&from.join(&rel))?;
+        let out = to.join(&rel);
+        if matches!(dest, Executor::Remote(_)) {
+            dest.write(&out, &bytes)?;
+        }
+        if let Some(dir) = out.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&out, &bytes)?;
+    }
+    Ok(())
+}
+
+/// The regular files under `dir`, relative to it, where `exec` keeps it. A
+/// link is never followed, nor carried, `dir` itself included: the agent can
+/// write here, and a link it planted would have the move copy whatever it
+/// names, or loop through an ancestor. In a guest that's `find` without `-L`,
+/// which examines a link as a link; on the host, a walk by file type.
+fn carried_files(dir: &Path, exec: &Executor) -> Result<Vec<PathBuf>> {
+    if matches!(exec, Executor::Remote(_)) {
+        let out = exec
+            .command("find", Path::new("/"), &[])
+            .arg(dir)
+            .args(["-type", "f", "-print0"])
+            .output()?;
+        if !out.status.success() {
+            // Nothing adopted: there is no dir to list.
+            if !exec.exists(dir)? {
+                return Ok(Vec::new());
+            }
+            return Err(Error::Other(format!(
+                "listing the attachments in the box failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        return Ok(out
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|p| !p.is_empty())
+            .filter_map(|p| {
+                let path = Path::new(std::str::from_utf8(p).ok()?);
+                path.strip_prefix(dir).ok().map(Path::to_path_buf)
+            })
+            .collect());
+    }
+    let mut files = Vec::new();
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => walk_files(dir, Path::new(""), &mut files)?,
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok(files)
+}
+
+/// [`carried_files`] on the host: `rel` is `dir`'s path below the root.
+fn walk_files(dir: &Path, rel: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let name = rel.join(entry.file_name());
+        if kind.is_dir() {
+            walk_files(&entry.path(), &name, files)?;
+        } else if kind.is_file() {
+            files.push(name);
+        }
+    }
+    Ok(())
+}
+
 /// The canonical form of `path` when it resolves to a **regular file at the
 /// exact shape [`save_pasted`] writes**: `<staging>/<uuid>/<filename>`. `None`
 /// leaves the caller's original string in place, which is the safe outcome for
@@ -377,6 +473,121 @@ mod tests {
         );
         assert_eq!(std::fs::read(&handed).unwrap(), b"pixels");
         assert!(!staged.exists());
+    }
+
+    /// A moving workspace's attachments land at the same paths on the other
+    /// side: into the guest when it is a box's, and on the host either way,
+    /// the source left as it was. With none adopted there is nothing to do.
+    #[test]
+    fn a_moving_workspace_carries_its_attachments_to_the_same_paths() {
+        let td = tempfile::tempdir().unwrap();
+        let (from, to) = (td.path().join("from"), td.path().join("to"));
+        let shot = Path::new("abc").join("shot.png");
+        std::fs::create_dir_all(from.join("abc")).unwrap();
+        std::fs::write(from.join(&shot), b"pixels").unwrap();
+        let local = Executor::Local;
+
+        carry_into(&from, &local, &to, &local).unwrap();
+        assert_eq!(std::fs::read(to.join(&shot)).unwrap(), b"pixels");
+        assert_eq!(std::fs::read(from.join(&shot)).unwrap(), b"pixels");
+
+        let boxed = td.path().join("boxed");
+        let guest = Arc::new(FakeBox::default());
+        carry_into(&from, &local, &boxed, &Executor::Remote(guest.clone())).unwrap();
+        assert_eq!(
+            *guest.writes.lock(),
+            vec![(boxed.join(&shot), b"pixels".to_vec())]
+        );
+        assert_eq!(std::fs::read(boxed.join(&shot)).unwrap(), b"pixels");
+
+        carry_into(&td.path().join("none"), &local, &to, &local).unwrap();
+    }
+
+    /// A guest whose files are this host's, reached as a box's are: commands
+    /// run here, reads read here. What the remote branch of the carry needs.
+    #[derive(Debug)]
+    struct HostAsGuest;
+
+    impl RemoteExecutor for HostAsGuest {
+        fn command(
+            &self,
+            program: &str,
+            cwd: &Path,
+            _: &[(String, String)],
+        ) -> std::process::Command {
+            let mut cmd = std::process::Command::new(program);
+            cmd.current_dir(cwd);
+            cmd
+        }
+        fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+            std::fs::read(path)
+        }
+        fn write(&self, path: &Path, bytes: &[u8], _: u32) -> io::Result<()> {
+            std::fs::write(path, bytes)
+        }
+        fn stat(&self, path: &Path) -> io::Result<Option<Stat>> {
+            Ok(std::fs::metadata(path).ok().map(|m| Stat {
+                is_dir: m.is_dir(),
+                is_file: m.is_file(),
+                len: m.len(),
+            }))
+        }
+        fn list(&self, _: &Path) -> io::Result<Vec<DirEntry>> {
+            unreachable!("the carry lists with find, never following a link")
+        }
+        fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+            std::fs::create_dir_all(path)
+        }
+        fn remove(&self, _: &Path) -> io::Result<()> {
+            Ok(())
+        }
+        fn rename(&self, _: &Path, _: &Path) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Out of a box, the guest is read: it holds every attachment, while the
+    /// host copy adoption keeps is best-effort and may be missing. A link the
+    /// agent planted there, to a file outside or back up the tree, is neither
+    /// followed nor carried; with nothing adopted there is nothing to do.
+    #[test]
+    fn a_box_workspace_carries_what_its_guest_holds_and_no_link() {
+        let td = tempfile::tempdir().unwrap();
+        let (from, to) = (td.path().join("box-ws"), td.path().join("mac-ws"));
+        std::fs::create_dir_all(from.join("abc")).unwrap();
+        std::fs::write(from.join("abc").join("shot.png"), b"pixels").unwrap();
+        let secret = td.path().join("secret.txt");
+        std::fs::write(&secret, b"key").unwrap();
+        std::os::unix::fs::symlink(&secret, from.join("abc").join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(td.path(), from.join("up")).unwrap();
+        let guest = Executor::Remote(Arc::new(HostAsGuest));
+
+        carry_into(&from, &guest, &to, &Executor::Local).unwrap();
+
+        assert_eq!(
+            std::fs::read(to.join("abc").join("shot.png")).unwrap(),
+            b"pixels"
+        );
+        assert!(!to.join("abc").join("link.txt").exists());
+        assert!(!to.join("up").exists());
+
+        carry_into(&td.path().join("none"), &guest, &to, &Executor::Local).unwrap();
+    }
+
+    /// A link in the host's attachments dir is not an attachment: the move
+    /// never follows one to copy what it names.
+    #[test]
+    fn a_link_among_the_attachments_is_left_behind() {
+        let td = tempfile::tempdir().unwrap();
+        let (from, to) = (td.path().join("from"), td.path().join("to"));
+        std::fs::create_dir_all(&from).unwrap();
+        let secret = td.path().join("secret.txt");
+        std::fs::write(&secret, b"key").unwrap();
+        std::os::unix::fs::symlink(&secret, from.join("link.txt")).unwrap();
+
+        carry_into(&from, &Executor::Local, &to, &Executor::Local).unwrap();
+
+        assert!(!to.join("link.txt").exists());
     }
 
     /// A box that cannot take the files fails the send, naming the file, and

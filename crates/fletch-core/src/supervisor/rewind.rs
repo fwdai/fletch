@@ -300,6 +300,45 @@ impl Supervisor {
             }
         }
     }
+
+    /// Switch `record` to a new session continuing `lineage` natively,
+    /// without launching it: `history` is written as that session's own
+    /// transcript where `record`'s engine keeps it, and the agent is left
+    /// `Spawning`. A rewind's `Exact` conversation, split at its launch for a
+    /// move between sandboxes, which switches the conversation as soon as
+    /// the code is across and launches once its checkouts are at rest
+    /// ([`Self::launch_native_session`]).
+    pub(super) async fn begin_native_session(
+        &self,
+        ctx: &Arc<EngineCtx>,
+        record: &AgentRecord,
+        lineage: &SessionLineage,
+        history: &[Value],
+    ) -> Result<()> {
+        let session = uuid::Uuid::new_v4().to_string();
+        let native = self.write_native_transcript(record, &session, history)?;
+        self.start_rewound_session(ctx, record, lineage, native.as_ref())
+            .await
+    }
+
+    /// Launch the session [`Self::begin_native_session`] switched `record`
+    /// to, its agent told `context`. A failed launch leaves the agent in
+    /// error, as a rewind's does.
+    pub(super) async fn launch_native_session(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        record: &AgentRecord,
+        context: Option<String>,
+    ) {
+        let handoff = Handoff::Native {
+            history: Vec::new(),
+            context,
+        };
+        if let Err(e) = self.launch_rewound_session(ctx, record, handoff).await {
+            tracing::warn!(agent_id = %record.id, error = %e, "moved agent failed to start");
+            fail_spawn(self, ctx, &record.id, e.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
