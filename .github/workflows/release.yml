@@ -224,10 +224,12 @@ jobs:
           chmod +x "$T/universal-apple-darwin/release/Fletch"
           lipo -info "$T/universal-apple-darwin/release/Fletch"
 
+      # A dry run passes no tag, and with neither a tag nor a release id the
+      # action bundles, signs and notarizes but uploads nothing; so a dry run
+      # goes through exactly this step too.
       - name: Bundle, sign, notarize and publish release
-        if: ${{ !inputs.dry_run }}
         uses: tauri-apps/tauri-action@v0
-        env: &tauri-bundle-env
+        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater artifact signing (minisign keypair generated for Fletch).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -240,7 +242,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: v__VERSION__
+          tagName: ${{ !inputs.dry_run && 'v__VERSION__' || '' }}
           releaseName: Fletch v__VERSION__
           releaseBody: See the assets to download and install this version.
           releaseDraft: false
@@ -250,18 +252,11 @@ jobs:
           tauriScript: sh scripts/tauri-bundle-prebuilt.sh
           args: --target universal-apple-darwin
 
-      # The same bundle through the Tauri CLI directly, with the same signing
-      # and notarization env, and nowhere to publish to.
-      - name: Bundle, sign and notarize (dry run)
-        if: ${{ inputs.dry_run }}
-        env: *tauri-bundle-env
+      # What ships, in the log, for comparing build changes.
+      - name: Artifact sizes
         run: |
-          set -euo pipefail
-          bun run tauri bundle --target universal-apple-darwin
-          # What a release would ship, for comparing build changes.
           B=src-tauri/target/universal-apple-darwin/release
           ls -l "$B/Fletch" "$B"/bundle/dmg/*.dmg "$B"/bundle/macos/*.app.tar.gz
-
 
       # The app as built: only Helpers/fletch-vm carries the hypervisor
       # entitlement and the runtime's signatures verify. No image argument:
