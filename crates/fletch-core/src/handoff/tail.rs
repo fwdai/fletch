@@ -2,12 +2,15 @@
 
 use std::borrow::Cow;
 
-/// Hard cap, in bytes, on the fallback context. It reaches the agent inside a
-/// single argv element (e.g. `--append-system-prompt <text>`), and the OS
-/// rejects oversized arguments with E2BIG ("Argument list too long"): Linux
-/// caps any one argument at 128 KiB (`MAX_ARG_STRLEN`), macOS caps argv + env
-/// together at 1 MiB (`ARG_MAX`). 64 KiB leaves room for the rest of the brief.
-/// A summary is capped well below this (`run::MAX_REPLY_BYTES`).
+/// Hard cap, in bytes, on the fallback context. It reaches the agent inside its
+/// instruction text: a file for claude's custom view, but a single argv
+/// element for every other delivery (claude's native view and pi
+/// `--append-system-prompt <text>`, codex `-c developer_instructions=…`), and
+/// the OS rejects oversized arguments with E2BIG ("Argument list too long"):
+/// Linux caps any one argument at 128 KiB (`MAX_ARG_STRLEN`), in a box's guest
+/// too, macOS caps argv + env together at 1 MiB (`ARG_MAX`). 64 KiB leaves room
+/// for the rest of the brief. A summary is capped well below this
+/// (`run::MAX_REPLY_BYTES`).
 const MAX_CONTEXT_BYTES: usize = 64 * 1024;
 
 /// First line of a fallback context, so the agent knows what it is reading.

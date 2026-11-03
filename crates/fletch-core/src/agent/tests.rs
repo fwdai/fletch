@@ -59,7 +59,7 @@ fn claude_session_flags_match_the_start_in_both_views() {
         let flags: Vec<String> = flags.into_iter().map(String::from).collect();
         let spec = claude_spec(start);
         for args in [
-            prepare_managed_args(&spec, &[], true),
+            prepare_managed_args(&spec, &[], true, None),
             prepare_pty_args(&spec, &[]),
         ] {
             assert!(args.ends_with(&flags), "{args:?}");
@@ -688,13 +688,13 @@ fn pi_args_thinking_when_set() {
 #[test]
 fn managed_args_ask_for_summarized_thinking_only_when_the_binary_takes_it() {
     let spec = claude_spec(SessionStart::Fresh);
-    let with = prepare_managed_args(&spec, &[], true);
+    let with = prepare_managed_args(&spec, &[], true, None);
     let at = with
         .iter()
         .position(|a| a == "--thinking-display")
         .expect("managed args carry --thinking-display");
     assert_eq!(with[at + 1], "summarized");
-    let without = prepare_managed_args(&spec, &[], false);
+    let without = prepare_managed_args(&spec, &[], false, None);
     assert!(!without.iter().any(|a| a == "--thinking-display"));
     let mut stripped = with.clone();
     let flag: Vec<String> = stripped.drain(at..at + 2).collect();
@@ -703,6 +703,41 @@ fn managed_args_ask_for_summarized_thinking_only_when_the_binary_takes_it() {
     assert!(!prepare_pty_args(&spec, &[])
         .iter()
         .any(|a| a == "--thinking-display"));
+}
+
+/// The custom view hands claude its instructions as a file, so no argument
+/// grows with them: however long the brief (a forked conversation's context
+/// rides in it), every argument stays far below the 128 KiB Linux allows one.
+/// The native view still passes the text itself, by design (`instructions`).
+#[test]
+fn managed_args_read_the_system_prompt_from_a_file() {
+    let brief = "x".repeat(300 * 1024);
+    let spec = SpawnSpec {
+        instructions: Some(&brief),
+        ..claude_spec(SessionStart::Fresh)
+    };
+    let file = Path::new("/w/a1/.fletch-profile/system-prompt.md");
+    let args = prepare_managed_args(&spec, &[], true, Some(file));
+    let at = args
+        .iter()
+        .position(|a| a == "--append-system-prompt-file")
+        .expect("managed args name the system-prompt file");
+    assert_eq!(args[at + 1], file.to_string_lossy());
+    assert!(!args.iter().any(|a| a == "--append-system-prompt"));
+    let longest = args.iter().map(String::len).max().unwrap();
+    assert!(longest < 4096, "an argument of {longest} bytes");
+
+    // No text, no file: no flag at all.
+    let bare = prepare_managed_args(&spec, &[], true, None);
+    assert!(!bare.iter().any(|a| a.starts_with("--append-system-prompt")));
+
+    let pty = prepare_pty_args(&spec, &[]);
+    let at = pty
+        .iter()
+        .position(|a| a == "--append-system-prompt")
+        .expect("the native view passes the text");
+    assert!(pty[at + 1].ends_with(&brief));
+    assert!(!pty.iter().any(|a| a == "--append-system-prompt-file"));
 }
 
 #[test]

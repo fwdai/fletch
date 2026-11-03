@@ -477,13 +477,35 @@ pub fn write_claude_mcp_config(
         return Ok(None);
     }
     let config = serde_json::json!({ "mcpServers": mcp_servers_object(servers) });
-    let dir = profile_dir(sandbox_root);
-    ensure_real_dir(&dir)?;
-    let path = dir.join("mcp-servers.json");
     let body = serde_json::to_string_pretty(&config)
         .map_err(|e| Error::Other(format!("failed to encode MCP config: {e}")))?;
-    write_profile_file(&path, &body)?;
-    Ok(Some(path))
+    write_profile_artifact(sandbox_root, "mcp-servers.json", &body).map(Some)
+}
+
+/// The name of claude's system-prompt file in the profile dir
+/// ([`write_system_prompt`]).
+pub const SYSTEM_PROMPT_FILE: &str = "system-prompt.md";
+
+/// Write the session's system-prompt text (`instructions::combined`) under the
+/// writable root and return its path for claude's
+/// `--append-system-prompt-file`, so the text never has to fit in one
+/// argument. Rewritten on every spawn, like the MCP config, so it is always
+/// this spawn's text. `None` when there is no text, and claude gets no flag.
+pub fn write_system_prompt(text: &str, sandbox_root: &Path) -> Result<Option<PathBuf>> {
+    if text.is_empty() {
+        return Ok(None);
+    }
+    write_profile_artifact(sandbox_root, SYSTEM_PROMPT_FILE, text).map(Some)
+}
+
+/// Write `name` into the profile dir under `sandbox_root` and return its path:
+/// a host-owned file the agent reads at the same path under every engine.
+fn write_profile_artifact(sandbox_root: &Path, name: &str, contents: &str) -> Result<PathBuf> {
+    let dir = profile_dir(sandbox_root);
+    ensure_real_dir(&dir)?;
+    let path = dir.join(name);
+    write_profile_file(&path, contents)?;
+    Ok(path)
 }
 
 /// Claude's [`McpDeliveryBuilder`]: write the generated config under the
@@ -1249,6 +1271,51 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(path.is_file());
+    }
+
+    /// The system prompt lands in the profile dir verbatim, however large, and
+    /// each spawn's write replaces the last; no text, no file and no flag.
+    #[test]
+    fn the_system_prompt_is_a_profile_file_rewritten_every_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!(
+            "# Fletch\n\nit's \"quoted\" $HOME\n{}",
+            "x".repeat(300 * 1024)
+        );
+        let path = write_system_prompt(&text, dir.path()).unwrap().unwrap();
+        assert_eq!(path, dir.path().join(PROFILE_DIR).join(SYSTEM_PROMPT_FILE));
+        assert!(std::fs::read_to_string(&path).unwrap() == text);
+
+        let again = write_system_prompt("shorter", dir.path()).unwrap().unwrap();
+        assert_eq!(again, path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "shorter");
+
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(write_system_prompt("", empty.path()).unwrap(), None);
+        assert!(!empty.path().join(PROFILE_DIR).exists());
+    }
+
+    /// A link the agent planted at the system-prompt file is replaced, never
+    /// written through: the host's write cannot be steered outside the
+    /// profile dir.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_system_prompt_file_is_replaced_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let profile = dir.path().join(PROFILE_DIR);
+        std::fs::create_dir_all(&profile).unwrap();
+        let target = outside.path().join("victim");
+        std::fs::write(&target, "before").unwrap();
+        std::os::unix::fs::symlink(&target, profile.join(SYSTEM_PROMPT_FILE)).unwrap();
+
+        let path = write_system_prompt("text", dir.path()).unwrap().unwrap();
+        assert!(!std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "text");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
     }
 
     #[test]

@@ -616,10 +616,24 @@ impl Agent {
         // Released on any failure before the session owns it (`KillGuard`).
         let kill = KillGuard::new(kill);
         account.unset.extend(env_remove);
+        // The instruction text as a file claude reads, never one argument it
+        // would have to fit in (`instructions`). Written after the plan, once
+        // the engine has the box that holds the writable root (if any)
+        // registered and running, so the file lands where claude runs; a
+        // failure here drops `kill`, which tears the plan down.
+        let system_prompt = crate::agent_profile::write_system_prompt(
+            &crate::instructions::combined(spec.instructions),
+            &spec.sandbox_root,
+        )?;
         // After the plan: only the engine knows which claude actually runs —
         // the host's or a box's — and whether that one
         // takes the thinking flag (`LaunchPlan::claude_thinking_summaries`).
-        let agent_args = prepare_managed_args(&spec, &mcp.args, claude_thinking_summaries);
+        let agent_args = prepare_managed_args(
+            &spec,
+            &mcp.args,
+            claude_thinking_summaries,
+            system_prompt.as_deref(),
+        );
         let args = launcher_args.for_process(&agent_args)?;
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
