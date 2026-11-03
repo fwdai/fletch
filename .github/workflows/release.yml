@@ -152,7 +152,12 @@ jobs:
       - name: Build, sign and notarize (dry run)
         if: ${{ inputs.dry_run }}
         env: *tauri-build-env
-        run: bun run tauri build --target universal-apple-darwin
+        run: |
+          set -euo pipefail
+          bun run tauri build --target universal-apple-darwin
+          # What a release would ship, for comparing build changes.
+          B=src-tauri/target/universal-apple-darwin/release
+          ls -l "$B/fletch" "$B"/bundle/dmg/*.dmg "$B"/bundle/macos/*.app.tar.gz
 
       # The app as built: only Helpers/fletch-vm carries the hypervisor
       # entitlement and the runtime's signatures verify. No image argument:
