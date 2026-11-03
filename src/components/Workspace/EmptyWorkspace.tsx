@@ -4,6 +4,7 @@ import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
 import { WorkspaceTypePicker } from "@/components/Composer/WorkspaceTypePicker";
+import { declaredWorkspaceType } from "@/components/Composer/workspaceType";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
 import { IconButton } from "@/components/ui/IconButton";
@@ -11,12 +12,14 @@ import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { activeEntry, useGate } from "@/store/capabilities";
+import { workspaceTypeOptionsFor } from "@/store/workspaceTypes";
 import {
   type ComposerMode,
   loadPipelinePrefs,
   rememberComposerMode,
 } from "@/workflows/run/projectPipeline";
 import { WorkflowComposer, WorkflowHeading } from "@/workflows/run/WorkflowComposer";
+import { creationNote } from "./creationNote";
 
 /** Empty-state pane shown when the user has started a draft agent.
  *  First message in the composer spawns the real agent and dispatches
@@ -114,6 +117,16 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   // host's spawn carries no workspace type yet. `spawnFromDraft` sends what
   // the chip declares on the same rule.
   const workspaceTypeShown = useAppStore((s) => activeEntry(s).kind !== "remote");
+  // What the page says will be created follows the sandbox the pill declares:
+  // the same derivation the spawn sends, so the sentence can't promise one
+  // sandbox while the agent lands in the other.
+  const workspaceTypeOptions = useAppStore((s) =>
+    workspaceTypeOptionsFor(s, draft.repoPath, draft.provider),
+  );
+  const note = creationNote(
+    workspaceTypeShown ? declaredWorkspaceType(workspaceTypeOptions, draft.workspaceType) : null,
+    repoCount,
+  );
 
   return (
     <div className="pane center">
@@ -194,12 +207,17 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
             <>
               <h1 className="empty-title text-5xl">What should be the first task?</h1>
               <p className="empty-sub text-base">
-                {repoCount > 1
-                  ? `Checkouts of all ${repoCount} repositories and a sandbox will be created at `
-                  : "A checkout and sandbox will be created at "}
-                <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
-                  ~/.fletch/workspaces/{draft.name}
-                </span>
+                {note.kind === "blocked" ? (
+                  note.text
+                ) : (
+                  <>
+                    {note.before}
+                    <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-1)" }}>
+                      ~/.fletch/workspaces/{draft.name}
+                    </span>
+                    {note.after}
+                  </>
+                )}
               </p>
             </>
           )}
