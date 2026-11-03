@@ -63,7 +63,7 @@ pub const LOOPBACK_PROXY: &str = "http://127.0.0.1:8899";
 /// images. Init tells the disks after the data disk apart by content (ext4 is
 /// a tools disk, an erofs with [`LAYER_MARKER`] is a layer), not by letter,
 /// and mounts every tools disk's `tools/` at [`TOOLS_MOUNT`]: one bound, several
-/// overlaid with the first on top (image 0.3.4 and later; earlier guests
+/// overlaid with the first on top (image 0.3.5 and later; earlier guests
 /// refuse a second ext4 disk).
 pub const DISK_BASE: &str = "/dev/vda";
 pub const DISK_DATA: &str = "/dev/vdb";

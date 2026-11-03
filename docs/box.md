@@ -28,7 +28,7 @@ the image layers. Init (`packaging/box-image/rootfs/opt/fletch/init`) tells
 the disks after the data disk apart by content: ext4 is a tools disk, an erofs
 with a `/.fletch-layer` marker is a layer. The tools disks' `tools/` are
 mounted at `/opt/fletch/tools` (one bound, several overlaid with the first on
-top, image 0.3.4 and later). Each layer's directories (`usr`, `etc`, `var`)
+top, image 0.3.5 and later). Each layer's directories (`usr`, `etc`, `var`)
 become a read-only overlay on the root. Folders the user shares arrive as
 virtio-fs at their own paths. Block devices are fixed at boot: a launch whose
 provider's disk is not aboard (built after the boot) restarts the box with it,
