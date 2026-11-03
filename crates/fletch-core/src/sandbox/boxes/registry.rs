@@ -162,7 +162,9 @@ pub enum StopReason {
     Discard,
     /// App exit.
     Shutdown,
-    /// A launch needs the tools disk that was built since this box booted.
+    /// A launch needs a tools disk that was built since this box booted: the
+    /// owner's, or another provider's for a tenant
+    /// ([`BoxRegistry::reattach_with_tools`]).
     Reattach,
     /// A launch needs the folders the user shares with this box now, which
     /// differ from the ones it booted with.
@@ -231,9 +233,10 @@ pub struct RunningBox {
     pub dir: PathBuf,
     pub channel: Arc<Channel>,
     pub since: i64,
-    /// The provider's CLI disk, held against the tools sweep for as long as
-    /// this box lives, its stop included.
-    tools_lease: Option<ToolsLease>,
+    /// The CLI disks this box booted with — the owner's provider's first, then
+    /// every other provider's that was built by boot time — each held against
+    /// the tools sweep for as long as this box lives, its stop included.
+    tools_leases: Vec<ToolsLease>,
     vm: Vm,
     proxy: Mutex<Option<EgressProxy>>,
     relays: relay::Relays,
@@ -249,9 +252,21 @@ impl RunningBox {
         &self.identity.agent_id
     }
 
-    /// The provider's CLI disk, when one was built by boot time.
-    pub fn tools_disk(&self) -> Option<&Path> {
-        self.tools_lease.as_ref().map(|lease| lease.path.as_path())
+    /// `provider`'s CLI disk, when one was built by boot time and so is
+    /// attached: the owner's, or another provider's a tenant runs from.
+    pub fn tools_disk_for(&self, provider: &str) -> Option<&Path> {
+        self.tools_leases
+            .iter()
+            .find(|lease| lease.provider == provider)
+            .map(|lease| lease.path.as_path())
+    }
+
+    /// The providers whose CLI disks are attached, the owner's first.
+    pub fn tools_providers(&self) -> Vec<String> {
+        self.tools_leases
+            .iter()
+            .map(|lease| lease.provider.clone())
+            .collect()
     }
 
     /// `box:<path>` for git over the channel.
@@ -523,13 +538,16 @@ impl Drop for StopOnDrop<'_> {
     }
 }
 
-/// One box's hold on its tools disk, from the moment [`BoxRegistry::tools_disk`]
-/// picks it until its [`RunningBox`] is dropped or its boot fails. The sweep
-/// never deletes a leased disk, and picking and leasing happen under the lock
-/// the sweep holds, so a disk handed to a boot cannot vanish before it opens.
+/// One box's hold on one tools disk, from the moment [`BoxRegistry::tools_disk`]
+/// (or [`BoxRegistry::other_tools_disks`]) picks it until its [`RunningBox`]
+/// is dropped or its boot fails. The sweep never deletes a leased disk, and
+/// picking and leasing happen under the lock the sweep holds, so a disk handed
+/// to a boot cannot vanish before it opens.
 #[derive(Debug)]
 struct ToolsLease {
     leases: Leases,
+    /// Whose CLI the disk carries.
+    provider: String,
     path: PathBuf,
 }
 
@@ -843,13 +861,18 @@ impl BoxRegistry {
             })
             .await?;
             self.verify_image_once(&ready).await?;
-            let tools_disk = self
-                .tools_disk(&ready, agent_id, &identity.provider)
-                .await?;
-            Ok::<_, Error>((ready, tools_disk))
+            // The owner's disk is waited for; every other provider's rides
+            // along when it is built, so a tenant of that provider (the
+            // local reviewer) finds its CLI here without a restart.
+            let mut tools_disks = vec![
+                self.tools_disk(&ready, agent_id, &identity.provider)
+                    .await?,
+            ];
+            tools_disks.extend(self.other_tools_disks(&identity.provider));
+            Ok::<_, Error>((ready, tools_disks))
         }
         .await;
-        let (ready, tools_disk) = match prepared {
+        let (ready, tools_disks) = match prepared {
             Ok(prepared) => prepared,
             Err(e) => {
                 self.set_phase(
@@ -868,7 +891,7 @@ impl BoxRegistry {
             return Err(refused);
         }
         self.set_phase(agent_id, BoxPhase::Starting);
-        let booted = boot(identity, &ready, Some(tools_disk)).await;
+        let booted = boot(identity, &ready, tools_disks).await;
         drop(slot);
         match booted {
             Ok(running) => {
@@ -982,7 +1005,7 @@ impl BoxRegistry {
         let root = tools_root();
         let built =
             || tools::built_disk_in(&root, provider, &version, CODEGRAPH_VERSION).map(|d| d.path);
-        if let Some(lease) = self.lease_tools_disk(built) {
+        if let Some(lease) = self.lease_tools_disk(provider, built) {
             if !tools_disk_settled(provider) {
                 drop(self.start_tools_build(ready, provider));
             }
@@ -992,7 +1015,7 @@ impl BoxRegistry {
         let bootable = || {
             tools::bootable_disk_in(&root, provider, &version, CODEGRAPH_VERSION).map(|d| d.path)
         };
-        if let Some(lease) = self.lease_tools_disk(bootable) {
+        if let Some(lease) = self.lease_tools_disk(provider, bootable) {
             tracing::info!(
                 agent_id,
                 provider,
@@ -1024,7 +1047,7 @@ impl BoxRegistry {
             },
         );
         wait_tools_build(build, setup::tools_wait()).await?;
-        self.lease_tools_disk(built).ok_or_else(|| {
+        self.lease_tools_disk(provider, built).ok_or_else(|| {
             Error::SandboxUnavailable(format!(
                 "the {provider} tools disk was reported built but {} is missing",
                 fletch_box::tools::disk_path(&root, provider, &version, None).display()
@@ -1032,15 +1055,66 @@ impl BoxRegistry {
         })
     }
 
-    /// Lease the disk `pick` names, picked under the lease lock so a sweep
-    /// cannot delete it between the pick and the lease. `pick` only reads the
-    /// file system: it must not probe the CLI version.
-    fn lease_tools_disk(&self, pick: impl FnOnce() -> Option<PathBuf>) -> Option<ToolsLease> {
+    /// The tools disks a box of `owner` attaches besides its own: every other
+    /// provider's newest disk ([`tools::newest_disk_in`]), so an agent of that
+    /// provider can run in the box as a tenant. Nothing is waited for, built
+    /// or probed here (no CLI version is asked, so a boot runs no host CLI):
+    /// a provider with no disk yet is simply not aboard, and a launch that
+    /// needs it restarts the box once it is ([`Self::reattach_with_tools`]).
+    fn other_tools_disks(&self, owner: &str) -> Vec<ToolsLease> {
+        self.other_tools_disks_in(&tools_root(), owner)
+    }
+
+    fn other_tools_disks_in(&self, root: &Path, owner: &str) -> Vec<ToolsLease> {
+        fletch_box::tools::PROVIDERS
+            .iter()
+            .filter(|provider| **provider != owner)
+            .filter_map(|provider| {
+                self.lease_tools_disk(provider, || {
+                    tools::newest_disk_in(root, provider, CODEGRAPH_VERSION).map(|d| d.path)
+                })
+            })
+            .collect()
+    }
+
+    /// Restart `identity`'s box with `provider`'s tools disk aboard, for a
+    /// launch of `provider` that found no CLI of its own in the running box
+    /// (the box booted before the disk was built, or before this provider
+    /// had one). Waits for the disk as a boot of that provider would
+    /// ([`Self::tools_disk`]), then stops the box and boots it again, which
+    /// takes every built disk ([`Self::other_tools_disks`]). The lease taken
+    /// here outlives the restart, so the sweep cannot take the disk in
+    /// between.
+    pub async fn reattach_with_tools(
+        &'static self,
+        identity: &BoxIdentity,
+        provider: &str,
+    ) -> Result<Arc<RunningBox>> {
+        let ready = setup::ready(|detail| {
+            self.set_phase(&identity.agent_id, BoxPhase::Preparing { detail });
+        })
+        .await?;
+        let _lease = self
+            .tools_disk(&ready, &identity.agent_id, provider)
+            .await?;
+        self.stop(&identity.agent_id, StopReason::Reattach).await?;
+        self.ensure_running(identity).await
+    }
+
+    /// Lease `provider`'s disk `pick` names, picked under the lease lock so a
+    /// sweep cannot delete it between the pick and the lease. `pick` only
+    /// reads the file system: it must not probe the CLI version.
+    fn lease_tools_disk(
+        &self,
+        provider: &str,
+        pick: impl FnOnce() -> Option<PathBuf>,
+    ) -> Option<ToolsLease> {
         let mut leases = self.tools_leases.lock();
         let path = pick()?;
         *leases.entry(path.clone()).or_default() += 1;
         Some(ToolsLease {
             leases: self.tools_leases.clone(),
+            provider: provider.to_string(),
             path,
         })
     }
@@ -1199,9 +1273,13 @@ impl BoxRegistry {
         }
     }
 
-    /// The tools disk `agent_id`'s box runs with, while it runs with one.
-    pub fn attached_tools_disk(&self, agent_id: &str) -> Option<PathBuf> {
-        Some(self.running(agent_id)?.tools_disk()?.to_path_buf())
+    /// `provider`'s tools disk in `agent_id`'s box, while the box runs with it.
+    pub fn attached_tools_disk(&self, agent_id: &str, provider: &str) -> Option<PathBuf> {
+        Some(
+            self.running(agent_id)?
+                .tools_disk_for(provider)?
+                .to_path_buf(),
+        )
     }
 
     /// Where `provider`'s tools disk stands, for the probe: the disk for the
@@ -1470,14 +1548,15 @@ impl BoxRegistry {
             self.finish_stop(&running, kill_rungs(&running.vm)).await
         };
         tracing::info!(agent_id, ?reason, ?outcome, "box stopped");
-        // Its disk's lease goes with it (unless another holder of the box
+        // Its disks' leases go with it (unless another holder of the box
         // outlives this), so a disk an update superseded can go now rather
         // than at the next app start. Not on app exit: the next start sweeps.
-        let provider = running.identity.provider.clone();
-        let had_disk = running.tools_disk().is_some();
+        let providers = running.tools_providers();
         drop(running);
-        if had_disk && reason != StopReason::Shutdown {
-            sweep_tools_disks_in_background(provider);
+        if reason != StopReason::Shutdown {
+            for provider in providers {
+                sweep_tools_disks_in_background(provider);
+            }
         }
         Ok(outcome)
     }
@@ -1881,7 +1960,7 @@ pub fn egress_policy(project_id: &str) -> EgressPolicy {
 async fn boot(
     identity: &BoxIdentity,
     ready: &super::Ready,
-    tools_lease: Option<ToolsLease>,
+    tools_leases: Vec<ToolsLease>,
 ) -> Result<RunningBox> {
     let agent_id = identity.agent_id.clone();
     let dir = identity.box_dir()?;
@@ -1925,7 +2004,10 @@ async fn boot(
     let mut spec = VmSpec::new(&agent_id, &ready.image.path(), &data, &dir.join(CONSOLE));
     spec.cpus = knobs.cpus;
     spec.memory_mib = knobs.memory_mib;
-    spec.tools_disk = tools_lease.as_ref().map(|lease| lease.path.clone());
+    spec.tools_disks = tools_leases
+        .iter()
+        .map(|lease| lease.path.clone())
+        .collect();
     spec.layers = ready.image.layer_paths();
     spec.shares = identity
         .shares
@@ -2028,7 +2110,7 @@ async fn boot(
         dir,
         channel,
         since: chrono::Utc::now().timestamp_millis(),
-        tools_lease,
+        tools_leases,
         vm,
         proxy: Mutex::new(Some(proxy)),
         relays,
@@ -2396,7 +2478,9 @@ mod tests {
         installed(&good);
         installed(&bad);
         damage(&bad);
-        let lease = registry.lease_tools_disk(|| Some(bad.clone())).unwrap();
+        let lease = registry
+            .lease_tools_disk("claude", || Some(bad.clone()))
+            .unwrap();
         assert!(!registry.verify_tools_disks_in(root, "claude", "v2.1.314"));
         assert!(bad.exists(), "a box runs on it");
         drop(lease);
@@ -2501,14 +2585,62 @@ mod tests {
     fn a_lease_lasts_until_its_last_holder_is_gone() {
         let registry = test_registry();
         let disk = PathBuf::from("/tools/claude-v2.1.312.img");
-        let first = registry.lease_tools_disk(|| Some(disk.clone())).unwrap();
-        let second = registry.lease_tools_disk(|| Some(disk.clone())).unwrap();
-        assert!(registry.lease_tools_disk(|| None).is_none());
+        let first = registry
+            .lease_tools_disk("claude", || Some(disk.clone()))
+            .unwrap();
+        let second = registry
+            .lease_tools_disk("claude", || Some(disk.clone()))
+            .unwrap();
+        assert!(registry.lease_tools_disk("claude", || None).is_none());
         assert_eq!(registry.tools_leases.lock().get(&disk), Some(&2));
         drop(first);
         assert_eq!(registry.tools_leases.lock().get(&disk), Some(&1));
         drop(second);
         assert!(registry.tools_leases.lock().is_empty());
+    }
+
+    /// A boot takes every other provider's bootable disk along, each leased
+    /// and named for its provider, and never the owner's own (which the boot
+    /// waits for separately) or a provider with no disk.
+    #[test]
+    fn a_boot_takes_every_other_providers_built_disk_along() {
+        let registry = test_registry();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let codex = root.join(format!("codex-{}.img", tools_version("codex")));
+        let pi = root.join(format!("pi-{}.img", tools_version("pi")));
+        let claude = root.join(format!("claude-{}.img", tools_version("claude")));
+        for disk in [&codex, &pi, &claude] {
+            installed(disk);
+        }
+
+        let leases = registry.other_tools_disks_in(root, "claude");
+        let mut aboard: Vec<(&str, &Path)> = leases
+            .iter()
+            .map(|lease| (lease.provider.as_str(), lease.path.as_path()))
+            .collect();
+        aboard.sort();
+        assert_eq!(aboard, [("codex", codex.as_path()), ("pi", pi.as_path())]);
+        {
+            let held = registry.tools_leases.lock();
+            assert_eq!(held.get(&codex), Some(&1));
+            assert_eq!(held.get(&pi), Some(&1));
+            assert!(
+                !held.contains_key(&claude),
+                "the owner's disk is leased by `tools_disk`"
+            );
+        }
+        drop(leases);
+        assert!(registry.tools_leases.lock().is_empty());
+
+        assert!(registry
+            .other_tools_disks_in(root, "codex")
+            .iter()
+            .all(|l| l.provider != "codex"));
+        let empty = tempfile::tempdir().unwrap();
+        assert!(registry
+            .other_tools_disks_in(empty.path(), "claude")
+            .is_empty());
     }
 
     #[test]

@@ -58,10 +58,13 @@ pub const GID: u32 = 1000;
 /// The guest's loopback proxy, for processes that only honour `HTTPS_PROXY`.
 pub const LOOPBACK_PROXY: &str = "http://127.0.0.1:8899";
 
-/// Block device order: the base image, the data disk, then the optional tools
-/// disk and the layer images. Init tells the disks after the data disk apart
-/// by content (ext4 is the tools disk, an erofs with [`LAYER_MARKER`] is a
-/// layer), not by letter.
+/// Block device order: the base image, the data disk, then the tools disks
+/// (one per provider CLI the box carries, the owner's first) and the layer
+/// images. Init tells the disks after the data disk apart by content (ext4 is
+/// a tools disk, an erofs with [`LAYER_MARKER`] is a layer), not by letter,
+/// and mounts every tools disk's `tools/` at [`TOOLS_MOUNT`]: one bound, several
+/// overlaid with the first on top (image 0.3.4 and later; earlier guests
+/// refuse a second ext4 disk).
 pub const DISK_BASE: &str = "/dev/vda";
 pub const DISK_DATA: &str = "/dev/vdb";
 pub const DISK_TOOLS: &str = "/dev/vdc";

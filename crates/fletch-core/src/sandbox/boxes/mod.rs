@@ -46,6 +46,10 @@
 //! reads the coder's checkout) runs *in the box that holds it* when that box
 //! is another agent's — as its tenant ([`registry::Tenant`]): same VM, its own
 //! ssh session, env file, mailbox relay and profile dir, no box of its own.
+//! It need not share the owner's provider: a box boots with every provider's
+//! tools disk that is built, the owner's on top, so each CLI is at its usual
+//! path; a tenant whose disk was not aboard restarts the box with it
+//! (`BoxRegistry::reattach_with_tools`).
 //! Conversely an agent adopting a host tree never runs in a box, which cannot
 //! see it ([`crate::sandbox::engine_for_adopted_tree`]). Inside the guest both
 //! agents are one user, so a file mode cannot keep the reviewer off the
@@ -508,13 +512,13 @@ pub fn supports_provider(provider: &str) -> bool {
 }
 
 /// The codegraph launcher's path in `agent_id`'s guest, when the tools disk
-/// its box runs with carries codegraph: the disk attached now, or for a box
-/// that is stopped (or will reattach, see `launch_agent`) the one its next
-/// boot takes. That is the disk the agent's MCP server will find, so the
-/// session is told about codegraph exactly when it is there.
+/// its launch of `provider` runs from carries codegraph: the disk attached
+/// now, or for a box that is stopped (or will reattach, see `launch_agent`)
+/// the one its next boot takes. That is the disk the agent's MCP server will
+/// find, so the session is told about codegraph exactly when it is there.
 pub fn codegraph_bin(agent_id: &str, provider: &str) -> Option<String> {
     let disk = BoxRegistry::global()
-        .attached_tools_disk(agent_id)
+        .attached_tools_disk(agent_id, provider)
         .or_else(|| registry::bootable_tools_disk(provider))?;
     fletch_box::tools::carries_codegraph(&disk).then(fletch_box::tools::codegraph_bin_path)
 }
@@ -1171,18 +1175,6 @@ impl SandboxEngine for BoxEngine {
             _ => identity_of(ctx),
         };
         let is_tenant = identity.agent_id != ctx.agent_id;
-        if is_tenant && identity.provider != ctx.provider {
-            // A box carries one provider's CLI (its tools disk): a tenant of
-            // another provider would find no binary on its PATH.
-            let label = |p: &str| {
-                crate::agent::provider_bin_label(p).map_or(p.to_string(), |(_, l)| l.to_string())
-            };
-            return Err(Error::SandboxUnavailable(format!(
-                "{} can't run in a {} box: a box carries one provider's CLI",
-                label(ctx.provider),
-                label(&identity.provider)
-            )));
-        }
         let box_agent_id = identity.agent_id.clone();
         let registry = BoxRegistry::global();
         let launch_id = uuid::Uuid::new_v4().to_string();
@@ -1205,16 +1197,18 @@ impl SandboxEngine for BoxEngine {
             block_on(registry.stop(&box_agent_id, StopReason::Reshare))?;
             running = block_on(registry.ensure_running(&identity))?;
         }
-        if running.tools_disk().is_none() {
-            // Booted before the disk existed (an older build, or a host CLI
-            // upgrade since): a restart attaches the disk `ensure_running`
-            // now waits for.
-            block_on(registry.stop(&box_agent_id, StopReason::Reattach))?;
-            running = block_on(registry.ensure_running(&identity))?;
-            if running.tools_disk().is_none() {
-                return Err(Error::SandboxUnavailable(
-                    "the box restarted without its tools disk".into(),
-                ));
+        if running.tools_disk_for(ctx.provider).is_none() {
+            // Booted before this provider's disk existed (an older build, a
+            // host CLI upgrade since, or a tenant of a provider the box had no
+            // disk for): a restart attaches the disk, once it is built
+            // (`reattach_with_tools`).
+            running = block_on(registry.reattach_with_tools(&identity, ctx.provider))?;
+            if running.tools_disk_for(ctx.provider).is_none() {
+                let label =
+                    crate::agent::provider_bin_label(ctx.provider).map_or(ctx.provider, |(_, l)| l);
+                return Err(Error::SandboxUnavailable(format!(
+                    "the box restarted without the {label} tools disk"
+                )));
             }
         }
         // The project's toolchain cache in the guest (made below), which a
@@ -1298,7 +1292,7 @@ impl SandboxEngine for BoxEngine {
         // The claude on the tools disk this box booted with — which may be an
         // older disk taken while the host's version builds — is the one this
         // launch runs, so it is the one asked.
-        let claude_thinking_summaries = match running.tools_disk() {
+        let claude_thinking_summaries = match running.tools_disk_for(ctx.provider) {
             Some(disk) if ctx.provider == "claude" => {
                 guest_thinking_summaries(&running.channel, disk, agent_bin)
             }

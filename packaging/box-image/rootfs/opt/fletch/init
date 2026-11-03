@@ -52,13 +52,14 @@ echo fletch-box > /proc/sys/kernel/hostname
 step="mounting layers"
 # Every disk after the data disk is told apart by content, not by its letter:
 # an erofs with a /.fletch-layer marker is a layer (devtools, browser, ...),
-# an ext4 is the tools disk, a disk with no filesystem (a test's script disk)
-# is left alone. Layers are mounted read-only under /run/layers and each
-# top-level directory they carry (usr, etc, var) becomes a read-only overlay
-# on the root, later disks on top. Binaries already running keep their inodes;
-# every later lookup goes through the overlay.
+# an ext4 is a tools disk (one provider's CLI each; a box may carry several),
+# a disk with no filesystem (a test's script disk) is left alone. Layers are
+# mounted read-only under /run/layers and each top-level directory they carry
+# (usr, etc, var) becomes a read-only overlay on the root, later disks on top.
+# Binaries already running keep their inodes; every later lookup goes through
+# the overlay.
 layers=""
-tools_dev=""
+tools_devs=""
 n=0
 for dev in /dev/vd[c-z]; do
   [ -b "$dev" ] || continue
@@ -73,8 +74,7 @@ for dev in /dev/vd[c-z]; do
       n=$((n + 1))
       ;;
     ext4)
-      [ -z "$tools_dev" ] || fail "two ext4 disks ($tools_dev, $dev); a box has one tools disk"
-      tools_dev=$dev
+      tools_devs="$tools_devs $dev"
       ;;
     "") ;;
     *) fail "$dev holds a $type filesystem, which is neither a layer (erofs) nor a tools disk (ext4)";;
@@ -177,15 +177,29 @@ while [ "$i" -lt "$shares" ]; do
   i=$((i + 1))
 done
 
-step="mounting the tools disk"
-if [ -n "$tools_dev" ]; then
-  # The disk was built by booting a box with it as /data, so the CLIs sit under
-  # its tools/ directory (packaging/box-image/tools); only that part is exposed.
-  mkdir -p /run/tools
-  mount -t ext4 -o ro,nosuid,nodev "$tools_dev" /run/tools
-  [ -d /run/tools/tools ] || fail "the tools disk has no tools/ directory"
-  mount --bind /run/tools/tools /opt/fletch/tools
-fi
+step="mounting the tools disks"
+# Each disk was built by booting a box with it as /data, so its CLI sits under
+# its tools/ directory (packaging/box-image/tools); only that part is exposed.
+# One disk is bound on /opt/fletch/tools; several are overlaid there, the
+# first disk (the box owner's provider) on top, so every provider's CLI is at
+# /opt/fletch/tools/<provider>/bin and the one codegraph copy that wins is the
+# owner's.
+lower=""
+n=0
+for dev in $tools_devs; do
+  mnt=/run/tools/$n
+  mkdir -p "$mnt"
+  mount -t ext4 -o ro,nosuid,nodev "$dev" "$mnt" || fail "the tools disk $dev does not mount"
+  [ -d "$mnt/tools" ] || fail "the tools disk $dev has no tools/ directory"
+  lower="$lower$mnt/tools:"
+  n=$((n + 1))
+done
+case "$n" in
+  0) ;;
+  1) mount --bind /run/tools/0/tools /opt/fletch/tools ;;
+  *) mount -t overlay overlay -o "ro,nosuid,nodev,lowerdir=${lower%:}" /opt/fletch/tools || fail "the tools overlay does not mount" ;;
+esac
+[ "$n" -eq 0 ] || echo "fletch-init: $n tools disk(s): $(ls /opt/fletch/tools | tr '\n' ' ')"
 
 step="preparing ssh"
 # The host key persists with the workspace, so the host learns it once.

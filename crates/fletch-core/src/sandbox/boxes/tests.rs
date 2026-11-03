@@ -100,8 +100,8 @@ async fn a_box_runs_the_whole_workspace_contract() {
     let booted = t0.elapsed();
     eprintln!(
         "first boot ready in {booted:.2?} (includes hashing the image once per process; \
-         tools disk attached: {})",
-        running.tools_disk().is_some()
+         tools disks attached: {:?})",
+        running.tools_providers()
     );
 
     let uname = running
