@@ -49,6 +49,13 @@ export function isolationOf(engine: string | null | undefined): Isolation {
   return SEATBELT;
 }
 
+/** What the title bar shows for a workspace: where it runs, or, while it
+ *  moves, where it's going. */
+export function shownIsolation(engine: string | null | undefined, moving: boolean): Isolation {
+  if (!moving) return isolationOf(engine);
+  return engine === "box" ? SEATBELT : BOX;
+}
+
 /** The box's phase as the title bar spells it. */
 export const BOX_PHASE_LABEL: Record<BoxStateEvent["phase"], string> = {
   stopped: "Stopped",

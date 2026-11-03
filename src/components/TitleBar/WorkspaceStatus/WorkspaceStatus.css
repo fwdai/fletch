@@ -79,7 +79,8 @@
 }
 .ws-iso.box.preparing,
 .ws-iso.box.starting,
-.ws-iso.box.stopping {
+.ws-iso.box.stopping,
+.ws-iso.moving {
   color: var(--info);
   animation: ws-iso-pulse 1.4s ease-in-out infinite;
 }
@@ -92,7 +93,8 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ws-iso.box {
+  .ws-iso.box,
+  .ws-iso.moving {
     animation: none;
   }
 }
