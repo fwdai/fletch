@@ -113,6 +113,33 @@ the app verifies against the embedded pubkey — the proxy can't forge an update
 5. Review the draft, then **Publish** it. Once published, the endpoint serves
    the new `latest.json` and installed apps pick it up on next launch.
 
+## How the Release workflow runs
+
+```
+app (arm64) ─┬─ release ─────┬─ host-upload
+app (x86_64) ┴─ host (×3) ───┘
+```
+
+- **`app`** compiles the app's binary once per architecture, each on its own
+  macOS runner and at the same time (`tauri build --no-bundle --target …`).
+  With the fat-LTO release profile, this is most of a release's time.
+- **`release`** joins the two binaries with `lipo`, as a universal
+  `tauri build` would, then runs tauri-action. `scripts/tauri-bundle-prebuilt.sh`
+  turns the action's `build` into `tauri bundle`, so it bundles, signs,
+  notarizes, publishes and writes `latest.json` without compiling again.
+- **`host`** builds the `fletch-host` tarballs while `release` bundles, and
+  **`host-upload`** adds them to the release.
+
+At most two macOS runners are busy at once. The repository is public, so
+standard runners are free; the limits that matter are concurrency (5 macOS
+jobs on the Free plan) and GitHub's arm64 capacity. A job that fails with
+"not acquired by Runner" never got a machine: re-run it.
+
+**Trying a build change:** run the workflow from your branch with **dry run**
+checked. It runs every build, signing and notarization, and the same
+tauri-action step a release runs, but publishes and uploads nothing. The
+artifact sizes are printed in the `release` job's log.
+
 ## Local signed build
 
 To produce a signed + notarized universal build on your Mac (no CI):
