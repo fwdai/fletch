@@ -28,9 +28,11 @@ import {
   reconcileSending,
   recordWorkspaceUsage,
   reduceRecords,
+  replaceTurnBubble,
   repoPathFor,
   resolveBaseBranch,
   unsupportedManagedCommand,
+  waitingBubble,
   whileSending,
 } from "@/helpers";
 import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
@@ -213,10 +215,12 @@ export interface WorkspaceSlice {
     context: ForkContext,
   ) => Promise<AgentRecord | null>;
   /** Send a message to the agent, in the order sends are made (`sendOrder`).
+   *  Its bubble is drawn at once, whatever it waits on before delivery.
    *  `folders` (the composer's chips, or a promise of them while its path
    *  mentions resolve) are granted first, in the message's place, so the agent
    *  can see them when it reads it; each then rides as an attachment. Resolves
-   *  false when one was refused (`lastError` says why) and nothing was sent. */
+   *  false when one was refused (`lastError` says why): nothing was sent and
+   *  the bubble is taken down. */
   sendUserMessage: (
     id: string,
     text: string,
@@ -581,16 +585,41 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  sendUserMessage: (id, text, given = [], folders = []) =>
-    sendOrder.run(id, async () => {
+  sendUserMessage: (id, text, given = [], folders = []) => {
+    // Stable per-turn id: the bubble drawn now, the backend's
+    // session_user_turns write (idempotent across the agent-not-ready retry)
+    // and the `turn:sent` mirror all name the turn by it.
+    const turnId = crypto.randomUUID();
+    // The bubble goes up now, before the message waits for its place in line
+    // or its folders, so it never seems lost while an earlier send — or its
+    // own folder grant, a box restart — takes seconds. Each outcome below
+    // redraws it in place (`draw`).
+    const draw = (next: ChatItem | null) =>
+      set((state) => ({
+        managedLogs: {
+          ...state.managedLogs,
+          [id]: replaceTurnBubble(state.managedLogs[id] ?? [], turnId, next),
+        },
+      }));
+    set((state) => ({
+      managedLogs: {
+        ...state.managedLogs,
+        [id]: [...(state.managedLogs[id] ?? []), waitingBubble(text, turnId, given)],
+      },
+    }));
+    return sendOrder.run(id, async () => {
       // The message's folders, granted in its place in line: the agent
       // relaunches with them before this reaches it, and a refused one sends
-      // nothing (the composer puts the draft back). Each rides by the path the
-      // backend stored, which can differ from the one picked (a link, `~`).
+      // nothing — its bubble comes down and the composer puts the draft back.
+      // Each rides by the path the backend stored, which can differ from the
+      // one picked (a link, `~`).
       const granted: string[] = [];
       for (const folder of await folders) {
         const path = await get().grantAgentFolder(id, folder.path, folder.writable);
-        if (path === null) return false;
+        if (path === null) {
+          draw(null);
+          return false;
+        }
         granted.push(path);
       }
       const attachments = [...given, ...granted];
@@ -612,21 +641,13 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         repoPathFor(get(), id),
       );
       if (unsupported) {
-        set((state) => ({
-          managedLogs: {
-            ...state.managedLogs,
-            [id]: [
-              ...(state.managedLogs[id] ?? []),
-              {
-                kind: "notice",
-                subtype: "command_output",
-                label: `/${unsupported}`,
-                text: `/${unsupported} isn't available in this chat view — it only works in Claude's interactive TUI. Switch to the Native view to use it.`,
-                is_error: true,
-              },
-            ],
-          },
-        }));
+        draw({
+          kind: "notice",
+          subtype: "command_output",
+          label: `/${unsupported}`,
+          text: `/${unsupported} isn't available in this chat view — it only works in Claude's interactive TUI. Switch to the Native view to use it.`,
+          is_error: true,
+        });
         return true;
       }
       // App-expanded commands (codex prompts): the CLI receives the prompt as a
@@ -645,11 +666,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
           sendText = expandSlashCommand(provider, text, repoPathFor(get(), id)) ?? text;
         }
       }
-      // Stable per-turn id, reused across the agent-not-ready retry below so the
-      // backend's session_user_turns write is idempotent (one row per turn).
-      const turnId = crypto.randomUUID();
-      // Sent mid-turn? Then this is a follow-up: render it as a queued_message
-      // and leave the running turn's busy state untouched. The backend decides
+      // Delivered mid-turn (a turn running, or one an earlier send in line
+      // just started)? Then this is a follow-up: it stays a queued_message and
+      // leaves the running turn's busy state untouched. The backend decides
       // whether to inject it live (claude) or queue it (per-turn agents); the
       // store never drives delivery.
       const wasBusy = isAgentBusy(get(), id);
@@ -673,9 +692,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
                 ? { kind: "user_message", text, attachments, turnId }
                 : { kind: "user_message", text, turnId };
           return {
+            // In place of the bubble drawn at send time, now with its folders.
             managedLogs: {
               ...state.managedLogs,
-              [id]: [...(state.managedLogs[id] ?? []), entry],
+              [id]: replaceTurnBubble(state.managedLogs[id] ?? [], turnId, entry),
             },
             // Only a turn-*starting* send is ours to bridge until the backend's
             // `running` lands; a follow-up rides a turn that is already busy.
@@ -722,7 +742,8 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         }));
       }
       return true;
-    }),
+    });
+  },
 
   answerToolUse: async (id, toolUseId, updatedInput, behavior = "allow", message) => {
     const requestId = get().pendingToolUse[id]?.[toolUseId];

@@ -121,6 +121,43 @@ describe("sendUserMessage", () => {
     expect(sentTexts()).toEqual(["look at @~/Projects/lib", "thanks"]);
   });
 
+  it("draws each message at once, and redraws it in place when it is delivered", async () => {
+    const grant = deferred<ReturnType<typeof granted>>();
+    grantAgentFolder.mockReturnValue(grant.promise);
+    const store = makeStore();
+    const log = () => store.getState().managedLogs.a1 ?? [];
+
+    const first = store.getState().sendUserMessage("a1", "read the lib", [], [lib]);
+    const second = store.getState().sendUserMessage("a1", "and then this");
+    // Both up before anything has reached the host.
+    expect(log().map((it) => [it.kind, "text" in it ? it.text : ""])).toEqual([
+      ["queued_message", "read the lib"],
+      ["queued_message", "and then this"],
+    ]);
+
+    grant.resolve(granted(lib.path));
+    await Promise.all([first, second]);
+    // The first opened the turn, in its own place and now with its folder;
+    // the second, delivered behind it, is that turn's follow-up.
+    expect(log()).toEqual([
+      expect.objectContaining({
+        kind: "user_message",
+        text: "read the lib",
+        attachments: [lib.path],
+      }),
+      expect.objectContaining({ kind: "queued_message", text: "and then this" }),
+    ]);
+  });
+
+  it("takes a refused message's bubble down", async () => {
+    grantAgentFolder.mockRejectedValue(new Error("Fletch won't share it"));
+    const store = makeStore();
+
+    await store.getState().sendUserMessage("a1", "read ~/.ssh", [], [lib]);
+
+    expect(store.getState().managedLogs.a1 ?? []).toEqual([]);
+  });
+
   it("sends nothing for a refused folder and lets the next message through", async () => {
     grantAgentFolder.mockRejectedValue(new Error("Fletch won't share it"));
     const store = makeStore();
