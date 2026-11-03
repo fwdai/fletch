@@ -394,6 +394,7 @@ impl Supervisor {
         self.rpc_dispatchers.lock().remove(agent_id);
         self.live_turns.lock().remove(agent_id);
         self.delivery_locks.lock().remove(agent_id);
+        self.checkout_locks.lock().remove(agent_id);
         self.forget_logins(agent_id);
         // Clear the in-memory queue and its durable mirror under one hold of
         // the queue lock. Dropping the mirror stops an archived agent's queue
@@ -589,6 +590,21 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
     // removal failed). Best-effort, retried + logged (see `remove_agent_dir`).
     if !remove_agent_dir(agent_id, op).await {
         failures.push("agent dir removal failed".to_string());
+    }
+
+    // What a move between sandboxes left staged goes with the workspace, so
+    // nothing settles it back into a path a later workspace of the name owns.
+    match crate::workspace::moving_dir(agent_id) {
+        Ok(staged) if staged.exists() => {
+            if let Err(e) = tokio::fs::remove_dir_all(&staged).await {
+                tracing::warn!(agent_id, op, error = %e, "staged move dir removal failed");
+                failures.push(format!("staged move: {e}"));
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(agent_id, op, error = %e, "staged move dir path resolution failed")
+        }
     }
 
     // The agent's RPC mailbox dies with it — nothing will ever read from it

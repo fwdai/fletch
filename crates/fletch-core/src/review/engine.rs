@@ -1340,6 +1340,9 @@ fn coder_free(sup: &Supervisor, key: &Key) -> bool {
         sup.status_of(&key.0),
         Some(AgentStatus::Running | AgentStatus::Spawning)
     ) && !crate::supervisor::delegation::is_live(key)
+        // Nor while a move between sandboxes has the checkouts, or left them
+        // unsettled: the review waits, queued, as it does for a turn.
+        && sup.checkouts_at_rest(&key.0).is_ok()
 }
 
 /// Ask for a review of `agent_id`'s checkout `subdir`. Runs now when the

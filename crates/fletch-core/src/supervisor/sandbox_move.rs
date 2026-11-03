@@ -19,12 +19,20 @@
 //! rollback, and at boot the recovery from a move the app didn't live to
 //! finish ([`settle_interrupted_moves`]).
 //!
+//! While a move runs, and for as long as one is left unsettled (its staging
+//! dir still there), the workspace's checkouts are not at rest, and nothing
+//! may put work into them: every entry point that would asks
+//! [`Supervisor::checkouts_at_rest`] first. A launch goes further and settles
+//! what is left first, so a workspace recovers at the next message, not only
+//! at the next boot.
+//!
 //! What doesn't travel: ignored files (`node_modules`, `.env`), which no
 //! snapshot holds, and earlier turns' checkpoints, so the code can't be
 //! rewound past the move (the conversation still can).
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -43,6 +51,37 @@ use super::lifecycle::{arm_spawn_timeout, fail_spawn, provision_codegraph_index}
 use super::Supervisor;
 
 const BUSY: &str = "Wait for the turn to finish before moving the workspace.";
+const MOVING: &str = "The workspace is moving to another sandbox. Try again once it's done.";
+const UNSETTLED: &str = "The workspace's last move between sandboxes didn't finish";
+
+/// One `settle` at a time: a move, a launch and boot can each try to finish
+/// what a move left.
+static SETTLING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A move under way, from its start until the disk is settled: the workspace
+/// is out of rest (`Supervisor::moving`) for as long as this lives.
+struct InFlight<'a> {
+    sup: &'a Supervisor,
+    agent_id: String,
+}
+
+impl<'a> InFlight<'a> {
+    fn begin(sup: &'a Supervisor, agent_id: &str) -> Result<Self> {
+        if !sup.moving.lock().insert(agent_id.to_string()) {
+            return Err(Error::Other(MOVING.into()));
+        }
+        Ok(Self {
+            sup,
+            agent_id: agent_id.to_string(),
+        })
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.sup.moving.lock().remove(&self.agent_id);
+    }
+}
 
 /// The conversation a moved workspace goes on with, read while the old
 /// sandbox still holds its transcript.
@@ -52,7 +91,79 @@ struct Conversation {
     context: Option<String>,
 }
 
+/// How long a move waits for the one-shot actions already at work in the
+/// checkouts (a commit, a pull, a verification) before it refuses.
+const QUIESCE_WAIT: Duration = Duration::from_secs(10);
+
+/// A one-shot action's hold on an agent's checkouts, for as long as it acts
+/// in them ([`Supervisor::hold_checkouts`]): no move starts on them until it
+/// is dropped.
+pub struct CheckoutHold(#[allow(dead_code)] tokio::sync::OwnedRwLockReadGuard<()>);
+
 impl Supervisor {
+    /// Whether work may be put into `agent_id`'s checkouts now, or why not: a
+    /// move between sandboxes is under way, or one didn't finish. Asked by
+    /// every entry point that would. What starts something long-lived there
+    /// asks on entry and again as it registers, under the lock the move's
+    /// sweep takes ([`Self::refuse_if_moving`]): the agent's launch
+    /// ([`Self::settle_before_launch`]), the user's shell, the Run panel's
+    /// app. A one-shot action holds them instead ([`Self::hold_checkouts`]):
+    /// the Git panel's (`commands::agent_repo_checkout`). A local review
+    /// waits for them (`review::engine`).
+    pub fn checkouts_at_rest(&self, agent_id: &str) -> Result<()> {
+        if self.moving.lock().contains(agent_id) {
+            return Err(Error::Other(MOVING.into()));
+        }
+        if moving_dir(agent_id)?.exists() {
+            return Err(Error::Other(format!(
+                "{UNSETTLED}. Send a message or restart Fletch to finish it."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Refuse while a move is under way: what something long-lived checks as
+    /// it registers, under the same lock the move's sweep (`take_down`)
+    /// takes, so it is either refused here or swept there.
+    pub(super) fn refuse_if_moving(&self, agent_id: &str) -> Result<()> {
+        if self.moving.lock().contains(agent_id) {
+            return Err(Error::Other(MOVING.into()));
+        }
+        Ok(())
+    }
+
+    /// Hold `agent_id`'s checkouts for a one-shot action in them, or why not
+    /// ([`Self::checkouts_at_rest`]). A move waits for the hold to go
+    /// before it touches them.
+    pub fn hold_checkouts(&self, agent_id: &str) -> Result<CheckoutHold> {
+        let hold = self
+            .checkout_lock(agent_id)
+            .try_read_owned()
+            .map_err(|_| Error::Other(MOVING.into()))?;
+        // Checked once held: a move flags itself before it waits for holds.
+        self.checkouts_at_rest(agent_id)?;
+        Ok(CheckoutHold(hold))
+    }
+
+    fn checkout_lock(&self, agent_id: &str) -> Arc<tokio::sync::RwLock<()>> {
+        self.checkout_locks
+            .lock()
+            .entry(agent_id.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// [`Self::checkouts_at_rest`] for the agent's launch, which first
+    /// finishes a move that didn't, when it can.
+    pub(super) async fn settle_before_launch(&self, agent_id: &str) -> Result<()> {
+        if self.moving.lock().contains(agent_id) {
+            return Err(Error::Other(MOVING.into()));
+        }
+        settle(&self.workspace, agent_id)
+            .await
+            .map_err(|e| Error::Other(format!("{UNSETTLED}, and finishing it failed: {e}")))
+    }
+
     /// Move `agent_id`'s workspace to the sandbox `kind` names (`host`, the
     /// macOS sandbox, or `box`, a Linux VM), keeping its code, branch and
     /// conversation. Resolves to the moved record once its agent is launching
@@ -61,7 +172,8 @@ impl Supervisor {
     /// Everything that can refuse is checked before anything changes. A
     /// failure before the restamp leaves the workspace where it was, its agent
     /// relaunched if it was up; after it, the workspace has moved, and what
-    /// couldn't follow is the error.
+    /// couldn't follow is the error. Either way, a disk that couldn't be
+    /// settled keeps the workspace out of rest, its agent down, until it is.
     pub async fn move_workspace(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
@@ -73,6 +185,20 @@ impl Supervisor {
         self.workspace.agent(agent_id)?;
         let _delivering = self.lock_delivery(agent_id).await;
         let _route = self.open_route(agent_id)?;
+        // Out of rest from here: no shell, Run app, Git action or review
+        // starts in the checkouts until the disk is settled. The actions
+        // already at work in them finish first.
+        let in_flight = InFlight::begin(self, agent_id)?;
+        let _exclusive =
+            tokio::time::timeout(QUIESCE_WAIT, self.checkout_lock(agent_id).write_owned())
+                .await
+                .map_err(|_| {
+                    Error::Other(
+                        "A Git action or a verification is still running in the workspace. \
+                 Try again once it's done."
+                            .into(),
+                    )
+                })?;
         // A move the app didn't finish is put right before another starts.
         settle(&self.workspace, agent_id).await?;
         let record = self.workspace.agent(agent_id)?;
@@ -81,37 +207,50 @@ impl Supervisor {
         let was_up = self.take_down(agent_id).inspect_err(|_| {
             self.discard_prefetch(agent_id);
         })?;
-        let conversation = match self.read_conversation(&record) {
-            Ok(conversation) => conversation,
-            Err(e) => return Err(self.give_up(ctx, agent_id, was_up, e).await),
+        let carried = match self.read_conversation(&record) {
+            Ok(conversation) => self.carry_code(&record, to).await.map(|()| conversation),
+            Err(e) => Err(e),
         };
-        if let Err(e) = self.carry_code(&record, to).await {
-            return Err(self.give_up(ctx, agent_id, was_up, e).await);
-        }
-        // Restamped: the new side is the workspace, and the old one goes.
-        settle(&self.workspace, agent_id).await.map_err(|e| {
-            Error::Other(format!(
-                "The workspace moved, but its old sandbox couldn't be cleared ({e}). \
-                 Restart Fletch to finish."
-            ))
-        })?;
+        let conversation = match carried {
+            Ok(conversation) => conversation,
+            Err(e) => {
+                drop(in_flight);
+                return Err(self.give_up(ctx, agent_id, was_up, e).await);
+            }
+        };
+        // Restamped: the new side is the workspace. Its conversation goes
+        // first, where the new sandbox keeps it, so the switch holds whatever
+        // happens to the disk next: whatever finishes the move launches it.
+        let moved = self.workspace.agent(agent_id)?;
         emit_workspace_changed(ctx.sink.as_ref());
         tracing::info!(agent_id, to = to.as_setting(), "moved the workspace");
-
-        let moved = self.workspace.agent(agent_id)?;
-        warm_indexes(&moved).await;
         let Conversation {
             lineage,
             history,
             context,
         } = conversation;
-        self.continue_natively(ctx, &moved, lineage, history, context)
-            .await
-            .map_err(|e| {
-                Error::Other(format!(
-                    "The workspace moved, but its conversation couldn't go with it: {e}"
-                ))
-            })?;
+        let switched = self
+            .begin_native_session(ctx, &moved, &lineage, &history)
+            .await;
+        // Then the old side goes. If it can't, the workspace stays out of
+        // rest, its agent down and in error, until a launch or boot finishes
+        // it.
+        if let Err(e) = settle(&self.workspace, agent_id).await {
+            let why = format!(
+                "The workspace moved, but its old sandbox couldn't be cleared ({e}). \
+                 Send a message or restart Fletch to finish."
+            );
+            fail_spawn(self, ctx, agent_id, why.clone());
+            return Err(Error::Other(why));
+        }
+        drop(in_flight);
+        warm_indexes(&moved).await;
+        switched.map_err(|e| {
+            Error::Other(format!(
+                "The workspace moved, but its conversation couldn't go with it: {e}"
+            ))
+        })?;
+        self.launch_native_session(ctx, &moved, context).await;
         self.agent_record(agent_id)
             .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))
     }
@@ -212,9 +351,10 @@ impl Supervisor {
         Ok(was_up)
     }
 
-    /// After a move failed before its restamp (the workspace is where it was):
-    /// drop the login resolved for the target, relaunch the agent if the move
-    /// took it down, and hand back the error.
+    /// After a move failed before its restamp: drop the login resolved for
+    /// the target, and relaunch the agent if the move took it down, where it
+    /// was, but only once its checkouts are back at rest. A rollback that
+    /// couldn't settle the disk leaves it down. Hands back the error.
     async fn give_up(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
@@ -223,7 +363,7 @@ impl Supervisor {
         error: Error,
     ) -> Error {
         self.discard_prefetch(agent_id);
-        if was_up {
+        if was_up && self.checkouts_at_rest(agent_id).is_ok() {
             let _ = self.prefetch_login(agent_id).await;
             self.set_status(ctx, agent_id, AgentStatus::Spawning, None);
             arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
@@ -296,15 +436,23 @@ impl Supervisor {
                 .update_agent_engine(&record.id, to.as_setting())
         }
         .await;
-        if carried.is_err() {
-            // Still stamped as it was, so settling puts the old side back at
-            // the path, where the pin is then dropped from its checkouts.
-            if let Err(e) = settle(&self.workspace, &record.id).await {
-                tracing::error!(agent_id = %record.id, error = %e, "putting a failed move back failed");
+        let Err(e) = carried else {
+            return Ok(());
+        };
+        // Still stamped as it was, so settling puts the old side back at the
+        // path, where the pin is then dropped from its checkouts. One that
+        // can't be put back is the error: the workspace isn't where it was.
+        match settle(&self.workspace, &record.id).await {
+            Ok(()) => {
+                code.release().await;
+                Err(e)
             }
-            code.release().await;
+            Err(undo) => Err(Error::Other(format!(
+                "The move failed ({e}), and putting the workspace back failed too ({undo}). \
+                 Its agent stays down until that's done: send a message or restart Fletch \
+                 to retry."
+            ))),
         }
-        carried
     }
 }
 
@@ -375,14 +523,19 @@ async fn warm_indexes(record: &AgentRecord) {
 /// Make the disk agree with `agent_id`'s stamp after a move, finished or not.
 /// Its checkouts belong on this Mac: any box it has is discarded and the
 /// staged checkouts are put at the workspace's path. They belong in a VM, or
-/// the workspace is gone: the staged checkouts go. Nothing to do when nothing
-/// is staged.
+/// the workspace is archived or gone: the staged checkouts go. Nothing to do
+/// when nothing is staged. One at a time ([`SETTLING`]).
 pub(super) async fn settle(workspace: &WorkspaceManager, agent_id: &str) -> Result<()> {
     let staged = moving_dir(agent_id)?;
     if !staged.exists() {
         return Ok(());
     }
+    let _one = SETTLING.lock().await;
+    if !staged.exists() {
+        return Ok(());
+    }
     let on_mac = match workspace.agent(agent_id) {
+        Ok(record) if record.archive.is_some() => false,
         Ok(record) => stamped_engine(&record).caps().checkout_on_host,
         Err(Error::AgentNotFound(_)) => false,
         Err(e) => return Err(e),
@@ -397,13 +550,25 @@ async fn settle_at(agent_id: &str, on_mac: bool, here: &Path, staged: &Path) -> 
         return Ok(());
     }
     // Discarded first: until its route is gone, the path still means the
-    // guest. What's left at the path is the box's empty placeholders.
+    // guest. What a box leaves at the path is empty placeholders.
     sandbox::discard_agent_state(agent_id).await?;
-    match tokio::fs::remove_dir_all(here).await {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-        _ => {}
+    // Entry by entry, each staged one replacing its namesake: what was
+    // written at the path meanwhile (the moved session's transcript, for a
+    // provider that keeps it beside the checkouts) stays, and a settle cut
+    // short picks up where it left off.
+    tokio::fs::create_dir_all(here).await?;
+    for entry in std::fs::read_dir(staged)? {
+        let entry = entry?;
+        let target = here.join(entry.file_name());
+        match tokio::fs::symlink_metadata(&target).await {
+            Ok(meta) if meta.is_dir() => tokio::fs::remove_dir_all(&target).await?,
+            Ok(_) => tokio::fs::remove_file(&target).await?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        tokio::fs::rename(entry.path(), &target).await?;
     }
-    tokio::fs::rename(staged, here).await?;
+    tokio::fs::remove_dir(staged).await?;
     Ok(())
 }
 
@@ -520,6 +685,37 @@ mod tests {
         );
     }
 
+    /// While a move is under way nothing gets into the checkouts, through any
+    /// door: the rest check, the check at registration, a one-shot hold, a
+    /// second move. A hold already taken keeps the move off them until it
+    /// goes. Once the move is over, they are at rest again.
+    #[tokio::test]
+    async fn a_move_under_way_keeps_all_work_out_of_the_checkouts() {
+        let sup = test_supervisor();
+        let id = "move-gate-test";
+        sup.checkouts_at_rest(id).unwrap();
+        let hold = sup.hold_checkouts(id).unwrap();
+
+        let moving = InFlight::begin(&sup, id).unwrap();
+        assert!(sup.checkouts_at_rest(id).is_err());
+        assert!(sup.refuse_if_moving(id).is_err());
+        assert!(sup.hold_checkouts(id).is_err());
+        assert!(InFlight::begin(&sup, id).is_err(), "one move at a time");
+        let lock = sup.checkout_lock(id);
+        assert!(
+            lock.clone().try_write_owned().is_err(),
+            "the action already at work finishes first"
+        );
+        drop(hold);
+        let exclusive = lock.try_write_owned().unwrap();
+        drop(exclusive);
+        drop(moving);
+
+        sup.checkouts_at_rest(id).unwrap();
+        sup.refuse_if_moving(id).unwrap();
+        drop(sup.hold_checkouts(id).unwrap());
+    }
+
     /// Stamped for a VM, the staged checkouts on this Mac are scrap; stamped
     /// for this Mac, they replace what is at the path (a box's placeholders).
     #[tokio::test]
@@ -540,11 +736,15 @@ mod tests {
 
         std::fs::create_dir_all(staged.join("repo")).unwrap();
         std::fs::write(staged.join("repo").join("code.txt"), b"staged").unwrap();
+        // Written at the path while the move was settling: it stays.
+        std::fs::create_dir_all(here.join(".sessions")).unwrap();
+        std::fs::write(here.join(".sessions").join("s.jsonl"), b"{}").unwrap();
         settle_at(id, true, &here, &staged).await.unwrap();
         assert!(!staged.exists());
         assert_eq!(
             std::fs::read(here.join("repo").join("code.txt")).unwrap(),
             b"staged"
         );
+        assert!(here.join(".sessions").join("s.jsonl").exists());
     }
 }

@@ -14,7 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::git;
 use crate::git_state::{self, FileStatus, StatusKind};
-use crate::supervisor::Supervisor;
+use crate::supervisor::{CheckoutHold, Supervisor};
 use crate::workspace::{AgentStatus, TrackedRepo};
 
 /// Which ref the Code panel's diff surfaces measure against — the user's
@@ -257,23 +257,31 @@ pub fn primary_repo_checkout(
 
 /// The tracked repo a panel command targets: the one whose `subdir` matches,
 /// or the primary when no subdir is given — which keeps every single-repo
-/// caller (and old frontends that don't pass the arg) byte-identical.
+/// caller (and old frontends that don't pass the arg) byte-identical. Every
+/// caller acts in the checkout, so it comes held: keep the hold for as long
+/// as the action runs, and no move between sandboxes starts under it; while
+/// one has the checkouts, or left them unsettled, this refuses
+/// (`Supervisor::hold_checkouts`).
 pub fn agent_repo_checkout(
     supervisor: &Supervisor,
     agent_id: &str,
     subdir: Option<&str>,
-) -> Result<(TrackedRepo, PathBuf)> {
-    let Some(s) = subdir else {
-        return primary_repo_checkout(supervisor, agent_id);
+) -> Result<(TrackedRepo, PathBuf, CheckoutHold)> {
+    let hold = supervisor.hold_checkouts(agent_id)?;
+    let (repo, checkout) = match subdir {
+        None => primary_repo_checkout(supervisor, agent_id)?,
+        Some(s) => {
+            let record = supervisor.workspace.agent(agent_id)?;
+            let repo = record
+                .repos
+                .into_iter()
+                .find(|r| r.subdir == s)
+                .ok_or_else(|| Error::Other(format!("agent has no tracked repo {s:?}")))?;
+            let checkout = repo.checkout_path(agent_id)?;
+            (repo, checkout)
+        }
     };
-    let record = supervisor.workspace.agent(agent_id)?;
-    let repo = record
-        .repos
-        .into_iter()
-        .find(|r| r.subdir == s)
-        .ok_or_else(|| Error::Other(format!("agent has no tracked repo {s:?}")))?;
-    let checkout = repo.checkout_path(agent_id)?;
-    Ok((repo, checkout))
+    Ok((repo, checkout, hold))
 }
 
 /// Best-effort variant for read-only lookups (git / PR state): returns `None`

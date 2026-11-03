@@ -24,6 +24,7 @@ impl Supervisor {
     ///
     /// No-op if a run is already in progress for this agent.
     pub fn run_start(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
+        self.checkouts_at_rest(agent_id)?;
         let record = self.workspace.agent(agent_id)?;
         if record.archive.is_some() {
             return Err(Error::Other("agent is archived".into()));
@@ -47,7 +48,9 @@ impl Supervisor {
         let setup_done = self.workspace.is_setup_completed(agent_id)?;
 
         let session = {
+            // Under the lock a move's sweep stops runs with.
             let mut runs = self.runs.lock();
+            self.refuse_if_moving(agent_id)?;
             runs.entry(agent_id.to_string())
                 .or_insert_with(|| Arc::new(RunSession::new()))
                 .clone()
@@ -115,6 +118,13 @@ impl Supervisor {
             let msg = format!("Failed to start command: {e}");
             session.mark_stopped(Some(msg.clone()));
             emit_run_state(ctx.sink.as_ref(), agent_id, RunPhase::Stopped, Some(msg));
+            return Err(e);
+        }
+        // A move that began between taking the session and spawning swept a
+        // run that hadn't started yet: stop the one that now has.
+        if let Err(e) = self.refuse_if_moving(agent_id) {
+            session.stop();
+            emit_run_state(ctx.sink.as_ref(), agent_id, RunPhase::Stopped, None);
             return Err(e);
         }
         Ok(())
