@@ -656,7 +656,11 @@ mod tests {
     #[test]
     fn a_written_session_waits_for_the_tail_to_mirror_it() {
         let td = tempfile::tempdir().unwrap();
-        let mirror = td.path().join("claude-projects").join("dir").join("s.jsonl");
+        let mirror = td
+            .path()
+            .join("claude-projects")
+            .join("dir")
+            .join("s.jsonl");
         let bytes = b"{\"a\":1}\n{\"b\":2}\n".to_vec();
 
         let tail = {

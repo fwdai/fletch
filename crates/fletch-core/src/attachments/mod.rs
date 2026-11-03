@@ -509,7 +509,12 @@ mod tests {
     struct HostAsGuest;
 
     impl RemoteExecutor for HostAsGuest {
-        fn command(&self, program: &str, cwd: &Path, _: &[(String, String)]) -> std::process::Command {
+        fn command(
+            &self,
+            program: &str,
+            cwd: &Path,
+            _: &[(String, String)],
+        ) -> std::process::Command {
             let mut cmd = std::process::Command::new(program);
             cmd.current_dir(cwd);
             cmd

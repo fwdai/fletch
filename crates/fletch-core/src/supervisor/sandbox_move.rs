@@ -140,9 +140,10 @@ impl Supervisor {
         }
         sandbox::ensure_engine_not_retired(record)?;
         let (wanted, provider) = (kind.to_string(), record.provider.clone());
-        let to = tokio::task::spawn_blocking(move || sandbox::engine_to_move_to(&wanted, &provider))
-            .await
-            .map_err(|e| Error::Other(format!("sandbox check failed: {e}")))??;
+        let to =
+            tokio::task::spawn_blocking(move || sandbox::engine_to_move_to(&wanted, &provider))
+                .await
+                .map_err(|e| Error::Other(format!("sandbox check failed: {e}")))??;
         if to == stamped_engine(record) {
             return Err(Error::Other("The workspace already runs there.".into()));
         }
@@ -477,7 +478,7 @@ mod tests {
         std::fs::write(source.join("new.txt"), b"untracked").unwrap();
 
         let sup = test_supervisor();
-        let mut record = record_in_checkouts(&sup, "denali", &[source.clone()]);
+        let mut record = record_in_checkouts(&sup, "denali", std::slice::from_ref(&source));
         // No branch of record: it was never pushed. The checkout's own is
         // what travels.
         let repo_entry = TrackedRepo {
