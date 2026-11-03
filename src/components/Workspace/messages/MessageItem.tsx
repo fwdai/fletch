@@ -1,6 +1,5 @@
 import { memo, type ReactNode } from "react";
 import type { ChatItem } from "@/adapters/types";
-import { AttachmentList } from "@/components/Composer/AttachmentList";
 import { Markdown } from "@/components/Markdown";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { APP_ACTION_PREFIX } from "@/delegation";
@@ -14,6 +13,7 @@ import { RewindMenu } from "../RewindMenu";
 import { isSubagentCall } from "../SubagentThread/thread";
 import { useTranscriptHost } from "./host";
 import type { ViewItem } from "./pair";
+import { SentAttachments } from "./SentAttachments";
 import { ToolStep } from "./StepGroup";
 import { SubagentCard } from "./SubagentCard";
 import { ToolResultItem } from "./ToolResultItem";
@@ -87,6 +87,7 @@ export const MessageItem = memo(function MessageItem({
         <UserBubble
           text={item.text}
           attachments={item.attachments}
+          agentId={agentId}
           turnId={turnId}
           rewind={agentId && item.turnId ? { agentId, turnId: item.turnId } : undefined}
           undelivered={
@@ -107,7 +108,14 @@ export const MessageItem = memo(function MessageItem({
       // genuinely held for a later turn boundary (item.queued); once delivered/
       // injected it renders as a plain bubble at its injection point. Either way
       // it's reconciled away once the transcript catches up (app.ts).
-      return <UserBubble text={item.text} attachments={item.attachments} queued={item.queued} />;
+      return (
+        <UserBubble
+          text={item.text}
+          attachments={item.attachments}
+          agentId={agentId}
+          queued={item.queued}
+        />
+      );
     case "agent_message":
       // Copy isn't offered here: it lives in the turn footer (see TurnFooter),
       // right-aligned on the seam, so the message itself reserves no extra
@@ -168,12 +176,14 @@ export const MessageItem = memo(function MessageItem({
 
 /** The user-prompt bubble, shared by the canonical `user_message` and the
  *  optimistic `queued_message` (a mid-turn follow-up not yet in the transcript)
- *  so both render identically aside from the queued marker. `rewind` names the
- *  agent and the turn a rewind to before this message goes back to;
+ *  so both render identically aside from the queued marker. `agentId` is
+ *  whose granted folders its attachments are checked against; `rewind` names
+ *  the agent and the turn a rewind to before this message goes back to;
  *  `undelivered` is the foot of a message the agent never read. */
 function UserBubble({
   text,
   attachments,
+  agentId,
   queued,
   turnId,
   rewind,
@@ -181,6 +191,7 @@ function UserBubble({
 }: {
   text: string;
   attachments?: string[];
+  agentId?: string;
   queued?: boolean;
   turnId?: number;
   rewind?: { agentId: string; turnId: string };
@@ -210,7 +221,7 @@ function UserBubble({
       <div className={queued ? "m-user m-user--queued" : "m-user"} data-chat-turn={turnId}>
         {display}
         {attachments && attachments.length > 0 && (
-          <AttachmentList paths={attachments} className="message-attachments" />
+          <SentAttachments agentId={agentId} paths={attachments} />
         )}
         {queued && <span className="m-user__queued-tag text-xs">queued</span>}
         {undelivered}
