@@ -386,25 +386,26 @@
   align-self: center;
   width: 1px;
   height: 12px;
-  margin: 0 2px;
+  /* Room on both sides, so a lit piece never touches the divider. */
+  margin: 0 5px;
   background: var(--fg-3);
   flex-shrink: 0;
 }
 .run-link {
-  align-items: stretch;
+  gap: 5px;
   min-width: 0;
 }
 .run-chev {
-  align-self: center;
   flex-shrink: 0;
-  margin: 0 -2px;
   color: var(--fg-2);
 }
 /* A piece: the rounded highlight sits inside the rail's 2px padding, so a
    hovered piece reads as the lit segment of one strip. */
 .run-piece {
-  /* The piece's glyph ink: quiet at rest, full when lit, accent for effort. */
+  /* The piece's glyph ink: quiet at rest, full when lit, accent for effort.
+     The account's ink lifts a step with it. */
   --ink: var(--fg-2);
+  --acct-ink: var(--fg-2);
   gap: 5px;
   min-width: 0;
   height: 22px;
@@ -427,20 +428,25 @@
 button.run-piece:hover,
 .run-piece.is-open {
   --ink: var(--fg-0);
+  --acct-ink: var(--fg-1);
   background: var(--hover);
   color: var(--fg-0);
 }
 .run-piece.is-open {
   background: var(--selected);
 }
-.run-piece.is-static {
-  cursor: default;
-}
 /* The agent's icon is a 16px tile: its own hue-tinted frame is the piece's
    mark, so the piece has no other. */
 .run-piece > .chip-mono,
 .run-piece > .ca-mono {
   flex-shrink: 0;
+}
+/* The agent chain is one piece: icon › account › model. The chain reads as
+   a hierarchy through weight alone — the model is the answer, the account a
+   qualifier — and lights as one on hover. No chevron: the menu opens upward,
+   and the hover highlight shared by every piece is the affordance. */
+.run-piece.run-chain {
+  padding: 0 8px 0 5px;
 }
 .run-name {
   max-width: 120px;
@@ -449,21 +455,17 @@ button.run-piece:hover,
 }
 .run-acct {
   max-width: 110px;
-  color: var(--fg-2);
+  color: var(--acct-ink);
+  transition: color 0.12s var(--ease);
 }
+/* Set on the part itself, so it beats the piece's lit ink. */
 .run-acct.is-spent {
-  color: var(--warn);
+  --acct-ink: var(--warn);
 }
 .run-model {
   max-width: 180px;
   font-weight: 500;
   color: var(--fg-0);
-}
-.run-piece .run-dd {
-  width: 9px;
-  height: 9px;
-  margin-left: -1px;
-  color: var(--fg-3);
 }
 .run-piece.run-effort,
 button.run-piece.run-effort:hover {

@@ -22,10 +22,6 @@ export type { AccountControl } from "./useAccountView";
 /** `hovered` while the account flyout is the one open; no provider id. */
 const ACCOUNT_FLY = "__account";
 
-/** Which piece of the chain opened the menu: it stays lit while the menu
- *  shows, and decides which flyout the menu opens on. */
-type Piece = "agent" | "account" | "model";
-
 interface Props {
   provider: string;
   model?: string;
@@ -35,7 +31,7 @@ interface Props {
   onChange: (provider: string, model?: string, customAgentId?: string) => void;
   /** Existing sessions: restrict the picker to changing the MODEL within the
    *  session's current provider. Provider and custom-agent identity are fixed
-   *  at spawn, so the agent piece only states them, and the dropdown drops the
+   *  at spawn, so the chain's tooltip says so, and the dropdown drops the
    *  agent/custom-agent sections to show only this provider's models. */
   modelOnly?: boolean;
   /** The account the agent runs under, and how to move it. Shown only when
@@ -43,18 +39,25 @@ interface Props {
   account?: AccountControl;
 }
 
-/** The run rail's agent chain: provider › account › model, three pieces of
- *  one group. The provider is its icon (a custom agent: its monogram and
- *  name), the account its compact name, the model its name without the
- *  vendor; the full names are the pieces' tooltips. All three open the same
- *  menu — the coding agents and one "Custom agents" row, hovering a coding
- *  agent opens a flyout on the right for model selection, hovering the
- *  custom-agents row opens the custom agents configured in Settings the same
- *  way — but each lands on its own part: the agent piece on the list, the
- *  account piece on the account flyout, the model piece on the current
- *  agent's models. Clicking an agent row commits its default model; leaving
- *  model unset preserves the provider CLI's default. Selections stay sticky
- *  via `onChange`.
+/** The run rail's agent chain: provider › account › model as ONE piece. The
+ *  provider is its icon (a custom agent: its monogram and name), the account
+ *  its compact name, the model its name without the vendor; the full names
+ *  are the piece's tooltip. One trigger, not three: all of them would open
+ *  the same menu, and since its side panel follows the cursor, whichever
+ *  panel a click landed on would be lost the moment the cursor crossed the
+ *  main card on its way up. No chevron either — the menu opens upward, and
+ *  the piece signals itself the way every piece in the rail does: the hover
+ *  highlight, the pressed fill while open, and the tooltip's "click to
+ *  change".
+ *
+ *  The menu is the coding agents and one "Custom agents" row; hovering a
+ *  coding agent opens a flyout on the right for model selection, hovering
+ *  the custom-agents row opens the custom agents configured in Settings the
+ *  same way, and the account row opens the accounts. It opens on the current
+ *  agent's models — the change made most often — with that agent's row lit.
+ *  Clicking an agent row commits its default model; leaving model unset
+ *  preserves the provider CLI's default. Selections stay sticky via
+ *  `onChange`.
  *
  *  The menu always opens upward — the composer sits on the bottom edge of the
  *  window. A surface near the top of a panel wants a screen, not a menu that has
@@ -67,8 +70,7 @@ export function ModelPicker({
   modelOnly = false,
   account,
 }: Props) {
-  const [openedBy, setOpenedBy] = useState<Piece | null>(null);
-  const open = openedBy !== null;
+  const [open, setOpen] = useState(false);
   // Coding agent whose model flyout is currently expanded, ACCOUNT_FLY for
   // the account flyout, or CUSTOM_FLY for the custom agents (null = none).
   const [hovered, setHovered] = useState<string | null>(null);
@@ -111,40 +113,42 @@ export function ModelPicker({
     if (open && offersAccounts) void refreshAccounts();
   }, [open, offersAccounts, refreshAccounts]);
 
-  /** Open the menu from one piece, on the flyout that piece is about. */
-  function openFrom(piece: Piece) {
-    if (openedBy === piece) {
+  function toggle() {
+    if (open) {
       close();
       return;
     }
-    setOpenedBy(piece);
-    if (piece === "account") setHovered(ACCOUNT_FLY);
+    setOpen(true);
     // The full menu lands on the current agent's models; the model-only menu
     // is those models already.
-    else if (piece === "model" && !modelOnly) setHovered(provider);
-    else setHovered(null);
+    setHovered(modelOnly ? null : provider);
   }
 
   function close() {
-    setOpenedBy(null);
+    setOpen(false);
     setHovered(null);
   }
 
   // Model-only (existing session): changing the model on a provider that bakes
   // it into the process (claude, `restartToApply`) restarts the agent; surface
-  // that in the model piece's tooltip, mirroring the effort piece.
+  // that in the tooltip, mirroring the effort piece.
   const restartOnChange =
     modelOnly && !!PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL]?.restartToApply;
   const agentName = activeCustom?.name ?? selected.label;
-  const agentTip = modelOnly
-    ? chainTip(agentName, "set at spawn")
-    : chainTip(agentName, activeCustom && providerLabel(activeCustom.base), "click to change");
-  const accountTip =
-    accountView &&
-    chainTip("Account", accountView.label, accountView.spent && "limit reached", "click to switch");
-  const modelTip = [
-    chainTip(agentName, modelName),
-    restartOnChange ? "Changing the model restarts the agent (rebuilds cache)" : "Click to change",
+  // Line one is the chain in full; line two, what a click does.
+  const tip = [
+    chainTip(
+      agentName,
+      activeCustom && providerLabel(activeCustom.base),
+      accountView?.label,
+      accountView?.spent && "limit reached",
+      modelName,
+    ),
+    modelOnly
+      ? restartOnChange
+        ? "Click to change the model — that restarts the agent (rebuilds cache)"
+        : "Click to change the model"
+      : "Click to change",
   ].join("\n");
 
   function pickModel(providerId: string, id: string | undefined) {
@@ -210,15 +214,7 @@ export function ModelPicker({
 
   return (
     <RailGroup className="model-picker">
-      {/* Where the row's first menu opens, so an open menu lights the piece
-       *  it came from and the ones after it read as the rest of the chain. */}
-      <RailPiece
-        glyph={!activeCustom}
-        static={modelOnly}
-        tip={agentTip}
-        open={openedBy === "agent"}
-        onClick={() => openFrom("agent")}
-      >
+      <RailPiece className="run-chain" tip={tip} open={open} onClick={toggle}>
         {activeCustom ? (
           <>
             <Mono name={activeCustom.name} hue={activeCustom.color} size={16} />
@@ -227,32 +223,17 @@ export function ModelPicker({
         ) : (
           <ProviderIcon slug={selected.id} short={selected.short} hue={selected.hue} size={16} />
         )}
-      </RailPiece>
-
-      {accountView && (
-        <RailLink className="is-acct">
-          <RailPiece
-            className={`run-acct ${accountView.spent ? "is-spent" : ""}`}
-            tip={accountTip ?? undefined}
-            open={openedBy === "account"}
-            onClick={() => openFrom("account")}
-          >
-            <span className="truncate">{compactAccountName(accountView.label)}</span>
-          </RailPiece>
+        {accountView && (
+          <RailLink className="is-acct">
+            <span className={`run-acct truncate ${accountView.spent ? "is-spent" : ""}`}>
+              {compactAccountName(accountView.label)}
+            </span>
+          </RailLink>
+        )}
+        <RailLink>
+          <span className="run-model truncate">{shortModelName(modelName)}</span>
         </RailLink>
-      )}
-
-      <RailLink>
-        <RailPiece
-          className="run-model"
-          tip={modelTip}
-          open={openedBy === "model"}
-          onClick={() => openFrom("model")}
-        >
-          <span className="truncate">{shortModelName(modelName)}</span>
-          <Icon name="chevD" size={9} className="run-dd" />
-        </RailPiece>
-      </RailLink>
+      </RailPiece>
 
       {open && !modelOnly && (
         <>
