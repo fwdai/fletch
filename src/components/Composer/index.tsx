@@ -22,6 +22,7 @@ import { EffortPicker } from "./EffortPicker";
 import { FolderList } from "./FolderList";
 import { IssuePicker } from "./IssuePicker";
 import { type AccountControl, ModelPicker } from "./ModelPicker";
+import { pathMentions } from "./mentions";
 import { PrimaryControl, primaryState } from "./PrimaryControl";
 import { RunRail } from "./RunRail";
 import { UsageMeter } from "./UsageMeter";
@@ -380,21 +381,36 @@ export function Composer({
     // started.
     if (!hasContent || disabled || sendBlocked) return;
     const draft = { text: input.text, attachments: input.attachments, folders: input.folders };
-    const sent = onSend({
-      text: trimmed,
-      provider,
-      model,
-      thinking: thinkingValue,
-      customAgentId,
-      attachments: input.attachments,
-      folders: input.folders,
-    });
-    input.clear();
-    if (sent instanceof Promise) {
-      void sent.then((ok) => {
-        if (ok === false) input.restore(draft);
+    const dispatch = (folders: FolderGrant[]) => {
+      const sent = onSend({
+        text: trimmed,
+        provider,
+        model,
+        thinking: thinkingValue,
+        customAgentId,
+        attachments: draft.attachments,
+        folders,
       });
+      if (sent instanceof Promise) {
+        void sent.then((ok) => {
+          if (ok === false) input.restore(draft);
+        });
+      }
+    };
+    if (!input.acceptsFolders || pathMentions(trimmed).length === 0) {
+      dispatch(draft.folders);
+      input.clear();
+      return;
     }
+    // A folder written as a path goes out as the chip the menu would have
+    // made: an agent sees only folders that were granted (a box mounts
+    // nothing else), so a path left as text names nothing it can read. A
+    // chip already there keeps its mode.
+    input.clear();
+    void input.mentionedFolders(trimmed).then((mentioned) => {
+      const chipped = new Set(draft.folders.map((f) => f.path.replace(/\/+$/, "")));
+      dispatch([...draft.folders, ...mentioned.filter((f) => !chipped.has(f.path))]);
+    });
   }
 
   /** The mic's action, from the control or ⌘⇧D. Not offered while the grant

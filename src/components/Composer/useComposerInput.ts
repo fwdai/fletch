@@ -10,6 +10,7 @@ import { useFileSource } from "./autocomplete/sources/files";
 import { usePrSource } from "./autocomplete/sources/prs";
 import { triggerQueryAt } from "./autocomplete/triggers";
 import { useAutocomplete } from "./autocomplete/useAutocomplete";
+import { offersFolder, pathMentions } from "./mentions";
 import { stageAttachmentPath, stageEnvironmentPath } from "./stageAttachment";
 import { useFileDrop } from "./useFileDrop";
 
@@ -119,6 +120,27 @@ export function useComposerInput(cfg: ComposerInputConfig) {
 
   function toggleFolder(path: string) {
     setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, writable: !f.writable } : f)));
+  }
+
+  /** The folders `text` names as `@~/…` or `@/…` paths, each the chip
+   *  picking it from the `@` menu would have added (read-only). Resolved on
+   *  the environment being driven, as the menu's listing is; a path that is
+   *  no folder there stays plain text. Empty where folders can't be attached. */
+  async function mentionedFolders(text: string): Promise<FolderGrant[]> {
+    const listDir = cfg.listDir;
+    if (!cfg.folders || !listDir) return [];
+    const resolved = await Promise.all(
+      pathMentions(text).map((typed) =>
+        listDir(typed).then(
+          (res) => (offersFolder(res.base, typed) ? res.base.replace(/\/+$/, "") : null),
+          () => null,
+        ),
+      ),
+    );
+    return [...new Set(resolved.filter((p) => p !== null))].map((path) => ({
+      path,
+      writable: false,
+    }));
   }
 
   /** Attach whatever each job stages, and say so once for the ones that
@@ -294,6 +316,7 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     acceptsFolders: !!cfg.folders,
     removeFolder,
     toggleFolder,
+    mentionedFolders,
     ta,
     autocomplete,
     isDropTarget,
