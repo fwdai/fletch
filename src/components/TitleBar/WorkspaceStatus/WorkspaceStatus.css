@@ -541,10 +541,10 @@
 .ws-pop-actions:empty {
   display: none;
 }
-/* Side by side, each button starts from its label's width and the row's
-   spare room is shared: a label never wraps. */
+/* Side by side at equal widths; labels are kept short enough to fit, and
+   never wrap. */
 .ws-act {
-  flex: 1 1 auto;
+  flex: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;

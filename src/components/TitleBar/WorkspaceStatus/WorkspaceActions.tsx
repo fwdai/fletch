@@ -63,7 +63,7 @@ export function WorkspaceActions({ agent, onBox }: { agent: AgentRecord; onBox: 
           onClick={() => setConfirming(true)}
         >
           <Icon name={target.icon} size={12} />
-          {moving ? `Moving to ${target.label}…` : `Move to ${target.label}`}
+          {moving ? `Moving to ${target.short}…` : `Move to ${target.short}`}
         </button>
       )}
     </div>
