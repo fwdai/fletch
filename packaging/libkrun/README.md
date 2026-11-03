@@ -38,9 +38,10 @@ packaging/libkrun/build.sh --unpatched # -> dist-unpatched/, the same without pa
 ```
 
 Runs on macOS on Apple silicon with Xcode (not only the Command Line Tools:
-bindgen needs libclang), rustup and cargo; or on Linux with rustup, cargo, `cc`
-and static glibc (`libc6-dev`; libkrun's init is built with `cc -static`),
-which the GitHub Ubuntu runners have. Sources are pinned by sha256 and
+bindgen needs libclang), rustup and cargo; or on Linux with rustup, cargo, `cc`,
+static glibc (`libc6-dev`; libkrun's init is built with `cc -static`) and
+`libclang-dev` (bindgen needs an unversioned `libclang.so`, which the GitHub
+Ubuntu runners lack; the release workflow installs it). Sources are pinned by sha256 and
 downloaded into `build/`. The first run takes about a minute, later ones about
 15 s. Two runs in the same checkout give byte-identical dylibs.
 

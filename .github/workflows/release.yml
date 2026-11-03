@@ -271,11 +271,19 @@ jobs:
       # Cached like the app's dylibs: ensure.sh is a no-op when dist/ was
       # built from the same build.sh and patches.
       - name: Cache libkrun
+        id: libkrun-cache
         if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
           path: packaging/libkrun/dist
           key: libkrun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packaging/libkrun/build.sh', 'packaging/libkrun/patches/*') }}
+
+      - name: Install libclang
+        # bindgen (a build script in libkrun's dependency tree) dlopens
+        # libclang. The runner images ship only versioned libclang.so.N, and
+        # clang-sys wants the unversioned libclang.so that libclang-dev adds.
+        if: runner.os == 'Linux' && steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libclang-dev
 
       - name: Build the box runtime
         if: runner.os == 'Linux'
