@@ -1,5 +1,7 @@
 //! Shared, non-provider-specific CLI arg-building helpers.
 
+use std::path::Path;
+
 use crate::instructions;
 
 use super::spawn::{SessionStart, SpawnSpec};
@@ -71,6 +73,8 @@ pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) -> Vec
     ];
     args.extend(effort_args(spec.effort));
     args.extend(model_args(spec.model));
+    // The text itself, not the file the custom view reads: a TUI that took
+    // the file form for print mode only would drop it unseen (`instructions`).
     args.extend(instructions::append_system_prompt_args(spec.instructions));
     args.extend(crate::attribution::claude_settings_args());
     args.extend_from_slice(mcp_args);
@@ -80,11 +84,15 @@ pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) -> Vec
 }
 
 /// `thinking_summaries`: whether the claude this launch runs parses
-/// `--thinking-display` (see below).
+/// `--thinking-display` (see below). `system_prompt`: the file the session's
+/// instruction text was written to (`agent_profile::write_system_prompt`),
+/// which claude reads with `--append-system-prompt-file`; `None` when there is
+/// no text.
 pub(crate) fn prepare_managed_args(
     spec: &SpawnSpec<'_>,
     mcp_args: &[String],
     thinking_summaries: bool,
+    system_prompt: Option<&Path>,
 ) -> Vec<String> {
     // Stream-json input + output give us a structured back-and-forth
     // over stdio. --verbose is required when using stream-json output
@@ -129,7 +137,7 @@ pub(crate) fn prepare_managed_args(
     ]);
     args.extend(effort_args(spec.effort));
     args.extend(model_args(spec.model));
-    args.extend(instructions::append_system_prompt_args(spec.instructions));
+    args.extend(instructions::append_system_prompt_file_args(system_prompt));
     args.extend(crate::attribution::claude_settings_args());
     args.extend_from_slice(mcp_args);
     args.extend(subagent_args(spec.codegraph_available));

@@ -8,8 +8,17 @@
 //! app-supplied guidance, so the *delivery* is per-agent while the *text* is
 //! shared:
 //!
-//! - **Claude, Pi** — `--append-system-prompt <text>` (appends to the real
-//!   system prompt; re-passed every spawn, one non-accumulating copy).
+//! - **Claude** — `--append-system-prompt-file <path>` in the custom view, the
+//!   text in a file of the session's profile dir that every spawn rewrites
+//!   (`agent_profile::write_system_prompt`): one argument can be at most
+//!   128 KiB on Linux, inside a box included, and the text with a forked
+//!   conversation's context can come near that. Claude's native (PTY) view
+//!   keeps `--append-system-prompt <text>`: claude long documented the file
+//!   form as print-mode only, and a TUI that ignored it would lose the
+//!   instructions without a word. Either way the text appends to the real
+//!   system prompt, re-passed every spawn, one non-accumulating copy.
+//! - **Pi** — `--append-system-prompt <text>`. Pi also takes a path there, but
+//!   reads a path it cannot see as the text itself, silently.
 //! - **Codex** — `-c developer_instructions=<text>` (the developer-role layer
 //!   on top of Codex's base prompt; re-passed every turn, non-accumulating).
 //! - **Cursor, OpenCode, Antigravity** — no system-prompt slot, so the text is
@@ -331,8 +340,10 @@ pub fn stale_base_note(base: &str) -> String {
 /// The global instruction text plus an optional per-session suffix (a custom
 /// agent's standing brief). The suffix is appended *after* the global block so
 /// project/global guidance composes with the agent's role rather than replacing
-/// it. Empty (a no-op for every helper) only when both layers are blank.
-fn combined(extra: Option<&str>) -> String {
+/// it. Empty (a no-op for every helper) only when both layers are blank. What
+/// every delivery below carries, and what a file delivery writes
+/// ([`append_system_prompt_file_args`]).
+pub fn combined(extra: Option<&str>) -> String {
     let base = text();
     match extra.map(str::trim).filter(|s| !s.is_empty()) {
         Some(custom) if base.is_empty() => custom.to_string(),
@@ -341,15 +352,31 @@ fn combined(extra: Option<&str>) -> String {
     }
 }
 
-/// Args for agents that expose `--append-system-prompt` (Claude, Pi). `extra`
-/// carries a custom agent's per-session instructions. Empty when there's
-/// nothing to inject.
+/// Args for agents that take `--append-system-prompt <text>` (claude's native
+/// view, pi). `extra` carries a custom agent's per-session instructions. Empty
+/// when there's nothing to inject.
 pub fn append_system_prompt_args(extra: Option<&str>) -> Vec<String> {
     let text = combined(extra);
     if text.is_empty() {
         return Vec::new();
     }
     vec!["--append-system-prompt".into(), text]
+}
+
+/// Claude's `--append-system-prompt-file <file>`, for the [`combined`] text
+/// written to `file` (`agent_profile::write_system_prompt`): an argument the
+/// size of a path, however long the text. Empty when there is no file, i.e.
+/// nothing to inject. A claude that cannot read the file refuses to start
+/// ("Append system prompt file not found"), so the instructions are never
+/// dropped quietly.
+pub fn append_system_prompt_file_args(file: Option<&std::path::Path>) -> Vec<String> {
+    match file {
+        Some(file) => vec![
+            "--append-system-prompt-file".into(),
+            file.to_string_lossy().into_owned(),
+        ],
+        None => Vec::new(),
+    }
 }
 
 /// Args for Codex's developer-instructions config override
@@ -515,6 +542,24 @@ mod tests {
         let args = append_system_prompt_args(None);
         assert_eq!(args[0], "--append-system-prompt");
         assert_eq!(args[1], text());
+    }
+
+    #[test]
+    fn the_file_delivery_names_the_file_or_nothing() {
+        let file = std::path::Path::new("/w/.fletch-profile/system-prompt.md");
+        assert_eq!(
+            append_system_prompt_file_args(Some(file)),
+            [
+                "--append-system-prompt-file",
+                "/w/.fletch-profile/system-prompt.md"
+            ]
+        );
+        assert!(append_system_prompt_file_args(None).is_empty());
+        // What the file carries is what the inline delivery would pass.
+        assert_eq!(
+            append_system_prompt_args(Some("be brief"))[1],
+            combined(Some("be brief"))
+        );
     }
 
     #[test]
