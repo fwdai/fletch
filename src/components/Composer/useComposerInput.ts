@@ -122,25 +122,31 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, writable: !f.writable } : f)));
   }
 
-  /** The folders `text` names as `@~/…` or `@/…` paths, each the chip
-   *  picking it from the `@` menu would have added (read-only). Resolved on
-   *  the environment being driven, as the menu's listing is; a path that is
-   *  no folder there stays plain text. Empty where folders can't be attached. */
-  async function mentionedFolders(text: string): Promise<FolderGrant[]> {
+  /** The folders a message of `text` with `chips` gives the agent: the chips,
+   *  then each folder `text` names as an `@~/…` or `@/…` path — the chip
+   *  picking it from the `@` menu would have added (read-only). A path goes
+   *  out as a grant because an agent sees only granted folders (a box mounts
+   *  nothing else). Resolved on the environment being driven, as the menu's
+   *  listing is; a path that is no folder there stays plain text, and a chip
+   *  already there keeps its mode. Just the chips where folders can't be
+   *  attached. Never rejects. */
+  async function foldersToSend(text: string, chips: FolderGrant[]): Promise<FolderGrant[]> {
     const listDir = cfg.listDir;
-    if (!cfg.folders || !listDir) return [];
+    const mentions = cfg.folders && listDir ? pathMentions(text) : [];
+    if (!listDir || mentions.length === 0) return chips;
     const resolved = await Promise.all(
-      pathMentions(text).map((typed) =>
+      mentions.map((typed) =>
         listDir(typed).then(
           (res) => (offersFolder(res.base, typed) ? res.base.replace(/\/+$/, "") : null),
           () => null,
         ),
       ),
     );
-    return [...new Set(resolved.filter((p) => p !== null))].map((path) => ({
-      path,
-      writable: false,
-    }));
+    const chipped = new Set(chips.map((f) => f.path.replace(/\/+$/, "")));
+    const mentioned = [...new Set(resolved.filter((p) => p !== null))]
+      .filter((path) => !chipped.has(path))
+      .map((path) => ({ path, writable: false }));
+    return [...chips, ...mentioned];
   }
 
   /** Attach whatever each job stages, and say so once for the ones that
@@ -316,7 +322,7 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     acceptsFolders: !!cfg.folders,
     removeFolder,
     toggleFolder,
-    mentionedFolders,
+    foldersToSend,
     ta,
     autocomplete,
     isDropTarget,

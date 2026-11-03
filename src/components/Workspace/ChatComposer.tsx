@@ -186,30 +186,19 @@ export function ChatComposer({
             seed={composerSeed}
             onSeedConsumed={onSeedConsumed}
             draftKey={agent.id}
-            onSend={async ({ text, attachments, folders }) => {
-              // Folder chips are granted first, each queued with the agent's
-              // config changes: the agent relaunches with the folder before
-              // this message reaches it. Mid-turn, the message waits for the
-              // turn's end (or "Apply now" in the working strip); one the
-              // agent can already read goes in live. A refusal is in the error
-              // banner, and returning false puts the draft back to fix.
-              // Each is named by the path the backend stored, which can differ
-              // from the one picked (a link, `~`).
-              const granted: string[] = [];
-              for (const folder of folders) {
-                const path = await grantFolder(agent.id, folder.path, folder.writable);
-                if (!path) return false;
-                granted.push(path);
-              }
+            onSend={({ text, attachments, folders }) => {
               // Effort is session-level now (persisted via onChangeEffort and
               // read from the record each turn), so sends carry no per-message
               // effort — the composer's `thinking` in the payload is only used
               // by the new-agent spawn path.
               onSend?.();
-              // The folders ride as attachments, named as folders to the
-              // agent (`attachments::reference_line`).
-              void send(agent.id, text, [...attachments, ...granted]);
-              return true;
+              // The send takes its place in line now and grants its folders in
+              // that place, so no later message overtakes it while they land
+              // (store.sendUserMessage). Mid-turn, a message naming a folder
+              // waits for the turn's end (or "Apply now" in the working
+              // strip). A refused folder is in the error banner, and false
+              // puts the draft back to fix.
+              return send(agent.id, text, attachments, folders);
             }}
             onStop={() => stop(agent.id)}
           />
