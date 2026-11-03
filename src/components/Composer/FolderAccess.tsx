@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FolderGrant } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
@@ -23,7 +23,13 @@ export function FolderAccess({
   onRevoke: (path: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  if (folders.length === 0) return null;
+  // Taking the last folder back from the open menu closes it, so a later
+  // grant doesn't bring the menu (and its scrim) back without a click.
+  const none = folders.length === 0;
+  useEffect(() => {
+    if (none) setOpen(false);
+  }, [none]);
+  if (none) return null;
   const tip =
     folders.length === 1
       ? `The agent can use ${baseName(folders[0].path)}`
