@@ -1,8 +1,8 @@
 #!/bin/sh
 # Build the VM runtime the box engine ships: libkrun with our patches, and
 # libkrunfw (the guest kernel). macOS on Apple silicon, with Xcode, rustup and
-# cargo; or Linux on x86-64 or arm64, with rustup, cargo and a C compiler that
-# links static glibc binaries (libc6-dev). Vendored from Calina
+# cargo; or Linux on x86-64 or arm64, with rustup, cargo, a C compiler that
+# links static glibc binaries (libc6-dev) and libclang-dev. Vendored from Calina
 # (sandbox/libkrun/build.sh) with Fletch paths.
 #
 #   build.sh [--unpatched]
