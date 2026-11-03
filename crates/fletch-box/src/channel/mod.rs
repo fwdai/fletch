@@ -102,44 +102,58 @@ impl Channel {
         cow_files: &[(&Path, &Path)],
         cmd: &[&str],
     ) -> Vec<String> {
+        let options = Self::exec_options(cwd, env_file, read_only, writable, cow_dirs, cow_files);
         let mut words: Vec<String> = Vec::new();
-        let confined = !read_only.is_empty()
-            || !writable.is_empty()
-            || !cow_dirs.is_empty()
-            || !cow_files.is_empty();
-        if cwd.is_some() || env_file.is_some() || confined {
+        if !options.is_empty() {
             words.push(guest::GUEST_AGENT.into());
             words.push(guest::EXEC.into());
-            if let Some(env_file) = env_file {
-                words.push("--env-file".into());
-                words.push(env_file.to_string_lossy().into_owned());
-            }
-            for dir in read_only {
-                words.push(guest::EXEC_READ_ONLY.into());
-                words.push(dir.to_string_lossy().into_owned());
-            }
-            for path in writable {
-                words.push(guest::EXEC_WRITABLE.into());
-                words.push(path.to_string_lossy().into_owned());
-            }
-            for (option, pairs) in [
-                (guest::EXEC_COW, cow_dirs),
-                (guest::EXEC_COW_FILE, cow_files),
-            ] {
-                for (shared, private) in pairs {
-                    words.push(option.into());
-                    words.push(shared.to_string_lossy().into_owned());
-                    words.push(private.to_string_lossy().into_owned());
-                }
-            }
-            if let Some(cwd) = cwd {
-                words.push("--cwd".into());
-                words.push(cwd.to_string_lossy().into_owned());
-            }
+            words.extend(options);
             words.push("--".into());
         }
         words.extend(cmd.iter().map(|w| w.to_string()));
         words.iter().map(|w| shell_quote(w)).collect()
+    }
+
+    /// The options of `fletch-guest exec` that
+    /// [`remote_command_confined`](Self::remote_command_confined) puts between
+    /// `exec` and `--`, unquoted: none when there is no working directory, env
+    /// file or view.
+    pub fn exec_options(
+        cwd: Option<&Path>,
+        env_file: Option<&Path>,
+        read_only: &[&Path],
+        writable: &[&Path],
+        cow_dirs: &[(&Path, &Path)],
+        cow_files: &[(&Path, &Path)],
+    ) -> Vec<String> {
+        let mut words: Vec<String> = Vec::new();
+        if let Some(env_file) = env_file {
+            words.push("--env-file".into());
+            words.push(env_file.to_string_lossy().into_owned());
+        }
+        for dir in read_only {
+            words.push(guest::EXEC_READ_ONLY.into());
+            words.push(dir.to_string_lossy().into_owned());
+        }
+        for path in writable {
+            words.push(guest::EXEC_WRITABLE.into());
+            words.push(path.to_string_lossy().into_owned());
+        }
+        for (option, pairs) in [
+            (guest::EXEC_COW, cow_dirs),
+            (guest::EXEC_COW_FILE, cow_files),
+        ] {
+            for (shared, private) in pairs {
+                words.push(option.into());
+                words.push(shared.to_string_lossy().into_owned());
+                words.push(private.to_string_lossy().into_owned());
+            }
+        }
+        if let Some(cwd) = cwd {
+            words.push("--cwd".into());
+            words.push(cwd.to_string_lossy().into_owned());
+        }
+        words
     }
 
     /// Runs `cmd` in the guest and collects its output. A non-zero exit is in

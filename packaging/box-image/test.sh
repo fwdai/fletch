@@ -111,6 +111,11 @@ check T-sshd "sshd -t with the box config and a host key under /data/ssh; sshd u
   runroot sh -c 'getent passwd sshd >/dev/null && ssh-keygen -q -t ed25519 -N "" -f /data/ssh/host_key && /usr/sbin/sshd -t -f /etc/ssh/sshd_config.fletch && ! test -x /usr/lib/systemd/systemd && echo "sshd config ok, systemd absent"'
 check T-guest "fletch-guest is in the image and answers" -- \
   agent_sh 'test -x /opt/fletch/bin/fletch-guest && test -L /usr/local/bin/fletch-guest && cat /etc/fletch-image'
+# How an agent launch gets its arguments: as a file, so that together they may
+# exceed what one argument can be (Linux caps one at 128 KiB). The app's
+# launcher relies on it from image 0.3.4.
+check T-guest-args "fletch-guest exec hands the command the arguments in --args-file, then removes it" -- \
+  agent_sh 'd=$(mktemp -d); printf "PATH=/usr/bin:/bin\n" > "$d/e"; for c in a b c; do head -c 100000 /dev/zero | tr "\0" "$c"; printf "\0"; done > "$d/a"; got=$(/opt/fletch/bin/fletch-guest exec --env-file "$d/e" --args-file "$d/a" -- /bin/sh -c "for x; do printf \"%s \" \"\${#x}\"; done" sh) && [ "$got" = "100000 100000 100000 " ] && [ ! -e "$d/a" ] && echo "3 arguments of 100000 bytes each arrive whole; the file is gone"'
 check T-mkfs "mkfs.ext4 and e2fsck for the data disk" -- \
   runroot sh -c 'mkfs.ext4 -V 2>&1 | head -1 && e2fsck -V 2>&1 | head -1'
 check T-nollvm-files "Mesa/LLVM files are excluded; libgbm stays" -- \

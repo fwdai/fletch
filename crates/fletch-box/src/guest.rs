@@ -101,6 +101,13 @@ pub const EXEC_COW: &str = "--cow";
 /// an [`EXEC_WRITABLE`] one) that the guest copies `<file>` to (owner-only)
 /// when it does not exist yet, and keeps after. New with image 0.3.1.
 pub const EXEC_COW_FILE: &str = "--cow-file";
+/// `exec --args-file <file>`: arguments the command takes after its own, read
+/// from `<file>` (each one ended by a NUL byte, so an empty file is none),
+/// which `exec` removes once read. How an agent launch gets its arguments into
+/// the guest: as a file they reach `execve` one by one, never joined into the
+/// one ssh command string that sshd hands the guest shell, which Linux caps
+/// at 128 KiB as a single argument. New with image 0.3.4.
+pub const EXEC_ARGS_FILE: &str = "--args-file";
 /// The directory under an [`EXEC_COW`] store that holds what the command
 /// wrote under `<dir>`, at the same relative paths (the overlay's upper
 /// layer; `work` beside it is the overlay's own).
