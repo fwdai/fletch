@@ -25,6 +25,7 @@ import { type AccountControl, ModelPicker } from "./ModelPicker";
 import { pathMentions } from "./mentions";
 import { PrimaryControl, primaryState } from "./PrimaryControl";
 import { RunRail } from "./RunRail";
+import { createSendLatch } from "./sendLatch";
 import { UsageMeter } from "./UsageMeter";
 import { useComposerInput } from "./useComposerInput";
 
@@ -327,6 +328,8 @@ export function Composer({
   // `input`, `dictation` and `send` defined just below (they depend on `input`
   // in turn).
   const keysRef = useRef<(e: KeyboardEvent) => boolean>(() => false);
+  // Serializes sends across the folder lookup a path mention takes (`send`).
+  const [latch] = useState(createSendLatch);
   const input = useComposerInput({
     provider,
     projectDir,
@@ -380,6 +383,9 @@ export function Composer({
     // hand, which let Enter start an agent the button said could not be
     // started.
     if (!hasContent || disabled || sendBlocked) return;
+    // The last send is still resolving the folders it names, with the box
+    // already cleared: this one would go out ahead of it.
+    if (latch.busy()) return;
     const draft = { text: input.text, attachments: input.attachments, folders: input.folders };
     const dispatch = (folders: FolderGrant[]) => {
       const sent = onSend({
@@ -405,9 +411,11 @@ export function Composer({
     // A folder written as a path goes out as the chip the menu would have
     // made: an agent sees only folders that were granted (a box mounts
     // nothing else), so a path left as text names nothing it can read. A
-    // chip already there keeps its mode.
+    // chip already there keeps its mode. The latch is held until the send
+    // has gone out, so no other send overtakes it meanwhile.
     input.clear();
-    void input.mentionedFolders(trimmed).then((mentioned) => {
+    latch.run(async () => {
+      const mentioned = await input.mentionedFolders(trimmed);
       const chipped = new Set(draft.folders.map((f) => f.path.replace(/\/+$/, "")));
       dispatch([...draft.folders, ...mentioned.filter((f) => !chipped.has(f.path))]);
     });
