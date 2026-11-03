@@ -242,12 +242,6 @@
   color: var(--fg-3);
   text-align: center;
 }
-@media (max-width: 760px) {
-  .model-chip-agent {
-    display: none;
-  }
-}
-
 /* Account row and flyout. The row is a model row led by the account's avatar,
    with a chevron bright enough to say a list opens beside it. */
 .model-acct-row.hot {
