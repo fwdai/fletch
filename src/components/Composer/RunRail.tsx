@@ -2,8 +2,8 @@ import type { MouseEvent, ReactNode } from "react";
 import { Icon } from "@/components/Icon";
 
 /** The composer's run rail: one framed strip holding every control that
- *  decides how the agent runs, read left to right as a chain — where it runs
- *  › which agent › under which account › which model › at what effort. Each
+ *  decides how the agent runs, read left to right as a chain — which agent ›
+ *  under which account › which model › at what effort. Each
  *  piece is its own control with its own menu; the frame is shared so the row
  *  reads as one setting rather than a scatter of chips.
  *

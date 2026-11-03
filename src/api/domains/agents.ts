@@ -56,7 +56,7 @@ export const agentsApi = {
      *  launch (the composer's folder chips). Each is checked by the backend;
      *  a refused one fails the spawn with the reason. */
     folderGrants?: FolderGrant[],
-    /** The composer's workspace type for this agent: the macOS sandbox or a
+    /** The new-workspace row's workspace type for this agent: the macOS sandbox or a
      *  Linux VM, over the project's placement. `undefined` leaves it to the
      *  host. A VM that cannot be had fails the spawn with why. */
     workspaceType?: WorkspaceKind,

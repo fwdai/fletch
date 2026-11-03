@@ -3,6 +3,7 @@ import { api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
+import { WorkspaceTypePicker } from "@/components/Composer/WorkspaceTypePicker";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
 import { IconButton } from "@/components/ui/IconButton";
@@ -169,10 +170,12 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
               <span className="d" />
               <span>NEW WORKSPACE</span>
             </div>
+            {/* A click rerolls the name; the glyph past its end says so on
+                hover. */}
             <div
-              className="empty-name text-5xl"
+              className="empty-name text-5xl tip"
+              data-tip="Click to reroll the name"
               onClick={() => rerollDraftName(draft.id)}
-              title="Reroll name"
             >
               <LandmarkGlyph
                 name={draft.name}
@@ -181,6 +184,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 style={{ display: "inline-block", verticalAlign: "-6px", marginRight: 6 }}
               />
               {draft.name}
+              <Icon name="refresh" size={16} className="empty-name-reroll" />
             </div>
           </div>
 
@@ -245,16 +249,6 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   current: draft.account,
                   onPick: (account) => updateDraft(draft.id, { account }),
                 }}
-                // Per draft too: an explicit pick, kept as made.
-                workspaceType={
-                  workspaceTypeShown
-                    ? {
-                        repoPath: draft.repoPath,
-                        current: draft.workspaceType,
-                        onPick: (workspaceType) => updateDraft(draft.id, { workspaceType }),
-                      }
-                    : undefined
-                }
                 placeholder="Describe the task for the agent. ↵ to spawn."
                 folders
                 onSend={({
@@ -321,10 +315,17 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   rememberDraftBase(draft.repoPath, branch);
                 }}
               />
-              <span className="pill is-action" onClick={() => rerollDraftName(draft.id)}>
-                <Icon name="refresh" />
-                <span>reroll name</span>
-              </span>
+              {/* Where the workspace runs, for a quick agent only: a box runs
+                  no workflow steps. Per draft, an explicit pick kept as
+                  made. */}
+              {!workflowMode && workspaceTypeShown && (
+                <WorkspaceTypePicker
+                  repoPath={draft.repoPath}
+                  provider={draft.provider}
+                  current={draft.workspaceType}
+                  onPick={(workspaceType) => updateDraft(draft.id, { workspaceType })}
+                />
+              )}
             </div>
           </div>
         </div>

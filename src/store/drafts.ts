@@ -44,7 +44,7 @@ export interface DraftAgent {
   /** The provider account picked for this draft's agent. Never remembered
    *  past the draft: undefined follows the active account in Settings. */
   account?: string;
-  /** The workspace type the user picked in the composer, kept as clicked
+  /** The workspace type the user picked on the new-workspace row, kept as clicked
    *  (the default included): a preference, shown over the default whenever
    *  the host lists it. Never remembered past the draft. The spawn sends
    *  what the chip declares from it (`workspaceTypeToSend`), not the field. */
@@ -452,7 +452,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // The composer's folder chips, checked by the backend and in place
         // from the first launch.
         folders,
-        // What the composer's chip declares, the pick or the default alike,
+        // What the sandbox pill declares, the pick or the default alike,
         // read from the host's answer for this repo and provider only: the
         // agent lands where the chip says, or the spawn fails with why. With
         // no such answer the chip shows nothing and nothing is sent. Only

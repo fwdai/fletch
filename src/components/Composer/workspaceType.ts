@@ -1,5 +1,6 @@
-// The composer's workspace type for a new agent: a Linux VM or the macOS
-// sandbox. The chip declares where the agent runs: the spawn carries exactly
+// The workspace type for a new workspace: a Linux VM or the macOS sandbox,
+// picked on the new-workspace row (`WorkspaceTypePicker`) beside the project
+// and the branch. The chip declares where the agent runs: the spawn carries exactly
 // the kind the chip shows, the user's pick or the host's default alike, so the
 // host lands the agent there or refuses with why, and the display cannot
 // disagree with the outcome. The options are the host's

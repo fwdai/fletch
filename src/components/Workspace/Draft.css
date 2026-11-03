@@ -39,6 +39,7 @@
   background: var(--accent);
 }
 .empty-name {
+  position: relative;
   display: inline-block;
   font-family: var(--font-serif);
   font-weight: 400;
@@ -51,6 +52,22 @@
 }
 .empty-name:hover {
   border-bottom-color: var(--accent);
+}
+/* The hint that a click rerolls the name: a glyph past its end, out of the
+   flow so the name stays centered, shown only while the name is hovered. */
+.empty-name-reroll {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  margin-left: 10px;
+  transform: translateY(-50%);
+  color: var(--fg-3);
+  opacity: 0;
+  transition: opacity 0.15s var(--ease);
+  pointer-events: none;
+}
+.empty-name:hover .empty-name-reroll {
+  opacity: 1;
 }
 .empty-title {
   font-family: var(--font-serif);
@@ -109,6 +126,18 @@
   height: 11px;
 }
 .empty-meta .pill .v {
+  color: var(--fg-0);
+}
+/* The sandbox pill's menu (where the workspace runs): rows with a trailing
+   check. */
+.ws-type-menu {
+  min-width: 190px;
+  white-space: nowrap;
+}
+.ws-type-menu .dd-item > svg:last-child {
+  color: var(--accent);
+}
+.ws-type-menu .dd-item.active {
   color: var(--fg-0);
 }
 
