@@ -134,10 +134,6 @@ export function EffortPicker({
                 );
               })}
             </div>
-            <div className="effort-ends flex-center text-xs">
-              <span>Faster</span>
-              <span>Deeper</span>
-            </div>
             {restarts && (
               <div className="effort-note text-xs">
                 Changing it restarts the agent, which rebuilds its cache.

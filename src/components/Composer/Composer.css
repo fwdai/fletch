@@ -554,11 +554,6 @@ button.run-piece:hover,
   color: var(--fg-0);
   font-weight: 600;
 }
-.effort-ends {
-  justify-content: space-between;
-  padding: 7px 2px 0;
-  color: var(--fg-3);
-}
 .effort-note {
   max-width: 260px;
   margin-top: 8px;
