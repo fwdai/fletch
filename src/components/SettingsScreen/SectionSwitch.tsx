@@ -9,9 +9,9 @@ export interface SectionTab {
 }
 
 /** The switch between the sections behind one nav entry, shown on the eyebrow
- *  row of each of their panes. Same `.set-seg` pill styling as the new-agent
- *  page's Agent | Workflow toggle. Reads the active section straight from the
- *  store so a pane can drop it in without threading section state through. */
+ *  row of each of their panes, in the shared `.set-seg` pill styling. Reads the
+ *  active section straight from the store so a pane can drop it in without
+ *  threading section state through. */
 export function SectionSwitch({ tabs }: { tabs: SectionTab[] }) {
   const section = useAppStore((s) => s.settingsSection);
   const setSection = useAppStore((s) => s.setSettingsSection);

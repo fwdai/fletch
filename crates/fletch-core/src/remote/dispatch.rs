@@ -1412,7 +1412,6 @@ impl Dispatch for SupervisorDispatch {
                         a.repo_path,
                         a.definition_id,
                         a.base_branch,
-                        a.base_sha,
                         a.attachments,
                         a.issue_ref,
                         &workflows(ctx)?,
@@ -3202,8 +3201,6 @@ struct WfLaunchArgs {
     definition_id: Option<String>,
     #[serde(default)]
     base_branch: Option<String>,
-    #[serde(default)]
-    base_sha: Option<String>,
     /// Host paths, as `send_user_message` takes them: from `attachment_end`.
     #[serde(default)]
     attachments: Vec<String>,

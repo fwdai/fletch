@@ -5,14 +5,14 @@
 // will run under before it runs, and the item form needs both to let the user
 // override it.
 //
-// The default is read through `loadPipelinePrefs` — the same `project_settings`
+// The default is read through `loadDefaultWorkflowId` — the same `project_settings`
 // key the composer writes (`src/workflows/run/projectPipeline.ts`) and the same
 // key the Rust drainer falls back to. One "the workflow this project runs",
 // three readers.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/api";
-import { loadPipelinePrefs } from "@/workflows/run/projectPipeline";
+import { loadDefaultWorkflowId } from "@/workflows/run/projectPipeline";
 import type { Definition } from "@/workflows/spec";
 
 export interface ProjectWorkflows {
@@ -43,11 +43,11 @@ export function useProjectWorkflows(projectId: string | null): ProjectWorkflows 
     }
     let alive = true;
     setReady(false);
-    Promise.all([api.wfDefList().catch(() => []), loadPipelinePrefs(projectId)])
-      .then(([defs, prefs]) => {
+    Promise.all([api.wfDefList().catch(() => []), loadDefaultWorkflowId(projectId)])
+      .then(([defs, id]) => {
         if (!alive) return;
         setDefinitions(defs);
-        setDefaultId(prefs.defaultWorkflowId);
+        setDefaultId(id);
       })
       .finally(() => {
         if (alive) setReady(true);

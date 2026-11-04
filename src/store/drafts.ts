@@ -23,12 +23,18 @@ import type { AppState, SliceCreator } from "./types";
 import { workspaceTypeOptionsFor } from "./workspaceTypes";
 
 // ---- Drafts ----------------------------------------------------------------
-// A draft is a new agent the user is about to spawn. It owns a landmark
-// name + chosen provider + base branch; the first message in the
-// composer spawns the real agent and sends the prompt.
+// A draft is a new agent the user is about to spawn, or a workflow run about to
+// launch. It owns a landmark name + chosen provider + base branch; the first
+// message in the composer spawns the real agent and sends the prompt (or
+// launches the run).
+
+/** What a draft's first message starts: one agent, or a workflow run. Fixed
+ *  when the draft is created — the project's + menu is where it is chosen. */
+export type DraftKind = "agent" | "workflow";
 
 export interface DraftAgent {
   id: string;
+  kind: DraftKind;
   /** Repo (sidebar group) this draft lives under. */
   repoPath: string;
   /** Rolled landmark name; user can re-roll before sending. */
@@ -88,13 +94,12 @@ export interface DraftsSlice {
    *  as the initial text on mount), so a caller that already knows what the
    *  agent should do — a roadmap item, a template — lands the user ready to
    *  launch rather than at an empty box. `roadmapItemId` tags the draft as a
-   *  roadmap hand-off, which stamps the item once the agent is spawned.
-   *  Resolves to the new draft's id, or `null` if it couldn't be created (the
-   *  error is already surfaced). */
+   *  roadmap hand-off, which stamps the item once the agent is spawned. `kind`
+   *  defaults to an agent. Resolves to the new draft's id, or `null` if it
+   *  couldn't be created (the error is already surfaced). */
   createDraft: (
     repoPath: string,
-    seedPrompt?: string,
-    roadmapItemId?: string,
+    opts?: { seedPrompt?: string; roadmapItemId?: string; kind?: DraftKind },
   ) => Promise<string | null>;
   /** The hand-off after a project is added: open a draft on it, so the user
    *  lands one keypress from a running agent instead of back where they were
@@ -181,6 +186,7 @@ async function prepareDraft(
   get: Get,
   repoPath: string,
   roadmapItemId?: string,
+  kind: DraftKind = "agent",
 ): Promise<DraftAgent | null> {
   const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
   const environment = activeEnvironmentId();
@@ -206,6 +212,7 @@ async function prepareDraft(
     : undefined;
   return {
     id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    kind,
     repoPath,
     name,
     provider: selection.provider,
@@ -275,10 +282,10 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   resolveDraftBase: (repoPath) => resolveBaseBranch(repoPath, get().draftBaseByRepo[repoPath]),
 
   // ── drafts ─────────────────────────────────────────────────────────────────
-  createDraft: async (repoPath, seedPrompt, roadmapItemId) => {
-    const draft = await prepareDraft(get, repoPath, roadmapItemId);
+  createDraft: async (repoPath, opts = {}) => {
+    const draft = await prepareDraft(get, repoPath, opts.roadmapItemId, opts.kind);
     if (!draft) return null;
-    openDraft(set, get, draft, seedPrompt);
+    openDraft(set, get, draft, opts.seedPrompt);
     return draft.id;
   },
 

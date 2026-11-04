@@ -27,7 +27,7 @@ import type { RewindSlice } from "./rewind";
 import type { SandboxSlice } from "./sandbox";
 import type { SkillsSlice } from "./skills";
 import type { RightPanelTab, UiSlice } from "./ui";
-import type { PromoteSeed, SyncHealthInfo, WorkspaceSlice } from "./workspace";
+import type { SyncHealthInfo, WorkspaceSlice } from "./workspace";
 import type { WorkspaceTypesSlice } from "./workspaceTypes";
 
 export type {
@@ -48,7 +48,6 @@ export type {
   InstallState,
   LocalCommandsSlice,
   McpServersSlice,
-  PromoteSeed,
   ProvidersSlice,
   ReposSlice,
   ReviewSlice,

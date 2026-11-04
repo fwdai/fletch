@@ -1179,7 +1179,7 @@ it:
 | `run.<row>` (`run.install`, `run.test`, `run.lint`, `run.dev`, …) | the Run panel, the verifier, workflow checks | the command |
 | `run.agent.<agentId>.<row>` | the same, for one agent, over the project's | the command |
 | `run_env` | the Run panel's env membrane | the `RunEnvDoc` JSON; values never live here |
-| `workflow.default`, `composer.mode` | the roadmap queue, the composer | a definition id; `"agent"` \| `"workflow"` |
+| `workflow.default` | the roadmap queue, the workflow composer | a definition id |
 | `roadmap.autoqueue` | the roadmap queue | `"1"` on; absent off |
 | `roadmap.max_concurrent` | the roadmap queue | an integer; absent is one |
 | `roadmap.settle_review`, `roadmap.midrun_awareness` | the PM's review | `"0"` off; absent on |

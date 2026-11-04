@@ -30,12 +30,9 @@ export const workflowsApi = {
     /** Absolute paths of files to attach to the run's first prompt, like a chat
      *  message's attachments. Empty by default. */
     attachments: string[] = [],
-    /** Explicit fork-point commit (promote-to-workflow). Wins over `baseBranch`
-     *  for the fork point; leave undefined for a normal branch-based launch. */
-    baseSha?: string,
-    /** GitHub issue number (as text) this run was started from, via the Home
-     *  inbox "Start work" in Pipeline mode. The finalized PR closes it
-     *  (backend appends `Closes #N`). Undefined for a normal launch. */
+    /** GitHub issue number (as text) this run was started from. The finalized
+     *  PR closes it (backend appends `Closes #N`). Undefined for a normal
+     *  launch. */
     issueRef?: string,
   ) =>
     invoke<string>("wf_launch", {
@@ -45,7 +42,6 @@ export const workflowsApi = {
       repoPath,
       definitionId,
       baseBranch,
-      baseSha,
       attachments,
       issueRef,
     }),

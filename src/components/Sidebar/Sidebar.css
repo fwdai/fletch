@@ -300,7 +300,7 @@
   opacity: 1;
   pointer-events: auto;
 }
-.proj-h .padd[aria-label="New agent"] svg {
+.proj-h .padd-add svg {
   width: 15px;
   height: 15px;
   flex-shrink: 0;
@@ -311,6 +311,15 @@
   width: 14px;
   height: 14px;
   flex-shrink: 0;
+}
+/* The + menu renders inside the header: shed its uppercase label type and grab
+ * cursor, and stay narrow enough to fit the sidebar at its minimum width. */
+.proj-h .dd {
+  min-width: 180px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  cursor: default;
 }
 
 .agents {

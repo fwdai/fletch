@@ -31,7 +31,7 @@ export function MapProject({ projectId, disabled }: { projectId: string; disable
     if (!repoPath || !result) return;
     // The draft lives in the workspace, which this page covers; stay put if
     // it couldn't be created so the error is seen here.
-    const draftId = await createDraft(repoPath, result.mapping_task);
+    const draftId = await createDraft(repoPath, { seedPrompt: result.mapping_task });
     if (draftId) closeProjectScreen();
   };
 

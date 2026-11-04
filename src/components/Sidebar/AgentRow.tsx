@@ -10,7 +10,6 @@ import { providerChip, providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { useGate } from "@/store/capabilities";
 import { maxBehind } from "@/store/git";
 import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
@@ -97,10 +96,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const spawnStage = useAppStore((s) => s.spawnStage[agent.id]);
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
-  const promoteAgentToWorkflow = useAppStore((s) => s.promoteAgentToWorkflow);
-  // Promoting seeds the workflow builder, and a host answers no `wf_*` op — so
-  // on a remote environment there is nothing to promote into.
-  const workflowGate = useGate("workflows");
   const now = useMinuteClock();
   const [statsOpen, setStatsOpen] = useState(false);
   // Backgrounded sub-agents outlive the main turn: the agent reads `idle` while
@@ -189,10 +184,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
     e.stopPropagation();
     archive(agent.id);
   };
-  const onPromote = (e: MouseEvent) => {
-    e.stopPropagation();
-    void promoteAgentToWorkflow(agent.id);
-  };
 
   return (
     <>
@@ -257,16 +248,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
               {agent.status === "error" && <Badge variant="err">error</Badge>}
             </span>
             <span className="ag-actions">
-              {!workflowGate && (
-                <button
-                  className="ag-act iflex-center tip"
-                  data-tip="Promote to workflow"
-                  onClick={onPromote}
-                  aria-label="Promote to workflow"
-                >
-                  <Icon name="combine" size={11} />
-                </button>
-              )}
               {stoppable && !awaiting && (
                 <button
                   className="ag-act iflex-center tip"
@@ -359,6 +340,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
 
 function DraftRow({ draft, active, onClick }: DraftRowProps) {
   const removeDraft = useAppStore((s) => s.removeDraft);
+  const workflow = draft.kind === "workflow";
 
   function onDiscard(e: React.MouseEvent) {
     e.stopPropagation();
@@ -376,7 +358,9 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
     >
       <span className="ag-rail idle" />
       <div className="agent-row flex-center">
-        <span className="ag-name ag-title ag-name-draft">Define task…</span>
+        <span className="ag-name ag-title ag-name-draft">
+          {workflow ? "Describe the run…" : "Define task…"}
+        </span>
         <span className="ag-slot iflex-center">
           <span className="ag-meta wide">
             <Badge variant="new">new</Badge>
@@ -394,9 +378,15 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
         </span>
       </div>
       <div className="agent-sub flex-center">
-        <span className="ag-prov-chip tip" data-tip={providerLabel(draft.provider)}>
-          <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={12} />
-        </span>
+        {workflow ? (
+          <span className="ag-prov-chip tip" data-tip="Workflow run">
+            <Icon name="combine" size={12} />
+          </span>
+        ) : (
+          <span className="ag-prov-chip tip" data-tip={providerLabel(draft.provider)}>
+            <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={12} />
+          </span>
+        )}
         <span className="a-task a-codename">{draft.name}</span>
       </div>
     </div>
