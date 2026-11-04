@@ -6,10 +6,10 @@
 // identical derivation instead of a second copy of this mapping.
 //
 // The rows are the row model's (rows.ts): runs of steps gathered behind one
-// line, and every settled turn but the latest folded down to its prompt, one
-// "Worked for …" line and its answer. This is the desktop's shell around the
-// shared rows: it draws messages with MessageItem and provides the app's
-// background tasks, reveal requests and markdown (TranscriptHost).
+// line, and what the agent says and the sub-agents it starts on the page. This
+// is the desktop's shell around the shared rows: it draws messages with
+// MessageItem and provides the app's background tasks, reveal requests and
+// markdown (TranscriptHost).
 import { Fragment, useCallback, useMemo, useRef } from "react";
 import type { AgentRecord } from "@/api";
 import { Markdown } from "@/components/Markdown";
@@ -17,10 +17,10 @@ import { Loader } from "@/components/ui/Loader";
 import { providerLabel } from "@/data/providers";
 import { taskForToolUse, useAppStore } from "@/store";
 import { TurnFooter } from "../RunTimer";
-import { TranscriptHost, type TranscriptHostValue } from "./host";
+import { RowEnv, type RowEnvValue, TranscriptHost, type TranscriptHostValue } from "./host";
 import { MessageItem } from "./MessageItem";
-import { RowEnv, type RowEnvValue, RowView, rowViewKey } from "./RowView";
-import { buildRows, lastIndex, newRowCache } from "./rows";
+import { RowView, rowViewKey } from "./RowView";
+import { buildRows, footerFor, newRowCache } from "./rows";
 import type { Transcript } from "./useTranscript";
 
 function HostMarkdown({ text }: { text: string }) {
@@ -42,12 +42,9 @@ export function TranscriptRows({
 }) {
   const { items, turnIds, turnFooters, openTurnStart, transcriptLoading } = transcript;
 
-  // Runs and folds keep their identity across streaming deltas (see RowCache).
+  // Runs keep their identity across streaming deltas (see RowCache).
   const cache = useRef(newRowCache());
-  const { rows, quietFooters, tailRunKey } = useMemo(
-    () => buildRows(items, cache.current),
-    [items],
-  );
+  const { rows, tailRunKey } = useMemo(() => buildRows(items, cache.current), [items]);
 
   const tasks = useAppStore((s) => s.backgroundTasks[agent.id]);
   const focus = useAppStore((s) => s.chatFocus);
@@ -109,14 +106,11 @@ export function TranscriptRows({
     <TranscriptHost.Provider value={host}>
       <RowEnv.Provider value={env}>
         {rows.map((row) => {
-          const end = lastIndex(row);
-          const footer = turnFooters[end];
+          const footer = footerFor(row, turnFooters, liveBusy, openTurnStart);
           return (
             <Fragment key={rowViewKey(row, items)}>
               <RowView row={row} />
-              {footer != null && (
-                <TurnFooter {...footer} agentId={agent.id} quiet={quietFooters.has(end)} />
-              )}
+              {footer != null && <TurnFooter {...footer} agentId={agent.id} />}
             </Fragment>
           );
         })}

@@ -21,6 +21,7 @@ fn turn(id: &str, text: &str, native_id: Option<&str>, inherited: bool) -> UserT
         ended_at: None,
         outcome: None,
         position: None,
+        provider_run_ms: 0,
         inherited,
     }
 }

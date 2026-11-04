@@ -87,7 +87,7 @@ export function visibleItems(
 }
 
 /** What names an item across the log's reshapings — a turn-end rebuild, a
- *  page of older history prepended on the phone — so a run, a fold and its
+ *  page of older history prepended on the phone — so a run and its
  *  disclosure state follow the item rather than its current index: a tool
  *  call's id, a prompt's turn id, else the session record it came from. Null
  *  for an item that has none (a live thought before the rebuild stamps it). */

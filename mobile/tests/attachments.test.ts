@@ -63,7 +63,10 @@ describe("uploadAttachment", () => {
     const path = await uploadAttachment(h.api, "shot.png", file);
     expect(path).toBe("/staged/u1/shot.png");
     expect(h.ops).toEqual(["begin:shot.png", "chunk:u1", "chunk:u1", "chunk:u1", "end:u1"]);
-    expect(h.bytes()).toEqual(file);
+    // By hand: `toEqual` walks megabytes of bytes slowly enough to time out.
+    const sent = h.bytes();
+    expect(sent.length).toBe(file.length);
+    expect(sent.every((byte, i) => byte === file[i])).toBe(true);
   });
 
   it("an empty file is an upload with no chunks", async () => {

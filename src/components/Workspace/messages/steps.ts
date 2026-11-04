@@ -65,12 +65,12 @@ export function stepStatus(
   };
 }
 
-/** What a run of steps (or a whole turn's work) did. Files are counted once
- *  however many times they were touched; everything else is counted by call. */
+/** What a run of steps did. Files are counted once however many times they
+ *  were touched; everything else is counted by call. */
 export interface StepSummary {
   /** Every step, whatever it is. */
   steps: number;
-  /** Tool calls, sub-agent launches included. */
+  /** Tool calls. */
   calls: number;
   /** Calls whose background task is still going. */
   running: number;
@@ -86,8 +86,7 @@ export interface StepSummary {
   searched: string[];
   planned: number;
   other: string[];
-  subagents: number;
-  /** Calls whose result was an error, and error notices. */
+  /** Calls and outputs that came back an error. */
   failed: number;
 }
 
@@ -112,7 +111,6 @@ export function summarizeSteps(items: ViewItem[], taskFor?: TaskLookup): StepSum
     searched: [],
     planned: 0,
     other: [],
-    subagents: 0,
     failed: 0,
   };
   for (const item of items) {
@@ -121,7 +119,6 @@ export function summarizeSteps(items: ViewItem[], taskFor?: TaskLookup): StepSum
         s.thoughts += 1;
         s.firstThought ??= item.text;
       } else if (item.subtype === "hook_output") s.hooks += 1;
-      else if (item.is_error || item.subtype === "error") s.failed += 1;
       continue;
     }
     if (item.kind === "tool_result") {
@@ -141,11 +138,6 @@ export function summarizeSteps(items: ViewItem[], taskFor?: TaskLookup): StepSum
     );
     if (status.failed) s.failed += 1;
     if (status.running) s.running += 1;
-    if (isSubagentCall(c.call)) {
-      s.subagents += 1;
-      continue;
-    }
-    if (isUserInputTool(c.call.name)) continue;
     const facts = stepFacts(c.call, item.kind === "tool_pair" ? item.result : null);
     switch (facts.kind) {
       case "change":
@@ -209,9 +201,6 @@ export function summaryParts(s: StepSummary): SummaryPart[] {
       diff: { additions: s.changed.additions, deletions: s.changed.deletions },
     });
   }
-  if (s.subagents > 0) {
-    parts.push({ key: "subagents", text: `delegated to ${plural(s.subagents, "sub-agent")}` });
-  }
   if (s.ran.length === 1 && s.ran[0]) {
     parts.push({ key: "ran", text: "ran", code: clip(s.ran[0], 40) });
   } else if (s.ran.length > 0) {
@@ -259,7 +248,6 @@ export function runIcon(items: ViewItem[], summary: StepSummary): IconName {
   });
   if (calls.length === 1) return getPresenter(calls[0].name).icon ?? "wrench";
   if (summary.changed.paths.length > 0) return KIND_ICON.change;
-  if (summary.subagents > 0) return "subagent";
   if (summary.ran.length > 0) return KIND_ICON.run;
   if (summary.read.length > 0) return KIND_ICON.read;
   if (summary.searched.length > 0) return KIND_ICON.search;

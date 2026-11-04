@@ -1,12 +1,13 @@
 // The seam between the transcript rows and the app around them. The rows —
-// runs of steps, folds, tool rows, thoughts, the presenters — are shared by the
+// runs of steps, tool rows, thoughts, the presenters — are shared by the
 // desktop chat and the phone verbatim; what differs is where background tasks
 // live, how a "reveal this row" request arrives, and which markdown component
 // renders prose. Each app provides those once, here, instead of the rows
 // reaching into a store.
 
-import { type ComponentType, createContext, useContext } from "react";
+import { type ComponentType, createContext, type ReactNode, useContext } from "react";
 import type { BackgroundTask } from "@/adapters/shared/backgroundTasks";
+import type { ViewItem } from "./pair";
 
 export interface TranscriptHostValue {
   /** The background task a tool call launched (a dev server, a watcher), if
@@ -36,6 +37,25 @@ export const TranscriptHost = createContext<TranscriptHostValue>({
 export function useTranscriptHost(): TranscriptHostValue {
   return useContext(TranscriptHost);
 }
+
+/** What every row needs from the transcript it sits in. It changes with every
+ *  streaming delta, so a closed run of steps stays off it and only reads it
+ *  once opened: settled history doesn't re-render as the live turn streams. */
+export interface RowEnvValue {
+  agentId: string;
+  provider: string | undefined;
+  items: ViewItem[];
+  liveBusy: boolean;
+  openTurnStart: number;
+  /** Key of the run the transcript ends on, if it ends on one. */
+  tailRunKey: string | null;
+  /** The app's own rendering of one item that isn't a step — a prompt, the
+   *  agent's prose, a sub-agent card, a question for the user. `busy` is
+   *  whether the item's turn is live. */
+  renderItem: (index: number, busy: boolean) => ReactNode;
+}
+
+export const RowEnv = createContext<RowEnvValue | null>(null);
 
 /** Prose rendered by the host's markdown component. */
 export function HostMarkdown({ text }: { text: string }) {

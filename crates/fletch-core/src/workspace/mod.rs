@@ -564,6 +564,10 @@ pub struct UserTurn {
     /// when it was sent for a turn that ended without the provider logging
     /// it, `None` while in flight. What a renderer places the turn by.
     pub position: Option<i64>,
+    /// Millis the provider ran in turns it opened on its own after this one
+    /// closed. Not part of [`Self::ended_at`]: the gaps between those runs
+    /// are idle time, so a turn's run time is its own span plus this.
+    pub provider_run_ms: i64,
     /// Shown through lineage from an ancestor session (see
     /// [`SessionRecord::inherited`]).
     pub inherited: bool,

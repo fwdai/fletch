@@ -1,8 +1,8 @@
 // The chat log, through the desktop's own row model: runs of tool calls and
-// thoughts fold into one summarizing line, every settled turn but the latest
-// folds behind "Worked for …", and each row opens to its detail — the same
-// rows, presenters and styles as the Mac (`@desktop/components/Workspace/
-// messages`). What is the phone's own is how a message, a notice and a
+// thoughts fold into one summarizing line that opens to its detail, a settled
+// turn closes on how long it ran, and what the agent says stays on the page —
+// the same rows, presenters and styles as the Mac (`@desktop/components/
+// Workspace/messages`). What is the phone's own is how a message, a notice and a
 // sub-agent card draw: a tool row that launched a sub-agent is a thread entry
 // rather than something the agent did, so it renders as a card that opens that
 // thread on its own screen (`openThread`) instead of expanding in place.
@@ -16,6 +16,8 @@ import {
 } from "@desktop/adapters/shared/subagents";
 import { Icon } from "@desktop/components/Icon";
 import {
+  RowEnv,
+  type RowEnvValue,
   TranscriptHost,
   type TranscriptHostValue,
 } from "@desktop/components/Workspace/messages/host";
@@ -24,16 +26,18 @@ import {
   type ViewItem,
   visibleItems,
 } from "@desktop/components/Workspace/messages/pair";
+import { RowView, rowViewKey } from "@desktop/components/Workspace/messages/RowView";
 import {
-  RowEnv,
-  type RowEnvValue,
-  RowView,
-  rowViewKey,
-} from "@desktop/components/Workspace/messages/RowView";
-import { buildRows, newRowCache, openTurnStart } from "@desktop/components/Workspace/messages/rows";
+  buildRows,
+  footerFor,
+  newRowCache,
+  openTurnStart,
+  turnFooters,
+} from "@desktop/components/Workspace/messages/rows";
 import { ToolStep } from "@desktop/components/Workspace/messages/StepGroup";
 import { UNDELIVERED_LABEL } from "@desktop/helpers/mergeTurns";
-import { useCallback, useMemo, useRef } from "react";
+import { fmtDur } from "@desktop/util/format";
+import { Fragment, useCallback, useMemo, useRef } from "react";
 import type { ChatItem, DisplayPolicy } from "../../adapters";
 import { SentChips } from "../../attachments";
 import { Md } from "../../components/Md";
@@ -185,10 +189,12 @@ export function Transcript({
   openThread?: (toolUseId: string) => void;
   resend?: Resend;
 }) {
-  // Run and fold identity survives streaming deltas (RowCache), so settled
-  // rows skip re-rendering while the live one grows.
+  // Run identity survives streaming deltas (RowCache), so settled rows skip
+  // re-rendering while the live one grows.
   const rowCache = useRef(newRowCache());
   const { rows, tailRunKey } = useMemo(() => buildRows(view, rowCache.current), [view]);
+  const footers = useMemo(() => turnFooters(view).footers, [view]);
+  const openStart = useMemo(() => openTurnStart(view), [view]);
 
   const host = useMemo<TranscriptHostValue>(
     () => ({
@@ -229,19 +235,25 @@ export function Transcript({
       provider,
       items: view,
       liveBusy: busy,
-      openTurnStart: openTurnStart(view),
+      openTurnStart: openStart,
       tailRunKey,
       renderItem,
     }),
-    [agentId, provider, view, busy, tailRunKey, renderItem],
+    [agentId, provider, view, busy, openStart, tailRunKey, renderItem],
   );
 
   return (
     <TranscriptHost.Provider value={host}>
       <RowEnv.Provider value={env}>
-        {rows.map((row) => (
-          <RowView key={rowViewKey(row, view)} row={row} />
-        ))}
+        {rows.map((row) => {
+          const footer = footerFor(row, footers, busy, openStart);
+          return (
+            <Fragment key={rowViewKey(row, view)}>
+              <RowView row={row} />
+              {footer && <div className="turn-ran">Ran {fmtDur(footer.runSec)}</div>}
+            </Fragment>
+          );
+        })}
       </RowEnv.Provider>
     </TranscriptHost.Provider>
   );

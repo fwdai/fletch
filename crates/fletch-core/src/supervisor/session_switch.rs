@@ -78,6 +78,7 @@ impl Supervisor {
         self.interrupted.lock().remove(agent_id);
         self.respawn_pending.lock().remove(agent_id);
         self.heuristic_idle.lock().remove(agent_id);
+        self.provider_runs.lock().remove(agent_id);
         self.statuses.lock().remove(agent_id);
         Ok(session)
     }

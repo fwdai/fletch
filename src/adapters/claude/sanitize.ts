@@ -5,6 +5,7 @@
 
 import type { ChatItem } from "@/adapters/types";
 import { stripInjectedInstructions } from "@/util/instructions";
+import { decodeEntities } from "@/util/markdownText";
 
 type NoticeItem = Extract<ChatItem, { kind: "notice" }>;
 
@@ -34,7 +35,8 @@ const COMPACT_PREAMBLE_RE = /^This session is being continued from a previous co
 // guard in reduce.ts and would otherwise render its raw XML as a user bubble.
 // Detect it by the wrapper tag — present on both the live wire and the persisted
 // transcript, unlike origin which the CLI reshapes between the two — and surface
-// only the human-readable <summary> as a quiet background_task notice. Stripped
+// only the human-readable <summary> as a quiet background_task notice, unescaped
+// (the wrapper is XML, so an agent named "A & B" arrives as `A &amp; B`). Stripped
 // inline (global, like the other wrappers) so a notification riding alongside
 // real user text doesn't leak its raw XML into the bubble.
 const TASK_NOTIFICATION_RE = /<task-notification>([\s\S]*?)<\/task-notification>/g;
@@ -48,7 +50,7 @@ function taskNotificationNotice(body: string): NoticeItem | null {
   // showing — drop it like an empty system-reminder rather than emitting a
   // misleading "Background task update" line.
   if (!summary && !status) return null;
-  const text = summary || `Background task ${status}`;
+  const text = summary ? decodeEntities(summary) : `Background task ${status}`;
   // Anything other than a clean completion (e.g. "stopped", a nonzero exit)
   // flags the dot red; the summary text already spells out the detail.
   const isError = status !== "" && status !== "completed" && status !== "success";

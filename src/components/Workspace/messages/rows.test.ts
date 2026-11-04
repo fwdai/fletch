@@ -3,7 +3,7 @@ import { claudeAdapter } from "@/adapters/claude/index";
 import { APP_ACTION_PREFIX } from "@/delegation";
 import type { ChatItem } from "@/store";
 import { type ViewItem, visibleItems } from "./pair";
-import { buildRows, newRowCache, type Row, turnSpans } from "./rows";
+import { buildRows, footerFor, newRowCache, type Row, turnFooters, turnSpans } from "./rows";
 import { liveActivity, summarizeSteps, summaryParts } from "./steps";
 
 let seq = 0;
@@ -35,22 +35,14 @@ const edit = (path: string, oldS = "a", newS = "b\nc") =>
   tool("Edit", { file_path: path, old_string: oldS, new_string: newS });
 const bash = (command: string, description?: string) => tool("Bash", { command, description });
 
-/** Rows as a compact shape: item indices, run lengths, folds with their rows. */
+/** Rows as a compact shape: item indices and run lengths. */
 function shape(rows: Row[]): unknown[] {
-  return rows.map((r) => {
-    if (r.kind === "item") return r.index;
-    if (r.kind === "steps") return `steps×${r.run.items.length}`;
-    return { fold: shape(r.fold.rows) };
-  });
+  return rows.map((r) => (r.kind === "item" ? r.index : `steps×${r.run.items.length}`));
 }
 
-/** Every item the rows hold, in order, folds and runs opened. */
+/** Every item the rows hold, in order, runs opened. */
 function flatten(rows: Row[], items: ViewItem[]): ViewItem[] {
-  return rows.flatMap((r) => {
-    if (r.kind === "item") return [items[r.index]];
-    if (r.kind === "steps") return r.run.items;
-    return flatten(r.fold.rows, items);
-  });
+  return rows.flatMap((r) => (r.kind === "item" ? [items[r.index]] : r.run.items));
 }
 
 describe("buildRows", () => {
@@ -60,8 +52,8 @@ describe("buildRows", () => {
   });
 
   // The rows only regroup the items; nothing is left out. Thoughts in
-  // particular: live, mid-run, between a call and its result, and in a turn
-  // folded away — each is in the rows exactly once, in its place.
+  // particular: live, mid-run, between a call and its result, and in a settled
+  // turn — each is in the rows exactly once, in its place.
   it("holds every item exactly once, thoughts included", () => {
     const items = [
       user("one", { startedAt: 0, endedAt: 1000 }),
@@ -89,7 +81,9 @@ describe("buildRows", () => {
     expect(shape(buildRows(items, newRowCache()).rows)).toEqual([0, "steps×1", 2, "steps×1", 4]);
   });
 
-  it("folds an older turn's work and keeps its prompt and answer", () => {
+  // Only steps collapse, so a settled turn reads as the latest one does: what
+  // the agent said, each run of work under the words that introduced it.
+  it("keeps what the agent says on the page in every turn", () => {
     const items = [
       user("one", { startedAt: 0, endedAt: 252_000 }),
       say("looking"),
@@ -101,77 +95,56 @@ describe("buildRows", () => {
       read("/b"),
       say("fine"),
     ];
-    const { rows, quietFooters } = buildRows(items, newRowCache());
-    expect(shape(rows)).toEqual([0, { fold: [1, "steps×1", 3, "steps×1"] }, 5, 6, "steps×1", 8]);
-    const fold = rows[1].kind === "fold" ? rows[1].fold : null;
-    expect(fold?.runSec).toBe(252);
-    // The fold says how long turn one ran, so its footer (at its last item)
-    // leaves the duration out.
-    expect([...quietFooters]).toEqual([5]);
-  });
-
-  // A git button's app action is a message to the agent, so its work folds
-  // under its chip; it's not a turn of the user's, so the turn it was clicked
-  // in ends after the action's reply — where its footer sits (useTranscript
-  // places footers by the same `turnSpans`). The fold under the prompt said
-  // how long the prompt ran, so that footer is the one that goes quiet.
-  it("ends a turn after the app action clicked in it", () => {
-    const items = [
-      user("one", { startedAt: 0, endedAt: 60_000 }),
-      say("looking"),
-      read("/a"),
-      say("done"),
-      user(`${APP_ACTION_PREFIX}commit-pr`, { startedAt: 70_000, endedAt: 80_000 }),
-      bash("git commit"),
-      say("committed"),
-      bash("git push"),
-      say("opened #1"),
-      user("two"),
-      say("hi"),
-    ];
-    expect(turnSpans(items)).toEqual([
-      { head: 0, end: 9 },
-      { head: 9, end: 11 },
-    ]);
-    const { rows, quietFooters } = buildRows(items, newRowCache());
-    expect(shape(rows)).toEqual([
-      0,
-      { fold: [1, "steps×1"] },
-      3,
-      4,
-      { fold: ["steps×1", 6, "steps×1"] },
-      8,
-      9,
-      10,
-    ]);
-    expect([...quietFooters]).toEqual([8]);
-  });
-
-  it("never folds the latest turn", () => {
-    const items = [user(), say("a"), read("/a"), say("b"), read("/b"), say("c")];
-    expect(shape(buildRows(items, newRowCache()).rows)).toEqual([0, 1, "steps×1", 3, "steps×1", 5]);
-  });
-
-  it("leaves a turn whose work is a single row as it is", () => {
-    const items = [user(), read("/a"), read("/b"), say("done"), user(), say("hi")];
-    expect(shape(buildRows(items, newRowCache()).rows)).toEqual([0, "steps×2", 3, 4, 5]);
-  });
-
-  it("folds everything after the prompt when the turn ends on a step", () => {
-    const items = [user(), say("a"), read("/a"), say("b"), bash("ls"), user(), say("x")];
     expect(shape(buildRows(items, newRowCache()).rows)).toEqual([
       0,
-      { fold: [1, "steps×1", 3, "steps×1"] },
+      1,
+      "steps×1",
+      3,
+      "steps×1",
+      5,
+      6,
+      "steps×1",
+      8,
+    ]);
+  });
+
+  // The answer needn't be the last thing in a turn: here a scheduled wake-up
+  // fired after it, called a tool to end its loop, and added one line.
+  it("keeps an answer a later tool call follows on the page", () => {
+    const answer = say("the assessment");
+    const items = [
+      user("audit this"),
+      read("/a"),
+      answer,
+      tool("ScheduleWakeup", { stop: true }),
+      say("nothing further"),
+      user("what are you doing?"),
+      say("nothing"),
+    ];
+    const { rows } = buildRows(items, newRowCache());
+    expect(shape(rows)).toEqual([0, "steps×1", 2, "steps×1", 4, 5, 6]);
+    expect(rows.some((r) => r.kind === "item" && items[r.index] === answer)).toBe(true);
+  });
+
+  it("keeps sub-agents on the page in a settled turn", () => {
+    const sub = tool("Agent", { description: "explore", prompt: "go" });
+    const items = [user(), read("/a"), sub, read("/b"), say("done"), user(), say("hi")];
+    expect(shape(buildRows(items, newRowCache()).rows)).toEqual([
+      0,
+      "steps×1",
+      2,
+      "steps×1",
+      4,
       5,
       6,
     ]);
   });
 
-  // A run is named by its first tool call and a fold by its prompt, so a page
-  // of older history prepended at the top (the phone's "Load older messages")
-  // moves every index but no key: an open run stays open, and the run that
-  // now sits at its old index doesn't inherit its state.
-  it("keeps run and fold keys through a prepend", () => {
+  // A run is named by its first tool call, so a page of older history
+  // prepended at the top (the phone's "Load older messages") moves every index
+  // but no key: an open run stays open, and the run that now sits at its old
+  // index doesn't inherit its state.
+  it("keeps run keys through a prepend", () => {
     const older = [
       { ...user("zero", { startedAt: 0, endedAt: 1 }), turnId: "t0" },
       read("/z"),
@@ -187,37 +160,106 @@ describe("buildRows", () => {
       read("/b"),
       think(),
     ];
-    const keys = (rows: Row[]) =>
-      rows.flatMap((r) => (r.kind === "item" ? [] : [r.kind === "fold" ? r.fold.key : r.run.key]));
+    const keys = (rows: Row[]) => rows.flatMap((r) => (r.kind === "item" ? [] : [r.run.key]));
     const before = keys(buildRows(items, newRowCache()).rows);
     const after = keys(buildRows([...older, ...items], newRowCache()).rows);
     expect(after.slice(-before.length)).toEqual(before);
-    expect(before[0]).toBe("f:u:t1");
-    expect(before[1]).toBe(`s:tp:${(items[6] as { call: { id: string } }).call.id}`);
+    expect(before[0]).toBe(`s:tp:${(items[1] as { call: { id: string } }).call.id}`);
   });
 
-  it("reuses unchanged runs and folds across passes", () => {
+  it("reuses unchanged runs across passes", () => {
     const cache = newRowCache();
-    const items = [
-      user(),
-      say("a"),
-      read("/a"),
-      say("b"),
-      read("/b"),
-      say("c"),
-      user(),
-      read("/c"),
-    ];
+    const items = [user(), say("a"), read("/a"), say("b"), read("/b")];
     const first = buildRows(items, cache).rows;
-    const grown = [...items, read("/d")];
-    const second = buildRows(grown, cache).rows;
-    expect(second[1]).toEqual(first[1]);
-    if (first[1].kind === "fold" && second[1].kind === "fold") {
-      expect(second[1].fold).toBe(first[1].fold);
-    }
+    const second = buildRows([...items, read("/d")], cache).rows;
+    // The settled run keeps its object, so its memoized row skips re-rendering.
+    const run = (rows: Row[], at: number) => (rows[at].kind === "steps" ? rows[at].run : null);
+    expect(run(second, 2)).toBe(run(first, 2));
     // The live run grew, so it's a new object.
-    const lastRun = (rows: Row[]) => rows[rows.length - 1];
-    expect(lastRun(second)).not.toBe(lastRun(first));
+    expect(run(second, 4)).not.toBe(run(first, 4));
+  });
+});
+
+describe("turnFooters", () => {
+  const timed = (startedAt: number, endedAt?: number, providerRunMs?: number) =>
+    ({ ...user("go", { startedAt, endedAt }), providerRunMs }) as ViewItem;
+
+  it("closes a turn at its last item, with its prose", () => {
+    const items = [timed(0, 90_000), say("one"), read("/a"), say("two"), user("next"), say("hi")];
+    const { footers } = turnFooters(items);
+    expect(footers[3]).toMatchObject({ runSec: 90, copyText: "one\n\ntwo" });
+    expect(footers.filter(Boolean)).toHaveLength(1);
+  });
+
+  // A git button's app action is a message to the agent but not a turn of the
+  // user's, so the turn it was clicked in ends after its reply and ran for both.
+  it("ends a turn after the app action clicked in it, counting its time", () => {
+    const items = [
+      { ...user("one", { startedAt: 0, endedAt: 60_000 }), turnId: "t1" },
+      say("looking"),
+      read("/a"),
+      say("done"),
+      {
+        ...user(`${APP_ACTION_PREFIX}commit-pr`, { startedAt: 70_000, endedAt: 80_000 }),
+        turnId: "t2",
+      },
+      bash("git commit"),
+      say("committed"),
+      bash("git push"),
+      say("opened #1"),
+      user("two"),
+      say("hi"),
+    ];
+    expect(turnSpans(items)).toEqual([
+      { head: 0, end: 9 },
+      { head: 9, end: 11 },
+    ]);
+    const { footers } = turnFooters(items);
+    expect(footers[8]).toMatchObject({ runSec: 70, forkTurnId: "t2" });
+    expect(footers.slice(0, 8).every((f) => f === null)).toBe(true);
+  });
+
+  // Claude's `result` closes the turn; what it runs on its own afterwards
+  // (answering a background task, waking on a schedule) is the same work. The
+  // idle time between those runs is not: it's in neither number.
+  it("counts the runs the provider opened on its own", () => {
+    const { footers } = turnFooters([timed(0, 141_000, 180_000), say("done")]);
+    expect(footers[1]?.runSec).toBe(321);
+  });
+
+  it("leaves an open turn without a footer, naming when it began", () => {
+    const { footers, openStartedAt } = turnFooters([timed(5000), say("working")]);
+    expect(footers).toEqual([null, null]);
+    expect(openStartedAt).toBe(5000);
+  });
+
+  it("keeps a turn open while an app action in it runs", () => {
+    const items = [
+      timed(0, 60_000),
+      say("done"),
+      user(`${APP_ACTION_PREFIX}commit`, { startedAt: 70_000 }),
+      bash("git commit"),
+    ];
+    const { footers, openStartedAt } = turnFooters(items);
+    expect(footers.every((f) => f === null)).toBe(true);
+    expect(openStartedAt).toBe(70_000);
+  });
+
+  it("has nothing to say about a turn with no timing", () => {
+    expect(turnFooters([user(), say("a")]).footers).toEqual([null, null]);
+  });
+
+  // Between Claude's `result` and its own next run the prompt has ended, so the
+  // footer exists; while that run is live it isn't the turn's last word yet.
+  it("holds the footer back while the agent is on that turn", () => {
+    const items = [timed(0, 60_000), say("a"), timed(70_000, 80_000), say("b")];
+    const { footers } = turnFooters(items);
+    const { rows } = buildRows(items, newRowCache());
+    const closing = rows[rows.length - 1];
+    expect(footerFor(closing, footers, false, 2)).not.toBeNull();
+    expect(footerFor(closing, footers, true, 2)).toBeNull();
+    // An earlier turn's footer stands whatever the latest is doing.
+    expect(footerFor(rows[1], footers, true, 2)).not.toBeNull();
   });
 });
 
@@ -267,6 +309,39 @@ describe("from Claude's records to rows", () => {
     const { rows } = buildRows(items, newRowCache());
     expect(shape(rows)).toEqual([0, "steps×4", 5]);
     expect(thoughts(flatten(rows, items))).toEqual(thoughts(items));
+  });
+});
+
+describe("a turn a scheduled wake-up added to", () => {
+  const assistant = (block: Record<string, unknown>) => ({
+    type: "assistant",
+    message: { id: "m1", role: "assistant", model: "claude-opus-5-5", content: [block] },
+  });
+
+  // The records as Claude Code wrote them for the session that found this: the
+  // wake-up's prompt is injected (`isMeta`), so it opens no turn of the user's.
+  it("leaves the answer it followed on the page", () => {
+    const lines = [
+      { type: "user", message: { role: "user", content: "audit the app" } },
+      assistant({ type: "text", text: "The full assessment." }),
+      { type: "user", isMeta: true, message: { role: "user", content: "check the surveys" } },
+      assistant({ type: "tool_use", id: "w1", name: "ScheduleWakeup", input: { stop: true } }),
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "w1", content: "stopped" }],
+        },
+      },
+      assistant({ type: "text", text: "Nothing further is pending." }),
+    ];
+    const log = claudeAdapter
+      .normalizeTranscript(lines)
+      .reduce<ChatItem[]>((acc, ev) => claudeAdapter.reduce(acc, ev), []);
+    const items = visibleItems(log, claudeAdapter.policy);
+    const { rows } = buildRows(items, newRowCache());
+    expect(shape(rows)).toEqual([0, 1, "steps×1", 3]);
+    expect(items[1]).toMatchObject({ kind: "agent_message", text: "The full assessment." });
   });
 });
 

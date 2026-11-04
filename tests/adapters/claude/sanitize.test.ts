@@ -96,6 +96,12 @@ describe("sanitizeUserText", () => {
     ]);
   });
 
+  it("unescapes the summary: the wrapper is XML, the notice is text", () => {
+    const raw =
+      '<task-notification><status>completed</status><summary>Agent "Nav &amp; sidebar" finished</summary></task-notification>';
+    expect(sanitizeUserText(raw).notices[0].text).toBe('Agent "Nav & sidebar" finished');
+  });
+
   it("flags a non-completed task-notification as an error", () => {
     const raw = [
       "<task-notification>",
