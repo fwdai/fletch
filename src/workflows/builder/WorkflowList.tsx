@@ -118,7 +118,7 @@ export function WorkflowList({
       <SetHead
         eyebrow="Settings · Workflows"
         title="Workflows"
-        desc="Chain agents into a repeatable pipeline, each handing off on the same git branch. Define once here; launch on any task."
+        desc="Repeatable pipelines that chain agents on the same branch."
         actions={
           <Button variant="primary" onClick={onNew}>
             <Icon name="plus" size={13} /> New workflow
@@ -197,8 +197,8 @@ export function WorkflowList({
                       {installing ? "Installing starter pack…" : "Install the starter pack"}
                     </div>
                     <div className="wf-desc">
-                      Seeds five specialist agents — Project Manager, Architect, Coder, Reviewer,
-                      Tester — and a ready-to-run Feature pipeline that chains the last four.
+                      Seeds five specialist agents (Project Manager, Architect, Coder, Reviewer,
+                      Tester) and a ready-to-run Feature pipeline that chains the last four.
                     </div>
                   </div>
                 </div>

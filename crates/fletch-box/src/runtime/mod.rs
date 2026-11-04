@@ -169,6 +169,24 @@ impl RuntimePaths {
     }
 }
 
+/// This machine's physical memory, MiB; `None` where the OS will not say.
+#[cfg(unix)]
+pub fn host_memory_mib() -> Option<u64> {
+    // SAFETY: both read a system constant; no pointer crosses.
+    let (pages, page_size) = unsafe {
+        (
+            libc::sysconf(libc::_SC_PHYS_PAGES),
+            libc::sysconf(libc::_SC_PAGESIZE),
+        )
+    };
+    (pages > 0 && page_size > 0).then(|| pages as u64 * page_size as u64 / (1024 * 1024))
+}
+
+#[cfg(not(unix))]
+pub fn host_memory_mib() -> Option<u64> {
+    None
+}
+
 /// The result of [`RuntimePaths::probe`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Probe {

@@ -1,0 +1,48 @@
+/* Scale: ordered stops side by side as one segmented meter. Every stop up to
+   the one in force is filled, deepening left to right. */
+.ui-scale {
+  display: grid;
+  gap: 3px;
+}
+.ui-scale-seg {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 4px 2px 3px;
+  border-radius: 6px;
+  color: var(--fg-2);
+  white-space: nowrap;
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s var(--ease);
+}
+.ui-scale-seg:not(:disabled):hover,
+.ui-scale-seg:focus-visible {
+  background: var(--hover);
+  color: var(--fg-0);
+  outline: none;
+}
+.ui-scale-seg:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ui-scale-bar {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--bd);
+  transition: background 0.14s var(--ease);
+}
+/* Deepens by opacity, never by hue: mixing the accent with a grey would
+   drift it through other colours on the way. */
+.ui-scale-seg.is-filled .ui-scale-bar {
+  background: color-mix(in srgb, var(--accent) calc(40% + 60% * var(--depth, 1)), transparent);
+}
+.ui-scale-label {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.ui-scale-seg.is-current {
+  color: var(--fg-0);
+  font-weight: 600;
+}

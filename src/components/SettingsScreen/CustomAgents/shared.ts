@@ -36,6 +36,6 @@ export const INJECTION_HINT: Record<string, string> = {
  *  map: the materialize-and-index mechanism works on every base. */
 export const MCP_HINT: Record<McpSupport, string> = {
   all: "MCP servers attached when this agent runs",
-  stdio: "MCP servers attached when this agent runs — command (stdio) servers only",
-  none: "Not supported by this base — the agent will run without attached tools",
+  stdio: "Command (stdio) MCP servers attached when this agent runs",
+  none: "Not supported by this base, so the agent will run without attached tools",
 };

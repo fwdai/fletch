@@ -73,7 +73,7 @@ export function SkillsPane() {
       eyebrow="Settings · Customize"
       eyebrowAside={<CustomizeSwitch />}
       title="Skills"
-      desc="Named instruction documents your custom agents load on demand. Assign skills to agents in their editor; running sessions keep the version they spawned with."
+      desc="Instruction documents your custom agents load on demand."
       newLabel="New skill"
       emptyLabel="Create your first skill"
       icon="notebookPen"

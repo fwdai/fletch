@@ -449,6 +449,27 @@ mod tests {
         }
     }
 
+    /// A write fd on the binary makes exec fail with ETXTBSY, which is what a
+    /// sibling thread's fork does to a just-written file for an instant. The
+    /// probe must wait that out, not read it as a binary that can't be run:
+    /// this is what failed the thinking-display test on Linux CI, intermittently.
+    /// Only Linux can fail this: macOS runs a script that is open for writing.
+    #[test]
+    fn a_probe_waits_out_a_binary_held_open_for_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = script(dir.path(), "busy", "#!/bin/sh\necho 1.2.3\n");
+        let held = std::fs::OpenOptions::new().write(true).open(&bin).unwrap();
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                drop(held);
+            });
+            let out = run_probe_bounded(&bin, &["--version"]).expect("the probe ran");
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1.2.3");
+        });
+    }
+
     /// A claude that knows `--thinking-display` rejects the probe's value
     /// before `--version` can answer; one that doesn't answers as if the flag
     /// weren't there. Older hosts keep launching without the flag.

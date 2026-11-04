@@ -86,7 +86,7 @@ export function OrchestrateContainer({
           </span>
         </button>
         <div className={`wb-step-goal ${block.goal.trim() ? "" : "empty"}`}>
-          {block.goal.trim() || "No coordination brief yet — select to add."}
+          {block.goal.trim() || "No coordination brief yet. Select to add."}
         </div>
         <div className="wb-step-foot">
           {block.comms.length > 0 && (

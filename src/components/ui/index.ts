@@ -18,6 +18,8 @@ export { MenuButton } from "./MenuButton";
 export type { ModalLayer, ModalSize } from "./Modal";
 export { Modal, ModalBody, ModalFooter, ModalSheet } from "./Modal";
 export { ProgressBar } from "./ProgressBar";
+export type { ScaleStop } from "./Scale";
+export { Scale } from "./Scale";
 export { Scrim } from "./Scrim";
 export type { SelectOption } from "./Select";
 export { Select } from "./Select";

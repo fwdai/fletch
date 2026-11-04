@@ -13,10 +13,10 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 const GATE = "claude";
 
-/** Where the host's box setup stands, as one line: `busy` while the image
- *  downloads or a tools disk builds (`cancel` only while the download can
- *  still be stopped), `error` when either failed or the image is simply not
- *  there, `ready` once the image and Claude Code's disk are in. `retry` says
+/** Where the host's box setup stands: `busy` while the image downloads or a
+ *  tools disk builds (`cancel` only while the download can still be stopped),
+ *  `error` when either failed or the image is simply not there, `ready` once
+ *  the image and Claude Code's disk are in, with what is installed. `retry` says
  *  what Retry starts again: the image install (which also builds the disk
  *  after it), or the failed provider's tools disk build alone, past the
  *  backoff after failed builds. */
@@ -25,7 +25,7 @@ export type BoxSetup =
   | { state: "busy"; text: string; cancel: boolean }
   | { state: "error"; text: string; retry: "image" }
   | { state: "error"; text: string; retry: "tools"; provider: string }
-  | { state: "ready"; text: string };
+  | { state: "ready"; versions: { label: string; version: string }[] };
 
 export function boxSetup(
   probe: BoxRuntimeProbe | null,
@@ -86,9 +86,9 @@ export function boxSetup(
   }
   const ready = disks
     .filter(({ disk }) => disk?.phase === "ready")
-    .map(({ provider, disk }) => `${label(provider)} ${disk?.version}`);
+    .map(({ provider, disk }) => ({ label: label(provider), version: disk?.version ?? "" }));
   return {
     state: "ready",
-    text: `Ready · image v${image.version ?? image.pinned_version} · ${ready.join(" · ")} · other providers use the macOS sandbox`,
+    versions: [{ label: "Image", version: `v${image.version ?? image.pinned_version}` }, ...ready],
   };
 }

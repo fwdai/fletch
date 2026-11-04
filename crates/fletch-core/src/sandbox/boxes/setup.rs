@@ -20,7 +20,7 @@ use tokio::sync::watch;
 
 use crate::error::{Error, Result};
 
-use super::{registry, settings, Ready, EVENT_IMAGE};
+use super::{registry, Ready, EVENT_IMAGE};
 
 /// How long a launch waits for the image download before giving up: a few
 /// hundred MB on a slow connection.
@@ -112,11 +112,11 @@ pub fn image_status() -> BoxImageStatus {
 }
 
 /// Start downloading (or copying, for a `file://` URL) this build's pinned
-/// image and the enabled layers (`box_layers`) in the background; progress
-/// and the outcome arrive as `box:image` events, and the tools disks are
-/// built once it is in. A no-op while an install runs, and quick when
-/// everything is installed already (the store skips the download), so
-/// autostart, a layer change and a Retry can all call it blindly.
+/// image and its layers in the background; progress and the outcome arrive
+/// as `box:image` events, and the tools disks are built once it is in. A no-op
+/// while an install runs, and quick when everything is installed already (the
+/// store skips the download), so autostart and a Retry can both call it
+/// blindly.
 pub fn start_install() -> Result<()> {
     let pinned = super::pinned_image();
     let mut status = BoxImageStatus {
@@ -146,7 +146,7 @@ pub fn start_install() -> Result<()> {
         };
         publish(&status);
         let mut last = 0u8;
-        let layers = settings::current().layers;
+        let layers = super::image_layers();
         let result = super::image_store()
             .install(&pinned, &layers, |p| {
                 if cancel.load(Ordering::Relaxed) {

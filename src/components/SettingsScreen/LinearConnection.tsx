@@ -56,7 +56,7 @@ export function LinearConnection() {
         <span className="set-gh-status text-base">
           {connected
             ? `Connected${linear?.user ? ` as ${linear.user}` : ""}`
-            : "Not connected — pick a team per project once connected"}
+            : "Not connected. Pick a team per project once connected."}
         </span>
         {connected ? (
           <Button variant="outline" onClick={() => void disconnect()}>

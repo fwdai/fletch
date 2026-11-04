@@ -47,7 +47,7 @@ async fn setup() -> tempfile::TempDir {
     });
     let t0 = Instant::now();
     let installed = super::image_store()
-        .install(&super::pinned_image(), &settings::current().layers, |_| {
+        .install(&super::pinned_image(), &super::image_layers(), |_| {
             std::ops::ControlFlow::Continue(())
         })
         .await
@@ -382,6 +382,7 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
             "images": [
                 {"name": "base", "file": "base.erofs", "size": 5, "sha256": "0".repeat(64)},
                 {"name": "devtools", "file": "layer-devtools.erofs", "size": 5, "sha256": "1".repeat(64)},
+                {"name": "browser", "file": "layer-browser.erofs", "size": 5, "sha256": "2".repeat(64)},
             ],
         })
         .to_string()
@@ -402,23 +403,85 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
     std::fs::write(dir.join("manifest.json"), manifest(&pin.version)).unwrap();
     assert!(
         super::installed_image().unwrap().is_none(),
-        "the default devtools layer is not there yet"
+        "the layers are not there yet"
     );
     std::fs::write(dir.join("layer-devtools.erofs"), b"layer").unwrap();
-    let installed = super::installed_image().unwrap().expect("the pinned image");
-    assert_eq!(installed.version, pin.version);
-    assert_eq!(installed.layers.len(), 1);
-    assert_eq!(super::setup::image_status().phase, "installed");
-
-    settings::set(BoxSettings {
-        layers: vec!["devtools".into(), "browser".into()],
-        ..BoxSettings::default()
-    });
     assert!(
         super::installed_image().unwrap().is_none(),
-        "a layer turned on but not downloaded holds the image back"
+        "a layer still on its way holds the image back"
     );
-    settings::set(BoxSettings::default());
+    std::fs::write(dir.join("layer-browser.erofs"), b"layer").unwrap();
+    let installed = super::installed_image().unwrap().expect("the pinned image");
+    assert_eq!(installed.version, pin.version);
+    assert_eq!(installed.layers.len(), 2);
+    assert_eq!(super::setup::image_status().phase, "installed");
+}
+
+thread_local! {
+    /// The `box:*` events this thread emitted, while a test is listening.
+    static EVENTS: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Record an emitted event, for the test on this thread that asked to.
+pub(super) fn note_event(event: &str) {
+    EVENTS.with(|events| {
+        if let Some(events) = events.borrow_mut().as_mut() {
+            events.push(event.to_string());
+        }
+    });
+}
+
+/// The registry says when the set of VMs changes, which is what keeps a client's
+/// list honest about a hidden workspace: nothing else tells it one is gone. A
+/// box it already knows is not news.
+#[tokio::test(flavor = "current_thread")]
+async fn the_list_event_fires_when_a_box_is_registered_or_discarded() {
+    let id = "list-event-test";
+    let identity = BoxIdentity::new(id, "p", "claude").unwrap();
+    let registry = BoxRegistry::global();
+    let list_events = || {
+        EVENTS.with(|events| {
+            let events = events.borrow();
+            let events = events.as_ref().unwrap();
+            events.iter().filter(|e| *e == super::EVENT_LIST).count()
+        })
+    };
+    EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+
+    registry.register(identity.clone());
+    assert_eq!(list_events(), 1, "a new box");
+    registry.register(identity);
+    assert_eq!(list_events(), 1, "a box it knows");
+
+    super::discard_if_any(id).await.unwrap();
+    assert_eq!(list_events(), 2, "a discarded box");
+    super::discard_if_any(id).await.unwrap();
+    assert_eq!(list_events(), 2, "nothing left to discard");
+
+    EVENTS.with(|events| *events.borrow_mut() = None);
+}
+
+/// A box exists once it has a data disk: a tools build's throwaway box and a
+/// directory that never got one are not VMs.
+#[test]
+fn a_created_box_is_a_directory_with_a_data_disk() {
+    let root = tempfile::tempdir().unwrap();
+    let disk = |dir: &str, with_disk: bool| {
+        let dir = root.path().join(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if with_disk {
+            std::fs::write(dir.join(super::registry::DATA_DISK), b"").unwrap();
+        }
+    };
+    disk("vm", true);
+    disk("never-booted", false);
+    disk("tools-build", true);
+
+    let boxes = super::boxes_in(root.path());
+    assert_eq!(
+        boxes.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["vm"]
+    );
 }
 
 // `block_on` from the sync seams (`launch_agent`, the executor).

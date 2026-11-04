@@ -3,11 +3,14 @@ import { useAppStore } from "@/store";
 import { SetGroup, SetHead } from "../primitives";
 import { BoxKnobs } from "./BoxKnobs";
 import { BoxSetupStatus } from "./BoxSetupStatus";
-import { ContainerAuth } from "./ContainerAuth";
-import { EgressGlobal } from "./EgressGlobal";
+import { SandboxSwitch } from "./SandboxSwitch";
+import { VmDetails } from "./VmDetails";
+import { VmList } from "./VmList";
 
-/** Settings › Sandbox: where the Linux VM's setup stands, its knobs, what it
- *  may reach, and how its claude signs in. Nothing here chooses an engine:
+/** Settings › Sandbox › Linux VM: the VMs' resources and the VMs themselves,
+ *  with setup shown only while it needs attention and the details tucked away.
+ *  What they may reach is the Network tab. The macOS sandbox has nothing to set:
+ *  its rules are fixed boundaries. Nothing here chooses an engine:
  *  every new workspace runs in a Linux VM when one can boot, in the macOS
  *  sandbox otherwise; a project or a single workspace overrides that where
  *  the override is made (the project page, the composer). */
@@ -25,28 +28,27 @@ export function SandboxPane() {
     <div className="set-pane">
       <SetHead
         eyebrow="Settings · Sandbox"
-        title="Sandbox"
-        desc="New workspaces run in a Linux VM that shares no folder with your Mac and reaches only allowed hosts. Until it's ready, or where a project builds a macOS app, they run in the macOS sandbox. Applies to new workspaces only."
+        eyebrowAside={boxProbe && !runtimeOk ? undefined : <SandboxSwitch />}
+        title="Linux VM"
+        desc="The VMs agents run in and what each one can use."
       />
 
-      <SetGroup label="Linux VM">
-        {boxProbe && !runtimeOk ? (
+      {boxProbe && !runtimeOk ? (
+        <SetGroup>
           <div className="set-row-s text-sm set-box-setup">
             <span>
               Linux VMs aren't available on this Mac: {boxProbe.problems.join("; ")}. Workspaces run
               in the macOS sandbox.
             </span>
           </div>
-        ) : (
-          <BoxSetupStatus />
-        )}
-      </SetGroup>
+        </SetGroup>
+      ) : (
+        <BoxSetupStatus />
+      )}
 
       {runtimeOk && <BoxKnobs />}
-      {runtimeOk && <EgressGlobal />}
-      <SetGroup label="Claude sign-in" last>
-        <ContainerAuth />
-      </SetGroup>
+      {runtimeOk && <VmList />}
+      <VmDetails />
     </div>
   );
 }

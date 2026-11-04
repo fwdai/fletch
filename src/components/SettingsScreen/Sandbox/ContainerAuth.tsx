@@ -43,7 +43,7 @@ export function ContainerAuth() {
     <>
       <SetRow
         title="Claude in a Linux VM"
-        sub="Agents in a Linux VM use your Keychain Claude login, or an API key or setup token as fallback."
+        sub="Uses your Keychain Claude login, or an API key or setup token as fallback."
       >
         <span className={`set-cauth-status text-sm ${connected ? "connected" : ""}`}>
           {status ? STATUS_LABELS[status] : "Checking…"}
@@ -156,7 +156,7 @@ function AutoConnect({
       <>
         <div className="ghc-lede text-sm">
           Connect your Claude account so agents in Linux VMs can authenticate. This opens your
-          browser once to sign in — no copy-paste.
+          browser once to sign in.
         </div>
         <div className="modal-actions">
           <Button variant="primary" onClick={connect}>

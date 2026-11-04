@@ -100,7 +100,7 @@ export function McpServersPane() {
       eyebrow="Settings · Customize"
       eyebrowAside={<CustomizeSwitch />}
       title="Tools (MCP)"
-      desc="MCP servers your custom agents can attach as tools. Supported by Claude Code and Codex bases; other bases run without them. Running sessions keep the configuration they spawned with."
+      desc="MCP servers your custom agents can attach as tools."
       before={<BuiltInTools />}
       newLabel="New server"
       emptyLabel="Add your first MCP server"

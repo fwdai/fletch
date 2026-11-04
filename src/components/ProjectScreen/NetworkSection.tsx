@@ -19,7 +19,8 @@ const FILE_LABEL: Record<ProjectFileWhich, string> = {
 };
 
 /** What this project's box agents may reach, and where each part of it comes
- *  from: Fletch's list and the user's global changes (Settings › Sandbox),
+ *  from: Fletch's list and the user's global changes (Settings › Sandbox ›
+ *  Network),
  *  then this project's own — `.fletch/settings.json` (shared, meant to be
  *  committed) and `.fletch/settings.local.json` (just you), read on the host
  *  from the project's repository, never from an agent's checkout.
@@ -91,8 +92,9 @@ export function NetworkSection({ projectId }: { projectId: string }) {
         <h2 className="ps-section-t text-lg">Network</h2>
         <p className="ps-section-lead text-sm">
           What this project&rsquo;s box agents may reach: Fletch&rsquo;s list and your changes in
-          Settings › Sandbox, then this project&rsquo;s <code>.fletch/settings.json</code> (commit
-          it to share with your team) and <code>.fletch/settings.local.json</code> (just you).
+          Settings › Sandbox › Network, then this project&rsquo;s <code>.fletch/settings.json</code>{" "}
+          (commit it to share with your team) and <code>.fletch/settings.local.json</code> (just
+          you).
         </p>
       </header>
 

@@ -128,8 +128,8 @@ enum ImageCmd {
         /// Alternate release base URL (the `box_image_url` setting).
         #[arg(long)]
         url: Option<String>,
-        /// Layers besides the base, comma-separated, or `all` (every layer
-        /// the app offers); default `devtools`.
+        /// Layers besides the base, comma-separated; default `all`, every
+        /// layer the app attaches.
         #[arg(long, value_delimiter = ',')]
         layers: Option<Vec<String>>,
     },
@@ -471,9 +471,8 @@ async fn image(command: ImageCmd) -> Result<(), String> {
             let names =
                 |layers: &[&str]| -> Vec<String> { layers.iter().map(|l| l.to_string()).collect() };
             let layers = match layers {
-                None => names(image_store::DEFAULT_LAYERS),
-                Some(l) if l == ["all"] => names(image_store::OPTIONAL_LAYERS),
-                Some(l) => l,
+                Some(l) if l != ["all"] => l,
+                _ => names(image_store::OPTIONAL_LAYERS),
             };
             let mut last = 0;
             let installed = store

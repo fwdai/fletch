@@ -453,15 +453,12 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         }
     }
 
-    // Seed the in-process claude setup token (mirror of the stored
-    // `claude_container_token` secret, same pattern as the GitHub token below)
-    // so the box launch's auth chain — resolved at spawn time with no DB
-    // handle — sees a token pasted in a previous run.
-    seed_secret_mirror(
-        &db,
-        sandbox::provider::auth::TOKEN_SETTING,
-        sandbox::provider::auth::seed_stored_token,
-    );
+    // A box launch signs in with the host's login, so nothing reads the claude
+    // setup token past versions stored. Delete it rather than leave a live
+    // credential behind.
+    if let Err(e) = secrets::delete(&db.lock(), "claude_container_token") {
+        tracing::warn!(error = %e, "the retired claude setup token was not deleted");
+    }
 
     // Unified git resolution: point the portable-install root at app data, wire
     // the fallback commit identity to the signed-in profile, and kick off

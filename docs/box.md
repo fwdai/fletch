@@ -38,8 +38,13 @@ the disk is aboard at the box's next start.
 | Image | Content | Packed |
 | --- | --- | ---: |
 | `base.erofs` | Debian trixie minbase, bash, git, ssh, curl/jq/rg, Node 22, the shared libraries any Chromium needs, a small font set, `fletch-guest` | ~160 MB |
-| `layer-devtools.erofs` | build-essential, pkg-config, python3 + pip + venv, Node headers. On by default | ~115 MB |
-| `layer-browser.erofs` | Debian `chromium-headless-shell`, `fonts-noto-core`. Off by default; Playwright projects download their own browser and need only the base | ~165 MB |
+| `layer-devtools.erofs` | build-essential, pkg-config, python3 + pip + venv, Node headers | ~115 MB |
+| `layer-browser.erofs` | Debian `chromium-headless-shell`, `fonts-noto-core`. Playwright projects download their own browser and need only the base; Puppeteer's download is off the allow-list (`storage.googleapis.com`) | ~165 MB |
+
+Every box gets both layers, with no setting. A layer is a read-only file the
+boxes share: it costs disk once and no guest memory until something reads it,
+and with block devices fixed at boot, one left out could not be added to a
+running box.
 
 The layers are the file-level delta between the base and the base with their
 packages installed (`packages/<name>.txt`), so nothing is duplicated. Mesa's
@@ -100,9 +105,10 @@ cover: scratch outside every bind (`/tmp`, `/var/tmp`, `/run`), which the
 reviewer may write as the guest user, and the network namespace, which is the
 guest's.
 
-Settings (Settings › Sandbox › Linux VM): memory, CPUs, idle stop, and a
-toggle per layer (`box_layers`); the image URL is on Settings › Developer. A layer turned on is downloaded once and
-attached to every box from its next boot.
+Settings (the Linux VM tab of Settings › Sandbox): memory, CPUs, disk and idle stop, as
+scales. Memory and CPUs stop at what the host has (`box_runtime_probe`'s
+`host_cpus` and `host_memory_mib`), and disk reaches new boxes only, since a
+data disk is sized when it is created. The image URL is on Settings › Developer.
 
 ## Releases and updates
 
@@ -114,7 +120,7 @@ never emulates, so each host downloads its own architecture's; the manifest's
 packages), the `.erofs` files, and `<file>.chunks.json` delta manifests. The
 app boots the one version `PinnedImage::VERSION` names
 (`crates/fletch-box/src/image_store/mod.rs`) and downloads it on first use:
-the manifest, then the base and the enabled layers, each verified against its
+the manifest, then the base and the layers, each verified against its
 size and sha256 as it arrives. With an older version on disk only the chunks
 that changed are fetched (content-defined chunking, HTTP range requests);
 a release asset without a chunk list, or a server without ranges, falls back

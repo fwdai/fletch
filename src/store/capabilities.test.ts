@@ -47,6 +47,23 @@ const OLD_HOST_CLOSED = (Object.keys(GATES) as GateName[]).filter(
 ).length;
 
 describe("gateReason", () => {
+  // `ops` is scoped per device (`dispatch::ops_for`): one paired to observe is
+  // told `box_list` and not `box_stop`, so it sees VMs it may not stop.
+  it("lets a device see VMs without offering it Stop", () => {
+    const observer = host(["box_list"]);
+    expect(gateReason(observer, "vmList")).toBeNull();
+    expect(gateReason(observer, "stopVm")).toBe(GATES.stopVm.reason);
+    expect(gateReason(host(["box_list", "box_stop"]), "stopVm")).toBeNull();
+  });
+
+  it("lets a device read VM setup without offering it the actions", () => {
+    const observer = host(["box_runtime_probe", "box_image_status"]);
+    expect(gateReason(observer, "vmSetup")).toBe(GATES.vmSetup.reason);
+    expect(
+      gateReason(host(["box_image_install", "box_image_cancel", "box_tools_retry"]), "vmSetup"),
+    ).toBeNull();
+  });
+
   it("never gates the local environment", () => {
     for (const gate of Object.keys(GATES) as (keyof typeof GATES)[]) {
       expect(gateReason(local, gate)).toBeNull();

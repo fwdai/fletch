@@ -460,6 +460,11 @@ export function onBoxEgress(cb: (e: BoxEgressEvent) => void): Promise<UnlistenFn
 
 /** What boxes may reach changed in the app: the global list, or a project's
  *  in-app additions. Reload `boxEgressOverview`. */
+/** The set of VMs changed; `boxList` says what it is now. */
+export function onBoxList(cb: () => void): Promise<UnlistenFn> {
+  return on<unknown>("box:list", () => cb());
+}
+
 export function onBoxPolicy(cb: (e: BoxPolicyEvent) => void): Promise<UnlistenFn> {
   return on<BoxPolicyEvent>("box:policy", cb);
 }

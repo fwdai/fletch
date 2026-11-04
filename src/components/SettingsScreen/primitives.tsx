@@ -25,6 +25,8 @@ export function SetHead({
    *  Customize section switch, which sits above the (tab-dependent) title. */
   eyebrowAside?: ReactNode;
   title: string;
+  /** One line naming the category of settings on the page. How things work
+   *  belongs on the rows. */
   desc?: ReactNode;
   /** Optional controls aligned to the right of the title row. */
   actions?: ReactNode;
@@ -64,22 +66,44 @@ export function SetGroup({
 }
 
 export function SetRow({
+  icon,
   title,
   sub,
   align,
+  compact,
   children,
 }: {
+  /** Sits beside the title and description, spanning both. */
+  icon?: ReactNode;
+  /** One tight line, title and description side by side: for a list of things
+   *  rather than a setting to read. */
+  compact?: boolean;
   title: ReactNode;
+  /** Two lines at most. Leave it out when the title and control say enough. */
   sub?: ReactNode;
   align?: "start";
   children?: ReactNode;
 }) {
+  const label = (
+    <div className="set-row-l">
+      <div className="set-row-t text-base">{title}</div>
+      {sub && <div className="set-row-s text-sm">{sub}</div>}
+    </div>
+  );
   return (
-    <div className={`set-row flex-center ${align === "start" ? "align-start" : ""}`}>
-      <div className="set-row-l">
-        <div className="set-row-t text-base">{title}</div>
-        {sub && <div className="set-row-s text-sm">{sub}</div>}
-      </div>
+    <div
+      className={`set-row flex-center ${align === "start" ? "align-start" : ""} ${
+        compact ? "compact" : ""
+      }`}
+    >
+      {icon ? (
+        <div className="set-row-lead flex-center">
+          {icon}
+          {label}
+        </div>
+      ) : (
+        label
+      )}
       {children && <div className="set-row-c flex-center">{children}</div>}
     </div>
   );

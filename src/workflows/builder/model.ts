@@ -499,7 +499,7 @@ function validateBlocks(blocks: EBlock[], v: Validation, seen: Map<string, EStep
       const errs: string[] = [];
       if (b.max < 1) errs.push("max iterations must be ≥ 1");
       if (b.body.some((x) => x.kind !== "step")) {
-        errs.push("loop body blocks must be steps — nesting isn't supported yet");
+        errs.push("loop body blocks must be steps, since nesting isn't supported yet");
       }
       const until = b.untilNid ? findStepByNid(b.body, b.untilNid) : null;
       if (!until) errs.push("choose which step's verdict ends the loop");
@@ -512,7 +512,7 @@ function validateBlocks(blocks: EBlock[], v: Validation, seen: Map<string, EStep
       const errs: string[] = [];
       if (!b.agent) errs.push("assign an orchestrator agent");
       if (b.integrate === "merge") {
-        errs.push("integrate: merge is not supported yet — use none");
+        errs.push("integrate: merge is not supported yet, so use none");
       }
       if (b.children && b.children.max < 1) errs.push("children max must be ≥ 1");
       if (b.children && !b.children.agent) errs.push("choose the child agent");

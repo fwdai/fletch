@@ -295,7 +295,22 @@ pub(crate) fn spawn_in_own_group(
     use std::os::unix::process::CommandExt;
 
     command.as_std_mut().process_group(0);
-    let child = command.spawn()?;
+    // Retry on ETXTBSY: a sibling thread's fork can hold a just-written binary
+    // open for writing for an instant, a freshly installed CLI included, and an
+    // exec in that window fails. Nothing but timing is wrong, and the window is
+    // tiny, so a few short backoffs clear it, as in `exec_session`.
+    let mut attempts = 0;
+    let child = loop {
+        match command.spawn() {
+            Ok(child) => break child,
+            // 26 == ETXTBSY on Linux and macOS.
+            Err(e) if e.raw_os_error() == Some(26) && attempts < 10 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => return Err(e),
+        }
+    };
     let pid = child
         .id()
         .ok_or_else(|| std::io::Error::other("child had no pid right after spawn"))?;

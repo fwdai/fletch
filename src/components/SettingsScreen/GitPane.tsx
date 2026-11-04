@@ -20,7 +20,7 @@ const WAIT_OPTIONS: { value: string; label: string }[] = [
 ];
 
 /** How agents publish: the Git panel's default action, the approval gate and
- *  its wait, draft PRs, and the branch prefix. */
+ *  its wait, draft PRs, agent attribution, and the branch prefix. */
 export function GitPane() {
   const gitCommitAction = useAppStore((s) => s.gitCommitAction);
   const setGitCommitAction = useAppStore((s) => s.setGitCommitAction);
@@ -30,6 +30,8 @@ export function GitPane() {
   const setPublishApprovalWait = useAppStore((s) => s.setPublishApprovalWait);
   const draftPrs = useAppStore((s) => s.draftPrs);
   const setDraftPrs = useAppStore((s) => s.setDraftPrs);
+  const attributionRemoved = useAppStore((s) => s.agentAttributionRemoved);
+  const setAttributionRemoved = useAppStore((s) => s.setAgentAttributionRemoved);
   // Everything but the default Git action is the host's: its publish path
   // reads them. The default action is this window's own preference.
   const gate = useGate("publishSettings");
@@ -44,10 +46,7 @@ export function GitPane() {
       />
 
       <SetGroup label="Publishing">
-        <SetRow
-          title="Default Git action"
-          sub="Preselected action in the Git panel. You can still pick another from its menu."
-        >
+        <SetRow title="Default Git action" sub="Preselected action in the Git panel.">
           <Select<GitCommitAction>
             value={gitCommitAction}
             ariaLabel="Default Git action"
@@ -80,13 +79,23 @@ export function GitPane() {
             onChange={(v) => void setPublishApprovalWait(Number(v))}
           />
         </SetRow>
-        <SetRow
-          title="Open PRs as drafts"
-          sub="Every pull request Fletch opens starts as a draft until you mark it ready."
-        >
+        <SetRow title="Open PRs as drafts" sub="Every pull request Fletch opens starts as a draft.">
           <SetToggle
             on={draftPrs}
             onClick={() => void setDraftPrs(!draftPrs)}
+            disabled={!!gate}
+            tip={tip}
+          />
+        </SetRow>
+        {/* PRs read this as they open; an agent's commit hook takes it from the
+            env it started with. */}
+        <SetRow
+          title="Remove agent attribution"
+          sub="Strip agents' Co-Authored-By trailers and “Generated with” footers from commits and PRs."
+        >
+          <SetToggle
+            on={attributionRemoved}
+            onClick={() => void setAttributionRemoved(!attributionRemoved)}
             disabled={!!gate}
             tip={tip}
           />
@@ -129,11 +138,7 @@ function BranchPrefixRow({ gate }: { gate: string | null }) {
   return (
     <SetRow
       title="Branch prefix"
-      sub={
-        error ??
-        gate ??
-        "Prepended to every branch an agent creates, e.g. alex/ or feature/. Blank for none."
-      }
+      sub={error ?? gate ?? "Added to the start of every branch an agent creates, e.g. alex/."}
     >
       <TextInput
         mono

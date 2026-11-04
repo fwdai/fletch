@@ -905,12 +905,13 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `set_auto_archive_idle_days` | `{ days: number }` — `auto_archive_idle_days`; `0` turns the idle sweep off | `null` |
 | `set_code_indexing_enabled` | `{ enabled: boolean }` — `code_indexing_enabled`; turning it on also installs codegraph and warms the index for every pinned repo, in the background on the host | `null` |
 | `set_context_layer_enabled` | `{ enabled: boolean }` — `context_layer_enabled`: the project context layer's developer gate; off, the layer's ops, instruction block, ingesters and extractor are inert and the project page shows no Context tab | `null` |
-| `box_runtime_probe` | `{}` — can this host boot a box (docs/boxes-spec.md §9): the flag, the machine and runtime (`runtime_ok`, with one sentence per failing item in `problems`), the image's install state and each supported provider's tools disk. Read-only | `BoxRuntimeProbe` |
+| `box_runtime_probe` | `{}` — can this host boot a box (docs/boxes-spec.md §9): the flag, the machine and runtime (`runtime_ok`, with one sentence per failing item in `problems`), the image's install state, each supported provider's tools disk, and the host's cores and memory (`host_cpus`, `host_memory_mib`). Read-only | `BoxRuntimeProbe` |
 | `box_image_status` | `{}` — the pinned guest image's install state; `box:image` carries every change after | `BoxImageStatus` |
 | `box_image_install` | `{}` — download this build's pinned image in the background, then build the tools disks; a no-op while an install runs, so it is also the Retry after a failure. Refused with the flag off | `null` |
 | `box_image_cancel` | `{}` — stop the running download; refused when none runs | `null` |
 | `box_tools_retry` | `{ provider }` — build the provider's tools disk now: after a failed build, a launch or the prebuild builds again only once a backoff has passed (1, 5, 30 minutes, then 2 hours between attempts), and this skips it. Nothing builds by itself when the backoff ends. With the box runtime not ready it starts nothing and sends a `box:tools` `failed` saying why. In the background; the outcome arrives as `box:tools`. With the image not installed it starts the install, which builds the disks after. Refused with the flag off and for a provider boxes do not run | `null` |
 | `box_state` | `{ agentId }` — the registry's phase for one agent's box, as the `box:state` event spells it | `BoxStateEvent` |
+| `box_list` | `{}`: every VM that exists, running or not: an agent with a data disk or a registry entry, hidden workspaces included, archived ones not. Read-only | `BoxVm[]` |
 | `box_stop` | `{ agentId }` — stop the agent's box now through the stop ladder; answers which rung worked (`control` \| `sysrq` \| `term` \| `killed` \| `alreadyexited`). The box's disk stays; the next launch boots it again | `string` |
 | `box_egress_allow` | `{ projectId, pattern }` — add one host pattern to the project's egress allow-list (`box.egress_allow`) and update its running boxes; refused for a pattern that does not parse | `string[]` (the list as stored) |
 | `project_file_status` | `{ projectId }` — the project's `.fletch/settings.json` and `.fletch/settings.local.json`, read now from its primary repo on the host (never an agent's checkout): each file's state (`exists`, `error`, `warnings`) and the host patterns they add under `egress.allow`, split into `applied` (approved by the user) and `pending`. Read-only | `ProjectFileStatus` |
@@ -918,7 +919,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `project_file_edit` | `{ projectId, file: "shared" \| "local", edit: { allowAdd?, allowRemove?, disableAdd?, disableRemove? } }` — change the `egress` lists of one of the project's settings files on the host (`shared` is `.fletch/settings.json`, `local` is `.fletch/settings.local.json`, kept out of git through `info/exclude`); creates the file when missing. Hosts added this way are approved as they are written. Refused for a file with comments, which plain JSON would drop, and for a pattern that does not parse | `ProjectFileStatus` |
 | `box_egress_overview` | `{ projectId?: string }` — the egress allow-list layer by layer: the template with categories, the quiet (telemetry) list, the user's global changes, the list every project starts from, and with `projectId` that project's own entries (each with its source), settings files and in-app additions. Read-only | `EgressOverview` |
 | `set_box_egress_global` | `{ delta: { add: string[], remove: string[] } }` — replace the user's global changes over the template: hosts every project's boxes may also reach, template entries turned off. Validated and normalized; every running box takes the new list from its next connection | `{ add, remove }` (as stored) |
-| `set_box_setting` | `{ key, value: string \| null }` — one of the five host-owned box settings (see "Settings"), validated on the host; `null` restores the default. A `box_layers` change starts the install of a layer turned on (the host starts the image install on its own, at boot and after onboarding, wherever the runtime probe passes) | `null` |
+| `set_box_setting` | `{ key, value: string \| null }` — one of the five host-owned box settings (see "Settings"), validated on the host; `null` restores the default (the host starts the image install on its own, at boot and after onboarding, wherever the runtime probe passes) | `null` |
 | `available_workspace_types` | `{ repoPath, provider }` — the workspace types a new agent of `provider` in the repo at `repoPath` may be given, for the composer's choice: `host` (the macOS sandbox, always available) and `box` (an isolated VM, available exactly when a spawn asking for one would be accepted, else `reason` is the sentence it would fail with); `default` marks what a spawn with no choice picks (always `box` on a host off macOS, where there is no macOS sandbox). `spawn_agent` on the wire carries no workspace type yet, so a remote spawn always takes the default. Read-only | `{ kind: "host" \| "box", available: boolean, reason: string \| null, default: boolean }[]` |
 | `set_agent_bin_override` | `{ id, path: string \| null }` — `agent_bin_path_<id>`, a path *on the host*; blank or `null` clears it. Live agents on that provider are respawned so they exec the new binary | `null` |
 | `set_branch_prefix` | `{ prefix }` — `git_branch_prefix`; validated and trimmed on the host, empty clears it | `string` (the prefix as stored) |
@@ -1137,7 +1138,7 @@ default the host does):
 | `auto_archive_idle_days` | `set_auto_archive_idle_days` | `projects` |
 | `code_indexing_enabled` | `set_code_indexing_enabled` | `projects` |
 | `context_layer_enabled` | `set_context_layer_enabled` | `projects` |
-| `box_memory_mib`, `box_cpus`, `box_image_url`, `box_idle_stop_minutes`, `box_layers` | `set_box_setting` | `projects` |
+| `box_memory_mib`, `box_cpus`, `box_disk_gib`, `box_image_url`, `box_idle_stop_minutes` | `set_box_setting` | `projects` |
 | `agent_bin_path_<id>` | `set_agent_bin_override` | `projects` |
 | `git_branch_prefix` | `set_branch_prefix` | `publish` |
 | `github_draft_prs` | `set_draft_prs` | `publish` |
@@ -1356,7 +1357,7 @@ roadmap:queue-note
 settings:changed       project_settings:changed
 context:changed
 box:state              box:egress             box:image
-box:tools              box:policy
+box:tools              box:policy             box:list
 project_file:changed
 ```
 
@@ -1367,6 +1368,9 @@ outcome, and a provider's tools disk build. All of them happen on the host, so
 a remote Settings page and workspace follow them as the desktop's do. A
 `box:tools` with `phase: "failed"` carries `error` and, while the backoff
 holds a launch's or the prebuild's next build off, `retry_at` (unix ms); nothing builds at that time by itself. `box_tools_retry` builds now.
+
+`box:list` says the set of VMs changed, one registered or discarded, hidden
+workspaces included; it carries nothing, so a client re-reads `box_list`.
 
 `box:policy { project_id }` says what boxes may reach changed in the app: the
 user's global list (`project_id: null`) or one project's in-app additions.

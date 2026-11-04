@@ -20,6 +20,7 @@ and is the path of least resistance for new UI.
 | `CopyButton` | Copy-to-clipboard affordance with copied-state feedback. | — |
 | `Modal` / `ModalBody` / `ModalFooter` | Centered modal dialog — dimmed scrim + card + the standard icon/title/close header. Sizes `sm` / `md` / `lg`; `layer` picks the stacking level. The backdrop always dims; if it shouldn't, you want a popover (bare `Scrim`), not a modal. | `.modal` / `.modal-body` |
 | `ModalSheet` | The wide overlay sheet (History, Project Settings) — dimmed backdrop + large card, no built-in header. `fill` pins it to full viewport height. | `.modal-sheet` |
+| `Scale` | A value picked from a few ordered stops, as a segmented meter (thinking effort, VM memory). Previews on hover and arrows; a click picks. | `.ui-scale` |
 | `Scrim` | Full-screen dim/click-catcher behind popovers and overlays. | `.ui-scrim` |
 
 Tooltips: pass `tip="…"` — it sets `.tip` + `data-tip`. The single
