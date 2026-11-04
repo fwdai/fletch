@@ -32,6 +32,7 @@ lands, its row turns from plan into fact.
 | Loops | A loop block in the spec; iterate its body in the same workspace until a verdict says `done` or the max is reached. |
 | Parallel / orchestrate | Git worktrees off the run workspace, so children fork cheaply and integrate by local merges of pinned refs. |
 | Budgets | Turn / token / wall caps in the spec, charged per step and checked between turns, with a stop the timeline names. |
+| Box placement | Provision the run workspace inside the project's box and adopt it there, so a boxed project's steps run as the box's tenants like any other adopting agent. Until then a launch for such a project is refused up front (`service::lands_in_a_box`). |
 | Stall / nudge watchdogs | Covered by the single per-step wall timeout. Add nuance only if real hangs demand it. |
 | Latency polish | Straight-line pre-spawn of the next step's CLI, session reuse across loop iterations, asynchronous archive. |
 
@@ -62,5 +63,10 @@ rather than pretending.
   reads with them ignored.
 - **No comms.** A step agent has no `wf_*` mailbox ops: it cannot ask, report or
   be answered mid-run.
+- **No boxes.** The run workspace is a host tree, so every step adopts it on
+  this Mac's sandbox. A project whose agents would land in a box (its stored
+  placement, or the automatic choice with a box ready, or any host off macOS)
+  is refused at launch with that reason, never run on the host behind the
+  project's isolation.
 - **One guard.** A single per-step wall timeout (30 minutes) covers spawn through
   turn end. There is no turn-start deadline, stall clock, or nudge.

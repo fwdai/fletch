@@ -5,15 +5,17 @@
 //! `failed("internal scheduler error")` so a run is never left `running` with no
 //! live driver.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use rusqlite::Connection;
 
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
+use crate::sandbox::{self, EngineKind};
 use crate::supervisor::Supervisor;
 
 use super::cleanup::{
@@ -85,6 +87,32 @@ impl WorkflowService {
         roadmap_item_id: Option<String>,
     ) -> Result<String> {
         spec::validate(&spec).map_err(|errs| Error::Other(errs.join("; ")))?;
+        // Every step adopts the run's host-side workspace, and an adopting
+        // agent runs where its tree lives: on this Mac's sandbox, never in a
+        // box (`sandbox::engine_for_spawn`). So a project whose agents would
+        // land in a box is refused here, with why, rather than have its
+        // workflow run on the host behind the isolation it chose. Before the
+        // lifecycle lock, like a spawn: the automatic choice stats the
+        // repository and may probe the runtime once.
+        let placement_setting = {
+            let conn = self.db.lock();
+            project_setting(&conn, &project_id, sandbox::placement::KEY)
+        };
+        let providers: BTreeSet<String> = spec.agents.values().map(|a| a.base.clone()).collect();
+        let repo_for_placement = PathBuf::from(&repo_path);
+        let boxed = tokio::task::spawn_blocking(move || {
+            lands_in_a_box(
+                placement_setting.as_deref(),
+                &repo_for_placement,
+                providers.iter().map(String::as_str),
+                sandbox::boxes::ready_for,
+            )
+        })
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+        if boxed {
+            return Err(Error::Other(BOX_REFUSAL.to_string()));
+        }
         let _lifecycle_guard = self.lifecycle.lock().await;
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         let repo = PathBuf::from(&repo_path);
@@ -460,10 +488,75 @@ pub async fn wf_delete_run_impl(
         .map_err(|e| e.to_string())
 }
 
+/// Why a launch is refused for a project whose agents run in a box. A fact,
+/// not advice: the user picked that placement and nothing here suggests
+/// changing it.
+const BOX_REFUSAL: &str =
+    "Workflow runs cannot run in a box yet, and this project's agents run in one.";
+
+/// Whether a fresh agent of any of `providers` would land in a box for the
+/// project at `repo` whose stored placement is `placement_setting` — the
+/// automatic choice `spawn_agent` makes when neither an adopted tree nor a
+/// session's own workspace type decides (`sandbox::engine_for_spawn`), with
+/// the runtime probe supplied as `ready` so the answer can be fixed in a test.
+fn lands_in_a_box<'a>(
+    placement_setting: Option<&str>,
+    repo: &Path,
+    providers: impl IntoIterator<Item = &'a str>,
+    ready: impl Fn(&str) -> bool,
+) -> bool {
+    let placement = sandbox::placement::resolve(placement_setting, repo);
+    providers.into_iter().any(|provider| {
+        sandbox::boxes::engine_for_new_agent_with(provider, placement, || ready(provider))
+            == EngineKind::Box
+    })
+}
+
+/// One project setting, or `None` when unset (or unreadable: a setting that
+/// cannot be read decides nothing).
+fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
+        [project_id, key],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::workflow::driver::MockDriver;
+
+    /// The refusal mirrors the spawn path's automatic choice: a project pinned
+    /// to boxes is boxed wherever one can boot, a project pinned to this Mac
+    /// never is, and an undecided project follows whether a box is ready.
+    #[test]
+    fn a_launch_is_boxed_exactly_when_a_fresh_agent_would_be() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let claude = ["claude"];
+
+        assert!(lands_in_a_box(Some("box"), repo, claude, |_| true));
+        if cfg!(target_os = "macos") {
+            assert!(!lands_in_a_box(Some("host"), repo, claude, |_| true));
+            assert!(!lands_in_a_box(None, repo, claude, |_| false));
+            assert!(lands_in_a_box(None, repo, claude, |_| true));
+            // One boxed provider among several is enough: every step must run.
+            assert!(lands_in_a_box(
+                None,
+                repo,
+                ["claude", "codex"],
+                |provider| provider == "codex"
+            ));
+            // A native-looking project runs on this Mac whatever is ready.
+            std::fs::create_dir(repo.join("App.xcodeproj")).unwrap();
+            assert!(!lands_in_a_box(None, repo, claude, |_| true));
+        } else {
+            // Off macOS there is no seatbelt: every fresh agent is a box.
+            assert!(lands_in_a_box(Some("host"), repo, claude, |_| false));
+        }
+    }
 
     fn insert_run(db: &Db, id: &str, status: &str, spec_json: &str) {
         db.lock()
