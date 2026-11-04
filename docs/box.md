@@ -135,6 +135,16 @@ What the proxy does with a host off that list is the **posture**
 | `ask` | The connection is held and the user asked, once per host (`box:egress-requested`). The answer allows it for the project or for every project, blocks it on that box until the box restarts, or opens the box's network for the turn. Nobody answering refuses it after about a minute; telemetry is never asked about; at most four hosts are held per box, a further one is refused at once. |
 | `allowlist` | Refused at once. |
 
+A host blocked in the prompt stays refused on that box under every posture,
+and under a turn's open network, until the box restarts: the block is the
+user's answer about that host, and only a list that allows it wins. Every
+hold reports its own end to the engine (`EgressEvent::HoldEnded`), whichever
+way it ended, and that is what closes the prompt: a host that came to be
+allowed elsewhere (the posture opened, a list gained it) closes it as
+allowed at once, not when its tunnel happens to end, so no stale prompt can
+be answered later. Dropping the proxy (the box stopping) ends every hold at
+once.
+
 A workspace's network can also be opened for one turn from the composer
 (`box_egress_open_turn`): any host passes until the turn ends, then the
 posture resumes on its own. The flag lives in the registry and is never

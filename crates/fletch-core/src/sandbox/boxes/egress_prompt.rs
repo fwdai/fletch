@@ -119,17 +119,26 @@ pub fn resolve(id: &str, outcome: Outcome) {
     }
 }
 
-/// The proxy refused `host` for `agent_id`'s box: whatever prompt was up for
-/// it is over. A hold the user answered with a block was closed by the
-/// answer first, so this is the unanswered case.
-pub fn refused(agent_id: &str, host: &str) {
+/// The proxy's hold on `host` for `agent_id`'s box is over, whichever way:
+/// the host came to be allowed (`admitted`, by an answer here or by a list
+/// or posture changed elsewhere), or it was refused (a decline, the deadline,
+/// the box going away). Whatever prompt is still up for it closes with the
+/// matching outcome; one an answer here already closed is not closed twice.
+pub fn ended(agent_id: &str, host: &str, admitted: bool) {
     let id = PENDING.lock().as_ref().and_then(|m| {
         m.values()
             .find(|p| p.agent_id == agent_id && p.host == host)
             .map(|p| p.id.clone())
     });
     if let Some(id) = id {
-        resolve(&id, Outcome::Expired);
+        resolve(
+            &id,
+            if admitted {
+                Outcome::Allowed
+            } else {
+                Outcome::Expired
+            },
+        );
     }
 }
 
@@ -152,13 +161,26 @@ mod tests {
         let fuji = mine.iter().find(|p| p.agent_id == "fuji-prompt").unwrap();
         assert!(get(&fuji.id).is_some());
 
-        refused("fuji-prompt", "api.stripe.com");
-        assert!(get(&fuji.id).is_none(), "a refusal closes the prompt");
-        refused("fuji-prompt", "api.stripe.com");
+        ended("fuji-prompt", "api.stripe.com", false);
+        assert!(get(&fuji.id).is_none(), "a refused hold closes the prompt");
+        ended("fuji-prompt", "api.stripe.com", false);
         let etna = mine.iter().find(|p| p.agent_id == "etna-prompt").unwrap();
         resolve(&etna.id, Outcome::Blocked);
         assert!(get(&etna.id).is_none());
         resolve("never-registered", Outcome::Allowed);
+
+        // A hold admitted elsewhere (the posture opened, a list gained the
+        // host) closes its prompt too, so no stale card can be answered.
+        request("vesuvio-prompt", "p", "docs.python.org", 443);
+        let vesuvio = pending()
+            .into_iter()
+            .find(|p| p.agent_id == "vesuvio-prompt")
+            .unwrap();
+        ended("vesuvio-prompt", "docs.python.org", true);
+        assert!(
+            get(&vesuvio.id).is_none(),
+            "an admitted hold closes the prompt"
+        );
     }
 
     /// The wire spellings are the documented ones (docs/remote-protocol.md).

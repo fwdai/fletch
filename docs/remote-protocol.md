@@ -1394,8 +1394,10 @@ and the host raises one prompt per workspace and host — the payload is an
 minute passes and the proxy refuses it. A client that connected after the
 event asks `box_egress_pending` after every handshake and replaces its queue
 with the answer. `box:egress-resolved` `{ id, outcome: "allowed" | "blocked"
-| "expired" }` closes one, whoever ended it; a client drops the card and needs
-no other reaction. A `box:state` carries `turn_open: true` while the box's
+| "expired" }` closes one, whoever ended it — `allowed` also when the host
+came to be allowed another way (the posture opened, a list gained it), and
+`expired` also when the box went away; a client drops the card and needs no
+other reaction. A `box:state` carries `turn_open: true` while the box's
 network is open for the turn (`box_egress_open_turn`); the turn's end clears
 it and emits the state again.
 
