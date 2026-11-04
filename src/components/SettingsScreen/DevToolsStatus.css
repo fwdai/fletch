@@ -1,0 +1,64 @@
+/* Git and GitHub status rows in Settings › Account. */
+.devtools {
+  display: flex;
+  flex-direction: column;
+}
+.devtools-row {
+  display: flex;
+  gap: 10px;
+  padding: 8px 2px;
+  align-items: flex-start;
+}
+.devtools-icon {
+  width: 20px;
+  display: flex;
+  justify-content: center;
+  padding-top: 1px;
+  color: var(--fg-2);
+  flex-shrink: 0;
+}
+.devtools-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.devtools-line {
+  gap: 8px;
+}
+.devtools-name {
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.devtools-status {
+  color: var(--fg-2);
+}
+.devtools-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.devtools-dot.ok {
+  background: var(--success);
+}
+.devtools-dot.warn {
+  background: var(--warn);
+}
+.devtools-dot.bad {
+  background: var(--danger);
+}
+.devtools-dot.checking {
+  background: var(--fg-3);
+}
+.devtools-fix {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.devtools-foot {
+  justify-content: flex-end;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--bg-2);
+}

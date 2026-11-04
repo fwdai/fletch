@@ -1,8 +1,9 @@
-import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { api, type GhStatus, type ToolStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
+import { CopyCmd } from "@/components/ui/CopyCmd";
+import { DocsLink } from "@/components/ui/DocsLink";
 import { IS_MAC } from "@/util/platform";
 import { useGitInstall } from "@/util/useGitInstall";
 
@@ -41,7 +42,7 @@ export function DevToolsStatus() {
   const ghState: S = gh ? (gh.authenticated ? "ok" : "warn") : checking ? "checking" : "warn";
 
   return (
-    <div className="readiness">
+    <div className="devtools">
       <ToolRow
         icon={<Icon name="branch" size={15} />}
         name="Git"
@@ -85,8 +86,7 @@ export function DevToolsStatus() {
               : "Couldn't check"
         }
       />
-      <div className="rdy-foot flex-center">
-        <span className="rdy-count" />
+      <div className="devtools-foot flex-center">
         <Button variant="outline" onClick={recheck} disabled={checking}>
           <Icon name="refresh" size={12} />
           {checking ? "Checking…" : "Re-check"}
@@ -117,50 +117,22 @@ function ToolRow({
 }) {
   const needsFix = state === "bad" || state === "warn";
   return (
-    <div className="rdy-row">
-      <span className="rdy-icon">{icon}</span>
-      <div className="rdy-main">
-        <div className="rdy-line flex-center">
-          <span className="rdy-name">{name}</span>
-          <span className={`rdy-dot ${state}`} />
-          <span className="rdy-status">{statusText}</span>
+    <div className="devtools-row">
+      <span className="devtools-icon">{icon}</span>
+      <div className="devtools-main">
+        <div className="devtools-line flex-center">
+          <span className="devtools-name">{name}</span>
+          <span className={`devtools-dot ${state}`} />
+          <span className="devtools-status">{statusText}</span>
         </div>
         {needsFix && (action || fix || docs) && (
-          <div className="rdy-fix flex-center">
+          <div className="devtools-fix flex-center">
             {action}
             {fix && <CopyCmd cmd={fix} />}
-            {docs && (
-              <button
-                type="button"
-                className="rdy-docs iflex-center"
-                onClick={() => void openExternal(docs)}
-              >
-                Setup guide
-                <Icon name="external" size={10} />
-              </button>
-            )}
+            {docs && <DocsLink url={docs} />}
           </div>
         )}
       </div>
     </div>
-  );
-}
-
-function CopyCmd({ cmd }: { cmd: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      className="rdy-cmd iflex-center"
-      title="Copy command"
-      onClick={() => {
-        void navigator.clipboard.writeText(cmd);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1200);
-      }}
-    >
-      <code>{cmd}</code>
-      <Icon name={copied ? "check" : "copy"} size={11} />
-    </button>
   );
 }

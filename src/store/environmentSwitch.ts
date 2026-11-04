@@ -51,7 +51,6 @@ const STASH_KEYS = [
   "focusedStepAgentId",
   "activeDraftId",
   "historyOpen",
-  "selectedHistoryAgentId",
   "projectScreenRepoPath",
   "attendedChatId",
   // The add-project popover: a way into the environment's own repos, so it
@@ -141,7 +140,6 @@ const BLANK: Pick<AppState, StashKey> = {
   focusedStepAgentId: null,
   activeDraftId: null,
   historyOpen: false,
-  selectedHistoryAgentId: null,
   projectScreenRepoPath: null,
   attendedChatId: null,
   addProjectOpen: false,

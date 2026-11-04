@@ -390,7 +390,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         selectedRunId: null,
         activeDraftId: null,
         historyOpen: false,
-        selectedHistoryAgentId: null,
         // A sub-agent thread belongs to the agent it was opened in.
         openThread: null,
         unseenResults,
@@ -405,7 +404,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       selectedAgentId: null,
       activeDraftId: null,
       historyOpen: false,
-      selectedHistoryAgentId: null,
       openThread: null,
       settingsScreenOpen: false,
       usageScreenOpen: false,
@@ -422,7 +420,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       selectedAgentId: null,
       activeDraftId: null,
       historyOpen: false,
-      selectedHistoryAgentId: null,
       openThread: null,
       settingsScreenOpen: false,
       usageScreenOpen: false,
@@ -976,7 +973,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
             }
           : s.workspace,
         historyOpen: false,
-        selectedHistoryAgentId: null,
         selectedAgentId: id,
       }));
       await refreshWorkspace(set);

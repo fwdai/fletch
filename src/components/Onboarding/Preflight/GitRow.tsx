@@ -6,9 +6,9 @@
 
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
+import { CopyCmd } from "@/components/ui/CopyCmd";
 import { DocsLink } from "@/components/ui/DocsLink";
 import { IS_MAC } from "@/util/platform";
-import { CopyCmd } from "../CopyCmd";
 import type { OnboardingSetup } from "../useSetup";
 import { CheckRow } from "./CheckRow";
 import type { CheckState } from "./usePreflight";

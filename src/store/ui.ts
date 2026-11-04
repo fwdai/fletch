@@ -62,9 +62,6 @@ export interface UiSlice {
    *  of the selected agent / draft. Treated as a separate "mode" that wins
    *  over `selectedAgentId` / `activeDraftId` for rendering. */
   historyOpen: boolean;
-  /** When in history mode, the archived agent whose chat preview is
-   *  being shown. `null` = list view. */
-  selectedHistoryAgentId: string | null;
   /** Full-screen project page (roadmap + settings). Replaces the workspace
    *  panes while non-null, like the settings screen. Keyed by the project's
    *  primary repo path — the screen resolves the project_id on open. */
@@ -154,7 +151,6 @@ export interface UiSlice {
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
   closeOnboarding: () => void;
   toggleHistory: (open?: boolean) => void;
-  selectHistoryAgent: (id: string | null) => void;
   /** Open the full-screen project page for a sidebar repo group, on `tab`
    *  (default: the roadmap). */
   openProjectScreen: (repoPath: string, tab?: ProjectScreenTab) => void;
@@ -212,7 +208,6 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   onboardingOpen: false,
   onboardingComplete: false,
   historyOpen: false,
-  selectedHistoryAgentId: null,
   projectScreenRepoPath: null,
   projectScreenTab: "roadmap",
   roadmapFocusCode: null,
@@ -287,14 +282,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     // not a banner.
     if (firstCompletion) void api.boxImageInstall().catch(() => {});
   },
-  toggleHistory: (open) =>
-    set((s) => {
-      const next = open ?? !s.historyOpen;
-      // Closing history clears any in-flight detail selection so the
-      // next open lands on the list.
-      return next ? { historyOpen: true } : { historyOpen: false, selectedHistoryAgentId: null };
-    }),
-  selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
+  toggleHistory: (open) => set((s) => ({ historyOpen: open ?? !s.historyOpen })),
   openProjectScreen: (repoPath, tab = "roadmap") => {
     // The project page opens on the roadmap, so it needs a host that drives
     // one; its settings sections gate themselves (`projectSettings`). The
