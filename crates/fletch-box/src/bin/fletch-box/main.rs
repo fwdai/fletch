@@ -270,18 +270,25 @@ async fn boot(args: BootArgs) -> Result<(), String> {
     }
 
     let policy = EgressPolicy::with_extra(&args.allow).map_err(|e| e.to_string())?;
-    let proxy = EgressProxy::start(&dir.join("egress.sock"), policy, |event| match event {
-        EgressEvent::Allowed {
-            host,
-            port,
-            bytes_up,
-            bytes_down,
-        } => println!("egress: allow {host}:{port} up {bytes_up} down {bytes_down}"),
-        EgressEvent::Denied { host, port, reason } => {
-            println!("egress: DENY {host}:{port} ({reason})")
-        }
-        EgressEvent::Error { message, .. } => println!("egress: error {message}"),
-    })
+    let proxy = EgressProxy::start(
+        &dir.join("egress.sock"),
+        policy,
+        fletch_box::egress::Mode::Refuse,
+        |event| match event {
+            EgressEvent::Allowed {
+                host,
+                port,
+                bytes_up,
+                bytes_down,
+                ..
+            } => println!("egress: allow {host}:{port} up {bytes_up} down {bytes_down}"),
+            EgressEvent::Denied { host, port, reason } => {
+                println!("egress: DENY {host}:{port} ({reason})")
+            }
+            EgressEvent::Held { host, port } => println!("egress: held {host}:{port}"),
+            EgressEvent::Error { message, .. } => println!("egress: error {message}"),
+        },
+    )
     .map_err(|e| format!("egress proxy: {e}"))?;
 
     let mut spec = VmSpec::new(&args.id, &args.image, &args.data, &dir.join("console.log"));
