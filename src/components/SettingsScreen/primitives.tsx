@@ -70,10 +70,14 @@ export function SetRow({
   title,
   sub,
   align,
+  compact,
   children,
 }: {
   /** Sits beside the title and description, spanning both. */
   icon?: ReactNode;
+  /** One tight line, title and description side by side: for a list of things
+   *  rather than a setting to read. */
+  compact?: boolean;
   title: ReactNode;
   /** Two lines at most. Leave it out when the title and control say enough. */
   sub?: ReactNode;
@@ -87,7 +91,11 @@ export function SetRow({
     </div>
   );
   return (
-    <div className={`set-row flex-center ${align === "start" ? "align-start" : ""}`}>
+    <div
+      className={`set-row flex-center ${align === "start" ? "align-start" : ""} ${
+        compact ? "compact" : ""
+      }`}
+    >
       {icon ? (
         <div className="set-row-lead flex-center">
           {icon}

@@ -16,7 +16,8 @@ function VmListRow({ row }: { row: VmRow }) {
   );
   return (
     <SetRow
-      icon={<IsolationIcon isolation={VM} boxPhase={row.phase ?? "stopped"} size={16} />}
+      compact
+      icon={<IsolationIcon isolation={VM} boxPhase={row.phase ?? "stopped"} size={14} />}
       title={row.agent.name}
       sub={[project, row.status].filter(Boolean).join(" · ")}
     >
