@@ -133,11 +133,22 @@ impl Guarantee {
                 "seatbelt does not restrict egress: its (allow default) leaves it open. Treat \
                  every agent on this Mac as network-capable",
             ),
-            // No network device: egress only through the host proxy's
-            // allow-list, per project. `Enforced` carries no note, so the
-            // allow-list is stated here, not in the panel; whether the panel
-            // should say it is still open.
-            (Self::ConfinedNetwork, Box) => Coverage::Enforced,
+            // No network device: egress only through the host proxy, under the
+            // posture the user set (`boxes::settings::EgressMode`). Open, the
+            // default, lets any host on ports 80 and 443 through and records
+            // it; the claim holds once the posture is tightened. The global
+            // posture is what this reads: a project may pick its own.
+            (Self::ConfinedNetwork, Box) => {
+                match super::boxes::settings::current().egress_mode {
+                    super::boxes::settings::EgressMode::Open => Coverage::Partial(
+                        "the Network posture is Open: any host on ports 80 and 443 passes through \
+                         the host proxy, telemetry included, and every connection is recorded on \
+                         Settings › Sandbox › Network. Pick Ask me or Allow list there to enforce \
+                         this; a project can pick its own on its page",
+                    ),
+                    _ => Coverage::Enforced,
+                }
+            }
 
             // Push/PR never run in the sandbox — they are brokered host-side
             // (`crate::rpc::git`), so no credential enters an agent's process.
