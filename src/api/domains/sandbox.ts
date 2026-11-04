@@ -1,5 +1,5 @@
-import { invoke, invokeLocal } from "../invoke";
-import type { ContainerAuthStatus, IsolationReport, PublishApproval } from "../types/sandbox";
+import { invoke } from "../invoke";
+import type { IsolationReport, PublishApproval } from "../types/sandbox";
 
 export const sandboxApi = {
   // What each engine actually guarantees, for the picker (`sandbox::guarantees`).
@@ -16,24 +16,4 @@ export const sandboxApi = {
   // that has just (re)connected to a host learns of one — gate it on
   // `hostSupports("approvals_list")`, since an older host answers `unknown op`.
   listPublishApprovals: () => invoke<PublishApproval[]>("approvals_list"),
-  // Anthropic auth for box agents: seatbelt agents keep the user's own claude
-  // login. The token is backend-owned
-  // (`claude_container_token` in the backend secret store, written by the
-  // set/clear commands below — never via a frontend `setSetting`).
-  getContainerAuthStatus: () => invoke<ContainerAuthStatus>("get_container_auth_status"),
-  setContainerAuthToken: (token: string) => invoke<void>("set_container_auth_token", { token }),
-  clearContainerAuthToken: () => invoke<void>("clear_container_auth_token"),
-  // Automated `claude setup-token` capture: drives the CLI under a PTY,
-  // surfaces the consent URL + auth-code prompt as `claude-setup:url` /
-  // `claude-setup:awaiting-code` events, and resolves once the token is stored.
-  // The token itself never crosses this boundary. See `useClaudeSetup`.
-  //
-  // Local whatever environment is active: this is a sign-in the user completes
-  // in this window, against a PTY on this machine, and its events arrive over
-  // the local bus. A remote host has its own setup token and its own way in
-  // (`fletch-host github login`), so following the active environment here would
-  // strand the flow the moment the user switched hosts.
-  connectClaudeContainerAuth: () => invokeLocal<void>("connect_claude_container_auth"),
-  submitClaudeSetupCode: (code: string) => invokeLocal<void>("submit_claude_setup_code", { code }),
-  cancelClaudeContainerAuth: () => invokeLocal<void>("cancel_claude_container_auth"),
 };

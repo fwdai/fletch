@@ -1,19 +1,18 @@
 //! Rust / Cargo detector.
 
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    DetectedConfig, DetectedRow, RowGroup, RunDetector, Tree, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
-use std::path::Path;
 
 pub struct RustDetector;
 
 impl RunDetector for RustDetector {
-    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
-        if !exists(checkout, "Cargo.toml") {
+    fn detect(&self, tree: &Tree) -> Option<DetectedConfig> {
+        if !tree.exists("Cargo.toml") {
             return None;
         }
-        let confidence = if exists(checkout, "Cargo.lock") {
+        let confidence = if tree.exists("Cargo.lock") {
             CONFIDENCE_LOCKFILE
         } else {
             CONFIDENCE_MANIFEST
@@ -23,7 +22,8 @@ impl RunDetector for RustDetector {
 
         // version: rust-toolchain.toml `channel`, or legacy bare
         // rust-toolchain file.
-        if let Some(channel) = read_trimmed(checkout, "rust-toolchain.toml")
+        if let Some(channel) = tree
+            .read_trimmed("rust-toolchain.toml")
             .and_then(|s| toml_string_value(&s, "channel"))
         {
             rows.push(DetectedRow::new(
@@ -33,7 +33,7 @@ impl RunDetector for RustDetector {
                 channel,
                 "rust-toolchain.toml · channel",
             ));
-        } else if let Some(channel) = read_trimmed(checkout, "rust-toolchain") {
+        } else if let Some(channel) = tree.read_trimmed("rust-toolchain") {
             rows.push(DetectedRow::new(
                 "version",
                 RowGroup::Environment,
@@ -97,12 +97,12 @@ fn toml_string_value(toml: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{fixture, val};
+    use super::super::test_support::{detect_in, val};
     use super::super::CONFIDENCE_LOCKFILE;
     use super::*;
 
     fn detect(files: &[(&str, &str)]) -> Option<DetectedConfig> {
-        RustDetector.detect(fixture(files).path())
+        detect_in(&RustDetector, files)
     }
 
     #[test]

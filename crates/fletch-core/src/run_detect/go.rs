@@ -1,17 +1,16 @@
 //! Go detector.
 
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    DetectedConfig, DetectedRow, RowGroup, RunDetector, Tree, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
-use std::path::Path;
 
 pub struct GoDetector;
 
 impl RunDetector for GoDetector {
-    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
-        let go_mod = read_trimmed(checkout, "go.mod")?;
-        let confidence = if exists(checkout, "go.sum") {
+    fn detect(&self, tree: &Tree) -> Option<DetectedConfig> {
+        let go_mod = tree.read_trimmed("go.mod")?;
+        let confidence = if tree.exists("go.sum") {
             CONFIDENCE_LOCKFILE
         } else {
             CONFIDENCE_MANIFEST
@@ -74,12 +73,12 @@ impl RunDetector for GoDetector {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{fixture, val};
+    use super::super::test_support::{detect_in, val};
     use super::super::CONFIDENCE_LOCKFILE;
     use super::*;
 
     fn detect(files: &[(&str, &str)]) -> Option<DetectedConfig> {
-        GoDetector.detect(fixture(files).path())
+        detect_in(&GoDetector, files)
     }
 
     #[test]

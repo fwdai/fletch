@@ -597,43 +597,6 @@
   color: var(--fg-2);
 }
 
-/* ── CLAUDE SETUP TOKEN (Sandbox › Claude auth) ─────────────────────── */
-.set-cauth-status {
-  color: var(--fg-2);
-  white-space: nowrap;
-}
-.set-cauth-status.connected {
-  color: var(--fg-1);
-}
-/* Modal internals; the dialog chrome reuses `.ghc-*` (GithubConnect.css). */
-.set-cauth-cmd {
-  gap: 6px;
-  padding: 4px 6px 4px 12px;
-  background: var(--bg-1);
-  border: 1px solid var(--bd);
-  border-radius: var(--r-sm);
-  color: var(--fg-1);
-}
-/* The token field uses the shared `TextInput` primitive; it only needs to fill
-   the dialog's centered column. */
-.set-cauth-input {
-  width: 100%;
-}
-/* Consent URL surfaced during the automated flow (fallback to the CLI's own
-   browser-open); mono + single-line with the tail elided so a ~250-char URL
-   doesn't blow out the dialog. The recognizable `https://claude.com/…` head
-   stays visible; Copy/Open carry the full value. */
-.set-cauth-url {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Muted per-phase status line ("Opening your browser…", "Verifying…"). */
-.set-cauth-note {
-  color: var(--fg-2);
-}
 /* Inline warning box, warn-tinted like the other inline banners. */
 .set-inline-warn {
   margin-top: 10px;

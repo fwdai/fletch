@@ -24,8 +24,18 @@
 #
 # Reproducible inputs: packages come from a snapshot.debian.org timestamp
 # (DEBIAN_SNAPSHOT), Node from one nodejs.org tarball checked against its
+# SHASUMS256 entry, Bun from one GitHub release zip checked against its
 # SHASUMS256 entry, every inode gets SOURCE_DATE_EPOCH, each image has a fixed
 # UUID. The same inputs and the same fletch-guest give the same images.
+#
+# Package managers: the base enables Node's corepack, so `pnpm` and `yarn` (and
+# `pnpx`, `yarnpkg`) are shims that run the version a project's package.json
+# `packageManager` names, fetched on first use through the box's egress proxy
+# — what the Run panel's detected `pnpm dev` / `yarn dev` run. Corepack
+# downloads with Node's own fetch, which takes the proxy from the env only
+# when told to, and the shims ask on a tty before a download; the host's guest
+# env sets both (NODE_USE_ENV_PROXY=1, COREPACK_ENABLE_DOWNLOAD_PROMPT=0,
+# `boxes::guest_env`). Bun is a binary of its own, in the devtools layer.
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -40,11 +50,15 @@ DEBIAN_SNAPSHOT=${DEBIAN_SNAPSHOT:-20261027T000000Z}
 NODE_VERSION=22.23.4
 NODE_SHA256_ARM64=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b
 NODE_SHA256_X64=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
+BUN_VERSION=1.4.4
+BUN_SHA256_ARM64=baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e
+BUN_SHA256_X64=e0446eb55995772eb9894bebae9a6be368d985a8b9271ee124486f9946eedd76
 # --- end pins ---
-# Debian's and Node's names for $ARCH.
+# Debian's, Node's and Bun's names for $ARCH. Bun's x64 build is the baseline
+# one: the plain build needs AVX2, which a VM is not guaranteed to show.
 case "$ARCH" in
-  aarch64) DEB_ARCH=arm64 NODE_ARCH=arm64 NODE_SHA256=$NODE_SHA256_ARM64 ;;
-  x86_64) DEB_ARCH=amd64 NODE_ARCH=x64 NODE_SHA256=$NODE_SHA256_X64 ;;
+  aarch64) DEB_ARCH=arm64 NODE_ARCH=arm64 NODE_SHA256=$NODE_SHA256_ARM64 BUN_ARCH=aarch64 BUN_SHA256=$BUN_SHA256_ARM64 ;;
+  x86_64) DEB_ARCH=amd64 NODE_ARCH=x64 NODE_SHA256=$NODE_SHA256_X64 BUN_ARCH=x64-baseline BUN_SHA256=$BUN_SHA256_X64 ;;
   *) echo "build.sh: images are built for aarch64 or x86_64, not $ARCH" >&2; exit 1 ;;
 esac
 GUEST=${FLETCH_GUEST:-$HERE/../../crates/fletch-guest/target/$ARCH-unknown-linux-musl/release/fletch-guest}
@@ -76,7 +90,7 @@ OUT=$(cd "$OUT" && pwd)
 echo "== installing build tools"
 export DEBIAN_FRONTEND=noninteractive
 apt-get -qq update
-apt-get -qq install -y --no-install-recommends mmdebstrap erofs-utils jq xz-utils curl ca-certificates rsync >/dev/null
+apt-get -qq install -y --no-install-recommends mmdebstrap erofs-utils jq xz-utils unzip curl ca-certificates rsync >/dev/null
 
 pkgs() { grep -v '^\s*#' "$HERE/packages/$1.txt" | grep -v '^\s*$' | paste -sd, -; }
 # The dpkg rules as --dpkgopt arguments. They hold globs, so `set -f` guards
@@ -122,6 +136,13 @@ rm -f "$ROOT/usr/local/CHANGELOG.md" "$ROOT/usr/local/README.md" "$ROOT/usr/loca
 rm -rf "$ROOT/usr/local/share/doc" "$ROOT/usr/local/share/man" "$ROOT/usr/local/lib/node_modules/npm/docs"
 rm -rf "$WORK/node-include"
 mv "$ROOT/usr/local/include" "$WORK/node-include"
+# pnpm and yarn as corepack's shims beside node: `corepack enable` links them
+# into the bin dir it runs from, relative, so the links hold in the image.
+echo "== enabling corepack (pnpm, yarn)"
+chroot "$ROOT" /usr/local/bin/corepack enable
+for shim in pnpm pnpx yarn yarnpkg; do
+  [ -L "$ROOT/usr/local/bin/$shim" ] || { echo "build.sh: corepack enable left no $shim shim" >&2; exit 1; }
+done
 
 echo "== adding Fletch files"
 cp -R "$HERE/rootfs/." "$ROOT/"
@@ -147,7 +168,7 @@ printf '127.0.0.1\tlocalhost fletch-box\n::1\tlocalhost\n' > "$ROOT/etc/hosts"
 # unused and would make the image differ per build.
 rm -f "$ROOT"/etc/ssh/ssh_host_*
 : > "$ROOT/etc/machine-id"
-echo "fletch-box-image $VERSION ($ARCH, debian $SUITE @ $DEBIAN_SNAPSHOT, node $NODE_VERSION)" > "$ROOT/etc/fletch-image"
+echo "fletch-box-image $VERSION ($ARCH, debian $SUITE @ $DEBIAN_SNAPSHOT, node $NODE_VERSION, bun $BUN_VERSION in devtools)" > "$ROOT/etc/fletch-image"
 
 echo "== cleaning the base"
 clean_tree "$ROOT"
@@ -182,12 +203,21 @@ for layer in $LAYERS; do
   : > "$LR/etc/resolv.conf"
   if [ "$layer" = devtools ]; then
     cp -a "$WORK/node-include" "$LR/usr/local/include"
+    echo "== installing Bun $BUN_VERSION (devtools layer)"
+    zip="$WORK/bun-$BUN_VERSION-$BUN_ARCH.zip"
+    [ -f "$zip" ] || curl -fsSL -o "$zip" "https://github.com/oven-sh/bun/releases/download/bun-v$BUN_VERSION/bun-linux-$BUN_ARCH.zip"
+    echo "$BUN_SHA256  $zip" | sha256sum -c - >/dev/null
+    rm -rf "$WORK/bun"
+    unzip -q "$zip" -d "$WORK/bun"
+    install -m 755 "$WORK/bun/bun-linux-$BUN_ARCH/bun" "$LR/usr/local/bin/bun"
+    ln -s bun "$LR/usr/local/bin/bunx"
   fi
   clean_tree "$LR"
   pin_times "$LR"
   chroot "$LR" /usr/bin/fc-cache -s -f
   chroot "$LR" dpkg-query -W -f '${binary:Package}=${Version}\n' | LC_ALL=C sort > "$WORK/$layer.allpkgs"
   LC_ALL=C comm -13 "$WORK/base.pkgs" "$WORK/$layer.allpkgs" > "$WORK/$layer.pkgs"
+  [ "$layer" = devtools ] && echo "bun=$BUN_VERSION" >> "$WORK/$layer.pkgs"
 
   # The delta: what the layer tree has that the base has not, byte for byte
   # (-c). The package databases, apt state and logs stay with the base; the

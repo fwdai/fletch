@@ -126,7 +126,6 @@ describe("host-owned settings", () => {
     for (const key of [
       "github_token",
       "linear_token",
-      "claude_container_token",
       "telemetry_enabled",
       "telemetry_distinct_id",
       "remote.enabled",

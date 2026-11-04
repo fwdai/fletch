@@ -103,8 +103,17 @@ PAGE='<body style="font:32px sans-serif">Hello 你好 Привет 😀 <canvas 
 # ------------------------------------------------------------ base + devtools (the default)
 say "configuration: base + devtools"
 assemble devtools
-check T-base-tools "bash, git, rg, curl, jq, node, npm present" -- \
-  agent_sh 'bash --version | head -1 && git --version && rg --version | head -1 && curl --version | head -1 && jq --version && node -v && npm -v'
+check T-base-tools "bash, git, rg, curl, jq, node, npm, corepack present" -- \
+  agent_sh 'bash --version | head -1 && git --version && rg --version | head -1 && curl --version | head -1 && jq --version && node -v && npm -v && corepack --version'
+# The Run panel's detected commands for a pnpm or yarn project: corepack's
+# shims fetch the manager a package.json names and run it.
+check T-base-pm "pnpm and yarn run through corepack's shims, the version a project pins" -- \
+  agent_sh 'set -e; test -L /usr/local/bin/pnpm && test -L /usr/local/bin/yarn && test -L /usr/local/bin/pnpx && test -L /usr/local/bin/yarnpkg
+cd $(mktemp -d); echo "{\"name\":\"t\",\"packageManager\":\"pnpm@10.0.0\",\"scripts\":{\"v\":\"pnpm --version\"}}" > package.json
+v=$(pnpm --version); [ "$v" = 10.0.0 ] || { echo "pnpm ran $v, not the pinned 10.0.0"; exit 1; }
+echo "{\"name\":\"t\",\"packageManager\":\"yarn@1.22.22\"}" > package.json
+y=$(yarn --version); [ "$y" = 1.22.22 ] || { echo "yarn ran $y, not the pinned 1.22.22"; exit 1; }
+echo "pnpm $v, yarn $y, as pinned"'
 check T-git "git init, commit and log work as agent" -- \
   agent_sh 'cd $(mktemp -d) && git init -q . && git -c user.email=a@b -c user.name=a commit -q --allow-empty -m x && git log --oneline | head -1'
 check T-sshd "sshd -t with the box config and a host key under /data/ssh; sshd user exists; no systemd" -- \
@@ -126,6 +135,8 @@ check T-fonts "fontconfig resolves sans-serif, emoji and CJK on the base fonts" 
   agent_sh 'fc-match sans-serif && fc-match emoji && fc-match "sans-serif:lang=zh" && fc-list | wc -l'
 check T-dev-gcc "devtools: gcc compiles and runs a C program" -- \
   agent_sh 'cd $(mktemp -d) && printf "#include <stdio.h>\nint main(){puts(\"hello from gcc\");return 0;}\n" > h.c && gcc -O2 h.c -o h && ./h && g++ --version | head -1'
+check T-dev-bun "devtools: bun runs a script and bunx is beside it" -- \
+  agent_sh 'cd $(mktemp -d) && echo "console.log(\"hi from bun \" + Bun.version)" > h.ts && bun run h.ts && test -L /usr/local/bin/bunx && bunx --version'
 check T-dev-python "devtools: python3 with ssl, sqlite3, pip and venv" -- \
   agent_sh 'python3 -c "import ssl, sqlite3, json; print(\"py ok\")" && pip --version && python3 -m venv /tmp/venv && /tmp/venv/bin/python -c "print(\"venv ok\")"'
 check T-ldd "no missing shared libraries for python3, gcc, node, git, sshd, rg through the overlay" -- \
@@ -186,8 +197,8 @@ check T-ldd-browser "the browser resolves every library through the overlay" -- 
 # ------------------------------------------------------------ base only: the agent CLIs
 say "configuration: base only"
 assemble
-check T-base-only-no-dev "gcc and python3 are absent on the base alone" -- \
-  sh -c "! test -e $M/usr/bin/gcc && ! test -e $M/usr/bin/python3 && echo absent"
+check T-base-only-no-dev "gcc, python3 and bun are absent on the base alone" -- \
+  sh -c "! test -e $M/usr/bin/gcc && ! test -e $M/usr/bin/python3 && ! test -e $M/usr/local/bin/bun && echo absent"
 if [ "$WITH_AGENTS" = 1 ]; then
   check T-agents-claude "Claude Code installs and starts on the base" -- \
     agent_sh 'set -e; P=/tmp/t/claude; mkdir -p $P; npm install -g --prefix $P --cache /tmp/npm-cache --no-fund --no-audit --silent @anthropic-ai/claude-code@latest; $P/bin/claude --version'

@@ -26,6 +26,8 @@
 //!   waits on them.
 //! - [`ssh_access`]: the user's own ssh client reaching a box, for an
 //!   editor's remote mode.
+//! - [`run`]: the Run panel's process in the guest, its port forwarded to
+//!   the host.
 //!
 //! Host-side layout per box (`~/.fletch/[dev/]boxes/<agent id>/`, a sibling of
 //! the workspaces root rather than inside it, so no host file sits under a path
@@ -75,10 +77,11 @@
 //! tmpfs mounts) and the network namespace, which is the guest's.
 //!
 //! What touches a checkout from the host goes through the seam, or asks
-//! [`box_holding`] and refuses with the reason. Not in the guest yet, each
-//! refusing or skipping rather than acting on the host's empty placeholder:
-//! the Run panel (`supervisor::run`), verification (`verify`) and workflow
-//! step agents (`BoxEngine::launch_agent` refuses a blackboard). Codegraph
+//! [`box_holding`] and refuses with the reason. The Run panel's process runs
+//! in the guest as a launch of the box, its port forwarded to the host
+//! ([`run`]). Not in the guest yet, each refusing or skipping rather than
+//! acting on the host's empty placeholder: verification (`verify`) and
+//! workflow step agents (`BoxEngine::launch_agent` refuses a blackboard). Codegraph
 //! runs in the guest from the tools disk ([`codegraph_bin`]), the attribution
 //! hook refresh reaches the guest through the seam (`attribution::
 //! refresh_hooks`), and a turn checkpoint crosses the box boundary through
@@ -100,6 +103,7 @@ pub mod mirror;
 pub mod provision;
 pub mod registry;
 pub mod relay;
+pub mod run;
 pub mod settings;
 pub mod setup;
 pub mod ssh_access;
@@ -491,6 +495,14 @@ pub struct BoxEngine {
     /// Every live launch's files in its guest, by launch id: written and
     /// removed under each one's own lock ([`launch_files::LaunchFiles`]).
     files: Mutex<std::collections::HashMap<String, Arc<launch_files::LaunchFiles>>>,
+    /// The port forward of every live Run launch, by launch id
+    /// ([`run::GuestRun`]): dropped, and so ended, by the launch's kill.
+    forwards: Mutex<std::collections::HashMap<String, fletch_box::Forward>>,
+    /// Every live Run launch, by launch id, with its copy-on-write stores
+    /// ([`run::GuestRun`]): its kill ends the command's process group in the
+    /// guest itself, rather than leave that to the tty hangup the ssh
+    /// client's end causes, and removes the stores.
+    runs: Mutex<std::collections::HashMap<String, PathBuf>>,
 }
 
 impl BoxEngine {
@@ -501,9 +513,30 @@ impl BoxEngine {
                 Arc::new(BoxEngine {
                     pending: Mutex::new(std::collections::HashMap::new()),
                     files: Mutex::new(std::collections::HashMap::new()),
+                    forwards: Mutex::new(std::collections::HashMap::new()),
+                    runs: Mutex::new(std::collections::HashMap::new()),
                 })
             })
             .clone()
+    }
+
+    /// Keep `forward` for as long as launch `launch_id` lives: its kill drops
+    /// it ([`SandboxEngine::kill`]).
+    fn park_forward(&self, launch_id: &str, forward: fletch_box::Forward) {
+        self.forwards
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(launch_id.to_string(), forward);
+    }
+
+    /// Launch `launch_id` is a Run with its copy-on-write stores at `stores`:
+    /// its kill ends its process group in the guest and removes the stores
+    /// ([`run::end_in_guest`]).
+    fn note_run(&self, launch_id: &str, stores: PathBuf) {
+        self.runs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(launch_id.to_string(), stores);
     }
 }
 
@@ -1511,6 +1544,7 @@ impl SandboxEngine for BoxEngine {
     /// the session's processes are doing: none of them writes those files.
     /// The CLI's credential changes were written back as each process exited
     /// (`after_exit`), never here, where the process may still be running.
+    /// A Run launch's port forward ends here too ([`run::GuestRun`]).
     fn kill(&self, plan: &KillPlan) -> Result<()> {
         let KillPlan::Box {
             agent_id,
@@ -1520,6 +1554,13 @@ impl SandboxEngine for BoxEngine {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(launch_id);
+        // Dropped: ssh is killed, and the host port is free again.
+        drop(
+            self.forwards
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(launch_id),
+        );
         let files = self
             .files
             .lock()
@@ -1528,6 +1569,17 @@ impl SandboxEngine for BoxEngine {
             .unwrap_or_else(|| Arc::new(launch_files::LaunchFiles::new(launch_id)));
         let registry = BoxRegistry::global();
         let channel = registry.channel_for_running(agent_id).ok();
+        // A Run's command is ended in the guest first, by name: a stop must
+        // not depend on what its process tree makes of the tty hangup that
+        // follows, and a stopped box has nothing left to end.
+        let run = self
+            .runs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(launch_id);
+        if let (Some(stores), Some(channel)) = (run, &channel) {
+            run::end_in_guest(channel, launch_id, Some(&stores));
+        }
         files.close(|stem| {
             if let Some(channel) = &channel {
                 let stem = stem.to_string_lossy();
@@ -1627,6 +1679,14 @@ pub fn guest_env(provider: &str, home: &Path) -> Vec<(String, String)> {
         ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
         ("no_proxy".into(), "127.0.0.1,localhost".into()),
         ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+        // Node's own `fetch` takes the proxy from the env only when told to;
+        // a box has no other way out (no DNS in the guest), and corepack —
+        // the image's pnpm and yarn — downloads through nothing else.
+        ("NODE_USE_ENV_PROXY".into(), "1".into()),
+        // Corepack's shims ask on a tty before they download the version a
+        // project pins; nothing in a box answers a prompt (the Run panel's
+        // tty least of all), and the image put the shims there to download.
+        ("COREPACK_ENABLE_DOWNLOAD_PROMPT".into(), "0".into()),
     ]
 }
 

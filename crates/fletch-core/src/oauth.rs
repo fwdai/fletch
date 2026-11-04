@@ -298,8 +298,8 @@ pub async fn device_login(
     // https transport from now on. A failed write fails the sign-in: the
     // store is the Keychain on release macOS, which can refuse writes (e.g.
     // locked keychain), and proceeding would look signed in until quit, then
-    // silently sign out on next launch. Same posture as
-    // `store_container_token`; the mirror is only set once storage succeeded.
+    // silently sign out on next launch. The mirror is only set once storage
+    // succeeded.
     if provider == "github" {
         crate::secrets::set(&db.lock(), crate::github::TOKEN_SETTING, &access_token)
             .map_err(|e| format!("couldn't save your GitHub login: {e}"))?;

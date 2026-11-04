@@ -1643,7 +1643,7 @@ impl BoxRegistry {
     /// a stop records is taken only then, since a session still running in
     /// the guest could change its checkouts between the read and the halt.
     /// With no record its agent is not auto-archived until a later stop.
-    fn nothing_attached(&self, agent_id: &str) -> bool {
+    pub(super) fn nothing_attached(&self, agent_id: &str) -> bool {
         self.entries
             .lock()
             .get(agent_id)

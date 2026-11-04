@@ -95,7 +95,8 @@ impl RunDispatcher {
             "app_start",
             &json!({
                 "phase": after.phase,
-                "port": after.port,
+                "port": after.guest_port.or(after.port),
+                "host_port": after.port,
                 "already_running": already_running,
                 "exited": exited,
                 "last_error": after.last_error,
@@ -124,7 +125,11 @@ impl RunDispatcher {
             "app_status",
             &json!({
                 "phase": state.phase,
-                "port": state.port,
+                // Where the server listens, which is where the agent is: in
+                // a box, the guest. `host_port` is the user's port on the
+                // Mac — what to tell them to open, not what to curl.
+                "port": state.guest_port.or(state.port),
+                "host_port": state.port,
                 "last_error": state.last_error,
                 "log_bytes": state.log.len(),
             }),
@@ -265,13 +270,60 @@ pub(crate) fn tail_lines(log: &str, lines: usize, raw: bool) -> (String, bool) {
     (all[skip..].join("\n"), skip > 0)
 }
 
+/// Strip ANSI/VT control sequences (CSI, OSC, and two-byte escapes), preserving
+/// the surrounding UTF-8 bytes intact. Escape sequences are pure ASCII, so we
+/// can drop them at the byte level without splitting a multibyte char.
+fn strip_ansi(input: &str) -> String {
+    let b = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == 0x1b {
+            i += 1;
+            let Some(&kind) = b.get(i) else { break };
+            match kind {
+                b'[' => {
+                    // CSI: params/intermediates until a final byte in @..~.
+                    i += 1;
+                    while i < b.len() && !(0x40..=0x7e).contains(&b[i]) {
+                        i += 1;
+                    }
+                    if i < b.len() {
+                        i += 1;
+                    }
+                }
+                b']' => {
+                    // OSC: until BEL, or ST (ESC \).
+                    i += 1;
+                    while i < b.len() && b[i] != 0x07 {
+                        if b[i] == 0x1b && b.get(i + 1) == Some(&b'\\') {
+                            i += 1;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    if i < b.len() {
+                        i += 1; // consume the BEL / the `\` of ST
+                    }
+                }
+                // Two-byte escape (e.g. ESC 7 save-cursor, ESC = keypad mode).
+                _ => i += 1,
+            }
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// A PTY transcript as plain lines: ANSI stripped, `\r\n` as a line break,
 /// and a bare `\r` as the overwrite it is — what follows the last one on a
 /// line replaces what came before. A `\r` with nothing after it yet (a
 /// progress line caught mid-update) only moved the cursor, so the text
 /// before it is what the terminal still shows.
 fn plain_text(log: &str) -> String {
-    let stripped = crate::sandbox::provider::setup_token::strip_ansi(log);
+    let stripped = strip_ansi(log);
     stripped
         .replace("\r\n", "\n")
         .lines()
@@ -287,6 +339,19 @@ fn plain_text(log: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_ansi_removes_csi_osc_and_two_byte_escapes() {
+        // ESC7 / ESC8 (two-byte), a CSI cursor move, and an OSC title with BEL.
+        let raw = "\x1b7\x1b[9GWelcome\x1b]0;title\x07 to\x1b[0m Claude";
+        assert_eq!(strip_ansi(raw), "Welcome to Claude");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_multibyte_content() {
+        // Braille/block spinner glyphs must survive byte-level escape stripping.
+        assert_eq!(strip_ansi("\x1b[2K✳ ░█▓"), "✳ ░█▓");
+    }
     use parking_lot::Mutex;
 
     /// A run the test scripts: `start` moves to `next_phase` with `port`,
@@ -306,6 +371,7 @@ mod tests {
                     phase: RunPhase::Idle,
                     last_error: None,
                     port: None,
+                    guest_port: None,
                     log: Vec::new(),
                     log_seq: 0,
                 }),
@@ -334,6 +400,7 @@ mod tests {
             }
             s.phase = self.next_phase;
             s.port = self.port;
+            s.guest_port = None;
             Ok(())
         }
         fn stop(&self, _agent_id: &str) -> Result<()> {
@@ -341,6 +408,7 @@ mod tests {
             let mut s = self.state.lock();
             s.phase = RunPhase::Stopped;
             s.port = None;
+            s.guest_port = None;
             Ok(())
         }
         fn state(&self, _agent_id: &str) -> RunStateSnapshot {

@@ -456,9 +456,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // A box launch signs in with the host's login, so nothing reads the claude
     // setup token past versions stored. Delete it rather than leave a live
     // credential behind.
-    if let Err(e) = secrets::delete(&db.lock(), "claude_container_token") {
-        tracing::warn!(error = %e, "the retired claude setup token was not deleted");
-    }
+    delete_retired_secret(&db, "claude_container_token");
 
     // Unified git resolution: point the portable-install root at app data, wire
     // the fallback commit identity to the signed-in profile, and kick off
@@ -809,21 +807,54 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
 /// init, never written by the engine.
 pub const ONBOARDING_COMPLETE_SETTING: &str = "onboardingComplete";
 
-/// Startup seed retry pacing for an unavailable secret store: start at 30s (the
+/// Startup retry pacing for an unavailable secret store: start at 30s (the
 /// realistic case — a login-item launch racing the keychain unlock — resolves
 /// quickly) and back off to a slow probe that never gives up. An unavailable
 /// store must stay distinct from "no token" for the app's whole lifetime, not
 /// just a startup window: a saved login must never read as signed-out only
 /// because the keychain stayed locked past some deadline.
-const SECRET_SEED_RETRY_START: std::time::Duration = std::time::Duration::from_secs(30);
-const SECRET_SEED_RETRY_CAP: std::time::Duration = std::time::Duration::from_secs(300);
+const SECRET_RETRY_START: std::time::Duration = std::time::Duration::from_secs(30);
+const SECRET_RETRY_CAP: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Call `attempt` at that pace until it reports it is done.
+async fn retry_secret_store(mut attempt: impl FnMut() -> bool) {
+    let mut delay = SECRET_RETRY_START;
+    loop {
+        tokio::time::sleep(delay).await;
+        if attempt() {
+            return;
+        }
+        delay = (delay * 2).min(SECRET_RETRY_CAP);
+    }
+}
+
+/// Delete a secret nothing reads any more. An unavailable store retries in the
+/// background until the delete lands: trying once per launch could never land
+/// for a login item that races the keychain unlock every time, and would leave
+/// a live credential (and any plaintext row, which `secrets::delete` only
+/// reaches past the keychain) behind.
+fn delete_retired_secret(db: &Db, key: &'static str) {
+    let db = db.clone();
+    if let Some(retry) = delete_or_retry(key, move || secrets::delete(&db.lock(), key)) {
+        crate::host::spawn(retry);
+    }
+}
+
+/// Run `delete`, and hand back what finishes the job if it failed.
+fn delete_or_retry(
+    key: &str,
+    mut delete: impl FnMut() -> crate::error::Result<()> + Send + 'static,
+) -> Option<impl std::future::Future<Output = ()> + Send + 'static> {
+    let e = delete().err()?;
+    tracing::warn!(key, error = %e, "secret store unavailable at startup; retrying the delete");
+    Some(retry_secret_store(move || delete().is_ok()))
+}
 
 /// Seed an in-process secret mirror from the store at startup. A definitive
 /// answer (present or absent) applies immediately; an *unavailable* store
 /// (`Err` — e.g. the keychain is locked) retries in the background until it gets
 /// one. `apply` must be the mirror's `seed_*` variant (`github::seed_token`,
-/// `linear::seed_token`, `provider::auth::seed_stored_token`), which no-ops once
-/// any explicit set has run — a connect/disconnect that lands while a retry is
+/// `linear::seed_token`), which no-ops once any explicit set has run — a connect/disconnect that lands while a retry is
 /// pending must win over the (possibly stale) value that retry read.
 fn seed_secret_mirror(db: &Db, key: &'static str, apply: fn(Option<String>)) {
     match secrets::get(&db.lock(), key) {
@@ -831,23 +862,21 @@ fn seed_secret_mirror(db: &Db, key: &'static str, apply: fn(Option<String>)) {
         Err(e) => {
             tracing::warn!(key, error = %e, "secret store unavailable at startup; retrying");
             let db = db.clone();
-            crate::host::spawn(async move {
-                let mut delay = SECRET_SEED_RETRY_START;
-                loop {
-                    tokio::time::sleep(delay).await;
-                    match secrets::get(&db.lock(), key) {
-                        // A definitive answer ends the retry either way; the
-                        // seed fn itself refuses to apply over an explicit set
-                        // that happened while we waited (the mirror's seal), so
-                        // a late read can't clobber fresher state. Applying a
-                        // late None is skipped outright — the mirror already
-                        // defaults to empty.
-                        Ok(Some(value)) => return apply(Some(value)),
-                        Ok(None) => return,
-                        Err(_) => delay = (delay * 2).min(SECRET_SEED_RETRY_CAP),
+            crate::host::spawn(retry_secret_store(move || {
+                match secrets::get(&db.lock(), key) {
+                    // A definitive answer ends the retry either way; the seed
+                    // fn itself refuses to apply over an explicit set that
+                    // happened while we waited (the mirror's seal), so a late
+                    // read can't clobber fresher state. Applying a late None is
+                    // skipped outright — the mirror already defaults to empty.
+                    Ok(Some(value)) => {
+                        apply(Some(value));
+                        true
                     }
+                    Ok(None) => true,
+                    Err(_) => false,
                 }
-            });
+            }));
         }
     }
 }
@@ -980,6 +1009,66 @@ mod tests {
     }
 
     /// The desktop moves its whole config onto the boot thread.
+    /// The store can stay locked for hours, so the retry backs off to its cap
+    /// and keeps going rather than giving up: a retired credential has to go
+    /// eventually, and a saved login must not read as signed out.
+    #[tokio::test(start_paused = true)]
+    async fn a_secret_store_retry_backs_off_to_its_cap_and_never_gives_up() {
+        let start = tokio::time::Instant::now();
+        let mut waits = Vec::new();
+        let mut last = start;
+        retry_secret_store(|| {
+            let now = tokio::time::Instant::now();
+            waits.push((now - last).as_secs());
+            last = now;
+            waits.len() == 7
+        })
+        .await;
+        assert_eq!(waits, [30, 60, 120, 240, 300, 300, 300]);
+    }
+
+    /// A delete that lands first time leaves nothing to do.
+    #[test]
+    fn a_delete_that_lands_needs_no_retry() {
+        assert!(delete_or_retry("k", || Ok(())).is_none());
+    }
+
+    /// A locked keychain fails the delete at launch: it keeps being tried until
+    /// it lands, and stops there.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_delete_is_retried_until_it_lands() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = attempts.clone();
+        let retry = delete_or_retry("k", move || {
+            let attempt = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if attempt < 4 {
+                Err(crate::error::Error::Other("keychain locked".into()))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("the first attempt failed");
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        retry.await;
+
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 4);
+    }
+
+    /// A secret nothing reads goes at boot, its plaintext row with it.
+    #[test]
+    fn a_retired_secret_is_deleted() {
+        let db = crate::workspace::tests::test_db();
+        crate::secrets::set(&db.lock(), "retired-secret-test", "sk-ant-oat-old").unwrap();
+
+        delete_retired_secret(&db, "retired-secret-test");
+
+        assert_eq!(
+            crate::secrets::get(&db.lock(), "retired-secret-test").unwrap(),
+            None
+        );
+    }
+
     #[test]
     fn a_boot_config_can_cross_threads() {
         fn assert_send<T: Send>() {}

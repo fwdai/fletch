@@ -1,6 +1,5 @@
-/* App-level GitHub connect modal (see components/GithubConnect/index.tsx), and
-   the container-auth modal that reuses this content vocabulary. The shell,
-   header, centered body and shared pieces (`.modal-error`, `.modal-actions`)
+/* App-level GitHub connect modal (see components/GithubConnect/index.tsx). The
+   shell, header, centered body and shared pieces (`.modal-error`, `.modal-actions`)
    come from the `Modal` primitive (`<Modal size="sm">` + `<ModalBody center>`,
    see ui/Modal.css). */
 .ghc-lede {
