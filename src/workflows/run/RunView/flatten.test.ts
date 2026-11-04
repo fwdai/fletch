@@ -9,6 +9,11 @@ function spec(workflow: Block[]): Spec {
   return { version: 1, name: "s", agents: { a: { base: "claude" } }, workflow };
 }
 
+/** A block only a retired run's frozen snapshot still holds. */
+function legacy(block: unknown): Block {
+  return block as Block;
+}
+
 describe("flattenSteps", () => {
   it("lists the steps in document order with their gate kind", () => {
     const steps = flattenSteps(
@@ -19,9 +24,9 @@ describe("flattenSteps", () => {
       ]),
     );
     expect(steps).toEqual([
-      { id: "plan", agentAlias: "a", goal: "plan it", gate: "verdict" },
-      { id: "code", agentAlias: "a", goal: "build it", gate: "commit" },
-      { id: "check", agentAlias: "a", goal: "check it", gate: undefined },
+      { id: "plan", agentAlias: "a", goal: "plan it", gate: "verdict", block: 0, position: 0 },
+      { id: "code", agentAlias: "a", goal: "build it", gate: "commit", block: 1, position: 0 },
+      { id: "check", agentAlias: "a", goal: "check it", gate: undefined, block: 2, position: 0 },
     ]);
   });
 
@@ -35,7 +40,7 @@ describe("flattenSteps", () => {
     // verbatim, and its nested steps have attempts to label and order.
     const old = spec([
       { step: { id: "plan", agent: "a", goal: "g" } },
-      {
+      legacy({
         loop: {
           max: 2,
           until: { step: "check" },
@@ -44,32 +49,73 @@ describe("flattenSteps", () => {
             { step: { id: "check", agent: "a", goal: "g" } },
           ],
         },
-      } as unknown as Block,
-      {
+      }),
+      legacy({
         parallel: {
           steps: [
             { id: "review", agent: "a", goal: "g" },
             { id: "test", agent: "a", goal: "g" },
           ],
         },
-      } as unknown as Block,
-      {
-        orchestrate: {
-          agent: "a",
-          goal: "g",
-          body: [{ id: "child", agent: "a", goal: "g" }],
-        },
-      } as unknown as Block,
+      }),
       { step: { id: "ship", agent: "a", goal: "g" } },
     ]);
-    expect(flattenSteps(old).map((s) => s.id)).toEqual([
-      "plan",
-      "code",
-      "check",
+    const steps = flattenSteps(old);
+    expect(steps.map((s) => s.id)).toEqual(["plan", "code", "check", "review", "test", "ship"]);
+    // Block and position carry the container structure the thread orders by.
+    expect(steps.map((s) => [s.block, s.position])).toEqual([
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [2, 0],
+      [2, 1],
+      [3, 0],
+    ]);
+  });
+
+  it("names the stages a retired run created beside its spec, only when they ran", () => {
+    const old = spec([
+      legacy({
+        parallel: {
+          steps: [{ id: "review", agent: "a", goal: "g" }],
+        },
+      }),
+      legacy({
+        orchestrate: {
+          agent: "lead",
+          goal: "coordinate",
+          body: [{ id: "child-a", agent: "a", goal: "g" }],
+          children: { agent: "worker", max: 3 },
+        },
+      }),
+    ]);
+    // Without attempts only the spec's own steps and the orchestrator exist.
+    expect(flattenSteps(old).map((s) => s.id)).toEqual(["review", "orchestrate-1", "child-a"]);
+
+    const attempts = [
+      { step_id: "orchestrate-1::dyn-1" },
+      { step_id: "orchestrate-1::dyn-0" },
+      { step_id: "__merge_0" },
+      { step_id: "review" },
+    ];
+    const steps = flattenSteps(old, attempts);
+    expect(steps.map((s) => s.id)).toEqual([
       "review",
-      "test",
-      "child",
-      "ship",
+      "__merge_0",
+      "orchestrate-1",
+      "child-a",
+      "orchestrate-1::dyn-0",
+      "orchestrate-1::dyn-1",
+    ]);
+    expect(steps.find((s) => s.id === "orchestrate-1")?.agentAlias).toBe("lead");
+    expect(steps.find((s) => s.id === "orchestrate-1::dyn-0")?.agentAlias).toBe("worker");
+    expect(steps.map((s) => [s.block, s.position])).toEqual([
+      [0, 0],
+      [0, 1],
+      [1, 0],
+      [1, 1],
+      [1, 2],
+      [1, 3],
     ]);
   });
 });

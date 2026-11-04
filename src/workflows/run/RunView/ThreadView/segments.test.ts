@@ -10,9 +10,9 @@ import { flattenSteps, type StepDesc } from "../flatten";
 import { deriveSegments, liveAgent } from "./segments";
 
 const steps: StepDesc[] = [
-  { id: "plan", agentAlias: "a", goal: "" },
-  { id: "code", agentAlias: "b", goal: "" },
-  { id: "review", agentAlias: "c", goal: "" },
+  { id: "plan", agentAlias: "a", goal: "", block: 0, position: 0 },
+  { id: "code", agentAlias: "b", goal: "", block: 1, position: 0 },
+  { id: "review", agentAlias: "c", goal: "", block: 2, position: 0 },
 ];
 
 function exec(over: Partial<WfStepExec> & { id: string; step_id: string }): WfStepExec {
@@ -138,6 +138,75 @@ describe("deriveSegments", () => {
     expect(segments.map((s) => s.exec.id)).toEqual(["e1", "e2", "e3", "e4"]);
     expect(segments.map((s) => s.stepIndex)).toEqual([0, 1, 2, 3]);
     expect(segments.map((s) => s.step?.agentAlias)).toEqual(["a", "b", "a", "a"]);
+  });
+
+  it("replays an archived loop as the engine ran it: whole body per iteration", () => {
+    // The retired engine ran `[review, fix]` twice: review(0), fix(0),
+    // review(1), fix(1). Grouping by step would tell that story out of order.
+    const old: Spec = {
+      version: 1,
+      name: "s",
+      agents: { a: { base: "claude" } },
+      workflow: [
+        { step: { id: "plan", agent: "a", goal: "" } },
+        {
+          loop: {
+            max: 2,
+            until: { step: "review" },
+            body: [
+              { step: { id: "review", agent: "a", goal: "" } },
+              { step: { id: "fix", agent: "a", goal: "" } },
+            ],
+          },
+        } as unknown as Block,
+        { step: { id: "ship", agent: "a", goal: "" } },
+      ],
+    };
+    const rows = [
+      exec({ id: "fix-1", step_id: "fix", iteration: 1 }),
+      exec({ id: "review-0", step_id: "review", iteration: 0 }),
+      exec({ id: "ship", step_id: "ship" }),
+      exec({ id: "fix-0", step_id: "fix", iteration: 0 }),
+      exec({ id: "review-1", step_id: "review", iteration: 1 }),
+      exec({ id: "plan", step_id: "plan" }),
+    ];
+    expect(deriveSegments(flattenSteps(old), rows, []).map((s) => s.exec.id)).toEqual([
+      "plan",
+      "review-0",
+      "fix-0",
+      "review-1",
+      "fix-1",
+      "ship",
+    ]);
+  });
+
+  it("seats an archived orchestrator and its on-request children in their block", () => {
+    const old: Spec = {
+      version: 1,
+      name: "s",
+      agents: { lead: { base: "claude" }, worker: { base: "codex" } },
+      workflow: [
+        {
+          orchestrate: {
+            agent: "lead",
+            goal: "",
+            body: [],
+            children: { agent: "worker", max: 2 },
+          },
+        } as unknown as Block,
+        { step: { id: "ship", agent: "lead", goal: "" } },
+      ],
+    };
+    const rows = [
+      exec({ id: "ship", step_id: "ship" }),
+      exec({ id: "dyn-1", step_id: "orchestrate-0::dyn-1" }),
+      exec({ id: "lead", step_id: "orchestrate-0" }),
+      exec({ id: "dyn-0", step_id: "orchestrate-0::dyn-0" }),
+    ];
+    const segments = deriveSegments(flattenSteps(old, rows), rows, []);
+    expect(segments.map((s) => s.exec.id)).toEqual(["lead", "dyn-0", "dyn-1", "ship"]);
+    expect(segments.map((s) => s.step?.agentAlias)).toEqual(["lead", "worker", "worker", "lead"]);
+    expect(segments.every((s) => s.stepIndex >= 0)).toBe(true);
   });
 });
 

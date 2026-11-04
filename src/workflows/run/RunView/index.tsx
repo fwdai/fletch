@@ -44,7 +44,9 @@ export function RunView({ id }: { id: string }) {
   const run = detail?.run ?? null;
   const spec = (run?.spec ?? null) as Spec | null;
   const attempts = detail?.attempts ?? [];
-  const steps = useMemo(() => flattenSteps(spec), [spec]);
+  // The attempts let a retired run's on-the-fly stages (an orchestrator's
+  // children, a parallel merge) be named; a kernel run's steps are all in the spec.
+  const steps = useMemo(() => flattenSteps(spec, detail?.attempts), [spec, detail?.attempts]);
 
   // Resolve a spec agent alias to its display identity (custom agent or provider).
   const resolve = useMemo(

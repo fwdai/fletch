@@ -10,8 +10,8 @@ import { disabledHint } from "./composer";
 import { derivePhase, type PhaseInput, phaseLabel } from "./phases";
 
 const steps: StepDesc[] = [
-  { id: "plan", agentAlias: "planner", goal: "" },
-  { id: "code", agentAlias: "coder", goal: "" },
+  { id: "plan", agentAlias: "planner", goal: "", block: 0, position: 0 },
+  { id: "code", agentAlias: "coder", goal: "", block: 1, position: 0 },
 ];
 
 const attempts: WfStepExec[] = [stepExec("exec-plan", "plan"), stepExec("exec-code", "code")];
