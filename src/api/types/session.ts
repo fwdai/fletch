@@ -64,6 +64,12 @@ export interface UserTurn {
    *  flight, and for rows from before positions existed. What the transcript
    *  places the turn by (`helpers/mergeTurns`). */
   position: number | null;
+  /** Millis the provider ran in turns it opened on its own after this one
+   *  ended: answering a background task, waking on a schedule. Those turns
+   *  have no row, and the gaps between them are idle time, so a turn's run
+   *  time is `ended_at - started_at` plus this. Absent from hosts that predate
+   *  it. */
+  provider_run_ms?: number;
   /** From an ancestor session (see `SessionRecord.inherited`). */
   inherited?: boolean;
 }

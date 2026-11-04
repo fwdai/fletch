@@ -1,6 +1,6 @@
-/* ── Runs of steps, folded turns, tool rows and their detail ─────────────────
-   Three depths, one quiet language. A run of steps or a settled turn's work is
-   one muted line of prose (`.steprun-head`); opened, its steps are compact rows
+/* ── Runs of steps, tool rows and their detail ───────────────────────────────
+   Three depths, one quiet language. A run of steps is one muted line of prose
+   (`.steprun-head`); opened, its steps are compact rows
    hung off a hairline (`.m-tool`); opened again, a step is a caption and a code
    surface (`.tb-*`). Motion is short and soft: bodies grow open, labels
    crossfade, the live line shimmers. Under reduced motion all of it is still. */
@@ -12,8 +12,7 @@
    the phone's agent.css); here the run keeps a full beat of space after it, so
    the next thing the agent says starts a new beat. Proximity does the grouping,
    with no rail or box. */
-.steprun,
-.turnfold {
+.steprun {
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -108,9 +107,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.steprun-summary .steprun-lead {
-  color: var(--fg-1);
 }
 .steprun-sep {
   margin: 0 7px;
@@ -290,16 +286,6 @@
     opacity: 0;
     transform: translateY(-3px);
   }
-}
-
-/* An open fold: the turn as it happened, hung off the same hairline. */
-.turnfold-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 6px 0 10px 6px;
-  padding: 4px 0 0 17px;
-  border-left: 1px solid var(--bd-soft);
 }
 
 /* ── A step: icon, label, what it was about ──────────────────────────────── */

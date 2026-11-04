@@ -73,9 +73,8 @@ export function useDisclosure(): {
 }
 
 /** Open when a reveal request (TranscriptHost `focus`) names a tool call
- *  among `items` — the sub-agent card the user just came back from, folded
- *  inside an older turn. Sticky: the request is consumed by the row it names,
- *  which only mounts once this has opened. */
+ *  among `items`. Sticky: the request is consumed by the row it names, which
+ *  only mounts once this has opened. */
 export function useFocusInside(
   agentId: string | undefined,
   items: ViewItem[],

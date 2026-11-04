@@ -93,6 +93,11 @@ pub struct Supervisor {
     /// consumes this marker and restores Running. Structured providers never
     /// enter this set because their terminal events are authoritative.
     pub heuristic_idle: Mutex<HashSet<String>>,
+    /// When the turn the provider opened on its own began, per agent running
+    /// one. Fletch delivered nothing to open it, so no turn row carries its
+    /// clock; `persist_and_emit_status` closes it onto the turn it followed.
+    /// Lost across a host restart, which costs that one run's time at most.
+    pub(super) provider_runs: Mutex<HashMap<String, i64>>,
     /// In-memory source of truth for live runtime status
     /// (Spawning/Running/Idle). The DB only persists durable
     /// dispositions, so a resting record loaded from it derives `Idle`;
@@ -197,6 +202,7 @@ impl Supervisor {
             generations: Mutex::new(HashMap::new()),
             activities: Mutex::new(HashMap::new()),
             heuristic_idle: Mutex::new(HashSet::new()),
+            provider_runs: Mutex::new(HashMap::new()),
             statuses: Mutex::new(HashMap::new()),
             native_inputs: Mutex::new(HashMap::new()),
             shells: Mutex::new(HashMap::new()),
@@ -497,6 +503,12 @@ impl Supervisor {
             }
             _ => {}
         }
+        // Any status but Running ends a run the provider opened on its own,
+        // Stopped included: its clock must not survive to a later Idle and
+        // count the time the agent spent down.
+        let provider_run = (status != AgentStatus::Running)
+            .then(|| self.provider_runs.lock().remove(agent_id))
+            .flatten();
         // Close the in-flight turn's timer on any terminal state. Idle covers
         // the in-band turn-end and clean process exit; Error covers a crash.
         // A closed turn (started, not native, not the resting Idle at spawn)
@@ -526,7 +538,13 @@ impl Supervisor {
                     turn,
                     last_error.clone().or(in_band),
                 ),
-                Ok(None) => {}
+                Ok(None) => {
+                    if let Some(started_at) = provider_run {
+                        if let Err(e) = self.workspace.add_provider_run(agent_id, started_at) {
+                            tracing::warn!(error = %e, agent_id, "count provider run failed");
+                        }
+                    }
+                }
                 Err(e) => tracing::warn!(error = %e, agent_id, "stamp user turn end failed"),
             }
         }

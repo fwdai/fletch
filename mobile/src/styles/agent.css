@@ -34,9 +34,13 @@
 .msg-text + .steprun {
   margin-top: -10px;
 }
-.chat > .steprun,
-.chat > .turnfold {
+.chat > .steprun {
   margin-bottom: 6px;
+}
+/* What closes a settled turn: how long it ran. */
+.turn-ran {
+  color: var(--fg-3);
+  font-size: 12px;
 }
 /* Transcript text is arbitrary: a URL, a $PATH dump, a base64 blob, a stack
    frame. Those carry no space to break at, and `.msg-user` is sized to
@@ -1889,7 +1893,6 @@
 /* The shared transcript rows (desktop Steps.css) on a touch screen: every row
    is a tap target, so the heads stand a little taller than on the Mac. */
 .steprun-head,
-.turnfold-head,
 .m-tool {
   min-height: 40px;
 }

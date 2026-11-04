@@ -2787,6 +2787,37 @@ fn mark_user_turn_started_is_idempotent() {
 }
 
 #[test]
+fn a_provider_run_adds_up_on_the_latest_turn_that_ran() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    for turn in ["turn-1", "turn-2"] {
+        wm.insert_user_turn(&ws_id, turn, "hello", &[]).unwrap();
+        wm.mark_user_turn_started(turn, 1000).unwrap();
+        wm.mark_user_turn_ended(&ws_id, TurnOutcome::Completed)
+            .unwrap();
+    }
+    // Queued behind them and never run: not what the provider's run followed.
+    wm.insert_user_turn(&ws_id, "turn-3", "later", &[]).unwrap();
+
+    let now = chrono::Utc::now().timestamp_millis();
+    wm.add_provider_run(&ws_id, now - 2000).unwrap();
+    wm.add_provider_run(&ws_id, now - 3000).unwrap();
+
+    let turns = wm.read_history_turns(&ws_id).unwrap();
+    assert_eq!(turns[0].provider_run_ms, 0);
+    assert!(turns[1].provider_run_ms >= 5000);
+    assert_eq!(turns[2].provider_run_ms, 0);
+}
+
+#[test]
+fn a_provider_run_with_no_turn_behind_it_counts_nowhere() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    wm.add_provider_run(&ws_id, 0).unwrap();
+    assert!(wm.read_history_turns(&ws_id).unwrap().is_empty());
+}
+
+#[test]
 fn mark_user_turn_ended_skips_turns_that_never_started() {
     let db = test_db();
     let (ws_id, wm) = make_workspace_with_session(&db);

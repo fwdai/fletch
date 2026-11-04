@@ -72,6 +72,14 @@ describe("mergeUserTurns", () => {
     expect(out).toHaveLength(4);
   });
 
+  it("carries the provider's own runs onto the bubble", () => {
+    const out = mergeUserTurns(
+      [user("go", 1)],
+      [{ ...echoed("t1", "go", 1), provider_run_ms: 5000 }],
+    );
+    expect(out[0]).toMatchObject({ providerRunMs: 5000 });
+  });
+
   it("restores the typed text and attachments, guarded by the prefix", () => {
     const padded = "look\nAttached file: /tmp/a.png";
     const t = { ...echoed("t1", "look", 1), attachments: ["/tmp/a.png"] };

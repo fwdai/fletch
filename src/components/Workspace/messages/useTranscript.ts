@@ -12,17 +12,13 @@ import { type ChatItem, useAppStore } from "@/store";
 import { stripInjectedInstructions } from "@/util/instructions";
 import type { ChatTurn } from "../ChatNav";
 import { type PairCache, type ViewItem, visibleItems } from "./pair";
-import { isPrompt, openTurnStart as openTurnStartOf, turnSpans } from "./rows";
+import {
+  isPrompt,
+  openTurnStart as openTurnStartOf,
+  type TurnFooterData,
+  turnFooters,
+} from "./rows";
 import { isUserInputTool } from "./UserInput/parse";
-
-/** A turn's closing footer: how long it ran, its settled prose (for copy), and
- *  the turn a fork from here continues through — the last turn above the
- *  footer, which is an app action when one closed the span. */
-export interface TurnFooterData {
-  runSec: number;
-  copyText: string;
-  forkTurnId: string | undefined;
-}
 
 export interface Transcript {
   items: ViewItem[];
@@ -129,39 +125,10 @@ export function useTranscriptFrom(
     return { turns, turnIds };
   }, [items]);
 
-  // Footer closing each *ended* turn (border + "Ran …" + copy), placed at the
-  // turn's last item — the seam before the next turn, as `turnSpans` counts
-  // turns. Gated on the same turn-end signal as the duration, so it only
-  // appears once the turn finishes; the open turn (started, not ended)
-  // carries no footer, just its live timer on the working strip.
-  const { turnFooters, openTurnStartedAt } = useMemo(() => {
-    const footers: (TurnFooterData | null)[] = items.map(() => null);
-    let openStart: number | undefined;
-    for (const { head, end } of turnSpans(items)) {
-      const start = items[head];
-      if (start.kind !== "user_message" || start.startedAt == null) continue;
-      if (start.endedAt == null) {
-        openStart = start.startedAt; // turn still running
-        continue;
-      }
-      // The agent's settled prose for this turn — what "copy" yields — and
-      // the last turn in the span (the prompt, or an app action after it),
-      // so a fork from this footer carries everything above it.
-      const texts: string[] = [];
-      let forkTurnId: string | undefined;
-      for (let j = head; j < end; j += 1) {
-        const it = items[j];
-        if (it.kind === "agent_message" && !it.streaming && it.text) texts.push(it.text);
-        if (it.kind === "user_message" && it.turnId) forkTurnId = it.turnId;
-      }
-      footers[end - 1] = {
-        runSec: (start.endedAt - start.startedAt) / 1000,
-        copyText: texts.join("\n\n"),
-        forkTurnId,
-      };
-    }
-    return { turnFooters: footers, openTurnStartedAt: openStart };
-  }, [items]);
+  const { footers: footersOf, openStartedAt: openTurnStartedAt } = useMemo(
+    () => turnFooters(items),
+    [items],
+  );
 
   const activeModel = useMemo(() => {
     for (let i = items.length - 1; i >= 0; i -= 1) {
@@ -184,7 +151,7 @@ export function useTranscriptFrom(
     items,
     turns,
     turnIds,
-    turnFooters,
+    turnFooters: footersOf,
     openTurnStart,
     openTurnStartedAt,
     activeModel,

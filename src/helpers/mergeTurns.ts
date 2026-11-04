@@ -32,6 +32,7 @@ function overlayTurn(item: UserMessage, t: UserTurn): UserMessage {
   const next: UserMessage = { ...item, turnId: t.turn_id };
   if (t.started_at != null) next.startedAt = t.started_at;
   if (t.ended_at != null) next.endedAt = t.ended_at;
+  if (t.provider_run_ms) next.providerRunMs = t.provider_run_ms;
   if (t.attachments.length > 0) {
     next.attachments = t.attachments;
     if (item.text.startsWith(t.text)) next.text = t.text;
