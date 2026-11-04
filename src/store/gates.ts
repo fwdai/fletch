@@ -140,6 +140,26 @@ export const GATES = {
     label: "Box network allow-list",
     reason: "This host is too old to show or change what VMs may reach. Change it on the host.",
   },
+  /** The network posture (Open, Ask me, Allow list) and the prompt that the
+   *  `ask` posture raises: a host from before them holds nothing and prompts
+   *  nobody, so the picker and the answers hide, and the lists stay. */
+  egressPrompt: {
+    op: ["set_box_setting", "box_egress_pending", "box_egress_answer"],
+    label: "Network posture",
+    reason: "This host is too old to ask before a VM reaches a new host. Update it.",
+  },
+  /** What VMs reached lately, from the host's log. */
+  egressActivity: {
+    op: "box_egress_activity",
+    label: "Network activity",
+    reason: "This host is too old to record what its VMs reach. Update it.",
+  },
+  /** Opening a VM's network for one turn. */
+  egressTurn: {
+    op: "box_egress_open_turn",
+    label: "Opening the network for a turn",
+    reason: "This host is too old to open a VM's network for a turn. Update it.",
+  },
   /** Stopping a VM. Its own gate because it needs the `agents` scope where
    *  reading the list needs only `observe`, so a device can see a VM it may not
    *  stop. */

@@ -105,6 +105,14 @@ const STASH_KEYS = [
   // on one, and `loadPendingPublishApprovals` re-reads the entered
   // environment's queue rather than trusting what was parked.
   "pendingPublishApprovals",
+  // The hosts its VMs are held waiting to reach, and the hosts they were
+  // refused: both name agents, and a prompt answered on the wrong host would
+  // send its id to an engine that never raised it and leave the real hold
+  // unanswered. `loadPendingEgressPrompts` re-reads the queue on entry; the
+  // blocked list is this window's own record per environment.
+  "pendingEgressPrompts",
+  "promptedHosts",
+  "boxEgressBlocked",
   // Its VMs and their phases. An agent id means something on one host only, so
   // neither may survive a switch: Stop acts on the host on screen, and a row
   // left over from the last one would aim it at the wrong VM. `loadBoxSetup`
@@ -181,6 +189,9 @@ const BLANK: Pick<AppState, StashKey> = {
   autopilotPausedAgents: [],
   reviews: {},
   pendingPublishApprovals: [],
+  pendingEgressPrompts: [],
+  promptedHosts: new Set(),
+  boxEgressBlocked: [],
   boxVms: null,
   boxStates: {},
   github: null,
@@ -244,6 +255,9 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     // that was not connected when it was raised.
     await get()
       .loadPendingPublishApprovals()
+      .catch(() => {});
+    await get()
+      .loadPendingEgressPrompts()
       .catch(() => {});
     // The delegations it is running, which it owns: the mirror parked in the
     // stash (or one built from events this client missed) is not the truth.

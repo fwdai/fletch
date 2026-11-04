@@ -312,6 +312,12 @@ pub const OPS: &[&str] = &[
     // The egress allow-list, layer by layer, and the user's global list.
     "box_egress_overview",
     "set_box_egress_global",
+    // The hosts boxes are held waiting to reach, the answers, the record of
+    // what they reached, and a turn's open network.
+    "box_egress_pending",
+    "box_egress_answer",
+    "box_egress_activity",
+    "box_egress_open_turn",
     // The project context layer (protocol doc, "Project context"): the
     // Context tab's reads and the user's own writes, so a paired client
     // curates the same knowledge the host serves its agents.
@@ -632,6 +638,12 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("project_file_edit", Scope::Projects),
     ("box_egress_overview", Scope::Observe),
     ("set_box_egress_global", Scope::Projects),
+    // Two reads; an answer widens what a box reaches, like
+    // `box_egress_allow`, and so does opening a turn's network.
+    ("box_egress_pending", Scope::Observe),
+    ("box_egress_activity", Scope::Observe),
+    ("box_egress_answer", Scope::Projects),
+    ("box_egress_open_turn", Scope::Projects),
     // How a publish happens, and whether one waits for a human: a device that
     // may not publish must not be able to switch the approval gate off.
     ("set_branch_prefix", Scope::Publish),
@@ -1879,7 +1891,11 @@ impl Dispatch for SupervisorDispatch {
                 | "box_stop"
                 | "box_egress_allow"
                 | "set_box_setting"
-                | "available_workspace_types" => boxes_op(ctx, op, args).await,
+                | "available_workspace_types"
+                | "box_egress_pending"
+                | "box_egress_answer"
+                | "box_egress_activity"
+                | "box_egress_open_turn" => boxes_op(ctx, op, args).await,
 
                 "project_file_status"
                 | "project_file_approve"
@@ -2131,6 +2147,23 @@ async fn boxes_op(ctx: &Arc<EngineCtx>, op: &str, args: Value) -> DispatchResult
         "available_workspace_types" => {
             let a: WorkspaceTypesArgs = parse(args)?;
             res(c::available_workspace_types_impl(ctx, &a.repo_path, &a.provider).await)
+        }
+        "box_egress_pending" => ok(c::box_egress_pending_impl()),
+        "box_egress_answer" => {
+            let a: EgressAnswerArgs = parse(args)?;
+            res(c::box_egress_answer_impl(ctx, &a.id, a.answer))
+        }
+        "box_egress_activity" => {
+            let a: EgressActivityArgs = parse(args)?;
+            res(c::box_egress_activity_impl(
+                ctx,
+                a.project_id.as_deref(),
+                a.hours,
+            ))
+        }
+        "box_egress_open_turn" => {
+            let a: EgressOpenTurnArgs = parse(args)?;
+            res(c::box_egress_open_turn_impl(&a.agent_id, a.open))
         }
         _ => Err(UNKNOWN_OP.to_string()),
     }
@@ -2922,6 +2955,35 @@ struct EgressOverviewArgs {
 #[derive(Deserialize)]
 struct EgressGlobalArgs {
     delta: crate::sandbox::boxes::allowlist::Delta,
+}
+
+/// One answer to a `box:egress-requested` prompt: `project`, `always`,
+/// `block` or `turn`.
+#[derive(Deserialize)]
+struct EgressAnswerArgs {
+    id: String,
+    answer: crate::commands::EgressAnswer,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EgressActivityArgs {
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    hours: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EgressOpenTurnArgs {
+    agent_id: String,
+    #[serde(default = "yes")]
+    open: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// `value: null` restores the setting's default.
