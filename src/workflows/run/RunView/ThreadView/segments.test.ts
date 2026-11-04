@@ -5,7 +5,8 @@
 
 import { describe, expect, it } from "vitest";
 import type { AgentRecord, WfStepExec } from "../../../../api";
-import type { StepDesc } from "../flatten";
+import type { Block, Spec } from "../../../spec";
+import { flattenSteps, type StepDesc } from "../flatten";
 import { deriveSegments, liveAgent } from "./segments";
 
 const steps: StepDesc[] = [
@@ -105,6 +106,38 @@ describe("deriveSegments", () => {
       exec({ id: "e2", step_id: "code", status: "running" }),
     ];
     expect(deriveSegments(steps, rows, []).map((s) => s.live)).toEqual([false, true]);
+  });
+
+  it("keeps an archived container run's nested steps named and in order", () => {
+    // A run the retired engine launched: its frozen spec nests steps in a
+    // parallel block, and their attempts must still find their step.
+    const old: Spec = {
+      version: 1,
+      name: "s",
+      agents: { a: { base: "claude" }, b: { base: "codex" } },
+      workflow: [
+        { step: { id: "plan", agent: "a", goal: "" } },
+        {
+          parallel: {
+            steps: [
+              { id: "review", agent: "b", goal: "" },
+              { id: "test", agent: "a", goal: "" },
+            ],
+          },
+        } as unknown as Block,
+        { step: { id: "ship", agent: "a", goal: "" } },
+      ],
+    };
+    const rows = [
+      exec({ id: "e4", step_id: "ship" }),
+      exec({ id: "e3", step_id: "test" }),
+      exec({ id: "e2", step_id: "review" }),
+      exec({ id: "e1", step_id: "plan" }),
+    ];
+    const segments = deriveSegments(flattenSteps(old), rows, []);
+    expect(segments.map((s) => s.exec.id)).toEqual(["e1", "e2", "e3", "e4"]);
+    expect(segments.map((s) => s.stepIndex)).toEqual([0, 1, 2, 3]);
+    expect(segments.map((s) => s.step?.agentAlias)).toEqual(["a", "b", "a", "a"]);
   });
 });
 

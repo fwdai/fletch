@@ -30,12 +30,46 @@ describe("flattenSteps", () => {
     expect(flattenSteps(spec([]))).toEqual([]);
   });
 
-  it("skips entries with no step in a run's frozen launch snapshot", () => {
-    // What the retired engine could launch: a run row still carries it verbatim.
+  it("walks the containers a retired engine's run snapshot still holds, in document order", () => {
+    // What the clone-per-step engine could launch: a run row carries it
+    // verbatim, and its nested steps have attempts to label and order.
     const old = spec([
       { step: { id: "plan", agent: "a", goal: "g" } },
-      { loop: { max: 2, body: [] } } as unknown as Block,
+      {
+        loop: {
+          max: 2,
+          until: { step: "check" },
+          body: [
+            { step: { id: "code", agent: "a", goal: "g" } },
+            { step: { id: "check", agent: "a", goal: "g" } },
+          ],
+        },
+      } as unknown as Block,
+      {
+        parallel: {
+          steps: [
+            { id: "review", agent: "a", goal: "g" },
+            { id: "test", agent: "a", goal: "g" },
+          ],
+        },
+      } as unknown as Block,
+      {
+        orchestrate: {
+          agent: "a",
+          goal: "g",
+          body: [{ id: "child", agent: "a", goal: "g" }],
+        },
+      } as unknown as Block,
+      { step: { id: "ship", agent: "a", goal: "g" } },
     ]);
-    expect(flattenSteps(old).map((s) => s.id)).toEqual(["plan"]);
+    expect(flattenSteps(old).map((s) => s.id)).toEqual([
+      "plan",
+      "code",
+      "check",
+      "review",
+      "test",
+      "child",
+      "ship",
+    ]);
   });
 });
