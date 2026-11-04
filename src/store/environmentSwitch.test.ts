@@ -224,6 +224,34 @@ describe("switchEnvironment", () => {
     expect(store.getState().boxStates).toBe(states);
   });
 
+  it("keeps one host's held and blocked hosts off the other", async () => {
+    const store = newStore();
+    // A prompt answered on the wrong host would send its id to an engine that
+    // never raised it, and leave the real hold unanswered; a blocked row names
+    // an agent of this Mac, not of the host.
+    const prompts = [{ id: "h1", agent_id: "fuji", host: "api.stripe.com" }] as never;
+    const prompted = new Set(["fuji\napi.stripe.com"]);
+    const blocked = [{ agent_id: "fuji", host: "evil.test", seen: false }] as never;
+    store.setState({
+      pendingEgressPrompts: prompts,
+      promptedHosts: prompted,
+      boxEgressBlocked: blocked,
+    });
+
+    await store.getState().switchEnvironment(HOST);
+
+    // Empty at once, before the host's own queue is read, not held over.
+    expect(store.getState().pendingEgressPrompts).toEqual([]);
+    expect(store.getState().promptedHosts.size).toBe(0);
+    expect(store.getState().boxEgressBlocked).toEqual([]);
+    expect(store.getState().loadPendingEgressPrompts).toHaveBeenCalled();
+
+    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
+    expect(store.getState().pendingEgressPrompts).toBe(prompts);
+    expect(store.getState().promptedHosts).toBe(prompted);
+    expect(store.getState().boxEgressBlocked).toBe(blocked);
+  });
+
   it("re-registers the engine listeners against the new transport", async () => {
     const store = newStore();
 

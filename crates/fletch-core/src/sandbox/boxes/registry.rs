@@ -352,7 +352,9 @@ impl Entry {
     /// What this box's proxy does with a host off the list, now.
     fn proxy_mode(&self) -> fletch_box::EgressMode {
         if self.turn_open {
-            fletch_box::EgressMode::Open
+            // `Override`, not `Open`: a tunnel it admits is reported as such
+            // when it closes, which may be after the turn ended.
+            fletch_box::EgressMode::Override
         } else {
             settings::egress_mode(&self.identity.project_id).proxy_mode()
         }
@@ -2341,10 +2343,12 @@ fn on_egress(agent_id: &str, project_id: &str, event: EgressEvent) {
             bytes_up,
             bytes_down,
         } => {
+            // Decided as the tunnel was admitted, not read now: the turn that
+            // opened it may have ended while it was up.
             let via = match admission {
                 Admission::Listed => "listed",
-                Admission::Open if BoxRegistry::global().turn_open(agent_id) => "turn",
                 Admission::Open => "open",
+                Admission::Override => "turn",
             };
             super::egress_log::record(&super::egress_log::Record {
                 agent_id,
