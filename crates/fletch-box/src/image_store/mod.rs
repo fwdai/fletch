@@ -47,10 +47,11 @@ pub const MANIFEST: &str = "manifest.json";
 pub const BASE: &str = "base";
 /// The layers a release may carry besides the base, in the order init stacks
 /// them. `devtools`: gcc, python3, pip, Node headers. `browser`: Debian's
-/// chromium-headless-shell and the Noto fonts.
+/// chromium-headless-shell and the Noto fonts. The app attaches all of them to
+/// every box: a layer is a read-only disk the boxes share, so it costs disk
+/// once and no guest memory until something reads it, and block devices are
+/// fixed at boot, so one left out cannot be added to a running box.
 pub const OPTIONAL_LAYERS: &[&str] = &["devtools", "browser"];
-/// The layers installed unless the user says otherwise.
-pub const DEFAULT_LAYERS: &[&str] = &["devtools"];
 /// A manifest is a few hundred KB at most (the package lists); anything past this is not one.
 const MAX_MANIFEST: u64 = 4 << 20;
 const STAGING_PREFIX: &str = ".staging-";

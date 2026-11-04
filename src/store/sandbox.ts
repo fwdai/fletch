@@ -6,7 +6,7 @@ import {
   type BoxSettingKey,
   type BoxStateEvent,
   type BoxToolsStatus,
-  type ContainerAuthStatus,
+  type BoxVm,
   type PublishApproval,
   type PublishApprovalResolved,
 } from "@/api";
@@ -21,6 +21,10 @@ import type { SliceCreator } from "./types";
  *  as everywhere else a whole list is replaced (util/newestWins). */
 const approvalLoads = newestWins();
 
+/** `box_list` is re-read on entering a host, on `box:list` and when the page
+ *  opens, so two can be out at once (util/newestWins). */
+const vmLoads = newestWins();
+
 /** Approval events seen while an `approvals_list` is in flight, replayed over
  *  its answer so the snapshot cannot undo them (see util/publishApprovals).
  *  Belongs to the newest claim — an older load's snapshot is superseded
@@ -29,9 +33,6 @@ const approvalLoads = newestWins();
 let approvalsInFlight: ApprovalEvent[] | null = null;
 
 export interface SandboxSlice {
-  /** Which claude auth chain step is active (Anthropic credentials for box
-   *  agents); `null` until the first refresh lands. */
-  containerAuth: ContainerAuthStatus | null;
   /** Whether an agent must get the user's approval before publishing. Mirrors
    *  the backend-owned `publish_confirmation` setting. Off by default. */
   publishConfirmation: boolean;
@@ -44,11 +45,9 @@ export interface SandboxSlice {
    *  string = unset (the engine's defaults apply). */
   boxMemoryMib: string;
   boxCpus: string;
+  boxDiskGib: string;
   boxImageUrl: string;
   boxIdleStopMinutes: string;
-  /** `box_layers`: the image layers every box gets, comma-separated; empty =
-   *  the engine default (devtools), `none` = base only. */
-  boxLayers: string;
   /** Latest box runtime probe; `null` until the first lands. */
   boxProbe: BoxRuntimeProbe | null;
   /** The pinned guest image's install state: `box_image_status` once, then
@@ -57,6 +56,11 @@ export interface SandboxSlice {
   /** Each supported provider's tools disk by provider id: seeded by the probe,
    *  then every `box:tools`. */
   boxTools: Record<string, BoxToolsStatus>;
+  /** Every VM on the active host (`box_list`), hidden workspaces included:
+   *  `null` until the host answers, and on one that cannot. A per-host value, so
+   *  `environmentSwitch` parks it with the rest; `box:list` says when to re-read
+   *  it, and `box:state` carries phases in between. */
+  boxVms: BoxVm[] | null;
   /** Each box agent's phase by agent id, from `box:state`. */
   boxStates: Record<string, BoxStateEvent>;
   /** Hosts a box's egress proxy refused, one entry per workspace and host
@@ -86,15 +90,6 @@ export interface SandboxSlice {
    *  else answered it, or nobody did before the host's wait ran out. No call
    *  back to the engine: the verdict is already made. */
   resolvePublishApproval: (e: PublishApprovalResolved) => void;
-  /** Re-resolve the claude auth chain into `containerAuth`. */
-  refreshContainerAuth: () => Promise<void>;
-  /** Persist a pasted `claude setup-token` for boxes, then refresh the
-   *  status. Throws on backend refusal (empty token) so the connect modal
-   *  can show the error inline. */
-  setContainerAuthToken: (token: string) => Promise<void>;
-  /** Drop the stored setup token, then refresh the status (a later chain
-   *  step — shell env / credentials file — may take over). */
-  clearContainerAuthToken: () => Promise<void>;
   /** Read where the host's box setup stands — the runtime probe (with the
    *  tools disks) and the image — once per environment; `box:image` and
    *  `box:tools` carry every change after. What the title bar's popover,
@@ -108,6 +103,8 @@ export interface SandboxSlice {
   /** Re-probe the box runtime into `boxProbe`; a host that cannot answer
    *  leaves it as is. */
   refreshBoxProbe: () => Promise<void>;
+  /** Re-read `boxVms`, and with it every VM's phase. */
+  refreshBoxVms: () => Promise<void>;
   /** Read the image's install state into `boxImage`. */
   refreshBoxImage: () => Promise<void>;
   /** Start (or retry) the image install and the tools builds after it, or
@@ -177,12 +174,13 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   pendingPublishApprovals: [],
   boxMemoryMib: "",
   boxCpus: "",
+  boxDiskGib: "",
   boxImageUrl: "",
   boxIdleStopMinutes: "",
-  boxLayers: "",
   boxProbe: null,
   boxImage: null,
   boxTools: {},
+  boxVms: null,
   boxStates: {},
   boxEgressBlocked: [],
 
@@ -233,31 +231,6 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     }));
   },
 
-  containerAuth: null,
-  refreshContainerAuth: async () => {
-    try {
-      set({ containerAuth: await api.getContainerAuthStatus() });
-    } catch {
-      // A failed resolution means we can't confirm any credentials — show the
-      // "Not connected" state (with its connect CTA) rather than a stale one.
-      set({ containerAuth: { status: "none" } });
-    }
-  },
-  setContainerAuthToken: async (token) => {
-    // No try/catch: the connect modal surfaces the rejection (empty token)
-    // inline next to the paste field, so the error must propagate.
-    await api.setContainerAuthToken(token);
-    await get().refreshContainerAuth();
-  },
-  clearContainerAuthToken: async () => {
-    try {
-      await api.clearContainerAuthToken();
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-    await get().refreshContainerAuth();
-  },
-
   saveBoxSetting: async (key, value) => {
     try {
       await api.setBoxSetting(key, value || null);
@@ -283,6 +256,30 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
       // was on screen; the probe is advisory.
     }
   },
+  refreshBoxVms: async () => {
+    const claim = vmLoads.claim();
+    const asked = get().boxStates;
+    try {
+      // Two guards, as for the approvals: after a switch this is another host's
+      // list, and a newer read owns it too, since an older answer landing last
+      // would put back a VM that is gone.
+      const vms = await forActiveEnvironment(() => api.boxList());
+      if (!vms || !claim.current()) return;
+      set((s) => ({
+        boxVms: vms,
+        boxStates: Object.fromEntries(
+          vms.map((vm) => {
+            const id = vm.agent_id;
+            // A phase `box:state` reported during the read is newer than this.
+            const moved = s.boxStates[id] !== asked[id];
+            return [id, moved ? s.boxStates[id] : vm.state];
+          }),
+        ),
+      }));
+    } catch {
+      // A host from before `box_list` keeps `null`: the list says why.
+    }
+  },
   refreshBoxImage: async () => {
     try {
       const image = await forActiveEnvironment(() => api.boxImageStatus());
@@ -296,7 +293,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     // cleared before this one answers, so a switch never shows host A's
     // download on host B.
     set({ boxProbe: null, boxImage: null, boxTools: {} });
-    await Promise.all([get().refreshBoxProbe(), get().refreshBoxImage()]);
+    await Promise.all([get().refreshBoxProbe(), get().refreshBoxImage(), get().refreshBoxVms()]);
   },
   installBoxImage: async () => {
     try {

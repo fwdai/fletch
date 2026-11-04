@@ -31,7 +31,7 @@ export function RelayRow({
   return (
     <SetRow
       title="Reach this Mac from anywhere"
-      sub="Lets your phone reach this Mac when it isn't on the same network, through Fletch's servers. Everything stays end-to-end encrypted."
+      sub="Connect from any network via Fletch's servers, end-to-end encrypted."
     >
       {on && (
         <span className="set-relay-pill text-sm" data-state={relay.state}>
@@ -71,7 +71,7 @@ export function RelayUrlRow({
   return (
     <SetRow
       title="Relay server"
-      sub="Point this at your own relay if you run one. Paired devices pick it up on their next connection. Push notifications only work through Fletch's relay."
+      sub="For running your own relay. Push notifications only work through Fletch's relay."
       align="start"
     >
       <input

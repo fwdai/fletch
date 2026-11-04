@@ -52,7 +52,7 @@ export function GithubConnection() {
         <span className="set-gh-status text-base">
           {connected
             ? `Connected${github?.login ? ` as ${github.login}` : ""}`
-            : "Not connected — local projects still work offline"}
+            : "Not connected. Local projects still work offline."}
         </span>
         {connected ? (
           <Button variant="outline" onClick={() => void disconnectGithub().then(probe)}>

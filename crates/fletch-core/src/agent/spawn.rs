@@ -221,8 +221,8 @@ fn launcher_env(
 /// account's dir, naming the login the agent's [`CodexHome`] copies from (no
 /// CLI runs in it; a claude account signs in by token instead), and the default
 /// account's credential vars to strip from the child so the CLI can only
-/// authenticate as that account (the box's auth chain filters the same
-/// vars; host-side launches inherit the login shell, so they
+/// authenticate as that account (a box launch forwards none of these beside
+/// a token; host-side launches inherit the login shell, so they
 /// must drop them here — an ambient `ANTHROPIC_API_KEY` would outrank the
 /// account's token). The sessions apply `unset` to the inherited layers only,
 /// before the launch plan's own env: the account's token, which the plan

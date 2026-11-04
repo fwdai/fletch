@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import type { BoxSettingKey } from "@/api";
+import { Scale } from "@/components/ui/Scale";
 import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
-import { SetGroup, SetRow, SetToggle } from "../primitives";
+import { SetGroup, SetRow } from "../primitives";
+import { BOX_SCALES, type BoxScale, scaleStops, scaleValue } from "./boxScales";
 
 /** One text box knob: a host-owned `box_*` setting written through
- *  `set_box_setting`, which validates it; the defaults quoted are the
- *  engine's (`sandbox/boxes/settings.rs`). */
+ *  `set_box_setting`, which validates it. */
 interface KnobField {
   key: BoxSettingKey;
   title: string;
@@ -15,71 +16,14 @@ interface KnobField {
   placeholder: string;
 }
 
-/** The text box knobs on Settings › Sandbox, in display order. */
-const FIELDS = [
-  {
-    key: "box_memory_mib",
-    title: "Memory (MiB)",
-    sub: "Guest RAM per box. Blank uses the default (2048); at least 512.",
-    placeholder: "2048",
-  },
-  {
-    key: "box_cpus",
-    title: "CPUs",
-    sub: "vCPUs per box. Blank uses the default (2).",
-    placeholder: "2",
-  },
-  {
-    key: "box_idle_stop_minutes",
-    title: "Idle stop (minutes)",
-    sub: "Stop a box with no attached process after this long. Blank uses the default (10); 0 never stops.",
-    placeholder: "10",
-  },
-] as const satisfies readonly KnobField[];
-
 /** Where the image downloads from: on Settings › Developer, since it exists to
  *  boot a locally built image (`file://`). */
 export const IMAGE_URL_FIELD: KnobField = {
   key: "box_image_url",
   title: "Linux VM image URL",
-  sub: "Alternate base URL for the VM image download (https://, http:// or file://). Blank uses the GitHub release.",
+  sub: "Base URL for the VM image (https, http or file). Blank uses the GitHub release.",
   placeholder: "https://github.com/… (built-in)",
 };
-
-type FieldKey = (typeof FIELDS)[number]["key"];
-
-/** The optional image layers (`box_layers`), in the engine's order. A layer
- *  turned on is downloaded once and attached to every box from its next boot. */
-const LAYERS = [
-  {
-    name: "devtools",
-    title: "Developer tools layer",
-    sub: "gcc, make, python3, pip and the Node headers: projects that build native code. On by default (~115 MB).",
-  },
-  {
-    name: "browser",
-    title: "Browser layer",
-    sub: "A system Chromium (headless shell) and the Noto fonts for agents that drive a browser directly. Playwright projects download their own browser and work without it (~165 MB).",
-  },
-] as const;
-const DEFAULT_LAYERS: readonly string[] = ["devtools"];
-
-/** The layers a `box_layers` value turns on: blank is the default set, `none` nothing. */
-export function enabledLayers(value: string): string[] {
-  const v = value.trim();
-  if (v === "") return [...DEFAULT_LAYERS];
-  if (v === "none") return [];
-  return v
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-/** The `box_layers` value for a set of layers, in the engine's order. */
-export function layersValue(names: readonly string[]): string {
-  const ordered = LAYERS.map((l) => l.name).filter((n) => names.includes(n));
-  return ordered.length === 0 ? "none" : ordered.join(",");
-}
 
 /** One box knob: a draft committed on blur/Enter, with the host's validation
  *  message under it until the next edit. The stored value comes back through
@@ -122,47 +66,53 @@ export function BoxKnob({ field, value }: { field: KnobField; value: string }) {
   );
 }
 
-/** One layer toggle. Flipping it writes the whole `box_layers` value; the
- *  download of a layer turned on starts at once (the host does that). */
-function LayerToggle({ layer, value }: { layer: (typeof LAYERS)[number]; value: string }) {
+/** One numeric box knob as a scale. A pick is saved at once; the stored value
+ *  comes back through `settings:changed`, so the scale never shows a value
+ *  that did not stick. */
+function BoxScaleRow({ scale, stored }: { scale: BoxScale; stored: string }) {
   const save = useAppStore((s) => s.saveBoxSetting);
+  const hostCpus = useAppStore((s) => s.boxProbe?.host_cpus);
+  const hostMemoryMib = useAppStore((s) => s.boxProbe?.host_memory_mib);
   const hostGate = useGate("hostSettings");
   const [error, setError] = useState<string | null>(null);
-  const enabled = enabledLayers(value);
-  const on = enabled.includes(layer.name);
-  const flip = async () => {
-    const next = on ? enabled.filter((n) => n !== layer.name) : [...enabled, layer.name];
-    setError(await save("box_layers", layersValue(next)));
+  const value = scaleValue(scale, stored);
+
+  const pick = async (next: string) => {
+    if (next === String(value)) return;
+    setError(await save(scale.key, next));
   };
+
   return (
-    <SetRow title={layer.title} sub={hostGate ?? error ?? layer.sub}>
-      <SetToggle
-        on={on}
+    <SetRow title={scale.title} sub={hostGate ?? error ?? scale.sub}>
+      <Scale
+        className="set-scale"
+        ariaLabel={scale.title}
+        stops={scaleStops(scale, value, { host_cpus: hostCpus, host_memory_mib: hostMemoryMib })}
+        value={String(value)}
         disabled={!!hostGate}
-        tip={hostGate ?? undefined}
-        onClick={() => void flip()}
+        onPick={(next) => void pick(next)}
       />
     </SetRow>
   );
 }
 
-/** The Linux VM's launch knobs. Mounted only where the machine can boot one. */
+/** The Linux VM's resources. Mounted only where the machine can boot one. */
 export function BoxKnobs({ last }: { last?: boolean }) {
   // One selector per value: a selector returning a fresh object would hand
   // `useSyncExternalStore` a new snapshot each render.
-  const values: Record<FieldKey, string> = {
+  const stored: Partial<Record<BoxScale["key"], string>> = {
     box_memory_mib: useAppStore((s) => s.boxMemoryMib),
     box_cpus: useAppStore((s) => s.boxCpus),
+    box_disk_gib: useAppStore((s) => s.boxDiskGib),
     box_idle_stop_minutes: useAppStore((s) => s.boxIdleStopMinutes),
   };
-  const layers = useAppStore((s) => s.boxLayers);
+  // Disk shipped with `box_list`: a host without the op refuses the setting.
+  const oldHost = !!useGate("vmList");
+  const scales = BOX_SCALES.filter((s) => !(oldHost && s.key === "box_disk_gib"));
   return (
-    <SetGroup label="Linux VM" last={last}>
-      {LAYERS.map((l) => (
-        <LayerToggle key={l.name} layer={l} value={layers} />
-      ))}
-      {FIELDS.map((f) => (
-        <BoxKnob key={f.key} field={f} value={values[f.key]} />
+    <SetGroup label="Resources" last={last}>
+      {scales.map((scale) => (
+        <BoxScaleRow key={scale.key} scale={scale} stored={stored[scale.key] ?? ""} />
       ))}
     </SetGroup>
   );

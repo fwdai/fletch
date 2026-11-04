@@ -3,18 +3,24 @@
 //! lays it out itself on first run. Seeded with the onboarding state the
 //! managed account dirs seed, so the first turn is not a setup wizard; the
 //! login is the access token the host resolved for the launch
-//! (`agent::host_login::claude`), as the auth chain (`super::auth`) spells it,
-//! in the env file.
+//! (`agent::host_login::claude`), in the env file.
 
 use std::path::{Path, PathBuf};
 
-use super::{Credential, GuestEntry, ProviderHome, SharedState};
-use crate::error::Result;
+use super::{auth, Credential, GuestEntry, ProviderHome, SharedState};
+use crate::error::{Error, Result};
 use crate::sandbox::engine::AgentLaunchCtx;
 use crate::sandbox::policy;
 
 /// Where the host mirrors `~/.claude/projects`, under the box dir.
 pub const MIRROR_DIR: &str = "claude-projects";
+
+/// Why a launch with no credential is refused. Bedrock, Vertex and
+/// `apiKeyHelper` setups pass the host's login check but reach no guest.
+pub const NO_AUTH_MSG: &str =
+    "No Claude Code credentials for Linux VMs. Sign in under Settings → Providers → Claude Code, \
+     or set ANTHROPIC_API_KEY in your shell. Bedrock, Vertex and apiKeyHelper setups only work \
+     in the macOS sandbox.";
 
 pub struct Claude;
 
@@ -58,19 +64,10 @@ impl ProviderHome for Claude {
         ])
     }
 
-    /// The claude login the host resolved (`agent::host_login`), as the
-    /// seatbelt engine passes it; the auth chain adds the stored
-    /// setup-token or the shell's own key when there is no host login.
+    /// The claude login the host resolved (`agent::host_login`), else the
+    /// shell's own key.
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
-        use super::auth::{resolve, ContainerAuth};
-        let env = match resolve(ctx.oauth_token) {
-            ContainerAuth::Resolved { env, .. } => env,
-            ContainerAuth::Unavailable => Vec::new(),
-        };
-        Ok(Credential {
-            env,
-            files: Vec::new(),
-        })
+        credential_from(auth::claude_env(ctx.oauth_token))
     }
 
     /// The writable islands of `~/.claude` seatbelt grants
@@ -84,9 +81,31 @@ impl ProviderHome for Claude {
     }
 }
 
+/// [`Claude::credential`] with the env given.
+fn credential_from(env: Vec<(String, String)>) -> Result<Credential> {
+    if env.is_empty() {
+        return Err(Error::Other(NO_AUTH_MSG.into()));
+    }
+    Ok(Credential {
+        env,
+        files: Vec::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A claude that could only fail on its first turn is refused at launch.
+    #[test]
+    fn a_launch_with_nothing_to_sign_in_with_is_refused() {
+        assert_eq!(
+            credential_from(Vec::new()).unwrap_err().to_string(),
+            Error::Other(NO_AUTH_MSG.into()).to_string()
+        );
+        let env = vec![("ANTHROPIC_API_KEY".to_string(), "sk".to_string())];
+        assert_eq!(credential_from(env.clone()).unwrap().env, env);
+    }
 
     #[test]
     fn sessions_live_under_the_home_whatever_the_root() {

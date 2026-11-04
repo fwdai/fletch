@@ -6,12 +6,12 @@ import { useGate } from "@/store/capabilities";
 import { EGRESS_CATEGORIES, useEgressOverview } from "@/util/useEgressOverview";
 import { SetDisclosure, SetGroup, SetRow, SetToggle } from "../primitives";
 
-/** Network › every project: the hosts boxes may reach, as Fletch's template
+/** Sandbox › Network, for every project: the hosts boxes may reach, as Fletch's template
  *  (maintained with the app, grouped by what it serves) plus the user's own
  *  changes — hosts added for every project, template entries turned off. A
  *  project's `.fletch/settings.json` can change them again for that project.
  *  Telemetry the agent CLIs reach for is listed as blocked quietly. */
-export function EgressGlobal({ last }: { last?: boolean }) {
+export function EgressGlobal() {
   const gate = useGate("egressPolicy");
   const { overview } = useEgressOverview(null, !!gate);
   const [draft, setDraft] = useState("");
@@ -19,8 +19,8 @@ export function EgressGlobal({ last }: { last?: boolean }) {
 
   if (gate) {
     return (
-      <SetGroup label="Network" last={last}>
-        <SetRow title="Hosts boxes may reach" sub={gate} />
+      <SetGroup>
+        <SetRow title="Hosts VMs may reach" sub={gate} />
       </SetGroup>
     );
   }
@@ -48,10 +48,10 @@ export function EgressGlobal({ last }: { last?: boolean }) {
   };
 
   return (
-    <SetGroup label="Network" last={last}>
+    <SetGroup>
       <SetRow
-        title="Hosts boxes may reach"
-        sub="Fletch keeps this list current. Your changes here apply to every project; a project's .fletch/settings.json can change them again."
+        title="Hosts VMs may reach"
+        sub="Fletch maintains this list. Changes apply to every project unless its .fletch/settings.json overrides them."
       />
       {EGRESS_CATEGORIES.map(({ key, label }) => {
         const entries = overview.template.filter((t) => t.category === key);
@@ -74,9 +74,7 @@ export function EgressGlobal({ last }: { last?: boolean }) {
       })}
       <SetRow
         title="Your hosts"
-        sub={
-          error ?? "Allowed for every project's boxes. A host name, or *.domain for its subdomains."
-        }
+        sub={error ?? "Allowed in every project. A host name, or *.domain for its subdomains."}
       >
         <TextInput
           mono
@@ -111,7 +109,7 @@ export function EgressGlobal({ last }: { last?: boolean }) {
       <SetDisclosure label={`Blocked quietly · ${overview.quiet.length} telemetry hosts`}>
         <SetRow
           title="Telemetry and error reporting"
-          sub="The agent CLIs reach for these on their own and work without them. A box is refused them without a prompt; allow one above to let it through."
+          sub="Agent CLIs call these on their own and work without them. Add one above to allow it."
         />
         {overview.quiet.map((pattern) => (
           <SetRow key={pattern} title={<span className="mono">{pattern}</span>} />

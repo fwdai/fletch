@@ -8,8 +8,8 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import { fmtDur } from "@/util/format";
 import { ForkMenu } from "./ForkMenu";
 
-// `fmtDur` lives in util/format so the shared transcript rows (desktop and
-// phone) can say "Worked for 4m 12s" without this file's desktop chrome.
+// `fmtDur` lives in util/format so the phone's turn footer can say "Ran 4m 12s"
+// without this file's desktop chrome.
 export { fmtDur };
 
 /** Live elapsed value, recomputed from a fixed start timestamp every second so
@@ -31,29 +31,22 @@ export function LiveTimer({ startedAt }: { startedAt: number }) {
  *  action. Doubles as the seam between turns (the hairline lives in CSS).
  *
  *  `agentId` + `forkTurnId` (the last turn above this footer) are what the fork
- *  action anchors the new conversation on; no turn id, no fork action. `quiet`
- *  leaves the duration out — a folded turn's "Worked for …" line said it. */
+ *  action anchors the new conversation on; no turn id, no fork action. */
 export function TurnFooter({
   runSec,
   copyText,
   agentId,
   forkTurnId,
-  quiet,
 }: {
   runSec: number;
   copyText: string;
   agentId: string;
   forkTurnId: string | undefined;
-  quiet?: boolean;
 }) {
   return (
     <div className="turn-meta">
-      {!quiet && (
-        <>
-          <Icon name="clock" size={11} />
-          <span>Ran {fmtDur(runSec)}</span>
-        </>
-      )}
+      <Icon name="clock" size={11} />
+      <span>Ran {fmtDur(runSec)}</span>
       {copyText && <CopyButton text={copyText} className="turn-copy" />}
       {forkTurnId && (
         <ForkMenu agentId={agentId} turnId={forkTurnId} tip="Fork from here" compact />

@@ -10,6 +10,7 @@ use crate::host::EngineCtx;
 use crate::sandbox::boxes::{
     self, registry::ToolsStatus, settings, setup, BoxRegistry, StopReason,
 };
+use crate::workspace::WorkspaceManager;
 use crate::{database, sandbox};
 
 use super::settings::announce;
@@ -34,6 +35,10 @@ pub struct BoxRuntimeProbe {
     pub image: BoxImageStatus,
     /// Each supported provider's tools disk.
     pub tools: Vec<ToolsStatus>,
+    /// This machine's logical cores and physical memory: what the Sandbox
+    /// page's memory and CPU scales stop at. `None` where the OS will not say.
+    pub host_cpus: Option<usize>,
+    pub host_memory_mib: Option<u64>,
 }
 
 pub fn box_image_status_impl() -> BoxImageStatus {
@@ -67,6 +72,8 @@ pub fn box_runtime_probe_impl() -> BoxRuntimeProbe {
         hypervisor: probe.as_ref().is_some_and(|p| p.hypervisor),
         image,
         tools,
+        host_cpus: std::thread::available_parallelism().ok().map(|n| n.get()),
+        host_memory_mib: fletch_box::host_memory_mib(),
     }
 }
 
@@ -131,6 +138,51 @@ fn project_placement(ctx: &EngineCtx, repo_path: &str) -> Option<String> {
             |row| row.get::<_, String>(0),
         )
         .ok()
+}
+
+/// One VM on the Sandbox page's list.
+#[derive(Debug, Clone, Serialize)]
+pub struct BoxVm {
+    pub agent_id: String,
+    pub name: String,
+    pub project_id: String,
+    pub created_at: String,
+    pub state: boxes::registry::BoxStateReport,
+}
+
+/// `box_list`: every VM that exists, running or not. Built from the disks and
+/// the registry rather than the sidebar's snapshot, which leaves out hidden
+/// workspaces such as a Roadmap chat. The registry adds a box still on its way
+/// to a first disk; on its own it knows only what ran since launch.
+pub fn box_list_impl(ctx: &EngineCtx) -> Result<Vec<BoxVm>> {
+    let supervisor = ctx
+        .supervisor()
+        .ok_or_else(|| Error::Other("the engine is still starting".into()))?;
+    let ids = boxes::created_box_ids().into_iter().chain(
+        BoxRegistry::global()
+            .identities()
+            .into_iter()
+            .map(|i| i.agent_id),
+    );
+    Ok(vms_of(&supervisor.workspace, ids))
+}
+
+/// `ids` as VMs, each once. `agent()` applies no sidebar filter, so a hidden
+/// workspace comes through; one archived or gone does not.
+fn vms_of(workspace: &WorkspaceManager, ids: impl Iterator<Item = String>) -> Vec<BoxVm> {
+    let ids: std::collections::BTreeSet<String> = ids.collect();
+    ids.into_iter()
+        .filter_map(|id| {
+            let record = workspace.agent(&id).ok()?;
+            record.archive.is_none().then(|| BoxVm {
+                state: BoxRegistry::global().report(&id),
+                agent_id: id,
+                name: record.name,
+                project_id: record.project_id,
+                created_at: record.created_at,
+            })
+        })
+        .collect()
 }
 
 /// `box_stop(agent_id)`: stop the box now, reporting which rung worked.
@@ -261,12 +313,10 @@ pub fn set_box_egress_global_impl(
     Ok(delta)
 }
 
-/// Write one box setting (`box_memory_mib`, `box_cpus`, `box_image_url`,
-/// `box_idle_stop_minutes`, `box_layers`), validated, and mirror it for the
-/// engine; `None` restores the default. The Sandbox page's knobs go through
-/// here, not the client-side `set_setting`, since the engine reads these. A
-/// layer turned on starts the image install (the next boot of every box
-/// attaches it).
+/// Write one box setting (`box_memory_mib`, `box_cpus`, `box_disk_gib`,
+/// `box_image_url`, `box_idle_stop_minutes`), validated, and mirror it for the
+/// engine; `None` restores the default. The Sandbox page's knobs go through here, not the
+/// client-side `set_setting`, since the engine reads these.
 pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> Result<()> {
     let normalized = match value {
         Some(value) => Some(
@@ -291,11 +341,6 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
         settings::set(settings::load(&conn));
     }
     announce(ctx, key, normalized.as_deref());
-    if key == settings::LAYERS_SETTING {
-        if let Err(e) = setup::start_install() {
-            tracing::warn!(error = %e, "the box layer install did not start");
-        }
-    }
     Ok(())
 }
 
@@ -303,7 +348,54 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
 mod tests {
     use super::*;
     use crate::host::ctx::test_ctx;
+    use crate::workspace::tests::{mk_repo, seed_repo, test_db};
+    use crate::workspace::{new_agent_record, AgentRecord, AgentView, PURPOSE_ROADMAP_PM};
     use serde_json::json;
+
+    /// The list is the VMs that exist, not the sidebar: a Roadmap chat, which
+    /// the sidebar hides, is on it, and an archived workspace or an id with no
+    /// row is not.
+    #[test]
+    fn the_vm_list_keeps_hidden_workspaces_and_drops_archived_ones() {
+        let db = test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        seed_repo(&db, "/r");
+        let record = |name: &str| -> AgentRecord {
+            new_agent_record(
+                name.into(),
+                name.into(),
+                "claude".into(),
+                mk_repo("/r"),
+                "task".into(),
+                AgentView::Custom,
+            )
+        };
+        let mut chat = record("shasta");
+        chat.purpose = Some(PURPOSE_ROADMAP_PM.to_string());
+        wm.add_agent(&mut chat).unwrap();
+        let mut plain = record("denali");
+        wm.add_agent(&mut plain).unwrap();
+        let mut archived = record("rainier");
+        wm.add_agent(&mut archived).unwrap();
+        wm.begin_archive(&archived.id).unwrap();
+        wm.finish_archive(&archived.id, &[], None).unwrap();
+
+        assert!(wm.current().unwrap().agents.iter().all(|a| a.id != chat.id));
+
+        let ids = [
+            chat.id.clone(),
+            plain.id.clone(),
+            plain.id.clone(),
+            archived.id.clone(),
+            "gone".to_string(),
+        ];
+        let mut names: Vec<String> = vms_of(&wm, ids.into_iter())
+            .into_iter()
+            .map(|v| v.name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["denali", "shasta"]);
+    }
 
     #[test]
     fn a_box_setting_is_validated_persisted_mirrored_and_announced() {

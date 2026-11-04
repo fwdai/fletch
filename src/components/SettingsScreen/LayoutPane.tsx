@@ -6,12 +6,12 @@ const SIDE_PANELS: FeatureItem[] = [
   {
     key: "code",
     title: "Code",
-    sub: "Browse and edit checkout files, with a live feed of the agent's diffs.",
+    sub: "Browse and edit files, with a live feed of the agent's diffs.",
   },
   {
     key: "run",
     title: "Run",
-    sub: "Start the project's dev server with auto-detected, editable config.",
+    sub: "Start the project's dev server.",
   },
   { key: "terminal", title: "Terminal", sub: "Interactive shell scoped to the checkout." },
 ];
@@ -20,12 +20,12 @@ const COMPOSER: FeatureItem[] = [
   {
     key: "thinkingBudget",
     title: "Thinking budget",
-    sub: "Show a low / medium / high reasoning cap in the composer.",
+    sub: "Show a low / medium / high reasoning cap.",
   },
   {
     key: "tokenUsage",
     title: "Token usage",
-    sub: "Show the context-window usage meter in the composer.",
+    sub: "Show how much of the context window is used.",
   },
 ];
 
@@ -33,12 +33,7 @@ const SIDEBAR: FeatureItem[] = [
   {
     key: "sidebarActiveFirst",
     title: "Active projects first",
-    sub: "Float projects with running or recently launched agents to the top. The rest keep the order you drag them into.",
-  },
-  {
-    key: "sidebarUsage",
-    title: "Usage chip",
-    sub: "Show the past 7 days' token count next to your account, opening the Usage screen.",
+    sub: "Keep projects with running or recent agents at the top.",
   },
 ];
 
@@ -63,7 +58,7 @@ export function LayoutPane() {
       <SetHead
         eyebrow="Settings · Layout"
         title="Layout"
-        desc="Choose which panels, composer controls and sidebar extras appear while you work with an agent."
+        desc="What appears around an agent while you work."
       />
 
       <SetGroup label="Side panels">

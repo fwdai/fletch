@@ -215,14 +215,14 @@ export function AgentEditor({
           <label className="set-field-label text-sm">
             Skills
             <span className="ca-field-hint">
-              Instruction documents this agent loads on demand — works on every base
+              Instruction documents this agent loads on demand, on any base
             </span>
           </label>
           <AssignPicker
             items={skills.map((s) => ({ id: s.id, name: s.name, detail: s.description }))}
             selected={form.skillIds}
             onChange={(skillIds) => set({ skillIds })}
-            emptyHint="No skills yet — create them under Settings → Skills."
+            emptyHint="No skills yet. Create them under Settings → Skills."
           />
         </div>
 
@@ -241,14 +241,14 @@ export function AgentEditor({
                 name: s.name,
                 detail:
                   unattachable && mcpSupport === "stdio"
-                    ? `${target} — HTTP servers aren't supported by this base`
+                    ? `${target} (HTTP servers aren't supported by this base)`
                     : target,
                 disabled: unattachable,
               };
             })}
             selected={form.mcpServerIds}
             onChange={(mcpServerIds) => set({ mcpServerIds })}
-            emptyHint="No MCP servers yet — add them under Settings → Tools."
+            emptyHint="No MCP servers yet. Add them under Settings → Tools."
           />
         </div>
 

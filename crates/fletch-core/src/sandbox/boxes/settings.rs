@@ -15,13 +15,12 @@ use crate::error::{Error, Result};
 pub const MEMORY_SETTING: &str = "box_memory_mib";
 /// vCPUs per box.
 pub const CPUS_SETTING: &str = "box_cpus";
+/// Data disk of each new box, GiB. Sparse, so it costs only what is written.
+pub const DISK_SETTING: &str = "box_disk_gib";
 /// Alternate base URL for the image download; empty is the GitHub release.
 pub const IMAGE_URL_SETTING: &str = "box_image_url";
 /// Minutes a box with no attached launch stays up; `0` is never.
 pub const IDLE_STOP_SETTING: &str = "box_idle_stop_minutes";
-/// The image layers attached to every box besides the base, comma-separated
-/// (`fletch_box::image_store::OPTIONAL_LAYERS`); blank is the default set.
-pub const LAYERS_SETTING: &str = "box_layers";
 /// Project setting: a JSON array of host patterns added to the default egress
 /// allow-list.
 pub const EGRESS_ALLOW_KEY: &str = "box.egress_allow";
@@ -30,27 +29,29 @@ pub const EGRESS_ALLOW_KEY: &str = "box.egress_allow";
 pub const KEYS: &[&str] = &[
     MEMORY_SETTING,
     CPUS_SETTING,
+    DISK_SETTING,
     IMAGE_URL_SETTING,
     IDLE_STOP_SETTING,
-    LAYERS_SETTING,
 ];
 
 pub const DEFAULT_MEMORY_MIB: u32 = 2048;
 pub const MIN_MEMORY_MIB: u32 = 512;
 pub const DEFAULT_CPUS: u8 = 2;
+pub const DEFAULT_DISK_GIB: u32 = (fletch_box::disks::DEFAULT_DATA_DISK_BYTES >> 30) as u32;
+pub const MIN_DISK_GIB: u32 = 4;
+pub const MAX_DISK_GIB: u32 = 256;
 pub const DEFAULT_IDLE_STOP_MINUTES: u64 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoxSettings {
     pub memory_mib: u32,
     pub cpus: u8,
+    /// A box's disk is sized when it is created, so this reaches new boxes only.
+    pub disk_gib: u32,
     /// `None` is the GitHub release for this build's pin.
     pub image_url: Option<String>,
     /// `None` is never.
     pub idle_stop: Option<Duration>,
-    /// The image layers every box gets besides the base, in
-    /// `OPTIONAL_LAYERS` order; the install fetches them, the boot attaches them.
-    pub layers: Vec<String>,
 }
 
 impl Default for BoxSettings {
@@ -58,9 +59,9 @@ impl Default for BoxSettings {
         Self {
             memory_mib: DEFAULT_MEMORY_MIB,
             cpus: DEFAULT_CPUS,
+            disk_gib: DEFAULT_DISK_GIB,
             image_url: None,
             idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
-            layers: default_layers(),
         }
     }
 }
@@ -68,18 +69,10 @@ impl Default for BoxSettings {
 static SETTINGS: RwLock<BoxSettings> = RwLock::new(BoxSettings {
     memory_mib: DEFAULT_MEMORY_MIB,
     cpus: DEFAULT_CPUS,
+    disk_gib: DEFAULT_DISK_GIB,
     image_url: None,
     idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
-    layers: Vec::new(),
 });
-
-/// The layers a host gets without a `box_layers` row.
-pub fn default_layers() -> Vec<String> {
-    fletch_box::image_store::DEFAULT_LAYERS
-        .iter()
-        .map(|l| l.to_string())
-        .collect()
-}
 
 /// `project_id → patterns`, the per-project egress additions.
 static EGRESS: RwLock<Option<HashMap<String, Vec<String>>>> = RwLock::new(None);
@@ -110,10 +103,10 @@ pub fn load(conn: &Connection) -> BoxSettings {
     BoxSettings {
         memory_mib: parse_memory(raw(MEMORY_SETTING).as_deref()).unwrap_or(DEFAULT_MEMORY_MIB),
         cpus: parse_cpus(raw(CPUS_SETTING).as_deref()).unwrap_or(DEFAULT_CPUS),
+        disk_gib: parse_disk(raw(DISK_SETTING).as_deref()).unwrap_or(DEFAULT_DISK_GIB),
         image_url: parse_image_url(raw(IMAGE_URL_SETTING).as_deref()).unwrap_or(None),
         idle_stop: parse_idle_stop(raw(IDLE_STOP_SETTING).as_deref())
             .unwrap_or(Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60))),
-        layers: parse_layers(raw(LAYERS_SETTING).as_deref()).unwrap_or_else(|_| default_layers()),
     }
 }
 
@@ -165,6 +158,20 @@ pub fn parse_cpus(raw: Option<&str>) -> Result<u8> {
     }
 }
 
+/// A whole number of GiB between [`MIN_DISK_GIB`] and [`MAX_DISK_GIB`].
+pub fn parse_disk(raw: Option<&str>) -> Result<u32> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(DEFAULT_DISK_GIB);
+    };
+    match raw.parse::<u32>() {
+        Ok(gib) if (MIN_DISK_GIB..=MAX_DISK_GIB).contains(&gib) => Ok(gib),
+        _ => Err(Error::Other(format!(
+            "{DISK_SETTING} must be a whole number of GiB between {MIN_DISK_GIB} and \
+             {MAX_DISK_GIB}; got {raw:?}"
+        ))),
+    }
+}
+
 /// A `http(s)://` or `file://` base URL, trimmed; blank is the release URL.
 pub fn parse_image_url(raw: Option<&str>) -> Result<Option<String>> {
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -196,48 +203,17 @@ pub fn parse_idle_stop(raw: Option<&str>) -> Result<Option<Duration>> {
     }
 }
 
-/// Comma-separated layer names out of `OPTIONAL_LAYERS`, returned in that
-/// order without repeats; blank is the default set, `none` is no layer.
-pub fn parse_layers(raw: Option<&str>) -> Result<Vec<String>> {
-    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Ok(default_layers());
-    };
-    if raw == "none" {
-        return Ok(Vec::new());
-    }
-    let known = fletch_box::image_store::OPTIONAL_LAYERS;
-    for name in raw.split(',').map(str::trim) {
-        if !known.contains(&name) {
-            return Err(Error::Other(format!(
-                "{LAYERS_SETTING} must name layers out of {}, comma-separated, or `none`; got {raw:?}",
-                known.join(", ")
-            )));
-        }
-    }
-    Ok(known
-        .iter()
-        .filter(|k| raw.split(',').any(|n| n.trim() == **k))
-        .map(|k| k.to_string())
-        .collect())
-}
-
 /// Validate `value` for `key` and return it normalized for storage, or why it
 /// is refused. `None` for a key that is not a box setting.
 pub fn validate(key: &str, value: &str) -> Option<Result<String>> {
     Some(match key {
         MEMORY_SETTING => parse_memory(Some(value)).map(|v| v.to_string()),
         CPUS_SETTING => parse_cpus(Some(value)).map(|v| v.to_string()),
+        DISK_SETTING => parse_disk(Some(value)).map(|v| v.to_string()),
         IMAGE_URL_SETTING => parse_image_url(Some(value)).map(Option::unwrap_or_default),
         IDLE_STOP_SETTING => {
             parse_idle_stop(Some(value)).map(|d| d.map_or(0, |d| d.as_secs() / 60).to_string())
         }
-        LAYERS_SETTING => parse_layers(Some(value)).map(|layers| {
-            if layers.is_empty() {
-                "none".to_string()
-            } else {
-                layers.join(",")
-            }
-        }),
         _ => return None,
     })
 }
@@ -310,24 +286,17 @@ mod tests {
             Some(Duration::from_secs(180))
         );
         assert!(parse_idle_stop(Some("-1")).is_err());
-        assert_eq!(parse_layers(None).unwrap(), ["devtools"]);
-        assert_eq!(parse_layers(Some(" ")).unwrap(), ["devtools"]);
-        assert_eq!(
-            parse_layers(Some("browser, devtools,browser")).unwrap(),
-            ["devtools", "browser"],
-            "canonical order, no repeats"
-        );
-        assert!(parse_layers(Some("none")).unwrap().is_empty());
-        assert!(parse_layers(Some("gpu")).is_err());
-        assert_eq!(
-            validate("box_layers", "browser").unwrap().unwrap(),
-            "browser"
-        );
-        assert_eq!(validate("box_layers", "none").unwrap().unwrap(), "none");
-        assert!(
-            validate("boxes_enabled", "true").is_none(),
-            "the retired switch is no longer a box setting"
-        );
+        assert_eq!(parse_disk(None).unwrap(), 8);
+        assert_eq!(parse_disk(Some(" 64 ")).unwrap(), 64);
+        for bad in ["3", "257", "1.5", "lots"] {
+            assert!(parse_disk(Some(bad)).is_err(), "{bad}");
+        }
+        for retired in ["boxes_enabled", "box_layers"] {
+            assert!(
+                validate(retired, "true").is_none(),
+                "{retired} is no longer a box setting"
+            );
+        }
         assert_eq!(
             validate("box_idle_stop_minutes", "0").unwrap().unwrap(),
             "0"

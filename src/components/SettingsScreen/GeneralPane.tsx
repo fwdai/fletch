@@ -54,7 +54,7 @@ export function GeneralPane() {
       />
 
       <SetGroup label="Appearance">
-        <SetRow title="Theme" sub="Light or dark window chrome.">
+        <SetRow title="Theme">
           <SetSeg<ThemeMode>
             value={theme}
             options={[
@@ -64,7 +64,7 @@ export function GeneralPane() {
             onChange={setTheme}
           />
         </SetRow>
-        <SetRow title="Accent" sub="Used for highlights, focus rings, and the running pearl.">
+        <SetRow title="Accent" sub="Highlight color across the app.">
           <div className="set-swatches">
             {ACCENTS.map((a) => (
               <button
@@ -94,19 +94,16 @@ export function GeneralPane() {
       <SetGroup label="Notifications">
         <SetRow
           title="Sound"
-          sub="Play a sound when an agent finishes, needs your input, or hits an error — each has its own."
+          sub="Play a sound when an agent finishes, needs input, or hits an error."
         >
           <SetToggle on={soundEnabled} onClick={() => setSoundEnabled(!soundEnabled)} />
         </SetRow>
-        <SetRow
-          title="Desktop notifications"
-          sub="Show a system notification when an agent finishes, needs your input, or hits an error."
-        >
+        <SetRow title="Desktop notifications" sub="Show a system notification for the same events.">
           <SetToggle on={notifyEnabled} onClick={() => setNotifyEnabled(!notifyEnabled)} />
         </SetRow>
         <SetRow
           title="Turn finished"
-          sub="Also alert when an agent finishes a turn. Alerts for needed input and errors are always sent."
+          sub="Also alert on finished turns. Input requests and errors always alert."
         >
           <SetToggle
             on={notifyTurnComplete}
@@ -117,7 +114,7 @@ export function GeneralPane() {
         </SetRow>
         <SetRow
           title="Pull request activity"
-          sub="Also alert your phone when a PR's checks settle, a review comment arrives, or the PR merges or closes. Sent while this window is in the background."
+          sub="Alert your phone on check results, reviews, and merged or closed PRs."
         >
           <SetToggle
             on={notifyPrActivity}
@@ -133,7 +130,7 @@ export function GeneralPane() {
           title="Auto-archive idle workspaces"
           sub={
             hostGate ??
-            "Archive a workspace once it has sat idle this long. Only workspaces with no uncommitted changes and no unpushed commits are archived; a workspace whose PR has merged or closed goes after a day. Archived workspaces can be restored from History."
+            "Archive fully pushed workspaces after this long, or a day after their PR closes. Restore them from History."
           }
         >
           <Select
@@ -153,10 +150,7 @@ export function GeneralPane() {
         >
           <SetToggle on={telemetryEnabled} onClick={() => setTelemetryEnabled(!telemetryEnabled)} />
         </SetRow>
-        <SetRow
-          title="Logs"
-          sub="Fletch writes a local log file. Reveal it to attach to a bug report."
-        >
+        <SetRow title="Logs" sub="Find the local log file to attach to a bug report.">
           <Button variant="outline" onClick={() => void revealLogs()}>
             <Icon name="folder" size={12} />
             Reveal logs

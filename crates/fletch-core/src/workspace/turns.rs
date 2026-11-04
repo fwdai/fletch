@@ -33,7 +33,7 @@ pub(super) fn query_turns(
 ) -> Result<Vec<UserTurn>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT t.turn_id, t.seq, t.text, t.attachments, t.native_id, t.started_at, t.ended_at,
-                t.outcome, {TURN_POSITION}
+                t.outcome, {TURN_POSITION}, t.provider_run_ms
          FROM session_user_turns t
          LEFT JOIN transcripts.session_records r ON r.session_id = t.session_id AND r.native_id = t.native_id
          WHERE t.session_id = ?1 AND (?2 IS NULL OR {TURN_POSITION} < ?2)
@@ -53,6 +53,7 @@ pub(super) fn query_turns(
                     ended_at: r.get(6)?,
                     outcome: r.get(7)?,
                     position: r.get(8)?,
+                    provider_run_ms: r.get(9)?,
                     inherited,
                 },
                 r.get(3)?,
@@ -206,6 +207,27 @@ impl WorkspaceManager {
             duration_ms: now - started_at,
             record_count,
         }))
+    }
+
+    /// Count a turn the provider opened on its own, from `started_at` to now,
+    /// toward the turn it followed: the latest one of the workspace's current
+    /// session to have run and closed. Nothing to count it toward (a session
+    /// whose only turns are an ancestor's, say) drops it.
+    pub fn add_provider_run(&self, workspace_id: &str, started_at: i64) -> Result<()> {
+        let conn = self.db.lock();
+        let Some(sid) = current_session_id(&conn, workspace_id) else {
+            return Ok(());
+        };
+        conn.execute(
+            "UPDATE session_user_turns SET provider_run_ms = provider_run_ms + ?1
+             WHERE turn_id = (
+                 SELECT turn_id FROM session_user_turns
+                 WHERE session_id = ?2 AND started_at IS NOT NULL AND ended_at IS NOT NULL
+                 ORDER BY seq DESC LIMIT 1
+             )",
+            rusqlite::params![(now_millis() - started_at).max(0), sid],
+        )?;
+        Ok(())
     }
 
     /// Mark turns whose messages were dropped before they ever ran — queued

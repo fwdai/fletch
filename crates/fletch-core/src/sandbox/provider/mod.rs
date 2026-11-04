@@ -9,9 +9,8 @@
 //! resolved it ([`Credential`]: env, and files with the side that writes
 //! them), the sessions dir and how it reaches the host ([`Transport`]). The
 //! box engine applies those answers over its channel (`sandbox::boxes::home`);
-//! nothing here touches a guest. The credential resolution the adapters
-//! share — the claude auth chain, the stored setup-token, the provider API
-//! keys a shell exports — is [`auth`].
+//! nothing here touches a guest. What the adapters share to resolve a
+//! credential is [`auth`].
 //!
 //! Adding a provider to the box is one adapter plus its tools-disk script
 //! (`fletch_box::tools`); nothing in the engine names a provider.
@@ -22,7 +21,6 @@ pub mod codex;
 pub mod cursor;
 pub mod opencode;
 pub mod pi;
-pub mod setup_token;
 
 use std::io;
 use std::path::{Path, PathBuf};

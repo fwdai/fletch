@@ -50,7 +50,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
         combos: ["Mod+Shift+["],
         label: "Previous in the sidebar",
         description:
-          "Select the row above — agents, drafts and workflow runs, in the order shown. Shows the sidebar if hidden.",
+          "Select the row above: agents, drafts and workflow runs, in the order shown. Shows the sidebar if hidden.",
       },
       {
         id: "nextAgent",

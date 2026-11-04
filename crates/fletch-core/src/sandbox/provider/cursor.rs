@@ -20,9 +20,10 @@ const API_KEY: &str = "CURSOR_API_KEY";
 
 /// Launch-blocking message when there is no key: the keychain login cannot
 /// reach a guest, so nothing else could authenticate there.
-pub const NO_AUTH_MSG: &str = "No Cursor credentials for boxes — set CURSOR_API_KEY (create one at \
-     cursor.com/dashboard). `cursor-agent login` stores its token in the host keychain, which a box \
-     can't read.";
+pub const NO_AUTH_MSG: &str =
+    "No Cursor credentials for Linux VMs. Set CURSOR_API_KEY (create one at \
+     cursor.com/dashboard). `cursor-agent login` keeps its token in the Keychain, which a VM can't \
+     read.";
 
 pub struct Cursor;
 

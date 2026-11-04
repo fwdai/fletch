@@ -136,7 +136,7 @@ export function ShortcutsPane() {
       <SetHead
         eyebrow="Settings · Shortcuts"
         title="Keyboard shortcuts"
-        desc="Every key binding in Fletch, grouped by where it applies. The first three groups work anywhere in the window and can be changed: click the keys, then press the new ones. The rest belong to the surface named and are fixed."
+        desc="Key bindings across Fletch, and which ones you can change."
         actions={
           customized ? (
             <Button variant="outline" size="sm" onClick={resetAll}>

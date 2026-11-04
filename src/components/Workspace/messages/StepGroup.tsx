@@ -9,7 +9,7 @@
 // thoughts) render here, through the presenters; anything else that lands in a
 // run (a hook's output) goes back to the app's own `renderItem`.
 
-import { memo, type ReactNode, useMemo, useState } from "react";
+import { memo, useContext, useMemo, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { Loader } from "@/components/ui/Loader";
 import { firstLine } from "@/util/format";
@@ -22,7 +22,7 @@ import {
   useRevealed,
   useSteady,
 } from "./Disclosure";
-import { useTranscriptHost } from "./host";
+import { RowEnv, useTranscriptHost } from "./host";
 import { itemIdentity, type ViewItem } from "./pair";
 import { getPresenter, type ToolCall, type ToolResult } from "./presenters";
 import { Caption } from "./presenters/blocks";
@@ -40,26 +40,22 @@ import {
 import { ToolResultItem } from "./ToolResultItem";
 import { ToolRow } from "./ToolRow";
 
-/** The summary line: phrases joined by a quiet dot, the first capitalized
- *  unless a `lead` phrase ("Worked for 4m 12s") goes before them. */
-export function SummaryLine({
-  lead,
+/** The summary line: phrases joined by a quiet dot, the first capitalized. */
+function SummaryLine({
   parts,
   note,
 }: {
-  lead?: string;
   parts: SummaryPart[];
   /** Muted trailing text, e.g. a lone thought's first line. */
   note?: string;
 }) {
   return (
     <span className="steprun-summary">
-      {lead && <span className="steprun-lead">{lead}</span>}
       {parts.map((p, i) => {
-        const text = i === 0 && !lead ? p.text.charAt(0).toUpperCase() + p.text.slice(1) : p.text;
+        const text = i === 0 ? p.text.charAt(0).toUpperCase() + p.text.slice(1) : p.text;
         return (
           <span key={p.key} className={p.tone ? `steprun-part ${p.tone}` : "steprun-part"}>
-            {(i > 0 || lead) && <span className="steprun-sep">·</span>}
+            {i > 0 && <span className="steprun-sep">·</span>}
             {text}
             {p.code && <code>{p.code}</code>}
             {p.diff && <DiffCount additions={p.diff.additions} deletions={p.diff.deletions} />}
@@ -73,7 +69,7 @@ export function SummaryLine({
 
 /** The leading glyph: what the run is about at rest, a chevron on hover and
  *  while open. A live run's icon follows what it's doing now. */
-export function StepGlyph({ icon }: { icon: IconName }) {
+function StepGlyph({ icon }: { icon: IconName }) {
   return (
     <span className="steprun-glyph" aria-hidden>
       <Ticker k={icon} className="steprun-icon">
@@ -146,7 +142,11 @@ function ThoughtRow({ text }: { text: string }) {
   );
 }
 
-type RenderItem = (index: number, busy: boolean) => ReactNode;
+/** A step that isn't a tool call or a thought: the app's to draw (RowEnv). */
+function AppStep({ index, busy }: { index: number; busy: boolean }) {
+  const env = useContext(RowEnv);
+  return env ? <>{env.renderItem(index, busy)}</> : null;
+}
 
 /** One step inside an open run. */
 function StepItem({
@@ -154,18 +154,16 @@ function StepItem({
   index,
   agentId,
   busy,
-  renderItem,
 }: {
   item: ViewItem;
   index: number;
   agentId?: string;
   busy: boolean;
-  renderItem: RenderItem;
 }) {
   switch (item.kind) {
     case "notice":
       if (item.subtype === "reasoning") return <ThoughtRow text={item.text} />;
-      return <>{renderItem(index, busy)}</>;
+      return <AppStep index={index} busy={busy} />;
     case "tool_pair":
       return <ToolStep call={item.call} result={item.result} agentId={agentId} busy={busy} />;
     case "tool_call":
@@ -173,20 +171,14 @@ function StepItem({
     case "tool_result":
       return <ToolResultItem item={item} />;
     default:
-      return <>{renderItem(index, busy)}</>;
+      return <AppStep index={index} busy={busy} />;
   }
 }
 
 /** A run of one opens to that step's own detail; there's no list to show.
  *  A failed background task has no row to say so here, so its status leads
  *  the detail. */
-function SoleDetail(props: {
-  item: ViewItem;
-  index: number;
-  agentId?: string;
-  busy: boolean;
-  renderItem: RenderItem;
-}) {
+function SoleDetail(props: { item: ViewItem; index: number; agentId?: string; busy: boolean }) {
   const { item, busy } = props;
   const { taskFor } = useTranscriptHost();
   if (item.kind === "tool_pair") {
@@ -214,7 +206,6 @@ export const StepGroup = memo(function StepGroup({
   provider: _provider,
   busy,
   tail,
-  renderItem,
 }: {
   run: StepRun;
   agentId?: string;
@@ -224,9 +215,6 @@ export const StepGroup = memo(function StepGroup({
   /** Nothing comes after the run yet: while the turn is live, the agent is
    *  still on it. */
   tail: boolean;
-  /** The app's rendering of an item in the run that isn't a tool call or a
-   *  thought (see RowEnv). */
-  renderItem: RenderItem;
 }) {
   const { items } = run;
   const { open, deep, instant, reveal, toggle } = useDisclosure();
@@ -300,13 +288,7 @@ export const StepGroup = memo(function StepGroup({
       >
         <DeepOpen.Provider value={deep}>
           {sole ? (
-            <SoleDetail
-              item={sole}
-              index={run.start}
-              agentId={agentId}
-              busy={busy}
-              renderItem={renderItem}
-            />
+            <SoleDetail item={sole} index={run.start} agentId={agentId} busy={busy} />
           ) : (
             <div className="steprun-list">
               {items.map((item, i) => (
@@ -315,13 +297,7 @@ export const StepGroup = memo(function StepGroup({
                   className="steprun-item"
                   style={{ "--i": Math.min(i, 12) } as React.CSSProperties}
                 >
-                  <StepItem
-                    item={item}
-                    index={run.start + i}
-                    agentId={agentId}
-                    busy={busy}
-                    renderItem={renderItem}
-                  />
+                  <StepItem item={item} index={run.start + i} agentId={agentId} busy={busy} />
                 </div>
               ))}
             </div>

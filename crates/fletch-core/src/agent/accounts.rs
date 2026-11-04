@@ -252,7 +252,7 @@ pub fn existing_account_dir(provider: &str, account: Option<&str>) -> Result<Opt
 /// a launch under a managed account removes them from the child's env: the
 /// CLI must authenticate with that account's own login or not at all. Proxy
 /// endpoint vars (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`) are not here and
-/// still pass through. The box's auth chain filters the same claude set.
+/// still pass through. A box launch forwards the same claude set from the shell.
 pub fn ambient_credential_vars(provider: &str) -> &'static [&'static str] {
     match provider {
         "claude" => &[
@@ -386,7 +386,7 @@ fn symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
 pub fn remove_account_dir(provider: &str, id: &str) -> Result<()> {
     let dir = account_dir(provider, id)?;
     if provider == "claude" {
-        let service = crate::sandbox::provider::auth::claude_keychain_service(Some(&dir));
+        let service = super::host_login::claude::claude_keychain_service(Some(&dir));
         if let Err(reason) = crate::keychain::delete_item(&service) {
             return Err(Error::Other(format!(
                 "Could not delete the `{id}` account's Keychain login ({reason}). \

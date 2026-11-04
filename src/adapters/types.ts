@@ -33,6 +33,11 @@ type ChatItemBody =
        *  flight (the live turn); both absent for turns with no timing row. */
       startedAt?: number;
       endedAt?: number;
+      /** Millis the provider ran in turns it opened on its own after this one
+       *  ended (`UserTurn.provider_run_ms`): more of this turn's work, with
+       *  idle time between, so it adds to `endedAt - startedAt` rather than
+       *  moving `endedAt`. */
+      providerRunMs?: number;
       /** The turn's id (`session_user_turns.turn_id`): on a store-inserted
        *  optimistic bubble (the message that opened a turn, before the
        *  transcript echoes it), or overlaid from the matching `UserTurn` row.

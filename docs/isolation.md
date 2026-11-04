@@ -497,8 +497,8 @@ and this document should be corrected.
   step.
 - `crates/fletch-core/src/sandbox/provider/` — provider knowledge shared by
   every engine: what each CLI keeps outside the checkout, how its credential
-  is resolved on the host for a launch (`auth.rs`: the claude auth chain, the
-  stored setup-token), and which engines can run it (`supports`).
+  is resolved on the host for a launch (`auth.rs`), and which engines can run
+  it (`supports`).
 - `crates/fletch-core/src/sandbox/guarantees.rs` — the claim/coverage matrix: what each
   engine actually guarantees, and the stated reason wherever coverage is less
   than complete. Authoritative for per-engine coverage.

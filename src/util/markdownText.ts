@@ -64,7 +64,8 @@ const ENTITIES: Record<string, string> = {
   nbsp: " ",
 };
 
-function decodeEntities(s: string): string {
+/** Text with its named and numeric character references resolved. */
+export function decodeEntities(s: string): string {
   return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
     if (e[0] === "#") {
       const code =

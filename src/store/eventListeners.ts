@@ -26,6 +26,7 @@ import {
   onAutopilotSwitches,
   onBoxEgress,
   onBoxImage,
+  onBoxList,
   onBoxState,
   onBoxTools,
   onDelegationChanged,
@@ -769,6 +770,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   await bind(onBoxImage((image) => applyBoxSetupEvent(get, { image })));
   await bind(onBoxTools((tools) => applyBoxSetupEvent(get, { tools })));
   await bind(onBoxState((state) => applyBoxSetupEvent(get, { state })));
+  await bind(onBoxList(() => void get().refreshBoxVms()));
   await bind(
     onBoxEgress((e) => {
       if (!e.allowed) get().receiveBoxEgress(e);

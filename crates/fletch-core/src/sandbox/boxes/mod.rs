@@ -334,9 +334,16 @@ pub fn ready_for(provider: &str) -> bool {
         && registry::built_tools_disk(provider).is_some()
 }
 
-/// This build's image with the enabled layers (`box_layers`), when all of
-/// them are installed; `None` while a layer the user turned on is still on
-/// its way, so a launch waits for it like for the base.
+/// The layers every box gets besides the base.
+pub(crate) fn image_layers() -> Vec<String> {
+    fletch_box::image_store::OPTIONAL_LAYERS
+        .iter()
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// This build's image with its layers, when all of them are installed; `None`
+/// while one is still on its way, so a launch waits for it like for the base.
 pub fn installed_image() -> Result<Option<InstalledImage>> {
     // This build's version, never the newest on disk: a newer image left by a
     // later build would boot a guest whose init contract this build does not
@@ -344,7 +351,7 @@ pub fn installed_image() -> Result<Option<InstalledImage>> {
     // first boot of a session (the registry), which is where damage is caught.
     Ok(image_store()
         .find(&pinned_image().version)
-        .and_then(|image| image.with_layers(&settings::current().layers)))
+        .and_then(|image| image.with_layers(&image_layers())))
 }
 
 /// The runtime probe alone, for the Settings page: `None` when no runtime
@@ -366,6 +373,9 @@ pub const EVENT_TOOLS: &str = "box:tools";
 /// `box_egress_overview`. A project's settings files say so with
 /// `project_file:changed` instead.
 pub const EVENT_POLICY: &str = "box:policy";
+/// The set of VMs changed: one was registered or discarded. Carries nothing:
+/// a client re-reads `box_list`. A phase change is `box:state`, not this.
+pub const EVENT_LIST: &str = "box:list";
 
 static SINK: OnceLock<Sink> = OnceLock::new();
 
@@ -378,6 +388,8 @@ pub fn set_event_sink(sink: Sink) {
 }
 
 pub(crate) fn emit<T: Serialize>(event: &str, payload: &T) {
+    #[cfg(test)]
+    tests::note_event(event);
     if let Some(sink) = SINK.get() {
         crate::host::emit(sink.as_ref(), event, payload);
     }
@@ -1851,9 +1863,17 @@ pub async fn discard_if_any(agent_id: &str) -> Result<()> {
     if !dir.exists() && !registry.knows(agent_id) {
         return Ok(());
     }
-    registry.discard(agent_id).await.inspect_err(|e| {
+    let outcome = registry.discard(agent_id).await.inspect_err(|e| {
         tracing::warn!(agent_id, error = %e, "box discard failed");
-    })
+    });
+    // Whatever came of it: the workspace is on its way out either way.
+    list_changed();
+    outcome
+}
+
+/// Tell clients the set of VMs changed ([`EVENT_LIST`]).
+pub(crate) fn list_changed() {
+    emit(EVENT_LIST, &serde_json::json!({}));
 }
 
 /// Stop every running box cleanly; app exit (`Supervisor::shutdown`).
@@ -1933,21 +1953,20 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
     });
 }
 
-/// Box directories no live agent owns: left by a discard that failed, or by
-/// an archive the app died in the middle of (`begin_archive` has already
-/// marked the row). Each holds a whole data disk, so nothing else would ever
-/// reclaim it. Only a directory with a data disk counts — the root also holds
-/// a tools build's throwaway `tools-…` box — and the directories are
-/// listed before the agents are read, so a box made in between belongs to a
-/// row that is already live.
-fn leaked_box_dirs(workspace: &crate::workspace::WorkspaceManager) -> Vec<PathBuf> {
-    let Some(entries) = boxes_root()
-        .ok()
-        .and_then(|root| std::fs::read_dir(root).ok())
-    else {
+/// Every agent's box directory, by agent id: a box exists once it has a data
+/// disk. That survives a restart, which the registry's entries do not, and a
+/// tenant has none of its own. The root also holds a tools build's throwaway
+/// `tools-…` box, which is no agent's.
+fn boxes_on_disk() -> Vec<(String, PathBuf)> {
+    boxes_root().map(|root| boxes_in(&root)).unwrap_or_default()
+}
+
+/// [`boxes_on_disk`] with the root given.
+fn boxes_in(root: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
-    let boxes: Vec<(String, PathBuf)> = entries
+    entries
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
@@ -1955,7 +1974,21 @@ fn leaked_box_dirs(workspace: &crate::workspace::WorkspaceManager) -> Vec<PathBu
             (!name.starts_with("tools-") && path.join(registry::DATA_DISK).is_file())
                 .then_some((name, path))
         })
-        .collect();
+        .collect()
+}
+
+/// The agents that have a box, running or not, hidden workspaces included.
+pub fn created_box_ids() -> Vec<String> {
+    boxes_on_disk().into_iter().map(|(id, _)| id).collect()
+}
+
+/// Box directories no live agent owns: left by a discard that failed, or by
+/// an archive the app died in the middle of (`begin_archive` has already
+/// marked the row). Each holds a whole data disk, so nothing else would ever
+/// reclaim it. The directories are listed before the agents are read, so a
+/// box made in between belongs to a row that is already live.
+fn leaked_box_dirs(workspace: &crate::workspace::WorkspaceManager) -> Vec<PathBuf> {
+    let boxes = boxes_on_disk();
     if boxes.is_empty() {
         return Vec::new();
     }

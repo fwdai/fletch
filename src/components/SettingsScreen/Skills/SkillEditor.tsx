@@ -54,8 +54,8 @@ export function SkillEditor({
           <label className="set-field-label text-sm">
             Description
             <span className="ca-field-hint">
-              One line telling the agent when this skill applies — it's all the agent sees until it
-              opens the document
+              One line on when this skill applies. It's all the agent sees until it opens the
+              document.
             </span>
           </label>
           <TextInput

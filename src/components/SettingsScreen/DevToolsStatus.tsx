@@ -52,11 +52,11 @@ export function DevToolsStatus() {
             : git
               ? git.installed
                 ? git.source === "portable"
-                  ? `${git.version ?? "Installed"} — bundled with Fletch`
+                  ? `${git.version ?? "Installed"}, bundled with Fletch`
                   : (git.version ?? "Installed")
                 : gitInstallError
-                  ? `Install failed — ${gitInstallError}`
-                  : "Not found — required to run any agent"
+                  ? `Install failed: ${gitInstallError}`
+                  : "Not found. Required to run any agent."
               : checking
                 ? "Checking…"
                 : "Couldn't check"
@@ -79,7 +79,7 @@ export function DevToolsStatus() {
           gh
             ? gh.authenticated
               ? `Connected${gh.login ? ` as ${gh.login}` : ""}`
-              : "Not connected — sign in with GitHub (Account tab) for clone & PRs"
+              : "Not connected. Sign in with GitHub (Account tab) for clone & PRs."
             : checking
               ? "Checking…"
               : "Couldn't check"

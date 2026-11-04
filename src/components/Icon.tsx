@@ -190,6 +190,7 @@ const ICON_COMPONENTS = {
   task: ListChecks,
   fetch: Globe,
   flask: FlaskConical,
+  globe: Globe,
   history: History,
   archive: Archive,
   archiveRestore: ArchiveRestore,

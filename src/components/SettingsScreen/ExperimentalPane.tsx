@@ -20,7 +20,7 @@ export function ExperimentalPane() {
       <SetHead
         eyebrow="Settings · Experimental"
         title="Experimental"
-        desc="Early features we're still polishing. Toggle them on to try them, off to go back."
+        desc="Early features we're still polishing."
       />
 
       <SetGroup label="Early features" last>

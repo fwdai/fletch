@@ -35,13 +35,13 @@ export function DeveloperPane() {
       <SetHead
         eyebrow="Settings · Developer"
         title="Developer"
-        desc="Tools for working on Fletch itself. Only available in development builds."
+        desc="Tools for working on Fletch itself."
       />
 
       <SetGroup label="Home">
         <SetRow
           title="Mission Control"
-          sub="Use the fleet review queue as the Home view. When off, Home is the quick-actions landing screen."
+          sub="Use the fleet review queue as Home, instead of the quick-actions screen."
         >
           <SetToggle
             on={!!features.missionControl}
@@ -53,7 +53,7 @@ export function DeveloperPane() {
       <SetGroup label="Pilots">
         <SetRow
           title="Project context layer"
-          sub="Agents read and record project knowledge (vision, features, decisions, constraints) through context_* ops; a background pass extracts it from sessions and merged PRs. Adds a Context tab to every project page."
+          sub="Agents read and record project knowledge. Adds a Context tab to every project page."
         >
           <SetToggle
             on={contextLayerEnabled}
@@ -67,10 +67,7 @@ export function DeveloperPane() {
       </SetGroup>
 
       <SetGroup label="Onboarding">
-        <SetRow
-          title="Onboarding"
-          sub="Replay the first-run onboarding — the welcome and the pre-flight check."
-        >
+        <SetRow title="Onboarding" sub="Replay the first-run welcome and pre-flight check.">
           <Button
             variant="outline"
             onClick={() => {
@@ -103,7 +100,7 @@ export function DeveloperPane() {
       <SetGroup label="Notifications" last>
         <SetRow
           title="Feedback prompt"
-          sub="Show the one-time “How's Fletch working for you?” prompt that normally comes up on the third day of use. Triggering it here leaves its schedule untouched."
+          sub="Show the “How's Fletch working for you?” prompt. Its schedule stays untouched."
         >
           <Button
             variant="outline"
@@ -118,7 +115,7 @@ export function DeveloperPane() {
         </SetRow>
         <SetRow
           title="Update-ready toast"
-          sub="Show the “Update ready” restart toast with a fake version, without releasing a build. Restart now will actually relaunch."
+          sub="Show the “Update ready” toast with a fake version. Restart now really relaunches."
         >
           <Button
             variant="outline"

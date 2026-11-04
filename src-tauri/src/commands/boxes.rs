@@ -62,6 +62,12 @@ pub async fn available_workspace_types(
     engine::available_workspace_types_impl(&ctx, &repo_path, &provider).await
 }
 
+/// Every VM that exists, running or not, hidden workspaces included.
+#[tauri::command]
+pub async fn box_list(ctx: State<'_, Arc<EngineCtx>>) -> Result<Vec<engine::BoxVm>> {
+    engine::box_list_impl(&ctx)
+}
+
 /// Stop the agent's box now; answers which rung of the ladder worked.
 #[tauri::command]
 pub async fn box_stop(agent_id: String) -> Result<String> {

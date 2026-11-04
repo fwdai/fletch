@@ -1,21 +1,18 @@
-// The transcript as the user reads it, derived from the flat item list:
+// The transcript as the user reads it, derived from the flat item list: every
+// run of steps (tool calls, thinking) becomes one row, a `StepRun`, whose header
+// says what the run did, and everything else is a row of its own, on the page.
 //
-//   - every run of steps (tool calls, thinking) becomes one row, a `StepRun`,
-//     whose header says what the run did;
-//   - every turn but the latest folds the work between its prompt and its
-//     answer into one row, a `Fold` ("Worked for 4m 12s · changed 9 files"),
-//     leaving the prompt and the answer on the page.
-//
-// The latest turn is never folded: it's the one being watched, or just read.
-// It folds when the next one starts, after the user has sent a message and the
-// log has pinned to the bottom, so nothing collapses under their eyes.
+// `isStep` is the only rule, the same in every turn, live or settled. What the
+// agent says and the sub-agents it starts are never collapsed, wherever they
+// sit in a turn, so nothing here has to tell an answer from narration: a turn
+// can end on a tool call, and a scheduled wake-up can add to it long after.
 //
 // Pure. Rows refer to items by index into the list, so the per-index
-// bookkeeping (live turn, turn ids, footers) carries over unchanged. Their
-// keys, though, follow the items (`itemIdentity`): a run is named by the first
-// tool call in it and a fold by its prompt, so the log can be rebuilt at turn
-// end or grow a page of older history at the top (the phone's "Load older
-// messages") without a run's disclosure state moving to a different run.
+// bookkeeping (live turn, turn ids, footers) carries over unchanged. A run's
+// key, though, follows its items (`itemIdentity`): it is named by the first
+// tool call in it, so the log can be rebuilt at turn end or grow a page of
+// older history at the top (the phone's "Load older messages") without a run's
+// disclosure state moving to a different run.
 
 import { APP_ACTION_PREFIX } from "@/delegation";
 import { itemIdentity, type ViewItem } from "./pair";
@@ -29,42 +26,17 @@ export interface StepRun {
   items: ViewItem[];
 }
 
-/** The work of a settled turn — everything between its prompt and its
- *  answer — folded behind one row. */
-export interface Fold {
-  key: string;
-  /** Index of the turn's prompt. */
-  head: number;
-  /** The folded items, `start` (the item after the prompt) up to `end`. */
-  start: number;
-  end: number;
-  items: ViewItem[];
-  /** The folded rows, as they render once opened. */
-  rows: Row[];
-  /** How long the turn ran, when its prompt carries timing. */
-  runSec: number | undefined;
-}
+export type Row = { kind: "item"; index: number } | { kind: "steps"; run: StepRun };
 
-export type Row =
-  | { kind: "item"; index: number }
-  | { kind: "steps"; run: StepRun }
-  | { kind: "fold"; fold: Fold };
+/** Runs by key from the previous pass, reused while their items are unchanged
+ *  so memoized rows skip re-rendering during streaming (the same idea as
+ *  pair.ts's PairCache, one level up). */
+export type RowCache = Map<string, StepRun>;
 
-/** Runs and folds by key from the previous pass, reused while their items are
- *  unchanged so memoized rows skip re-rendering during streaming (the same
- *  idea as pair.ts's PairCache, one level up). */
-export interface RowCache {
-  runs: Map<string, StepRun>;
-  folds: Map<string, Fold>;
-}
-
-export const newRowCache = (): RowCache => ({ runs: new Map(), folds: new Map() });
+export const newRowCache = (): RowCache => new Map();
 
 export interface TranscriptRowsModel {
   rows: Row[];
-  /** Footer indices whose turn's fold already says how long it ran; the
-   *  footer leaves the duration out rather than repeating it. */
-  quietFooters: Set<number>;
   /** Key of the run the transcript ends on — a mid-turn follow-up bubble
    *  below it aside — which is the one the agent is on while the turn is
    *  live. Null when it ends on something else. */
@@ -91,9 +63,8 @@ export function isPrompt(item: ViewItem): item is Extract<ViewItem, { kind: "use
 
 /** A turn as the user counts them: `[head, end)` from a prompt they wrote up
  *  to the next, app actions and their replies inside it. One model for every
- *  per-turn derivation — the footer that closes a turn (`useTranscript`), the
- *  navigable turns, and which footer a fold has already spoken for — so none
- *  of them can place a turn's end somewhere another doesn't. */
+ *  per-turn derivation — the footer that closes a turn and the navigable
+ *  turns — so none of them can place a turn's end somewhere another doesn't. */
 export interface TurnSpan {
   head: number;
   end: number;
@@ -127,21 +98,67 @@ function sameItems(a: ViewItem[], b: ViewItem[]): boolean {
 
 /** The last index a row covers — where a turn footer that closes it sits. */
 export function lastIndex(row: Row): number {
-  switch (row.kind) {
-    case "item":
-      return row.index;
-    case "steps":
-      return row.run.start + row.run.items.length - 1;
-    case "fold":
-      return row.fold.end - 1;
-  }
+  return row.kind === "item" ? row.index : row.run.start + row.run.items.length - 1;
 }
 
-/** What a settled turn ends on and keeps on the page: the agent's closing
- *  words, and any notice after them (an error the turn ended on, a background
- *  task reporting in). */
-function isAnswer(item: ViewItem): boolean {
-  return item.kind === "agent_message" || (item.kind === "notice" && !isStep(item));
+/** A turn's closing footer: how long it ran, its settled prose (for copy), and
+ *  the turn a fork from here continues through — the last turn above the
+ *  footer, which is an app action when one closed the span. */
+export interface TurnFooterData {
+  runSec: number;
+  copyText: string;
+  forkTurnId: string | undefined;
+}
+
+export interface TurnFooters {
+  /** Parallel to the items: a footer at each ended turn's last item. */
+  footers: (TurnFooterData | null)[];
+  /** Persisted start of the turn still running, if one is. */
+  openStartedAt: number | undefined;
+}
+
+/** The footer closing each turn, placed at its last item: the seam before the
+ *  next turn, as `turnSpans` counts turns. A turn ran for as long as every
+ *  message in it did (its prompt, and any app action clicked in it), each with
+ *  the runs the provider opened on its own after it. A message still running
+ *  keeps the turn open, and an open turn carries no footer, just its live
+ *  timer on the working strip. */
+export function turnFooters(items: ViewItem[]): TurnFooters {
+  const footers: (TurnFooterData | null)[] = items.map(() => null);
+  let openStartedAt: number | undefined;
+  for (const { head, end } of turnSpans(items)) {
+    let runMs: number | undefined;
+    let open: number | undefined;
+    let forkTurnId: string | undefined;
+    const texts: string[] = [];
+    for (let j = head; j < end; j += 1) {
+      const it = items[j];
+      if (it.kind === "agent_message" && !it.streaming && it.text) texts.push(it.text);
+      if (it.kind !== "user_message") continue;
+      if (it.turnId) forkTurnId = it.turnId;
+      if (it.startedAt == null) continue;
+      if (it.endedAt == null) open ??= it.startedAt;
+      else runMs = (runMs ?? 0) + it.endedAt - it.startedAt + (it.providerRunMs ?? 0);
+    }
+    if (open !== undefined) openStartedAt = open;
+    else if (runMs !== undefined) {
+      footers[end - 1] = { runSec: runMs / 1000, copyText: texts.join("\n\n"), forkTurnId };
+    }
+  }
+  return { footers, openStartedAt };
+}
+
+/** The footer closing `row`, if one does. The turn the agent is on shows none
+ *  yet, even when its messages have all ended: a run the provider opened on
+ *  its own after them is that turn's work too, and still adding up. */
+export function footerFor(
+  row: Row,
+  footers: (TurnFooterData | null)[],
+  liveBusy: boolean,
+  openStart: number,
+): TurnFooterData | null {
+  const end = lastIndex(row);
+  return liveBusy && end >= openStart ? null : footers[end];
 }
 
 export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsModel {
@@ -172,102 +189,28 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
     // items at a new place (older history prepended above them) get a fresh
     // object under the same key — the key keeps the row's state, the object
     // carries the indices the footers and the live turn are placed by.
-    const cached = cache.runs.get(key);
+    const cached = cache.get(key);
     if (cached && cached.start === start && sameItems(cached.items, slice)) return cached;
     const fresh: StepRun = { key, start, items: slice };
-    cache.runs.set(key, fresh);
+    cache.set(key, fresh);
     return fresh;
   };
 
-  /** Rows for `[start, end)`, steps gathered into runs. */
-  const flat = (start: number, end: number): Row[] => {
-    const out: Row[] = [];
-    let i = start;
-    while (i < end) {
-      if (!isStep(items[i])) {
-        out.push({ kind: "item", index: i });
-        i += 1;
-        continue;
-      }
-      let j = i + 1;
-      while (j < end && isStep(items[j])) j += 1;
-      out.push({ kind: "steps", run: run(i, j) });
-      i = j;
-    }
-    return out;
-  };
-
-  /** Fold the turn `[head, end)`, or null when there's nothing worth folding:
-   *  no steps at all, or work that already renders as a single row. */
-  const fold = (head: number, end: number): { fold: Fold; answerAt: number } | null => {
-    let answerAt = end;
-    while (answerAt - 1 > head && isAnswer(items[answerAt - 1])) answerAt -= 1;
-    const start = head + 1;
-    if (answerAt - start < 1) return null;
-    const work = items.slice(start, answerAt);
-    if (!work.some(isStep)) return null;
-    const rows = flat(start, answerAt);
-    if (rows.length < 2) return null;
-
-    const prompt = items[head];
-    const runSec =
-      prompt.kind === "user_message" && prompt.startedAt != null && prompt.endedAt != null
-        ? (prompt.endedAt - prompt.startedAt) / 1000
-        : undefined;
-    const key = `f:${itemIdentity(prompt) ?? `i:${head}`}`;
-    seen.add(key);
-    const cached = cache.folds.get(key);
-    if (
-      cached &&
-      cached.head === head &&
-      cached.end === answerAt &&
-      cached.runSec === runSec &&
-      sameItems(cached.items, work)
-    ) {
-      return { fold: cached, answerAt };
-    }
-    const fresh: Fold = { key, head, start, end: answerAt, items: work, rows, runSec };
-    cache.folds.set(key, fresh);
-    return { fold: fresh, answerAt };
-  };
-
-  // Work folds under the message that asked for it — a prompt, or an app
-  // action clicked after the reply, whose own work is its own fold. Anything
-  // before the first message (a forked history's inherited tail, a sub-agent
-  // thread's whole log) has nothing to fold under.
-  const heads: number[] = [];
-  items.forEach((it, i) => {
-    if (it.kind === "user_message") heads.push(i);
-  });
-
   const rows: Row[] = [];
-  /** How long each folded message's work ran, by its index. */
-  const spoken = new Map<number, number>();
-  rows.push(...flat(0, heads.length > 0 ? heads[0] : items.length));
-  heads.forEach((head, k) => {
-    const end = k + 1 < heads.length ? heads[k + 1] : items.length;
-    const latest = k === heads.length - 1;
-    const folded = latest ? null : fold(head, end);
-    if (!folded) {
-      rows.push({ kind: "item", index: head }, ...flat(head + 1, end));
-      return;
+  let i = 0;
+  while (i < items.length) {
+    if (!isStep(items[i])) {
+      rows.push({ kind: "item", index: i });
+      i += 1;
+      continue;
     }
-    rows.push({ kind: "item", index: head }, { kind: "fold", fold: folded.fold });
-    rows.push(...flat(folded.answerAt, end));
-    if (folded.fold.runSec !== undefined) spoken.set(head, folded.fold.runSec);
-  });
-
-  // The footer closing a turn says how long its prompt ran; when the fold
-  // under that prompt said it first, the footer leaves it out. The footer
-  // sits where the turn ends as the user counts turns (`turnSpans`): after an
-  // app action's reply, not before the action.
-  const quietFooters = new Set<number>();
-  for (const span of turnSpans(items)) {
-    if (spoken.has(span.head)) quietFooters.add(span.end - 1);
+    let j = i + 1;
+    while (j < items.length && isStep(items[j])) j += 1;
+    rows.push({ kind: "steps", run: run(i, j) });
+    i = j;
   }
 
-  for (const key of cache.runs.keys()) if (!seen.has(key)) cache.runs.delete(key);
-  for (const key of cache.folds.keys()) if (!seen.has(key)) cache.folds.delete(key);
+  for (const key of cache.keys()) if (!seen.has(key)) cache.delete(key);
 
   let tailRunKey: string | null = null;
   for (let r = rows.length - 1; r >= 0; r -= 1) {
@@ -276,5 +219,5 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
     tailRunKey = row.kind === "steps" ? row.run.key : null;
     break;
   }
-  return { rows, quietFooters, tailRunKey };
+  return { rows, tailRunKey };
 }

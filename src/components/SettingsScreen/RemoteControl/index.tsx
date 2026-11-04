@@ -50,7 +50,7 @@ export function RemoteControlPane() {
   // nothing beyond its switches.
   const problem = listening
     ? status?.addresses.length === 0
-      ? "No network address found — connect this Mac to Wi-Fi or Ethernet."
+      ? "No network address found. Connect this Mac to Wi-Fi or Ethernet."
       : null
     : enabled
       ? "On, but the port could not be opened."
@@ -61,13 +61,13 @@ export function RemoteControlPane() {
       <SetHead
         eyebrow="Settings · Remote control"
         title="Remote control"
-        desc="Watch and steer your agents from Fletch on your phone. Turn on the connection, pair a device with a one-time code, and manage the devices that can reach this Mac. This Mac can also be paired with another machine running Fletch, so its agents are reachable from here."
+        desc="How your phone and other machines connect to your agents."
       />
 
       <SetGroup label="Connection">
         <SetRow
           title="Allow remote control"
-          sub="Lets a paired phone watch and steer agents over your network. End-to-end encrypted."
+          sub="Lets a paired phone watch and steer agents. End-to-end encrypted."
         >
           <SetToggle
             on={enabled}
@@ -78,7 +78,7 @@ export function RemoteControlPane() {
 
         <SetRow
           title="Keep this Mac awake on power"
-          sub="While remote control is on and the Mac is plugged in, it won't idle-sleep, so your phone can reach it between tasks. Closing the lid still puts it to sleep. On battery, it stays awake only while agents are working."
+          sub="Stops idle sleep while plugged in, so your phone can reach this Mac. Closing the lid still sleeps it."
         >
           <SetToggle on={keepAwakeOnPower} onClick={() => setKeepAwakeOnPower(!keepAwakeOnPower)} />
         </SetRow>
@@ -114,8 +114,7 @@ export function RemoteControlPane() {
             title="Pair a device"
             sub={
               <>
-                Opens pairing for five minutes: scan the QR code with your phone, or pick this Mac
-                in Fletch on your phone and accept here.
+                Scan the QR code with your phone, or accept a request from it.
                 <br />
                 {CONTROL_PRESET_HELP}
               </>

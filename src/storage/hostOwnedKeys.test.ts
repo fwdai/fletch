@@ -120,13 +120,12 @@ describe("host-owned settings", () => {
   });
 
   it("include every key the host reads, and no secret", () => {
-    for (const key of ["notify_turn_complete", "box_layers", "agent_bin_path_codex"]) {
+    for (const key of ["notify_turn_complete", "box_cpus", "agent_bin_path_codex"]) {
       expect(isHostSettingKey(key)).toBe(true);
     }
     for (const key of [
       "github_token",
       "linear_token",
-      "claude_container_token",
       "telemetry_enabled",
       "telemetry_distinct_id",
       "remote.enabled",

@@ -1297,8 +1297,9 @@ impl Supervisor {
         };
 
         // A fresh process/view must never inherit a recoverable-idle marker
-        // from the native process it replaced.
+        // from the native process it replaced, nor a run the old one opened.
         self.heuristic_idle.lock().remove(&agent_id_str);
+        self.provider_runs.lock().remove(&agent_id_str);
         self.activities
             .lock()
             .insert(agent_id_str.clone(), build_activity(&record, &start));
@@ -2231,6 +2232,9 @@ pub(super) fn make_event_handler(
         // idle status.
         if follows_stream && active && matches!(sup.live_status(&agent_id), Some(AgentStatus::Idle))
         {
+            sup.provider_runs
+                .lock()
+                .insert(agent_id.clone(), chrono::Utc::now().timestamp_millis());
             mark_user_turn_started(&sup, &ctx, &agent_id, None);
         }
 
@@ -2591,7 +2595,7 @@ fn apply_exit_if_current(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::NativeTranscript;
+    use crate::workspace::{NativeTranscript, TurnOutcome};
 
     /// An Idle supervisor holding one agent whose last turn ended, plus the
     /// event handler that would receive its stream.
@@ -2695,6 +2699,68 @@ mod tests {
             .unwrap();
         assert!(last_event < last_status);
         assert_eq!(events[last_status].1["status"], "idle");
+    }
+
+    /// That turn is more of the user's turn's work, not a turn of its own: its
+    /// time lands on the turn it followed, which keeps its own `ended_at`.
+    #[test]
+    fn a_turn_the_provider_starts_on_its_own_counts_toward_the_turn_it_followed() {
+        use serde_json::json;
+        let RestingAgent {
+            sup,
+            agent_id,
+            sink: _sink,
+            on_event,
+            _runtime,
+            _dir,
+        } = resting_agent(TurnClose::OnTerminalEvent);
+        let _enter = _runtime.enter();
+        sup.workspace
+            .insert_user_turn(&agent_id, "t1", "go", &[])
+            .unwrap();
+        sup.workspace.mark_user_turn_started("t1", 1000).unwrap();
+        sup.workspace
+            .mark_user_turn_ended(&agent_id, TurnOutcome::Completed)
+            .unwrap();
+        let closed = sup.workspace.read_history_turns(&agent_id).unwrap()[0].ended_at;
+
+        on_event(json!({
+            "type": "user",
+            "message": {"role": "user", "content": "<task-notification>done</task-notification>"}
+        }));
+        // Back-date the run so its time is measurable, whatever the clock's grain.
+        *sup.provider_runs.lock().get_mut(&agent_id).unwrap() -= 5000;
+        on_event(json!({"type": "result", "subtype": "success"}));
+
+        let turn = &sup.workspace.read_history_turns(&agent_id).unwrap()[0];
+        assert!(turn.provider_run_ms >= 5000, "{}", turn.provider_run_ms);
+        assert_eq!(turn.ended_at, closed);
+        assert!(sup.provider_runs.lock().is_empty());
+    }
+
+    /// An agent stopped mid-run takes the run's clock down with it: time spent
+    /// down must not count when it next comes to rest.
+    #[test]
+    fn stopping_mid_run_drops_the_providers_clock() {
+        use serde_json::json;
+        let RestingAgent {
+            sup,
+            agent_id,
+            sink: _sink,
+            on_event,
+            _runtime,
+            _dir,
+        } = resting_agent(TurnClose::OnTerminalEvent);
+        let _enter = _runtime.enter();
+        on_event(json!({
+            "type": "user",
+            "message": {"role": "user", "content": "<task-notification>done</task-notification>"}
+        }));
+        assert!(sup.provider_runs.lock().contains_key(&agent_id));
+
+        let (ctx, _ctx_sink, _ctx_dir) = crate::host::ctx::test_ctx();
+        sup.persist_and_emit_status(&ctx, &agent_id, AgentStatus::Stopped, None);
+        assert!(sup.provider_runs.lock().is_empty());
     }
 
     /// A per-turn provider's process exit is its turn boundary (`on_turn_exit`).

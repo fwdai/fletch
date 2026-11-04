@@ -1,12 +1,5 @@
 import type { ProjectFileStatus } from "./settings";
 
-/** Which step of the claude auth chain (pasted token → shell env →
- *  claude credentials file) would supply Anthropic credentials to a box
- *  agent right now (Settings › Sandbox status row). */
-export interface ContainerAuthStatus {
-  status: "keychain" | "stored-token" | "shell-env" | "credentials-file" | "none";
-}
-
 /** One isolation claim and how completely the selected engine delivers it.
  *  `coverage` is a stable wire string so the UI can style by it directly. */
 export interface GuaranteeStatus {
@@ -85,6 +78,10 @@ export interface BoxRuntimeProbe {
   hypervisor: boolean;
   image: BoxImageStatus;
   tools: BoxToolsStatus[];
+  /** The host's logical cores and physical memory. Absent on a host from
+   *  before these fields, null where its OS will not say. */
+  host_cpus?: number | null;
+  host_memory_mib?: number | null;
 }
 
 /** A workspace type a new agent may be given (`sandbox::placement::Placement`
@@ -112,6 +109,16 @@ export interface BoxStateEvent {
   since?: number | null;
   reason?: string | null;
   detail?: string | null;
+}
+
+/** One VM on Settings › Sandbox (`box_list`). `agent_id` may be a workspace the
+ *  sidebar hides, such as a Roadmap chat. */
+export interface BoxVm {
+  agent_id: string;
+  name: string;
+  project_id: string;
+  created_at: string;
+  state: BoxStateEvent;
 }
 
 /** `box:egress`: the proxy answered one connection request from a box. */
@@ -170,6 +177,6 @@ export interface BoxPolicyEvent {
 export type BoxSettingKey =
   | "box_memory_mib"
   | "box_cpus"
+  | "box_disk_gib"
   | "box_image_url"
-  | "box_idle_stop_minutes"
-  | "box_layers";
+  | "box_idle_stop_minutes";
