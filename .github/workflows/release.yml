@@ -8,19 +8,58 @@ name: Release
 # the .dmg, the updater artifact (.app.tar.gz + .sig), and latest.json.
 # Publishing makes it available to the in-app auto-updater.
 #
-# The `host` job then adds the headless `fletch-host` binaries to that same
-# release, one tarball per target with a `.sha256` and a `.sig` beside it. It is
-# deliberately a separate job: it shares nothing with the desktop build but the
-# version number and the updater signing key, it needs no Apple identity, and a
-# failure there must not take the app release with it.
+# The jobs, and what runs at the same time:
+#
+#   app (arm64) ─┬─ release ─────┬─ host-upload
+#   app (x86_64) ┴─ host (×3) ───┘
+#
+# `app` compiles the app's binary once per architecture, on its own runner,
+# which is most of a release's time; `release` joins the two into a universal
+# binary, then bundles, signs, notarizes and publishes. `host` builds the
+# headless `fletch-host` tarballs, and `host-upload` adds them to the release
+# once it exists. The host side is deliberately separate: it shares nothing
+# with the desktop build but the version number and the updater signing key,
+# it needs no Apple identity, and a failure there must not take the app
+# release with it.
+#
+# At most two macOS runners at a time: the two `app` builds, then `release`
+# beside `host`'s one macOS target. `host` waits for `app` only for that — its
+# builds take a few minutes, less than `release`, so starting them earlier
+# would not finish the run sooner but would hold a third macOS runner. The
+# repository is public, so standard runners cost nothing; what is limited is
+# concurrency (5 macOS jobs on the Free plan) and GitHub's arm64 capacity,
+# which is what a job left "not acquired" ran into.
+#
+# Every job has a timeout well above its slowest cold run, so a hung step
+# releases its runner instead of holding it for the 6-hour default.
+#
+# `dry_run` runs every build and the signing and notarization exactly as a
+# release does but publishes nothing: no release, no uploads, no website
+# redeploy. It is how a change to the build itself is tried from a branch.
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build, sign and notarize without publishing anything
+        type: boolean
+        default: false
+
+# One release (or dry run) per branch at a time; a second dispatch queues.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    permissions:
-      contents: write
+  # `tauri build --no-bundle` for one architecture is exactly the compile a
+  # universal `tauri build` runs for it (same features, env and
+  # beforeBuildCommand), just not back to back with the other one.
+  app:
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
     runs-on: macos-latest
+    # A cold build (every dependency) has taken up to 25 minutes.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -37,19 +76,79 @@ jobs:
 
       - name: Install Rust
         # Toolchain version + components come from /rust-toolchain.toml (single
-        # source of truth; see ci.yml). Targets are release-only — both arches
-        # are required so Tauri can lipo them into a universal binary — so they
-        # stay here rather than in the shared toolchain file.
+        # source of truth; see ci.yml). The target is release-only, so it stays
+        # here rather than in the shared toolchain file. x86_64 cross-compiles
+        # on the arm64 runner.
         run: |
           rustup toolchain install
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustup target add ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.target }}
 
       - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        env:
+          # OAuth client keys, baked into the binary at compile time (see
+          # src-tauri/src/oauth.rs). Add these as repository Actions secrets.
+          QUORUM_GITHUB_CLIENT_ID: ${{ secrets.QUORUM_GITHUB_CLIENT_ID }}
+          QUORUM_GOOGLE_CLIENT_ID: ${{ secrets.QUORUM_GOOGLE_CLIENT_ID }}
+          QUORUM_GOOGLE_CLIENT_SECRET: ${{ secrets.QUORUM_GOOGLE_CLIENT_SECRET }}
+          # Sentry DSN, baked in at compile time (see src-tauri/src/lib.rs).
+          # Unset → error reporting is a no-op. Add as a repository secret.
+          QUORUM_SENTRY_DSN: ${{ secrets.QUORUM_SENTRY_DSN }}
+          # PostHog project key, baked in at compile time (see
+          # src-tauri/src/telemetry.rs). Unset → telemetry is a no-op AND in-app
+          # feedback has nowhere to go (docs/feedback.md). Add as a repository
+          # secret. QUORUM_POSTHOG_HOST is only needed for a self-hosted
+          # instance (defaults to PostHog US cloud).
+          QUORUM_POSTHOG_KEY: ${{ secrets.QUORUM_POSTHOG_KEY }}
+        run: bun run tauri build --no-bundle --target ${{ matrix.target }}
+
+      # The binary (Tauri names it after mainBinaryName) and the `.dSYM` the
+      # release profile writes beside it, for the `release` job.
+      - name: Hand the binary to the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.target }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/Fletch
+            src-tauri/target/${{ matrix.target }}/release/fletch.dSYM
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: app
+    permissions:
+      contents: write
+    runs-on: macos-latest
+    # Bundling takes minutes; the margin is for Apple's notary service.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.3"
+
+      - name: Install Rust
+        # For fletch-vm, which prepare.sh builds in the bundle step (arm64, the
+        # runner's own target).
+        run: rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/fletch-box
+
+      - name: Install frontend dependencies
+        # The Tauri CLI, for the bundle step.
         run: bun install --frozen-lockfile
 
       # The box sandbox runtime (docs/boxes-spec.md) ships inside the app:
@@ -58,7 +157,7 @@ jobs:
       # (src-tauri/tauri.macos.conf.json). libkrun is arm64 only, so beside a
       # universal app these are arm64 files and an Intel Mac gets "unavailable"
       # from the runtime probe. The dylibs are built here, ahead of the Tauri
-      # build, and cached: ensure.sh is a no-op when dist/ was built from the
+      # bundle, and cached: ensure.sh is a no-op when dist/ was built from the
       # same build.sh and patches, which is exactly the cache key. prepare.sh
       # refuses to build them itself in CI, so a broken cache fails loudly in
       # the bundle step instead of silently costing a minute.
@@ -100,7 +199,35 @@ jobs:
           rm "$RUNNER_TEMP/cert.p12"
           security find-identity -v -p codesigning "$KEYCHAIN"
 
-      - name: Build, sign, notarize and publish release
+      - name: Download the app binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: app-*
+          path: ${{ runner.temp }}/app
+
+      # What a universal `tauri build` does after compiling: lipo the two
+      # architectures into target/universal-apple-darwin/release, where the
+      # bundler looks. The per-arch binaries and dSYMs go back where cargo
+      # left them, for the dSYM step below.
+      - name: Join the architectures
+        run: |
+          set -euo pipefail
+          T=src-tauri/target
+          for TRIPLE in aarch64-apple-darwin x86_64-apple-darwin; do
+            mkdir -p "$T/$TRIPLE/release"
+            ditto "$RUNNER_TEMP/app/app-$TRIPLE" "$T/$TRIPLE/release"
+          done
+          mkdir -p "$T/universal-apple-darwin/release"
+          lipo -create -output "$T/universal-apple-darwin/release/Fletch" \
+            "$T/aarch64-apple-darwin/release/Fletch" "$T/x86_64-apple-darwin/release/Fletch"
+          # Artifacts do not keep the executable bit.
+          chmod +x "$T/universal-apple-darwin/release/Fletch"
+          lipo -info "$T/universal-apple-darwin/release/Fletch"
+
+      # A dry run passes no tag, and with neither a tag nor a release id the
+      # action bundles, signs and notarizes but uploads nothing; so a dry run
+      # goes through exactly this step too.
+      - name: Bundle, sign, notarize and publish release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -114,28 +241,22 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # OAuth client keys, baked into the binary at compile time (see
-          # src-tauri/src/oauth.rs). Add these as repository Actions secrets.
-          QUORUM_GITHUB_CLIENT_ID: ${{ secrets.QUORUM_GITHUB_CLIENT_ID }}
-          QUORUM_GOOGLE_CLIENT_ID: ${{ secrets.QUORUM_GOOGLE_CLIENT_ID }}
-          QUORUM_GOOGLE_CLIENT_SECRET: ${{ secrets.QUORUM_GOOGLE_CLIENT_SECRET }}
-          # Sentry DSN, baked in at compile time (see src-tauri/src/lib.rs).
-          # Unset → error reporting is a no-op. Add as a repository secret.
-          QUORUM_SENTRY_DSN: ${{ secrets.QUORUM_SENTRY_DSN }}
-          # PostHog project key, baked in at compile time (see
-          # src-tauri/src/telemetry.rs). Unset → telemetry is a no-op AND in-app
-          # feedback has nowhere to go (docs/feedback.md). Add as a repository
-          # secret. QUORUM_POSTHOG_HOST is only needed for a self-hosted
-          # instance (defaults to PostHog US cloud).
-          QUORUM_POSTHOG_KEY: ${{ secrets.QUORUM_POSTHOG_KEY }}
         with:
-          tagName: v__VERSION__
+          tagName: ${{ !inputs.dry_run && 'v__VERSION__' || '' }}
           releaseName: Fletch v__VERSION__
           releaseBody: See the assets to download and install this version.
           releaseDraft: false
           prerelease: false
-          tauriScript: bun run tauri
+          # The action runs `<tauriScript> build`; this turns it into
+          # `tauri bundle` over the binary joined above.
+          tauriScript: sh scripts/tauri-bundle-prebuilt.sh
           args: --target universal-apple-darwin
+
+      # What ships, in the log, for comparing build changes.
+      - name: Artifact sizes
+        run: |
+          B=src-tauri/target/universal-apple-darwin/release
+          ls -l "$B/Fletch" "$B"/bundle/dmg/*.dmg "$B"/bundle/macos/*.app.tar.gz
 
       # The app as built: only Helpers/fletch-vm carries the hypervisor
       # entitlement and the runtime's signatures verify. No image argument:
@@ -151,6 +272,7 @@ jobs:
       # arm64 -l <load address> <address>` (docs/debugging-crashes.md). The release is
       # already published, so a missing dSYM or failed upload only warns.
       - name: Attach debug symbols to the release
+        if: ${{ !inputs.dry_run }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -175,6 +297,7 @@ jobs:
       # release notes (the same "What's Changed" list the UI button produces),
       # built from PRs/commits since the previous release.
       - name: Generate release notes
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -189,12 +312,15 @@ jobs:
       # (fwdai/quorum-web) so it rebuilds against the freshly published release.
       # WEB_DEPLOY_HOOK is the deploy-hook URL from the Worker's Settings > Builds.
       - name: Trigger website redeploy
+        if: ${{ !inputs.dry_run }}
         run: curl -fsS -X POST "${{ secrets.WEB_DEPLOY_HOOK }}"
 
   # `fletch-host`, the headless engine (crates/fletch-host/README.md): one
-  # stripped tarball plus checksum per target, uploaded to the release the job
-  # above published. Every target builds natively — no `cross`, no sysroot — so
-  # each one is a plain `cargo build`:
+  # stripped tarball plus checksum per target, built while `release` bundles
+  # (see the top of this file for why not earlier) and handed to `host-upload`,
+  # which adds them to the release once `release` has published it. Every
+  # target builds natively — no `cross`, no sysroot — so each one is a plain
+  # `cargo build`:
   #
   #   x86_64-unknown-linux-gnu    ubuntu-latest
   #   aarch64-unknown-linux-gnu   ubuntu-24.04-arm   (GitHub's arm64 runner,
@@ -212,9 +338,9 @@ jobs:
   # `libkrunfw.so.5` (upstream's kernel bundle for the arch). The install
   # script and `fletch-host update` put them next to `fletch-host`.
   host:
-    needs: release
-    permissions:
-      contents: write
+    needs: app
+    # A cold build has taken about 6 minutes.
+    timeout-minutes: 30
     strategy:
       # One target's failure leaves the others' assets on the release.
       fail-fast: false
@@ -341,7 +467,6 @@ jobs:
           else
             shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
           fi
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
       - name: Sign the tarball
@@ -364,17 +489,46 @@ jobs:
           # that must fail here rather than at the first `fletch-host update`.
           test -s "$TARBALL.sig"
 
+      - name: Hand the tarball to host-upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.name }}.tar.gz
+            ${{ steps.package.outputs.name }}.tar.gz.sha256
+            ${{ steps.package.outputs.name }}.tar.gz.sig
+          if-no-files-found: error
+          retention-days: 1
+
+  # Whatever `host` targets built go onto the release `release` published; a
+  # failed target leaves the others' assets there.
+  host-upload:
+    needs: [release, host]
+    if: ${{ !cancelled() && !inputs.dry_run && needs.release.result == 'success' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the tarballs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: host-*
+          merge-multiple: true
+          path: host
+
       # `gh release upload`, not `softprops/action-gh-release`: the action
-      # *patches* the release it is pointed at, and the job above has just
+      # *patches* the release it is pointed at, and `release` has just
       # replaced that release's body with GitHub's generated notes. Adding
       # assets must not risk overwriting them, and `gh` (preinstalled on every
       # runner) does only that.
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >
-          gh release upload ${{ steps.package.outputs.tag }}
-          ${{ steps.package.outputs.name }}.tar.gz
-          ${{ steps.package.outputs.name }}.tar.gz.sha256
-          ${{ steps.package.outputs.name }}.tar.gz.sig
-          --clobber
+        run: |
+          set -euo pipefail
+          TAG="v$(jq -r .version src-tauri/tauri.conf.json)"
+          ls -l host
+          gh release upload "$TAG" host/* --clobber
