@@ -10,10 +10,11 @@
 //! [`EgressProxy::update`] and [`EgressProxy::decline`] wakes it to check
 //! again, so an allow that lands anywhere above travels the one path a policy
 //! change already has, and dropping the proxy ends every hold at once. Each
-//! hold reports its own end ([`EgressEvent::HoldEnded`]), whichever way it
-//! ended, so whoever asked a question on its behalf can close it. A hold
-//! nobody resolves ends in a refusal after [`HOLD_TIMEOUT`]. Nothing here
-//! knows who is asked or where an answer is kept; that is the engine's.
+//! hold has an id and reports its own end ([`EgressEvent::HoldEnded`]),
+//! whichever way it ended, so whoever asked a question on its behalf can close
+//! that question and no other. A hold nobody resolves ends in a refusal after
+//! [`HOLD_TIMEOUT`]. Nothing here knows who is asked or where an answer is
+//! kept; that is the engine's.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -93,17 +94,22 @@ pub enum EgressEvent {
         reason: Denial,
     },
     /// A connection to `host` is being held for a decision, under
-    /// [`Mode::Hold`]. Emitted once per host while any connection to it is
-    /// held, however many arrive: the answer is one for all of them.
-    Held { host: String, port: u16 },
-    /// The hold on `host` is over for every connection that joined it, one
-    /// per [`Held`](Self::Held): `admitted` when the policy came to allow the
-    /// host (each connection then opens its tunnel and reports `Allowed` as it
-    /// closes), else refused (each reports `Denied`), whether by a decline,
-    /// a mode that stopped holding, the deadline, or the proxy going away.
-    /// Reported as the hold ends, not as the tunnels close, so a question
-    /// asked on its behalf can be closed at once.
+    /// [`Mode::Hold`]. Emitted once per hold, by the first connection to join
+    /// it, however many join after: the answer is one for all of them. `hold`
+    /// names this hold, and the [`HoldEnded`](Self::HoldEnded) that ends it
+    /// carries the same id: a retry of the host after an end starts a new
+    /// hold with a new id, so an end delivered late can never be taken for
+    /// the end of the hold that followed it.
+    Held { hold: u64, host: String, port: u16 },
+    /// The hold `hold` on `host` is over for every connection that joined it,
+    /// one per [`Held`](Self::Held): `admitted` when the policy came to allow
+    /// the host (each connection then opens its tunnel and reports `Allowed`
+    /// as it closes), else refused (each reports `Denied`), whether by a
+    /// decline, a mode that stopped holding, the deadline, or the proxy going
+    /// away. Reported as the hold ends, not as the tunnels close, so a
+    /// question asked on its behalf can be closed at once.
     HoldEnded {
+        hold: u64,
         host: String,
         port: u16,
         admitted: bool,
@@ -125,8 +131,8 @@ struct Shared {
     /// Hosts the engine declined for this proxy's lifetime: refused under
     /// every mode, never held again, until a list allows them.
     declined: Mutex<HashSet<String>>,
-    /// Hosts with a connection held right now.
-    held: Mutex<HashMap<String, Hold>>,
+    /// Hosts with a connection held right now, and the id the next hold gets.
+    held: Mutex<Holds>,
     /// Follows the proxy's generation, which ticks on every change a held
     /// connection should re-check on; each hold takes a clone. The sender is
     /// the proxy's own ([`EgressProxy::generation`]), so dropping the proxy
@@ -135,12 +141,28 @@ struct Shared {
     hold_timeout: Duration,
 }
 
-/// One host's hold: when the first connection arrived, on which port, and how
-/// many are waiting.
+#[derive(Default)]
+struct Holds {
+    by_host: HashMap<String, Hold>,
+    /// Ids count up from 1 for the proxy's lifetime, so no two holds share one.
+    next_id: u64,
+}
+
+/// One host's hold: its id, when the first connection arrived, on which port,
+/// and how many are waiting.
 struct Hold {
+    id: u64,
     since: Instant,
     port: u16,
     waiting: usize,
+}
+
+/// A connection's place in a hold, as [`Shared::join_hold`] gives it.
+struct Joined {
+    id: u64,
+    since: Instant,
+    /// The first connection, which announces the hold.
+    first: bool,
 }
 
 impl Shared {
@@ -163,39 +185,48 @@ impl Shared {
     }
 
     /// Join the hold on `host`, or start one. `None` when the proxy already
-    /// holds [`MAX_HELD_HOSTS`] other hosts. The bool says whether this is
-    /// the first connection, which announces the hold.
-    fn join_hold(&self, host: &str, port: u16) -> Option<(Instant, bool)> {
-        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(hold) = held.get_mut(host) {
+    /// holds [`MAX_HELD_HOSTS`] other hosts.
+    fn join_hold(&self, host: &str, port: u16) -> Option<Joined> {
+        let mut holds = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(hold) = holds.by_host.get_mut(host) {
             hold.waiting += 1;
-            return Some((hold.since, false));
+            return Some(Joined {
+                id: hold.id,
+                since: hold.since,
+                first: false,
+            });
         }
-        if held.len() >= MAX_HELD_HOSTS {
+        if holds.by_host.len() >= MAX_HELD_HOSTS {
             return None;
         }
-        let since = Instant::now();
-        held.insert(
+        holds.next_id += 1;
+        let (id, since) = (holds.next_id, Instant::now());
+        holds.by_host.insert(
             host.to_string(),
             Hold {
+                id,
                 since,
                 port,
                 waiting: 1,
             },
         );
-        Some((since, true))
+        Some(Joined {
+            id,
+            since,
+            first: true,
+        })
     }
 
     /// Leave the hold on `host`; `Some(port)` when this was the last
     /// connection in it, which ends the hold.
     fn leave_hold(&self, host: &str) -> Option<u16> {
-        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
-        let hold = held.get_mut(host)?;
+        let mut holds = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        let hold = holds.by_host.get_mut(host)?;
         hold.waiting -= 1;
         if hold.waiting > 0 {
             return None;
         }
-        held.remove(host).map(|h| h.port)
+        holds.by_host.remove(host).map(|h| h.port)
     }
 }
 
@@ -235,7 +266,7 @@ impl EgressProxy {
             policy: RwLock::new(policy),
             mode: RwLock::new(mode),
             declined: Mutex::new(HashSet::new()),
-            held: Mutex::new(HashMap::new()),
+            held: Mutex::new(Holds::default()),
             generation: follow,
             hold_timeout,
         });
@@ -317,6 +348,7 @@ impl EgressProxy {
             .held
             .lock()
             .unwrap_or_else(|p| p.into_inner())
+            .by_host
             .keys()
             .cloned()
             .collect();
@@ -457,9 +489,9 @@ async fn serve(mut client: UnixStream, shared: Arc<Shared>, on_event: OnEvent) {
 
 /// Wait for the policy to admit `host`: `Some` with how it was admitted,
 /// `None` when the host was declined, the mode stopped holding, the proxy
-/// went away, or the hold's deadline passed. The hold is announced once per
-/// host, by the first connection to join it, and its end reported once, by
-/// the last to leave.
+/// went away, or the hold's deadline passed. The hold is announced once, by
+/// the first connection to join it, and its end reported once, by the last to
+/// leave, both with the hold's id.
 ///
 /// The subscription comes first and the policy is checked again before the
 /// first wait: a change that lands between the caller's decision and the
@@ -470,14 +502,15 @@ async fn hold(shared: &Shared, on_event: &OnEvent, host: &str, port: u16) -> Opt
     let mut generation = shared.generation.clone();
     // Seen up to here; the check below covers everything before it.
     let _ = generation.borrow_and_update();
-    let (since, first) = shared.join_hold(host, port)?;
-    if first {
+    let joined = shared.join_hold(host, port)?;
+    if joined.first {
         on_event(EgressEvent::Held {
+            hold: joined.id,
             host: host.to_string(),
             port,
         });
     }
-    let deadline = since + shared.hold_timeout;
+    let deadline = joined.since + shared.hold_timeout;
     let admitted = loop {
         match decide(shared, host, port) {
             Verdict::Allow(admission) => break Some(admission),
@@ -493,6 +526,7 @@ async fn hold(shared: &Shared, on_event: &OnEvent, host: &str, port: u16) -> Opt
     };
     if let Some(port) = shared.leave_hold(host) {
         on_event(EgressEvent::HoldEnded {
+            hold: joined.id,
             host: host.to_string(),
             port,
             admitted: admitted.is_some(),
@@ -672,6 +706,14 @@ mod tests {
         out
     }
 
+    /// The next event, which must be a `Held`; its id.
+    async fn next_held(events: &mut mpsc::UnboundedReceiver<EgressEvent>) -> u64 {
+        match events.recv().await.unwrap() {
+            EgressEvent::Held { hold, .. } => hold,
+            other => panic!("expected Held, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn allowed_hosts_are_tunnelled_and_counted() {
         let dir = tempfile::tempdir().unwrap();
@@ -823,8 +865,8 @@ mod tests {
     }
 
     /// Under `Hold`, two connections to one unlisted host announce one hold;
-    /// an `update` that lists the host ends the hold as admitted, once, and
-    /// releases both into tunnels.
+    /// an `update` that lists the host ends the hold as admitted, once, under
+    /// the same id, and releases both into tunnels.
     #[tokio::test]
     async fn held_connections_share_one_hold_and_follow_an_allow() {
         let dir = tempfile::tempdir().unwrap();
@@ -841,6 +883,7 @@ mod tests {
         assert_eq!(
             events.recv().await.unwrap(),
             EgressEvent::Held {
+                hold: 1,
                 host: "localhost".into(),
                 port
             }
@@ -866,7 +909,14 @@ mod tests {
         let seen = next_events(&mut events, 3).await;
         assert_eq!(
             seen.iter()
-                .filter(|e| matches!(e, EgressEvent::HoldEnded { admitted: true, .. }))
+                .filter(|e| matches!(
+                    e,
+                    EgressEvent::HoldEnded {
+                        hold: 1,
+                        admitted: true,
+                        ..
+                    }
+                ))
                 .count(),
             1,
             "{seen:?}"
@@ -886,6 +936,40 @@ mod tests {
         );
     }
 
+    /// A retry of a host after its hold ended starts a new hold with a new
+    /// id, so the end of the first can never be taken for the end of the
+    /// second, however late it is delivered.
+    #[tokio::test]
+    async fn a_retry_after_a_hold_ends_is_a_new_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let (proxy, mut events) = start_with(
+            dir.path(),
+            EgressPolicy::new(["other.test"]).unwrap(),
+            Mode::Hold,
+            Duration::from_millis(100),
+        )
+        .await;
+        let sock = proxy.socket().to_path_buf();
+        for expected in 1..=2u64 {
+            let (_c, reply) = request(&sock, "CONNECT again.test:443 HTTP/1.1\r\n\r\n").await;
+            assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+            assert_eq!(next_held(&mut events).await, expected);
+            assert_eq!(
+                events.recv().await.unwrap(),
+                EgressEvent::HoldEnded {
+                    hold: expected,
+                    host: "again.test".into(),
+                    port: 443,
+                    admitted: false
+                }
+            );
+            assert!(matches!(
+                events.recv().await.unwrap(),
+                EgressEvent::Denied { .. }
+            ));
+        }
+    }
+
     /// A hold released by the mode opening, not by the list, ends as admitted
     /// the moment the mode changes, before its tunnel has run its course.
     #[tokio::test]
@@ -898,10 +982,7 @@ mod tests {
 
         let sock = proxy.socket().to_path_buf();
         let held = tokio::spawn(async move { request(&sock, &connect_head(port)).await });
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            EgressEvent::Held { .. }
-        ));
+        let hold = next_held(&mut events).await;
         proxy.update(policy, Mode::Open);
         let (mut client, reply) = held.await.unwrap();
         assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
@@ -909,6 +990,7 @@ mod tests {
         assert_eq!(
             events.recv().await.unwrap(),
             EgressEvent::HoldEnded {
+                hold,
                 host: "localhost".into(),
                 port,
                 admitted: true
@@ -942,10 +1024,7 @@ mod tests {
             let sock = sock.clone();
             async move { request(&sock, "CONNECT Example.com:443 HTTP/1.1\r\n\r\n").await }
         });
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            EgressEvent::Held { .. }
-        ));
+        let hold = next_held(&mut events).await;
 
         proxy.decline("Example.COM");
         let (_c, reply) = held.await.unwrap();
@@ -953,6 +1032,7 @@ mod tests {
         assert_eq!(
             events.recv().await.unwrap(),
             EgressEvent::HoldEnded {
+                hold,
                 host: "example.com".into(),
                 port: 443,
                 admitted: false
@@ -998,13 +1078,11 @@ mod tests {
         let (_c, reply) = request(&sock, "CONNECT slow.test:443 HTTP/1.1\r\n\r\n").await;
         assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
         assert!(started.elapsed() >= Duration::from_millis(200));
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            EgressEvent::Held { .. }
-        ));
+        let hold = next_held(&mut events).await;
         assert_eq!(
             events.recv().await.unwrap(),
             EgressEvent::HoldEnded {
+                hold,
                 host: "slow.test".into(),
                 port: 443,
                 admitted: false
@@ -1023,10 +1101,7 @@ mod tests {
             let sock = sock.clone();
             async move { request(&sock, "CONNECT later.test:443 HTTP/1.1\r\n\r\n").await }
         });
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            EgressEvent::Held { .. }
-        ));
+        next_held(&mut events).await;
         proxy.update(EgressPolicy::new(["other.test"]).unwrap(), Mode::Refuse);
         let (_c, reply) = held.await.unwrap();
         assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
@@ -1059,10 +1134,7 @@ mod tests {
                 let sock = sock.clone();
                 async move { request(&sock, &format!("CONNECT h{i}.test:443 HTTP/1.1\r\n\r\n")).await }
             }));
-            assert!(matches!(
-                events.recv().await.unwrap(),
-                EgressEvent::Held { .. }
-            ));
+            next_held(&mut events).await;
         }
         assert_eq!(proxy.held_hosts().len(), MAX_HELD_HOSTS);
         let (_c, reply) = request(&sock, "CONNECT one-too-many.test:443 HTTP/1.1\r\n\r\n").await;
@@ -1152,13 +1224,14 @@ mod tests {
         );
         ping(&mut client).await;
         drop(client);
+        let hold = next_held(&mut events).await;
         assert!(matches!(
             events.recv().await.unwrap(),
-            EgressEvent::Held { .. }
-        ));
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            EgressEvent::HoldEnded { admitted: true, .. }
+            EgressEvent::HoldEnded {
+                hold: ended,
+                admitted: true,
+                ..
+            } if ended == hold
         ));
         assert!(matches!(
             events.recv().await.unwrap(),
