@@ -98,7 +98,7 @@ impl WorkflowService {
             let conn = self.db.lock();
             project_setting(&conn, &project_id, sandbox::placement::KEY)
         };
-        let providers: BTreeSet<String> = spec.agents.values().map(|a| a.base.clone()).collect();
+        let providers = step_providers(&spec);
         let repo_for_placement = PathBuf::from(&repo_path);
         let boxed = tokio::task::spawn_blocking(move || {
             lands_in_a_box(
@@ -494,6 +494,19 @@ pub async fn wf_delete_run_impl(
 const BOX_REFUSAL: &str =
     "Workflow runs cannot run in a box yet, and this project's agents run in one.";
 
+/// The providers the run will spawn: the base of every alias a step names,
+/// resolved through `spec.agents`. An alias declared but named by no step is
+/// left out — validation allows one and a YAML import keeps every declared
+/// agent — so it cannot refuse a launch over an agent the run would never
+/// start. Validation has already checked that each step's alias exists.
+fn step_providers(spec: &Spec) -> BTreeSet<String> {
+    spec.workflow
+        .iter()
+        .filter_map(|step| spec.agents.get(&step.agent))
+        .map(|agent| agent.base.clone())
+        .collect()
+}
+
 /// Whether a fresh agent of any of `providers` would land in a box for the
 /// project at `repo` whose stored placement is `placement_setting` — the
 /// automatic choice `spawn_agent` makes when neither an adopted tree nor a
@@ -555,6 +568,32 @@ mod tests {
         } else {
             // Off macOS there is no seatbelt: every fresh agent is a box.
             assert!(lands_in_a_box(Some("host"), repo, claude, |_| false));
+        }
+    }
+
+    /// An alias no step names is declared, kept by import, and never spawned:
+    /// its provider must not decide the launch.
+    #[test]
+    fn only_the_providers_steps_name_decide_the_placement() {
+        let spec: Spec = serde_json::from_str(
+            r#"{"version":1,"name":"s",
+                "agents":{"coder":{"base":"claude"},"spare":{"base":"codex"}},
+                "workflow":[{"step":{"id":"plan","agent":"coder","goal":"g"}},
+                            {"step":{"id":"code","agent":"coder","goal":"g"}}]}"#,
+        )
+        .unwrap();
+        let providers = step_providers(&spec);
+        assert_eq!(providers, BTreeSet::from(["claude".to_string()]));
+
+        if cfg!(target_os = "macos") {
+            let dir = tempfile::tempdir().unwrap();
+            // Only the spare alias's provider has a box ready: no refusal.
+            assert!(!lands_in_a_box(
+                None,
+                dir.path(),
+                providers.iter().map(String::as_str),
+                |provider| provider == "codex"
+            ));
         }
     }
 
