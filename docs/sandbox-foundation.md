@@ -121,7 +121,6 @@ engine enforces) and `docs/box.md` is the box runtime.
 | --- | --- | --- |
 | `checkout_on_host` | yes | no |
 | `shares_host_fs` | yes | no |
-| `token_only_launch` | no | yes |
 | `share_roots` | any | `/Users`, `/Volumes` |
 | `run_panel` | yes | no |
 | `workflow_steps` | yes | no |

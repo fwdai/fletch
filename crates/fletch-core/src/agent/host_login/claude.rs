@@ -180,10 +180,9 @@ async fn credential(account_dir: Option<&Path>, demand: Demand) -> Result<Access
 /// The token a claude agent stamped with `account` launches with. A managed
 /// account without a usable login fails the launch: running it under any
 /// other credential would be running it as someone else. The default account
-/// degrades to no token only when something else can sign the launch in — an
-/// auth var in the user's shell, or for a `containerized` (box) launch the
-/// stored setup-token the auth chain forwards. Otherwise it fails with the
-/// reason: every sandbox closes the Keychain and the credential files to the
+/// degrades to no token only when something else can sign the launch in, such
+/// as an auth var in the user's shell. Otherwise it fails with the reason:
+/// every sandbox closes the Keychain and the credential files to the
 /// agent, so a claude launched with nothing would only end each turn on its
 /// own "Not logged in · Please run /login", which the user can't act on from
 /// a chat.
@@ -191,7 +190,6 @@ async fn credential(account_dir: Option<&Path>, demand: Demand) -> Result<Access
 pub async fn launch_token(
     account: Option<&str>,
     rejected_expires_at_ms: Option<i64>,
-    containerized: bool,
 ) -> crate::error::Result<Option<AccessToken>> {
     let dir = accounts::existing_account_dir("claude", account)?;
     let token = match rejected_expires_at_ms {
@@ -206,9 +204,7 @@ pub async fn launch_token(
             // they run off the runtime.
             let error = e.clone();
             let refusal = tokio::task::spawn_blocking(move || {
-                let fallback =
-                    crate::sandbox::provider::auth::fallback_login_present(containerized);
-                default_launch_refusal(&error, fallback, default_store_description)
+                default_launch_refusal(&error, fallback_login_present(), default_store_description)
             })
             .await
             .unwrap_or(None);
@@ -227,8 +223,7 @@ pub async fn launch_token(
 }
 
 /// Why a default-account launch without a host login is refused, or `None`
-/// when `fallback` (a shell auth var or the stored setup-token) can sign it
-/// in instead. `store` names where the login was looked for, so a login kept
+/// when `fallback` (a shell auth var, say) can sign it in instead. `store` names where the login was looked for, so a login kept
 /// under another name is diagnosable from the message alone.
 fn default_launch_refusal(
     error: &LoginError,
@@ -260,12 +255,121 @@ fn default_launch_refusal(
 /// the Keychain service (which carries no path) and the credentials file by
 /// its generic name, never a path that names the user.
 fn default_store_description() -> String {
-    let service = crate::sandbox::provider::auth::default_keychain_service();
+    let service = default_keychain_service();
     let dir = match accounts::claude_config_override() {
         Some(_) => "the config dir your shell's CLAUDE_CONFIG_DIR names",
         None => "~/.claude",
     };
     format!("the Keychain item `{service}` or {dir}/.credentials.json")
+}
+
+/// macOS Keychain service Claude Code stores its login under; the password
+/// payload is the same JSON as `~/.claude/.credentials.json`.
+const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+/// Env vars that route claude to a cloud provider's own credentials (AWS,
+/// GCP, Azure), which the agent reads from the shell and the home dir itself.
+const CLOUD_PROVIDER_VARS: [&str; 3] = [
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+];
+
+/// The config dir whose `.credentials.json` claude reads: the relocated
+/// `CLAUDE_CONFIG_DIR` if set, else `~/.claude`.
+fn credentials_config_dir(relocated: Option<PathBuf>, home: Option<&Path>) -> Option<PathBuf> {
+    relocated.or_else(|| home.map(|h| h.join(".claude")))
+}
+
+/// The Keychain item the default account's login lives under: the one claude
+/// names for the user's relocated config dir.
+fn default_keychain_service() -> String {
+    claude_keychain_service(accounts::claude_config_override().as_deref())
+}
+
+/// The Keychain service claude keeps a login under for `config_dir`: the plain
+/// service for the default `~/.claude`, else the service plus the first eight
+/// hex chars of the SHA-256 of the directory path, which is how claude keeps
+/// one login per `CLAUDE_CONFIG_DIR`. The path is hashed exactly as the env var
+/// carries it, so callers pass the same string they set.
+pub(crate) fn claude_keychain_service(config_dir: Option<&Path>) -> String {
+    use sha2::{Digest, Sha256};
+    match config_dir {
+        None => KEYCHAIN_SERVICE.to_string(),
+        Some(dir) => {
+            let digest = Sha256::digest(dir.as_os_str().as_encoded_bytes());
+            let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+            format!("{KEYCHAIN_SERVICE}-{hex}")
+        }
+    }
+}
+
+/// Whether `.credentials.json` holds a claude login; see
+/// [`stored_access_token`] for the bar.
+pub(crate) fn credentials_file_usable(contents: Option<&[u8]>) -> bool {
+    contents.and_then(stored_access_token).is_some()
+}
+
+/// Whether the default account's credentials file holds a login.
+fn default_credentials_file_usable() -> bool {
+    credentials_config_dir(
+        accounts::claude_config_override(),
+        dirs::home_dir().as_deref(),
+    )
+    .is_some_and(|dir| {
+        credentials_file_usable(std::fs::read(dir.join(".credentials.json")).ok().as_deref())
+    })
+}
+
+/// Whether the user's shell carries an auth var that signs claude in.
+fn shell_login_present() -> bool {
+    accounts::ambient_credential_vars("claude")
+        .iter()
+        .any(|var| crate::agent::env_key_present(var))
+}
+
+/// Whether a claude `settings.json` names an `apiKeyHelper`: a script claude
+/// runs for its key, so no stored login or env var is needed. The value is
+/// tested for emptiness only.
+fn settings_name_an_api_key_helper(contents: Option<&[u8]>) -> bool {
+    serde_json::from_slice::<Value>(contents.unwrap_or_default())
+        .ok()
+        .and_then(|v| {
+            v.get("apiKeyHelper")?
+                .as_str()
+                .map(|s| !s.trim().is_empty())
+        })
+        .unwrap_or(false)
+}
+
+/// Whether a default-account launch that got no host login can still sign in
+/// some other way: an auth var in the user's shell, a cloud provider routing
+/// var, or an `apiKeyHelper` in the user's claude settings. The Keychain and
+/// credentials file are deliberately not counted: the host just failed to use
+/// them, and every sandbox closes them to the agent.
+fn fallback_login_present() -> bool {
+    shell_login_present()
+        || CLOUD_PROVIDER_VARS
+            .iter()
+            .any(|var| crate::agent::env_key_present(var))
+        || settings_name_an_api_key_helper(
+            credentials_config_dir(
+                accounts::claude_config_override(),
+                dirs::home_dir().as_deref(),
+            )
+            .and_then(|dir| std::fs::read(dir.join("settings.json")).ok())
+            .as_deref(),
+        )
+}
+
+/// Whether the host has a usable claude login, for Settings' sign-in status
+/// (`agent::auth_probe`), which polls while the pane is open. The Keychain step
+/// is presence-only: `security find-generic-password` without `-w`, so the
+/// credential is never read and macOS never prompts.
+pub fn host_login_present() -> bool {
+    crate::keychain::item_present(&default_keychain_service(), None)
+        || default_credentials_file_usable()
+        || shell_login_present()
 }
 
 /// Whether a refresh of the account in `account_dir` was refused and nothing
@@ -505,8 +609,8 @@ impl HostStore {
         // The default account's item is the one Settings' presence probe
         // names, so the two can't disagree on where the login is.
         let service = match account_dir {
-            Some(dir) => crate::sandbox::provider::auth::claude_keychain_service(Some(dir)),
-            None => crate::sandbox::provider::auth::default_keychain_service(),
+            Some(dir) => claude_keychain_service(Some(dir)),
+            None => default_keychain_service(),
         };
         Some(Self {
             service,

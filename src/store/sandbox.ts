@@ -7,7 +7,6 @@ import {
   type BoxStateEvent,
   type BoxToolsStatus,
   type BoxVm,
-  type ContainerAuthStatus,
   type PublishApproval,
   type PublishApprovalResolved,
 } from "@/api";
@@ -34,9 +33,6 @@ const vmLoads = newestWins();
 let approvalsInFlight: ApprovalEvent[] | null = null;
 
 export interface SandboxSlice {
-  /** Which claude auth chain step is active (Anthropic credentials for box
-   *  agents); `null` until the first refresh lands. */
-  containerAuth: ContainerAuthStatus | null;
   /** Whether an agent must get the user's approval before publishing. Mirrors
    *  the backend-owned `publish_confirmation` setting. Off by default. */
   publishConfirmation: boolean;
@@ -94,15 +90,6 @@ export interface SandboxSlice {
    *  else answered it, or nobody did before the host's wait ran out. No call
    *  back to the engine: the verdict is already made. */
   resolvePublishApproval: (e: PublishApprovalResolved) => void;
-  /** Re-resolve the claude auth chain into `containerAuth`. */
-  refreshContainerAuth: () => Promise<void>;
-  /** Persist a pasted `claude setup-token` for boxes, then refresh the
-   *  status. Throws on backend refusal (empty token) so the connect modal
-   *  can show the error inline. */
-  setContainerAuthToken: (token: string) => Promise<void>;
-  /** Drop the stored setup token, then refresh the status (a later chain
-   *  step — shell env / credentials file — may take over). */
-  clearContainerAuthToken: () => Promise<void>;
   /** Read where the host's box setup stands — the runtime probe (with the
    *  tools disks) and the image — once per environment; `box:image` and
    *  `box:tools` carry every change after. What the title bar's popover,
@@ -242,31 +229,6 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     set((s) => ({
       pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
     }));
-  },
-
-  containerAuth: null,
-  refreshContainerAuth: async () => {
-    try {
-      set({ containerAuth: await api.getContainerAuthStatus() });
-    } catch {
-      // A failed resolution means we can't confirm any credentials — show the
-      // "Not connected" state (with its connect CTA) rather than a stale one.
-      set({ containerAuth: { status: "none" } });
-    }
-  },
-  setContainerAuthToken: async (token) => {
-    // No try/catch: the connect modal surfaces the rejection (empty token)
-    // inline next to the paste field, so the error must propagate.
-    await api.setContainerAuthToken(token);
-    await get().refreshContainerAuth();
-  },
-  clearContainerAuthToken: async () => {
-    try {
-      await api.clearContainerAuthToken();
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-    await get().refreshContainerAuth();
   },
 
   saveBoxSetting: async (key, value) => {

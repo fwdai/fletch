@@ -1,12 +1,5 @@
 import type { ProjectFileStatus } from "./settings";
 
-/** Which step of the claude auth chain (pasted token → shell env →
- *  claude credentials file) would supply Anthropic credentials to a box
- *  agent right now (Settings › Sandbox status row). */
-export interface ContainerAuthStatus {
-  status: "keychain" | "stored-token" | "shell-env" | "credentials-file" | "none";
-}
-
 /** One isolation claim and how completely the selected engine delivers it.
  *  `coverage` is a stable wire string so the UI can style by it directly. */
 export interface GuaranteeStatus {

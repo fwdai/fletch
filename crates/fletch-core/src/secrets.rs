@@ -1,4 +1,4 @@
-//! App-held secrets (the GitHub OAuth token, the claude setup token).
+//! App-held secrets (the GitHub OAuth token, the Linear API key).
 //!
 //! Release macOS builds store secrets in the login Keychain through the
 //! in-process Security.framework API: the item is created and read by the
@@ -252,7 +252,7 @@ mod tests {
     fn blank_value_reads_as_none() {
         let (_dir, db) = test_db();
         let conn = db.lock();
-        set(&conn, "claude_container_token", "  ").unwrap();
-        assert_eq!(get(&conn, "claude_container_token").unwrap(), None);
+        set(&conn, "linear_token", "  ").unwrap();
+        assert_eq!(get(&conn, "linear_token").unwrap(), None);
     }
 }

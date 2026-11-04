@@ -1150,7 +1150,7 @@ Each setter is the desktop command of the same name, so it does what the
 desktop's Settings pane does: it persists the key *and* updates the in-memory
 mirror the host's spawn and publish paths read, so a change applies without a
 restart. Nothing secret is on the list and nothing secret is ever answered —
-`github_token`, `linear_token`, `claude_container_token`, the `remote.*` keys,
+`github_token`, `linear_token`, the `remote.*` keys,
 `telemetry_*` and every client-side preference (theme, pane widths, shortcuts,
 dictation) stay where they are, off the wire.
 

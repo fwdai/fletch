@@ -76,8 +76,8 @@ PR's own **Acceptance** paragraph in §2 is what to run for that work.
 ### Gap 4 — plaintext secrets on a headless host: **verified, and already documented**
 
 - `secrets::use_settings_store_only()` is called only when headless
-  (`host/boot.rs:248-254`). Three keys go through it: `github_token`,
-  `linear_token`, `claude_container_token`.
+  (`host/boot.rs:248-254`). Two keys go through it: `github_token` and
+  `linear_token`.
 - The README already has the section the audit asks for: "The data dir, and
   who may read it" (`crates/fletch-host/README.md:315-380`) states the token is
   plaintext in the settings table, why, the 0700 dir and 0600 socket, and "run

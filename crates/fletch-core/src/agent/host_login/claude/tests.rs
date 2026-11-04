@@ -231,19 +231,13 @@ fn the_default_login_is_read_from_a_config_dir_the_login_shell_exports() {
         || HostStore::for_account(None),
     )
     .unwrap();
-    assert_eq!(
-        store.service,
-        crate::sandbox::provider::auth::claude_keychain_service(Some(&dir))
-    );
-    assert_ne!(
-        store.service,
-        crate::sandbox::provider::auth::claude_keychain_service(None)
-    );
+    assert_eq!(store.service, claude_keychain_service(Some(&dir)));
+    assert_ne!(store.service, claude_keychain_service(None));
     assert_eq!(store.file, dir.join(".credentials.json"));
 }
 
 /// A default-account launch with no host login fails with where the login
-/// was looked for, unless the shell or the stored setup-token can sign it in.
+/// was looked for, unless the shell can sign it in.
 #[test]
 fn a_default_launch_without_a_login_is_refused_unless_something_else_signs_in() {
     let store =
@@ -268,3 +262,115 @@ fn a_default_launch_without_a_login_is_refused_unless_something_else_signs_in() 
 
 #[cfg(target_os = "macos")]
 mod live;
+
+/// The suffix is the first eight hex chars of SHA-256 over the directory
+/// path as the env var carries it, verified against a live Keychain item
+/// written by claude 2.1.x for a custom `CLAUDE_CONFIG_DIR`.
+#[test]
+fn keychain_service_is_suffixed_per_config_dir() {
+    assert_eq!(claude_keychain_service(None), "Claude Code-credentials");
+    assert_eq!(
+        claude_keychain_service(Some(Path::new("/cfg/eve"))),
+        "Claude Code-credentials-b634a9ea"
+    );
+    assert_eq!(
+        claude_keychain_service(Some(Path::new("/Users/u/.fletch/accounts/claude/work"))),
+        "Claude Code-credentials-98eed843"
+    );
+}
+
+/// Settings' presence probe looks for the Keychain item claude names for a
+/// config dir only the login shell exports, not the default dir's.
+#[test]
+fn the_status_probe_looks_at_the_login_shells_config_dir_keychain_item() {
+    let service = crate::bin_resolve::with_login_shell_env(
+        &[("CLAUDE_CONFIG_DIR", "/cfg/eve")],
+        default_keychain_service,
+    );
+    assert_eq!(service, "Claude Code-credentials-b634a9ea");
+}
+
+#[test]
+fn an_api_key_helper_counts_only_when_named_non_blank() {
+    assert!(settings_name_an_api_key_helper(Some(
+        br#"{"apiKeyHelper": "~/bin/key.sh", "model": "opus"}"#
+    )));
+    assert!(!settings_name_an_api_key_helper(Some(
+        br#"{"apiKeyHelper": "  "}"#
+    )));
+    assert!(!settings_name_an_api_key_helper(Some(
+        br#"{"model": "opus"}"#
+    )));
+    assert!(!settings_name_an_api_key_helper(Some(b"{not json")));
+    assert!(!settings_name_an_api_key_helper(None));
+}
+
+/// The credentials file is read under a config dir only the login shell
+/// exports.
+#[test]
+fn the_credentials_file_check_reads_under_the_login_shells_config_dir() {
+    let td = tempfile::tempdir().unwrap();
+    std::fs::write(
+        td.path().join(".credentials.json"),
+        br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1893456000000}}"#,
+    )
+    .unwrap();
+    assert!(crate::bin_resolve::with_login_shell_env(
+        &[("CLAUDE_CONFIG_DIR", td.path().to_str().unwrap())],
+        default_credentials_file_usable,
+    ));
+}
+
+#[test]
+fn credentials_config_dir_honors_claude_config_dir() {
+    let home = Path::new("/Users/u");
+    assert_eq!(
+        credentials_config_dir(None, Some(home)),
+        Some(PathBuf::from("/Users/u/.claude"))
+    );
+    assert_eq!(
+        credentials_config_dir(Some(PathBuf::from("/cfg/eve")), Some(home)),
+        Some(PathBuf::from("/cfg/eve"))
+    );
+    assert_eq!(credentials_config_dir(None, None), None);
+}
+
+#[test]
+fn credentials_file_usable_accepts_a_real_oauth_token() {
+    assert!(credentials_file_usable(Some(
+        br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1893456000000}}"#
+    )));
+    // Expired-but-nonzero is still a login: the host refreshes it.
+    assert!(credentials_file_usable(Some(
+        br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1}}"#
+    )));
+}
+
+#[test]
+fn credentials_file_usable_rejects_stale_and_malformed() {
+    // A macOS Keychain login leaves a placeholder on disk.
+    assert!(!credentials_file_usable(Some(
+        br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":0}}"#
+    )));
+    // Empty access token, missing expiry, wrong shape, unparseable, absent.
+    assert!(!credentials_file_usable(Some(
+        br#"{"claudeAiOauth":{"accessToken":"","expiresAt":1893456000000}}"#
+    )));
+    assert!(!credentials_file_usable(Some(
+        br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x"}}"#
+    )));
+    assert!(!credentials_file_usable(Some(br#"{"somethingElse":true}"#)));
+    assert!(!credentials_file_usable(Some(b"not json")));
+    assert!(!credentials_file_usable(None));
+}
+
+#[test]
+fn stored_access_token_extracts_or_rejects() {
+    assert_eq!(
+        stored_access_token(
+            br#"{"claudeAiOauth":{"accessToken":"  sk-ant-oat-x \n","expiresAt":1893456000000}}"#
+        ),
+        Some("sk-ant-oat-x".to_string()),
+        "trimmed token extracted from a usable blob"
+    );
+}

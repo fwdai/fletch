@@ -311,11 +311,10 @@ Engine (`crates/fletch-core/src/`):
   denied; every profile denies reading `~/.codex/auth.json` and
   `<accounts root>/codex` (`deny_host_codex_logins`). Ignored kernel tests
   `seatbelt_enforces_account_dir_grants`, `seatbelt_hides_the_hosts_codex_logins`.
-- `sandbox/provider/auth.rs` — `auth::resolve(oauth_token)`: the host token
-  (`AuthSource::HostLogin`), then (default account only, since a managed
-  launch always has a token) the stored setup-token and the shell's auth
-  vars. A claude account dir never reaches a box. `status()` is
-  presence-only. `claude_keychain_service`.
+- `sandbox/provider/auth.rs`: `claude_env(oauth_token)`, a box launch's env.
+  The host token, else (default account only, since a managed launch always
+  has a token) the shell's auth vars. A claude account dir never reaches a
+  box, and a launch with neither is refused (`Claude::credential`).
 - `keychain.rs` — `item_present`, `item_stamp` (`acct` + `mdat`, no secret),
   `read_password` (launch or explicit action only, 20 s cap),
   `write_password` (`security -i`, hex `-X`, so the secret never hits argv;

@@ -257,13 +257,7 @@ impl Supervisor {
         if record.provider != "claude" {
             return Ok(None);
         }
-        // Whether only a token the host hands over can sign this launch in
-        // (`EngineCaps::token_only_launch`): seatbelt shares the host's
-        // files, so for it only the shell's own auth counts.
-        let containerized = crate::sandbox::stamped_engine(record)
-            .caps()
-            .token_only_launch;
-        let token = claude_login::launch_token(account, rejected, containerized).await;
+        let token = claude_login::launch_token(account, rejected).await;
         let kept = match &token {
             Ok(token) => Ok(token.clone()),
             Err(e) => Err(e.to_string()),
@@ -305,10 +299,7 @@ impl Supervisor {
             return kept.token.map_err(Error::Other);
         }
         let rejected = self.logins.lock().rejected.get(agent_id).copied();
-        let containerized = crate::sandbox::stamped_engine(record)
-            .caps()
-            .token_only_launch;
-        claude_login::launch_token(record.account.as_deref(), rejected, containerized).await
+        claude_login::launch_token(record.account.as_deref(), rejected).await
     }
 
     /// The launch replaced a rejected token, so the mark has done its job.
@@ -546,7 +537,7 @@ impl Supervisor {
             return LoginVerdict::Fine;
         }
         // A process launched without a host token signed in some other way
-        // (an API key, the stored setup-token); nothing here can renew it.
+        // (an API key in the shell); nothing here can renew it.
         let Some(expiry) = self
             .agents
             .lock()

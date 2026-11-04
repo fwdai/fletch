@@ -1,428 +1,50 @@
-//! Provider credential resolution for the launches of an engine that cannot
-//! read the user's own login where it lives (the box): the claude auth chain,
-//! the stored setup-token, the provider API keys a shell exports.
-//!
-//! Anthropic: [`resolve`] walks a first-hit-wins chain — the host's claude
-//! login (an access token `agent::host_login::claude` resolved, and
-//! refreshed, for this launch), stored setup-token, shell/process env, else
-//! [`ContainerAuth::Unavailable`] — and is re-evaluated on every spawn, so a
-//! `claude` re-login lands immediately. It returns env for the launch (a
-//! box's env file), so token values never appear in argv (invariant 3); nor in logs,
-//! since [`ContainerAuth`]'s `Debug` prints var names only.
-//!
-//! The other providers: [`present_api_keys`] and [`multi_provider_auth_env`],
-//! which decide whether a launch has a credential at all.
+//! What the adapters share to sign a box launch in. A guest inherits none of
+//! the host's env and cannot read its Keychain, so every credential is
+//! resolved on the host: claude's from the access token the host hands over,
+//! else the shell; opencode's and pi's from a login file, or the shell's keys.
 
-use std::collections::HashMap;
-use std::fmt;
-use std::path::{Path, PathBuf};
+use super::{login_shell_var, Credential, CredentialFile};
+use crate::agent::accounts::ambient_credential_vars;
+use crate::agent::host_login::claude::AccessToken;
+use crate::error::{Error, Result};
 
-use parking_lot::RwLock;
-
-use crate::agent::host_login::claude::{stored_access_token, AccessToken};
-use crate::bin_resolve;
-use crate::error::Error;
-
-/// `crate::secrets` key holding the user-pasted `claude setup-token` value.
-pub const TOKEN_SETTING: &str = "claude_container_token";
-
-/// Env var claude reads a setup-token (OAuth) credential from.
+/// Env var claude reads an OAuth access token from.
 const OAUTH_TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
-/// macOS Keychain service Claude Code stores its login under; the password
-/// payload is the same JSON as `~/.claude/.credentials.json`.
-const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+/// Points claude at a proxy. Not a login, so it follows whichever signs the
+/// launch in.
+const BASE_URL_VAR: &str = "ANTHROPIC_BASE_URL";
 
-/// Shell vars that constitute a chain hit on their own — the gateway bearer
-/// `ANTHROPIC_AUTH_TOKEN` included, so a gateway-only host isn't refused.
-const SHELL_KEY_VARS: [&str; 3] = [
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "ANTHROPIC_AUTH_TOKEN",
-];
-
-/// Everything forwarded once one of [`SHELL_KEY_VARS`] is present.
-const SHELL_AUTH_VARS: [&str; 4] = [
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-];
-
-/// Endpoint vars forwarded alongside a credential resolved from a *higher* chain
-/// step, to point that login at a custom proxy. Credential vars must never be
-/// listed here: an ambient one would override the resolved login.
-const PROXY_RIDE_ALONG: [&str; 1] = ["ANTHROPIC_BASE_URL"];
-
-/// Expected prefix of a `claude setup-token` credential. Other shapes are
-/// accepted with a warning — the format isn't a contract we own.
-const SETUP_TOKEN_PREFIX: &str = "sk-ant-oat";
-
-/// The stored token, mirrored in-process so [`resolve`] — called deep in spawn
-/// paths with no DB handle — never touches the DB.
-static STORED_TOKEN: RwLock<Option<String>> = RwLock::new(None);
-
-/// True once an explicit [`set_stored_token`] has run, so a delayed startup-seed
-/// retry can't overwrite newer user action with the stale value it read.
-static SEALED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Replace the in-process stored token (blank counts as none) and seal the
-/// mirror against any still-pending startup seed.
-pub fn set_stored_token(token: Option<String>) {
-    let mut w = STORED_TOKEN.write();
-    SEALED.store(true, std::sync::atomic::Ordering::SeqCst);
-    *w = sanitize(token);
+/// claude's env for a box launch: the access token the host resolved for it,
+/// else the auth vars in the user's shell. Those belong to the default account,
+/// and a managed account always arrives with a token. Empty when neither
+/// exists.
+pub(crate) fn claude_env(host_login: Option<&AccessToken>) -> Vec<(String, String)> {
+    claude_env_from(host_login.map(AccessToken::secret), login_shell_var)
 }
 
-/// Startup-seed variant of [`set_stored_token`]: applies only while no explicit
-/// set has run. The seal is read under the mirror's write lock, so a racing
-/// paste/clear wins in either order.
-pub fn seed_stored_token(token: Option<String>) {
-    let mut w = STORED_TOKEN.write();
-    if SEALED.load(std::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    *w = sanitize(token);
-}
-
-fn stored_token() -> Option<String> {
-    STORED_TOKEN.read().clone()
-}
-
-/// Blank-to-none: a cleared setting is persisted as `""`, which must not count
-/// as a token.
-fn sanitize(token: Option<String>) -> Option<String> {
-    token
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-}
-
-/// Which chain step supplied the credentials.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuthSource {
-    /// The host's claude login (Keychain item or credentials file), handed
-    /// over as a short-lived access token; [`status`] tells the stores apart.
-    HostLogin,
-    /// The pasted/captured setup-token from settings.
-    StoredToken,
-    /// Auth vars from the app's process env or the user's login shell.
-    ShellEnv,
-}
-
-/// Outcome of the chain: the env to set for the launched CLI (written to a
-/// box's env file), or nothing usable.
-pub enum ContainerAuth {
-    Resolved {
-        env: Vec<(String, String)>,
-        source: AuthSource,
-    },
-    Unavailable,
-}
-
-/// Manual impl so a stray `{:?}` can never leak a token: env entries print their
-/// var *names* only.
-impl fmt::Debug for ContainerAuth {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Resolved { env, source } => f
-                .debug_struct("Resolved")
-                .field("source", source)
-                .field(
-                    "env",
-                    &env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
-                )
-                .finish(),
-            Self::Unavailable => write!(f, "Unavailable"),
-        }
-    }
-}
-
-/// The config dir whose `.credentials.json` claude reads: the relocated
-/// `CLAUDE_CONFIG_DIR` if set, else `~/.claude`.
-fn credentials_config_dir(relocated: Option<PathBuf>, home: Option<&Path>) -> Option<PathBuf> {
-    relocated.or_else(|| home.map(|h| h.join(".claude")))
-}
-
-/// The Keychain item the default account's login lives under: the one claude
-/// names for the user's relocated config dir, the same dir a launch mounts
-/// and forwards. Shared by the Settings probe and the host store, so the two
-/// can't disagree on where the login is.
-pub(crate) fn default_keychain_service() -> String {
-    claude_keychain_service(crate::agent::accounts::claude_config_override().as_deref())
-}
-
-/// Env vars that route claude to a cloud provider's own credentials (AWS,
-/// GCP, Azure), which the agent reads from the shell and the home dir itself.
-const CLOUD_PROVIDER_VARS: [&str; 3] = [
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLAUDE_CODE_USE_FOUNDRY",
-];
-
-/// Whether a default-account launch that got no host login can still sign
-/// in some other way: an auth var in the app's env or the user's login shell,
-/// a cloud provider routing var, an `apiKeyHelper` in the user's claude
-/// settings, or — for a `containerized` launch only, since nothing else
-/// forwards it — the stored setup-token. The Keychain and credentials file
-/// are deliberately not counted: the host just failed to use them, and every
-/// sandbox closes them to the agent.
-pub fn fallback_login_present(containerized: bool) -> bool {
-    let (env, _) = chain_inputs();
-    (containerized && stored_token().is_some())
-        || !matches!(
-            resolve_from(None, None, env.as_ref()),
-            ContainerAuth::Unavailable
-        )
-        || CLOUD_PROVIDER_VARS
+fn claude_env_from(
+    host_login: Option<&str>,
+    shell: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    let var = |name: &str| shell(name).map(|value| (name.to_string(), value));
+    let mut env: Vec<(String, String)> = match host_login {
+        // An ambient credential would outrank the token, so none rides along.
+        Some(token) => vec![(OAUTH_TOKEN_VAR.to_string(), token.to_string())],
+        None => ambient_credential_vars("claude")
             .iter()
-            .any(|var| crate::agent::env_key_present(var))
-        || settings_name_an_api_key_helper(
-            credentials_config_dir(
-                crate::agent::accounts::claude_config_override(),
-                dirs::home_dir().as_deref(),
-            )
-            .and_then(|dir| std::fs::read(dir.join("settings.json")).ok())
-            .as_deref(),
-        )
-}
-
-/// Whether a claude `settings.json` names an `apiKeyHelper`: a script claude
-/// runs for its key, so no stored login or env var is needed. The value is
-/// tested for emptiness only.
-pub(crate) fn settings_name_an_api_key_helper(contents: Option<&[u8]>) -> bool {
-    serde_json::from_slice::<serde_json::Value>(contents.unwrap_or_default())
-        .ok()
-        .and_then(|v| {
-            v.get("apiKeyHelper")?
-                .as_str()
-                .map(|s| !s.trim().is_empty())
-        })
-        .unwrap_or(false)
-}
-
-/// Walk the auth chain (first hit wins). May block on the first call: loading
-/// the login-shell env runs a shell if nothing populated `bin_resolve`'s cache.
-///
-/// `host_login` is the access token the spawn path resolved for the account
-/// the agent is stamped with (`agent::host_login::claude::launch_token`). The
-/// container never sees the stored login itself, so nothing inside it can
-/// refresh (and rotate) the host's refresh token. A managed account always
-/// arrives with a token, since its launch fails without one, so the stored
-/// setup-token and the shell's auth vars — the default account's — can only
-/// ever answer for the default account.
-pub fn resolve(host_login: Option<&AccessToken>) -> ContainerAuth {
-    let (env, _) = chain_inputs();
-    resolve_from(
-        host_login.map(|t| t.secret().to_string()),
-        stored_token(),
-        env.as_ref(),
-    )
-}
-
-/// Whether the *host* has a usable claude login. Drives the providers settings'
-/// sign-in status (see `crate::agent::auth_probe`), which polls while the pane
-/// is open, so this differs from [`resolve`] in two ways:
-///
-/// - The Keychain step is **presence-only**: [`crate::keychain::item_present`]
-///   runs `security find-generic-password` without `-w`, so the credential is
-///   never read and macOS never prompts. An item under the default config
-///   dir's service ([`default_keychain_service`]) is taken as a login; deciding otherwise would mean reading the payload, which
-///   is exactly what this path must not do.
-/// - [`AuthSource::StoredToken`] is excluded: that token is pasted into Fletch's
-///   settings for containers to use and says nothing about whether the `claude`
-///   CLI on this machine is signed in.
-///
-/// A usable `.credentials.json` counts too, and the shell/process auth vars are
-/// evaluated by the same [`resolve_from`] chain [`resolve`] uses, so the two
-/// can't drift on what counts as a login.
-pub fn host_login_present() -> bool {
-    if crate::keychain::item_present(&default_keychain_service(), None) {
-        return true;
-    }
-    let (env, credentials_file) = chain_inputs();
-    credentials_file
-        || !matches!(
-            resolve_from(None, None, env.as_ref()),
-            ContainerAuth::Unavailable
-        )
-}
-
-/// Read the chain's non-Keychain inputs. Shared by [`resolve`], [`status`] and
-/// [`host_login_present`] so they can't drift on *what* they look at. The
-/// Keychain is deliberately not one of them: only a launch may read its
-/// secret, and that read belongs to `agent::host_login::claude`.
-fn chain_inputs() -> (Option<HashMap<String, String>>, bool) {
-    // The dir claude will actually read — and the one the engine mounts (see
-    // `nondefault_claude_config_dir`); hardcoding `~/.claude` would refuse a
-    // container whose only credential lives in a custom config dir.
-    let credentials_file = credentials_config_dir(
-        crate::agent::accounts::claude_config_override(),
-        dirs::home_dir().as_deref(),
-    )
-    .is_some_and(|dir| {
-        credentials_file_usable(std::fs::read(dir.join(".credentials.json")).ok().as_deref())
-    });
-    let process_env: HashMap<String, String> = SHELL_AUTH_VARS
-        .iter()
-        .filter_map(|var| std::env::var(var).ok().map(|v| (var.to_string(), v)))
-        .collect();
-    let env = merge_auth_env(&process_env, bin_resolve::login_shell_env());
-    (env, credentials_file)
-}
-
-/// Fold the app's own process environment together with the login-shell probe
-/// into one auth view for the env chain step (login-shell wins on collision);
-/// `None` when neither carries an auth var. Both are consulted because the
-/// container CLI child inherits the process env: a token visible only there —
-/// e.g. on a bash-only host the `/bin/zsh -lc` probe can't read — would
-/// otherwise resolve `Unavailable` and abort a launch that would have worked.
-fn merge_auth_env(
-    process_env: &HashMap<String, String>,
-    shell_env: Option<&HashMap<String, String>>,
-) -> Option<HashMap<String, String>> {
-    let mut merged = HashMap::new();
-    for var in SHELL_AUTH_VARS {
-        if let Some(v) = process_env.get(var) {
-            merged.insert(var.to_string(), v.clone());
-        }
-    }
-    if let Some(shell) = shell_env {
-        for var in SHELL_AUTH_VARS {
-            if let Some(v) = shell.get(var) {
-                merged.insert(var.to_string(), v.clone());
-            }
-        }
-    }
-    (!merged.is_empty()).then_some(merged)
-}
-
-/// Whether `.credentials.json` holds a claude login — see
-/// [`crate::agent::host_login::claude::stored_access_token`] for the bar.
-pub(crate) fn credentials_file_usable(contents: Option<&[u8]>) -> bool {
-    contents.and_then(stored_access_token).is_some()
-}
-
-/// The Keychain service claude keeps a login under for `config_dir`: the plain
-/// service for the default `~/.claude`, else the service plus the first eight
-/// hex chars of the SHA-256 of the directory path — how claude keeps one login
-/// per `CLAUDE_CONFIG_DIR`. The path is hashed exactly as the env var carries
-/// it, so callers pass the same string they set.
-pub(crate) fn claude_keychain_service(config_dir: Option<&Path>) -> String {
-    use sha2::{Digest, Sha256};
-    match config_dir {
-        None => KEYCHAIN_SERVICE.to_string(),
-        Some(dir) => {
-            let digest = Sha256::digest(dir.as_os_str().as_encoded_bytes());
-            let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
-            format!("{KEYCHAIN_SERVICE}-{hex}")
-        }
-    }
-}
-
-/// The chain itself, pure over its inputs so tests can exercise the ordering.
-fn resolve_from(
-    host_login: Option<String>,
-    stored: Option<String>,
-    shell_env: Option<&HashMap<String, String>>,
-) -> ContainerAuth {
-    // Only `PROXY_RIDE_ALONG` endpoints follow a credential taken from a higher
-    // step; forwarding an ambient credential var would override that login.
-    let with_proxy = |mut env: Vec<(String, String)>| -> Vec<(String, String)> {
-        if let Some(shell) = shell_env {
-            for var in PROXY_RIDE_ALONG {
-                if let Some(value) = shell.get(var).map(|v| v.trim()).filter(|v| !v.is_empty()) {
-                    env.push((var.to_string(), value.to_string()));
-                }
-            }
-        }
-        env
+            .filter_map(|name| var(name))
+            .collect(),
     };
-
-    if let Some(token) = host_login {
-        return ContainerAuth::Resolved {
-            env: with_proxy(vec![(OAUTH_TOKEN_VAR.to_string(), token)]),
-            source: AuthSource::HostLogin,
-        };
+    if !env.is_empty() {
+        env.extend(var(BASE_URL_VAR));
     }
-    if let Some(token) = stored {
-        return ContainerAuth::Resolved {
-            env: with_proxy(vec![(OAUTH_TOKEN_VAR.to_string(), token)]),
-            source: AuthSource::StoredToken,
-        };
-    }
-    if let Some(env) = shell_env {
-        let set = |var: &str| env.get(var).map(String::as_str).map(str::trim);
-        if SHELL_KEY_VARS
-            .iter()
-            .any(|var| set(var).is_some_and(|v| !v.is_empty()))
-        {
-            let forwarded = SHELL_AUTH_VARS
-                .iter()
-                .filter_map(|var| {
-                    let value = set(var)?;
-                    if value.is_empty() {
-                        None
-                    } else {
-                        Some((var.to_string(), value.to_string()))
-                    }
-                })
-                .collect();
-            return ContainerAuth::Resolved {
-                env: forwarded,
-                source: AuthSource::ShellEnv,
-            };
-        }
-    }
-    ContainerAuth::Unavailable
-}
-
-/// Wire shape of the `get_container_auth_status` command:
-/// `{ "status": "keychain" | "stored-token" | "shell-env" | "credentials-file" | "none" }`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "status", rename_all = "kebab-case")]
-pub enum ContainerAuthStatus {
-    Keychain,
-    StoredToken,
-    ShellEnv,
-    CredentialsFile,
-    None,
-}
-
-/// Which chain step a default-account launch would take right now. Settings
-/// polls it, so the host login is checked by presence, never read: the
-/// Keychain item's existence, or a usable credentials file.
-pub fn status() -> ContainerAuthStatus {
-    if crate::keychain::item_present(&default_keychain_service(), None) {
-        return ContainerAuthStatus::Keychain;
-    }
-    let (env, credentials_file) = chain_inputs();
-    if credentials_file {
-        return ContainerAuthStatus::CredentialsFile;
-    }
-    match resolve_from(None, stored_token(), env.as_ref()) {
-        ContainerAuth::Resolved { source, .. } => match source {
-            AuthSource::HostLogin => ContainerAuthStatus::Keychain,
-            AuthSource::StoredToken => ContainerAuthStatus::StoredToken,
-            AuthSource::ShellEnv => ContainerAuthStatus::ShellEnv,
-        },
-        ContainerAuth::Unavailable => ContainerAuthStatus::None,
-    }
-}
-
-/// Normalize a pasted token for storage: trimmed and non-empty, plus whether it
-/// matches the expected shape (callers warn-but-accept). Errors never echo input.
-pub fn normalize_token(raw: &str) -> Result<(String, bool), String> {
-    let token = raw.trim();
-    if token.is_empty() {
-        return Err("Token is empty. Run `claude setup-token` and paste its output.".into());
-    }
-    Ok((token.to_string(), token.starts_with(SETUP_TOKEN_PREFIX)))
+    env
 }
 
 /// Provider API-key env vars the multi-provider CLIs (opencode, pi) read to
-/// authenticate; any one set in the app's process env satisfies auth on its own.
-/// Curated to the mainstream providers both CLIs honor, not exhaustive. Codex is
-/// excluded — it's single-provider and resolved separately.
+/// authenticate; any one set satisfies auth on its own. Curated to the
+/// mainstream providers both CLIs honor, not exhaustive.
 const MULTI_PROVIDER_API_KEY_ENV: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -434,269 +56,68 @@ const MULTI_PROVIDER_API_KEY_ENV: &[&str] = &[
     "MISTRAL_API_KEY",
 ];
 
-/// The subset of [`MULTI_PROVIDER_API_KEY_ENV`] present and non-blank via
-/// `lookup`, in constant order so forwarding is deterministic.
-pub(crate) fn present_api_keys(lookup: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+/// The keys in [`MULTI_PROVIDER_API_KEY_ENV`] the user's shell exports, in
+/// constant order so forwarding is deterministic.
+pub(crate) fn present_api_keys() -> Vec<(String, String)> {
     MULTI_PROVIDER_API_KEY_ENV
         .iter()
-        .filter_map(|&name| {
-            let value = lookup(name)?;
-            let value = value.trim();
-            (!value.is_empty()).then(|| (name.to_string(), value.to_string()))
-        })
+        .filter_map(|&name| Some((name.to_string(), login_shell_var(name)?)))
         .collect()
 }
 
-/// Shared auth rule for the multi-provider CLIs (opencode, pi): a forwarded
-/// provider key OR a credential on the read-write mount suffices; neither is the
-/// caller's launch-blocking message.
-pub(crate) fn multi_provider_auth_env(
+/// The credential of a multi-provider CLI (opencode, pi): a forwarded key or a
+/// login file suffices; with neither, the launch is refused with `no_auth_msg`.
+pub(crate) fn multi_provider_credential(
     api_keys: Vec<(String, String)>,
-    credential_on_mount: bool,
+    files: Vec<CredentialFile>,
     no_auth_msg: &str,
-) -> crate::error::Result<Vec<(String, String)>> {
-    if !api_keys.is_empty() || credential_on_mount {
-        Ok(api_keys)
-    } else {
-        Err(Error::Other(no_auth_msg.to_string()))
+) -> Result<Credential> {
+    if api_keys.is_empty() && files.is_empty() {
+        return Err(Error::Other(no_auth_msg.to_string()));
     }
+    Ok(Credential {
+        env: api_keys,
+        files,
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
-    fn shell_env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    fn resolved(auth: ContainerAuth) -> (Vec<(String, String)>, AuthSource) {
-        match auth {
-            ContainerAuth::Resolved { env, source } => (env, source),
-            ContainerAuth::Unavailable => panic!("expected Resolved"),
+    fn shell<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
         }
     }
 
-    #[test]
-    fn merge_auth_env_honors_process_env_and_prefers_shell() {
-        let process = shell_env(&[
-            ("ANTHROPIC_API_KEY", "proc-key"),
-            ("ANTHROPIC_BASE_URL", "https://proc-proxy"),
-        ]);
-        let m = merge_auth_env(&process, None).unwrap();
-        assert_eq!(m.get("ANTHROPIC_API_KEY").unwrap(), "proc-key");
-        // Login-shell wins on collision; process-only vars still survive.
-        let shell = shell_env(&[("ANTHROPIC_API_KEY", "shell-key")]);
-        let m = merge_auth_env(&process, Some(&shell)).unwrap();
-        assert_eq!(m.get("ANTHROPIC_API_KEY").unwrap(), "shell-key");
-        assert_eq!(m.get("ANTHROPIC_BASE_URL").unwrap(), "https://proc-proxy");
+    fn names(env: &[(String, String)]) -> Vec<&str> {
+        let mut names: Vec<_> = env.iter().map(|(name, _)| name.as_str()).collect();
+        names.sort_unstable();
+        names
     }
 
+    /// The token wins, and only the endpoint follows it: forwarding an ambient
+    /// credential would let claude prefer it over the login.
     #[test]
-    fn merge_auth_env_none_when_no_auth_vars() {
-        assert!(merge_auth_env(&HashMap::new(), None).is_none());
-        let junk = shell_env(&[("PATH", "/usr/bin")]);
-        assert!(merge_auth_env(&junk, Some(&junk)).is_none());
-    }
-
-    #[test]
-    fn process_env_token_resolves_instead_of_aborting() {
-        // A token only the process env carries must resolve, not abort the launch.
-        let process = shell_env(&[("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-proc")]);
-        let merged = merge_auth_env(&process, None);
-        let (env, source) = resolved(resolve_from(None, None, merged.as_ref()));
-        assert_eq!(source, AuthSource::ShellEnv);
-        assert_eq!(
-            env,
-            vec![(
-                "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
-                "sk-ant-oat-proc".to_string()
-            )]
-        );
-    }
-
-    #[test]
-    fn host_login_beats_stored_and_shell() {
-        let shell = shell_env(&[("ANTHROPIC_API_KEY", "sk-ant-api-key")]);
-        let auth = resolve_from(
-            Some("sk-ant-oat-keychain".into()),
-            Some("sk-ant-oat-stored".into()),
-            Some(&shell),
-        );
-        let (env, source) = resolved(auth);
-        assert_eq!(source, AuthSource::HostLogin);
-        assert_eq!(
-            env,
-            vec![(
-                "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
-                "sk-ant-oat-keychain".to_string()
-            )]
-        );
-    }
-
-    #[test]
-    fn proxy_config_rides_along_but_ambient_credentials_do_not() {
-        // Forwarding the ambient key would let claude prefer it over the
-        // Keychain login the chain resolved.
-        let shell = shell_env(&[
-            ("ANTHROPIC_API_KEY", "sk-ant-ambient-key"),
-            ("ANTHROPIC_BASE_URL", "https://proxy.example.com"),
-        ]);
-        let (env, source) = resolved(resolve_from(
-            Some("sk-ant-oat-keychain".into()),
-            None,
-            Some(&shell),
-        ));
-        assert_eq!(source, AuthSource::HostLogin);
-        let mut keys: Vec<_> = env.iter().map(|(k, _)| k.as_str()).collect();
-        keys.sort_unstable();
-        assert_eq!(keys, ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN"]);
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == "sk-ant-oat-keychain"));
-    }
-
-    #[test]
-    fn gateway_token_alone_resolves_via_shell_env() {
-        // A gateway-only host still authenticates, matching seatbelt.
-        let shell = shell_env(&[
+    fn a_host_login_signs_in_and_only_the_endpoint_follows_it() {
+        let vars = [
+            ("ANTHROPIC_API_KEY", "sk-ant-ambient"),
             ("ANTHROPIC_AUTH_TOKEN", "gw-secret"),
-            ("ANTHROPIC_BASE_URL", "https://gateway.example.com"),
-        ]);
-        let (env, source) = resolved(resolve_from(None, None, Some(&shell)));
-        assert_eq!(source, AuthSource::ShellEnv);
-        let mut keys: Vec<_> = env.iter().map(|(k, _)| k.as_str()).collect();
-        keys.sort_unstable();
-        assert_eq!(keys, ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]);
-    }
-
-    #[test]
-    fn endpoint_rides_along_but_ambient_gateway_token_does_not() {
-        // The endpoint points the resolved login at its proxy; the ambient
-        // gateway token would override that login, so it must not ride along.
-        let shell = shell_env(&[
-            ("ANTHROPIC_AUTH_TOKEN", "gw-secret"),
-            ("ANTHROPIC_BASE_URL", "https://proxy.example.com"),
-        ]);
-        let (env, source) = resolved(resolve_from(
-            Some("sk-ant-oat-keychain".into()),
-            None,
-            Some(&shell),
-        ));
-        assert_eq!(source, AuthSource::HostLogin);
-        let mut keys: Vec<_> = env.iter().map(|(k, _)| k.as_str()).collect();
-        keys.sort_unstable();
-        assert_eq!(keys, ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN"]);
-    }
-
-    #[test]
-    fn stored_access_token_extracts_or_rejects() {
-        assert_eq!(
-            stored_access_token(
-                br#"{"claudeAiOauth":{"accessToken":"  sk-ant-oat-x \n","expiresAt":1893456000000}}"#
-            ),
-            Some("sk-ant-oat-x".to_string()),
-            "trimmed token extracted from a usable blob"
-        );
-        // Placeholder, empty token, wrong shape, unparseable, absent — all reject.
-        for blob in [
-            &br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","expiresAt":0}}"#[..],
-            &br#"{"claudeAiOauth":{"accessToken":"","expiresAt":1893456000000}}"#[..],
-            &br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x"}}"#[..],
-            &br#"{"somethingElse":true}"#[..],
-            &b"not json"[..],
-        ] {
-            assert_eq!(stored_access_token(blob), None, "must reject: {blob:?}");
-        }
-    }
-
-    #[test]
-    fn stored_token_beats_shell_env() {
-        let shell = shell_env(&[("ANTHROPIC_API_KEY", "sk-ant-api-key")]);
-        let auth = resolve_from(None, Some("sk-ant-oat-stored".into()), Some(&shell));
-        let (env, source) = resolved(auth);
-        assert_eq!(source, AuthSource::StoredToken);
-        assert_eq!(
-            env,
-            vec![(
-                "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
-                "sk-ant-oat-stored".to_string()
-            )]
-        );
-    }
-
-    #[test]
-    fn shell_env_forwards_proxy_vars() {
-        let shell = shell_env(&[
-            ("ANTHROPIC_API_KEY", "sk-ant-api-key"),
-            ("ANTHROPIC_BASE_URL", "https://proxy.example.com"),
-            ("PATH", "/usr/bin"),
-        ]);
-        let (env, source) = resolved(resolve_from(None, None, Some(&shell)));
-        assert_eq!(source, AuthSource::ShellEnv);
-        let mut keys: Vec<_> = env.iter().map(|(k, _)| k.as_str()).collect();
-        keys.sort_unstable();
-        assert_eq!(keys, ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
-    }
-
-    #[test]
-    fn shell_values_are_trimmed_before_forwarding() {
-        // The hit check trims, so the forwarded value must trim too or auth
-        // fails in-container.
-        let shell = shell_env(&[("ANTHROPIC_API_KEY", "  sk-ant-api-key\n")]);
-        let (env, source) = resolved(resolve_from(None, None, Some(&shell)));
-        assert_eq!(source, AuthSource::ShellEnv);
-        assert_eq!(
-            env,
-            vec![(
-                "ANTHROPIC_API_KEY".to_string(),
-                "sk-ant-api-key".to_string()
-            )]
-        );
-    }
-
-    #[test]
-    fn proxy_vars_alone_are_not_a_hit() {
-        // BASE_URL alone can't authenticate anything.
-        let shell = shell_env(&[("ANTHROPIC_BASE_URL", "https://proxy.example.com")]);
-        assert!(matches!(
-            resolve_from(None, None, Some(&shell)),
-            ContainerAuth::Unavailable
-        ));
-    }
-
-    #[test]
-    fn blank_shell_values_are_ignored() {
-        let shell = shell_env(&[("ANTHROPIC_API_KEY", "  ")]);
-        assert!(matches!(
-            resolve_from(None, None, Some(&shell)),
-            ContainerAuth::Unavailable
-        ));
-    }
-
-    /// A host login token (any account's) outranks the default account's
-    /// stored token and shell keys, and only the proxy endpoint rides along.
-    #[test]
-    fn a_host_login_token_shadows_the_default_accounts_fallbacks() {
-        let shell = shell_env(&[
-            ("ANTHROPIC_API_KEY", "sk-ant-api-key"),
             ("ANTHROPIC_BASE_URL", "https://proxy"),
-        ]);
-        let (env, source) = resolved(resolve_from(
-            Some("sk-ant-oat-account".into()),
-            Some("sk-ant-oat-stored".into()),
-            Some(&shell),
-        ));
-        assert_eq!(source, AuthSource::HostLogin);
+        ];
+        let env = claude_env_from(Some("sk-ant-oat-login"), shell(&vars));
         assert_eq!(
             env,
             vec![
                 (
                     "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
-                    "sk-ant-oat-account".to_string()
+                    "sk-ant-oat-login".to_string()
                 ),
                 (
                     "ANTHROPIC_BASE_URL".to_string(),
@@ -706,212 +127,73 @@ mod tests {
         );
     }
 
-    /// The host-side launch strips the same vars this chain treats as a
-    /// default-account login, so a managed account is isolated the same way
-    /// under every sandbox engine.
     #[test]
-    fn host_launches_strip_the_vars_this_chain_counts_as_a_login() {
-        let mut chain = SHELL_KEY_VARS.to_vec();
-        chain.sort_unstable();
-        let mut host = crate::agent::accounts::ambient_credential_vars("claude").to_vec();
-        host.sort_unstable();
-        assert_eq!(chain, host);
-    }
-
-    /// The suffix is the first eight hex chars of SHA-256 over the directory
-    /// path as the env var carries it — verified against a live Keychain
-    /// item written by claude 2.1.x for a custom `CLAUDE_CONFIG_DIR`.
-    #[test]
-    fn keychain_service_is_suffixed_per_config_dir() {
-        assert_eq!(claude_keychain_service(None), "Claude Code-credentials");
+    fn without_a_host_login_the_shells_auth_vars_sign_in() {
+        let vars = [
+            ("ANTHROPIC_API_KEY", "sk-ant-key"),
+            ("ANTHROPIC_BASE_URL", "https://proxy"),
+            ("PATH", "/usr/bin"),
+        ];
         assert_eq!(
-            claude_keychain_service(Some(Path::new("/cfg/eve"))),
-            "Claude Code-credentials-b634a9ea"
+            names(&claude_env_from(None, shell(&vars))),
+            ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]
+        );
+    }
+
+    /// A gateway-only host still authenticates, matching seatbelt.
+    #[test]
+    fn a_gateway_token_alone_signs_in() {
+        let vars = [
+            ("ANTHROPIC_AUTH_TOKEN", "gw-secret"),
+            ("ANTHROPIC_BASE_URL", "https://gateway"),
+        ];
+        assert_eq!(
+            names(&claude_env_from(None, shell(&vars))),
+            ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]
+        );
+    }
+
+    #[test]
+    fn an_endpoint_alone_signs_nothing_in() {
+        let vars = [("ANTHROPIC_BASE_URL", "https://proxy")];
+        assert!(claude_env_from(None, shell(&vars)).is_empty());
+        assert!(claude_env_from(None, shell(&[])).is_empty());
+    }
+
+    /// The value forwarded is the trimmed one, or auth fails in the guest, and
+    /// a blank one counts as unset.
+    #[test]
+    fn the_shell_is_read_trimmed_and_a_blank_value_is_unset() {
+        let read = |value| {
+            crate::bin_resolve::with_login_shell_env(&[("ANTHROPIC_API_KEY", value)], || {
+                login_shell_var("ANTHROPIC_API_KEY")
+            })
+        };
+        assert_eq!(read("  sk-ant-key\n").as_deref(), Some("sk-ant-key"));
+        assert_eq!(read("  "), None);
+    }
+
+    #[test]
+    fn a_multi_provider_cli_needs_a_key_or_a_login_file() {
+        let key = vec![("OPENAI_API_KEY".to_string(), "sk".to_string())];
+        let file = vec![CredentialFile::cli_owned(PathBuf::from("/h/auth.json"))];
+        assert_eq!(
+            multi_provider_credential(key.clone(), Vec::new(), "no")
+                .unwrap()
+                .env,
+            key
         );
         assert_eq!(
-            claude_keychain_service(Some(Path::new("/Users/u/.fletch/accounts/claude/work"))),
-            "Claude Code-credentials-98eed843"
+            multi_provider_credential(Vec::new(), file.clone(), "no")
+                .unwrap()
+                .files,
+            file
         );
-    }
-
-    /// Settings' presence probe looks for the Keychain item claude names for a
-    /// config dir only the login shell exports, not the default dir's.
-    #[test]
-    fn the_status_probe_looks_at_the_login_shells_config_dir_keychain_item() {
-        let service = crate::bin_resolve::with_login_shell_env(
-            &[("CLAUDE_CONFIG_DIR", "/cfg/eve")],
-            default_keychain_service,
-        );
-        assert_eq!(service, "Claude Code-credentials-b634a9ea");
-    }
-
-    #[test]
-    fn an_api_key_helper_counts_only_when_named_non_blank() {
-        assert!(settings_name_an_api_key_helper(Some(
-            br#"{"apiKeyHelper": "~/bin/key.sh", "model": "opus"}"#
-        )));
-        assert!(!settings_name_an_api_key_helper(Some(
-            br#"{"apiKeyHelper": "  "}"#
-        )));
-        assert!(!settings_name_an_api_key_helper(Some(
-            br#"{"model": "opus"}"#
-        )));
-        assert!(!settings_name_an_api_key_helper(Some(b"{not json")));
-        assert!(!settings_name_an_api_key_helper(None));
-    }
-
-    /// The chain's credentials-file step reads under a config dir only the
-    /// login shell exports.
-    #[test]
-    fn the_credentials_file_check_reads_under_the_login_shells_config_dir() {
-        let td = tempfile::tempdir().unwrap();
-        std::fs::write(
-            td.path().join(".credentials.json"),
-            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1893456000000}}"#,
-        )
-        .unwrap();
-        let (_, credentials_file) = crate::bin_resolve::with_login_shell_env(
-            &[("CLAUDE_CONFIG_DIR", td.path().to_str().unwrap())],
-            chain_inputs,
-        );
-        assert!(credentials_file);
-    }
-
-    #[test]
-    fn credentials_config_dir_honors_claude_config_dir() {
-        let home = Path::new("/Users/u");
-        // Unset → the default `~/.claude`.
         assert_eq!(
-            credentials_config_dir(None, Some(home)),
-            Some(PathBuf::from("/Users/u/.claude"))
+            multi_provider_credential(Vec::new(), Vec::new(), "no")
+                .unwrap_err()
+                .to_string(),
+            Error::Other("no".into()).to_string()
         );
-        // A custom `CLAUDE_CONFIG_DIR` is used verbatim.
-        assert_eq!(
-            credentials_config_dir(Some(PathBuf::from("/cfg/eve")), Some(home)),
-            Some(PathBuf::from("/cfg/eve"))
-        );
-        // No env and no home → nothing to check.
-        assert_eq!(credentials_config_dir(None, None), None);
-    }
-
-    #[test]
-    fn credentials_file_usable_accepts_a_real_oauth_token() {
-        assert!(credentials_file_usable(Some(
-            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1893456000000}}"#
-        )));
-        // Expired-but-nonzero is still a login: the host refreshes it.
-        assert!(credentials_file_usable(Some(
-            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1}}"#
-        )));
-    }
-
-    #[test]
-    fn credentials_file_usable_rejects_stale_and_malformed() {
-        // A macOS Keychain login leaves a placeholder on disk.
-        assert!(!credentials_file_usable(Some(
-            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":0}}"#
-        )));
-        // Empty access token, missing expiry, wrong shape, unparseable, absent.
-        assert!(!credentials_file_usable(Some(
-            br#"{"claudeAiOauth":{"accessToken":"","expiresAt":1893456000000}}"#
-        )));
-        assert!(!credentials_file_usable(Some(
-            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x"}}"#
-        )));
-        assert!(!credentials_file_usable(Some(br#"{"somethingElse":true}"#)));
-        assert!(!credentials_file_usable(Some(b"not json")));
-        assert!(!credentials_file_usable(None));
-    }
-
-    #[test]
-    fn nothing_resolves_to_unavailable() {
-        assert!(matches!(
-            resolve_from(None, None, None),
-            ContainerAuth::Unavailable
-        ));
-        assert!(matches!(
-            resolve_from(None, None, Some(&shell_env(&[("PATH", "/usr/bin")]))),
-            ContainerAuth::Unavailable
-        ));
-    }
-
-    #[test]
-    fn host_login_chain_excludes_stored_token_but_honors_file_and_shell() {
-        // Models what `host_login_present` evaluates once its Keychain presence
-        // check misses. The Keychain half itself is a `security` subprocess and
-        // so isn't unit-testable — passing `None` for the keychain slot is
-        // exactly the "no Keychain item" case, and the probe never supplies a
-        // token there.
-        //
-        // A pasted container token is not a host login…
-        assert!(matches!(
-            resolve_from(None, None, None),
-            ContainerAuth::Unavailable
-        ));
-        // …even though `resolve` still accepts it for container launches.
-        assert!(!matches!(
-            resolve_from(None, Some("sk-ant-oat-stored".into()), None),
-            ContainerAuth::Unavailable
-        ));
-        // So is a key in the shell/process env.
-        let shell = shell_env(&[("ANTHROPIC_API_KEY", "sk-ant-api-key")]);
-        assert!(!matches!(
-            resolve_from(None, None, Some(&shell)),
-            ContainerAuth::Unavailable
-        ));
-        // A proxy endpoint on its own can't authenticate anything.
-        let proxy_only = shell_env(&[("ANTHROPIC_BASE_URL", "https://proxy.example.com")]);
-        assert!(matches!(
-            resolve_from(None, None, Some(&proxy_only)),
-            ContainerAuth::Unavailable
-        ));
-    }
-
-    #[test]
-    fn debug_output_redacts_token_values() {
-        let auth = resolve_from(None, Some("sk-ant-oat-SECRET-VALUE".into()), None);
-        let printed = format!("{auth:?}");
-        assert!(printed.contains("CLAUDE_CODE_OAUTH_TOKEN"), "{printed}");
-        assert!(printed.contains("StoredToken"), "{printed}");
-        assert!(!printed.contains("SECRET"), "token leaked: {printed}");
-    }
-
-    #[test]
-    fn sanitize_drops_blank_and_trims() {
-        assert_eq!(sanitize(None), None);
-        assert_eq!(sanitize(Some("".into())), None);
-        assert_eq!(sanitize(Some("   ".into())), None);
-        assert_eq!(sanitize(Some(" tok ".into())), Some("tok".into()));
-    }
-
-    #[test]
-    fn normalize_token_rejects_empty_and_flags_shape() {
-        assert!(normalize_token("").is_err());
-        assert!(normalize_token("  \n ").is_err());
-        assert_eq!(
-            normalize_token(" sk-ant-oat01-abc \n"),
-            Ok(("sk-ant-oat01-abc".to_string(), true))
-        );
-        // Unknown shapes are accepted but flagged so the command can warn.
-        assert_eq!(
-            normalize_token("some-proxy-token"),
-            Ok(("some-proxy-token".to_string(), false))
-        );
-    }
-
-    #[test]
-    fn status_serializes_to_the_wire_shape() {
-        for (status, wire) in [
-            (ContainerAuthStatus::Keychain, "keychain"),
-            (ContainerAuthStatus::StoredToken, "stored-token"),
-            (ContainerAuthStatus::ShellEnv, "shell-env"),
-            (ContainerAuthStatus::CredentialsFile, "credentials-file"),
-            (ContainerAuthStatus::None, "none"),
-        ] {
-            assert_eq!(
-                serde_json::to_value(status).unwrap(),
-                serde_json::json!({ "status": wire })
-            );
-        }
     }
 }
