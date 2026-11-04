@@ -435,7 +435,7 @@ impl Tracked {
     /// (`queued`), then the recorded failure — a scan that couldn't verify
     /// the review reads `stale`, every other origin `failed`.
     pub fn derive(&self, open: u32) -> Phase {
-        if self.flight.is_some() {
+        if self.in_round() {
             return Phase::Reviewing;
         }
         if self.pending.is_some() {
@@ -567,9 +567,7 @@ impl Tracked {
     /// a claim; always right after a restart, while a PR is open, or while
     /// the coder was active lately.
     pub fn wants_scan(&self, pr_open: bool, now: i64) -> bool {
-        self.flight.is_none()
-            && !self.starting
-            && (self.needs_rescan || pr_open || now < self.active_until_ms)
+        !self.in_round() && (self.needs_rescan || pr_open || now < self.active_until_ms)
     }
 
     /// The persisted memory as a restart finds it: no turn survived, so a
@@ -587,11 +585,18 @@ impl Tracked {
         self
     }
 
+    /// A round holds the checkout, from its claim to its end. The one meaning
+    /// of "a review is running": what clients are told, what a delegation is
+    /// refused on and what a second start is turned away by.
+    pub fn in_round(&self) -> bool {
+        self.flight.is_some() || self.starting
+    }
+
     /// Claim the checkout for a start about to run. Refused while a round is
     /// in flight or another start holds the claim; [`Self::begin`],
     /// [`Self::release`] or a failure ends it.
     pub fn claim(&mut self) -> std::result::Result<(), &'static str> {
-        if self.flight.is_some() || self.starting {
+        if self.in_round() {
             return Err("a review is already running on this checkout");
         }
         self.starting = true;
@@ -746,14 +751,11 @@ impl Table {
         self.inner.lock().get(key).cloned()
     }
 
-    /// A reviewer is reading this checkout, or is being spawned to. Bounded by
+    /// A round holds this checkout ([`Tracked::in_round`]). Bounded by
     /// [`WALL_TIMEOUT_MS`]. A queued start doesn't count: it reads nothing until
     /// the coder is free.
     pub fn reviewing(&self, key: &Key) -> bool {
-        self.inner
-            .lock()
-            .get(key)
-            .is_some_and(|t| t.flight.is_some() || t.starting)
+        self.inner.lock().get(key).is_some_and(Tracked::in_round)
     }
 
     /// Apply `f` to a checkout's memory, creating it on first touch.
@@ -1404,7 +1406,7 @@ pub async fn start(
                 .await
                 .ok_or_else(|| Error::Other("review state vanished".into()));
         }
-        if t.flight.is_some() || t.starting {
+        if t.in_round() {
             return Err(Error::Other(ALREADY_RUNNING.into()));
         }
     }
@@ -1498,6 +1500,9 @@ async fn run_round(
     before: FailureOrigin,
     _held: CheckoutHold,
 ) -> Result<ReviewState> {
+    // Out now, not after the read below: clients close what would change the
+    // code on this phase.
+    refresh(ctx, sup, key).await;
     let prefix = if before == FailureOrigin::Queued {
         "queued review not started: "
     } else {
@@ -1824,10 +1829,7 @@ pub async fn on_pr_opened(
         return;
     };
     let tracked = global().get(&key);
-    if tracked
-        .as_ref()
-        .is_some_and(|t| t.flight.is_some() || t.starting)
-    {
+    if tracked.as_ref().is_some_and(Tracked::in_round) {
         return;
     }
     if let (Some(t), Some(n)) = (&tracked, number) {
@@ -2074,11 +2076,7 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
         let Some(mut tracked) = table.get(&key) else {
             continue;
         };
-        if tracked.flight.is_some()
-            || tracked.starting
-            || tracked.pending.is_some()
-            || !coder_free(sup, &key)
-        {
+        if tracked.in_round() || tracked.pending.is_some() || !coder_free(sup, &key) {
             continue;
         }
         // Never decided on a skipped digest: read the content of this one

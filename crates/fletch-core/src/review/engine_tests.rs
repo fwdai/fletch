@@ -685,8 +685,8 @@ fn a_start_queued_behind_a_busy_coder_runs_once_it_is_free() {
     );
     let pending = t.claim_pending().expect("the start runs");
     assert_eq!(pending.trigger, Trigger::PrOpen);
-    assert_ne!(t.derive(0), Phase::Queued);
     assert!(t.starting, "taken and claimed in one step");
+    assert_eq!(t.derive(0), Phase::Reviewing, "queued to reviewing, no gap");
 
     let mut t = begun(Trigger::Manual, None);
     t.queue(Trigger::ReReview, None);
@@ -730,6 +730,20 @@ fn a_queued_start_that_cannot_begin_reads_failed() {
         t.error().as_deref(),
         Some("queued review not started: No reviewer is set up — pick one in Settings › Review")
     );
+}
+
+/// What clients are told and what the host refuses on are the same fact, from
+/// the claim on: a client reading `idle` here would leave open what changes
+/// the code the round is about to read.
+#[test]
+fn a_claim_reads_as_reviewing_before_its_flight_exists() {
+    let mut t = reviewed();
+    t.claim().unwrap();
+    assert!(t.flight.is_none());
+    assert_eq!(t.derive(0), Phase::Reviewing);
+
+    t.record_failure(FailureOrigin::Start, "boom", None);
+    assert_eq!(t.derive(0), Phase::Failed, "a claim that fails lets go");
 }
 
 #[test]

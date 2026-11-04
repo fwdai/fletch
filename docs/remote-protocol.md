@@ -1692,7 +1692,8 @@ runs on the host and needs no PR, no origin and no GitHub login.
   reviewed), `queued` (a start waits for the coder: asked for while the coder
   was running or spawning, or a delegation was live on the checkout; one per
   checkout, persisted across a restart, and begun once the coder is idle with
-  no delegation live), `reviewing` (a reviewer turn is running), `findings`
+  no delegation live), `reviewing` (a round holds the checkout, from the moment
+  it is claimed: its reviewer is coming up or its turn is running), `findings`
   (the last review left local threads open), `clean` (approved, or every
   finding resolved, and the code unchanged since), `stale` (the code differs
   from what the last review read: HEAD, the dirty paths and their kinds, or a
