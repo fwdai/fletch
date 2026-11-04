@@ -812,8 +812,8 @@ fn transition_active(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, new
             // for agents without a reader.
             sup.trigger_session_sync(ctx.clone(), agent_id.to_string());
             // Opt-in per project (OFF by default): run verification on the
-            // agent's checkout so its Mission Control card carries test
-            // evidence. Ad-hoc agents only, fire-and-forget, never blocks.
+            // agent's checkout so the phone can show its test evidence.
+            // Ad-hoc agents only, fire-and-forget, never blocks.
             sup.trigger_turn_end_verification(ctx.clone(), agent_id.to_string());
             drain_pending_respawn(sup, ctx, agent_id);
             drain_message_queue(sup, ctx, agent_id);

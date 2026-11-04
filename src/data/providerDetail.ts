@@ -24,14 +24,13 @@ export interface ProviderDetail {
   models: string;
   /** Detected & configured on this machine — drives the "Installed" list. */
   installed: boolean;
-  /** Shell command to install the CLI on macOS/Linux, shown in the readiness
-   *  check when the binary isn't found — the official native installer
-   *  (standalone binary, no Node/npm), so it doubles as the manual copy-paste
-   *  fallback for the one-click install. Omit when there's no reliable
-   *  one-liner — the UI falls back to the `docs` link. Consumers should read
-   *  these through `installCommand()`, which picks per platform; both fields
-   *  must mirror the pinned commands the backend runs
-   *  (src-tauri/src/agent_install.rs). */
+  /** Shell command to install the CLI on macOS/Linux, shown when the binary
+   *  isn't found — the official native installer (standalone binary, no
+   *  Node/npm), so it doubles as the manual copy-paste fallback for the
+   *  one-click install. Omit when there's no reliable one-liner — the UI falls
+   *  back to the `docs` link. Consumers should read these through
+   *  `installCommand()`, which picks per platform; both fields must mirror the
+   *  pinned commands the backend runs (src-tauri/src/agent_install.rs). */
   install?: string;
   /** PowerShell equivalent of `install` for Windows, where one exists. */
   installWindows?: string;

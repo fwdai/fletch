@@ -13,8 +13,6 @@ export function DeveloperPane() {
   const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
   const refreshModelCatalog = useAppStore((s) => s.refreshModelCatalog);
   const setUpdateReady = useAppStore((s) => s.setUpdateReady);
-  const features = useAppStore((s) => s.features);
-  const setFeature = useAppStore((s) => s.setFeature);
   const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
   const setContextLayerEnabled = useAppStore((s) => s.setContextLayerEnabled);
   const boxImageUrl = useAppStore((s) => s.boxImageUrl);
@@ -37,18 +35,6 @@ export function DeveloperPane() {
         title="Developer"
         desc="Tools for working on Fletch itself."
       />
-
-      <SetGroup label="Home">
-        <SetRow
-          title="Mission Control"
-          sub="Use the fleet review queue as Home, instead of the quick-actions screen."
-        >
-          <SetToggle
-            on={!!features.missionControl}
-            onClick={() => setFeature("missionControl", !features.missionControl)}
-          />
-        </SetRow>
-      </SetGroup>
 
       <SetGroup label="Pilots">
         <SetRow

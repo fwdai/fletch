@@ -1,10 +1,10 @@
 // How a PR, or a checkout's whole set of them, reads at a glance. Every surface
-// that shows a PR label (sidebar pill, title-bar badge, the Git panel's chips,
-// Mission Control's evidence) tints and ranks through here, so a PR never reads
-// "failing" in one place and "open" in another.
+// that shows a PR label (sidebar pill, title-bar badge, the Git panel's chips)
+// tints and ranks through here, so a PR never reads "failing" in one place and
+// "open" in another.
 //
-// Pure — no store, no React — so the queue selector (which must stay free of
-// the store) shares it with every component.
+// Pure — no store, no React — so store-free selectors share it with every
+// component.
 
 import type { PrChecks, PrSetEntry, PrState } from "@/api";
 import type { BadgeVariant } from "@/components/ui/Badge";

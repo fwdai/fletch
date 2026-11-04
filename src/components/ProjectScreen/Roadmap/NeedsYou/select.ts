@@ -5,14 +5,9 @@
 // the reason vocabulary are unit-testable in isolation (select.test.ts) and the
 // strip is a thin renderer over this.
 //
-// Modelled on MissionControl/queue.ts, deliberately: the two surfaces answer the
-// same question at different altitudes (one fleet-wide, one for this project's
-// board), so the ordering follows the same most-decidable-first principle.
-//
-// What is NOT here: dismissal. Mission Control lets the user hide a card until
-// its signal changes because it is a fleet-wide inbox nobody finishes; this strip
-// is one project's open decisions and every card has an action that resolves it,
-// so a card leaves only when the underlying state moves. A hold is the clearest
+// What is NOT here: dismissal. This strip is one project's open decisions and
+// every card has an action that resolves it, so a card leaves only when the
+// underlying state moves. A hold is the clearest
 // case of that: Release *is* the resolution, and it is the user's alone — the PM
 // can pull the brake and has no way to lift it, so this strip is the only place
 // (with the card itself) a hold can end.

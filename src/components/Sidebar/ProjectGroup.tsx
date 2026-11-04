@@ -30,7 +30,8 @@ interface Props {
   fold: boolean;
   /** The sidebar's minute clock, so the fold's age cutoff moves with time. */
   now: number;
-  /** Whether this group can be dragged to reorder (disabled while searching). */
+  /** Whether this group can be dragged to reorder: only with "Active projects
+   *  first" off, and not while searching. */
   reorderable: boolean;
   /** This group is the one currently being dragged. */
   dragging: boolean;
@@ -38,7 +39,7 @@ interface Props {
   dropIndicator: "before" | "after" | null;
   /** Start a pointer-driven reorder from this group's header. `markDragged` is
    *  called once the pointer clears the drag threshold, so the group can swallow
-   *  the trailing click. Undefined when reordering is disabled (searching). */
+   *  the trailing click. Undefined when the group isn't `reorderable`. */
   onReorderPointerDown?: (e: React.PointerEvent, markDragged: () => void) => void;
 }
 

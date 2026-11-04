@@ -62,9 +62,6 @@ export interface UiSlice {
    *  of the selected agent / draft. Treated as a separate "mode" that wins
    *  over `selectedAgentId` / `activeDraftId` for rendering. */
   historyOpen: boolean;
-  /** When in history mode, the archived agent whose chat preview is
-   *  being shown. `null` = list view. */
-  selectedHistoryAgentId: string | null;
   /** Full-screen project page (roadmap + settings). Replaces the workspace
    *  panes while non-null, like the settings screen. Keyed by the project's
    *  primary repo path — the screen resolves the project_id on open. */
@@ -113,11 +110,6 @@ export interface UiSlice {
    *  restore the tab the user was on (e.g. Git) when they switch back to an
    *  agent, instead of always resetting to the first tab. In-memory only. */
   rightPanelTabs: Record<string, RightPanelTab>;
-  /** Mission Control dismissals: review-queue item id → the signal signature it
-   *  was dismissed at. The queue hides an item only while its live signature
-   *  still matches, so a dismissed item resurfaces when its signal changes.
-   *  Persisted in settings (`reviewDismissed`); hydrated on init. */
-  reviewDismissed: Record<string, string>;
   /** The user's keyboard rebindings (see `util/keymap.ts`), shortcut id →
    *  chords. Persisted whole in settings (`shortcutOverrides`); hydrated on
    *  init. An id absent here is on its defaults. */
@@ -154,7 +146,6 @@ export interface UiSlice {
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
   closeOnboarding: () => void;
   toggleHistory: (open?: boolean) => void;
-  selectHistoryAgent: (id: string | null) => void;
   /** Open the full-screen project page for a sidebar repo group, on `tab`
    *  (default: the roadmap). */
   openProjectScreen: (repoPath: string, tab?: ProjectScreenTab) => void;
@@ -188,10 +179,6 @@ export interface UiSlice {
   commitRoadmapBoardWidth: (w: number) => void;
   /** Remember the right-rail tab an agent was last viewing. */
   setRightPanelTab: (agentId: string, tab: RightPanelTab) => void;
-  /** Dismiss a Mission Control review-queue item at its current signal
-   *  signature; persists the mark so it survives reloads (until the signal
-   *  changes and the signature no longer matches). */
-  dismissReviewItem: (id: string, signature: string) => void;
   /** Rebind a global shortcut; persists the whole override map. */
   setShortcut: (id: string, combos: Combo[]) => void;
   /** Put one shortcut back on its defaults. */
@@ -212,7 +199,6 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   onboardingOpen: false,
   onboardingComplete: false,
   historyOpen: false,
-  selectedHistoryAgentId: null,
   projectScreenRepoPath: null,
   projectScreenTab: "roadmap",
   roadmapFocusCode: null,
@@ -225,7 +211,6 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   rightWidth: DEFAULT_RIGHT_WIDTH,
   roadmapBoardWidth: null,
   rightPanelTabs: {},
-  reviewDismissed: {},
   shortcutOverrides: {},
   admin: false,
 
@@ -287,14 +272,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     // not a banner.
     if (firstCompletion) void api.boxImageInstall().catch(() => {});
   },
-  toggleHistory: (open) =>
-    set((s) => {
-      const next = open ?? !s.historyOpen;
-      // Closing history clears any in-flight detail selection so the
-      // next open lands on the list.
-      return next ? { historyOpen: true } : { historyOpen: false, selectedHistoryAgentId: null };
-    }),
-  selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
+  toggleHistory: (open) => set((s) => ({ historyOpen: open ?? !s.historyOpen })),
   openProjectScreen: (repoPath, tab = "roadmap") => {
     // The project page opens on the roadmap, so it needs a host that drives
     // one; its settings sections gate themselves (`projectSettings`). The
@@ -367,15 +345,6 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   commitRoadmapBoardWidth: (w) => setSetting("roadmapBoardWidth", String(w)),
   setRightPanelTab: (agentId, tab) =>
     set((s) => ({ rightPanelTabs: { ...s.rightPanelTabs, [agentId]: tab } })),
-  dismissReviewItem: (id, signature) =>
-    set((s) => {
-      // No-op if the exact same mark is already stored — avoids a redundant DB
-      // write (and re-render) when a card is dismissed twice at one signature.
-      if (s.reviewDismissed[id] === signature) return s;
-      const reviewDismissed = { ...s.reviewDismissed, [id]: signature };
-      setSetting("reviewDismissed", reviewDismissed);
-      return { reviewDismissed };
-    }),
   setShortcut: (id, combos) =>
     set((s) => {
       const shortcutOverrides = { ...s.shortcutOverrides, [id]: combos };

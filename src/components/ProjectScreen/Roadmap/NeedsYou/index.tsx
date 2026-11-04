@@ -2,8 +2,7 @@
 // pipeline is waiting on the user for, above the horizons, resolved without
 // leaving the board.
 //
-// The derivation is a pure selector (select.ts) in MissionControl/queue.ts's
-// style. This file is the strip shell.
+// The derivation is a pure selector (select.ts); this file is the strip shell.
 //
 // Nothing here removes a card: every action moves backend state (a release lifts
 // the hold, an edited dependency unwedges the item), the change arrives on

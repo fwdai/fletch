@@ -9,10 +9,10 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { CopyCmd } from "@/components/ui/CopyCmd";
 import { DocsLink } from "@/components/ui/DocsLink";
 import { installCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import { useAppStore } from "@/store";
-import { CopyCmd } from "../CopyCmd";
 import { ExBar } from "../exhibits";
 import type { OnboardingSetup } from "../useSetup";
 import { SCAN_STEP_MS } from "./usePreflight";

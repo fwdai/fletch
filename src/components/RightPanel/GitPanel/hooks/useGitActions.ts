@@ -102,6 +102,7 @@ export function useGitActions(ctx: GitActionsCtx) {
   const stopReview = useAppStore((s) => s.stopReview);
   const dismissReviewThread = useAppStore((s) => s.dismissReviewThread);
   const openReviewer = useAppStore((s) => s.openReviewer);
+  const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
 
   // Hand control to the coding agent: it writes the judgment part (message /
   // description / conflict edits) and executes the mutation through the app's
@@ -304,6 +305,9 @@ export function useGitActions(ctx: GitActionsCtx) {
         break;
       case "review-open":
         if (review?.reviewer?.agent_id) void openReviewer(review.reviewer.agent_id, projectId);
+        break;
+      case "review-setup":
+        openSettingsScreen("review");
         break;
       // ── delegated to the coding agent (agent mode): the `agent-*` keys ──
       // "loading" is a non-actionable placeholder, and has no plan.

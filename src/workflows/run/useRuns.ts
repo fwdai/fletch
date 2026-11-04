@@ -1,5 +1,5 @@
-// run/useRuns.ts — the reactive list of workflow runs for the sidebar, the
-// review queue, and the roadmap board. Loads the runs (newest-updated first) and
+// run/useRuns.ts — the reactive list of workflow runs for the sidebar and the
+// roadmap board. Loads the runs (newest-updated first) and
 // keeps the list live: `wf:run` fires the full row on every run-row change, so a
 // launch or a status flip upserts in place. This hook is a pure view; the backend
 // owns every run's lifecycle.

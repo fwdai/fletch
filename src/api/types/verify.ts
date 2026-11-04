@@ -22,8 +22,8 @@ export interface VerificationReport {
   checks: CheckResult[];
 }
 
-/** A turn-end verification finished for an ad-hoc agent (opt-in per project) —
- *  the Mission Control card renders a tests chip from this report. */
+/** A turn-end verification finished for an ad-hoc agent (opt-in per project).
+ *  The phone keeps the latest per agent for its Changes and Ship tabs. */
 export interface VerificationReportEvent {
   agent_id: string;
   report: VerificationReport;

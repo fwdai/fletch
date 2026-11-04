@@ -224,41 +224,6 @@ pub fn reopen(conn: &Connection, id: &str) -> rusqlite::Result<Option<RoadmapIte
     get(conn, id)
 }
 
-pub(crate) const DECLINED_ISSUES_KEY: &str = "roadmap.declined_issues";
-
-const DECLINED_MAX: usize = 500;
-
-pub fn decline_issue(conn: &Connection, project_id: &str, issue_url: &str) -> rusqlite::Result<()> {
-    let mut urls = declined_issues(conn, project_id)?;
-    if urls.iter().any(|u| u == issue_url) {
-        return Ok(());
-    }
-    urls.push(issue_url.to_string());
-    if urls.len() > DECLINED_MAX {
-        urls.drain(..urls.len() - DECLINED_MAX);
-    }
-    let json = serde_json::to_string(&urls).unwrap_or_else(|_| "[]".to_string());
-    conn.execute(
-        "INSERT INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3) \
-         ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value",
-        params![project_id, DECLINED_ISSUES_KEY, json],
-    )?;
-    Ok(())
-}
-
-fn declined_issues(conn: &Connection, project_id: &str) -> rusqlite::Result<Vec<String>> {
-    let stored: Option<String> = conn
-        .query_row(
-            "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
-            params![project_id, DECLINED_ISSUES_KEY],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(stored
-        .and_then(|v| serde_json::from_str::<Vec<String>>(&v).ok())
-        .unwrap_or_default())
-}
-
 pub fn next_code(conn: &Connection, project_id: &str) -> rusqlite::Result<String> {
     let prefix = code_prefix(conn, project_id)?;
     let number = next_number(conn, project_id)?;

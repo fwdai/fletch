@@ -1,0 +1,20 @@
+.copy-cmd {
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  border: 1px solid var(--bg-2);
+  color: var(--fg-1);
+}
+.copy-cmd code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.copy-cmd:hover {
+  border-color: var(--fg-3);
+}

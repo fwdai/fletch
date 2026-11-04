@@ -344,13 +344,6 @@ fn delete_item(
             }
         }
         let removed = store::delete(&conn, &id).map_err(|e| e.to_string())?;
-        if removed {
-            if let Some(row) = doomed.filter(|r| r.status == ItemStatus::Proposed) {
-                if let Some(url) = row.issue_url.as_deref() {
-                    store::decline_issue(&conn, &row.project_id, url).map_err(|e| e.to_string())?;
-                }
-            }
-        }
         (removed, pending.filter(|_| removed))
     };
     if removed {

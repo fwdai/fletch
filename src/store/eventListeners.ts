@@ -49,7 +49,6 @@ import {
   onSpawnProgress,
   onTurnSent,
   onTurnStarted,
-  onVerificationReport,
   onWorkspaceAutoArchived,
   onWorkspaceChanged,
 } from "@/api";
@@ -84,7 +83,6 @@ import {
   parseNewDraftSelection,
   parsePaneWidth,
   parseProviderFlags,
-  parseReviewDismissed,
   parseRoadmapBoardWidth,
   parseShortcutOverrides,
   type ThemeMode,
@@ -197,9 +195,6 @@ export const hydrateSettings = async (set: AppSet) => {
       // Absent until the Roadmap splitter is dragged for the first time; null
       // keeps the even split.
       roadmapBoardWidth: parseRoadmapBoardWidth(s.roadmapBoardWidth),
-      // Mission Control's dismissed review-queue marks (item id → signal
-      // signature); the queue honors a mark only while the signature matches.
-      reviewDismissed: parseReviewDismissed(s.reviewDismissed),
       // Keyboard rebindings; an id missing from the map is on its defaults.
       shortcutOverrides: parseShortcutOverrides(s.shortcutOverrides),
       // Admin unlocks the Developer settings section in production. Opt-in:
@@ -737,16 +732,6 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // agent's stream, a usage scan, a Refresh), so they follow the local engine
   // whichever environment is active.
   await bind(onLocalSettingsChanged((e) => get().applyProviderLimitsChange(e.key, e.value)));
-
-  // Turn-end verification result (opt-in per project) — stored per agent to
-  // feed the Mission Control card's tests chip.
-  await bind(
-    onVerificationReport((e) => {
-      set((s) => ({
-        verificationReports: { ...s.verificationReports, [e.agent_id]: e.report },
-      }));
-    }),
-  );
 
   // App-wide run-phase tracking. The RunPanel unmounts when its tab isn't
   // active, so its own subscription can't keep the Run tab's "app is running"

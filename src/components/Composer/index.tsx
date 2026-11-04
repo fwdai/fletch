@@ -4,7 +4,6 @@ import { hasUsage } from "@/adapters/usage";
 import type { DirListing, FolderGrant, IssueComment, PrSummary, TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { lookupModel, lookupModelInList } from "@/data/modelCatalog";
 import {
   PROVIDER_DETAIL,
@@ -15,6 +14,7 @@ import { DEFAULT_PROVIDER_ID } from "@/data/providers";
 import type { LocalCommandAction } from "@/data/slashCommands";
 import type { UsageSnapshot } from "@/store";
 import { useAppStore } from "@/store";
+import { composeIssueBrief } from "@/util/issueBrief";
 import { blockedSentence, useAgentAvailability } from "./availability";
 import { ComposerFrame } from "./ComposerFrame";
 import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
