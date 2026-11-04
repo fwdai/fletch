@@ -8,6 +8,9 @@ import {
   type BoxToolsStatus,
   type BoxVm,
   type ContainerAuthStatus,
+  type EgressAnswer,
+  type EgressPrompt,
+  type EgressPromptResolved,
   type PublishApproval,
   type PublishApprovalResolved,
 } from "@/api";
@@ -25,6 +28,9 @@ const approvalLoads = newestWins();
 /** `box_list` is re-read on entering a host, on `box:list` and when the page
  *  opens, so two can be out at once (util/newestWins). */
 const vmLoads = newestWins();
+
+/** `box_egress_pending` is re-read on every handshake, like the approvals. */
+const promptLoads = newestWins();
 
 /** Approval events seen while an `approvals_list` is in flight, replayed over
  *  its answer so the snapshot cannot undo them (see util/publishApprovals).
@@ -52,6 +58,17 @@ export interface SandboxSlice {
   boxDiskGib: string;
   boxImageUrl: string;
   boxIdleStopMinutes: string;
+  /** The network posture (`box_egress_mode`): `open`, `ask` or `allowlist`;
+   *  blank is open. A project may override it (`sandbox.egress_mode`). */
+  boxEgressMode: string;
+  /** Hosts VMs are held waiting to reach under the `ask` posture, oldest
+   *  first. The prompt shows one per workspace; the host refuses an unanswered
+   *  hold after about a minute, so a dropped entry fails closed. */
+  pendingEgressPrompts: EgressPrompt[];
+  /** `agent_id\nhost` of every prompt that was raised, so the refusal that
+   *  follows an unanswered one does not raise the "couldn't reach" toast
+   *  about a host the user was already asked about. */
+  promptedHosts: Set<string>;
   /** Latest box runtime probe; `null` until the first lands. */
   boxProbe: BoxRuntimeProbe | null;
   /** The pinned guest image's install state: `box_image_status` once, then
@@ -94,6 +111,19 @@ export interface SandboxSlice {
    *  else answered it, or nobody did before the host's wait ran out. No call
    *  back to the engine: the verdict is already made. */
   resolvePublishApproval: (e: PublishApprovalResolved) => void;
+  /** Queue a held host for the prompt (`box:egress-requested`). */
+  receiveEgressPrompt: (prompt: EgressPrompt) => void;
+  /** Replace the queue with what the active host still holds, after a
+   *  handshake: the events only reached the clients connected when they
+   *  fired. A no-op for a host without `box_egress_pending`. */
+  loadPendingEgressPrompts: () => Promise<void>;
+  /** Answer the held host `id` and drop it from the queue. */
+  answerEgressPrompt: (id: string, answer: EgressAnswer) => Promise<void>;
+  /** Drop the held host `id`: the engine says it is over. */
+  resolveEgressPrompt: (e: EgressPromptResolved) => void;
+  /** Open (or close) a workspace's VM network for the turn; refusals go to
+   *  `lastError`. The state comes back as `box:state`. */
+  setTurnNetworkOpen: (agentId: string, open: boolean) => Promise<void>;
   /** Re-resolve the claude auth chain into `containerAuth`. */
   refreshContainerAuth: () => Promise<void>;
   /** Persist a pasted `claude setup-token` for boxes, then refresh the
@@ -160,8 +190,13 @@ export interface BlockedHost {
 const MAX_BLOCKED = 200;
 
 /** `blocked` with one more refused connection folded in: counted on its
- *  workspace and host when known, else added — unseen unless it is noise. */
-export function foldBlocked(blocked: BlockedHost[], e: BoxEgressEvent): BlockedHost[] {
+ *  workspace and host when known, else added — unseen unless it is noise, or
+ *  the user was already asked about it (`prompted`). */
+export function foldBlocked(
+  blocked: BlockedHost[],
+  e: BoxEgressEvent,
+  prompted = false,
+): BlockedHost[] {
   const now = Date.now();
   const at = blocked.findIndex((b) => b.agent_id === e.agent_id && b.host === e.host);
   if (at >= 0) {
@@ -177,10 +212,12 @@ export function foldBlocked(blocked: BlockedHost[], e: BoxEgressEvent): BlockedH
     count: 1,
     lastAt: now,
     quiet,
-    seen: quiet,
+    seen: quiet || prompted,
   };
   return [...blocked, entry].slice(-MAX_BLOCKED);
 }
+
+const promptedKey = (agentId: string, host: string) => `${agentId}\n${host}`;
 
 export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   publishConfirmation: false,
@@ -190,6 +227,9 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   boxDiskGib: "",
   boxImageUrl: "",
   boxIdleStopMinutes: "",
+  boxEgressMode: "",
+  pendingEgressPrompts: [],
+  promptedHosts: new Set(),
   boxProbe: null,
   boxImage: null,
   boxTools: {},
@@ -242,6 +282,49 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     set((s) => ({
       pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
     }));
+  },
+
+  receiveEgressPrompt: (prompt) =>
+    set((s) => ({
+      pendingEgressPrompts: s.pendingEgressPrompts.some((p) => p.id === prompt.id)
+        ? s.pendingEgressPrompts
+        : [...s.pendingEgressPrompts, prompt],
+      promptedHosts: new Set(s.promptedHosts).add(promptedKey(prompt.agent_id, prompt.host)),
+    })),
+
+  loadPendingEgressPrompts: async () => {
+    const env = activeEnvironment();
+    if (env.kind === "remote" && !hostSupports(env.protocol, "box_egress_pending")) return;
+    const claim = promptLoads.claim();
+    const pending = await forActiveEnvironment(() => api.boxEgressPending()).catch(() => null);
+    if (!pending || !claim.current()) return;
+    set((s) => {
+      const prompted = new Set(s.promptedHosts);
+      for (const p of pending) prompted.add(promptedKey(p.agent_id, p.host));
+      return { pendingEgressPrompts: pending, promptedHosts: prompted };
+    });
+  },
+
+  answerEgressPrompt: async (id, answer) => {
+    // Dropped first, as a publish approval: the card must not linger if the
+    // call throws, and an id the host already refused is a no-op there.
+    set((s) => ({ pendingEgressPrompts: s.pendingEgressPrompts.filter((p) => p.id !== id) }));
+    try {
+      await api.boxEgressAnswer(id, answer);
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  resolveEgressPrompt: ({ id }) =>
+    set((s) => ({ pendingEgressPrompts: s.pendingEgressPrompts.filter((p) => p.id !== id) })),
+
+  setTurnNetworkOpen: async (agentId, open) => {
+    try {
+      await api.boxEgressOpenTurn(agentId, open);
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
   },
 
   containerAuth: null,
@@ -357,7 +440,14 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   applyBoxImage: (e) => set({ boxImage: e }),
   applyBoxState: (e) => set((s) => ({ boxStates: { ...s.boxStates, [e.agent_id]: e } })),
   applyBoxTools: (e) => set((s) => ({ boxTools: { ...s.boxTools, [e.provider]: e } })),
-  receiveBoxEgress: (e) => set((s) => ({ boxEgressBlocked: foldBlocked(s.boxEgressBlocked, e) })),
+  receiveBoxEgress: (e) =>
+    set((s) => ({
+      boxEgressBlocked: foldBlocked(
+        s.boxEgressBlocked,
+        e,
+        s.promptedHosts.has(promptedKey(e.agent_id, e.host)),
+      ),
+    })),
   dismissBoxEgress: (agentId) =>
     set((s) => ({
       boxEgressBlocked: s.boxEgressBlocked.map((b) =>

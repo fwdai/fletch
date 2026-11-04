@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   api,
+  EGRESS_MODES,
   type EgressEntry,
   type ProjectFileEdit,
   type ProjectFileReport,
@@ -10,8 +11,17 @@ import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import type { BlockedHost } from "@/store/sandbox";
+import {
+  EGRESS_MODE_HINTS,
+  EGRESS_MODE_KEY,
+  EGRESS_MODE_LABELS,
+  effectiveEgressMode,
+} from "@/util/egressMode";
+import { formatAge } from "@/util/format";
+import { useEgressActivity } from "@/util/useEgressActivity";
 import { EGRESS_CATEGORIES, useEgressOverview } from "@/util/useEgressOverview";
 import { useProjectFile } from "@/util/useProjectFile";
+import { useProjectSettings } from "@/util/useProjectSettings";
 
 const FILE_LABEL: Record<ProjectFileWhich, string> = {
   shared: ".fletch/settings.json",
@@ -19,11 +29,12 @@ const FILE_LABEL: Record<ProjectFileWhich, string> = {
 };
 
 /** What this project's box agents may reach, and where each part of it comes
- *  from: Fletch's list and the user's global changes (Settings › Sandbox ›
- *  Network),
- *  then this project's own — `.fletch/settings.json` (shared, meant to be
- *  committed) and `.fletch/settings.local.json` (just you), read on the host
- *  from the project's repository, never from an agent's checkout.
+ *  from: the posture for hosts off the list (the global one from Settings ›
+ *  Sandbox › Network, or this project's own), Fletch's list and the user's
+ *  global hosts, then this project's own — `.fletch/settings.json` (shared,
+ *  meant to be committed) and `.fletch/settings.local.json` (just you), read
+ *  on the host from the project's repository, never from an agent's checkout,
+ *  plus the hosts answered "This project" in the prompt, kept in the app.
  *
  *  Edits made here are written into one of those files, picked by the user,
  *  and apply at once. Hosts a file adds by any other hand wait for approval:
@@ -32,8 +43,14 @@ export function NetworkSection({ projectId }: { projectId: string }) {
   const fileGate = useGate("projectFile");
   const editGate = useGate("projectFileEdit");
   const policyGate = useGate("egressPolicy");
+  const activityGate = useGate("egressActivity");
+  const postureGate = useGate("egressPrompt");
+  const settingsGate = useGate("projectSettings");
   const { status, approve } = useProjectFile(fileGate ? null : projectId);
   const { overview } = useEgressOverview(projectId, !!policyGate);
+  const activity = useEgressActivity(projectId, !!activityGate);
+  const { settings, save } = useProjectSettings(projectId);
+  const globalMode = useAppStore((s) => s.boxEgressMode);
   const blocked = useAppStore((s) => s.boxEgressBlocked);
   const clearBlocked = useAppStore((s) => s.clearBoxEgress);
   const agents = useAppStore((s) => s.workspace?.agents);
@@ -50,6 +67,7 @@ export function NetworkSection({ projectId }: { projectId: string }) {
   const pending = status?.egress.pending ?? [];
   const present = files.filter((f) => f.exists);
   const canEdit = !editGate && !!status && !status.error;
+  const posture = effectiveEgressMode(settings?.[EGRESS_MODE_KEY], globalMode);
 
   // The workspaces of this project, for its blocked hosts.
   const paths = new Set(
@@ -59,7 +77,21 @@ export function NetworkSection({ projectId }: { projectId: string }) {
     (agents ?? []).filter((a) => a.repos[0] && paths.has(a.repos[0].repo_path)).map((a) => a.id),
   );
   const allowedNow = new Set(overview?.project?.entries.map((e) => e.pattern) ?? []);
-  const recent = byHost(blocked.filter((b) => mine.has(b.agent_id) && !allowedNow.has(b.host)));
+  const now = Date.now();
+  // The host's record when it keeps one, else what this window saw.
+  const recent: RecentRow[] = activity
+    ? activity
+        .filter((h) => h.refused > 0 && h.allowed === 0 && !h.quiet && !allowedNow.has(h.host))
+        .map((h) => ({
+          host: h.host,
+          count: h.refused,
+          at: h.last_at,
+          port: h.last_via === "port",
+        }))
+    : byHost(blocked.filter((b) => mine.has(b.agent_id) && !allowedNow.has(b.host)));
+  const reached = (activity ?? []).filter(
+    (h) => h.allowed > 0 && h.last_via !== "listed" && !h.quiet && !allowedNow.has(h.host),
+  );
 
   const run = async (task: () => Promise<unknown>) => {
     setBusy(true);
@@ -97,6 +129,41 @@ export function NetworkSection({ projectId }: { projectId: string }) {
           you).
         </p>
       </header>
+
+      {!postureGate && (
+        <>
+          <div className="ps-field ps-name-row">
+            <label className="ps-label text-sm" htmlFor="ps-egress-mode">
+              New hosts
+            </label>
+            <select
+              id="ps-egress-mode"
+              className="ps-input ps-pf-which text-sm"
+              value={posture.overridden ? posture.mode : "default"}
+              disabled={!!settingsGate || settings === null}
+              title={settingsGate ?? undefined}
+              onChange={(e) => {
+                const next = e.target.value;
+                save(EGRESS_MODE_KEY, next === "default" ? null : next);
+              }}
+            >
+              <option value="default">
+                Same as every project ·{" "}
+                {EGRESS_MODE_LABELS[effectiveEgressMode(undefined, globalMode).mode]}
+              </option>
+              {EGRESS_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {EGRESS_MODE_LABELS[m]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="ps-hint text-xs">
+            What a VM does when an agent reaches a host that isn&rsquo;t on its list.{" "}
+            {EGRESS_MODE_HINTS[posture.mode]}
+          </p>
+        </>
+      )}
 
       {fileGate ? (
         <p className="ps-pf-note text-sm">{fileGate}</p>
@@ -181,6 +248,33 @@ export function NetworkSection({ projectId }: { projectId: string }) {
           )}
           {error && <p className="ps-pf-error text-sm">{error}</p>}
 
+          {reached.length > 0 && (
+            <div className="ps-field">
+              <span className="ps-label text-sm">Reached recently, beyond the list</span>
+              <ul className="ps-pf-rows">
+                {reached.map((h) => (
+                  <li key={h.host} className="ps-pf-row">
+                    <span className="mono">{h.host}</span>
+                    <span className="ps-pf-ok">
+                      {h.allowed === 1 ? "once" : `${h.allowed} times`}
+                      {h.last_via === "turn" ? " · opened for a turn" : " · open network"} ·{" "}
+                      {formatAge(h.last_at, now)}
+                    </span>
+                    {canEdit && (
+                      <Button
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => void edit(target, { allowAdd: [h.host] })}
+                      >
+                        Allow
+                      </Button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {recent.length > 0 && (
             <div className="ps-field">
               <span className="ps-label text-sm">Blocked recently</span>
@@ -190,9 +284,10 @@ export function NetworkSection({ projectId }: { projectId: string }) {
                     <span className="mono">{b.host}</span>
                     <span className="ps-pf-ok">
                       {b.count === 1 ? "once" : `${b.count} times`}
-                      {b.quiet && " · telemetry"}
+                      {b.port && " · port not allowed"}
+                      {b.at !== undefined && ` · ${formatAge(b.at, now)}`}
                     </span>
-                    {canEdit && (
+                    {canEdit && !b.port && (
                       <Button
                         variant="ghost"
                         disabled={busy}
@@ -282,6 +377,16 @@ export function NetworkSection({ projectId }: { projectId: string }) {
   );
 }
 
+/** One blocked host as the list shows it, from either source. */
+interface RecentRow {
+  host: string;
+  count: number;
+  /** Unix ms; absent for the in-memory fallback's quiet rows. */
+  at?: number;
+  /** Refused for its port, which no list can allow. */
+  port: boolean;
+}
+
 /** The inherited list, the template's categories first, then the user's
  *  global additions. */
 function groups(entries: EgressEntry[]): { label: string; entries: EgressEntry[] }[] {
@@ -296,13 +401,17 @@ function groups(entries: EgressEntry[]): { label: string; entries: EgressEntry[]
   return out.filter((g) => g.entries.length > 0);
 }
 
-/** Blocked hosts across this project's workspaces, one row per host. */
-function byHost(blocked: BlockedHost[]) {
-  const rows = new Map<string, { host: string; count: number; quiet: boolean }>();
+/** Blocked hosts across this project's workspaces, one row per host, from
+ *  what this window saw (a host from before the egress log). */
+function byHost(blocked: BlockedHost[]): RecentRow[] {
+  const rows = new Map<string, RecentRow & { quiet: boolean }>();
   for (const b of blocked) {
     const row = rows.get(b.host);
-    if (row) row.count += b.count;
-    else rows.set(b.host, { host: b.host, count: b.count, quiet: b.quiet });
+    if (row) {
+      row.count += b.count;
+      row.at = Math.max(row.at ?? 0, b.lastAt);
+    } else
+      rows.set(b.host, { host: b.host, count: b.count, at: b.lastAt, port: false, quiet: b.quiet });
   }
   // What the user may need first: not noise, then the most refused.
   return [...rows.values()].sort((a, b) => Number(a.quiet) - Number(b.quiet) || b.count - a.count);

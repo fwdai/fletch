@@ -245,6 +245,9 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     await get()
       .loadPendingPublishApprovals()
       .catch(() => {});
+    await get()
+      .loadPendingEgressPrompts()
+      .catch(() => {});
     // The delegations it is running, which it owns: the mirror parked in the
     // stash (or one built from events this client missed) is not the truth.
     await get()

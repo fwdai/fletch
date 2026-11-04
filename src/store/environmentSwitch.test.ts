@@ -84,6 +84,7 @@ const newStore = () => {
         loadHistoryTranscript: vi.fn(),
         pendingPublishApprovals: [],
         loadPendingPublishApprovals: vi.fn().mockResolvedValue(undefined),
+        loadPendingEgressPrompts: vi.fn().mockResolvedValue(undefined),
         loadDelegations: vi.fn().mockResolvedValue(undefined),
         loadAutopilot: vi.fn().mockResolvedValue(undefined),
         reviews: {},

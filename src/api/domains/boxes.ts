@@ -9,8 +9,11 @@ import type {
   BoxSettingKey,
   BoxStateEvent,
   BoxVm,
+  EgressAnswer,
   EgressDelta,
   EgressOverview,
+  EgressPrompt,
+  HostActivity,
   WorkspaceTypeOption,
 } from "../types/sandbox";
 
@@ -52,4 +55,21 @@ export const boxesApi = {
    *  with the validation message. */
   setBoxSetting: (key: BoxSettingKey, value: string | null) =>
     invoke<void>("set_box_setting", { key, value }),
+  /** The hosts VMs are held waiting to reach, oldest first: what a client that
+   *  connected after the `box:egress-requested` events fired has missed. */
+  boxEgressPending: () => invoke<EgressPrompt[]>("box_egress_pending"),
+  /** Answer one held host. An id the host no longer holds is ignored. */
+  boxEgressAnswer: (id: string, answer: EgressAnswer) =>
+    invoke<void>("box_egress_answer", { id, answer }),
+  /** What VMs reached or were refused lately, grouped by host, newest first;
+   *  with a project, its VMs only. `hours` is 24 by default. */
+  boxEgressActivity: (projectId?: string, hours?: number) =>
+    invoke<HostActivity[]>("box_egress_activity", {
+      projectId: projectId ?? null,
+      hours: hours ?? null,
+    }),
+  /** Open a workspace's VM network until its turn ends, or close it again.
+   *  Rejects for a workspace with no VM. */
+  boxEgressOpenTurn: (agentId: string, open: boolean) =>
+    invoke<void>("box_egress_open_turn", { agentId, open }),
 };
