@@ -138,8 +138,11 @@ What the proxy does with a host off that list is the **posture**
 A host blocked in the prompt stays refused on that box under every posture,
 and under a turn's open network, until the box restarts: the block is the
 user's answer about that host, and only a list that allows it wins. Every
-hold reports its own end to the engine (`EgressEvent::HoldEnded`), whichever
-way it ended, and that is what closes the prompt: a host that came to be
+hold has an id and reports its own end to the engine
+(`EgressEvent::HoldEnded`, the same id as its `Held`), whichever way it
+ended, and that is what closes the prompt of that hold and no other: a retry
+of the host starts a new hold with a new id, so an end delivered after the
+retry began closes nothing of the retry's. A host that came to be
 allowed elsewhere (the posture opened, a list gained it) closes it as
 allowed at once, not when its tunnel happens to end, so no stale prompt can
 be answered later. Dropping the proxy (the box stopping) ends every hold at

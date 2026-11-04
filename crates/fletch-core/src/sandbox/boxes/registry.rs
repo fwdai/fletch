@@ -2399,21 +2399,31 @@ fn on_egress(agent_id: &str, project_id: &str, event: EgressEvent) {
                 },
             )
         }
-        EgressEvent::Held { host, port } => {
-            tracing::info!(agent_id, host, port, "box egress held for an answer");
-            super::egress_prompt::request(agent_id, project_id, &host, port);
+        EgressEvent::Held { hold, host, port } => {
+            tracing::info!(agent_id, hold, host, port, "box egress held for an answer");
+            super::egress_prompt::request(agent_id, project_id, &host, port, hold);
         }
         // The one signal a prompt closes on, whichever way the hold ended:
         // admitted by an answer here or by a list or posture changed anywhere,
         // or refused by a block, the deadline or the box going away. The
         // tunnels' own events come later and say nothing about the question.
+        // The hold's id ties the end to its own prompt, so an end delivered
+        // after a retry's start closes nothing of the retry's.
         EgressEvent::HoldEnded {
+            hold,
             host,
             port,
             admitted,
         } => {
-            tracing::info!(agent_id, host, port, admitted, "box egress hold ended");
-            super::egress_prompt::ended(agent_id, &host, admitted);
+            tracing::info!(
+                agent_id,
+                hold,
+                host,
+                port,
+                admitted,
+                "box egress hold ended"
+            );
+            super::egress_prompt::ended(agent_id, hold, admitted);
         }
         EgressEvent::Error { host, message } => {
             tracing::info!(agent_id, ?host, message, "box egress error")

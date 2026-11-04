@@ -658,9 +658,9 @@ mod tests {
                 [],
             )
             .unwrap();
-        egress_prompt::request("held-fuji", "pa", "api.stripe.com", 443);
-        egress_prompt::request("held-fuji", "pa", "docs.python.org", 443);
-        egress_prompt::request("held-etna", "pa", "evil.test", 443);
+        egress_prompt::request("held-fuji", "pa", "api.stripe.com", 443, 1);
+        egress_prompt::request("held-fuji", "pa", "docs.python.org", 443, 2);
+        egress_prompt::request("held-etna", "pa", "evil.test", 443, 1);
         let mine = |host: &str| {
             egress_prompt::pending()
                 .into_iter()

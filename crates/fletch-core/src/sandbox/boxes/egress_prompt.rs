@@ -1,14 +1,17 @@
 //! The questions a box's held connections raise, for the user to answer.
 //!
 //! Under the `ask` posture (`settings::EgressMode::Ask`) the proxy holds a
-//! connection to a host off the allow-list and says so once per host
-//! (`fletch_box::egress::EgressEvent::Held`). That becomes one prompt here,
-//! keyed by workspace and host, announced as [`EVENT_REQUESTED`] and listed
-//! for clients that connect later (`box_egress_pending`). An answer
-//! (`commands::box_egress_answer_impl`) allows the host somewhere above the
-//! box, declines it on the box, or opens the box's network for the turn; the
-//! proxy then admits or refuses what it held. A hold nobody answers ends in
-//! the proxy's ordinary refusal, which closes the prompt as expired.
+//! connection to a host off the allow-list and says so once per hold
+//! (`fletch_box::egress::EgressEvent::Held`, with the hold's id). That
+//! becomes one prompt here, one per workspace and host at a time, announced
+//! as [`EVENT_REQUESTED`] and listed for clients that connect later
+//! (`box_egress_pending`). An answer (`commands::box_egress_answer_impl`)
+//! allows the host somewhere above the box, declines it on the box, or opens
+//! the box's network for the turn; the proxy then admits or refuses what it
+//! held and reports the hold's end (`HoldEnded`, the same id), which closes
+//! the prompt. The id is what ties the two: a retry of the host starts a new
+//! hold, and the end of the old one, however late it is delivered, closes
+//! only the prompt of the hold it belongs to.
 //!
 //! Only the UI's op answers. Nothing an agent can reach — its mailbox, the
 //! guest — leads here, so a box cannot widen its own allow-list.
@@ -38,6 +41,10 @@ pub struct PendingEgressPrompt {
     pub host: String,
     pub port: u16,
     pub requested_at: String,
+    /// The proxy's hold this prompt stands for: the engine's own, not a
+    /// client's.
+    #[serde(skip)]
+    pub hold: u64,
 }
 
 /// How a prompt stopped waiting, as [`EVENT_RESOLVED`] spells it.
@@ -63,20 +70,25 @@ impl Outcome {
 
 static PENDING: Mutex<Option<HashMap<String, PendingEgressPrompt>>> = Mutex::new(None);
 
-/// A box holds a connection to `host`: raise the prompt, unless one for this
-/// workspace and host is already up (the proxy announces once per host, but a
-/// hold that expired and came back would ask again, which is right: the
-/// earlier card is gone).
-pub fn request(agent_id: &str, project_id: &str, host: &str, port: u16) {
-    let prompt = {
+/// A box holds a connection to `host` under hold `hold`: raise the prompt.
+/// A prompt already up for this workspace and host stands for an earlier
+/// hold (the proxy announces each hold once), so it is closed as expired
+/// first: its hold is over, whether or not its end has been delivered yet,
+/// and one card per host is what the user sees. The same hold announced
+/// twice raises nothing.
+pub fn request(agent_id: &str, project_id: &str, host: &str, port: u16, hold: u64) {
+    let (stale, prompt) = {
         let mut guard = PENDING.lock();
         let map = guard.get_or_insert_with(HashMap::new);
-        if map
+        let standing = map
             .values()
-            .any(|p| p.agent_id == agent_id && p.host == host)
-        {
-            return;
-        }
+            .find(|p| p.agent_id == agent_id && p.host == host)
+            .map(|p| (p.id.clone(), p.hold));
+        let stale = match standing {
+            Some((_, standing_hold)) if standing_hold == hold => return,
+            Some((id, _)) => map.remove(&id).map(|p| p.id),
+            None => None,
+        };
         let prompt = PendingEgressPrompt {
             id: uuid::Uuid::new_v4().to_string(),
             agent_id: agent_id.to_string(),
@@ -84,10 +96,17 @@ pub fn request(agent_id: &str, project_id: &str, host: &str, port: u16) {
             host: host.to_string(),
             port,
             requested_at: chrono::Utc::now().to_rfc3339(),
+            hold,
         };
         map.insert(prompt.id.clone(), prompt.clone());
-        prompt
+        (stale, prompt)
     };
+    if let Some(id) = stale {
+        super::emit(
+            EVENT_RESOLVED,
+            &json!({ "id": id, "outcome": Outcome::Expired.as_str() }),
+        );
+    }
     super::emit(EVENT_REQUESTED, &prompt);
 }
 
@@ -119,15 +138,17 @@ pub fn resolve(id: &str, outcome: Outcome) {
     }
 }
 
-/// The proxy's hold on `host` for `agent_id`'s box is over, whichever way:
-/// the host came to be allowed (`admitted`, by an answer here or by a list
-/// or posture changed elsewhere), or it was refused (a decline, the deadline,
-/// the box going away). Whatever prompt is still up for it closes with the
-/// matching outcome; one an answer here already closed is not closed twice.
-pub fn ended(agent_id: &str, host: &str, admitted: bool) {
+/// The proxy's hold `hold` for `agent_id`'s box is over, whichever way: the
+/// host came to be allowed (`admitted`, by an answer here or by a list or
+/// posture changed elsewhere), or it was refused (a decline, the deadline,
+/// the box going away). The prompt standing for that hold, if it is still
+/// up, closes with the matching outcome; one an answer here already closed
+/// is not closed twice, and a newer hold's prompt for the same host is not
+/// this hold's to close.
+pub fn ended(agent_id: &str, hold: u64, admitted: bool) {
     let id = PENDING.lock().as_ref().and_then(|m| {
         m.values()
-            .find(|p| p.agent_id == agent_id && p.host == host)
+            .find(|p| p.agent_id == agent_id && p.hold == hold)
             .map(|p| p.id.clone())
     });
     if let Some(id) = id {
@@ -146,13 +167,13 @@ pub fn ended(agent_id: &str, host: &str, admitted: bool) {
 mod tests {
     use super::*;
 
-    /// One prompt per workspace and host, however many holds announce it;
-    /// closing it once is final.
+    /// One prompt per workspace and host, however many times a hold is
+    /// announced; closing it once is final.
     #[test]
     fn a_host_prompts_once_per_workspace_and_resolves_once() {
-        request("fuji-prompt", "p", "api.stripe.com", 443);
-        request("fuji-prompt", "p", "api.stripe.com", 443);
-        request("etna-prompt", "p", "api.stripe.com", 443);
+        request("fuji-prompt", "p", "api.stripe.com", 443, 1);
+        request("fuji-prompt", "p", "api.stripe.com", 443, 1);
+        request("etna-prompt", "p", "api.stripe.com", 443, 1);
         let mine: Vec<_> = pending()
             .into_iter()
             .filter(|p| p.agent_id == "fuji-prompt" || p.agent_id == "etna-prompt")
@@ -161,9 +182,9 @@ mod tests {
         let fuji = mine.iter().find(|p| p.agent_id == "fuji-prompt").unwrap();
         assert!(get(&fuji.id).is_some());
 
-        ended("fuji-prompt", "api.stripe.com", false);
+        ended("fuji-prompt", 1, false);
         assert!(get(&fuji.id).is_none(), "a refused hold closes the prompt");
-        ended("fuji-prompt", "api.stripe.com", false);
+        ended("fuji-prompt", 1, false);
         let etna = mine.iter().find(|p| p.agent_id == "etna-prompt").unwrap();
         resolve(&etna.id, Outcome::Blocked);
         assert!(get(&etna.id).is_none());
@@ -171,16 +192,45 @@ mod tests {
 
         // A hold admitted elsewhere (the posture opened, a list gained the
         // host) closes its prompt too, so no stale card can be answered.
-        request("vesuvio-prompt", "p", "docs.python.org", 443);
+        request("vesuvio-prompt", "p", "docs.python.org", 443, 7);
         let vesuvio = pending()
             .into_iter()
             .find(|p| p.agent_id == "vesuvio-prompt")
             .unwrap();
-        ended("vesuvio-prompt", "docs.python.org", true);
+        ended("vesuvio-prompt", 7, true);
         assert!(
             get(&vesuvio.id).is_none(),
             "an admitted hold closes the prompt"
         );
+    }
+
+    /// A retry's hold announced before the previous hold's end is delivered:
+    /// the new hold gets its prompt (the old one is closed for it), and the
+    /// old end, arriving late, closes nothing of the new hold's.
+    #[test]
+    fn a_late_end_of_an_earlier_hold_leaves_the_retry_its_prompt() {
+        request("stromboli-prompt", "p", "api.stripe.com", 443, 1);
+        let first = pending()
+            .into_iter()
+            .find(|p| p.agent_id == "stromboli-prompt")
+            .unwrap();
+        // The retry starts a new hold while the first's end is still in flight.
+        request("stromboli-prompt", "p", "api.stripe.com", 443, 2);
+        let second = pending()
+            .into_iter()
+            .find(|p| p.agent_id == "stromboli-prompt")
+            .unwrap();
+        assert_ne!(first.id, second.id, "a new hold is a new prompt");
+        assert!(
+            get(&first.id).is_none(),
+            "the earlier hold's prompt is over"
+        );
+        assert_eq!(second.hold, 2);
+
+        ended("stromboli-prompt", 1, false);
+        assert!(get(&second.id).is_some(), "the late end is not the retry's");
+        ended("stromboli-prompt", 2, true);
+        assert!(get(&second.id).is_none());
     }
 
     /// The wire spellings are the documented ones (docs/remote-protocol.md).
