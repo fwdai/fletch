@@ -51,7 +51,9 @@ class Walker {
   constructor(private readonly attempts: AttemptRef[]) {}
 
   topLevel(blocks: LegacyBlock[]): void {
-    blocks.forEach((b, i) => this.block(b, i));
+    blocks.forEach((b, i) => {
+      this.block(b, i);
+    });
   }
 
   /** Stage ids the run actually recorded under `prefix`, in the order their
@@ -79,7 +81,9 @@ class Walker {
       this.push(b.step, index, 0);
     } else if (b.parallel) {
       const steps = b.parallel.steps ?? [];
-      steps.forEach((s, i) => this.push(s, index, i));
+      steps.forEach((s, i) => {
+        this.push(s, index, i);
+      });
       const merge = `${LEGACY_MERGE_PREFIX}${index}`;
       if (this.attempts.some((a) => a.step_id === merge)) {
         this.out.push({
@@ -106,7 +110,9 @@ class Walker {
         position: 0,
       });
       const body = o.body ?? [];
-      body.forEach((s, i) => this.push(s, index, i + 1));
+      body.forEach((s, i) => {
+        this.push(s, index, i + 1);
+      });
       this.recorded(`${orchestrator}${LEGACY_DYNAMIC_CHILD_INFIX}`).forEach((id, i) => {
         this.out.push({
           id,
