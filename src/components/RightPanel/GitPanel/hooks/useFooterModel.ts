@@ -15,6 +15,7 @@ import {
   type FooterAction,
   focusFooter,
   type ReviewFooterInput,
+  reviewInFlight,
 } from "../footerModel";
 
 /** The footer as the panel renders it: `buildFooter` (or `focusFooter` for a
@@ -61,6 +62,7 @@ export function useFooterModel(input: {
   const checkoutBranch = gitState?.branch || null;
   const workSinceMerge = gitState != null && hasWorkSinceMerge(gitState);
   const { delegationActive, busy, primaryCheckout } = input;
+  const reviewActive = reviewInFlight(input.reviewMenu?.state);
   const gate = useCallback(
     (key: string) =>
       gateAction(key, {
@@ -70,6 +72,7 @@ export function useFooterModel(input: {
         mergeAllowed,
         delegationActive,
         busy,
+        reviewActive,
         primaryCheckout,
         workSinceMerge,
       }),
@@ -80,6 +83,7 @@ export function useFooterModel(input: {
       mergeAllowed,
       delegationActive,
       busy,
+      reviewActive,
       primaryCheckout,
       workSinceMerge,
     ],

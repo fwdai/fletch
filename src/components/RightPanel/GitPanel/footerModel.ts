@@ -15,6 +15,7 @@ import type { ActionTone, GitCommitAction } from "@/components/RightPanel/primar
 import { describeMergeGate } from "@/mergeGate";
 import { nextRung, type Rung } from "@/readiness";
 import { plural } from "@/util/format";
+import { reviewAllows } from "./actionGate";
 import type { LadderInput } from "./ladderModel";
 
 export interface FooterAction {
@@ -91,6 +92,10 @@ export function applyGate(
   };
 }
 
+/** A review is queued for the checkout or reading it. */
+export const reviewInFlight = (state: ReviewState | null | undefined): boolean =>
+  state?.phase === "queued" || state?.phase === "reviewing";
+
 /** The local reviewer as the footer offers it. Absent on a client with no
  *  reviewer to offer (the phone), so its menu is unchanged. */
 export interface ReviewFooterInput {
@@ -98,7 +103,8 @@ export interface ReviewFooterInput {
   /** The custom agent that would review, for the label; null when none is
    *  configured. */
   reviewerName: string | null;
-  /** Why a review can't start now (an old host, no reviewer picked), or null. */
+  /** Why this host can't run a review (an old host), or null. No reviewer is
+   *  not a refusal: the reviewer is optional, so `reviewerName` says that. */
   refusal: string | null;
 }
 
@@ -115,8 +121,8 @@ export interface FooterInput extends LadderInput {
 
 /** The Review group: start, re-run, stop or cancel the local reviewer, and
  *  reach its transcript. Starting while the coder is mid-turn is fine — the
- *  host queues it. A review that can't start is offered disabled with the
- *  reason, so the way to enable it (Settings › Review) is one hover away. */
+ *  host queues it. With no reviewer it offers the way to add one; on a host
+ *  that can't run one it is offered disabled with the reason. */
 export function reviewActions(input: ReviewFooterInput): FooterAction[] {
   const { state, reviewerName, refusal } = input;
   const items: FooterAction[] = [];
@@ -124,6 +130,8 @@ export function reviewActions(input: ReviewFooterInput): FooterAction[] {
     items.push({ key: "review-stop", label: "Cancel queued review", icon: "close" });
   } else if (state?.phase === "reviewing") {
     items.push({ key: "review-stop", label: "Stop review", icon: "stop" });
+  } else if (!reviewerName && !refusal) {
+    items.push({ key: "review-setup", label: "Set up a reviewer", icon: "search" });
   } else {
     const again = state != null && state.phase !== "idle" && state.phase !== "failed";
     const who = reviewerName ?? state?.reviewer?.name ?? null;
@@ -173,6 +181,15 @@ export function githubUnblock(
 }
 
 const VIEW_PR: FooterAction = { key: "view-pr", label: "View on GitHub", icon: "github" };
+
+/** The primary while a review holds the checkout. Inert: `reviewAllows` has no
+ *  such key, so the gate closes it and says why. */
+const REVIEW_WAIT: FooterAction = {
+  key: "review-wait",
+  label: "Reviewing…",
+  icon: "search",
+  tone: "ghost",
+};
 
 /** The primary for a rung. `unblock` replaces anything that would reach GitHub. */
 function primaryOf(rung: Rung, input: FooterInput, unblock: FooterAction | null): FooterAction {
@@ -258,10 +275,16 @@ export function buildFooter(input: FooterInput): Footer {
     ? nextRung({ git, pr, checks, comments }, { base, commitMode: ladderCommitMode(commitMode) })
     : { do: "wait", why: "unknown-state" };
   const unblock = githubUnblock(input);
-  const primary = primaryOf(rung, input, unblock);
+  const next = primaryOf(rung, input, unblock);
   // Nothing is known yet: no menu either, rather than a Pull that would run
   // against a checkout the panel hasn't read.
-  if (!git) return { primary, groups: [] };
+  if (!git) return { primary: next, groups: [] };
+  // A running review holds the main button on anything the gate would close,
+  // and on the merge: nothing should ask for that before the review reports.
+  // The merge stays in the menu, where choosing not to wait is deliberate.
+  const held =
+    reviewInFlight(input.reviewMenu?.state) && (next.key === "merge" || !reviewAllows(next.key));
+  const primary = held ? REVIEW_WAIT : next;
 
   const files = git.files.length;
   const conflicted = git.files.some((f) => f.kind === "conflicted");

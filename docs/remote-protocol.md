@@ -808,7 +808,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `get_pr_checks` | as command | `PrChecks \| null` |
 | `get_pr_live` | as command — read once when a screen showing the PR opens with nothing cached for it; `pr:state_changed` / `pr:checks_changed` keep it current after that | `PrLive \| null` |
 | `get_pr_threads` | as command — unresolved review threads (GraphQL). Read once like `get_pr_live`; `pr:threads_changed` keeps it current | `PrComments \| null` |
-| `delegate_git` | `{ agentId, subdir?, action, params? }` — hands a git playbook to the agent (see "Delegations"). `action` is a playbook name (`commit`, `commit-push`, `commit-pr`, `open-pr`, `push`, `resolve-conflicts`, `update-branch`, `fix-checks`, `resolve-comments`); anything else is refused. `params` is a `{ [key]: string }` of the playbook's dynamic context (`base`, `failing`); empty values are dropped, `repo` is the host's to set from `subdir`, and so is `branch` — the focused PR's head branch while it is open, added for the playbooks that work on that PR (`update-branch`, `fix-checks`, `resolve-comments`) so an agent on another branch switches first. The host composes the `[app-action]` trigger, records the delegation and either sends it now as a user turn (`turn:sent` fires as for any send) or, while the agent is `running`, holds it until the agent goes idle | `Delegation` |
+| `delegate_git` | `{ agentId, subdir?, action, params? }` — hands a git playbook to the agent (see "Delegations"). `action` is a playbook name (`commit`, `commit-push`, `commit-pr`, `open-pr`, `push`, `resolve-conflicts`, `update-branch`, `fix-checks`, `resolve-comments`); anything else is refused. `params` is a `{ [key]: string }` of the playbook's dynamic context (`base`, `failing`); empty values are dropped, `repo` is the host's to set from `subdir`, and so is `branch` — the focused PR's head branch while it is open, added for the playbooks that work on that PR (`update-branch`, `fix-checks`, `resolve-comments`) so an agent on another branch switches first. The host composes the `[app-action]` trigger, records the delegation and either sends it now as a user turn (`turn:sent` fires as for any send) or, while the agent is `running`, holds it until the agent goes idle. Refused while a local review holds the checkout (see "Local review") | `Delegation` |
 | `get_delegations` | `{}` — every delegation the host is tracking, for a client that connected mid-flight | `Delegation[]` |
 | `autopilot_state` | `{ agentId? }` — autopilot as the host runs it (see "Autopilot"): one row per checkout of `agentId`, or of every live agent when it is absent, plus the two opt-out lists | `AutopilotSnapshot` |
 | `autopilot_set` | `{ projectId, enabled }` or `{ agentId, enabled }` — exactly one of the two ids. On a project it is the project's switch (default on); on an agent `enabled: false` pauses that agent's checkouts and `true` resumes them. Persists the host setting, takes effect before the call returns, and emits `autopilot:switches` (always, first) then `autopilot:state` for every checkout it changed | `AutopilotSnapshot` (the whole host's, as `autopilot_state {}` would answer) |
@@ -1656,8 +1656,10 @@ switches.
   follow), waits for the agent's turn to end, then judges it — `fix-checks` by
   running the project's own verify commands on the host (reported as
   `verify:report`), the others by the PR state alone. Never while the agent is
-  mid-turn or another delegation is live on the checkout, and never two
-  dispatches to one agent in one pass.
+  mid-turn, another delegation is live on the checkout or a local review holds
+  it (see "Local review"), and never two dispatches to one agent in one pass.
+  A rung that loses the checkout to a review opens no cycle and spends no
+  budget.
 - **When it stops.** Each rung gets a budget per situation (`fix-checks` 3,
   the others 2); a cycle that changes nothing at all, a spent budget, or no CI
   verdict within 15 minutes ends in a `give-up`, after which autopilot waits
@@ -1714,7 +1716,8 @@ runs on the host and needs no PR, no origin and no GitHub login.
   reviewed), `queued` (a start waits for the coder: asked for while the coder
   was running or spawning, or a delegation was live on the checkout; one per
   checkout, persisted across a restart, and begun once the coder is idle with
-  no delegation live), `reviewing` (a reviewer turn is running), `findings`
+  no delegation live), `reviewing` (a round holds the checkout, from the moment
+  it is claimed: its reviewer is coming up or its turn is running), `findings`
   (the last review left local threads open), `clean` (approved, or every
   finding resolved, and the code unchanged since), `stale` (the code differs
   from what the last review read: HEAD, the dirty paths and their kinds, or a
@@ -1756,6 +1759,13 @@ runs on the host and needs no PR, no origin and no GitHub login.
   PR; a spent budget is reported on `error` without changing the phase. A
   start triggered while the coder is mid-turn (a PR usually opens inside the
   opener's turn) is queued as above rather than refused.
+- **One at a time.** A review and a delegation never share a checkout. Who
+  takes it is decided as one atomic step on the host: a start queues while a
+  delegation is live, and `delegate_git` is refused from the moment a round
+  claims the checkout until it ends, however the delegation was asked for.
+  Clients close what would change the code for the same span. A message the
+  user sends the coder is never held: a review it overtakes reads `stale`, with
+  the "the code changed during the review" `error`.
 
 ```
 ReviewState = { agent_id, subdir: string | null,

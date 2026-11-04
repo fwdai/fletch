@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { useCopy } from "@/util/useCopy";
 import { IconButton } from "./IconButton";
 
 /** Copies `text` to the clipboard and briefly swaps the copy icon for a check
@@ -14,33 +14,12 @@ export function CopyButton({
   tip?: string;
   className?: string;
 }) {
-  const [copied, setCopied] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout>>();
-
-  // Clear the pending revert if the button unmounts mid-confirmation.
-  useEffect(() => () => clearTimeout(timer.current), []);
-
-  const onCopy = async () => {
-    // Guard the whole call: the Clipboard API is absent in insecure contexts,
-    // some webviews, and most test runtimes, and writeText can throw
-    // synchronously (not just reject) — which a trailing .catch() would miss.
-    try {
-      if (!navigator.clipboard?.writeText) return;
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // Denied or unavailable — leave the icon as-is rather than falsely
-      // confirming a copy that didn't happen.
-      return;
-    }
-    setCopied(true);
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setCopied(false), 1500);
-  };
+  const { copied, copy } = useCopy(text);
 
   // No explicit aria-label: IconButton falls back to `tip`, so each call site's
   // own wording ("Copy command") becomes the accessible name.
   return (
-    <IconButton size="xs" tip={copied ? "Copied" : tip} className={className} onClick={onCopy}>
+    <IconButton size="xs" tip={copied ? "Copied" : tip} className={className} onClick={copy}>
       <Icon name={copied ? "check" : "copy"} size={12} />
     </IconButton>
   );

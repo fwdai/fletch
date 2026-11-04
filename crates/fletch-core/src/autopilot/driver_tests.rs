@@ -28,6 +28,7 @@ struct Fake {
     agents: Mutex<Vec<AgentRecord>>,
     busy: Mutex<HashSet<String>>,
     in_flight: Mutex<HashSet<Key>>,
+    reviewing: Mutex<HashSet<Key>>,
     git: Mutex<HashMap<Key, GitState>>,
     pr: Mutex<HashMap<Key, PrLive>>,
     threads: Mutex<HashMap<Key, PrComments>>,
@@ -39,6 +40,8 @@ struct Fake {
 }
 
 impl World for Fake {
+    type Admitted = Dispatched;
+
     fn agents(&self) -> Vec<AgentRecord> {
         self.agents.lock().clone()
     }
@@ -65,15 +68,20 @@ impl World for Fake {
         self.threads.lock().get(key).cloned()
     }
 
-    async fn dispatch(
+    fn admit(
         &self,
         key: &Key,
         action: &str,
         params: &BTreeMap<String, String>,
-    ) -> Result<()> {
-        self.dispatched
-            .lock()
-            .push((key.clone(), action.to_string(), params.clone()));
+    ) -> Result<Option<Dispatched>> {
+        if self.reviewing.lock().contains(key) {
+            return Ok(None);
+        }
+        Ok(Some((key.clone(), action.to_string(), params.clone())))
+    }
+
+    async fn dispatch(&self, admitted: Dispatched) -> Result<()> {
+        self.dispatched.lock().push(admitted);
         Ok(())
     }
 
@@ -349,6 +357,38 @@ async fn never_dispatches_over_a_live_delegation_or_a_running_turn() {
     h.world.busy.lock().insert("rhone".to_string());
     h.pass(NOW).await;
     assert!(h.dispatched().is_empty());
+}
+
+#[tokio::test]
+async fn a_review_holding_a_checkout_costs_autopilot_nothing() {
+    let h = Harness::new(vec![agent("aare", "p1", &["repo", "web"])]);
+    let reviewed = key("aare", None);
+    let sibling = key("aare", Some("web"));
+    failing(&h.world, &reviewed, "sha1");
+    failing(&h.world, &sibling, "sha2");
+    h.world.reviewing.lock().insert(reviewed.clone());
+
+    h.pass(NOW).await;
+
+    assert_eq!(h.cycle(&reviewed), None, "no cycle to judge");
+    assert!(
+        h.log().iter().all(|row| row.subdir.is_some()),
+        "nothing was handed over, so nothing says so"
+    );
+    // The refusal doesn't cost the agent's other checkout its turn.
+    assert_eq!(h.dispatched().len(), 1);
+    assert_eq!(h.dispatched()[0].0, sibling);
+
+    h.world.dispatched.lock().clear();
+    h.world.reviewing.lock().remove(&reviewed);
+    h.pass(NOW + 10_000).await;
+    assert_eq!(h.dispatched().len(), 1);
+    assert_eq!(h.dispatched()[0].0, reviewed);
+    assert_eq!(
+        h.cycle(&reviewed).unwrap().attempt,
+        1,
+        "the budget is untouched"
+    );
 }
 
 // ── what a pass reads ──────────────────────────────────────────────────────

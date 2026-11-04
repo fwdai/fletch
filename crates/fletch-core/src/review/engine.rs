@@ -67,8 +67,7 @@ const ACTIVE_WINDOW_MS: i64 = 2 * 60 * 1000;
 /// The note a review carries when the code changed while it was read.
 pub const CODE_MOVED: &str = "the code changed during the review";
 
-/// What a start refused by a round already on the checkout says. Matched by
-/// a queued start's runner, which puts the start back rather than failing it.
+/// What a start refused by a round already on the checkout says.
 pub const ALREADY_RUNNING: &str = "A review is already running on this checkout";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -436,7 +435,7 @@ impl Tracked {
     /// (`queued`), then the recorded failure — a scan that couldn't verify
     /// the review reads `stale`, every other origin `failed`.
     pub fn derive(&self, open: u32) -> Phase {
-        if self.flight.is_some() {
+        if self.in_round() {
             return Phase::Reviewing;
         }
         if self.pending.is_some() {
@@ -568,9 +567,7 @@ impl Tracked {
     /// a claim; always right after a restart, while a PR is open, or while
     /// the coder was active lately.
     pub fn wants_scan(&self, pr_open: bool, now: i64) -> bool {
-        self.flight.is_none()
-            && !self.starting
-            && (self.needs_rescan || pr_open || now < self.active_until_ms)
+        !self.in_round() && (self.needs_rescan || pr_open || now < self.active_until_ms)
     }
 
     /// The persisted memory as a restart finds it: no turn survived, so a
@@ -588,11 +585,18 @@ impl Tracked {
         self
     }
 
+    /// A round holds the checkout, from its claim to its end. The one meaning
+    /// of "a review is running": what clients are told, what a delegation is
+    /// refused on and what a second start is turned away by.
+    pub fn in_round(&self) -> bool {
+        self.flight.is_some() || self.starting
+    }
+
     /// Claim the checkout for a start about to run. Refused while a round is
     /// in flight or another start holds the claim; [`Self::begin`],
     /// [`Self::release`] or a failure ends it.
     pub fn claim(&mut self) -> std::result::Result<(), &'static str> {
-        if self.flight.is_some() || self.starting {
+        if self.in_round() {
             return Err("a review is already running on this checkout");
         }
         self.starting = true;
@@ -604,21 +608,13 @@ impl Tracked {
         self.starting = false;
     }
 
-    /// The queued start, taken for running — only when the coder is `free`
-    /// (idle, no delegation live) and nothing else holds the checkout.
-    pub fn take_pending(&mut self, free: bool) -> Option<Pending> {
-        if !free || self.flight.is_some() || self.starting {
-            return None;
-        }
+    /// The queued start, claimed for running. One step, so the checkout is
+    /// never neither queued nor claimed: `None` with nothing queued, or while
+    /// a round holds the checkout.
+    pub fn claim_pending(&mut self) -> Option<Pending> {
+        self.pending.as_ref()?;
+        self.claim().ok()?;
         self.pending.take()
-    }
-
-    /// A queued start beaten by a round already on the checkout waits its
-    /// turn again (one per checkout: a newer one queued meanwhile wins).
-    pub fn requeue(&mut self, pending: Pending) {
-        if self.pending.is_none() {
-            self.pending = Some(pending);
-        }
     }
 
     /// The report landed and the code was read again: if it is not the code
@@ -753,6 +749,13 @@ impl Table {
 
     pub fn get(&self, key: &Key) -> Option<Tracked> {
         self.inner.lock().get(key).cloned()
+    }
+
+    /// A round holds this checkout ([`Tracked::in_round`]). Bounded by
+    /// [`WALL_TIMEOUT_MS`]. A queued start doesn't count: it reads nothing until
+    /// the coder is free.
+    pub fn reviewing(&self, key: &Key) -> bool {
+        self.inner.lock().get(key).is_some_and(Tracked::in_round)
     }
 
     /// Apply `f` to a checkout's memory, creating it on first touch.
@@ -1336,25 +1339,46 @@ async fn round_prompt(
 
 // ── the ops ──────────────────────────────────────────────────────────────────
 
-/// Whether the coder is free for a review to read its checkout: not mid-turn
-/// (or coming up), no delegation live on the checkout, and its checkouts at
-/// rest (no move between sandboxes has them). A sample, for deciding what to
-/// queue; a round starts only on [`claim_coder`].
-fn coder_free(sup: &Supervisor, key: &Key) -> bool {
+/// The coder isn't mid-turn (or coming up), and no delegation is live on the
+/// checkout.
+fn coder_idle(sup: &Supervisor, key: &Key) -> bool {
     !matches!(
         sup.status_of(&key.0),
         Some(AgentStatus::Running | AgentStatus::Spawning)
     ) && !crate::supervisor::delegation::is_live(key)
-        && sup.checkouts_at_rest(&key.0).is_ok()
 }
 
-/// The coder's checkouts, held for a round's start, when the coder is free:
-/// held first, so no move starts on them between this decision and the
-/// reviewer coming up in them. `None` when the coder isn't free, or the
-/// checkouts can't be held (a move has them): the review waits, queued.
-fn claim_coder(sup: &Supervisor, key: &Key) -> Option<CheckoutHold> {
-    let hold = sup.hold_checkouts(&key.0).ok()?;
-    coder_free(sup, key).then_some(hold)
+/// Whether the coder is free for a review to read its checkout: idle, and its
+/// checkouts at rest (no move between sandboxes has them). A sample, for
+/// deciding what to queue; a round starts only on [`claim_if_free`].
+fn coder_free(sup: &Supervisor, key: &Key) -> bool {
+    coder_idle(sup, key) && sup.checkouts_at_rest(&key.0).is_ok()
+}
+
+/// What a try for a checkout came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Claim {
+    Claimed,
+    /// The coder has it: the review waits, queued.
+    CoderBusy,
+    AlreadyRunning,
+}
+
+/// Claim `key` for a round if the coder is `free`, as one step against a
+/// delegation's admission (`delegation::admit`): whichever goes first, the
+/// other sees it. A claim taken here is what a round starts on, so a second
+/// start meanwhile (the watcher and the agent's own op announcing one PR, a
+/// tick and a click) is refused rather than racing to the spawn.
+pub(crate) fn claim_if_free(table: &Table, key: &Key, free: impl FnOnce() -> bool) -> Claim {
+    crate::supervisor::delegation::admit(|| {
+        if !free() {
+            return Claim::CoderBusy;
+        }
+        match table.update(key, Tracked::claim) {
+            Ok(()) => Claim::Claimed,
+            Err(_) => Claim::AlreadyRunning,
+        }
+    })
 }
 
 /// Ask for a review of `agent_id`'s checkout `subdir`. Runs now when the
@@ -1382,7 +1406,7 @@ pub async fn start(
                 .await
                 .ok_or_else(|| Error::Other("review state vanished".into()));
         }
-        if t.flight.is_some() || t.starting {
+        if t.in_round() {
             return Err(Error::Other(ALREADY_RUNNING.into()));
         }
     }
@@ -1395,44 +1419,60 @@ pub async fn start(
             "No reviewer is set up — pick one in Settings › Review".into(),
         ));
     }
-    let Some(held) = claim_coder(sup, &key) else {
-        table.update(&key, |t| {
-            t.queue(trigger, custom_agent_id.map(str::to_string))
-        });
-        return refresh(ctx, sup, &key)
+    // Held first, so no move starts on the checkouts between this decision and
+    // the reviewer coming up in them. A move that has them reads as busy.
+    let claimed = sup
+        .hold_checkouts(&key.0)
+        .ok()
+        .map(|held| (claim_if_free(table, &key, || coder_idle(sup, &key)), held));
+    match claimed {
+        Some((Claim::Claimed, held)) => {
+            run_round(
+                ctx,
+                sup,
+                &key,
+                custom_agent_id,
+                trigger,
+                FailureOrigin::Start,
+                held,
+            )
             .await
-            .ok_or_else(|| Error::Other("review state vanished".into()));
-    };
-    run_round(
-        ctx,
-        sup,
-        &key,
-        custom_agent_id,
-        trigger,
-        FailureOrigin::Start,
-        held,
-    )
-    .await
+        }
+        Some((Claim::AlreadyRunning, _)) => Err(Error::Other(ALREADY_RUNNING.into())),
+        Some((Claim::CoderBusy, _)) | None => {
+            table.update(&key, |t| {
+                t.queue(trigger, custom_agent_id.map(str::to_string))
+            });
+            refresh(ctx, sup, &key)
+                .await
+                .ok_or_else(|| Error::Other("review state vanished".into()))
+        }
+    }
 }
 
 /// Run a queued start once the coder is free, in the background: spawning a
 /// reviewer takes a while and the caller (a status event, a tick) can't wait.
-/// A failure is recorded by the round as a queued start's; one beaten by a
-/// round already on the checkout waits again.
+/// The claim is taken here, before the spawn, so the checkout is never free to
+/// a delegation in between. A failure is recorded by the round as a queued
+/// start's.
 fn drain(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, key: &Key) {
-    let held = claim_coder(sup, key);
-    let Some(pending) = global()
-        .update_existing(key, |t| t.take_pending(held.is_some()))
-        .flatten()
-    else {
+    let Ok(held) = sup.hold_checkouts(&key.0) else {
         return;
     };
-    let Some(held) = held else {
+    let pending = crate::supervisor::delegation::admit(|| {
+        if !coder_idle(sup, key) {
+            return None;
+        }
+        global()
+            .update_existing(key, Tracked::claim_pending)
+            .flatten()
+    });
+    let Some(pending) = pending else {
         return;
     };
     let (ctx, sup, key) = (ctx.clone(), sup.clone(), key.clone());
     crate::host::spawn(async move {
-        let result = run_round(
+        let _ = run_round(
             &ctx,
             &sup,
             &key,
@@ -1442,20 +1482,15 @@ fn drain(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, key: &Key) {
             held,
         )
         .await;
-        if matches!(&result, Err(e) if e.to_string() == ALREADY_RUNNING) {
-            global().update_existing(&key, |t| t.requeue(pending));
-            refresh(&ctx, &sup, &key).await;
-        }
     });
 }
 
-/// Run one round now: claim the checkout, read the change, spawn or resume
-/// its reviewer, and send it the round's prompt, the coder's checkouts held
-/// (`_held`, [`claim_coder`]) until the reviewer is up in them. Every failure is recorded
-/// here, before returning — `before` (a start's or a queued start's origin)
-/// for one that stops the round from beginning, [`FailureOrigin::Round`]
-/// after it began. Only a claim lost to a round already running records
-/// nothing: that round is the checkout's news.
+/// Run one round on a checkout already claimed ([`claim_if_free`]): read the
+/// change, spawn or resume its reviewer, and send it the round's prompt, the
+/// coder's checkouts held (`_held`) until the reviewer is up in them. Every
+/// failure is recorded here, before returning — `before` (a start's or a queued
+/// start's origin) for one that stops the round from beginning,
+/// [`FailureOrigin::Round`] after it began.
 async fn run_round(
     ctx: &Arc<EngineCtx>,
     sup: &Arc<Supervisor>,
@@ -1465,13 +1500,9 @@ async fn run_round(
     before: FailureOrigin,
     _held: CheckoutHold,
 ) -> Result<ReviewState> {
-    let table = global();
-    // Claimed first, before anything awaits: a second start meanwhile — the
-    // watcher and the agent's own op both announcing one PR, a tick and a
-    // click — is refused here rather than racing to the spawn.
-    table
-        .update(key, Tracked::claim)
-        .map_err(|_| Error::Other(ALREADY_RUNNING.into()))?;
+    // Out now, not after the read below: clients close what would change the
+    // code on this phase.
+    refresh(ctx, sup, key).await;
     let prefix = if before == FailureOrigin::Queued {
         "queued review not started: "
     } else {
@@ -1798,10 +1829,7 @@ pub async fn on_pr_opened(
         return;
     };
     let tracked = global().get(&key);
-    if tracked
-        .as_ref()
-        .is_some_and(|t| t.flight.is_some() || t.starting)
-    {
+    if tracked.as_ref().is_some_and(Tracked::in_round) {
         return;
     }
     if let (Some(t), Some(n)) = (&tracked, number) {
@@ -2048,11 +2076,7 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
         let Some(mut tracked) = table.get(&key) else {
             continue;
         };
-        if tracked.flight.is_some()
-            || tracked.starting
-            || tracked.pending.is_some()
-            || !coder_free(sup, &key)
-        {
+        if tracked.in_round() || tracked.pending.is_some() || !coder_free(sup, &key) {
             continue;
         }
         // Never decided on a skipped digest: read the content of this one

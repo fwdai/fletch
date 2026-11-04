@@ -135,6 +135,9 @@ export function shipView(input: ShipInput): ShipView {
       mergeAllowed,
       delegationActive: delegation != null,
       busy: false,
+      // The phone offers no local review and doesn't track one. The host still
+      // refuses a delegation while a review holds the checkout.
+      reviewActive: false,
       primaryCheckout: true,
       workSinceMerge: git != null && hasWorkSinceMerge(git),
     });

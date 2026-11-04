@@ -1065,3 +1065,96 @@ async fn a_pass_drops_the_delegations_of_an_agent_that_is_gone() {
         "nothing to tell about a gone agent"
     );
 }
+
+/// The two ways into a checkout, raced from two threads over the real admission
+/// code. Each reads the other's table and then writes its own, so without one
+/// lock around both steps they can both win.
+#[test]
+fn a_delegation_and_a_review_never_both_take_a_checkout() {
+    use crate::review::engine::{claim_if_free, Claim, Table};
+
+    const ROUNDS: usize = 20_000;
+    let delegations = Delegations::default();
+    let reviews = Table::default();
+    let start = std::sync::Barrier::new(2);
+    let key_of = |round: usize| -> Key { ("aare".to_string(), Some(round.to_string())) };
+
+    let (delegated, reviewed): (Vec<bool>, Vec<bool>) = std::thread::scope(|s| {
+        let delegate = s.spawn(|| {
+            (0..ROUNDS)
+                .map(|round| {
+                    let key = key_of(round);
+                    start.wait();
+                    record_unless_reviewed(
+                        &delegations,
+                        &reviews,
+                        &key,
+                        DelegationKind::Commit,
+                        "[app-action] commit",
+                        false,
+                    )
+                    .is_some()
+                })
+                .collect()
+        });
+        let review = s.spawn(|| {
+            (0..ROUNDS)
+                .map(|round| {
+                    let key = key_of(round);
+                    start.wait();
+                    let free = || !delegations.inner.lock().table.contains_key(&key);
+                    claim_if_free(&reviews, &key, free) == Claim::Claimed
+                })
+                .collect()
+        });
+        (delegate.join().unwrap(), review.join().unwrap())
+    });
+
+    for round in 0..ROUNDS {
+        assert_ne!(
+            delegated[round], reviewed[round],
+            "round {round}: exactly one takes the checkout"
+        );
+    }
+}
+
+#[tokio::test]
+async fn delegating_is_refused_while_a_review_holds_the_checkout() {
+    let td = tempfile::tempdir().unwrap();
+    let sup = idle_agent(td.path(), "tanana").await;
+    let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+    let table = Delegations::default();
+    let reviews = crate::review::engine::global();
+    let key: Key = ("tanana".to_string(), Some("repo-1".to_string()));
+    reviews.update(&key, |t| t.claim().unwrap());
+
+    let refused = delegate(
+        &table,
+        &sup,
+        &ctx,
+        "tanana",
+        Some("repo-1"),
+        "commit",
+        &BTreeMap::new(),
+    )
+    .await;
+    assert_eq!(
+        refused.map(|_| ()).unwrap_err().to_string(),
+        REVIEW_HOLDS_CHECKOUT
+    );
+    assert!(table.is_empty(), "a refusal records nothing");
+    assert!(turns_sent(&sink).is_empty(), "and sends nothing");
+
+    reviews.remove(&key);
+    delegate(
+        &table,
+        &sup,
+        &ctx,
+        "tanana",
+        Some("repo-1"),
+        "commit",
+        &BTreeMap::new(),
+    )
+    .await
+    .expect("the review is over");
+}

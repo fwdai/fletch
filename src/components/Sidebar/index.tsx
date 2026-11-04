@@ -244,12 +244,12 @@ export function Sidebar() {
     [filtered, searching, activeFirst, turns, now],
   );
 
-  // Reordering is only meaningful over the full, unfiltered list, and only
-  // between the groups still in manual order — a floated group is neither
-  // draggable nor a drop target, since its position is computed.
-  const reorderable = !searching;
+  // Dragging is the manual mode. With active-first on the top of the list is
+  // computed, so nothing drags, and the quiet tail keeps the order last saved.
+  // Off while searching too: a reorder only means something over the full,
+  // unfiltered list.
+  const reorderable = !activeFirst && !searching;
   const orderedPaths = useMemo(() => groups.map((g) => g.primaryPath), [groups]);
-  const restPaths = useMemo(() => new Set(rest.map((g) => g.primaryPath)), [rest]);
 
   // Begin a pointer-driven reorder. `markDragged` lets the group swallow the
   // trailing click so a real drag doesn't also toggle it open/closed. The order
@@ -272,8 +272,7 @@ export function Sidebar() {
       const target = document
         .elementFromPoint(ev.clientX, ev.clientY)
         ?.closest<HTMLElement>("[data-repo-path]");
-      const hovered = target?.dataset.repoPath ?? null;
-      const over = hovered && restPaths.has(hovered) ? hovered : null;
+      const over = target?.dataset.repoPath ?? null;
       info.over = over;
       setOverPath(over);
     };
@@ -354,8 +353,8 @@ export function Sidebar() {
     });
   }, [groups, selectedAgentId, activeDraftId, selectedRunId]);
 
-  function renderGroup(g: ProjectGroupData, canReorder: boolean) {
-    const isOver = canReorder && overPath === g.primaryPath && dragPath !== g.primaryPath;
+  function renderGroup(g: ProjectGroupData) {
+    const isOver = overPath === g.primaryPath && dragPath !== g.primaryPath;
     const dropAfter =
       isOver &&
       dragPath != null &&
@@ -373,11 +372,11 @@ export function Sidebar() {
         onToggle={() => toggleGroup(g.key)}
         fold={!searching}
         now={now}
-        reorderable={canReorder}
+        reorderable={reorderable}
         dragging={dragPath === g.primaryPath}
         dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}
         onReorderPointerDown={
-          canReorder ? (e, markDragged) => startReorder(g.primaryPath, e, markDragged) : undefined
+          reorderable ? (e, markDragged) => startReorder(g.primaryPath, e, markDragged) : undefined
         }
       />
     );
@@ -411,10 +410,7 @@ export function Sidebar() {
               <div>{query ? "Try a different search." : "Add a repo to get started."}</div>
             </div>
           ) : (
-            <>
-              {active.map((g) => renderGroup(g, false))}
-              {rest.map((g) => renderGroup(g, reorderable))}
-            </>
+            [...active, ...rest].map((g) => renderGroup(g))
           )}
         </div>
       </div>
