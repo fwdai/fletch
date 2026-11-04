@@ -286,6 +286,14 @@ async fn boot(args: BootArgs) -> Result<(), String> {
                 println!("egress: DENY {host}:{port} ({reason})")
             }
             EgressEvent::Held { host, port } => println!("egress: held {host}:{port}"),
+            EgressEvent::HoldEnded {
+                host,
+                port,
+                admitted,
+            } => println!(
+                "egress: hold on {host}:{port} ended, {}",
+                if admitted { "admitted" } else { "refused" }
+            ),
             EgressEvent::Error { message, .. } => println!("egress: error {message}"),
         },
     )
