@@ -60,7 +60,11 @@ export function AccountPane() {
 
   return (
     <div className="set-pane">
-      <SetHead eyebrow="Settings · Account" title="Account" />
+      <SetHead
+        eyebrow="Settings · Account"
+        title="Account"
+        desc="Your profile and the services connected to Fletch."
+      />
 
       <div className="set-profile flex-center">
         <Avatar

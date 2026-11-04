@@ -17,7 +17,7 @@ export function PairedHosts() {
     <SetGroup label="Paired hosts" last>
       <SetRow
         title="Add a host"
-        sub="Paste the pairing link from the other machine's Remote control settings. It is single use and expires in five minutes."
+        sub="Paste the pairing link from the other machine's Remote control settings."
         align="start"
       >
         <input

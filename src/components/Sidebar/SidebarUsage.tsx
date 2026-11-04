@@ -15,14 +15,12 @@ import { formatTokens } from "@/util/format";
  *  Mounting starts the same transcript scan the Usage screen runs (shared
  *  cache, one scan per host, five-minute TTL), so the number lands a moment
  *  after launch; until then the chip holds a dimmed placeholder. It falls back
- *  to a bare icon when the flag is off or the scan failed before ever
- *  answering. */
+ *  to a bare icon when the scan failed before ever answering. */
 export function SidebarUsage() {
   const openUsageScreen = useAppStore((s) => s.openUsageScreen);
-  const enabled = useAppStore((s) => s.features.sidebarUsage);
   const { stats, loading, error } = useUsageStats("7d");
 
-  if (!enabled || (error && !stats)) return <UsageIcon onClick={openUsageScreen} />;
+  if (error && !stats) return <UsageIcon onClick={openUsageScreen} />;
 
   if (loading || !stats) {
     return (

@@ -118,7 +118,7 @@ export function WorkflowList({
       <SetHead
         eyebrow="Settings · Workflows"
         title="Workflows"
-        desc="Chain agents into a repeatable pipeline, each handing off on the same git branch. Define once here; launch on any task."
+        desc="Repeatable pipelines that chain agents on the same branch."
         actions={
           <Button variant="primary" onClick={onNew}>
             <Icon name="plus" size={13} /> New workflow

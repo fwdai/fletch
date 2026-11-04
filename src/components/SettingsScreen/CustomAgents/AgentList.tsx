@@ -37,7 +37,7 @@ export function AgentList({
         eyebrow="Settings · Customize"
         eyebrowAside={<CustomizeSwitch />}
         title="Custom agents"
-        desc="Give a base coding agent a name, a model, and a standing brief. Custom agents show up in the composer next to the built-ins."
+        desc="Your own agents, each with a name, model, and standing brief."
         actions={
           <Button variant="primary" onClick={onNew}>
             <Icon name="plus" size={13} /> New agent

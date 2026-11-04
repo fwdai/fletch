@@ -17,8 +17,6 @@ import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
 import { ProviderRow } from "./ProviderRow";
 
 export function ProvidersPane() {
-  const providerFlags = useAppStore((s) => s.providerFlags);
-  const providerPaths = useAppStore((s) => s.providerPaths);
   const providersProbed = useAppStore((s) => s.providersProbed);
   const refreshProviderVersions = useAppStore((s) => s.refreshProviderVersions);
   const env = useAppStore(activeEntry);
@@ -52,29 +50,17 @@ export function ProvidersPane() {
     }
   };
 
-  // Counts are about what's actually on this machine — "of 6 agents enabled"
-  // read as if all six were usable. Enabling is only meaningful for an agent
-  // that exists, so the denominator is the installed set.
-  const installed = PROVIDERS.filter((p) => !!providerPaths[p.id]);
-  const enabledCount = installed.filter((p) => providerFlags[p.id] !== false).length;
-  const missingCount = PROVIDERS.length - installed.length;
-  const counts = `${enabledCount} of ${installed.length} installed agents enabled${
-    missingCount > 0 ? ` · ${missingCount} not installed` : ""
-  }.`;
-
   return (
     <div className="set-pane">
       <SetHead
         eyebrow="Settings · Providers"
         title="Providers"
-        desc={
-          providersProbed
-            ? `${counts} Toggle an agent off to hide it from the composer's model picker without signing out.`
-            : "Scanning this machine for agent CLIs…"
-        }
+        desc="The coding agents on this machine and the accounts they use."
         actions={
           <>
-            {scanning && <span className="set-checked mono text-xs">Scanning…</span>}
+            {(scanning || !providersProbed) && (
+              <span className="set-checked mono text-xs">Scanning…</span>
+            )}
             <IconButton
               tip="Re-scan system"
               aria-label="Re-scan system"
@@ -113,8 +99,8 @@ export function ProvidersPane() {
   );
 }
 
-/** Two states, each named in the subtitle. PRs read the setting as they open;
- *  an agent's commit hook takes it from the env it started with. */
+/** PRs read the setting as they open; an agent's commit hook takes it from the
+ *  env it started with. */
 function AttributionRow() {
   const removed = useAppStore((s) => s.agentAttributionRemoved);
   const setRemoved = useAppStore((s) => s.setAgentAttributionRemoved);
@@ -123,11 +109,7 @@ function AttributionRow() {
   return (
     <SetRow
       title="Remove agent attribution"
-      sub={`${
-        removed
-          ? "Removed. Fletch strips agents' Co-Authored-By trailers and “Generated with” footers from commits and PRs, whatever the agents' own settings say."
-          : "Following your agent settings. Commits and PRs carry whatever attribution your agents' own settings add."
-      } Applies to PRs right away, and to an agent's commits from its next start.`}
+      sub="Strip agents' Co-Authored-By trailers and “Generated with” footers from commits and PRs."
     >
       <SetToggle
         on={removed}

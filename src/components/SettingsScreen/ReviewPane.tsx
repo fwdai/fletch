@@ -62,13 +62,13 @@ export function ReviewPane() {
       <SetHead
         eyebrow="Settings · Review"
         title="Review"
-        desc="A second agent reads every change before it ships, in the workspace itself — no GitHub needed. It runs alongside GitHub reviewers like Greptile; its findings land in the Git panel's Review row, where the coding agent picks them up."
+        desc="How a second agent checks changes before they ship."
       />
 
       <SetGroup label="When">
         <SetRow
           title="Review on PR open"
-          sub="Run the reviewer the moment a pull request opens, and again after the agent addresses its findings. You can always ask for a review earlier from the Git panel."
+          sub="Review each PR when it opens, and again after the agent addresses findings."
         >
           <SetToggle
             on={onPrOpen}
@@ -84,8 +84,8 @@ export function ReviewPane() {
           title="Reviewer"
           sub={
             effective
-              ? `${effective.name} reviews on ${effective.base}${effective.model ? ` · ${effective.model}` : ""}. Its brief says what to look for.`
-              : "No custom agent is set up to review yet. Create the Reviewer, or pick any custom agent."
+              ? `${effective.name} reviews on ${effective.base}${effective.model ? ` · ${effective.model}` : ""}.`
+              : "No reviewer yet. Create the Reviewer, or pick any custom agent."
           }
         >
           <Select<string>
@@ -100,8 +100,8 @@ export function ReviewPane() {
           title={effective ? `Edit ${effective.name}'s brief` : "Create the Reviewer"}
           sub={
             effective
-              ? "Tell it what matters in this codebase: what to flag, what to leave alone."
-              : "Seeds the starter pack's Reviewer: a rigorous, file-and-line code review brief."
+              ? "Tell it what to flag and what to leave alone."
+              : "Add the starter pack's Reviewer agent."
           }
         >
           {effective ? (

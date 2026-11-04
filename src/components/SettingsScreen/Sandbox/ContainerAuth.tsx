@@ -43,7 +43,7 @@ export function ContainerAuth() {
     <>
       <SetRow
         title="Claude in a Linux VM"
-        sub="Agents in a Linux VM use your Keychain Claude login, or an API key or setup token as fallback."
+        sub="Uses your Keychain Claude login, or an API key or setup token as fallback."
       >
         <span className={`set-cauth-status text-sm ${connected ? "connected" : ""}`}>
           {status ? STATUS_LABELS[status] : "Checking…"}

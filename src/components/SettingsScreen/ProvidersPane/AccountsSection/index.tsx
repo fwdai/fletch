@@ -90,11 +90,7 @@ export function AccountsSection({
     <div className="set-prov-accounts">
       <div className="set-prov-acct-head text-sm">
         <span className="set-prov-dk">Accounts</span>
-        <span>
-          Every agent runs under the selected account: new ones from the start, running ones from
-          their next turn. Each account keeps its own login and sessions; settings, commands and
-          skills are shared from your terminal setup.
-        </span>
+        <span>New agents use the selected account; running ones switch on their next turn.</span>
         <Button
           variant="outline"
           size="sm"

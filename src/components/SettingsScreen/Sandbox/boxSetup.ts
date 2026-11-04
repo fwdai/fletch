@@ -89,6 +89,6 @@ export function boxSetup(
     .map(({ provider, disk }) => `${label(provider)} ${disk?.version}`);
   return {
     state: "ready",
-    text: `Ready · image v${image.version ?? image.pinned_version} · ${ready.join(" · ")} · other providers use the macOS sandbox`,
+    text: `Ready · image v${image.version ?? image.pinned_version} · ${ready.join(" · ")}`,
   };
 }

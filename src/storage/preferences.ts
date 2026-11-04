@@ -40,9 +40,6 @@ export interface FeatureFlags {
   thinkingBudget: boolean;
   /** Show the context-window usage meter in the composer foot. */
   tokenUsage: boolean;
-  /** Show the 7-day token count on the sidebar footer's usage chip. Off leaves
-   *  the chip as a bare icon into the Usage screen. */
-  sidebarUsage: boolean;
   /** Float projects with recently launched or running agents to the top of
    *  the sidebar; the quiet ones keep the manual order beneath them. Off keeps
    *  the whole list in manual order. */
@@ -64,7 +61,6 @@ export const DEFAULT_FEATURES: FeatureFlags = {
   terminal: false,
   thinkingBudget: true,
   tokenUsage: true,
-  sidebarUsage: true,
   sidebarActiveFirst: true,
   nativeView: false,
   missionControl: false,
@@ -79,8 +75,9 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
       diff?: boolean;
       // removed in this version; its presence marks a pre-migration blob
       statusBar?: boolean;
-      // removed feature; drop any stored value on read
+      // removed features; drop any stored value on read
       autoEdit?: boolean;
+      sidebarUsage?: boolean;
     };
     // The old "Files" and "Diff" tabs were merged into the Code panel; honor a
     // saved preference for either when migrating an existing settings blob.
@@ -99,12 +96,14 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
       diff: _diff,
       statusBar: _statusBar,
       autoEdit: _autoEdit,
+      sidebarUsage: _sidebarUsage,
       ...rest
     } = saved;
     void _files;
     void _diff;
     void _statusBar;
     void _autoEdit;
+    void _sidebarUsage;
     if (preMigration) delete rest.tokenUsage;
     return {
       ...DEFAULT_FEATURES,

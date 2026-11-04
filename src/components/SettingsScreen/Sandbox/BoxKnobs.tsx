@@ -20,19 +20,19 @@ const FIELDS = [
   {
     key: "box_memory_mib",
     title: "Memory (MiB)",
-    sub: "Guest RAM per box. Blank uses the default (2048); at least 512.",
+    sub: "RAM per VM, at least 512. Blank uses the default.",
     placeholder: "2048",
   },
   {
     key: "box_cpus",
     title: "CPUs",
-    sub: "vCPUs per box. Blank uses the default (2).",
+    sub: "vCPUs per VM. Blank uses the default.",
     placeholder: "2",
   },
   {
     key: "box_idle_stop_minutes",
     title: "Idle stop (minutes)",
-    sub: "Stop a box with no attached process after this long. Blank uses the default (10); 0 never stops.",
+    sub: "Stop a VM after this long with nothing running. 0 never stops; blank uses the default.",
     placeholder: "10",
   },
 ] as const satisfies readonly KnobField[];
@@ -42,7 +42,7 @@ const FIELDS = [
 export const IMAGE_URL_FIELD: KnobField = {
   key: "box_image_url",
   title: "Linux VM image URL",
-  sub: "Alternate base URL for the VM image download (https://, http:// or file://). Blank uses the GitHub release.",
+  sub: "Base URL for the VM image (https, http or file). Blank uses the GitHub release.",
   placeholder: "https://github.com/… (built-in)",
 };
 
@@ -54,12 +54,12 @@ const LAYERS = [
   {
     name: "devtools",
     title: "Developer tools layer",
-    sub: "gcc, make, python3, pip and the Node headers: projects that build native code. On by default (~115 MB).",
+    sub: "gcc, make, python3, pip and Node headers for projects that build native code (~115 MB).",
   },
   {
     name: "browser",
     title: "Browser layer",
-    sub: "A system Chromium (headless shell) and the Noto fonts for agents that drive a browser directly. Playwright projects download their own browser and work without it (~165 MB).",
+    sub: "Headless Chromium and Noto fonts for agents that drive a browser. Playwright brings its own (~165 MB).",
   },
 ] as const;
 const DEFAULT_LAYERS: readonly string[] = ["devtools"];

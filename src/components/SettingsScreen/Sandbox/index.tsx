@@ -26,7 +26,7 @@ export function SandboxPane() {
       <SetHead
         eyebrow="Settings · Sandbox"
         title="Sandbox"
-        desc="New workspaces run in a Linux VM that shares no folder with your Mac and reaches only allowed hosts. Until it's ready, or where a project builds a macOS app, they run in the macOS sandbox. Applies to new workspaces only."
+        desc="Where agents run and what they can reach."
       />
 
       <SetGroup label="Linux VM">

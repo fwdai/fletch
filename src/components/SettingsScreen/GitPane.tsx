@@ -44,10 +44,7 @@ export function GitPane() {
       />
 
       <SetGroup label="Publishing">
-        <SetRow
-          title="Default Git action"
-          sub="Preselected action in the Git panel. You can still pick another from its menu."
-        >
+        <SetRow title="Default Git action" sub="Preselected action in the Git panel.">
           <Select<GitCommitAction>
             value={gitCommitAction}
             ariaLabel="Default Git action"
@@ -80,10 +77,7 @@ export function GitPane() {
             onChange={(v) => void setPublishApprovalWait(Number(v))}
           />
         </SetRow>
-        <SetRow
-          title="Open PRs as drafts"
-          sub="Every pull request Fletch opens starts as a draft until you mark it ready."
-        >
+        <SetRow title="Open PRs as drafts" sub="Every pull request Fletch opens starts as a draft.">
           <SetToggle
             on={draftPrs}
             onClick={() => void setDraftPrs(!draftPrs)}
@@ -129,11 +123,7 @@ function BranchPrefixRow({ gate }: { gate: string | null }) {
   return (
     <SetRow
       title="Branch prefix"
-      sub={
-        error ??
-        gate ??
-        "Prepended to every branch an agent creates, e.g. alex/ or feature/. Blank for none."
-      }
+      sub={error ?? gate ?? "Added to the start of every branch an agent creates, e.g. alex/."}
     >
       <TextInput
         mono

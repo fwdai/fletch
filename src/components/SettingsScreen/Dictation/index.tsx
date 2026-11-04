@@ -24,7 +24,7 @@ export function DictationPane() {
       <SetHead
         eyebrow="Settings · Dictation"
         title="Dictation"
-        desc="Speak instead of typing in the composer. Choose the engine and the model it runs."
+        desc="How your speech becomes text in the composer."
       />
 
       <SetGroup label="Speech recognition" last>
@@ -39,10 +39,7 @@ export function DictationPane() {
         {/* Both engines now end an utterance on the same measured pause, so this
             is a property of dictation rather than of the choice above it — it
             stays live whether or not the local engine is switched on. */}
-        <SetRow
-          title="Stop after a pause"
-          sub="Dictation ends on its own after a two-second pause. Off, you stop it with the mic button."
-        >
+        <SetRow title="Stop after a pause" sub="End dictation after a two-second pause.">
           <SetToggle on={autoStop} onClick={() => setAutoStop(!autoStop)} />
         </SetRow>
         {/* Always offered, engine on or off: the choice has to be makeable
