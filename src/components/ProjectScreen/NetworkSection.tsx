@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import type { BlockedHost } from "@/store/sandbox";
+import { canAllow, countsLabel, hostStanding, viaLabel } from "@/util/egressActivity";
 import {
   EGRESS_MODE_HINTS,
   EGRESS_MODE_KEY,
@@ -78,20 +79,21 @@ export function NetworkSection({ projectId }: { projectId: string }) {
   );
   const allowedNow = new Set(overview?.project?.entries.map((e) => e.pattern) ?? []);
   const now = Date.now();
-  // The host's record when it keeps one, else what this window saw.
+  // The host's record when it keeps one, else what this window saw. A host
+  // sits where its newest connection put it (`hostStanding`), with both
+  // counts when its window holds both.
+  const shown = (activity ?? []).filter((h) => !h.quiet && !allowedNow.has(h.host));
   const recent: RecentRow[] = activity
-    ? activity
-        .filter((h) => h.refused > 0 && h.allowed === 0 && !h.quiet && !allowedNow.has(h.host))
+    ? shown
+        .filter((h) => hostStanding(h) === "blocked")
         .map((h) => ({
           host: h.host,
-          count: h.refused,
+          label: `${viaLabel(h.last_via)} · ${countsLabel(h)}`,
+          allowable: canAllow(h),
           at: h.last_at,
-          port: h.last_via === "port",
         }))
     : byHost(blocked.filter((b) => mine.has(b.agent_id) && !allowedNow.has(b.host)));
-  const reached = (activity ?? []).filter(
-    (h) => h.allowed > 0 && h.last_via !== "listed" && !h.quiet && !allowedNow.has(h.host),
-  );
+  const reached = shown.filter((h) => hostStanding(h) === "reached" && h.last_via !== "listed");
 
   const run = async (task: () => Promise<unknown>) => {
     setBusy(true);
@@ -256,9 +258,7 @@ export function NetworkSection({ projectId }: { projectId: string }) {
                   <li key={h.host} className="ps-pf-row">
                     <span className="mono">{h.host}</span>
                     <span className="ps-pf-ok">
-                      {h.allowed === 1 ? "once" : `${h.allowed} times`}
-                      {h.last_via === "turn" ? " · opened for a turn" : " · open network"} ·{" "}
-                      {formatAge(h.last_at, now)}
+                      {viaLabel(h.last_via)} · {countsLabel(h)} · {formatAge(h.last_at, now)}
                     </span>
                     {canEdit && (
                       <Button
@@ -283,11 +283,10 @@ export function NetworkSection({ projectId }: { projectId: string }) {
                   <li key={b.host} className="ps-pf-row">
                     <span className="mono">{b.host}</span>
                     <span className="ps-pf-ok">
-                      {b.count === 1 ? "once" : `${b.count} times`}
-                      {b.port && " · port not allowed"}
+                      {b.label}
                       {b.at !== undefined && ` · ${formatAge(b.at, now)}`}
                     </span>
-                    {canEdit && !b.port && (
+                    {canEdit && b.allowable && (
                       <Button
                         variant="ghost"
                         disabled={busy}
@@ -380,11 +379,12 @@ export function NetworkSection({ projectId }: { projectId: string }) {
 /** One blocked host as the list shows it, from either source. */
 interface RecentRow {
   host: string;
-  count: number;
+  /** How its newest connection was answered, and how many, in words. */
+  label: string;
+  /** Whether a list could change the outcome (not a port refusal). */
+  allowable: boolean;
   /** Unix ms; absent for the in-memory fallback's quiet rows. */
   at?: number;
-  /** Refused for its port, which no list can allow. */
-  port: boolean;
 }
 
 /** The inherited list, the template's categories first, then the user's
@@ -404,17 +404,23 @@ function groups(entries: EgressEntry[]): { label: string; entries: EgressEntry[]
 /** Blocked hosts across this project's workspaces, one row per host, from
  *  what this window saw (a host from before the egress log). */
 function byHost(blocked: BlockedHost[]): RecentRow[] {
-  const rows = new Map<string, RecentRow & { quiet: boolean }>();
+  const rows = new Map<string, { host: string; count: number; at: number; quiet: boolean }>();
   for (const b of blocked) {
     const row = rows.get(b.host);
     if (row) {
       row.count += b.count;
-      row.at = Math.max(row.at ?? 0, b.lastAt);
-    } else
-      rows.set(b.host, { host: b.host, count: b.count, at: b.lastAt, port: false, quiet: b.quiet });
+      row.at = Math.max(row.at, b.lastAt);
+    } else rows.set(b.host, { host: b.host, count: b.count, at: b.lastAt, quiet: b.quiet });
   }
   // What the user may need first: not noise, then the most refused.
-  return [...rows.values()].sort((a, b) => Number(a.quiet) - Number(b.quiet) || b.count - a.count);
+  return [...rows.values()]
+    .sort((a, b) => Number(a.quiet) - Number(b.quiet) || b.count - a.count)
+    .map((r) => ({
+      host: r.host,
+      label: r.count === 1 ? "refused once" : `refused ${r.count} times`,
+      allowable: true,
+      at: r.at,
+    }));
 }
 
 function FileRow({ file }: { file: ProjectFileReport }) {
