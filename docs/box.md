@@ -110,13 +110,31 @@ The Run panel's setup and dev commands run in the guest, where the checkout
 is (`boxes::run`), as one more launch of the box: it holds the box against
 the idle stop from before it reaches it (booting a stopped one, under a
 "Starting the Linux VM…" line in the panel) until the command ends, and the
-launch's kill — Stop, the command's own exit, app exit — removes its env
-file, drops its port forward and detaches it, which arms the idle timer. The
-command is `fletch-guest exec --env-file /data/run/<launch>.env --cwd
-<checkout> -- bash -c 'set +m; <cmd>'` over `ssh -tt`, so it prints as on the
-host and one hangup of the guest tty reaches everything it started; the env
-file carries the guest env every launch gets, the project's toolchain cache
-in the guest, the project's shared Run env and the pinned `PORT`.
+launch's kill — Stop, the command's own exit, app exit — ends the command's
+process group in the guest by name (`TERM`, then `KILL`; the tty hangup
+that follows reaches only the confining init, which passes no kernel-raised
+signal on), removes its env file, drops its port forward and detaches it,
+which arms the idle timer. The
+command is `fletch-guest exec --env-file /data/run/<launch>.env --read-only
+<home> --writable … --cwd <checkout> -- bash -c 'set +m; <cmd>'` over `ssh
+-tt`, so it prints as on the host and one hangup of the guest tty reaches
+everything it started; the env file carries the guest env every launch gets,
+the project's toolchain cache in the guest, the project's shared Run env and
+the pinned `PORT`.
+
+The command is project code run the moment the user clicks ▶, so it gets the
+view the host's Run profile gives such code (`boxes::run::run_view`): the
+agent's home read-only whole, so the provider's state (a hook, an MCP
+config, a plugin the agent would run) stays as the agent left it, with the
+checkout, the project's toolchain cache and the scratch and toolchain dirs a
+build writes outside its tree (`~/.cache`, `~/.config`, `~/.local`, `~/.npm`,
+`~/.cargo`, …, made before the launch) given back. The confined view also
+hides `/data`, where every launch's env file lies, the agent's own with its
+access token among them. A guest that cannot confine the command (an image
+before 0.3.1) refuses the run. Not hidden: a credential file a provider
+keeps in the home for the agent's launch (codex's launch `auth.json`), which
+the Run reads as any process the agent itself starts does; hiding those
+needs a guest option that does not exist yet.
 
 Ports: the dev server binds its own port inside the guest, whose loopback is
 the VM's alone, so two workspaces on port 3000 never clash there; a port

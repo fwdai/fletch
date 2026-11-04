@@ -308,10 +308,20 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
     let _data = setup().await;
     let registry = BoxRegistry::global();
     let pid = std::process::id() % 10_000;
-    // Both bind the guest's own 3000: each VM's loopback is its own.
+    // Both bind the guest's own 3000: each VM's loopback is its own. Each
+    // answer also reports the Run's view of the guest: whether `/data` (the
+    // launch env files, the agent's token among them) is in sight, and
+    // whether the agent's home (the provider's state lives there), the
+    // checkout and a scratch dir take a write.
     const GUEST_PORT: u16 = 3000;
-    let server = "node -e \"require('http').createServer((q, s) => s.end('hi from ' + \
-                  process.env.APP_NAME + ' on ' + process.env.PORT)).listen(process.env.PORT, \
+    let server = "node -e \"const fs = require('fs'); \
+                  const w = (p) => { try { fs.writeFileSync(p, 'x'); return 'yes'; } catch (e) { return e.code; } }; \
+                  require('http').createServer((q, s) => s.end('hi from ' + \
+                  process.env.APP_NAME + ' on ' + process.env.PORT + \
+                  ' data=' + fs.existsSync('/data/run') + \
+                  ' home=' + w(process.env.HOME + '/run-probe') + \
+                  ' cwd=' + w('run-probe') + \
+                  ' cache=' + w(process.env.HOME + '/.cache/run-probe'))).listen(process.env.PORT, \
                   '127.0.0.1', () => console.log('listening ' + process.env.PORT))\"";
 
     struct Up {
@@ -431,28 +441,55 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
             body.contains(&format!("hi from {name} on {GUEST_PORT}")),
             "{body}"
         );
+        // The Run's view: `/data` hidden, the home read-only, the checkout
+        // and the scratch dir writable.
+        assert!(body.contains(" data=false "), "{body}");
+        assert!(body.contains(" home=EROFS "), "{body}");
+        assert!(body.contains(" cwd=yes "), "{body}");
+        assert!(body.contains(" cache=yes"), "{body}");
     }
 
     // Stop: the guest process is gone, the host port is free, the box
     // released (its forward dropped with the launch, the other's kept).
     for (n, (name, up)) in ["first", "second"].iter().zip(ups.iter()).enumerate() {
+        let channel = registry.channel_for_running(&up.agent_id).unwrap();
+        // The guest's process table, for a stop that leaves something behind.
+        let ps = |label: &str| {
+            let out = super::executor::run(
+                &channel,
+                &["ps", "-eo", "pid,ppid,pgid,sid,args", "--forest"],
+                None,
+            )
+            .unwrap();
+            eprintln!(
+                "[{name}] guest processes {label}:\n{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+        };
         let t = Instant::now();
         up.pty.kill().unwrap();
         eprintln!("[{name}] stopped in {:.2?}", t.elapsed());
-        let channel = registry.channel_for_running(&up.agent_id).unwrap();
-        wait_for(
-            || {
-                super::executor::run(&channel, &["pgrep", "-f", "hi from"], None)
-                    .is_ok_and(|out| !out.status.success())
-            },
-            Duration::from_secs(10),
-        )
-        .await;
-        wait_for(
-            || std::net::TcpListener::bind(("127.0.0.1", up.host_port)).is_ok(),
-            Duration::from_secs(10),
-        )
-        .await;
+        let gone = || {
+            super::executor::run(&channel, &["pgrep", "-f", "hi from"], None)
+                .is_ok_and(|out| !out.status.success())
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !gone() {
+            if Instant::now() >= deadline {
+                ps("ten seconds after the stop");
+                panic!("[{name}] the guest process survived the stop");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::net::TcpListener::bind(("127.0.0.1", up.host_port)).is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "[{name}] host port {} still taken after the stop",
+                up.host_port
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         assert_eq!(
             super::BoxEngine::shared().forwards.lock().unwrap().len(),
             ups.len() - (n + 1),

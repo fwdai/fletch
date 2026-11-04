@@ -484,6 +484,10 @@ pub struct BoxEngine {
     /// The port forward of every live Run launch, by launch id
     /// ([`run::GuestRun`]): dropped, and so ended, by the launch's kill.
     forwards: Mutex<std::collections::HashMap<String, fletch_box::Forward>>,
+    /// Every live Run launch, by launch id ([`run::GuestRun`]): its kill
+    /// ends the command's process group in the guest itself, rather than
+    /// leave that to the tty hangup the ssh client's end causes.
+    runs: Mutex<std::collections::HashSet<String>>,
 }
 
 impl BoxEngine {
@@ -495,6 +499,7 @@ impl BoxEngine {
                     pending: Mutex::new(std::collections::HashMap::new()),
                     files: Mutex::new(std::collections::HashMap::new()),
                     forwards: Mutex::new(std::collections::HashMap::new()),
+                    runs: Mutex::new(std::collections::HashSet::new()),
                 })
             })
             .clone()
@@ -507,6 +512,15 @@ impl BoxEngine {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(launch_id.to_string(), forward);
+    }
+
+    /// Launch `launch_id` is a Run: its kill ends its process group in the
+    /// guest ([`run::end_in_guest`]).
+    fn note_run(&self, launch_id: &str) {
+        self.runs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(launch_id.to_string());
     }
 }
 
@@ -1539,6 +1553,17 @@ impl SandboxEngine for BoxEngine {
             .unwrap_or_else(|| Arc::new(launch_files::LaunchFiles::new(launch_id)));
         let registry = BoxRegistry::global();
         let channel = registry.channel_for_running(agent_id).ok();
+        // A Run's command is ended in the guest first, by name: a stop must
+        // not depend on what its process tree makes of the tty hangup that
+        // follows, and a stopped box has nothing left to end.
+        let is_run = self
+            .runs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(launch_id);
+        if let (true, Some(channel)) = (is_run, &channel) {
+            run::end_in_guest(channel, launch_id);
+        }
         files.close(|stem| {
             if let Some(channel) = &channel {
                 let stem = stem.to_string_lossy();
