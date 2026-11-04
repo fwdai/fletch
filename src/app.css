@@ -17,7 +17,6 @@
 @import "./components/Sidebar/Sidebar.css";
 @import "./styles/shared/badge.css";
 @import "./components/Workspace/Workspace.css";
-@import "./components/Workspace/MissionControl/MissionControl.css";
 @import "./components/Workspace/Home/Home.css";
 @import "./components/Workspace/Chat.css";
 @import "./components/Workspace/messages/UserInput/UserInput.css";
@@ -59,7 +58,7 @@
 @import "./components/ui/TextInput.css";
 @import "./components/SettingsScreen/SettingsScreen.css";
 @import "./styles/shared/error-boundary.css";
-@import "./components/ProviderReadiness/ProviderReadiness.css";
+@import "./components/SettingsScreen/DevToolsStatus.css";
 @import "./components/SettingsScreen/CustomAgents/CustomAgents.css";
 /* After SettingsScreen.css and Stats.css — the Usage screen composes on the
    settings shell (`.set-screen`, `.set-group`) and on the shared chart + stat
@@ -73,6 +72,8 @@
 @import "./components/ui/ProgressBar.css";
 @import "./components/ui/Scale.css";
 @import "./components/ui/DeviceCode.css";
+@import "./components/ui/CopyCmd.css";
+@import "./components/ui/DocsLink.css";
 @import "./components/Feedback/Feedback.css";
 @import "./components/BootScreen/BootScreen.css";
 /* After terminal.css, whose `.xterm-slot` sizing the login terminal overrides. */

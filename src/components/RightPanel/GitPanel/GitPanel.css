@@ -1445,7 +1445,7 @@ button.rg-head {
 }
 
 /* ── review row: the local reviewer ───────────────────────────────────────── */
-/* the row's one control (Review / Re-review / Stop), quiet until hovered */
+/* the row's one control (Set up / Review / Re-review / Stop), quiet until hovered */
 .rg-review-act {
   flex: none;
   margin-left: 6px;

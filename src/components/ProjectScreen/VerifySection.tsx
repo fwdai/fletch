@@ -21,8 +21,8 @@ export function VerifySection({ projectId }: { projectId: string }) {
         <h2 className="ps-section-t text-lg">Verify on turn end</h2>
         <p className="ps-section-lead text-sm">
           When on, each ad-hoc agent&rsquo;s turn end runs your project&rsquo;s install / test /
-          lint checks on its checkout, so its Mission Control card shows a tests verdict. Off by
-          default — it runs a full check pass after every turn.
+          lint checks on its checkout, so the phone shows a tests verdict for it. Off by default —
+          it runs a full check pass after every turn.
         </p>
       </header>
 

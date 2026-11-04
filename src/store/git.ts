@@ -8,7 +8,6 @@ import {
   type PrSetEntry,
   type PrState,
   type ShortStats,
-  type VerificationReport,
 } from "@/api";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import type { Delegation } from "@/delegation";
@@ -93,10 +92,6 @@ export interface GitSlice {
   /** The Git panel's transient confirmation per checkout ("Pushed to origin"),
    *  keyed like `gitBusy`, self-expiring like `delegationNotices`. */
   gitNotices: Record<string, string>;
-  /** Latest turn-end verification report per agent (keyed by agent_id), from
-   *  the opt-in `verify:report` event. Feeds the Mission Control card's tests
-   *  chip. Absent = never verified (no chip). */
-  verificationReports: Record<string, VerificationReport>;
   /** Sticky changes-state commit mode (Commit / & push / & open PR). Global
    *  across workspaces, persisted in settings until the user picks another. */
   gitCommitAction: GitCommitAction;
@@ -458,7 +453,6 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   delegationNotices: {},
   gitBusy: {},
   gitNotices: {},
-  verificationReports: {},
   gitCommitAction: "agent-commit-pr" as GitCommitAction,
   publishApprovalWait: DEFAULT_PUBLISH_APPROVAL_WAIT,
   autoArchiveIdleDays: DEFAULT_AUTO_ARCHIVE_IDLE_DAYS,

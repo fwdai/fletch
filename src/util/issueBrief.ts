@@ -1,29 +1,11 @@
-// MissionControl/inbox.ts — pure logic for the Home issue inbox: the
-// branch-name suggestion, the "Start work" brief composition, and merging
-// per-repo issue lists into one ordered set of rows. Source-agnostic — it
-// speaks `TrackerIssue`, so GitHub issues and Linear tickets (and future
-// sources) flow through the same code. Kept side-effect-free so each piece
-// is unit-tested without the network or the store (inbox.test.ts).
+// issueBrief.ts — pure logic for starting work from a tracker issue: the
+// branch-name suggestion and the brief the composer's issue picker seeds the
+// prompt with. Source-agnostic — it speaks `TrackerIssue`, so GitHub issues and
+// Linear tickets (and future sources) flow through the same code. Kept
+// side-effect-free so each piece is unit-tested without the network or the
+// store (issueBrief.test.ts).
 
 import { type IssueComment, issueDisplayKey, type TrackerIssue, type TrackerLabel } from "@/api";
-
-/** A tracked repo's fetched issues, tagged with its display label. */
-export interface InboxRepo {
-  repoPath: string;
-  /** Human label for the repo (project/repo name), shown when >1 repo. */
-  repoLabel: string;
-  issues: TrackerIssue[];
-}
-
-/** One rendered inbox row: an issue plus the repo it belongs to. Keyed by
- *  repo+source+key so the same issue number in two repos (or a GitHub #12
- *  next to a Linear ENG-12) never collides. */
-export interface InboxRow {
-  key: string;
-  repoPath: string;
-  repoLabel: string;
-  issue: TrackerIssue;
-}
 
 /** Slugify an issue title for a branch name: lowercase, non-alphanumerics to
  *  single dashes, trimmed, and clamped to a handful of words so the branch
@@ -68,8 +50,8 @@ const SOURCE_LABEL: Record<TrackerIssue["source"], string> = {
   linear: "Linear",
 };
 
-/** Compose the new-task brief for "Start work" / the composer's issue picker:
- *  issue reference, title, body, the issue's discussion (when fetched), and a
+/** Compose the new-task brief for the composer's issue picker: issue
+ *  reference, title, body, the issue's discussion (when fetched), and a
  *  visible/editable branch suggestion. The closing trailer (`Closes #N` /
  *  `Fixes ENG-N`) is added reliably by the backend at PR time, so the brief
  *  needn't instruct it. Comments arrive oldest-first and already capped by
@@ -86,22 +68,4 @@ export function composeIssueBrief(issue: TrackerIssue, comments: IssueComment[] 
   parts.push(issue.url);
   parts.push(`When you open the PR, use the branch name \`${branch}\`.`);
   return parts.join("\n\n");
-}
-
-/** Merge per-repo issue lists into one ordered set of rows, newest-updated
- *  first (issues with no timestamp sort last), capped at `limit`. */
-export function deriveInboxRows(repos: InboxRepo[], limit = 20): InboxRow[] {
-  const rows: InboxRow[] = [];
-  for (const repo of repos) {
-    for (const issue of repo.issues) {
-      rows.push({
-        key: `${repo.repoPath}#${issue.source}:${issue.key}`,
-        repoPath: repo.repoPath,
-        repoLabel: repo.repoLabel,
-        issue,
-      });
-    }
-  }
-  rows.sort((a, b) => (b.issue.updated_at ?? 0) - (a.issue.updated_at ?? 0));
-  return rows.slice(0, limit);
 }

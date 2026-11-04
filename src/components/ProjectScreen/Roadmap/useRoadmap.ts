@@ -5,9 +5,8 @@
 // The rows themselves come from `useRoadmapRows` (src/roadmapRows.ts), which
 // subscribes before it fetches and replays anything that arrived in between (see
 // rowSync.ts), because this board has writers other than the user. That hook is
-// shared: the workspace's issue inbox and a run's roadmap chip follow the same
-// stream through it, so "what is on this board" cannot mean two different things
-// on two screens. Everything else on this board — the PM's asks, the holds, the
+// shared: a run's roadmap chip follows the same stream through it, so "what is
+// on this board" cannot mean two different things on two screens. Everything else on this board — the PM's asks, the holds, the
 // history trails, the queue notes — is loaded by the effect below, which applies
 // the same discipline to four more streams.
 //
@@ -616,10 +615,8 @@ export function useRoadmap(repoPath: string) {
   );
 
   /** Delete rows. Also how a proposal is discarded: a suggestion the user turned
-   *  down was never on the roadmap, so it leaves no trace of having been — bar one,
-   *  for a ghost the issue funnel routed: the backend records the refusal against
-   *  the issue's URL, so the inbox stops offering it (see `roadmap_delete_item`).
-   *  Any pending PM ask against the row cascades away with it. */
+   *  down was never on the roadmap, so it leaves no trace of having been. Any
+   *  pending PM ask against the row cascades away with it. */
   const removeItems = useCallback(
     (ids: string[]) =>
       guarded(async () => {

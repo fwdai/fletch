@@ -613,6 +613,30 @@ fn a_start_claims_the_checkout_until_it_begins_or_lets_go() {
 }
 
 #[test]
+fn a_checkout_counts_as_reviewing_from_its_claim_to_the_end_of_the_round() {
+    let table = Table::default();
+    let key: Key = ("aare".into(), None);
+    assert!(!table.reviewing(&key), "never tracked");
+
+    table.update(&key, |t| t.queue(Trigger::PrOpen, None));
+    assert!(!table.reviewing(&key), "a queued start reads nothing yet");
+
+    table.update(&key, |t| t.claim().unwrap());
+    assert!(table.reviewing(&key), "claimed: its reviewer is coming up");
+
+    table.update(&key, |t| {
+        t.begin(reviewer(), Trigger::Manual, state("s", "d"), None, 0)
+            .unwrap();
+    });
+    assert!(table.reviewing(&key), "the round itself");
+
+    table.update(&key, |t| {
+        t.record_failure(FailureOrigin::Round, "boom", None)
+    });
+    assert!(!table.reviewing(&key), "over");
+}
+
+#[test]
 fn a_pr_that_had_a_round_is_not_reviewed_on_sight_again() {
     let mut t = Tracked::default();
     assert!(!t.reviewed_pr(7));
@@ -659,19 +683,16 @@ fn a_start_queued_behind_a_busy_coder_runs_once_it_is_free() {
         Trigger::PrOpen,
         "the first stays"
     );
-    assert_eq!(t.take_pending(false), None, "the coder is still busy");
-    let pending = t.take_pending(true).expect("free: the start runs");
+    let pending = t.claim_pending().expect("the start runs");
     assert_eq!(pending.trigger, Trigger::PrOpen);
-    assert_ne!(t.derive(0), Phase::Queued);
+    assert!(t.starting, "taken and claimed in one step");
+    assert_eq!(t.derive(0), Phase::Reviewing, "queued to reviewing, no gap");
 
     let mut t = begun(Trigger::Manual, None);
     t.queue(Trigger::ReReview, None);
     assert_eq!(t.derive(0), Phase::Reviewing, "a flight outranks the queue");
-    assert_eq!(
-        t.take_pending(true),
-        None,
-        "never while a round is in flight"
-    );
+    assert_eq!(t.claim_pending(), None, "never while a round is in flight");
+    assert!(t.pending.is_some(), "and it stays queued");
     let mut failed = reviewed();
     failed.record_failure(FailureOrigin::Round, "boom", None);
     failed.queue(Trigger::Manual, None);
@@ -689,17 +710,16 @@ fn stopping_a_queued_start_cancels_it() {
     t.stop();
     assert_eq!(t.pending, None);
     assert_eq!(t.derive(0), Phase::Idle);
-    assert_eq!(t.take_pending(true), None);
+    assert_eq!(t.claim_pending(), None);
+    assert!(!t.starting, "nothing queued, nothing claimed");
 }
 
-/// A queued start that can't begin is recorded as a queued failure; one
-/// beaten by a round already on the checkout waits its turn again.
+/// A queued start that can't begin is recorded as a queued failure.
 #[test]
-fn a_queued_start_that_cannot_begin_reads_failed_or_waits_again() {
+fn a_queued_start_that_cannot_begin_reads_failed() {
     let mut t = Tracked::default();
     t.queue(Trigger::PrOpen, None);
-    let _ = t.take_pending(true).unwrap();
-    t.claim().unwrap();
+    let _ = t.claim_pending().unwrap();
     t.record_failure(
         FailureOrigin::Queued,
         "queued review not started: No reviewer is set up — pick one in Settings › Review",
@@ -710,14 +730,34 @@ fn a_queued_start_that_cannot_begin_reads_failed_or_waits_again() {
         t.error().as_deref(),
         Some("queued review not started: No reviewer is set up — pick one in Settings › Review")
     );
+}
 
-    let mut t = Tracked::default();
-    t.queue(Trigger::Manual, Some("ca-1".into()));
-    let pending = t.take_pending(true).unwrap();
-    t.requeue(pending.clone());
-    assert_eq!(t.pending, Some(pending), "put back, not failed");
-    assert_eq!(t.failure, None);
-    assert_eq!(t.derive(0), Phase::Queued);
+/// What clients are told and what the host refuses on are the same fact, from
+/// the claim on: a client reading `idle` here would leave open what changes
+/// the code the round is about to read.
+#[test]
+fn a_claim_reads_as_reviewing_before_its_flight_exists() {
+    let mut t = reviewed();
+    t.claim().unwrap();
+    assert!(t.flight.is_none());
+    assert_eq!(t.derive(0), Phase::Reviewing);
+
+    t.record_failure(FailureOrigin::Start, "boom", None);
+    assert_eq!(t.derive(0), Phase::Failed, "a claim that fails lets go");
+}
+
+#[test]
+fn a_claim_is_refused_while_the_coder_is_busy_or_a_round_holds_the_checkout() {
+    let table = Table::default();
+    let key: Key = ("aare".into(), None);
+    assert_eq!(claim_if_free(&table, &key, || false), Claim::CoderBusy);
+    assert!(
+        !table.reviewing(&key),
+        "a busy coder leaves nothing claimed"
+    );
+    assert_eq!(claim_if_free(&table, &key, || true), Claim::Claimed);
+    assert!(table.reviewing(&key));
+    assert_eq!(claim_if_free(&table, &key, || true), Claim::AlreadyRunning);
 }
 
 #[test]

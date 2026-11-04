@@ -6,16 +6,16 @@
 //   detectBlockers  — WHAT is wrong.  (one forge-shaped function, see below)
 //   nextRung        — WHAT TO DO about the most blocking thing.
 //
-// The Git panel used to answer both inline, and Mission Control's `approveAgent`
-// answered them again independently. Two copies of one ladder is how the two
-// surfaces came to disagree about what "checks failing" even counts (see
-// `checksFailed` below). One classification, many renderings.
+// The Git panel used to answer both inline, and a second surface answered them
+// again independently. Two copies of one ladder is how the two surfaces came to
+// disagree about what "checks failing" even counts (see `checksFailed` below).
+// One classification, many renderings.
 //
 // ── Mirrored in Rust ─────────────────────────────────────────────────────────
 // Autopilot runs this same ladder on the host, so a window that is closed (or
 // hidden, where `usePoll` stops) doesn't stop it. Here it only decides what the
-// Git panel and Mission Control show; to keep the two copies a mechanical
-// translation of each other, this module obeys these rules, enforced by
+// Git panel shows; to keep the two copies a mechanical translation of each
+// other, this module obeys these rules, enforced by
 // `readiness.test.ts`:
 //
 //   1. Imports nothing but types from `@/api` and its sibling pure modules. No

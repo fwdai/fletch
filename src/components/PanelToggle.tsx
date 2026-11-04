@@ -38,8 +38,8 @@ const SIDES: Record<Side, SideSpec> = {
 };
 
 /** Show/hide toggle for one of the two side rails. Shared by every pane that
- *  renders a `.center-h` header (Workspace, Home, Mission Control, the draft
- *  empty state, and the workflow run monitor) so the icon, the tooltip wording,
+ *  renders a `.center-h` header (Workspace, Home, the draft empty state, and
+ *  the workflow run monitor) so the icon, the tooltip wording,
  *  and the resting appearance can't drift between call sites — they had: the
  *  right toggle carried `active`, and two RunView copies said "Toggle sidebar"
  *  instead of the show/hide pair.
