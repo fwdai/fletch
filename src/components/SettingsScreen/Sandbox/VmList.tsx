@@ -58,7 +58,7 @@ export function VmList() {
   }, [ids, applyBoxState]);
 
   return (
-    <SetGroup label="VMs">
+    <SetGroup label="Workspace VMs">
       {rows.length === 0 && <SetRow title="None yet" />}
       {shown.map((row) => (
         <VmListRow key={row.agent.id} row={row} />

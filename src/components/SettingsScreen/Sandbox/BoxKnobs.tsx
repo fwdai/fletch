@@ -107,7 +107,7 @@ export function BoxKnobs({ last }: { last?: boolean }) {
     box_idle_stop_minutes: useAppStore((s) => s.boxIdleStopMinutes),
   };
   return (
-    <SetGroup label="Linux VM" last={last}>
+    <SetGroup label="Resources" last={last}>
       {BOX_SCALES.map((scale) => (
         <BoxScaleRow key={scale.key} scale={scale} stored={stored[scale.key] ?? ""} />
       ))}

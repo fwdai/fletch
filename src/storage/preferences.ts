@@ -18,6 +18,7 @@ export type SettingsSection =
   | "git"
   | "review"
   | "sandbox"
+  | "network"
   | "remote"
   | "providers"
   | "agents"

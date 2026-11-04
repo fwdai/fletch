@@ -105,7 +105,7 @@ cover: scratch outside every bind (`/tmp`, `/var/tmp`, `/run`), which the
 reviewer may write as the guest user, and the network namespace, which is the
 guest's.
 
-Settings (Settings › Sandbox › Linux VM): memory, CPUs, disk and idle stop, as
+Settings (the Linux VM tab of Settings › Sandbox): memory, CPUs, disk and idle stop, as
 scales. Memory and CPUs stop at what the host has (`box_runtime_probe`'s
 `host_cpus` and `host_memory_mib`), and disk reaches new boxes only, since a
 data disk is sized when it is created. The image URL is on Settings › Developer.
