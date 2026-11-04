@@ -1,7 +1,7 @@
 //! Go detector.
 
 use super::{
-    Tree, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    DetectedConfig, DetectedRow, RowGroup, RunDetector, Tree, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
 

@@ -1,7 +1,7 @@
 //! Python detector.
 
 use super::{
-    Tree, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    DetectedConfig, DetectedRow, RowGroup, RunDetector, Tree, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
 
@@ -46,7 +46,8 @@ impl RunDetector for PythonDetector {
         let mut rows = Vec::new();
 
         // version: .python-version → pyproject requires-python.
-        if let Some((value, source)) = tree.read_trimmed(".python-version")
+        if let Some((value, source)) = tree
+            .read_trimmed(".python-version")
             .map(|v| (v, ".python-version"))
             .or_else(|| {
                 tree.read_trimmed("pyproject.toml")
@@ -158,11 +159,13 @@ impl RunDetector for PythonDetector {
 /// Package names match by whole token, so an unrelated package containing `name`
 /// (`ruffus`, `sruff`, `ruff-lsp`) never counts.
 fn declares_package(tree: &Tree, name: &str) -> bool {
-    let in_requirements = tree.read_trimmed("requirements.txt")
+    let in_requirements = tree
+        .read_trimmed("requirements.txt")
         .is_some_and(|t| requirements_declare(&t.to_lowercase(), name));
     in_requirements
         || ["pyproject.toml", "Pipfile"].iter().any(|f| {
-            tree.read_trimmed(f).is_some_and(|t| toml_declares(&t.to_lowercase(), name))
+            tree.read_trimmed(f)
+                .is_some_and(|t| toml_declares(&t.to_lowercase(), name))
         })
 }
 

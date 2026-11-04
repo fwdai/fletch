@@ -605,7 +605,9 @@ fn spawn_guest_run_phase(
         )));
     };
     let prepared = if phase == RunPhase::Running {
-        prepare_run_with(&cmd, intended_port, |start, cap| guest.free_port(start, cap))?
+        prepare_run_with(&cmd, intended_port, |start, cap| {
+            guest.free_port(start, cap)
+        })?
     } else {
         PreparedRun::passthrough(cmd.clone())
     };
@@ -974,13 +976,20 @@ mod tests {
         .unwrap();
         assert_eq!(free.cmd, "vite --port 3000");
         assert_eq!(free.port, Some(3000));
-        assert_eq!(free.extra_env, vec![("PORT".to_string(), "3000".to_string())]);
+        assert_eq!(
+            free.extra_env,
+            vec![("PORT".to_string(), "3000".to_string())]
+        );
         assert_eq!(free.note, None);
 
-        let bumped = prepare_run_with("vite --port 3000", Some(3000), |_, _| Ok(Some(3002))).unwrap();
+        let bumped =
+            prepare_run_with("vite --port 3000", Some(3000), |_, _| Ok(Some(3002))).unwrap();
         assert_eq!(bumped.cmd, "vite --port 3002");
         assert_eq!(bumped.port, Some(3002));
-        assert_eq!(bumped.note.as_deref(), Some("Port 3000 in use — using 3002"));
+        assert_eq!(
+            bumped.note.as_deref(),
+            Some("Port 3000 in use — using 3002")
+        );
 
         let none = prepare_run_with("cargo run", None, |_, _| panic!("no port to probe")).unwrap();
         assert_eq!(none.port, None);

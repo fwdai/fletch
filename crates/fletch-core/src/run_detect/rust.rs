@@ -1,7 +1,7 @@
 //! Rust / Cargo detector.
 
 use super::{
-    Tree, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    DetectedConfig, DetectedRow, RowGroup, RunDetector, Tree, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
 
@@ -22,7 +22,8 @@ impl RunDetector for RustDetector {
 
         // version: rust-toolchain.toml `channel`, or legacy bare
         // rust-toolchain file.
-        if let Some(channel) = tree.read_trimmed("rust-toolchain.toml")
+        if let Some(channel) = tree
+            .read_trimmed("rust-toolchain.toml")
             .and_then(|s| toml_string_value(&s, "channel"))
         {
             rows.push(DetectedRow::new(

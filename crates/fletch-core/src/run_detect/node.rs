@@ -2,7 +2,7 @@
 
 use super::port::detect_port;
 use super::{
-    Tree, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    DetectedConfig, DetectedRow, RowGroup, RunDetector, Tree, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
 
@@ -43,9 +43,13 @@ impl RunDetector for NodeDetector {
         let mut rows = Vec::new();
 
         // version: .nvmrc → .node-version → engines.node.
-        if let Some((value, source)) = tree.read_trimmed(".nvmrc")
+        if let Some((value, source)) = tree
+            .read_trimmed(".nvmrc")
             .map(|v| (v, ".nvmrc"))
-            .or_else(|| tree.read_trimmed(".node-version").map(|v| (v, ".node-version")))
+            .or_else(|| {
+                tree.read_trimmed(".node-version")
+                    .map(|v| (v, ".node-version"))
+            })
             .or_else(|| {
                 pkg.get("engines")
                     .and_then(|e| e.get("node"))

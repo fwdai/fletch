@@ -342,14 +342,22 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
 
         // What the supervisor does for a run phase: hold and reach the box,
         // settle the guest port, forward it, launch under a PTY.
-        let mut guest = GuestRun::open(&tree).unwrap().expect("the tree is in a box");
+        let mut guest = GuestRun::open(&tree)
+            .unwrap()
+            .expect("the tree is in a box");
         let port = guest.free_port(GUEST_PORT, 30).unwrap().unwrap();
         assert_eq!(port, GUEST_PORT, "[{name}] the guest's own 3000 is free");
         let host_port = guest.forward(port, 30).unwrap();
         if n == 0 {
-            assert_eq!(host_port, GUEST_PORT, "the first forward takes 3000 on the host");
+            assert_eq!(
+                host_port, GUEST_PORT,
+                "the first forward takes 3000 on the host"
+            );
         } else {
-            assert_ne!(host_port, ups[0].host_port, "the second forward is bumped past it");
+            assert_ne!(
+                host_port, ups[0].host_port,
+                "the second forward is bumped past it"
+            );
         }
         let env = [
             ("PORT".to_string(), port.to_string()),
@@ -398,10 +406,14 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
 
     // Both answer on the Mac, each on its own host port, each from its box.
     let fetch = |host_port: u16| -> String {
-        let mut stream =
-            std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], host_port).into(), Duration::from_secs(5))
-                .unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut stream = std::net::TcpStream::connect_timeout(
+            &([127, 0, 0, 1], host_port).into(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         stream
             .write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
             .unwrap();
@@ -411,8 +423,14 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
     };
     for (name, up) in ["first", "second"].iter().zip(&ups) {
         let body = fetch(up.host_port);
-        eprintln!("[{name}] http://localhost:{} answered: {body:?}", up.host_port);
-        assert!(body.contains(&format!("hi from {name} on {GUEST_PORT}")), "{body}");
+        eprintln!(
+            "[{name}] http://localhost:{} answered: {body:?}",
+            up.host_port
+        );
+        assert!(
+            body.contains(&format!("hi from {name} on {GUEST_PORT}")),
+            "{body}"
+        );
     }
 
     // Stop: the guest process is gone, the host port is free, the box

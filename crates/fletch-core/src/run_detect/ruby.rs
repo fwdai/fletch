@@ -1,7 +1,7 @@
 //! Ruby detector.
 
 use super::{
-    Tree, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    DetectedConfig, DetectedRow, RowGroup, RunDetector, Tree, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
 
@@ -25,7 +25,8 @@ impl RunDetector for RubyDetector {
 
         // version: .ruby-version → `ruby "x"` line in the Gemfile. The
         // source reflects whichever branch actually supplied the value.
-        if let Some((version, source)) = tree.read_trimmed(".ruby-version")
+        if let Some((version, source)) = tree
+            .read_trimmed(".ruby-version")
             .map(|v| (v, ".ruby-version"))
             .or_else(|| {
                 gemfile

@@ -153,12 +153,8 @@ impl GuestRun {
             _ => Vec::new(),
         };
         all.extend_from_slice(env);
-        let contents = super::render_env_file(
-            &all,
-            &self.identity.provider,
-            &self.identity.home,
-            ENV_DENY,
-        )?;
+        let contents =
+            super::render_env_file(&all, &self.identity.provider, &self.identity.home, ENV_DENY)?;
         let env_file = launch_files::env_file(&self.launch_id);
         executor::put(&self.channel, contents.as_bytes(), &env_file, 0o600)?;
         // Job control off, as on the host: everything the command starts
@@ -199,7 +195,11 @@ mod tests {
         let port = held.local_addr().unwrap().port();
         assert!(port < u16::MAX - 1);
         let out = run(&port.to_string(), "1");
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(
             String::from_utf8_lossy(&out.stdout).trim(),
             (port + 1).to_string()

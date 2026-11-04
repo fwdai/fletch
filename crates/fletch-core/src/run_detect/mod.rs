@@ -162,10 +162,8 @@ pub fn detect_all(checkout: &Path) -> Vec<DetectedConfig> {
 
 /// [`detect_all`] over an opened tree.
 pub fn detect_all_in(tree: &Tree) -> Vec<DetectedConfig> {
-    let mut configs: Vec<DetectedConfig> = detectors()
-        .iter()
-        .filter_map(|d| d.detect(tree))
-        .collect();
+    let mut configs: Vec<DetectedConfig> =
+        detectors().iter().filter_map(|d| d.detect(tree)).collect();
     // Stable sort by confidence desc so ties keep detector registration
     // order (node before python before … — a deterministic primary).
     configs.sort_by_key(|c| std::cmp::Reverse(c.confidence));
