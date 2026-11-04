@@ -2,21 +2,16 @@
 // know what is on a board without owning one.
 //
 // Lives here rather than under `components/ProjectScreen/Roadmap/` because it has
-// three consumers in three different areas: the board itself (`useRoadmap`), the
-// workspace's issue inbox (`MissionControl/useIssueFunnel`), and a run's monitor
-// (`RunView/RoadmapChip`). The same promotion `rowSync.ts` got when its third
-// caller appeared, and for the same reason — a shared hook whose home is one
-// caller's folder makes the other two import *through* a screen they have nothing
-// to do with.
+// consumers in different areas: the board itself (`useRoadmap`) and a run's
+// monitor (`RunView/RoadmapChip`). The same promotion `rowSync.ts` got when its
+// third caller appeared, and for the same reason — a shared hook whose home is
+// one caller's folder makes the others import *through* a screen they have
+// nothing to do with.
 //
-// Every surface here is event-driven, not polled. The funnel used to poll
-// (`roadmap_list_items` per project, every two minutes), which bought up to two
-// minutes of disagreement with the board: discarding a routed ghost left the
-// inbox saying "On roadmap", and the click-dedup could only see ghosts this
-// window had created. The chip fetched once per mount and never subscribed, so an
-// accepted retitle left a stale title on screen and a shipped item kept a chip
-// the board would silently swallow the click of. Both are the same defect —
-// a surface beside the spine rather than on it — and both are fixed by riding
+// Every surface here is event-driven, not polled. The chip used to fetch once
+// per mount and never subscribe, so an accepted retitle left a stale title on
+// screen and a shipped item kept a chip the board would silently swallow the
+// click of — a surface beside the spine rather than on it, fixed by riding
 // `roadmap:item` / `roadmap:item-deleted` like the board does.
 //
 // The load discipline is `rowSync`'s: subscribe, then fetch, then replay what
@@ -30,11 +25,11 @@ import { applyRowEvent, createRowSync } from "@/rowSync";
 
 /** How one project's board is doing.
  *
- *  `failed` is not `loaded` with no rows, and callers must not fold the two: the
- *  funnel's whole dedup rests on "what is already routed onto this board?", and a
- *  read that failed answering "nothing" would re-enable Add on every routed row
- *  and let one click stack a second ghost. A project absent from the map has not
- *  been read yet, which is the same unknown. */
+ *  `failed` is not `loaded` with no rows, and callers must not fold the two: a
+ *  surface that dedups against "what is already on this board?" would, on a
+ *  failed read answering "nothing", happily create a second copy of a row. A
+ *  project absent from the map has not been read yet, which is the same
+ *  unknown. */
 export type BoardLoad = "loading" | "loaded" | "failed";
 
 export interface RoadmapRows {
@@ -66,7 +61,7 @@ export interface RoadmapRowsOptions {
    *  invalidates. */
   onRow?: (row: RoadmapItem) => void;
   /** A row was deleted on `roadmap:item-deleted`. The board uses it to drop the
-   *  trail it was holding; the funnel uses it to remember a refusal. */
+   *  trail it was holding. */
   onDeleted?: (id: string) => void;
 }
 

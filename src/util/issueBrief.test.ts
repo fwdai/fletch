@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TrackerIssue } from "@/api";
-import {
-  branchKind,
-  composeIssueBrief,
-  deriveInboxRows,
-  slugifyTitle,
-  suggestBranchName,
-} from "./inbox";
+import { branchKind, composeIssueBrief, slugifyTitle, suggestBranchName } from "./issueBrief";
 
 function issue(over: Partial<TrackerIssue> = {}): TrackerIssue {
   return {
@@ -109,37 +103,5 @@ describe("composeIssueBrief", () => {
   it("composes without a discussion section when there are no comments", () => {
     expect(composeIssueBrief(issue(), [])).not.toContain("Discussion");
     expect(composeIssueBrief(issue())).not.toContain("Discussion");
-  });
-});
-
-describe("deriveInboxRows", () => {
-  it("merges repos, keys by repo+source+key, and sorts newest-updated first", () => {
-    const rows = deriveInboxRows([
-      {
-        repoPath: "/a",
-        repoLabel: "A",
-        issues: [
-          issue({ key: "1", updated_at: 100 }),
-          linearIssue({ key: "ENG-2", updated_at: 300 }),
-        ],
-      },
-      { repoPath: "/b", repoLabel: "B", issues: [issue({ key: "1", updated_at: 200 })] },
-    ]);
-    expect(rows.map((r) => r.key)).toEqual(["/a#linear:ENG-2", "/b#github:1", "/a#github:1"]);
-  });
-
-  it("sorts issues without a timestamp last and respects the limit", () => {
-    const rows = deriveInboxRows(
-      [
-        {
-          repoPath: "/a",
-          repoLabel: "A",
-          issues: [issue({ key: "1" }), issue({ key: "2", updated_at: 5 })],
-        },
-      ],
-      1,
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].key).toBe("/a#github:2");
   });
 });

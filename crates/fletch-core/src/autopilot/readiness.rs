@@ -1,7 +1,7 @@
 //! Readiness: what stands between a checkout's work and landing, and what fixes
 //! it. A port of `src/readiness.ts` (and the slice of `src/mergeGate.ts` it
 //! reads), which the desktop keeps for rendering — the Git panel's main action
-//! and Mission Control ask the same two questions in their own words:
+//! asks the same two questions in its own words:
 //!
 //! - [`detect_blockers`] — WHAT is wrong. The one forge-coupled function: it
 //!   knows blockers are read out of `git status`, GitHub's merge gate and

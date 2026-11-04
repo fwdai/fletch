@@ -10,7 +10,6 @@ import { RunView } from "@/workflows/run/RunView";
 import { ChatView } from "./ChatView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
 import { Home } from "./Home";
-import { MissionControl } from "./MissionControl";
 import { NativeView } from "./NativeView";
 import { SubagentThreadView } from "./SubagentThread";
 import { TranscriptRail } from "./TranscriptRail";
@@ -31,7 +30,6 @@ export function Workspace() {
   const selectedRunId = useAppStore((s) => s.selectedRunId);
   const drafts = useAppStore((s) => s.drafts);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
-  const missionControl = useAppStore((s) => s.features.missionControl);
   const nativeView = useAppStore((s) => s.features.nativeView);
   const openThread = useAppStore((s) => s.openThread);
 
@@ -48,9 +46,8 @@ export function Workspace() {
     return <RunView id={selectedRunId} key={selectedRunId} />;
   }
 
-  // No agent selected → Home. Mission Control (the fleet review queue) is gated
-  // behind the Developer setting; when off, Home is a blank pane. The bare
-  // "Loading…" placeholder stands only until the workspace connects.
+  // No agent selected → Home. The bare "Loading…" placeholder stands only
+  // until the workspace connects.
   const agent = agents.find((a) => a.id === selectedId) ?? offSidebar;
   if (!workspace) {
     // A paired host that is not reachable has nothing to show and no reason to
@@ -70,7 +67,7 @@ export function Workspace() {
       </div>
     );
   }
-  if (!agent) return missionControl ? <MissionControl /> : <Home />;
+  if (!agent) return <Home />;
 
   // A sub-agent thread of this agent takes the pane over — header and body —
   // and is keyed by its path so stepping between threads remounts the log

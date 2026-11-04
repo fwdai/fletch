@@ -2,8 +2,8 @@
 // a workflow approval gate (spec §9). It shows the evidence (verification, the
 // ferried diff, budget spend, the step's verdict) and offers Approve / Request
 // changes. It is intentionally decoupled from any store: everything arrives as
-// props (evidence + a diff source + callbacks), so the next PR can mount the same
-// component from a fleet review queue without change.
+// props (evidence + a diff source + callbacks), so the roadmap's "Needs you"
+// strip mounts the same component without change.
 
 import type { GateEvidence } from "../../api";
 import { Icon } from "../Icon";

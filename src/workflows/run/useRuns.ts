@@ -1,5 +1,5 @@
-// run/useRuns.ts — the reactive list of workflow runs for the sidebar, the
-// review queue, and the roadmap board. Loads the runs (newest-updated first) and
+// run/useRuns.ts — the reactive list of workflow runs for the sidebar and the
+// roadmap board. Loads the runs (newest-updated first) and
 // keeps the list live: `wf:run` fires the full row on every run-row change, so a
 // launch, a status flip, or a pause upserts in place. Run resumption after an app
 // restart is owned by the backend (`resume_active_runs` on startup), so this hook
@@ -10,8 +10,8 @@
 // clobbers a `wf:run` that landed while the request was in flight, and a paused
 // run emits nothing further — it is waiting on a human — so the pause stayed
 // invisible until something else moved the row. Every surface that decides from a
-// pause (the sidebar badge, Mission Control, the roadmap's "Needs you" strip)
-// reads this list, so one lost event was silent in all of them at once.
+// pause (the sidebar badge, the roadmap's "Needs you" strip) reads this list,
+// so one lost event was silent in all of them at once.
 
 import { useEffect, useState } from "react";
 import { createRowSync, type RowSync } from "@/rowSync";

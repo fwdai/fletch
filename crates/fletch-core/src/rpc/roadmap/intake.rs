@@ -60,7 +60,8 @@ fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewI
             accept: clean_list(&it.accept),
             deps: clean_list(&it.deps),
             workflow_def_id: None,
-            // Only the issue funnel sets `issue_url`; a PM-supplied one would fake provenance.
+            // `issue_url` is provenance for a row routed from a tracker issue; a
+            // PM-supplied one would fake it.
             issue_url: None,
         });
     }

@@ -484,46 +484,6 @@ fn a_routed_row_carries_its_issue_url_and_a_hand_typed_one_does_not() {
     assert_eq!(list(&conn, &p).unwrap().len(), 2);
 }
 
-#[test]
-fn a_declined_issue_is_remembered_once_per_project() {
-    let conn = test_conn();
-    let a = project(&conn, "pa", "alpha");
-    let b = project(&conn, "pb", "beta");
-    let url = "https://github.com/o/r/issues/7";
-
-    decline_issue(&conn, &a, url).unwrap();
-    decline_issue(&conn, &a, url).unwrap();
-    decline_issue(&conn, &a, "https://github.com/o/r/issues/9").unwrap();
-    assert!(declined_issues(&conn, &b).unwrap().is_empty());
-    assert_eq!(
-        declined_issues(&conn, &a).unwrap(),
-        vec![
-            url.to_string(),
-            "https://github.com/o/r/issues/9".to_string()
-        ]
-    );
-
-    let raw: String = conn
-        .query_row(
-            "SELECT value FROM project_settings WHERE project_id = 'pa' AND key = ?1",
-            [DECLINED_ISSUES_KEY],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(raw.starts_with('['), "{raw}");
-    assert!(raw.contains(url));
-
-    // A corrupt value costs the dedup, never a panic.
-    conn.execute(
-        "UPDATE project_settings SET value = 'not json' WHERE project_id = 'pa'",
-        [],
-    )
-    .unwrap();
-    assert!(declined_issues(&conn, &a).unwrap().is_empty());
-    decline_issue(&conn, &a, url).unwrap();
-    assert_eq!(declined_issues(&conn, &a).unwrap(), vec![url.to_string()]);
-}
-
 /// must cross it untouched — no rebuild, no cascade, and the new column
 #[test]
 fn the_issue_url_migration_leaves_existing_rows_alone() {
@@ -560,7 +520,6 @@ fn the_issue_url_migration_leaves_existing_rows_alone() {
              frontend's fallback reader finds it"
     );
     assert!(rows[0].why.starts_with("https://github.com/o/r/issues/1"));
-    decline_issue(&conn, "p1", "https://github.com/o/r/issues/1").unwrap();
     let fresh = create(
         &conn,
         "p1",

@@ -76,8 +76,8 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // room for (see autopilotSignal for the precedence). Until now enrollment was
   // only visible after selecting the agent and opening the Git tab, so a fleet
   // quietly working on itself looked identical to a fleet doing nothing. The map
-  // is selected whole — a stable reference, same as MissionControl's queue does —
-  // and the derivation runs outside the selector.
+  // is selected whole — a stable reference — and the derivation runs outside
+  // the selector.
   const autopilotStates = useAppStore((s) => s.autopilot);
   const autopilot = autopilotSignal(autopilotStates, agent.id);
   // Dev-server state for this checkout — orthogonal to the agent's turn status,

@@ -113,11 +113,6 @@ export interface UiSlice {
    *  restore the tab the user was on (e.g. Git) when they switch back to an
    *  agent, instead of always resetting to the first tab. In-memory only. */
   rightPanelTabs: Record<string, RightPanelTab>;
-  /** Mission Control dismissals: review-queue item id → the signal signature it
-   *  was dismissed at. The queue hides an item only while its live signature
-   *  still matches, so a dismissed item resurfaces when its signal changes.
-   *  Persisted in settings (`reviewDismissed`); hydrated on init. */
-  reviewDismissed: Record<string, string>;
   /** The user's keyboard rebindings (see `util/keymap.ts`), shortcut id →
    *  chords. Persisted whole in settings (`shortcutOverrides`); hydrated on
    *  init. An id absent here is on its defaults. */
@@ -188,10 +183,6 @@ export interface UiSlice {
   commitRoadmapBoardWidth: (w: number) => void;
   /** Remember the right-rail tab an agent was last viewing. */
   setRightPanelTab: (agentId: string, tab: RightPanelTab) => void;
-  /** Dismiss a Mission Control review-queue item at its current signal
-   *  signature; persists the mark so it survives reloads (until the signal
-   *  changes and the signature no longer matches). */
-  dismissReviewItem: (id: string, signature: string) => void;
   /** Rebind a global shortcut; persists the whole override map. */
   setShortcut: (id: string, combos: Combo[]) => void;
   /** Put one shortcut back on its defaults. */
@@ -225,7 +216,6 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   rightWidth: DEFAULT_RIGHT_WIDTH,
   roadmapBoardWidth: null,
   rightPanelTabs: {},
-  reviewDismissed: {},
   shortcutOverrides: {},
   admin: false,
 
@@ -367,15 +357,6 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   commitRoadmapBoardWidth: (w) => setSetting("roadmapBoardWidth", String(w)),
   setRightPanelTab: (agentId, tab) =>
     set((s) => ({ rightPanelTabs: { ...s.rightPanelTabs, [agentId]: tab } })),
-  dismissReviewItem: (id, signature) =>
-    set((s) => {
-      // No-op if the exact same mark is already stored — avoids a redundant DB
-      // write (and re-render) when a card is dismissed twice at one signature.
-      if (s.reviewDismissed[id] === signature) return s;
-      const reviewDismissed = { ...s.reviewDismissed, [id]: signature };
-      setSetting("reviewDismissed", reviewDismissed);
-      return { reviewDismissed };
-    }),
   setShortcut: (id, combos) =>
     set((s) => {
       const shortcutOverrides = { ...s.shortcutOverrides, [id]: combos };

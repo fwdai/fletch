@@ -1,6 +1,6 @@
 //! The per-project settings a client may read and write: the rows in
 //! `project_settings` that the host's own loops read (the turn-end verifier,
-//! the Run panel, the roadmap queue, the issue funnel), reached through one
+//! the Run panel, the roadmap queue, the Linear team), reached through one
 //! allowlisted op pair instead of the generic `db_*` bridge. The desktop's
 //! Tauri commands of the same names call these too, so a project page edits the
 //! host it is driving whether that is this Mac or a paired one.
@@ -25,7 +25,6 @@ const PROJECT_SETTING_KEYS: &[&str] = &[
     "roadmap.max_concurrent",
     "roadmap.settle_review",
     "roadmap.midrun_awareness",
-    "roadmap.declined_issues",
     "linear.team_id",
     "linear.team_name",
     // Both opt-out: absent is on, `"false"` is off (`context::project_flag`).
@@ -157,7 +156,6 @@ mod tests {
             "roadmap.max_concurrent",
             "roadmap.settle_review",
             "roadmap.midrun_awareness",
-            "roadmap.declined_issues",
             "linear.team_id",
             "linear.team_name",
             "context.enabled",

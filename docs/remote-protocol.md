@@ -1179,8 +1179,7 @@ it:
 | `roadmap.autoqueue` | the roadmap queue | `"1"` on; absent off |
 | `roadmap.max_concurrent` | the roadmap queue | an integer; absent is one |
 | `roadmap.settle_review`, `roadmap.midrun_awareness` | the PM's review | `"0"` off; absent on |
-| `roadmap.declined_issues` | the issue funnel | JSON array of issue URLs |
-| `linear.team_id`, `linear.team_name` | the issue inbox and picker | a Linear team id; its display name |
+| `linear.team_id`, `linear.team_name` | the composer's issue picker | a Linear team id; its display name |
 | `context.enabled`, `context.extract` | the context layer (its ops, instruction block, ingesters) and its background extractor | `"false"` off; absent on |
 | `sandbox.placement` | the spawn path, under the `auto` engine | `"host"` (this Mac), `"box"` (always a box, waiting for the image); absent is automatic, which runs a repository that builds a macOS or iOS app on this Mac |
 
