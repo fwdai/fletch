@@ -29,6 +29,8 @@ struct Fake {
     busy: Mutex<HashSet<String>>,
     in_flight: Mutex<HashSet<Key>>,
     reviewing: Mutex<HashSet<Key>>,
+    /// A review that starts on this checkout while its git is being read.
+    review_starts_during_read: Mutex<Option<Key>>,
     git: Mutex<HashMap<Key, GitState>>,
     pr: Mutex<HashMap<Key, PrLive>>,
     threads: Mutex<HashMap<Key, PrComments>>,
@@ -58,6 +60,9 @@ impl World for Fake {
 
     async fn git(&self, key: &Key) -> Option<GitState> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        if let Some(started) = self.review_starts_during_read.lock().take() {
+            self.reviewing.lock().insert(started);
+        }
         self.git.lock().get(key).cloned()
     }
 
@@ -382,6 +387,19 @@ async fn holds_a_fix_until_the_local_review_on_its_checkout_ends() {
     h.pass(NOW + 20_000).await;
     assert_eq!(h.dispatched().len(), 1);
     assert_eq!(h.dispatched()[0].0, reviewed);
+}
+
+#[tokio::test]
+async fn a_review_that_starts_during_the_reads_still_holds_the_fix() {
+    let h = Harness::new(vec![agent("aare", "p1", &["repo"])]);
+    let k = key("aare", None);
+    failing(&h.world, &k, "sha1");
+    *h.world.review_starts_during_read.lock() = Some(k.clone());
+
+    h.pass(NOW).await;
+
+    assert_eq!(h.world.reads.load(Ordering::SeqCst), 1, "it did read");
+    assert!(h.dispatched().is_empty());
 }
 
 // ── what a pass reads ──────────────────────────────────────────────────────

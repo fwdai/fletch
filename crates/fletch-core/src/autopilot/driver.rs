@@ -322,6 +322,8 @@ pub(crate) async fn run_pass<W: World>(
         } else {
             ReadinessInput::default()
         };
+        // The reads above can take seconds, and a review can start during them.
+        let reviewing = reviewing || world.review_running(&key);
         let base = readiness
             .git
             .as_ref()
