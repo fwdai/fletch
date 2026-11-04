@@ -4,14 +4,13 @@ import { SetGroup, SetHead } from "../primitives";
 import { BoxKnobs } from "./BoxKnobs";
 import { BoxSetupStatus } from "./BoxSetupStatus";
 import { EgressGlobal } from "./EgressGlobal";
-import { RunningVms } from "./RunningVms";
-import { SandboxComparison } from "./SandboxComparison";
 import { VmDetails } from "./VmDetails";
+import { VmList } from "./VmList";
 
-/** Settings › Sandbox: the Linux VM's resources, what is running and what it
- *  may reach, with setup shown only while it needs attention and the details
- *  tucked away. The macOS sandbox has nothing to set: its rules are fixed
- *  boundaries, so it appears only in the comparison. Nothing here chooses an engine:
+/** Settings › Sandbox: the Linux VM's resources, the VMs themselves and what
+ *  they may reach, with setup shown only while it needs attention and the
+ *  details tucked away. The macOS sandbox has nothing to set: its rules are
+ *  fixed boundaries. Nothing here chooses an engine:
  *  every new workspace runs in a Linux VM when one can boot, in the macOS
  *  sandbox otherwise; a project or a single workspace overrides that where
  *  the override is made (the project page, the composer). */
@@ -47,12 +46,9 @@ export function SandboxPane() {
       )}
 
       {runtimeOk && <BoxKnobs />}
-      {runtimeOk && <RunningVms />}
+      {runtimeOk && <VmList />}
       {runtimeOk && <EgressGlobal />}
-      <SetGroup last>
-        <VmDetails />
-        <SandboxComparison />
-      </SetGroup>
+      <VmDetails />
     </div>
   );
 }

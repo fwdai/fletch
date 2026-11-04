@@ -1,5 +1,5 @@
 import { useAppStore } from "@/store";
-import { SetDisclosure, SetRow } from "../primitives";
+import { SetDisclosure, SetGroup, SetRow } from "../primitives";
 import { boxSetup } from "./boxSetup";
 
 /** What is under the hood of a ready VM, for anyone who wants to look: the
@@ -14,13 +14,15 @@ export function VmDetails() {
   if (setup.state !== "ready") return null;
 
   return (
-    <SetDisclosure label="VM details">
-      <SetRow title="Includes" sub="Node 22, Python 3, git, build tools, headless Chromium." />
-      {setup.versions.map(({ label, version }) => (
-        <SetRow key={label} title={label}>
-          <span className="set-vm-version mono text-sm">{version}</span>
-        </SetRow>
-      ))}
-    </SetDisclosure>
+    <SetGroup last>
+      <SetDisclosure label="VM details">
+        <SetRow title="Includes" sub="Node 22, Python 3, git, build tools, headless Chromium." />
+        {setup.versions.map(({ label, version }) => (
+          <SetRow key={label} title={label}>
+            <span className="set-vm-version mono text-sm">{version}</span>
+          </SetRow>
+        ))}
+      </SetDisclosure>
+    </SetGroup>
   );
 }
