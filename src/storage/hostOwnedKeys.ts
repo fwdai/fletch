@@ -40,7 +40,6 @@ export const HOST_PROJECT_SETTING_KEYS = [
   "verify.on_turn_end",
   "run_env",
   "workflow.default",
-  "composer.mode",
   "roadmap.autoqueue",
   "roadmap.max_concurrent",
   "roadmap.settle_review",

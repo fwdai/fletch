@@ -442,8 +442,7 @@
   color: var(--fg-0);
   box-shadow: var(--shadow-1);
 }
-/* Customize section switch: icon + label per pill, like the new-agent page's
-   Agent | Workflow toggle. */
+/* Customize section switch: icon + label per pill. */
 .set-head-eyebrow-aside .set-seg button {
   display: inline-flex;
   align-items: center;

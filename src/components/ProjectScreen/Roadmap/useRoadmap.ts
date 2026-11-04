@@ -927,7 +927,7 @@ export function useRoadmap(repoPath: string) {
         const prompt = reviewFeedbackPrompt(item, threads);
         // Same emptiness the card's button reads, so the two can't disagree.
         if (!prompt) return;
-        const draftId = await createDraft(repoPath, prompt);
+        const draftId = await createDraft(repoPath, { seedPrompt: prompt });
         // `createDraft` already surfaced its own failure; don't double-report.
         if (!draftId) return;
         if (review.head_ref) updateDraft(draftId, { base: review.head_ref });

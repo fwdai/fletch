@@ -1,6 +1,5 @@
 // OverviewInspector.tsx — the inspector when nothing is selected: run-level
-// stats, a compact flow map, accent hue, run budgets, finalize actions, and the
-// promote-to-workflow launch card when the builder was opened from a session.
+// stats, a compact flow map, accent hue, run budgets, and finalize actions.
 
 import { Icon } from "../../../components/Icon";
 import { AgentAvatar } from "../AgentAvatar";
@@ -9,17 +8,6 @@ import type { BuilderCtx } from "../ctx";
 import type { EBlock, EditorState } from "../model";
 import { WF_HUES } from "../model";
 import { BudgetFields, Field, RUN_BUDGET_FIELDS } from "./bits";
-
-/** The promote-launch surface, threaded down from the builder. */
-export interface PromotePanel {
-  baseLabel: string;
-  task: string;
-  setTask: (t: string) => void;
-  canLaunch: boolean;
-  launching: boolean;
-  launchError: string | null;
-  onLaunch: () => void;
-}
 
 function countSteps(blocks: EBlock[]): number {
   let n = 0;
@@ -87,13 +75,11 @@ export function OverviewInspector({
   ctx,
   onField,
   formErrors,
-  promote,
 }: {
   state: EditorState;
   ctx: BuilderCtx;
   onField: (patch: Partial<EditorState>) => void;
   formErrors: string[];
-  promote?: PromotePanel;
 }) {
   const steps = countSteps(state.blocks);
   const loops = countLoops(state.blocks);
@@ -102,41 +88,6 @@ export function OverviewInspector({
   return (
     <>
       <ContainerErrors errors={formErrors.length ? formErrors : undefined} />
-
-      {promote && (
-        <div className="wb-promote">
-          <div className="wb-promote-head">
-            <Icon name="combine" size={13} style={{ color: "var(--accent)" }} />
-            <span>Launch this workflow now</span>
-            <span
-              className="wb-promote-base tip"
-              data-tip="Forks from the promoted session's commit"
-            >
-              base <span className="mono">{promote.baseLabel}</span>
-            </span>
-          </div>
-          <textarea
-            className="wb-insp-textarea sm"
-            placeholder="Task for the run…"
-            value={promote.task}
-            onChange={(e) => promote.setTask(e.target.value)}
-          />
-          {promote.launchError && <div className="wb-summary-err">{promote.launchError}</div>}
-          <div className="wb-promote-foot">
-            <span className="wb-promote-note">Or save it as a reusable workflow.</span>
-            <span className="grow" />
-            <button
-              className="btn-t primary"
-              disabled={!promote.canLaunch || promote.launching}
-              style={!promote.canLaunch || promote.launching ? { opacity: 0.5 } : undefined}
-              onClick={promote.onLaunch}
-            >
-              <Icon name={promote.launching ? "refresh" : "arrowUp"} size={13} />{" "}
-              {promote.launching ? "Launching…" : "Launch run"}
-            </button>
-          </div>
-        </div>
-      )}
 
       <div className="wb-stats">
         <div className="wb-stat">

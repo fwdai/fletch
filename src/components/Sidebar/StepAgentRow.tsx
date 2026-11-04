@@ -8,7 +8,7 @@ import type { StepChild } from "./stepChildren";
  *  (indented, quieter) but speaking the same status vocabulary as `AgentRow`.
  *  Clicking focuses that step's chat in the run monitor. Step agents are
  *  capability-restricted and owned by the run, so this row carries no
- *  stop/archive/promote actions — its lifecycle is the run's. */
+ *  stop/archive actions — its lifecycle is the run's. */
 export function StepAgentRow({ runId, child }: { runId: string; child: StepChild }) {
   const { agent, rail, working } = child;
   const selectRunStep = useAppStore((s) => s.selectRunStep);

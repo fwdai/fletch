@@ -2,17 +2,14 @@
 .empty-wrap {
   flex: 1;
   flex-direction: column;
-  /* Content is vertically centered. The mode switcher is pinned out of this
-     flow (.empty-modeswitch, below), so re-centering when the agent/workflow
-     content changes height never moves it. The top padding keeps the centered
-     content clear of the pinned switcher on shorter windows. */
+  /* Content is vertically centered; the padding keeps it off the pane's edges
+     on shorter windows. */
   justify-content: center;
   padding: 72px 40px 60px;
   position: relative;
 }
-/* The whole centered unit minus the switcher (identity + heading + composer +
-   pickers). A real box so it can carry the fade, re-triggered via `key={mode}`
-   on switch — the content cross-fades in place instead of snapping. */
+/* The whole centered unit (identity + heading + composer + pickers), as one
+   column. */
 .empty-body {
   display: flex;
   flex-direction: column;
@@ -145,22 +142,4 @@
 }
 .ws-type-menu .dd-item.active {
   color: var(--fg-0);
-}
-
-/* New-agent page: Agent | Workflow kickoff toggle. Pinned out of the centered
-   flow so it holds a fixed spot on the page while the content below re-centers
-   on mode switch. */
-.empty-modeswitch {
-  position: absolute;
-  top: 24px;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: center;
-  z-index: 1;
-}
-.empty-modeswitch .set-seg button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }

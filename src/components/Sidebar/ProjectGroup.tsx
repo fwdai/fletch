@@ -4,10 +4,10 @@ import { Icon } from "@/components/Icon";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
-import { useShortcutKeys } from "@/util/shortcuts";
 import { RunRow } from "@/workflows/run/RunRow";
 import { AgentRow } from "./AgentRow";
 import { foldAgents } from "./foldAgents";
+import { ProjectAddButton } from "./ProjectAddButton";
 
 interface Props {
   /** Project display name. */
@@ -64,10 +64,8 @@ export function ProjectGroup({
   const selectAgent = useAppStore((s) => s.selectAgent);
   const selectDraft = useAppStore((s) => s.selectDraft);
   const selectRun = useAppStore((s) => s.selectRun);
-  const createDraft = useAppStore((s) => s.createDraft);
   const openProjectScreen = useAppStore((s) => s.openProjectScreen);
   const roadmapGate = useGate("roadmap");
-  const newAgentKeys = useShortcutKeys("newAgent");
 
   const count = agents.length + drafts.length + runs.length;
 
@@ -85,11 +83,6 @@ export function ProjectGroup({
     [fold, agents, selectedAgentId, now],
   );
   const foldable = hidden.length > 0;
-
-  function onAddAgent(e: React.MouseEvent) {
-    e.stopPropagation();
-    createDraft(repoPath);
-  }
 
   function onOpenSettings(e: React.MouseEvent) {
     e.stopPropagation();
@@ -143,14 +136,7 @@ export function ProjectGroup({
             <Icon name="settings" size={14} />
           </button>
         )}
-        <button
-          className="padd tip"
-          data-tip={`New agent  ${newAgentKeys}`}
-          onClick={onAddAgent}
-          aria-label="New agent"
-        >
-          <Icon name="plus" size={11} />
-        </button>
+        <ProjectAddButton repoPath={repoPath} />
       </div>
 
       <div className={`agents ${open ? "" : "closed"}`}>

@@ -5,7 +5,7 @@ import { Icon } from "../../../components/Icon";
 import type { BuilderCtx } from "../ctx";
 import type { EBlock, EditorState } from "../model";
 import { LoopInspector, OrchestrateInspector, ParallelInspector } from "./ContainerInspectors";
-import { OverviewInspector, type PromotePanel } from "./OverviewInspector";
+import { OverviewInspector } from "./OverviewInspector";
 import { StepInspector } from "./StepInspector";
 
 function headerFor(selected: EBlock | null, state: EditorState, ctx: BuilderCtx) {
@@ -30,14 +30,12 @@ export function Inspector({
   ctx,
   onField,
   formErrors,
-  promote,
 }: {
   state: EditorState;
   selected: EBlock | null;
   ctx: BuilderCtx;
   onField: (patch: Partial<EditorState>) => void;
   formErrors: string[];
-  promote?: PromotePanel;
 }) {
   const head = headerFor(selected, state, ctx);
 
@@ -58,13 +56,7 @@ export function Inspector({
       </div>
       <div className="wb-insp-body" key={selected?.nid ?? "overview"}>
         {!selected && (
-          <OverviewInspector
-            state={state}
-            ctx={ctx}
-            onField={onField}
-            formErrors={formErrors}
-            promote={promote}
-          />
+          <OverviewInspector state={state} ctx={ctx} onField={onField} formErrors={formErrors} />
         )}
         {selected?.kind === "step" && <StepInspector step={selected} ctx={ctx} />}
         {selected?.kind === "parallel" && <ParallelInspector block={selected} ctx={ctx} />}

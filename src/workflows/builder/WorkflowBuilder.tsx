@@ -10,7 +10,6 @@ import { Icon } from "../../components/Icon";
 import type { ModelMeta } from "../../data/modelCatalog/types";
 import type { CustomAgent } from "../../storage/customAgents";
 import { resolveAlias } from "../shared";
-import type { Spec } from "../spec";
 import { BlockSequence } from "./blocks/BlockSequence";
 import type { BuilderCtx, Pop, PopRect } from "./ctx";
 import {
@@ -29,21 +28,8 @@ import {
 import { useDismissOnViewportChange } from "./hooks";
 import { Inspector } from "./inspector";
 import type { EditorState, NodeId } from "./model";
-import { newStep, toSpec, validateEditor } from "./model";
+import { newStep, validateEditor } from "./model";
 import { AgentPick } from "./pickers";
-
-/** Launch context threaded in when the builder was opened by "promote to
- *  workflow": the run's fork point + brief ride alongside the definition so the
- *  user can launch straight from the builder, no re-typing. */
-export interface PromoteLaunch {
-  /** Prefilled run task (the promoted session's brief). */
-  taskSeed: string;
-  /** Human label for the fork point (short SHA or branch). */
-  baseLabel: string;
-  launching: boolean;
-  launchError: string | null;
-  onLaunch: (spec: Spec, task: string) => void;
-}
 
 function rectFrom(e: React.MouseEvent): PopRect {
   const r = e.currentTarget.getBoundingClientRect();
@@ -59,7 +45,6 @@ export function WorkflowBuilder({
   saveError,
   onCancel,
   onSave,
-  promote,
 }: {
   initial: EditorState;
   isNew: boolean;
@@ -69,11 +54,9 @@ export function WorkflowBuilder({
   saveError: string | null;
   onCancel: () => void;
   onSave: (state: EditorState) => void;
-  promote?: PromoteLaunch;
 }) {
   const [state, setState] = useState<EditorState>(initial);
   const [sel, setSel] = useState<NodeId | null>(null);
-  const [launchTask, setLaunchTask] = useState(promote?.taskSeed ?? "");
   const [pop, setPop] = useState<Pop | null>(null);
   const closePop = () => setPop(null);
   useDismissOnViewportChange(!!pop, closePop);
@@ -164,22 +147,6 @@ export function WorkflowBuilder({
             ctx={ctx}
             onField={onField}
             formErrors={validation.form}
-            promote={
-              promote
-                ? {
-                    baseLabel: promote.baseLabel,
-                    task: launchTask,
-                    setTask: setLaunchTask,
-                    canLaunch: validation.ok && !!launchTask.trim(),
-                    launching: promote.launching,
-                    launchError: promote.launchError,
-                    onLaunch: () =>
-                      validation.ok &&
-                      launchTask.trim() &&
-                      promote.onLaunch(toSpec(state), launchTask.trim()),
-                  }
-                : undefined
-            }
           />
         </div>
 

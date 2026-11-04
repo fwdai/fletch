@@ -13,11 +13,6 @@ import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { activeEntry, useGate } from "@/store/capabilities";
 import { workspaceTypeOptionsFor } from "@/store/workspaceTypes";
-import {
-  type ComposerMode,
-  loadPipelinePrefs,
-  rememberComposerMode,
-} from "@/workflows/run/projectPipeline";
 import { WorkflowComposer, WorkflowHeading } from "@/workflows/run/WorkflowComposer";
 import { creationNote } from "./creationNote";
 
@@ -57,8 +52,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   }, [projectRefs, draft.repoPath]);
   const runLocalCommand = useAppStore((s) => s.runLocalCommand);
 
-  // The project this draft targets — keys the remembered composer mode + default
-  // workflow (per-project `project_settings`).
+  // The project this draft targets — keys its Linear team and default workflow
+  // (per-project `project_settings`).
   const projectId = useMemo(
     () => projectRefs.find((r) => r.path === draft.repoPath)?.project_id ?? "",
     [projectRefs, draft.repoPath],
@@ -81,38 +76,11 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
     };
   }, [projectId]);
 
-  // Kickoff mode: a quick single agent, or a multi-step pipeline. The toggle
-  // sits at the top of the page and swaps the whole block — it never gates the
-  // quick path. It defaults to the project's remembered choice (a suggestion),
-  // and remembers a change for next time. The remembered mode loads async — a
-  // pick made before it resolves wins (the load must never flip the toggle
-  // back under the user's cursor); a project switch re-arms the default.
-  const [mode, setMode] = useState<ComposerMode>("agent");
-  const [defaultWorkflowId, setDefaultWorkflowId] = useState<string | null>(null);
-  const modePicked = useRef(false);
-  useEffect(() => {
-    modePicked.current = false;
-    let cancelled = false;
-    void loadPipelinePrefs(projectId).then((prefs) => {
-      if (cancelled) return;
-      if (!modePicked.current) setMode(prefs.mode);
-      setDefaultWorkflowId(prefs.defaultWorkflowId);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
-  const pickMode = (next: ComposerMode) => {
-    modePicked.current = true;
-    setMode(next);
-    rememberComposerMode(projectId, next);
-  };
   // A host answers no `wf_*` op (docs/multi-host-plan.md §5.3, item 2), so on a
-  // remote environment the pipeline half of this page does not exist: the
-  // toggle is dropped and the quick-agent path — which is all a host can run —
-  // is the whole page, whatever the project remembered.
+  // remote environment a workflow draft gets the quick-agent page — which is
+  // all a host can run.
   const workflowGate = useGate("workflows");
-  const workflowMode = mode === "workflow" && !workflowGate;
+  const workflowMode = draft.kind === "workflow" && !workflowGate;
   // The workspace type is offered only for an agent on this Mac: a paired
   // host's spawn carries no workspace type yet. `spawnFromDraft` sends what
   // the chip declares on the same rule.
@@ -154,30 +122,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
       </div>
 
       <div className="empty-wrap flex-center fade-in">
-        {!workflowGate && (
-          <div className="empty-modeswitch">
-            <div className="set-seg">
-              <button
-                className={mode === "agent" ? "active" : ""}
-                onClick={() => pickMode("agent")}
-              >
-                <Icon name="bot" size={13} /> Agent
-              </button>
-              <button
-                className={mode === "workflow" ? "active" : ""}
-                onClick={() => pickMode("workflow")}
-              >
-                <Icon name="combine" size={13} /> Workflow
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Everything but the switcher — identity, the mode-variable heading +
-            composer, and the pickers — centered as one unit and keyed by mode so
-            switching cross-fades it in place. The switcher is pinned separately
-            (it never moves regardless of this block's height). */}
-        <div className="empty-body fade-in" key={mode}>
+        <div className="empty-body fade-in">
           <div className="empty-id flex-center">
             <div className="empty-mark flex-center text-xs">
               <span className="d" />
@@ -228,8 +173,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 baseBranch={draft.base}
                 name={draft.name}
                 projectId={projectId}
-                defaultWorkflowId={defaultWorkflowId}
-                issueRef={draft.issueRef}
+                onLaunched={() => removeDraft(draft.id)}
               />
             ) : (
               <Composer

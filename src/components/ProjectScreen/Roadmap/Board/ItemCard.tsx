@@ -473,7 +473,10 @@ export function ItemCard({
                     // once an agent exists, and a draft's first send is what
                     // spawns one (see `spawnFromDraft`). A draft the user
                     // abandons therefore stamps nothing.
-                    const draftId = await createDraft(repoPath, briefFor(item), item.item.id);
+                    const draftId = await createDraft(repoPath, {
+                      seedPrompt: briefFor(item),
+                      roadmapItemId: item.item.id,
+                    });
                     // The draft lives in the workspace, which this page covers —
                     // but stay put if it couldn't be created, so the user isn't
                     // dropped somewhere else to read the error.

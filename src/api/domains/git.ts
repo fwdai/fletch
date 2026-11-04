@@ -14,9 +14,6 @@ export const gitApi = {
    *  profile is set. Local whatever environment is active: it is who the
    *  user is, not who a host is. */
   gitIdentity: () => invokeLocal<GitIdentity>("git_identity"),
-  /** The current HEAD commit SHA of an agent's checkout (primary repo). The
-   *  fork point for "promote to workflow". */
-  agentHeadSha: (agentId: string) => invoke<string>("agent_head_sha", { agentId }),
   // Git/PR commands below take an optional `subdir` (a checkout's directory
   // name from `TrackedRepo.subdir`) to target one repo of a multi-repo agent.
   // Omitted/undefined serializes to None = the agent's primary (first) repo.

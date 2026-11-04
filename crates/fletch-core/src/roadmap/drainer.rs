@@ -764,7 +764,6 @@ async fn dispatch(
             repo_path,
             Some(definition_id),
             None,
-            None,
             Vec::new(),
             None,
             Some(item.id.clone()),

@@ -1,16 +1,14 @@
-//! Misc app-level handlers: workspace snapshot, log/editor launchers,
-//! and an agent's HEAD sha.
+//! Misc app-level handlers: workspace snapshot and log/editor launchers.
 
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
 
 use crate::error::{Error, Result};
-use crate::git;
 use crate::supervisor::Supervisor;
 use crate::workspace::{AgentRecord, Workspace};
 
-use super::files::{agent_repo_checkout, primary_repo_checkout};
+use super::files::primary_repo_checkout;
 
 #[tauri::command]
 pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace> {
@@ -124,17 +122,4 @@ pub async fn open_in_editor(
     })
     .await
     .map_err(|e| Error::Other(format!("open in editor: {e}")))?
-}
-
-/// The current HEAD commit SHA of an agent's checkout (primary repo when
-/// `subdir` is omitted). Powers "promote to workflow", where the run forks from
-/// the promoted session's exact working commit rather than a branch tip.
-#[tauri::command]
-pub async fn agent_head_sha(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    subdir: Option<String>,
-) -> Result<String> {
-    let (_repo, checkout, _hold) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    git::rev_parse(&checkout, "HEAD").await
 }

@@ -10,7 +10,7 @@
 // snapshot (plus any @-staged attachments) and returns the run id, which the
 // monitor (RunView) then observes.
 
-import { type CSSProperties, Fragment, useRef, useState } from "react";
+import { type CSSProperties, Fragment, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { ComposerFrame } from "../../components/Composer/ComposerFrame";
 import { PrimaryControl } from "../../components/Composer/PrimaryControl";
@@ -22,7 +22,7 @@ import { useAppStore } from "../../store";
 import { AgentAvatar } from "../builder/AgentAvatar";
 import { resolveAlias } from "../shared";
 import type { Definition, Spec } from "../spec";
-import { rememberDefaultWorkflow } from "./projectPipeline";
+import { loadDefaultWorkflowId, rememberDefaultWorkflow } from "./projectPipeline";
 import { flattenSteps } from "./RunView/flatten";
 import { useDefinitions } from "./useDefinitions";
 
@@ -33,15 +33,13 @@ export interface ComposerContext {
   repoPath: string;
   baseBranch: string;
   name: string;
-  /** Project id for per-project prefs (remembering the picked default flow). */
+  /** Project id keying the project's default workflow: preselected when the
+   *  user hasn't picked another this session, and remembered on a pick. */
   projectId?: string;
-  /** The project's remembered default workflow — preselected when the user
-   *  hasn't picked another this session. */
-  defaultWorkflowId?: string | null;
-  /** GitHub issue number (as text) this launch was started from (Home inbox
-   *  "Start work" → Pipeline). Threaded onto the run so its finalized PR
-   *  closes the issue. Undefined for a normal launch. */
-  issueRef?: string;
+  /** Called once a run has launched, before it is selected: the draft that
+   *  hosted this composer is spent, the same way a sent first message spends
+   *  an agent draft. */
+  onLaunched?: () => void;
 }
 
 /** Heading slot for the workflow mode — replaces the agent's title/subtitle on
@@ -57,13 +55,7 @@ export function WorkflowHeading() {
   );
 }
 
-export function WorkflowComposer({
-  repoPath,
-  baseBranch,
-  projectId,
-  defaultWorkflowId,
-  issueRef,
-}: ComposerContext) {
+export function WorkflowComposer({ repoPath, baseBranch, projectId, onLaunched }: ComposerContext) {
   const selectRun = useAppStore((s) => s.selectRun);
   const setLastError = useAppStore((s) => s.setLastError);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
@@ -75,6 +67,17 @@ export function WorkflowComposer({
   // (which may load async) leads, falling back to the first definition.
   const [defId, setDefId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [defaultWorkflowId, setDefaultWorkflowId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setDefaultWorkflowId(null);
+    void loadDefaultWorkflowId(projectId ?? "").then((id) => {
+      if (!cancelled) setDefaultWorkflowId(id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   const preferredId = defId || defaultWorkflowId || "";
   const def = definitions.find((d) => d.id === preferredId) ?? definitions[0];
@@ -123,9 +126,8 @@ export function WorkflowComposer({
         def.id,
         baseBranch || undefined,
         input.attachments,
-        undefined,
-        issueRef,
       );
+      onLaunched?.();
       selectRun(runId);
     } catch (e) {
       setLastError(`Failed to launch workflow: ${e}`);
