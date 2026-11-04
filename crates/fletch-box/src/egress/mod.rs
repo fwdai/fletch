@@ -47,6 +47,11 @@ pub const MAX_HELD_HOSTS: usize = 4;
 pub enum Mode {
     /// Let it through on an allowed port, telemetry included.
     Open,
+    /// [`Mode::Open`] by a standing override of the engine's rather than the
+    /// policy itself: a host it admits is reported as [`Admission::Override`],
+    /// so the record tells the two apart however the mode changes while the
+    /// tunnel is up.
+    Override,
     /// Hold the connection and emit [`EgressEvent::Held`] until the policy
     /// changes, the host is declined, or [`HOLD_TIMEOUT`] passes. Hosts on
     /// the [`QUIET`] list are refused at once instead: nothing needs them.
@@ -55,13 +60,16 @@ pub enum Mode {
     Refuse,
 }
 
-/// Why a tunnel was opened, for the record the engine keeps.
+/// Why a tunnel was opened, decided as it was admitted and reported with it
+/// when it closes, for the record the engine keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Admission {
     /// The host is on the allow-list.
     Listed,
     /// The mode was [`Mode::Open`] and the host was not on the list.
     Open,
+    /// The mode was [`Mode::Override`] and the host was not on the list.
+    Override,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,6 +316,7 @@ fn decide(shared: &Shared, host: &str, port: u16) -> Verdict {
         Err(Denial::Port) => Verdict::Refuse(Denial::Port),
         Err(Denial::Host) => match shared.mode() {
             Mode::Open => Verdict::Allow(Admission::Open),
+            Mode::Override => Verdict::Allow(Admission::Override),
             Mode::Refuse => Verdict::Refuse(Denial::Host),
             Mode::Hold if is_quiet(host) || shared.is_declined(host) => {
                 Verdict::Refuse(Denial::Host)
@@ -411,7 +420,14 @@ async fn serve(mut client: UnixStream, shared: Arc<Shared>, on_event: OnEvent) {
 /// `None` when the host was declined, the mode stopped holding, the proxy
 /// went away, or the hold's deadline passed. The hold is announced once per
 /// host, by the first connection to join it.
+///
+/// The subscription comes first and the policy is checked again before the
+/// first wait: a change that lands between the caller's decision and the
+/// subscription is seen by that check, and one that lands after it wakes the
+/// wait, so no update is ever missed. An answer given from inside the `Held`
+/// callback itself resolves the hold too.
 async fn hold(shared: &Shared, on_event: &OnEvent, host: &str, port: u16) -> Option<Admission> {
+    let mut generation = shared.generation.subscribe();
     let (since, first) = shared.join_hold(host)?;
     if first {
         on_event(EgressEvent::Held {
@@ -420,16 +436,17 @@ async fn hold(shared: &Shared, on_event: &OnEvent, host: &str, port: u16) -> Opt
         });
     }
     let deadline = since + shared.hold_timeout;
-    let mut generation = shared.generation.subscribe();
     let admitted = loop {
+        match decide(shared, host, port) {
+            Verdict::Allow(admission) => break Some(admission),
+            Verdict::Refuse(_) => break None,
+            Verdict::Hold => {}
+        }
         match tokio::time::timeout_at(deadline.into(), generation.changed()).await {
-            // The proxy was dropped: nothing will ever admit this host.
+            Ok(Ok(())) => continue,
+            // The proxy was dropped, or the deadline passed: nothing will
+            // admit this host now.
             Ok(Err(_)) | Err(_) => break None,
-            Ok(Ok(())) => match decide(shared, host, port) {
-                Verdict::Allow(admission) => break Some(admission),
-                Verdict::Refuse(_) => break None,
-                Verdict::Hold => continue,
-            },
         }
     };
     shared.leave_hold(host);
@@ -893,6 +910,90 @@ mod tests {
             let (_c, reply) = handle.await.unwrap();
             assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
         }
+    }
+
+    /// An answer that lands while the hold is being set up — here from inside
+    /// the `Held` callback itself, before the old code subscribed — is not
+    /// missed: the connection is admitted at once, not at the deadline.
+    #[tokio::test]
+    async fn an_answer_during_the_held_callback_is_not_missed() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = echo_upstream(1).await;
+        let mut policy = EgressPolicy::new(["other.test"]).unwrap();
+        policy.ports = vec![port];
+        let (tx, mut events) = mpsc::unbounded_channel();
+        let shared: Arc<std::sync::OnceLock<Arc<Shared>>> = Arc::default();
+        let proxy = {
+            let shared = shared.clone();
+            EgressProxy::start_with_timeout(
+                &dir.path().join("egress.sock"),
+                policy,
+                Mode::Hold,
+                Duration::from_secs(5),
+                move |e| {
+                    if let EgressEvent::Held { host, .. } = &e {
+                        // Allow it right here, inside the window.
+                        let shared = shared.get().unwrap();
+                        shared
+                            .policy
+                            .write()
+                            .unwrap()
+                            .allow
+                            .push(host.parse().unwrap());
+                        shared.bump();
+                    }
+                    let _ = tx.send(e);
+                },
+            )
+            .unwrap()
+        };
+        shared.set(proxy.shared.clone()).ok().unwrap();
+
+        let started = Instant::now();
+        let (mut client, reply) = request(proxy.socket(), &connect_head(port)).await;
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "admitted by the answer, not by the deadline"
+        );
+        ping(&mut client).await;
+        drop(client);
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            EgressEvent::Held { .. }
+        ));
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            EgressEvent::Allowed {
+                admission: Admission::Listed,
+                ..
+            }
+        ));
+    }
+
+    /// How a tunnel was admitted is decided as it opens and reported as such
+    /// when it closes, whatever the mode became in between.
+    #[tokio::test]
+    async fn an_override_admission_survives_a_mode_change_while_the_tunnel_is_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = echo_upstream(1).await;
+        let mut policy = EgressPolicy::new(["other.test"]).unwrap();
+        policy.ports = vec![port];
+        let (proxy, mut events) = start(dir.path(), policy.clone(), Mode::Override).await;
+
+        let (mut client, reply) = request(proxy.socket(), &connect_head(port)).await;
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        // The override ends while the tunnel is up.
+        proxy.update(policy, Mode::Open);
+        ping(&mut client).await;
+        drop(client);
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            EgressEvent::Allowed {
+                admission: Admission::Override,
+                ..
+            }
+        ));
     }
 
     #[test]
