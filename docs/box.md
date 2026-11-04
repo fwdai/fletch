@@ -37,8 +37,8 @@ the disk is aboard at the box's next start.
 
 | Image | Content | Packed |
 | --- | --- | ---: |
-| `base.erofs` | Debian trixie minbase, bash, git, ssh, curl/jq/rg, Node 22, the shared libraries any Chromium needs, a small font set, `fletch-guest` | ~160 MB |
-| `layer-devtools.erofs` | build-essential, pkg-config, python3 + pip + venv, Node headers. On by default | ~115 MB |
+| `base.erofs` | Debian trixie minbase, bash, git, ssh, curl/jq/rg, Node 22 with corepack enabled (`pnpm` and `yarn` run the version a project's `packageManager` names, fetched on first use), the shared libraries any Chromium needs, a small font set, `fletch-guest` | ~160 MB |
+| `layer-devtools.erofs` | build-essential, pkg-config, python3 + pip + venv, Node headers, Bun. On by default | ~170 MB |
 | `layer-browser.erofs` | Debian `chromium-headless-shell`, `fonts-noto-core`. Off by default; Playwright projects download their own browser and need only the base | ~165 MB |
 
 The layers are the file-level delta between the base and the base with their
@@ -123,25 +123,35 @@ the project's toolchain cache in the guest, the project's shared Run env and
 the pinned `PORT`.
 
 The command is project code run the moment the user clicks ▶, so it gets the
-view the host's Run profile gives such code (`boxes::run::run_view`): the
-agent's home read-only whole, so the provider's state (a hook, an MCP
-config, a plugin the agent would run) stays as the agent left it, with the
-checkout, the project's toolchain cache and the scratch and toolchain dirs a
-build writes outside its tree (`~/.cache`, `~/.config`, `~/.local`, `~/.npm`,
-`~/.cargo`, …, made before the launch) given back. Provider state that lies
-inside those carve-outs — opencode's `~/.config/opencode` and
+view the host's Run profile gives such code (`boxes::run::run_view`):
+everything the box mounts of the user's read-only whole — the agent's home,
+so the provider's state (a hook, an MCP config, a plugin the agent would
+run) stays as the agent left it; the agent's writable root and mailbox; and
+every folder the user shared with the agent writable, which the host's Run
+profile grants no more than this view does — with the checkout, the
+project's toolchain cache and the scratch and toolchain dirs a build writes
+outside its tree (`~/.cache`, `~/.config`, `~/.local`, `~/.npm`, `~/.cargo`,
+…, made before the launch) given back. Provider state that lies inside
+those carve-outs — opencode's `~/.config/opencode` and
 `~/.local/share/opencode`, as every adapter's `shared_state` names it — is a
 private copy-on-write view, as a confined tenant gets it, with its stores
 under `<agent root>/.fletch-cow/run-<launch>/`, removed with the launch: a
 toolchain writes where it likes there, while nothing a project script
 writes reaches what a provider runs or reads. A state dir that cannot be
-made takes its carve-out down with it. The confined view also hides
-`/data`, where every launch's env file lies, the agent's own with its
-access token among them. A guest that cannot confine the command (an image
-before 0.3.1) refuses the run. Not hidden: a credential file a provider
-keeps in the home for the agent's launch (codex's launch `auth.json`), which
-the Run reads as any process the agent itself starts does; hiding those
-needs a guest option that does not exist yet.
+made, or that holds a mount, takes its carve-out down with it. The confined
+view also hides `/data`, where every launch's env file lies, the agent's own
+with its access token among them. A guest that cannot confine the command
+(an image before 0.3.1) refuses the run; so does a command whose program the
+guest cannot find, by its name, before the box is used for it: the image
+carries Node with npm, pnpm and yarn through corepack (the version a
+project's `packageManager` names, fetched on first use through the egress
+proxy) and Bun in the devtools layer, while a `cargo run` or `bundle exec`
+the detection emits names a toolchain to install in the VM first. What a
+refused launch had made in the guest (its stores, its env file) goes with
+it. Not hidden: a credential file a provider keeps in the home for the
+agent's launch (codex's launch `auth.json`), which the Run reads as any
+process the agent itself starts does; hiding those needs a guest option
+that does not exist yet.
 
 Ports: the dev server binds its own port inside the guest, whose loopback is
 the VM's alone, so two workspaces on port 3000 never clash there; a port
@@ -153,10 +163,12 @@ of its own (`Channel::forward`): a forward requested through the box's
 shared master would outlive the client that asked for it, while this one
 ends with the launch, and with the guest. sshd connects to `localhost` in
 the guest, so a server bound to `127.0.0.1`, `::1` or every address is
-reached. The panel's link and the sidebar show the host port
-(`host_port` on `run:port` and the run snapshot); the agent's `app_status`
-reports the guest port as `port`, which is where the agent is, and the host
-port beside it to tell the user. A VM stopped or killed under a running
+reached. The panel's link and the sidebar show the host port: `port` on
+`run:port` and the run snapshot, the port this Mac reaches as the field has
+always meant (a client from before boxes reads nothing else), with the
+guest's beside it as `guest_port`; the agent's `app_status` reports the
+guest port as `port`, which is where the agent is, and the host port beside
+it to tell the user. A VM stopped or killed under a running
 command ends its ssh session, which the panel reports as the command's
 exit; a tools-disk reattach is refused while the command holds the box, as
 for any attached launch.
@@ -201,7 +213,7 @@ app release workflow refuses to ship a pin whose release is missing files
 | **Box image** (`box-image.yml`) | PR touching `packaging/box-image`, `crates/fletch-guest` | Per architecture: checks VERSION is unreleased or released from these inputs; builds and tests; uploads the images as an artifact; publishes nothing |
 | | Push to `main` touching them | Same, then publishes `box-image-v<VERSION>` and `box-image-v<VERSION>-x86_64`; each a no-op when its release with these inputs exists |
 | | Run workflow | Same on any branch; `publish` to publish from a branch before merging (so the pin never names a missing release) |
-| **Box image bump** (`box-image-bump.yml`) | The 1st of each month, 06:00 UTC, or by hand | `bump.sh`: newest Debian snapshot and Node 22 release, VERSION patch bump, app pin bump, committed and pushed on `chore/box-image-bump`. Builds and tests that commit on both architectures. Tests green: publishes that architecture's release. Either way opens or refreshes the PR with both reports. Merge it to adopt (main's publish then finds the releases in place); close it to skip |
+| **Box image bump** (`box-image-bump.yml`) | The 1st of each month, 06:00 UTC, or by hand | `bump.sh`: newest Debian snapshot, Node 22 and Bun releases, VERSION patch bump, app pin bump, committed and pushed on `chore/box-image-bump`. Builds and tests that commit on both architectures. Tests green: publishes that architecture's release. Either way opens or refreshes the PR with both reports. Merge it to adopt (main's publish then finds the releases in place); close it to skip |
 
 Both run `.github/actions/box-image`, which runs `build-docker.sh --test`, the
 same build as on a Mac: fletch-guest cross-build, `build.sh` in a privileged

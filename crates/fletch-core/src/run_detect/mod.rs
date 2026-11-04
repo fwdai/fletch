@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use crate::exec::Executor;
 
+pub(crate) mod command;
 mod go;
 mod node;
 mod php;

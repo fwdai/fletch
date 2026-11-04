@@ -1665,6 +1665,14 @@ pub fn guest_env(provider: &str, home: &Path) -> Vec<(String, String)> {
         ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
         ("no_proxy".into(), "127.0.0.1,localhost".into()),
         ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+        // Node's own `fetch` takes the proxy from the env only when told to;
+        // a box has no other way out (no DNS in the guest), and corepack —
+        // the image's pnpm and yarn — downloads through nothing else.
+        ("NODE_USE_ENV_PROXY".into(), "1".into()),
+        // Corepack's shims ask on a tty before they download the version a
+        // project pins; nothing in a box answers a prompt (the Run panel's
+        // tty least of all), and the image put the shims there to download.
+        ("COREPACK_ENABLE_DOWNLOAD_PROMPT".into(), "0".into()),
     ]
 }
 

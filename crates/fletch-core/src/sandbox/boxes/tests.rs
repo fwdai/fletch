@@ -546,6 +546,144 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
             "[{name}] a Run's stores outlived it"
         );
     }
+    // A command whose program the guest lacks is refused by name before
+    // anything runs, and leaves nothing behind: no stores, no env file, no
+    // hold on the box.
+    let up = &ups[0];
+    let channel = registry.channel_for_running(&up.agent_id).unwrap();
+    let count = |script: &str, arg: &str| -> String {
+        let out = super::executor::run(&channel, &["sh", "-c", script, "sh", arg], None).unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let cow = up.identity.writable_root.join(super::COW_DIR);
+    let cow = cow.to_string_lossy().into_owned();
+    let env_files = count(
+        "ls \"$1\" 2>/dev/null | wc -l",
+        fletch_box::guest::ENV_FILE_DIR,
+    );
+    let guest = GuestRun::open(&up.tree)
+        .unwrap()
+        .expect("the tree is in a box");
+    let err = guest
+        .launch(&up.tree, "no-such-program-for-fletch --version", &[])
+        .err()
+        .expect("a program the guest lacks is refused");
+    eprintln!("refused: {err}");
+    assert!(
+        err.to_string()
+            .contains("`no-such-program-for-fletch` is not installed in the Linux VM"),
+        "{err}"
+    );
+    assert_eq!(
+        count("ls -d \"$1\"/run-* 2>/dev/null | wc -l", &cow),
+        "0",
+        "a refused launch's stores outlived it"
+    );
+    assert_eq!(
+        count(
+            "ls \"$1\" 2>/dev/null | wc -l",
+            fletch_box::guest::ENV_FILE_DIR
+        ),
+        env_files,
+        "a refused launch's env file outlived it"
+    );
+    assert!(
+        registry.nothing_attached(&up.agent_id),
+        "a refused launch released the box"
+    );
+
+    // A pnpm project as detection names it — `pnpm dev`, the version its
+    // package.json pins — runs on an image with corepack's shims, the
+    // manager fetched through the egress proxy; an older image refuses it by
+    // name.
+    let has_pnpm = super::executor::run(&channel, &["test", "-L", "/usr/local/bin/pnpm"], None)
+        .unwrap()
+        .status
+        .success();
+    let tree = &up.tree;
+    super::executor::put(
+        &channel,
+        br#"{"name":"t","packageManager":"pnpm@10.0.0","scripts":{"dev":"node server.js"}}"#,
+        &tree.join("package.json"),
+        0o644,
+    )
+    .unwrap();
+    super::executor::put(
+        &channel,
+        b"require('http').createServer((q, s) => s.end('ua=' + process.env.npm_config_user_agent))\
+          .listen(process.env.PORT, '127.0.0.1', () => console.log('listening ' + process.env.PORT))\n",
+        &tree.join("server.js"),
+        0o644,
+    )
+    .unwrap();
+    let mut guest = GuestRun::open(tree).unwrap().unwrap();
+    let port = guest.free_port(GUEST_PORT, 30).unwrap().unwrap();
+    let host_port = guest.forward(port, 30).unwrap();
+    let env = [("PORT".to_string(), port.to_string())];
+    match guest.launch(tree, "pnpm dev", &env) {
+        Err(e) if !has_pnpm => {
+            eprintln!("image without corepack's shims, pnpm dev refused: {e}");
+            assert!(e.to_string().contains("`pnpm` is not installed"), "{e}");
+        }
+        Err(e) => panic!("pnpm dev refused on an image with corepack's shims: {e}"),
+        Ok((program, args, kill)) => {
+            assert!(has_pnpm, "pnpm dev ran on an image without corepack's shim");
+            let (out_tx, out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+            let pty = KillGuard::new(kill)
+                .start(|kill| {
+                    PtySession::spawn(
+                        PtySpawn {
+                            program: &program,
+                            args: &args,
+                            cwd: tree,
+                            env: &[],
+                            cols: 120,
+                            rows: 32,
+                            env_remove: &[],
+                            kill_plan: kill,
+                            after_exit: None,
+                        },
+                        move |bytes| {
+                            let _ = out_tx.send(bytes);
+                        },
+                        |_| {},
+                    )
+                })
+                .unwrap();
+            let mut seen = Vec::new();
+            let t0 = Instant::now();
+            let deadline = t0 + Duration::from_secs(180);
+            while !String::from_utf8_lossy(&seen).contains("listening") {
+                assert!(
+                    Instant::now() < deadline,
+                    "pnpm dev never listened: {}",
+                    String::from_utf8_lossy(&seen)
+                );
+                if let Ok(bytes) = out_rx.recv_timeout(Duration::from_millis(200)) {
+                    seen.extend(bytes);
+                }
+            }
+            eprintln!("pnpm dev listening after {:.2?}", t0.elapsed());
+            let body = fetch(host_port);
+            eprintln!("pnpm dev answered on localhost:{host_port}: {body:?}");
+            assert!(body.contains("ua=pnpm/10.0.0"), "{body}");
+            pty.kill().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while std::net::TcpListener::bind(("127.0.0.1", host_port)).is_err() {
+                assert!(
+                    Instant::now() < deadline,
+                    "host port {host_port} still taken"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert_eq!(
+                count("ls -d \"$1\"/run-* 2>/dev/null | wc -l", &cow),
+                "0",
+                "the pnpm run's stores outlived it"
+            );
+        }
+    }
+
     for up in ups {
         registry.discard(&up.agent_id).await.unwrap();
         let _ = std::fs::remove_dir_all(&up.identity.writable_root);

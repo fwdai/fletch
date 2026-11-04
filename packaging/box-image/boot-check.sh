@@ -45,7 +45,7 @@ ssh_() { fletch-box ssh "$ID" -- "$@"; }
 echo "== layer mounts"
 ssh_ sh -c 'mount | grep -E " type (erofs|overlay) "'
 echo "== devtools and browser through the overlay"
-ssh_ sh -c 'gcc --version | head -1; python3 --version; chromium-headless-shell --version 2>/dev/null | head -1; node -v; ls /usr/local/include/node/node_api.h'
+ssh_ sh -c 'gcc --version | head -1; python3 --version; chromium-headless-shell --version 2>/dev/null | head -1; node -v; corepack --version; readlink /usr/local/bin/pnpm; bun --version; ls /usr/local/include/node/node_api.h'
 echo "== headless screenshot in the guest"
 ssh_ sh -c 'cd /tmp && chromium-headless-shell --no-sandbox --disable-dev-shm-usage --screenshot=/tmp/s.png --window-size=400,200 about:blank 2>/dev/null; ls -la /tmp/s.png'
 echo "== memory after boot"

@@ -106,9 +106,9 @@ impl Supervisor {
         // Emit the resolved port *before* the state flips to running, so the
         // store already holds the correct port when the UI reacts to
         // `run:state` — otherwise the link/label briefly shows the old port.
-        session.set_ports(prepared.port, prepared.port);
+        session.set_ports(prepared.port, None);
         if let Some(port) = prepared.port {
-            emit_run_port(ctx.sink.as_ref(), agent_id, port, port);
+            emit_run_port(ctx.sink.as_ref(), agent_id, port, None);
         }
         emit_run_state(ctx.sink.as_ref(), agent_id, plan.first_phase, None);
         write_header(&ctx, agent_id, &session, &prepared.cmd);
@@ -170,7 +170,7 @@ impl Supervisor {
                 phase: RunPhase::Idle,
                 last_error: None,
                 port: None,
-                host_port: None,
+                guest_port: None,
                 log: Vec::new(),
                 log_seq: 0,
             },
@@ -624,9 +624,9 @@ fn spawn_guest_run_phase(
         Some(port) => Some(guest.forward(port, PORT_SCAN_CAP)?),
         None => None,
     };
-    session.set_ports(prepared.port, host_port);
+    session.set_ports(host_port, prepared.port);
     if let (Some(port), Some(host_port)) = (prepared.port, host_port) {
-        emit_run_port(ctx.sink.as_ref(), &agent_id, port, host_port);
+        emit_run_port(ctx.sink.as_ref(), &agent_id, host_port, Some(port));
     }
     if let Some(note) = &prepared.note {
         write_note(&ctx, &agent_id, &session, note);
@@ -854,9 +854,9 @@ fn handle_run_phase_exit(
             session.transition_phase(RunPhase::Running);
             // Emit the resolved port before the running state so the store holds
             // it before the UI reacts (see run_start for the same ordering).
-            session.set_ports(prepared.port, prepared.port);
+            session.set_ports(prepared.port, None);
             if let Some(port) = prepared.port {
-                emit_run_port(ctx.sink.as_ref(), &agent_id, port, port);
+                emit_run_port(ctx.sink.as_ref(), &agent_id, port, None);
             }
             emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Running, None);
             write_header(&ctx, &agent_id, &session, &prepared.cmd);

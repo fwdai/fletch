@@ -172,7 +172,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           // and the port on this Mac that reaches it, which for a VM workspace
           // is a forwarded one the configured port says nothing about.
           setRunPhase(agent.id, snap.phase);
-          if (snap.host_port != null) setRunPort(agent.id, String(snap.host_port));
+          if (snap.port != null) setRunPort(agent.id, String(snap.port));
           setLastError(snap.last_error);
           if (snap.log.length > 0) snapLog = new Uint8Array(snap.log);
           snapEnd = snap.log_seq;
