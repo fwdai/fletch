@@ -20,6 +20,35 @@ describe("scaleValue", () => {
     expect(scaleValue(scale("box_memory_mib"), "")).toBe(2048);
     expect(scaleValue(scale("box_cpus"), "lots")).toBe(2);
   });
+
+  it("reads the whole string, as the engine does", () => {
+    expect(scaleValue(scale("box_memory_mib"), " 4096 ")).toBe(4096);
+    expect(scaleValue(scale("box_memory_mib"), "+4096")).toBe(4096);
+    for (const bad of ["4096oops", "1.5", "-4096", "0x1000", "1e4"]) {
+      expect(scaleValue(scale("box_memory_mib"), bad)).toBe(2048);
+    }
+  });
+
+  it("applies the engine's bounds for each setting", () => {
+    const edges: [BoxScale["key"], string, number][] = [
+      ["box_memory_mib", "512", 512],
+      ["box_memory_mib", "511", 2048],
+      ["box_memory_mib", "4294967296", 2048],
+      ["box_cpus", "1", 1],
+      ["box_cpus", "32", 32],
+      ["box_cpus", "0", 2],
+      ["box_cpus", "33", 2],
+      ["box_disk_gib", "4", 4],
+      ["box_disk_gib", "256", 256],
+      ["box_disk_gib", "3", 8],
+      ["box_disk_gib", "257", 8],
+      ["box_idle_stop_minutes", "1440", 1440],
+      ["box_idle_stop_minutes", "1441", 10],
+    ];
+    for (const [key, stored, expected] of edges) {
+      expect(scaleValue(scale(key), stored)).toBe(expected);
+    }
+  });
 });
 
 describe("scaleStops", () => {

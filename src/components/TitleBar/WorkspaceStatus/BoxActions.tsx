@@ -1,6 +1,7 @@
 import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
+import { boxIsUp } from "./isolation";
 
 /** The one action a box agent's popover offers for its box, if any, as a
  *  button for the popover's action row. While the box is up (its registry
@@ -13,7 +14,7 @@ export function BoxActions({ agent }: { agent: AgentRecord }) {
   const tools = useAppStore((s) => s.boxTools[agent.provider]);
   const stopBox = useAppStore((s) => s.stopBox);
   const retryTools = useAppStore((s) => s.retryBoxTools);
-  const boxUp = boxState?.phase === "running" || boxState?.phase === "starting";
+  const boxUp = boxIsUp(boxState?.phase);
   const toolsFailed = boxState?.phase === "failed" && tools?.phase === "failed";
 
   if (boxUp) {

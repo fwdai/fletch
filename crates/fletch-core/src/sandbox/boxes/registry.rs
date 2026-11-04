@@ -2063,7 +2063,7 @@ async fn boot(
     let authorized = channel::authorized_key(&key)?;
     let data = dir.join(DATA_DISK);
     if !data.exists() {
-        disks::create_sparse(&data, disks::DEFAULT_DATA_DISK_BYTES)?;
+        disks::create_sparse(&data, u64::from(settings::current().disk_gib) << 30)?;
     }
     let dirty = Dirty::in_dir(&dir);
     if dirty.set()? {

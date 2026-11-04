@@ -174,5 +174,6 @@ export interface BoxPolicyEvent {
 export type BoxSettingKey =
   | "box_memory_mib"
   | "box_cpus"
+  | "box_disk_gib"
   | "box_image_url"
   | "box_idle_stop_minutes";

@@ -15,6 +15,8 @@ use crate::error::{Error, Result};
 pub const MEMORY_SETTING: &str = "box_memory_mib";
 /// vCPUs per box.
 pub const CPUS_SETTING: &str = "box_cpus";
+/// Data disk of each new box, GiB. Sparse, so it costs only what is written.
+pub const DISK_SETTING: &str = "box_disk_gib";
 /// Alternate base URL for the image download; empty is the GitHub release.
 pub const IMAGE_URL_SETTING: &str = "box_image_url";
 /// Minutes a box with no attached launch stays up; `0` is never.
@@ -27,6 +29,7 @@ pub const EGRESS_ALLOW_KEY: &str = "box.egress_allow";
 pub const KEYS: &[&str] = &[
     MEMORY_SETTING,
     CPUS_SETTING,
+    DISK_SETTING,
     IMAGE_URL_SETTING,
     IDLE_STOP_SETTING,
 ];
@@ -34,12 +37,17 @@ pub const KEYS: &[&str] = &[
 pub const DEFAULT_MEMORY_MIB: u32 = 2048;
 pub const MIN_MEMORY_MIB: u32 = 512;
 pub const DEFAULT_CPUS: u8 = 2;
+pub const DEFAULT_DISK_GIB: u32 = (fletch_box::disks::DEFAULT_DATA_DISK_BYTES >> 30) as u32;
+pub const MIN_DISK_GIB: u32 = 4;
+pub const MAX_DISK_GIB: u32 = 256;
 pub const DEFAULT_IDLE_STOP_MINUTES: u64 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoxSettings {
     pub memory_mib: u32,
     pub cpus: u8,
+    /// A box's disk is sized when it is created, so this reaches new boxes only.
+    pub disk_gib: u32,
     /// `None` is the GitHub release for this build's pin.
     pub image_url: Option<String>,
     /// `None` is never.
@@ -51,6 +59,7 @@ impl Default for BoxSettings {
         Self {
             memory_mib: DEFAULT_MEMORY_MIB,
             cpus: DEFAULT_CPUS,
+            disk_gib: DEFAULT_DISK_GIB,
             image_url: None,
             idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
         }
@@ -60,6 +69,7 @@ impl Default for BoxSettings {
 static SETTINGS: RwLock<BoxSettings> = RwLock::new(BoxSettings {
     memory_mib: DEFAULT_MEMORY_MIB,
     cpus: DEFAULT_CPUS,
+    disk_gib: DEFAULT_DISK_GIB,
     image_url: None,
     idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
 });
@@ -93,6 +103,7 @@ pub fn load(conn: &Connection) -> BoxSettings {
     BoxSettings {
         memory_mib: parse_memory(raw(MEMORY_SETTING).as_deref()).unwrap_or(DEFAULT_MEMORY_MIB),
         cpus: parse_cpus(raw(CPUS_SETTING).as_deref()).unwrap_or(DEFAULT_CPUS),
+        disk_gib: parse_disk(raw(DISK_SETTING).as_deref()).unwrap_or(DEFAULT_DISK_GIB),
         image_url: parse_image_url(raw(IMAGE_URL_SETTING).as_deref()).unwrap_or(None),
         idle_stop: parse_idle_stop(raw(IDLE_STOP_SETTING).as_deref())
             .unwrap_or(Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60))),
@@ -147,6 +158,20 @@ pub fn parse_cpus(raw: Option<&str>) -> Result<u8> {
     }
 }
 
+/// A whole number of GiB between [`MIN_DISK_GIB`] and [`MAX_DISK_GIB`].
+pub fn parse_disk(raw: Option<&str>) -> Result<u32> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(DEFAULT_DISK_GIB);
+    };
+    match raw.parse::<u32>() {
+        Ok(gib) if (MIN_DISK_GIB..=MAX_DISK_GIB).contains(&gib) => Ok(gib),
+        _ => Err(Error::Other(format!(
+            "{DISK_SETTING} must be a whole number of GiB between {MIN_DISK_GIB} and \
+             {MAX_DISK_GIB}; got {raw:?}"
+        ))),
+    }
+}
+
 /// A `http(s)://` or `file://` base URL, trimmed; blank is the release URL.
 pub fn parse_image_url(raw: Option<&str>) -> Result<Option<String>> {
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -184,6 +209,7 @@ pub fn validate(key: &str, value: &str) -> Option<Result<String>> {
     Some(match key {
         MEMORY_SETTING => parse_memory(Some(value)).map(|v| v.to_string()),
         CPUS_SETTING => parse_cpus(Some(value)).map(|v| v.to_string()),
+        DISK_SETTING => parse_disk(Some(value)).map(|v| v.to_string()),
         IMAGE_URL_SETTING => parse_image_url(Some(value)).map(Option::unwrap_or_default),
         IDLE_STOP_SETTING => {
             parse_idle_stop(Some(value)).map(|d| d.map_or(0, |d| d.as_secs() / 60).to_string())
@@ -260,6 +286,11 @@ mod tests {
             Some(Duration::from_secs(180))
         );
         assert!(parse_idle_stop(Some("-1")).is_err());
+        assert_eq!(parse_disk(None).unwrap(), 8);
+        assert_eq!(parse_disk(Some(" 64 ")).unwrap(), 64);
+        for bad in ["3", "257", "1.5", "lots"] {
+            assert!(parse_disk(Some(bad)).is_err(), "{bad}");
+        }
         for retired in ["boxes_enabled", "box_layers"] {
             assert!(
                 validate(retired, "true").is_none(),

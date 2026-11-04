@@ -267,9 +267,9 @@ pub fn set_box_egress_global_impl(
     Ok(delta)
 }
 
-/// Write one box setting (`box_memory_mib`, `box_cpus`, `box_image_url`,
-/// `box_idle_stop_minutes`), validated, and mirror it for the engine; `None`
-/// restores the default. The Sandbox page's knobs go through here, not the
+/// Write one box setting (`box_memory_mib`, `box_cpus`, `box_disk_gib`,
+/// `box_image_url`, `box_idle_stop_minutes`), validated, and mirror it for the
+/// engine; `None` restores the default. The Sandbox page's knobs go through here, not the
 /// client-side `set_setting`, since the engine reads these.
 pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> Result<()> {
     let normalized = match value {

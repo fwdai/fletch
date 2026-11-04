@@ -44,6 +44,7 @@ export interface SandboxSlice {
    *  string = unset (the engine's defaults apply). */
   boxMemoryMib: string;
   boxCpus: string;
+  boxDiskGib: string;
   boxImageUrl: string;
   boxIdleStopMinutes: string;
   /** Latest box runtime probe; `null` until the first lands. */
@@ -174,6 +175,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   pendingPublishApprovals: [],
   boxMemoryMib: "",
   boxCpus: "",
+  boxDiskGib: "",
   boxImageUrl: "",
   boxIdleStopMinutes: "",
   boxProbe: null,

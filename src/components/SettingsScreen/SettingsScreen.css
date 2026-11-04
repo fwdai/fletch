@@ -301,6 +301,26 @@
 .set-vm-version {
   color: var(--fg-2);
 }
+/* What each sandbox protects: a claim, then a mark per sandbox. */
+.set-compare {
+  display: grid;
+  grid-template-columns: 1fr 88px 104px;
+  gap: 10px 16px;
+  padding: 14px 0 4px;
+  color: var(--fg-2);
+}
+.set-compare-h {
+  color: var(--fg-3);
+  text-align: center;
+}
+.set-compare-mark {
+  justify-content: center;
+  gap: 4px;
+  color: var(--fg-1);
+}
+.set-compare-mark[data-coverage="unenforced"] {
+  color: var(--fg-3);
+}
 
 /* Shortcuts: a keycap per chord. Body-sized and raised off the page (a lifted
    face with a heavier bottom edge) so the key is the thing the eye lands on

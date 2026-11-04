@@ -103,6 +103,7 @@ export function BoxKnobs({ last }: { last?: boolean }) {
   const stored: Partial<Record<BoxScale["key"], string>> = {
     box_memory_mib: useAppStore((s) => s.boxMemoryMib),
     box_cpus: useAppStore((s) => s.boxCpus),
+    box_disk_gib: useAppStore((s) => s.boxDiskGib),
     box_idle_stop_minutes: useAppStore((s) => s.boxIdleStopMinutes),
   };
   return (

@@ -46,6 +46,7 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
     // The box knobs are blank when unset (the engine's defaults apply).
     boxMemoryMib: s.box_memory_mib || "",
     boxCpus: s.box_cpus || "",
+    boxDiskGib: s.box_disk_gib || "",
     boxImageUrl: s.box_image_url || "",
     boxIdleStopMinutes: s.box_idle_stop_minutes || "",
   };
