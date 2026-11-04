@@ -14,6 +14,9 @@ import { spawnStageLabel } from "@/data/spawnStage";
 import { isAgentBusy } from "@/helpers";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
+import { EGRESS_MODE_KEY, effectiveEgressMode } from "@/util/egressMode";
+import { useProjectSettings } from "@/util/useProjectSettings";
 import { currentAccountId } from "./AccountPicker/choices";
 import { ChatWorkingStatus } from "./ChatWorkingStatus";
 
@@ -97,6 +100,21 @@ export function ChatComposer({
   // message — delivered live (claude) or queued for the next turn boundary
   // (per-turn agents). So `canSend` no longer gates on `busy`; the Composer
   // shows Stop when empty and Send once the user types (see Composer).
+  // The VM's network for this turn: offered where there is something to open —
+  // a box under a posture that holds or refuses new hosts, on a host that
+  // can — and while it is open, so it can be closed again.
+  const turnOpen = useAppStore((s) => s.boxStates[agent.id]?.turn_open === true);
+  const setTurnNetworkOpen = useAppStore((s) => s.setTurnNetworkOpen);
+  const boxEgressMode = useAppStore((s) => s.boxEgressMode);
+  const turnGate = useGate("egressTurn");
+  const inBox = agent.sandbox_engine === "box";
+  const { settings: projectSettings } = useProjectSettings(inBox ? projectId || null : null);
+  const posture = effectiveEgressMode(projectSettings?.[EGRESS_MODE_KEY], boxEgressMode).mode;
+  const network =
+    inBox && !turnGate && (turnOpen || posture !== "open")
+      ? { open: turnOpen, onToggle: (open: boolean) => void setTurnNetworkOpen(agent.id, open) }
+      : undefined;
+
   const canSend =
     !transcriptLoading &&
     !switchInFlight &&
@@ -171,6 +189,7 @@ export function ChatComposer({
             grantedFolders={agent.folder_grants}
             onChangeGrantedFolder={(path, writable) => void grantFolder(agent.id, path, writable)}
             onRevokeFolder={(path) => void revokeFolder(agent.id, path)}
+            network={network}
             listIssues={repoPath ? () => api.listTrackerIssues(repoPath, linearTeamId) : undefined}
             listIssueComments={
               repoPath ? (issue) => api.issueComments(repoPath, issue.source, issue.key) : undefined

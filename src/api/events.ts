@@ -57,6 +57,8 @@ import type {
   BoxPolicyEvent,
   BoxStateEvent,
   BoxToolsStatus,
+  EgressPrompt,
+  EgressPromptResolved,
   PublishApproval,
   PublishApprovalResolved,
 } from "./types/sandbox";
@@ -451,13 +453,26 @@ export function onBoxEgress(cb: (e: BoxEgressEvent) => void): Promise<UnlistenFn
   return on<BoxEgressEvent>("box:egress", cb);
 }
 
-/** What boxes may reach changed in the app: the global list, or a project's
- *  in-app additions. Reload `boxEgressOverview`. */
+/** A VM is holding a connection to a host until someone answers (the `ask`
+ *  posture). The hold refuses itself after about a minute, so ignoring one is
+ *  safe; `onBoxEgressResolved` says when it is over. */
+export function onBoxEgressRequested(cb: (e: EgressPrompt) => void): Promise<UnlistenFn> {
+  return on<EgressPrompt>("box:egress-requested", cb);
+}
+
+/** One held host is no longer held: answered here, answered on another
+ *  device, or refused because nobody answered. The prompt for `id` comes down. */
+export function onBoxEgressResolved(cb: (e: EgressPromptResolved) => void): Promise<UnlistenFn> {
+  return on<EgressPromptResolved>("box:egress-resolved", cb);
+}
+
 /** The set of VMs changed; `boxList` says what it is now. */
 export function onBoxList(cb: () => void): Promise<UnlistenFn> {
   return on<unknown>("box:list", () => cb());
 }
 
+/** What boxes may reach changed in the app: the global list, or a project's
+ *  in-app additions. Reload `boxEgressOverview`. */
 export function onBoxPolicy(cb: (e: BoxPolicyEvent) => void): Promise<UnlistenFn> {
   return on<BoxPolicyEvent>("box:policy", cb);
 }

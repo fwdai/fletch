@@ -25,6 +25,8 @@ import {
   onAutopilotState,
   onAutopilotSwitches,
   onBoxEgress,
+  onBoxEgressRequested,
+  onBoxEgressResolved,
   onBoxImage,
   onBoxList,
   onBoxState,
@@ -697,6 +699,11 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       get().resolvePublishApproval(e);
     }),
   );
+
+  // A VM holding a connection for an answer (the `ask` posture), and the hold
+  // ending: the same two-event shape as the publish approval.
+  await bind(onBoxEgressRequested((prompt) => get().receiveEgressPrompt(prompt)));
+  await bind(onBoxEgressResolved((e) => get().resolveEgressPrompt(e)));
 
   // The host-side PR watcher's events (and a push's or turn end's state read).
   // These are what keep the PR badges, checks and comments current — the

@@ -85,7 +85,7 @@ Fletch detects installed CLIs automatically and normalizes their transcripts int
 
 Fletch ships two isolation engines and picks one per workspace itself. The guarantee is the same under both: an agent's writes stay inside its own workspace.
 
-- **Linux VM (the box).** Where the Mac can run one, each agent gets its own micro-VM with its checkout inside the guest. It sees nothing of your machine but the folders you hand it, and reaches the network only through an allow-list you control. Every harness except Antigravity runs there.
+- **Linux VM (the box).** Where the Mac can run one, each agent gets its own micro-VM with its checkout inside the guest. It sees nothing of your machine but the folders you hand it, and reaches the network only through a proxy whose posture you set: open by default with every connection recorded, or ask-first, or an allow-list. Every harness except Antigravity runs there.
 - **Seatbelt.** Each agent runs under a per-agent macOS `sandbox-exec` profile that denies writes outside its workspace: for projects that build a macOS app, for Antigravity, and while the VM image downloads. It's write protection, not a VM: the agent runs as your user, reads what you can read, and has network access.
 
 What each one guarantees about an agent (from [`sandbox/guarantees.rs`](crates/fletch-core/src/sandbox/guarantees.rs)):
@@ -97,7 +97,7 @@ What each one guarantees about an agent (from [`sandbox/guarantees.rs`](crates/f
 | Cannot read or forge Fletch's own app data | Yes | Yes |
 | Cannot write your repository's `.git` | Yes | Yes |
 | Cannot read the rest of your disk, except folders you gave it | Yes | No |
-| Cannot reach arbitrary network hosts | Yes | No |
+| Cannot reach arbitrary network hosts | When you tighten the Network posture | No |
 | Cannot hold your GitHub credentials | Partly | Partly |
 
 Under both engines, workspaces are full shared-object clones, so an agent's writable `.git` lives entirely inside its sandbox; your repo's `.git` is never writable by an agent. Pushes and PR creation run host-side through a brokered RPC, so credentials never enter the sandbox, and each agent's capability grant constrains where it may publish: no agent can push the branch its work is reviewed against (nor `main`/`master`), and a workflow step agent can't publish at all. For its own branch, an agent publishes under your identity without asking — unless you turn on Settings › Git › "Ask before publishing" (off by default; it leaves autopilot and clicked Git actions alone, prompting only when an agent publishes on its own). Choose tasks and repos accordingly.

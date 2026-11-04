@@ -530,7 +530,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 182 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 186 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -702,6 +702,10 @@ fn allowlist_matches_the_protocol_table() {
         "project_file_edit",
         "box_egress_overview",
         "set_box_egress_global",
+        "box_egress_pending",
+        "box_egress_answer",
+        "box_egress_activity",
+        "box_egress_open_turn",
         "context_overview",
         "context_preview",
         "context_record_entity",

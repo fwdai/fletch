@@ -38,6 +38,10 @@ const PROJECT_SETTING_KEYS: &[&str] = &[
     // absent (automatic, with native apps on this Mac), `host` or `box`
     // (`sandbox::placement`).
     crate::sandbox::placement::KEY,
+    // The project's posture for hosts its boxes may not reach, over the
+    // global `box_egress_mode`: `open`, `ask` or `allowlist`; absent is the
+    // global (`sandbox::boxes::settings::EgressMode`).
+    crate::sandbox::boxes::settings::EGRESS_MODE_KEY,
 ];
 
 /// The key family a client may write in full: `run.<row>` (the project's run
@@ -97,6 +101,16 @@ pub fn set_project_setting_impl(
             "`{key}` is not a project setting a client may write"
         )));
     }
+    // The posture is validated and spelled the one way before it is stored,
+    // and the project's running boxes take it at once.
+    use crate::sandbox::boxes::settings::{self as box_settings, EgressMode};
+    let egress_mode = (key == box_settings::EGRESS_MODE_KEY)
+        .then(|| value.map(|v| EgressMode::parse(Some(v))).transpose())
+        .transpose()?;
+    let value = match egress_mode {
+        Some(Some(mode)) => Some(mode.as_setting()),
+        _ => value,
+    };
     {
         let conn = ctx.db.lock();
         match value {
@@ -110,6 +124,10 @@ pub fn set_project_setting_impl(
                 rusqlite::params![project_id, key],
             )?,
         };
+    }
+    if let Some(mode) = egress_mode {
+        box_settings::set_egress_mode_override(project_id, mode);
+        crate::sandbox::boxes::BoxRegistry::global().update_egress(project_id);
     }
     crate::host::emit(
         ctx.sink.as_ref(),
