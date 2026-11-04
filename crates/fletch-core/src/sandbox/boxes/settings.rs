@@ -452,6 +452,7 @@ mod tests {
     /// A global `remove` is read as nothing: the control that wrote it is gone.
     #[test]
     fn the_global_turn_offs_are_ignored() {
+        let _serial = TEST_LOCK.blocking_lock();
         set_global_egress(super::super::allowlist::Delta {
             add: vec!["a.test".into()],
             remove: vec!["rubygems.org".into()],

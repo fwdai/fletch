@@ -581,6 +581,8 @@ mod tests {
     #[test]
     fn the_global_list_reaches_every_project() {
         use crate::sandbox::boxes::allowlist::{Delta, Source};
+        // The global list's mirror is process-wide (`settings::TEST_LOCK`).
+        let _serial = settings::TEST_LOCK.blocking_lock();
         let (ctx, sink, _dir) = test_ctx();
         ctx.db
             .lock()
@@ -637,6 +639,123 @@ mod tests {
 
         // Process-wide: leave it as the other tests expect it.
         settings::set_global_egress(Delta::default());
+    }
+
+    /// A held host answered for the project lands in the project's in-app
+    /// list, answered for every project in the global list, and a block
+    /// closes its prompt; each prompt closes once, and a late answer to a
+    /// closed one changes nothing.
+    #[test]
+    fn a_held_host_is_answered_into_a_list_and_its_prompt_closes() {
+        use crate::sandbox::boxes::allowlist::{Delta, GLOBAL_SETTING};
+        use crate::sandbox::boxes::egress_prompt;
+        let _serial = settings::TEST_LOCK.blocking_lock();
+        let (ctx, _sink, _dir) = test_ctx();
+        ctx.db
+            .lock()
+            .execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('pa', 'p', 0)",
+                [],
+            )
+            .unwrap();
+        egress_prompt::request("held-fuji", "pa", "api.stripe.com", 443);
+        egress_prompt::request("held-fuji", "pa", "docs.python.org", 443);
+        egress_prompt::request("held-etna", "pa", "evil.test", 443);
+        let mine = |host: &str| {
+            egress_prompt::pending()
+                .into_iter()
+                .find(|p| p.host == host && p.project_id == "pa")
+                .unwrap()
+        };
+
+        let stripe = mine("api.stripe.com");
+        box_egress_answer_impl(&ctx, &stripe.id, EgressAnswer::Project).unwrap();
+        assert_eq!(
+            settings::egress_allow("pa"),
+            vec!["api.stripe.com".to_string()]
+        );
+        assert!(
+            egress_prompt::get(&stripe.id).is_none(),
+            "the prompt closed"
+        );
+        box_egress_answer_impl(&ctx, &stripe.id, EgressAnswer::Always).unwrap();
+        assert_eq!(
+            settings::egress_allow("pa").len(),
+            1,
+            "a late answer changes nothing"
+        );
+
+        let docs = mine("docs.python.org");
+        box_egress_answer_impl(&ctx, &docs.id, EgressAnswer::Always).unwrap();
+        let stored = Delta::parse(database::get_setting(&ctx.db.lock(), GLOBAL_SETTING).as_deref());
+        assert!(stored.add.contains(&"docs.python.org".to_string()));
+        assert!(egress_prompt::get(&docs.id).is_none());
+
+        let evil = mine("evil.test");
+        box_egress_answer_impl(&ctx, &evil.id, EgressAnswer::Block).unwrap();
+        assert!(egress_prompt::get(&evil.id).is_none());
+        assert!(!settings::egress_allow("pa").contains(&"evil.test".to_string()));
+
+        // Process-wide: leave it as the other tests expect it.
+        settings::set_global_egress(Delta::default());
+    }
+
+    /// The posture is a validated box setting with a per-project override that
+    /// is validated the same way, spelled the one way when stored, mirrored
+    /// for the proxies, and cleared back to the global by a `null`.
+    #[test]
+    fn the_posture_is_validated_globally_and_per_project() {
+        use crate::sandbox::boxes::settings::{EgressMode, EGRESS_MODE_KEY, EGRESS_MODE_SETTING};
+        let _serial = settings::TEST_LOCK.blocking_lock();
+        let (ctx, _sink, _dir) = test_ctx();
+        ctx.db
+            .lock()
+            .execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('pp', 'p', 0)",
+                [],
+            )
+            .unwrap();
+        assert!(set_box_setting_impl(&ctx, EGRESS_MODE_SETTING, Some("yolo")).is_err());
+        set_box_setting_impl(&ctx, EGRESS_MODE_SETTING, Some(" ask ")).unwrap();
+        assert_eq!(
+            database::get_setting(&ctx.db.lock(), EGRESS_MODE_SETTING).as_deref(),
+            Some("ask"),
+            "stored trimmed"
+        );
+        // The in-process mirror is shared with every other test's `set`, so the
+        // project is checked against whatever the global reads right now.
+        assert_eq!(settings::egress_mode("pp"), settings::current().egress_mode);
+
+        assert!(
+            super::super::set_project_setting_impl(&ctx, "pp", EGRESS_MODE_KEY, Some("never"))
+                .is_err()
+        );
+        super::super::set_project_setting_impl(&ctx, "pp", EGRESS_MODE_KEY, Some("allowlist "))
+            .unwrap();
+        assert_eq!(settings::egress_mode("pp"), EgressMode::AllowList);
+        assert_eq!(
+            super::super::get_project_settings_impl(&ctx, "pp")
+                .unwrap()
+                .get(EGRESS_MODE_KEY)
+                .map(String::as_str),
+            Some("allowlist"),
+            "stored in the one spelling"
+        );
+        super::super::set_project_setting_impl(&ctx, "pp", EGRESS_MODE_KEY, None).unwrap();
+        assert_eq!(
+            settings::egress_mode("pp"),
+            settings::current().egress_mode,
+            "back to the global"
+        );
+
+        set_box_setting_impl(&ctx, EGRESS_MODE_SETTING, None).unwrap();
+        assert_eq!(
+            database::get_setting(&ctx.db.lock(), EGRESS_MODE_SETTING),
+            None,
+            "a null restores the default"
+        );
+        assert_eq!(settings::load(&ctx.db.lock()).egress_mode, EgressMode::Open);
+        settings::set(settings::BoxSettings::default());
     }
 
     #[test]
