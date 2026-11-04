@@ -19,6 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -99,7 +100,8 @@ pub enum EgressEvent {
     /// names this hold, and the [`HoldEnded`](Self::HoldEnded) that ends it
     /// carries the same id: a retry of the host after an end starts a new
     /// hold with a new id, so an end delivered late can never be taken for
-    /// the end of the hold that followed it.
+    /// the end of the hold that followed it. Ids are unique for the process,
+    /// not the proxy, so the same holds across a box's restart.
     Held { hold: u64, host: String, port: u16 },
     /// The hold `hold` on `host` is over for every connection that joined it,
     /// one per [`Held`](Self::Held): `admitted` when the policy came to allow
@@ -144,8 +146,16 @@ struct Shared {
 #[derive(Default)]
 struct Holds {
     by_host: HashMap<String, Hold>,
-    /// Ids count up from 1 for the proxy's lifetime, so no two holds share one.
-    next_id: u64,
+}
+
+/// Where hold ids come from: one counter for the process, so no two holds
+/// ever share an id, across proxies and across a box's restarts included. A
+/// per-proxy counter would start over with each proxy, and the delayed end
+/// of an old proxy's hold could then pass for a new proxy's.
+static HOLD_IDS: AtomicU64 = AtomicU64::new(0);
+
+fn next_hold_id() -> u64 {
+    HOLD_IDS.fetch_add(1, Ordering::Relaxed) + 1
 }
 
 /// One host's hold: its id, when the first connection arrived, on which port,
@@ -199,8 +209,7 @@ impl Shared {
         if holds.by_host.len() >= MAX_HELD_HOSTS {
             return None;
         }
-        holds.next_id += 1;
-        let (id, since) = (holds.next_id, Instant::now());
+        let (id, since) = (next_hold_id(), Instant::now());
         holds.by_host.insert(
             host.to_string(),
             Hold {
@@ -880,14 +889,17 @@ mod tests {
             let sock = sock.clone();
             async move { request(&sock, &connect_head(port)).await }
         });
-        assert_eq!(
-            events.recv().await.unwrap(),
+        let hold = match events.recv().await.unwrap() {
             EgressEvent::Held {
-                hold: 1,
-                host: "localhost".into(),
-                port
+                hold,
+                host,
+                port: held_port,
+            } => {
+                assert_eq!((host.as_str(), held_port), ("localhost", port));
+                hold
             }
-        );
+            other => panic!("expected Held, got {other:?}"),
+        };
         let second = tokio::spawn({
             let sock = sock.clone();
             async move { request(&sock, &connect_head(port)).await }
@@ -912,10 +924,10 @@ mod tests {
                 .filter(|e| matches!(
                     e,
                     EgressEvent::HoldEnded {
-                        hold: 1,
+                        hold: ended,
                         admitted: true,
                         ..
-                    }
+                    } if *ended == hold
                 ))
                 .count(),
             1,
@@ -950,14 +962,15 @@ mod tests {
         )
         .await;
         let sock = proxy.socket().to_path_buf();
-        for expected in 1..=2u64 {
+        let mut ids = Vec::new();
+        for _ in 0..2 {
             let (_c, reply) = request(&sock, "CONNECT again.test:443 HTTP/1.1\r\n\r\n").await;
             assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
-            assert_eq!(next_held(&mut events).await, expected);
+            let hold = next_held(&mut events).await;
             assert_eq!(
                 events.recv().await.unwrap(),
                 EgressEvent::HoldEnded {
-                    hold: expected,
+                    hold,
                     host: "again.test".into(),
                     port: 443,
                     admitted: false
@@ -967,7 +980,25 @@ mod tests {
                 events.recv().await.unwrap(),
                 EgressEvent::Denied { .. }
             ));
+            ids.push(hold);
         }
+        assert!(ids[1] > ids[0], "a retry is a new hold: {ids:?}");
+
+        // And a new proxy, as after a box restart, never reuses an id: the
+        // counter is the process's.
+        drop(proxy);
+        let (proxy, mut events) = start_with(
+            dir.path(),
+            EgressPolicy::new(["other.test"]).unwrap(),
+            Mode::Hold,
+            Duration::from_millis(100),
+        )
+        .await;
+        let (_c, _reply) = request(proxy.socket(), "CONNECT again.test:443 HTTP/1.1\r\n\r\n").await;
+        assert!(
+            next_held(&mut events).await > ids[1],
+            "ids keep counting across proxies"
+        );
     }
 
     /// A hold released by the mode opening, not by the list, ends as admitted
