@@ -21,6 +21,7 @@ use crate::workspace::AgentRecord;
 // The name in an agent's writable root where a confined box tenant keeps its
 // private copies of what it shares with its host: Fletch's own, which no
 // checkout may take (`workspace::allocate_repo_subdir`).
+pub use boxes::run::GuestRun;
 pub(crate) use boxes::COW_DIR;
 pub use engine::{
     AgentLaunchCtx, EngineCaps, EngineKind, EnvDelivery, KillGuard, KillHandle, LaunchPlan,
@@ -617,6 +618,17 @@ pub fn shell_program(tree: &Path) -> Result<Option<(PathBuf, Vec<String>, KillHa
             (program, args, kill)
         }),
     )
+}
+
+/// The Run panel's process for the checkout `tree` when the engine keeps the
+/// tree where the host's shell cannot run a command in it: a box's, run in
+/// its guest over the box's channel, the dev server's port forwarded to this
+/// host ([`GuestRun`]). `None` for a host tree, which the Run profile runs on
+/// the host. The box is held against its idle stop from here (booting a
+/// stopped one) until the session the launch starts ends; a `GuestRun`
+/// dropped before its launch releases it.
+pub fn guest_run(tree: &Path) -> Result<Option<GuestRun>> {
+    GuestRun::open(tree)
 }
 
 /// Whether `path` is a checkout whose engine is not running, so work there

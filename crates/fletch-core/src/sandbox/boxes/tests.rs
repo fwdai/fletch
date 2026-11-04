@@ -290,6 +290,408 @@ async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
     }
 }
 
+/// The Run panel in a box, end to end, twice over on the same guest port:
+/// a tiny HTTP server bound to `127.0.0.1:3000` in each of two boxes'
+/// checkouts, launched the way the panel launches a run ([`super::run`])
+/// under a host PTY, reaches the browser on a host port of its own — the
+/// first on 3000, the second bumped past it; Stop ends the guest process,
+/// frees the host port and releases the box, whose idle timer may then stop
+/// it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "boots two real boxes; see the module docs"]
+async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
+    use super::run::GuestRun;
+    use crate::pty_session::{PtySession, PtySpawn};
+    use crate::sandbox::KillGuard;
+    use std::io::{Read, Write};
+
+    let _data = setup().await;
+    let registry = BoxRegistry::global();
+    let pid = std::process::id() % 10_000;
+    // Both bind the guest's own 3000: each VM's loopback is its own. Each
+    // answer also reports the Run's view of the guest: whether `/data` (the
+    // launch env files, the agent's token among them) is in sight, and
+    // whether the agent's home (the provider's state lives there), the
+    // checkout and a scratch dir take a write.
+    const GUEST_PORT: u16 = 3000;
+    let server = "node -e \"const fs = require('fs'); \
+                  const w = (p) => { try { fs.writeFileSync(p, 'x'); return 'yes'; } catch (e) { return e.code; } }; \
+                  require('http').createServer((q, s) => s.end('hi from ' + \
+                  process.env.APP_NAME + ' on ' + process.env.PORT + \
+                  ' data=' + fs.existsSync('/data/run') + \
+                  ' home=' + w(process.env.HOME + '/run-probe') + \
+                  ' cwd=' + w('run-probe') + \
+                  ' cache=' + w(process.env.HOME + '/.cache/run-probe') + \
+                  ' occfg=' + w(process.env.HOME + '/.config/opencode/run-probe') + \
+                  ' ocdata=' + w(process.env.HOME + '/.local/share/opencode/run-probe'))).listen(process.env.PORT, \
+                  '127.0.0.1', () => console.log('listening ' + process.env.PORT))\"";
+
+    struct Up {
+        agent_id: String,
+        identity: BoxIdentity,
+        tree: PathBuf,
+        host_port: u16,
+        pty: PtySession,
+    }
+    let mut ups: Vec<Up> = Vec::new();
+    for (n, name) in ["first", "second"].into_iter().enumerate() {
+        let agent_id = format!("e2e-run-{name}-{pid}");
+        let identity = identity(&agent_id);
+        std::fs::create_dir_all(&identity.writable_root).unwrap();
+        let t0 = Instant::now();
+        let running = registry
+            .ensure_running(&identity)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        eprintln!("[{name}] box ready in {:.2?}", t0.elapsed());
+        let tree = identity.writable_root.join("app");
+        let out = running
+            .channel
+            .exec(None, None, &["mkdir", "-p", &tree.to_string_lossy()])
+            .await
+            .unwrap();
+        assert!(out.status.success());
+
+        // What the supervisor does for a run phase: hold and reach the box,
+        // settle the guest port, forward it, launch under a PTY.
+        let mut guest = GuestRun::open(&tree)
+            .unwrap()
+            .expect("the tree is in a box");
+        let port = guest.free_port(GUEST_PORT, 30).unwrap().unwrap();
+        assert_eq!(port, GUEST_PORT, "[{name}] the guest's own 3000 is free");
+        let host_port = guest.forward(port, 30).unwrap();
+        if n == 0 {
+            assert_eq!(
+                host_port, GUEST_PORT,
+                "the first forward takes 3000 on the host"
+            );
+        } else {
+            assert_ne!(
+                host_port, ups[0].host_port,
+                "the second forward is bumped past it"
+            );
+        }
+        let env = [
+            ("PORT".to_string(), port.to_string()),
+            ("APP_NAME".to_string(), name.to_string()),
+        ];
+        let (program, args, kill) = guest.launch(&tree, server, &env).unwrap();
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let pty = KillGuard::new(kill)
+            .start(|kill| {
+                PtySession::spawn(
+                    PtySpawn {
+                        program: &program,
+                        args: &args,
+                        cwd: &tree,
+                        env: &[],
+                        cols: 120,
+                        rows: 32,
+                        env_remove: &[],
+                        kill_plan: kill,
+                        after_exit: None,
+                    },
+                    move |bytes| {
+                        let _ = out_tx.send(bytes);
+                    },
+                    |_| {},
+                )
+            })
+            .unwrap();
+        // The server's own line reaches the panel's log through the PTY.
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !String::from_utf8_lossy(&seen).contains("listening") {
+            assert!(Instant::now() < deadline, "[{name}] no output: {seen:?}");
+            if let Ok(bytes) = out_rx.recv_timeout(Duration::from_millis(200)) {
+                seen.extend(bytes);
+            }
+        }
+        ups.push(Up {
+            agent_id,
+            identity,
+            tree,
+            host_port,
+            pty,
+        });
+    }
+
+    // Both answer on the Mac, each on its own host port, each from its box.
+    let fetch = |host_port: u16| -> String {
+        let mut stream = std::net::TcpStream::connect_timeout(
+            &([127, 0, 0, 1], host_port).into(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut body = String::new();
+        stream.read_to_string(&mut body).unwrap();
+        body
+    };
+    for (name, up) in ["first", "second"].iter().zip(&ups) {
+        let body = fetch(up.host_port);
+        eprintln!(
+            "[{name}] http://localhost:{} answered: {body:?}",
+            up.host_port
+        );
+        assert!(
+            body.contains(&format!("hi from {name} on {GUEST_PORT}")),
+            "{body}"
+        );
+        // The Run's view: `/data` hidden, the home read-only, the checkout
+        // and the scratch dir writable.
+        assert!(body.contains(" data=false "), "{body}");
+        assert!(body.contains(" home=EROFS "), "{body}");
+        assert!(body.contains(" cwd=yes "), "{body}");
+        assert!(body.contains(" cache=yes "), "{body}");
+        // OpenCode's config and data dirs lie inside those carve-outs: the
+        // Run writes them, into a private copy; the dirs the agent's
+        // opencode reads take nothing of it.
+        assert!(body.contains(" occfg=yes "), "{body}");
+        assert!(body.contains(" ocdata=yes"), "{body}");
+        let channel = registry.channel_for_running(&up.agent_id).unwrap();
+        let home = up.identity.home.to_string_lossy().into_owned();
+        let untouched = super::executor::run(
+            &channel,
+            &[
+                "sh",
+                "-c",
+                "test ! -e \"$1/.config/opencode/run-probe\" && \
+                 test ! -e \"$1/.local/share/opencode/run-probe\" && \
+                 test -e \"$1/.cache/run-probe\"",
+                "sh",
+                &home,
+            ],
+            None,
+        )
+        .unwrap();
+        assert!(
+            untouched.status.success(),
+            "[{name}] the Run's writes reached opencode's own dirs, or missed ~/.cache"
+        );
+    }
+
+    // Stop: the guest process is gone, the host port is free, the box
+    // released (its forward dropped with the launch, the other's kept).
+    for (n, (name, up)) in ["first", "second"].iter().zip(ups.iter()).enumerate() {
+        let channel = registry.channel_for_running(&up.agent_id).unwrap();
+        // The guest's process table, for a stop that leaves something behind.
+        let ps = |label: &str| {
+            let out = super::executor::run(
+                &channel,
+                &["ps", "-eo", "pid,ppid,pgid,sid,args", "--forest"],
+                None,
+            )
+            .unwrap();
+            eprintln!(
+                "[{name}] guest processes {label}:\n{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+        };
+        let t = Instant::now();
+        up.pty.kill().unwrap();
+        eprintln!("[{name}] stopped in {:.2?}", t.elapsed());
+        let gone = || {
+            super::executor::run(&channel, &["pgrep", "-f", "hi from"], None)
+                .is_ok_and(|out| !out.status.success())
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !gone() {
+            if Instant::now() >= deadline {
+                ps("ten seconds after the stop");
+                panic!("[{name}] the guest process survived the stop");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::net::TcpListener::bind(("127.0.0.1", up.host_port)).is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "[{name}] host port {} still taken after the stop",
+                up.host_port
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            super::BoxEngine::shared().forwards.lock().unwrap().len(),
+            ups.len() - (n + 1),
+            "no forward outlives its launch, and no other's goes with it"
+        );
+        assert!(
+            registry.nothing_attached(&up.agent_id),
+            "[{name}] the run released the box"
+        );
+        // The launch's copy-on-write stores went with it.
+        let cow = up.identity.writable_root.join(super::COW_DIR);
+        let stores = super::executor::run(
+            &channel,
+            &[
+                "sh",
+                "-c",
+                "ls -d \"$1\"/run-* 2>/dev/null | wc -l",
+                "sh",
+                &cow.to_string_lossy(),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&stores.stdout).trim(),
+            "0",
+            "[{name}] a Run's stores outlived it"
+        );
+    }
+    // A command whose program the guest lacks is refused by name before
+    // anything runs, and leaves nothing behind: no stores, no env file, no
+    // hold on the box.
+    let up = &ups[0];
+    let channel = registry.channel_for_running(&up.agent_id).unwrap();
+    let count = |script: &str, arg: &str| -> String {
+        let out = super::executor::run(&channel, &["sh", "-c", script, "sh", arg], None).unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let cow = up.identity.writable_root.join(super::COW_DIR);
+    let cow = cow.to_string_lossy().into_owned();
+    let env_files = count(
+        "ls \"$1\" 2>/dev/null | wc -l",
+        fletch_box::guest::ENV_FILE_DIR,
+    );
+    let guest = GuestRun::open(&up.tree)
+        .unwrap()
+        .expect("the tree is in a box");
+    let err = guest
+        .launch(&up.tree, "no-such-program-for-fletch --version", &[])
+        .err()
+        .expect("a program the guest lacks is refused");
+    eprintln!("refused: {err}");
+    assert!(
+        err.to_string()
+            .contains("`no-such-program-for-fletch` is not installed in the Linux VM"),
+        "{err}"
+    );
+    assert_eq!(
+        count("ls -d \"$1\"/run-* 2>/dev/null | wc -l", &cow),
+        "0",
+        "a refused launch's stores outlived it"
+    );
+    assert_eq!(
+        count(
+            "ls \"$1\" 2>/dev/null | wc -l",
+            fletch_box::guest::ENV_FILE_DIR
+        ),
+        env_files,
+        "a refused launch's env file outlived it"
+    );
+    assert!(
+        registry.nothing_attached(&up.agent_id),
+        "a refused launch released the box"
+    );
+
+    // A pnpm project as detection names it — `pnpm dev`, the version its
+    // package.json pins — runs on an image with corepack's shims, the
+    // manager fetched through the egress proxy; an older image refuses it by
+    // name.
+    let has_pnpm = super::executor::run(&channel, &["test", "-L", "/usr/local/bin/pnpm"], None)
+        .unwrap()
+        .status
+        .success();
+    let tree = &up.tree;
+    super::executor::put(
+        &channel,
+        br#"{"name":"t","packageManager":"pnpm@10.0.0","scripts":{"dev":"node server.js"}}"#,
+        &tree.join("package.json"),
+        0o644,
+    )
+    .unwrap();
+    super::executor::put(
+        &channel,
+        b"require('http').createServer((q, s) => s.end('ua=' + process.env.npm_config_user_agent))\
+          .listen(process.env.PORT, '127.0.0.1', () => console.log('listening ' + process.env.PORT))\n",
+        &tree.join("server.js"),
+        0o644,
+    )
+    .unwrap();
+    let mut guest = GuestRun::open(tree).unwrap().unwrap();
+    let port = guest.free_port(GUEST_PORT, 30).unwrap().unwrap();
+    let host_port = guest.forward(port, 30).unwrap();
+    let env = [("PORT".to_string(), port.to_string())];
+    match guest.launch(tree, "pnpm dev", &env) {
+        Err(e) if !has_pnpm => {
+            eprintln!("image without corepack's shims, pnpm dev refused: {e}");
+            assert!(e.to_string().contains("`pnpm` is not installed"), "{e}");
+        }
+        Err(e) => panic!("pnpm dev refused on an image with corepack's shims: {e}"),
+        Ok((program, args, kill)) => {
+            assert!(has_pnpm, "pnpm dev ran on an image without corepack's shim");
+            let (out_tx, out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+            let pty = KillGuard::new(kill)
+                .start(|kill| {
+                    PtySession::spawn(
+                        PtySpawn {
+                            program: &program,
+                            args: &args,
+                            cwd: tree,
+                            env: &[],
+                            cols: 120,
+                            rows: 32,
+                            env_remove: &[],
+                            kill_plan: kill,
+                            after_exit: None,
+                        },
+                        move |bytes| {
+                            let _ = out_tx.send(bytes);
+                        },
+                        |_| {},
+                    )
+                })
+                .unwrap();
+            let mut seen = Vec::new();
+            let t0 = Instant::now();
+            let deadline = t0 + Duration::from_secs(180);
+            while !String::from_utf8_lossy(&seen).contains("listening") {
+                assert!(
+                    Instant::now() < deadline,
+                    "pnpm dev never listened: {}",
+                    String::from_utf8_lossy(&seen)
+                );
+                if let Ok(bytes) = out_rx.recv_timeout(Duration::from_millis(200)) {
+                    seen.extend(bytes);
+                }
+            }
+            eprintln!("pnpm dev listening after {:.2?}", t0.elapsed());
+            let body = fetch(host_port);
+            eprintln!("pnpm dev answered on localhost:{host_port}: {body:?}");
+            assert!(body.contains("ua=pnpm/10.0.0"), "{body}");
+            pty.kill().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while std::net::TcpListener::bind(("127.0.0.1", host_port)).is_err() {
+                assert!(
+                    Instant::now() < deadline,
+                    "host port {host_port} still taken"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert_eq!(
+                count("ls -d \"$1\"/run-* 2>/dev/null | wc -l", &cow),
+                "0",
+                "the pnpm run's stores outlived it"
+            );
+        }
+    }
+
+    for up in ups {
+        registry.discard(&up.agent_id).await.unwrap();
+        let _ = std::fs::remove_dir_all(&up.identity.writable_root);
+        let _ = std::fs::remove_dir_all(&up.identity.rpc_dir);
+        drop(up.tree);
+    }
+}
+
 /// A project pinned to boxes must not make providers boxes cannot run
 /// unsendable: they are stamped seatbelt. A provider boxes run — one with a
 /// guest-home adapter and a tools-disk script — lands in a box once one can

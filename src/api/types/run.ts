@@ -3,10 +3,16 @@ export type RunPhase = "idle" | "setup" | "running" | "stopped";
 export interface RunStateSnapshot {
   phase: RunPhase;
   last_error: string | null;
-  /** The port the dev server launched on (port-safe, may differ from the
-   *  configured one); null before the run phase, after a stop, and for a
-   *  command with no port. The same value `run:port` carried. */
+  /** The port on this Mac that reaches the dev server: the port it launched
+   *  on (port-safe, may differ from the configured one), or for a VM workspace
+   *  the host end of the forward to it. What the panel's link opens; null
+   *  before the run phase, after a stop, and for a command with no port. The
+   *  same value `run:port` carried. */
   port: number | null;
+  /** The port the server binds inside a VM workspace's guest, which the
+   *  forward from `port` reaches; null on the host, where `port` is that
+   *  port. Set and cleared with `port`. */
+  guest_port: number | null;
   /** Raw PTY bytes accumulated since the panel was last cleared.
    *  Sent as a JSON array of u8 values; decode with TextDecoder. */
   log: number[];
@@ -71,10 +77,15 @@ export interface RunStateEvent {
   last_error: string | null;
 }
 
-/** The port the dev server is actually launching on — emitted just before the
- *  run phase spawns. May differ from the configured port when port-safety
- *  bumped it to the next free one. */
+/** The port on this Mac that reaches the dev server — emitted as the run
+ *  phase spawns. `port` is what the link and sidebar show, as it has always
+ *  been: it may differ from the configured port when port-safety bumped it to
+ *  the next free one, or when the forward from a VM workspace's guest took
+ *  another. `guest_port` is additive — the port the server binds inside the
+ *  guest, which the forward reaches; null for a server on the host — and
+ *  absent from a host from before VM workspaces. */
 export interface RunPortEvent {
   agent_id: string;
   port: number;
+  guest_port?: number | null;
 }

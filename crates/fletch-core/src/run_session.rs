@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
+use crate::run_detect::DetectedConfig;
 
 /// How much PTY output we keep around for panel rehydration.
 /// 5 MB is enough for ~50k lines of average-width terminal output and
@@ -36,10 +37,18 @@ pub enum RunPhase {
 pub struct RunStateSnapshot {
     pub phase: RunPhase,
     pub last_error: Option<String>,
-    /// The port the dev server was launched on, once the run phase spawned:
-    /// the port-safe one, which may differ from the configured port. `None`
-    /// before the run phase, after a stop, and for a command with no port.
+    /// The port on this host that reaches the dev server, once the run phase
+    /// spawned: the port-safe one it was launched on, which may differ from
+    /// the configured port, or for a box's guest the host end of the forward
+    /// to it. What the panel's link opens and the sidebar shows, as the field
+    /// has always meant (`run:port` carries the same value). `None` before
+    /// the run phase, after a stop, and for a command with no port.
     pub port: Option<u16>,
+    /// The port the server binds inside a box's guest, which the forward from
+    /// `port` reaches: where the agent of a box workspace is, so what its
+    /// `app_status` names. `None` for a server on the host, where `port` is
+    /// that port. Set and cleared with `port`.
+    pub guest_port: Option<u16>,
     /// Cumulative PTY output bytes (latest first dropped on overflow).
     /// Encoded as a byte array so the frontend can render or strip
     /// ANSI without re-decoding.
@@ -64,8 +73,13 @@ struct RunSessionInner {
     phase: RunPhase,
     last_error: Option<String>,
     port: Option<u16>,
+    guest_port: Option<u16>,
     log: LogBuffer,
     pty: Option<PtySession>,
+    /// The run configs last detected in the checkout (`run_detect`), served
+    /// to the panel while the checkout cannot be read without waking its
+    /// sandbox (a stopped box). Survives stops like the log.
+    detected: Option<Vec<DetectedConfig>>,
     /// Bumped on every `start` and `stop`. The PTY exit handler
     /// captures the generation it was spawned under; if that
     /// generation no longer matches, the exit is from a process the
@@ -80,8 +94,10 @@ impl Default for RunSession {
                 phase: RunPhase::Idle,
                 last_error: None,
                 port: None,
+                guest_port: None,
                 log: LogBuffer::new(LOG_BUFFER_CAP),
                 pty: None,
+                detected: None,
                 generation: 0,
             }),
         }
@@ -99,6 +115,7 @@ impl RunSession {
             phase: inner.phase,
             last_error: inner.last_error.clone(),
             port: inner.port,
+            guest_port: inner.guest_port,
             log: inner.log.bytes().to_vec(),
             log_seq: inner.log.total(),
         }
@@ -112,11 +129,24 @@ impl RunSession {
         matches!(self.phase(), RunPhase::Setup | RunPhase::Running)
     }
 
-    /// The port the run phase is launching on, recorded as it spawns so the
-    /// agent's `run_status` can name it; the panel hears the same port on
-    /// `run:port`. Cleared by every start and stop.
-    pub fn set_port(&self, port: Option<u16>) {
-        self.inner.lock().port = port;
+    /// Keep `configs` as the checkout's last detection.
+    pub fn remember_detected(&self, configs: &[DetectedConfig]) {
+        self.inner.lock().detected = Some(configs.to_vec());
+    }
+
+    /// The checkout's last detection, if one was made.
+    pub fn last_detected(&self) -> Option<Vec<DetectedConfig>> {
+        self.inner.lock().detected.clone()
+    }
+
+    /// The port on this host that reaches the run phase's server, and the one
+    /// it binds in a box's guest (see [`RunStateSnapshot`]), recorded as the
+    /// phase spawns so the agent's `app_status` can name them; the panel
+    /// hears the host port on `run:port`. Cleared by every start and stop.
+    pub fn set_ports(&self, port: Option<u16>, guest_port: Option<u16>) {
+        let mut inner = self.inner.lock();
+        inner.port = port;
+        inner.guest_port = guest_port;
     }
 
     /// Append PTY output to the rolling buffer. Called from the per-spawn
@@ -146,6 +176,7 @@ impl RunSession {
             inner.phase = RunPhase::Stopped;
             inner.last_error = None;
             inner.port = None;
+            inner.guest_port = None;
             (prior, pty)
         };
         if let Some(pty) = pty {
@@ -165,6 +196,7 @@ impl RunSession {
         inner.phase = phase;
         inner.last_error = None;
         inner.port = None;
+        inner.guest_port = None;
         inner.generation
     }
 
@@ -200,18 +232,22 @@ impl RunSession {
         inner.phase = RunPhase::Stopped;
         inner.last_error = error;
         inner.port = None;
+        inner.guest_port = None;
     }
 }
 
 /// Spawn a single phase's PTY. The caller is responsible for
 /// `stop()` / `begin_phase` / `transition_phase` bookkeeping and for
 /// wiring up the on_output / on_exit closures (which need supervisor
-/// access to chain phases).
+/// access to chain phases). `kill` is how the child is ended beyond its
+/// own process group: the sandbox's own teardown for a command running in
+/// a box's guest, nothing more for one on the host.
 pub fn spawn_command<F, G>(
     program: &Path,
     args: &[String],
     cwd: &Path,
     env: &[(String, String)],
+    kill: crate::sandbox::KillHandle,
     on_output: F,
     on_exit: G,
 ) -> Result<PtySession>
@@ -228,7 +264,7 @@ where
             cols: 120,
             rows: 32,
             env_remove: &[],
-            kill_plan: crate::sandbox::KillHandle::ProcessGroup,
+            kill_plan: kill,
             after_exit: None,
         },
         on_output,
@@ -359,20 +395,24 @@ mod tests {
         let s = RunSession::new();
         assert_eq!(s.snapshot().port, None);
         s.begin_phase(RunPhase::Running);
-        s.set_port(Some(3001));
+        s.set_ports(Some(3001), Some(3000));
         assert_eq!(s.snapshot().port, Some(3001));
+        assert_eq!(s.snapshot().guest_port, Some(3000));
         s.stop();
         assert_eq!(s.snapshot().port, None, "a stopped run binds no port");
+        assert_eq!(s.snapshot().guest_port, None);
         s.begin_phase(RunPhase::Setup);
-        s.set_port(Some(3001));
+        s.set_ports(Some(3001), None);
         s.mark_stopped(Some("crashed".into()));
         assert_eq!(s.snapshot().port, None);
+        assert_eq!(s.snapshot().guest_port, None);
         s.begin_phase(RunPhase::Running);
         assert_eq!(
             s.snapshot().port,
             None,
             "a fresh start forgets the old port"
         );
+        assert_eq!(s.snapshot().guest_port, None);
     }
 
     #[test]

@@ -651,19 +651,31 @@ pub(super) fn emit_run_state(
 struct RunPortPayload {
     agent_id: String,
     port: u16,
+    guest_port: Option<u16>,
 }
 
-/// The port the dev server is actually being launched on — emitted just before
-/// the Run panel's dev phase spawns. May differ from the configured port when
-/// port-safety bumped it to the next free one; the frontend uses this to render
-/// the correct `localhost:<port>` link and sidebar indicator.
-pub(super) fn emit_run_port(sink: &dyn EventSink, agent_id: &str, port: u16) {
+/// The port on this host that reaches the dev server, emitted as the Run
+/// panel's dev phase spawns: `port`, what the frontend's `localhost:<port>`
+/// link and sidebar indicator show, as the field has meant since the event
+/// was added (a client from before boxes reads nothing else). It may differ
+/// from the configured port when port-safety bumped it to the next free one,
+/// or when the forward from a box's guest had to take another. `guest_port`
+/// is additive: the port a server in a box's guest binds there, which the
+/// forward to `port` reaches; `None` for a server on the host, where the two
+/// are one.
+pub(super) fn emit_run_port(
+    sink: &dyn EventSink,
+    agent_id: &str,
+    port: u16,
+    guest_port: Option<u16>,
+) {
     emit(
         sink,
         "run:port",
         RunPortPayload {
             agent_id: agent_id.to_string(),
             port,
+            guest_port,
         },
     );
 }

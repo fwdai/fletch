@@ -76,9 +76,10 @@ engine enforces) and `docs/box.md` is the box runtime.
 7. **Gaps are declared, not discovered.** A feature an engine cannot serve
    yet is a `false` in `caps()`, read by the feature's entry point. `caps()`
    holds facts only; the user-facing reason lives at the feature's refusal
-   site, written beside the cap read: `supervisor/run.rs` for the Run panel
-   (`run_panel`), the step provisioning in `supervisor/lifecycle.rs` for
-   workflow steps (`workflow_steps`). What the UI shows comes from a refusal
+   site, written beside the cap read: the step provisioning in
+   `supervisor/lifecycle.rs` for workflow steps (`workflow_steps`);
+   `supervisor/run.rs` reads `run_panel` the same way, though every engine
+   says yes today. What the UI shows comes from a refusal
    site too, never from the struct: `sandbox::workspace_types` carries the
    sentence a box spawn would fail with. Nothing refuses by probing a path.
 
@@ -115,6 +116,18 @@ engine enforces) and `docs/box.md` is the box runtime.
    `available_workspace_types` command in `commands/boxes.rs`, on the desktop
    and the remote wire).
 
+9. **A command in the checkout runs where the checkout is.** The Run panel's
+   setup and dev commands run on the host under the Run profile for a host
+   checkout, and in the guest for a box's (`sandbox::guest_run`): the same
+   `fletch-guest exec --env-file` entry an agent launch takes, a launch of the
+   box held against its idle stop for as long as the command runs, and the
+   dev server's port forwarded over an ssh connection of its own to a free
+   port on the host, which the panel's link opens (`docs/box.md`). The
+   supervisor asks `sandbox::checkout_is_remote` and the facade; it names no
+   engine. Detection reads the checkout through the executor
+   (`run_detect::Tree`), one listing then the files it needs, and the panel's
+   look is passive: a stopped box answers with its last detection.
+
 ## What `caps()` says today
 
 | capability | seatbelt | box |
@@ -122,7 +135,7 @@ engine enforces) and `docs/box.md` is the box runtime.
 | `checkout_on_host` | yes | no |
 | `shares_host_fs` | yes | no |
 | `share_roots` | any | `/Users`, `/Volumes` |
-| `run_panel` | yes | no |
+| `run_panel` | yes | yes |
 | `workflow_steps` | yes | no |
 
 The struct holds only these facts. A `no` has its user-facing reason at the
@@ -166,5 +179,3 @@ box. The handoff summary is not a row either: nothing reads such a fact yet.
   fallback: a guest that predates the options or cannot set them up refuses
   the launch. What it does not cover: scratch outside every bind (`/tmp` and
   the other tmpfs mounts), and the network namespace, which is the guest's.
-- The Run panel inside a box needs port forwarding over the channel; it is a
-  declared gap.

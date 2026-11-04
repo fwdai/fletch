@@ -3,10 +3,14 @@
 //! box's `ssh.sock`. Every host-to-guest interaction is one of the shapes here;
 //! git and editors use the same config through [`Channel::git_ssh_command`].
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 
 use crate::error::{Error, Result};
@@ -21,6 +25,15 @@ pub const KEY_FILE: &str = "key";
 pub const KNOWN_HOSTS_FILE: &str = "known_hosts";
 /// The multiplexing master's socket; skipped when the path would not fit `sun_path`.
 const CONTROL_FILE: &str = "cm.sock";
+/// What ssh appends to the control path while the master binds it
+/// (`<path>.XXXXXXXXXXXXXXXX`, then renamed): the name that must fit.
+const CONTROL_TEMP_SUFFIX: usize = 17;
+
+/// Whether the master's socket at `control` fits `sun_path`, ssh's temporary
+/// name included.
+fn control_path_fits(control: &Path) -> bool {
+    control.as_os_str().len() + CONTROL_TEMP_SUFFIX <= MAX_SOCKET_PATH
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Channel {
@@ -40,7 +53,7 @@ impl Channel {
         helper: &Path,
     ) -> Result<Channel> {
         let control = box_dir.join(CONTROL_FILE);
-        let control = (control.as_os_str().len() <= MAX_SOCKET_PATH).then_some(control.as_path());
+        let control = control_path_fits(&control).then_some(control.as_path());
         let config = box_dir.join(CONFIG_FILE);
         std::fs::write(
             &config,
@@ -267,15 +280,21 @@ impl Channel {
         format!("{SSH} -F {}", shell_quote(&self.config.to_string_lossy()))
     }
 
-    /// Forwards host `127.0.0.1:host_port` to the guest's `127.0.0.1:guest_port`
-    /// (sshd connects to the guest port itself; no guest relay). Ends when the
-    /// returned [`Forward`] drops.
+    /// Forwards host `127.0.0.1:host_port` to the guest's `localhost:guest_port`:
+    /// sshd connects to the guest port itself, trying each address `localhost`
+    /// resolves to there, so a server bound to `127.0.0.1`, `::1` or every
+    /// address is reached, with no guest relay. On a connection of its own
+    /// rather than the box's shared master: a forward requested through the
+    /// master outlives the client that asked for it, while one on its own
+    /// connection ends when the returned [`Forward`] drops — and with the
+    /// guest, as the helper's pipe closes. ssh exits instead of carrying on
+    /// without a listener when the host port cannot be bound; a dropped
+    /// `Forward` kills it. Needs a Tokio runtime context.
     pub fn forward(&self, host_port: u16, guest_port: u16) -> Result<Forward> {
-        let child = self
+        let mut child = self
             .ssh()
-            .arg("-N")
-            .arg("-L")
-            .arg(format!("127.0.0.1:{host_port}:127.0.0.1:{guest_port}"))
+            .args(["-S", "none", "-o", "ExitOnForwardFailure=yes", "-N", "-L"])
+            .arg(format!("127.0.0.1:{host_port}:localhost:{guest_port}"))
             .arg(guest::SSH_HOST_ALIAS)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -283,10 +302,31 @@ impl Channel {
             .kill_on_drop(true)
             .spawn()
             .map_err(Error::io("spawn ssh -L"))?;
+        // ssh's complaints — a bind that failed, a guest port refusing a
+        // connection — are drained as they come: a pipe nobody reads fills,
+        // and ssh would stall on it, forward and all, once the guest port had
+        // refused enough browser requests. The last few lines are kept for
+        // [`Forward::wait_ready`] to report.
+        let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
+        if let Some(stderr) = child.stderr.take() {
+            let tail = stderr_tail.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::debug!(host_port, guest_port, "ssh -L: {line}");
+                    let mut tail = tail.lock().unwrap_or_else(|p| p.into_inner());
+                    if tail.len() == STDERR_TAIL_LINES {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line);
+                }
+            });
+        }
         Ok(Forward {
             child,
             host_port,
             guest_port,
+            stderr_tail,
         })
     }
 
@@ -307,18 +347,60 @@ impl Channel {
     }
 }
 
+/// How many of ssh's last stderr lines a [`Forward`] keeps.
+const STDERR_TAIL_LINES: usize = 5;
+
 /// A running `ssh -N -L`; dropping it kills the forward.
 #[derive(Debug)]
 pub struct Forward {
     child: Child,
     pub host_port: u16,
     pub guest_port: u16,
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl Forward {
     /// Whether ssh is still running (it exits when the guest refuses the forward).
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Waits until the host listener accepts connections — ssh binds it once
+    /// its connection to the guest is up, a handshake through the proxy
+    /// helper away — or until ssh exited (the host port taken after all, the
+    /// guest unreachable), with its last complaint, or `timeout` passed. Each
+    /// probe is one accepted connection, which ssh then fails to open in the
+    /// guest, where nothing listens yet.
+    pub async fn wait_ready(&mut self, timeout: Duration) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if TcpStream::connect(("127.0.0.1", self.host_port))
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+            if let Ok(Some(status)) = self.child.try_wait() {
+                let tail: Vec<String> = self
+                    .stderr_tail
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .iter()
+                    .cloned()
+                    .collect();
+                return Err(Error::Other(format!(
+                    "ssh -L exited {status}: {}",
+                    tail.join(" | ")
+                )));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Error::Other(format!(
+                    "the forward to port {} did not come up within {timeout:?}",
+                    self.guest_port
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 }
 
@@ -558,9 +640,15 @@ mod tests {
         )
         .unwrap();
         let config = std::fs::read_to_string(&channel.config).unwrap();
-        let fits = dir.path().join(CONTROL_FILE).as_os_str().len() <= MAX_SOCKET_PATH;
+        let fits = control_path_fits(&dir.path().join(CONTROL_FILE));
         assert_eq!(config.contains("ControlMaster"), fits);
         assert_eq!(Channel::open(dir.path()), channel);
+        // ssh binds the socket under a temporary name 17 bytes longer than
+        // the path it was given; a path that fits only without that suffix
+        // gets no master rather than a master every connection fails on.
+        let room = MAX_SOCKET_PATH - CONTROL_TEMP_SUFFIX;
+        assert!(control_path_fits(Path::new(&"a".repeat(room))));
+        assert!(!control_path_fits(Path::new(&"a".repeat(room + 1))));
     }
 
     #[test]
@@ -653,6 +741,26 @@ mod tests {
         assert_eq!(&args[..4], ["-F", "/b/ssh_config", "-tt", "box"]);
         assert_eq!(args.last().unwrap(), "-l");
         assert_eq!(channel.git_ssh_command(), "/usr/bin/ssh -F /b/ssh_config");
+    }
+
+    /// A forward whose ssh cannot even start its connection — no config to
+    /// read — is reported as ssh's exit with what it said, not as a timeout.
+    #[tokio::test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "needs the system ssh")]
+    async fn a_forward_that_ssh_refuses_reports_its_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = Channel::open(dir.path());
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let mut forward = channel.forward(port, 3000).unwrap();
+        let err = forward
+            .wait_ready(Duration::from_secs(10))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ssh -L exited"), "{err}");
+        assert!(!forward.alive());
     }
 
     #[test]

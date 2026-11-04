@@ -1,17 +1,16 @@
 //! Ruby detector.
 
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    DetectedConfig, DetectedRow, RowGroup, RunDetector, Tree, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
-use std::path::Path;
 
 pub struct RubyDetector;
 
 impl RunDetector for RubyDetector {
-    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
-        let gemfile = read_trimmed(checkout, "Gemfile")?;
-        let confidence = if exists(checkout, "Gemfile.lock") {
+    fn detect(&self, tree: &Tree) -> Option<DetectedConfig> {
+        let gemfile = tree.read_trimmed("Gemfile")?;
+        let confidence = if tree.exists("Gemfile.lock") {
             CONFIDENCE_LOCKFILE
         } else {
             CONFIDENCE_MANIFEST
@@ -26,7 +25,8 @@ impl RunDetector for RubyDetector {
 
         // version: .ruby-version → `ruby "x"` line in the Gemfile. The
         // source reflects whichever branch actually supplied the value.
-        if let Some((version, source)) = read_trimmed(checkout, ".ruby-version")
+        if let Some((version, source)) = tree
+            .read_trimmed(".ruby-version")
             .map(|v| (v, ".ruby-version"))
             .or_else(|| {
                 gemfile
@@ -115,12 +115,12 @@ impl RunDetector for RubyDetector {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{fixture, row, val};
+    use super::super::test_support::{detect_in, row, val};
     use super::super::CONFIDENCE_LOCKFILE;
     use super::*;
 
     fn detect(files: &[(&str, &str)]) -> Option<DetectedConfig> {
-        RubyDetector.detect(fixture(files).path())
+        detect_in(&RubyDetector, files)
     }
 
     #[test]

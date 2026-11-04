@@ -95,7 +95,8 @@ impl RunDispatcher {
             "app_start",
             &json!({
                 "phase": after.phase,
-                "port": after.port,
+                "port": after.guest_port.or(after.port),
+                "host_port": after.port,
                 "already_running": already_running,
                 "exited": exited,
                 "last_error": after.last_error,
@@ -124,7 +125,11 @@ impl RunDispatcher {
             "app_status",
             &json!({
                 "phase": state.phase,
-                "port": state.port,
+                // Where the server listens, which is where the agent is: in
+                // a box, the guest. `host_port` is the user's port on the
+                // Mac — what to tell them to open, not what to curl.
+                "port": state.guest_port.or(state.port),
+                "host_port": state.port,
                 "last_error": state.last_error,
                 "log_bytes": state.log.len(),
             }),
@@ -366,6 +371,7 @@ mod tests {
                     phase: RunPhase::Idle,
                     last_error: None,
                     port: None,
+                    guest_port: None,
                     log: Vec::new(),
                     log_seq: 0,
                 }),
@@ -394,6 +400,7 @@ mod tests {
             }
             s.phase = self.next_phase;
             s.port = self.port;
+            s.guest_port = None;
             Ok(())
         }
         fn stop(&self, _agent_id: &str) -> Result<()> {
@@ -401,6 +408,7 @@ mod tests {
             let mut s = self.state.lock();
             s.phase = RunPhase::Stopped;
             s.port = None;
+            s.guest_port = None;
             Ok(())
         }
         fn state(&self, _agent_id: &str) -> RunStateSnapshot {

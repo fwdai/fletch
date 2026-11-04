@@ -6,7 +6,10 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
+use crate::pty_session::PtyExit;
+use crate::run_detect::{DetectedConfig, Tree};
 use crate::run_session::{self, shell_args, user_shell, RunPhase, RunSession, RunStateSnapshot};
+use crate::sandbox::{KillGuard, KillHandle};
 
 use super::events::{emit_run_output, emit_run_port, emit_run_state};
 use super::Supervisor;
@@ -36,29 +39,41 @@ impl Supervisor {
             .first()
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
         let cwd = primary.checkout_path(agent_id)?;
-        // The Run panel's process runs on the host, in the checkout; a box
-        // keeps the checkout in its guest, where nothing here can reach yet.
-        // Refused with the reason rather than run in the empty placeholder.
+        // Every engine Fletch ships runs the Run panel's process — on the host
+        // in the checkout, or in the guest that holds it (`sandbox::guest_run`)
+        // — and the cap is where one that cannot would say so
+        // (docs/sandbox-foundation.md rule 7).
         if !crate::sandbox::stamped_engine(&record).caps().run_panel {
             return Err(Error::Other(
-                "the Run panel doesn't run inside box sandboxes yet".into(),
+                "the Run panel isn't available under this workspace's sandbox".into(),
             ));
         }
 
-        let (setup_cmd, run_cmd, intended_port) =
-            self.read_run_config(agent_id, &record.project_id, &cwd);
-        let setup_done = self.workspace.is_setup_completed(agent_id)?;
-
-        let session = {
-            let mut runs = self.runs.lock();
-            runs.entry(agent_id.to_string())
-                .or_insert_with(|| Arc::new(RunSession::new()))
-                .clone()
-        };
-
+        let session = self.run_session(agent_id);
         if session.is_active() {
             return Ok(()); // already running, idempotent
         }
+
+        // The checkout, where it lives: a box keeps it in its guest, and a
+        // stopped box boots here, under a note, since the boot is the longest
+        // part of such a start and the panel has nothing else to show yet.
+        if crate::sandbox::checkout_asleep(&cwd) {
+            write_note(&ctx, agent_id, &session, "Starting the Linux VM\u{2026}");
+        }
+        let tree = match Tree::open(&cwd) {
+            Ok(tree) => tree,
+            Err(e) => {
+                let msg = format!("Failed to start: could not read the checkout: {e}");
+                session.mark_stopped(Some(msg.clone()));
+                emit_run_state(ctx.sink.as_ref(), agent_id, RunPhase::Stopped, Some(msg));
+                return Err(Error::Other(e.to_string()));
+            }
+        };
+        let configs = crate::run_detect::detect_all_in(&tree);
+        session.remember_detected(&configs);
+        let (setup_cmd, run_cmd, intended_port) =
+            self.read_run_config(agent_id, &record.project_id, &configs);
+        let setup_done = self.workspace.is_setup_completed(agent_id)?;
 
         // Nothing to run (unrecognized ecosystem with no install/dev) —
         // leave the button Idle rather than spawning an empty command.
@@ -70,8 +85,11 @@ impl Supervisor {
         // active, so a "no free port" failure surfaces cleanly without leaving
         // the button stuck. Setup runs unchanged; its chained run is prepared
         // later, in handle_run_phase_exit, closer to its own spawn — the
-        // intended port rides along so that pass reuses this detection.
-        let prepared = if plan.first_phase == RunPhase::Running {
+        // intended port rides along so that pass reuses this detection. A
+        // command in a box's guest settles its port as its phase spawns
+        // (`spawn_guest_run_phase`): the probe runs in the guest.
+        let remote = crate::sandbox::checkout_is_remote(&cwd);
+        let prepared = if plan.first_phase == RunPhase::Running && !remote {
             match prepare_run(&plan.first_cmd, intended_port) {
                 Ok(p) => p,
                 Err(e) => {
@@ -88,9 +106,9 @@ impl Supervisor {
         // Emit the resolved port *before* the state flips to running, so the
         // store already holds the correct port when the UI reacts to
         // `run:state` — otherwise the link/label briefly shows the old port.
-        session.set_port(prepared.port);
+        session.set_ports(prepared.port, None);
         if let Some(port) = prepared.port {
-            emit_run_port(ctx.sink.as_ref(), agent_id, port);
+            emit_run_port(ctx.sink.as_ref(), agent_id, port, None);
         }
         emit_run_state(ctx.sink.as_ref(), agent_id, plan.first_phase, None);
         write_header(&ctx, agent_id, &session, &prepared.cmd);
@@ -152,27 +170,36 @@ impl Supervisor {
                 phase: RunPhase::Idle,
                 last_error: None,
                 port: None,
+                guest_port: None,
                 log: Vec::new(),
                 log_seq: 0,
             },
         }
     }
 
+    /// The agent's run session, made on first use.
+    fn run_session(&self, agent_id: &str) -> Arc<RunSession> {
+        self.runs
+            .lock()
+            .entry(agent_id.to_string())
+            .or_insert_with(|| Arc::new(RunSession::new()))
+            .clone()
+    }
+
     /// Read the setup + run commands and the intended dev-server port for an
-    /// agent, from a single detection pass. The detector provides the baseline
-    /// (same values the panel shows); the project's `run.install` / `run.dev`
-    /// / `run.port` settings layer on top, and the agent's `run.agent.<id>.*`
-    /// overrides (edited in the Run panel sheet) take final precedence. One
-    /// detector feeds both the panel and the runner, so there is no hardcoded
-    /// default to keep in sync. The port is `None` when none can be inferred
-    /// (e.g. a plain script) — port safety is then a no-op.
+    /// agent, from the checkout's detection `configs`. The detector provides
+    /// the baseline (same values the panel shows); the project's `run.install`
+    /// / `run.dev` / `run.port` settings layer on top, and the agent's
+    /// `run.agent.<id>.*` overrides (edited in the Run panel sheet) take final
+    /// precedence. One detector feeds both the panel and the runner, so there
+    /// is no hardcoded default to keep in sync. The port is `None` when none
+    /// can be inferred (e.g. a plain script) — port safety is then a no-op.
     fn read_run_config(
         &self,
         agent_id: &str,
         project_id: &str,
-        checkout: &Path,
+        configs: &[DetectedConfig],
     ) -> (String, String, Option<u16>) {
-        let configs = crate::run_detect::detect_all(checkout);
         let detected = |id: &str| -> Option<String> {
             configs
                 .first()
@@ -211,17 +238,31 @@ impl Supervisor {
     /// ranked by confidence. The panel renders the first (highest
     /// confidence) entry; the rest are returned for future
     /// multi-ecosystem selection.
-    pub fn detect_run_config(
-        &self,
-        agent_id: &str,
-    ) -> Result<Vec<crate::run_detect::DetectedConfig>> {
+    ///
+    /// A look at the checkout, not an action in it: it never boots a stopped
+    /// box (docs/sandbox-foundation.md rule 2). Such a checkout answers with
+    /// its last detection — a start's, or an earlier look's while the box
+    /// ran — and nothing before the first; the panel looks again as a start
+    /// wakes the box.
+    pub fn detect_run_config(&self, agent_id: &str) -> Result<Vec<DetectedConfig>> {
         let record = self.workspace.agent(agent_id)?;
         let primary = record
             .repos
             .first()
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
         let checkout = primary.checkout_path(agent_id)?;
-        Ok(crate::run_detect::detect_all(&checkout))
+        let session = self.run_session(agent_id);
+        match crate::exec::passive_sync(|| Tree::open(&checkout)) {
+            Ok(tree) => {
+                let configs = crate::run_detect::detect_all_in(&tree);
+                session.remember_detected(&configs);
+                Ok(configs)
+            }
+            Err(e) => {
+                tracing::debug!(agent_id, error = %e, "run config: checkout not readable now");
+                Ok(session.last_detected().unwrap_or_default())
+            }
+        }
     }
 
     /// Detect the run configuration for a project, keyed by repo path
@@ -300,6 +341,7 @@ fn write_note(ctx: &Arc<EngineCtx>, agent_id: &str, session: &Arc<RunSession>, n
 /// A dev command prepared for spawn: the (possibly port-rewritten) command,
 /// extra env vars to inject (the pinned `PORT`), an optional user-facing note
 /// when the port was bumped, and the actual port to advertise to the UI.
+#[derive(Debug)]
 struct PreparedRun {
     cmd: String,
     extra_env: Vec<(String, String)>,
@@ -330,19 +372,33 @@ impl PreparedRun {
 ///
 /// The free-port probe runs here, right before spawn, rather than at click time:
 /// setup/install can take minutes, so a port checked earlier may be gone by the
-/// time the dev server actually binds.
+/// time the dev server actually binds. This is the host's probe, for a command
+/// that runs on the host; [`prepare_run_with`] takes the probe of wherever the
+/// command runs.
 fn prepare_run(run_cmd: &str, intended: Option<u16>) -> Result<PreparedRun> {
+    prepare_run_with(run_cmd, intended, |start, cap| {
+        Ok(crate::run_detect::port::find_free_port(start, cap))
+    })
+}
+
+/// [`prepare_run`] with `free_port` as the probe: the first free port at or
+/// after `start`, scanning up to `cap` past it, where the command will run —
+/// `None` when every port in range is taken.
+fn prepare_run_with(
+    run_cmd: &str,
+    intended: Option<u16>,
+    free_port: impl FnOnce(u16, u16) -> Result<Option<u16>>,
+) -> Result<PreparedRun> {
     let Some(intended) = intended else {
         return Ok(PreparedRun::passthrough(run_cmd.to_string()));
     };
-    let chosen =
-        crate::run_detect::port::find_free_port(intended, PORT_SCAN_CAP).ok_or_else(|| {
-            Error::Other(format!(
-                "No free port available in {}\u{2013}{}",
-                intended,
-                intended.saturating_add(PORT_SCAN_CAP)
-            ))
-        })?;
+    let chosen = free_port(intended, PORT_SCAN_CAP)?.ok_or_else(|| {
+        Error::Other(format!(
+            "No free port available in {}\u{2013}{}",
+            intended,
+            intended.saturating_add(PORT_SCAN_CAP)
+        ))
+    })?;
 
     let mut cmd = run_cmd.to_string();
     let mut note = None;
@@ -399,7 +455,9 @@ fn plan_run_phases(setup_done: bool, setup_cmd: &str, run_cmd: &str) -> Option<R
 /// Spawn one phase's PTY (setup or run). Wires up output streaming
 /// and the exit handler that chains setup→run or transitions to
 /// Stopped on natural exit. Out-of-band stops are handled via the
-/// generation check.
+/// generation check. `intended_port` is the configured dev-server port,
+/// for the run phase a setup phase chains into, and for a run phase in a
+/// box's guest, whose port is settled here.
 #[allow(clippy::too_many_arguments)]
 fn spawn_run_phase(
     sup: Arc<Supervisor>,
@@ -408,12 +466,29 @@ fn spawn_run_phase(
     session: Arc<RunSession>,
     gen: u64,
     cwd: std::path::PathBuf,
-    chain_port: Option<u16>,
+    intended_port: Option<u16>,
     phase: RunPhase,
     cmd: String,
     extra_env: Vec<(String, String)>,
     chain_run_cmd: Option<String>,
 ) -> Result<()> {
+    // A checkout the engine keeps off the host — a box's, in its guest — has
+    // its command run there, by the engine. The Run profile below is the
+    // host's own.
+    if crate::sandbox::checkout_is_remote(&cwd) {
+        return spawn_guest_run_phase(
+            sup,
+            ctx,
+            agent_id,
+            session,
+            gen,
+            cwd,
+            intended_port,
+            phase,
+            cmd,
+            chain_run_cmd,
+        );
+    }
     // Confine the run command to the checkout + toolchain caches. The command
     // string is repo-derived (package.json scripts, postinstall, dev-server
     // config), so a malicious agent could otherwise plant a script that runs
@@ -471,43 +546,163 @@ fn spawn_run_phase(
     // sandbox layer — or the project env above — set.
     env.extend(extra_env);
 
-    let session_out = session.clone();
-    let ctx_out = ctx.clone();
-    let id_out = agent_id.clone();
-
-    let sup_exit = sup.clone();
-    let ctx_exit = ctx.clone();
-    let id_exit = agent_id.clone();
-    let session_exit = session.clone();
-    let cwd_exit = cwd.clone();
-
+    let (on_output, on_exit) = phase_hooks(
+        sup,
+        ctx,
+        agent_id,
+        session.clone(),
+        gen,
+        cwd.clone(),
+        intended_port,
+        phase,
+        chain_run_cmd,
+    );
     let pty = run_session::spawn_command(
         &program,
         &args,
         &cwd,
         &env,
-        move |bytes| {
-            let seq = session_out.append_log(&bytes);
-            emit_run_output(ctx_out.sink.as_ref(), &id_out, bytes, seq);
-        },
-        move |exit| {
-            handle_run_phase_exit(
-                sup_exit.clone(),
-                ctx_exit.clone(),
-                id_exit.clone(),
-                session_exit.clone(),
-                gen,
-                cwd_exit.clone(),
-                chain_port,
-                phase,
-                exit,
-                chain_run_cmd.clone(),
-            );
-        },
+        KillHandle::ProcessGroup,
+        on_output,
+        on_exit,
     )?;
 
     session.attach_pty(pty);
     Ok(())
+}
+
+/// [`spawn_run_phase`] for a checkout the engine keeps off the host: the
+/// command runs in the guest that holds it (`sandbox::guest_run`), held
+/// against the box's idle stop for as long as it runs, and a run phase has
+/// its dev server's port forwarded to a free port on this host, which the
+/// panel's link opens. The port is settled here rather than before the phase
+/// began, as the host's is: finding a free port in the guest, and forwarding
+/// it, both need the box, which a stopped one must first boot — under a
+/// phase the panel already shows, so the wait is visible. `run:port` thus
+/// follows `run:state`, carrying the host port once the forward is up.
+///
+/// The env the command gets is the guest's own (`guest_env`, the project's
+/// toolchain cache in the guest) plus the project's shared Run env and the
+/// pinned `PORT`; the host's nested-Fletch roots mean nothing there.
+#[allow(clippy::too_many_arguments)]
+fn spawn_guest_run_phase(
+    sup: Arc<Supervisor>,
+    ctx: Arc<EngineCtx>,
+    agent_id: String,
+    session: Arc<RunSession>,
+    gen: u64,
+    cwd: PathBuf,
+    intended_port: Option<u16>,
+    phase: RunPhase,
+    cmd: String,
+    chain_run_cmd: Option<String>,
+) -> Result<()> {
+    let record = sup.workspace.agent(&agent_id)?;
+    let Some(mut guest) = crate::sandbox::guest_run(&cwd)? else {
+        return Err(Error::Other(format!(
+            "{} is not in a sandbox this host runs commands in",
+            cwd.display()
+        )));
+    };
+    let prepared = if phase == RunPhase::Running {
+        prepare_run_with(&cmd, intended_port, |start, cap| {
+            guest.free_port(start, cap)
+        })?
+    } else {
+        PreparedRun::passthrough(cmd.clone())
+    };
+    let mut env: Vec<(String, String)> = Vec::new();
+    if let Some(primary) = record.repos.first() {
+        env.extend(
+            sup.workspace
+                .run_env(&record.project_id, &primary.repo_path, &agent_id, &cwd),
+        );
+    }
+    env.extend(prepared.extra_env);
+
+    let host_port = match prepared.port {
+        Some(port) => Some(guest.forward(port, PORT_SCAN_CAP)?),
+        None => None,
+    };
+    session.set_ports(host_port, prepared.port);
+    if let (Some(port), Some(host_port)) = (prepared.port, host_port) {
+        emit_run_port(ctx.sink.as_ref(), &agent_id, host_port, Some(port));
+    }
+    if let Some(note) = &prepared.note {
+        write_note(&ctx, &agent_id, &session, note);
+    }
+    if let (Some(port), Some(host_port)) = (prepared.port, host_port) {
+        if host_port != port {
+            write_note(
+                &ctx,
+                &agent_id,
+                &session,
+                &format!("Port {port} in use on this Mac — reachable at localhost:{host_port}"),
+            );
+        }
+    }
+
+    let (program, args, kill) = guest.launch(&cwd, &prepared.cmd, &env)?;
+    let (on_output, on_exit) = phase_hooks(
+        sup,
+        ctx,
+        agent_id,
+        session.clone(),
+        gen,
+        cwd.clone(),
+        intended_port,
+        phase,
+        chain_run_cmd,
+    );
+    // The guard runs the kill — the box released, the forward dropped — if
+    // the spawn fails; a spawned session owns it from then on.
+    let pty = KillGuard::new(kill).start(|kill| {
+        run_session::spawn_command(&program, &args, &cwd, &[], kill, on_output, on_exit)
+    })?;
+    session.attach_pty(pty);
+    Ok(())
+}
+
+/// The output and exit hooks of one phase's PTY, whichever engine runs it:
+/// output into the session's log and out to the panel; the exit into
+/// [`handle_run_phase_exit`] under the phase's generation.
+#[allow(clippy::too_many_arguments)]
+fn phase_hooks(
+    sup: Arc<Supervisor>,
+    ctx: Arc<EngineCtx>,
+    agent_id: String,
+    session: Arc<RunSession>,
+    gen: u64,
+    cwd: PathBuf,
+    intended_port: Option<u16>,
+    phase: RunPhase,
+    chain_run_cmd: Option<String>,
+) -> (
+    impl Fn(Vec<u8>) + Send + 'static,
+    impl Fn(PtyExit) + Send + 'static,
+) {
+    let session_out = session.clone();
+    let ctx_out = ctx.clone();
+    let id_out = agent_id.clone();
+    let on_output = move |bytes: Vec<u8>| {
+        let seq = session_out.append_log(&bytes);
+        emit_run_output(ctx_out.sink.as_ref(), &id_out, bytes, seq);
+    };
+    let on_exit = move |exit: PtyExit| {
+        handle_run_phase_exit(
+            sup.clone(),
+            ctx.clone(),
+            agent_id.clone(),
+            session.clone(),
+            gen,
+            cwd.clone(),
+            intended_port,
+            phase,
+            exit,
+            chain_run_cmd.clone(),
+        );
+    };
+    (on_output, on_exit)
 }
 
 /// A command wrapped in the Run profile, as [`sandboxed_run_command`] builds
@@ -615,9 +810,9 @@ fn handle_run_phase_exit(
     session: Arc<RunSession>,
     gen: u64,
     cwd: std::path::PathBuf,
-    chain_port: Option<u16>,
+    intended_port: Option<u16>,
     phase: RunPhase,
-    exit: crate::pty_session::PtyExit,
+    exit: PtyExit,
     chain_run_cmd: Option<String>,
 ) {
     // If the user clicked Stop (or started a fresh run), our
@@ -640,22 +835,28 @@ fn handle_run_phase_exit(
         if let Some(run_cmd) = chain_run_cmd {
             // Secure a free port now — install may have run for minutes, so the
             // port could have been taken since the click. The intended port was
-            // resolved at run_start and threaded here, so no re-detection.
-            let prepared = match prepare_run(&run_cmd, chain_port) {
-                Ok(p) => p,
-                Err(e) => {
-                    let msg = format!("Failed to start run command: {e}");
-                    session.mark_stopped(Some(msg.clone()));
-                    emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, Some(msg));
-                    return;
+            // resolved at run_start and threaded here, so no re-detection. A
+            // command in a box's guest settles its port as it spawns, as at
+            // run_start.
+            let prepared = if crate::sandbox::checkout_is_remote(&cwd) {
+                PreparedRun::passthrough(run_cmd)
+            } else {
+                match prepare_run(&run_cmd, intended_port) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let msg = format!("Failed to start run command: {e}");
+                        session.mark_stopped(Some(msg.clone()));
+                        emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, Some(msg));
+                        return;
+                    }
                 }
             };
             session.transition_phase(RunPhase::Running);
             // Emit the resolved port before the running state so the store holds
             // it before the UI reacts (see run_start for the same ordering).
-            session.set_port(prepared.port);
+            session.set_ports(prepared.port, None);
             if let Some(port) = prepared.port {
-                emit_run_port(ctx.sink.as_ref(), &agent_id, port);
+                emit_run_port(ctx.sink.as_ref(), &agent_id, port, None);
             }
             emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Running, None);
             write_header(&ctx, &agent_id, &session, &prepared.cmd);
@@ -669,7 +870,7 @@ fn handle_run_phase_exit(
                 session.clone(),
                 gen,
                 cwd,
-                None,
+                intended_port,
                 RunPhase::Running,
                 prepared.cmd,
                 prepared.extra_env,
@@ -758,5 +959,48 @@ mod tests {
         assert_eq!(plan.first_phase, RunPhase::Running);
         assert_eq!(plan.first_cmd, "cargo run");
         assert_eq!(plan.chained_run_cmd, None);
+    }
+
+    // ── prepare_run_with ──────────────────────────────────────────────────
+
+    /// The probe decides the port wherever the command runs: the intended
+    /// port free leaves the command alone and pins `PORT`; a bump rewrites
+    /// an explicit token and says so; no port inferred probes nothing; and
+    /// a range with nothing free is the error.
+    #[test]
+    fn prepare_run_takes_the_probes_port() {
+        let free = prepare_run_with("vite --port 3000", Some(3000), |start, cap| {
+            assert_eq!((start, cap), (3000, PORT_SCAN_CAP));
+            Ok(Some(3000))
+        })
+        .unwrap();
+        assert_eq!(free.cmd, "vite --port 3000");
+        assert_eq!(free.port, Some(3000));
+        assert_eq!(
+            free.extra_env,
+            vec![("PORT".to_string(), "3000".to_string())]
+        );
+        assert_eq!(free.note, None);
+
+        let bumped =
+            prepare_run_with("vite --port 3000", Some(3000), |_, _| Ok(Some(3002))).unwrap();
+        assert_eq!(bumped.cmd, "vite --port 3002");
+        assert_eq!(bumped.port, Some(3002));
+        assert_eq!(
+            bumped.note.as_deref(),
+            Some("Port 3000 in use — using 3002")
+        );
+
+        let none = prepare_run_with("cargo run", None, |_, _| panic!("no port to probe")).unwrap();
+        assert_eq!(none.port, None);
+        assert!(none.extra_env.is_empty());
+
+        let taken = prepare_run_with("next dev", Some(3000), |_, _| Ok(None)).unwrap_err();
+        assert!(taken.to_string().contains("No free port"), "{taken}");
+        let failed = prepare_run_with("next dev", Some(3000), |_, _| {
+            Err(Error::Other("box gone".into()))
+        })
+        .unwrap_err();
+        assert_eq!(failed.to_string(), "box gone");
     }
 }

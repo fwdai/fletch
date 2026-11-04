@@ -14,7 +14,7 @@ is the pipeline.
 | `test.sh` | Mounts the output as init would and runs the checks (chroot as `agent`); `report.md` |
 | `build-docker.sh` | The one way to build, on a Mac (Docker Desktop) or in CI: fletch-guest, `build.sh` in a container, `test.sh` with `--test`, the delta manifests, an install with the app's installer |
 | `boot-check.sh` | Boots the output on a Mac (or a Linux host with KVM) with its layers and checks the guest over ssh |
-| `bump.sh` | Moves the pins in `build.sh` (Debian snapshot, Node 22 and its arm64 and x64 tarball hashes), VERSION and the app's pin |
+| `bump.sh` | Moves the pins in `build.sh` (Debian snapshot, Node 22 and its arm64 and x64 tarball hashes, Bun and its zip hashes), VERSION and the app's pin |
 | `publish.sh` | Creates the GitHub release from an output directory: `box-image-v<VERSION>` for an aarch64 build, `box-image-v<VERSION>-x86_64` for an x86_64 one (the manifest's `arch`); a draft, published once every file is there; refuses an existing version |
 
 `build.sh`, `packages/`, `dpkg-excludes.cfg`, `rootfs/` and `crates/fletch-guest`
@@ -29,6 +29,7 @@ by `build-docker.sh`; the app fetches only changed chunks on an update).
 
 Inputs that pin the result: Debian packages from `snapshot.debian.org` at
 `DEBIAN_SNAPSHOT`, Node from one nodejs.org tarball checked against its
+`SHASUMS256` entry, Bun from one GitHub release zip checked against its
 `SHASUMS256` entry, every inode at `SOURCE_DATE_EPOCH`, a fixed UUID per image.
 The same inputs and the same `fletch-guest` give byte-identical images.
 

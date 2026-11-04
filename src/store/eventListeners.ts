@@ -750,9 +750,12 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
     }),
   );
 
-  // The actual (possibly port-safety-bumped) port the dev server bound. Owns
-  // `runPorts` so the sidebar indicator and Run pane link reflect the real port
-  // even after a bump, and survive the RunPanel unmounting on a tab switch.
+  // The port on this Mac that reaches the dev server: the (possibly
+  // port-safety-bumped) port it bound on the host, or the host end of the
+  // forward to a VM workspace's guest — `port` either way, so a host of any
+  // age is read the same. Owns `runPorts` so the sidebar indicator and Run
+  // pane link reflect the real port even after a bump, and survive the
+  // RunPanel unmounting on a tab switch.
   await bind(
     onRunPort((e) => {
       set((s) => ({ runPorts: { ...s.runPorts, [e.agent_id]: String(e.port) } }));
