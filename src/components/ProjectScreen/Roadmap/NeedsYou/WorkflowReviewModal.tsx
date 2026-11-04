@@ -30,6 +30,17 @@ export function WorkflowReviewModal({ runId, onClose }: { runId: string; onClose
     if (run && !(run.status === "paused" && run.paused_reason === "approval")) onClose();
   }, [run, onClose]);
 
+  // The first load settled with no run — deleted, or a fetch failure the hook
+  // swallows and only retries on a later event or a remount. A paused approval
+  // emits nothing further, so leaving this mounted empty would make the strip's
+  // Review look dead: close instead, so the next click remounts and retries.
+  useEffect(() => {
+    if (!loading && !run) {
+      setLastError("Couldn't open the review for this run. Try again.");
+      onClose();
+    }
+  }, [loading, run, onClose, setLastError]);
+
   if (!run) return null;
   return (
     <ReviewModal
