@@ -589,7 +589,7 @@
    The decisions the pipeline is waiting on, above the batch bar. Same grammar as
    the bars below it (a flat band between the header and the scroller, one accent
    line, the same button pair) but read in amber rather than accent: a proposal is
-   an invitation, a pause is something already stopped. Deliberately low-key —
+   an invitation, a hold is something already stopped. Deliberately low-key —
    the cards are rows, not panels, so three of them cost three lines. */
 .rm-needs {
   flex-shrink: 0;
@@ -649,14 +649,6 @@
 .rm-needs-why {
   min-width: 0;
   color: var(--fg-3);
-}
-/* The inline answer for a question pause. Indented to the item's title so the
-   form reads as belonging to that row and not to the strip. */
-.rm-needs-answer {
-  padding: 0 0 4px 19px;
-}
-.rm-needs-answer .wf-answer {
-  margin-top: 4px;
 }
 
 /* ── the "In flight" rail ──
@@ -1079,7 +1071,6 @@
    state pill — the chips no longer set the row's height, the row does. */
 .rm-state,
 .rm-live,
-.rm-paused,
 .rm-src,
 .rm-area,
 .rm-dep,
@@ -1176,17 +1167,6 @@
   gap: 5px;
   max-width: 120px;
   color: var(--fg-2);
-}
-/* The pearl is pulsing but the run is waiting on a person. Warn-toned, because
-   nothing moves until someone acts — the one header chip that is a demand. */
-.rm-paused {
-  padding: 0 8px;
-  max-width: 190px;
-  overflow: hidden;
-  font-weight: 500;
-  border-radius: 999px;
-  color: var(--warn);
-  background: color-mix(in oklch, var(--warn), transparent 88%);
 }
 .rm-live > .truncate {
   min-width: 0;

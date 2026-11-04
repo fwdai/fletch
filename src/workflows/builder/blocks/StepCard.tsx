@@ -1,7 +1,6 @@
 // StepCard.tsx — one collapsed step card on the vertical canvas: agent identity,
-// a 2-line goal preview, and summary chips (gate, budgets, comms). All editing
-// happens in the inspector — clicking the card selects it there. Reused at the
-// top level and inside parallel / loop / orchestrate containers.
+// a 2-line goal preview, and summary chips (gate, issues). All editing happens
+// in the inspector — clicking the card selects it there.
 
 import { Icon } from "../../../components/Icon";
 import { GATE_MODES } from "../../data";
@@ -14,20 +13,16 @@ export function StepCard({
   ctx,
   indexLabel,
   canRemove,
-  role = "step",
 }: {
   step: EStep;
   ctx: BuilderCtx;
-  indexLabel?: string;
+  indexLabel: string;
   canRemove: boolean;
-  /** A `child` step lives under an orchestrate/parallel container. */
-  role?: "step" | "child";
 }) {
   const a = ctx.resolve(step.agent);
   const gate = GATE_MODES.find((m) => m.id === step.gate.type) ?? GATE_MODES[0];
   const errors = ctx.errorsFor(step.nid);
   const selected = ctx.selectedNid === step.nid;
-  const hasBudgets = !!step.budgets && Object.values(step.budgets).some((v) => v != null);
 
   return (
     <div
@@ -36,13 +31,13 @@ export function StepCard({
       onClick={() => ctx.select(step.nid)}
     >
       <div className="wb-step-h">
-        {indexLabel && <span className="wb-step-idx">{indexLabel}</span>}
+        <span className="wb-step-idx">{indexLabel}</span>
         <button
           className="wb-step-agent"
           onClick={(e) => {
             e.stopPropagation();
             ctx.select(step.nid);
-            ctx.openAgent(step.nid, "step", e);
+            ctx.openAgent(step.nid, e);
           }}
         >
           {a ? (
@@ -66,10 +61,10 @@ export function StepCard({
         {canRemove && (
           <button
             className="tip wb-step-menu"
-            data-tip={role === "child" ? "Remove" : "Remove step"}
+            data-tip="Remove step"
             onClick={(e) => {
               e.stopPropagation();
-              ctx.removeNode(step.nid);
+              ctx.removeStep(step.nid);
             }}
           >
             <Icon name="close" />
@@ -85,21 +80,6 @@ export function StepCard({
         <span className="wb-chip">
           <Icon name={gate.icon} /> Done on <b>{gate.short}</b>
         </span>
-        {step.gate.type === "artifact" && step.gate.path.trim() && (
-          <span className="wb-chip">
-            <Icon name="file" /> {step.gate.path}
-          </span>
-        )}
-        {hasBudgets && (
-          <span className="wb-chip">
-            <Icon name="clock" /> budgets
-          </span>
-        )}
-        {step.comms.map((c) => (
-          <span className="wb-chip" key={c}>
-            {c}
-          </span>
-        ))}
         {errors && (
           <span className="wb-chip err">
             <Icon name="close" /> {errors.length} issue{errors.length === 1 ? "" : "s"}

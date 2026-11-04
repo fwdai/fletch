@@ -112,8 +112,8 @@ repository's **git-executable configuration** — `.git/config`,
 (`sandbox/policy.rs`, invariant 3). Git resolves hooks, clean/smudge filters,
 textconv programs and merge drivers from those paths, so an agent-writable
 `.git/config` is a *host* code-execution primitive: Fletch runs git on the
-checkout constantly (diff polling, workflow boundary commits, merge
-integration), and a planted `filter.*.clean` executes on the next `git add`. The
+checkout constantly (diff polling, workflow boundary commits), and a planted
+`filter.*.clean` executes on the next `git add`. The
 tracked `.gitattributes` stays writable — it is source an agent legitimately
 edits, and an attribute naming a driver is inert while it cannot define one.
 Independently, every host-side git invocation carries hardening overrides that
@@ -235,9 +235,9 @@ the half-built checkout there. In order:
   default branch.
 
 A workflow run repository (`workflow/gitops.rs`) takes only the origin rewrite,
-the identity and the attribution hook from this pipeline: its host-side merge
-commits keep your signing config, and nothing listens for delegation hooks
-there.
+the identity and the attribution hook from this pipeline: its host-side
+boundary commits keep your signing config, and nothing listens for delegation
+hooks there.
 
 ### Signing on publish
 
@@ -473,15 +473,11 @@ Fletch uses precise words for these concepts. Please use them consistently.
   isolates an agent, it is "clone."
 - **Git worktrees are not the isolation mechanism.** Fletch does not use
   `git worktree add` to isolate agents (see [Why not linked git worktrees](#why-not-linked-git-worktrees)).
-  Two internal uses of the word "worktree" survive and are *not* user-facing
-  terminology for isolation:
-  - The **`worktrees` database table** is legacy-internal naming: one row per
-    repo checkout in a workspace (`database.rs`). Renaming the table is churn we
-    haven't taken on; it does not mean agents use git worktrees.
-  - The **workflow merge stage** does use a genuine linked worktree — but of an
-    internal, disposable *run repository* under `~/.fletch/runs/`, purely to
-    integrate parallel step results (`workflow/gitops.rs`). It never touches your
-    source repository, and it is unrelated to how agents are isolated.
+  One internal use of the word "worktree" survives and is *not* user-facing
+  terminology for isolation: the **`worktrees` database table** is
+  legacy-internal naming, one row per repo checkout in a workspace
+  (`database.rs`). Renaming the table is churn we haven't taken on; it does not
+  mean agents use git worktrees.
 
 The historical spelling `~/.fletch/worktrees/` for the on-disk root was renamed
 to `~/.fletch/workspaces/`; a one-time migration handles existing installs

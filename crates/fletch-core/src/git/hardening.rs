@@ -85,7 +85,7 @@ use crate::error::{Error, Result};
 /// patch-producing `git diff` with `fatal: external diff died` (stat forms
 /// like `--numstat`/`--shortstat`/`--name-only` never invoke it). The off
 /// switch is the `--no-ext-diff` flag, passed by the patch-producing call
-/// sites themselves (`git::files::file_diff_unified`, `git::diff::diff_refs`);
+/// sites themselves (`git::files::file_diff_unified`);
 /// that also keeps a user's own `diff.external` (difftastic and friends) from
 /// corrupting parsed output. Agent checkouts that plant it are refused
 /// outright — it's in [`EXEC_CONFIG`].

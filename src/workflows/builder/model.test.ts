@@ -3,17 +3,26 @@
 // through the editor is value-preserving.
 
 import { describe, expect, it } from "vitest";
+import { GATE_MODES } from "../data";
 import type { Definition, Gate, Spec } from "../spec";
-import { blankEditor, ensureAlias, fromDefinition, toSpec, validateEditor } from "./model";
+import { editorStepIds, insertStep, patchStep, removeStep, setAgent, setField } from "./edits";
+import {
+  blankEditor,
+  type EditorState,
+  ensureAlias,
+  fromDefinition,
+  newStep,
+  toSpec,
+  validateEditor,
+} from "./model";
 
-/** The canonical §5.3 example in the stored (JSON) shape: gates always present,
- *  empty collections omitted — exactly what `wf_def_save` persists. */
+/** A four-step pipeline in the stored (JSON) shape: gates always present, empty
+ *  collections omitted — exactly what `wf_def_save` persists. */
 function canonicalSpec(): Spec {
   return {
     version: 1,
     name: "feature-pipeline",
-    description: "Plan, implement in parallel, review loop, ship",
-    budgets: { turns: 120, wall_clock_mins: 240, tokens: 2000000 },
+    description: "Plan, implement, review, fix",
     agents: {
       planner: {
         base: "claude",
@@ -29,43 +38,31 @@ function canonicalSpec(): Spec {
           id: "plan",
           agent: "planner",
           goal: "Analyze the task and write PLAN.md describing independent slices.",
-          gate: { type: "artifact", path: "PLAN.md" },
-          budgets: { turns: 3 },
+          gate: { type: "verdict" },
         },
       },
       {
-        orchestrate: {
-          agent: "planner",
-          goal: "Assign one slice from PLAN.md per coder. Answer their questions.",
-          children: { agent: "coder", max: 3 },
-          join: "all",
-          integrate: "none",
-          comms: ["report", "ask"],
-          compose: { max_sub_runs: 2, max_depth: 2 },
+        step: {
+          id: "implement",
+          agent: "coder",
+          goal: "Implement the slices from PLAN.md.",
+          gate: { type: "commit" },
         },
       },
       {
-        loop: {
-          max: 3,
-          until: { step: "review", verdict: "done" },
-          body: [
-            {
-              step: {
-                id: "review",
-                agent: "reviewer",
-                goal: "Review the full diff vs the run base. Write verdict.json.",
-                gate: { type: "verdict" },
-              },
-            },
-            {
-              step: {
-                id: "fix",
-                agent: "coder",
-                goal: "Address the reviewer's feedback.",
-                gate: { type: "commit" },
-              },
-            },
-          ],
+        step: {
+          id: "review",
+          agent: "reviewer",
+          goal: "Review the full diff vs the run base. Write verdict.json.",
+          gate: { type: "verdict" },
+        },
+      },
+      {
+        step: {
+          id: "fix",
+          agent: "coder",
+          goal: "Address the reviewer's feedback.",
+          gate: { type: "commit" },
         },
       },
     ],
@@ -87,29 +84,17 @@ function asDefinition(spec: Spec): Definition {
 }
 
 describe("spec ↔ editor mapping", () => {
-  it("round-trips the §5.3 example losslessly", () => {
+  it("round-trips a step pipeline losslessly", () => {
     const spec = canonicalSpec();
     const editor = fromDefinition(asDefinition(spec));
     expect(toSpec(editor)).toEqual(spec);
   });
 
-  it("round-trips an approval gate with and without require: [tests]", () => {
-    // A minimal spec whose only agent is the one the step references (the
-    // editor prunes unreferenced aliases, so the fixture must be self-contained).
-    const approvalSpec = (gate: Gate): Spec => ({
-      version: 1,
-      name: "approval-flow",
-      budgets: { turns: 10, wall_clock_mins: 30, tokens: 100000 },
-      agents: { reviewer: { base: "claude" } },
-      workflow: [{ step: { id: "handoff", agent: "reviewer", goal: "Hand off.", gate } }],
-      finalize: { push: true, open_pr: true, pr_base: "main" },
-    });
-
-    const withReq = approvalSpec({ type: "approval", require: ["tests"] });
-    expect(toSpec(fromDefinition(asDefinition(withReq)))).toEqual(withReq);
-
-    const bare = approvalSpec({ type: "approval" });
-    expect(toSpec(fromDefinition(asDefinition(bare)))).toEqual(bare);
+  it("reads a step with no gate as a verdict step, like serde does", () => {
+    const spec = canonicalSpec();
+    delete spec.workflow[0].step.gate;
+    const out = toSpec(fromDefinition(asDefinition(spec)));
+    expect(out.workflow[0].step.gate).toEqual({ type: "verdict" });
   });
 
   it("preserves the definition id and hue for the edit path", () => {
@@ -118,24 +103,65 @@ describe("spec ↔ editor mapping", () => {
     expect(editor.hue).toBe(265);
   });
 
-  it("resolves the loop exit step by identity, not stale id", () => {
+  it("prunes aliases no longer referenced by any step", () => {
     const editor = fromDefinition(asDefinition(canonicalSpec()));
-    const loop = editor.blocks.find((b) => b.kind === "loop");
-    expect(loop?.kind).toBe("loop");
-    if (loop?.kind === "loop") {
-      const review = loop.body.find((b) => b.kind === "step" && b.stepId === "review");
-      expect(loop.untilNid).toBe(review?.nid);
-    }
-  });
-
-  it("prunes aliases no longer referenced by any node", () => {
-    const editor = fromDefinition(asDefinition(canonicalSpec()));
-    // Drop the loop (removes review→reviewer and fix→coder refs; coder stays via
-    // the orchestrate child template).
-    editor.blocks = editor.blocks.filter((b) => b.kind !== "loop");
+    editor.blocks = editor.blocks.filter((s) => s.stepId !== "review");
     const spec = toSpec(editor);
     expect(Object.keys(spec.agents).sort()).toEqual(["coder", "planner"]);
     expect(spec.agents.reviewer).toBeUndefined();
+  });
+});
+
+describe("toSpec only produces what the kernel runs", () => {
+  // Compile-time half: a gate kind added to (or missing from) `Gate` breaks this
+  // literal, so the runtime checks below can't silently fall behind the type.
+  const KERNEL_GATES: Record<Gate["type"], true> = { commit: true, verdict: true };
+  const SPEC_KEYS = new Set(["version", "name", "description", "agents", "workflow", "finalize"]);
+
+  /** A non-empty flat list of `{ step }` entries, each carrying exactly the four
+   *  step fields and a kernel gate, under a spec with no top-level extras. */
+  function expectKernelShape(spec: Spec) {
+    expect(Object.keys(spec).every((k) => SPEC_KEYS.has(k))).toBe(true);
+    expect(spec.workflow.length).toBeGreaterThan(0);
+    for (const entry of spec.workflow) {
+      expect(Object.keys(entry)).toEqual(["step"]);
+      expect(Object.keys(entry.step).sort()).toEqual(["agent", "gate", "goal", "id"]);
+      expect(Object.keys(KERNEL_GATES)).toContain(entry.step.gate?.type);
+      expect(Object.keys(entry.step.gate ?? {})).toEqual(["type"]);
+    }
+  }
+
+  it("offers exactly the kernel's gates in the inspector", () => {
+    expect(GATE_MODES.map((m) => m.id).sort()).toEqual(Object.keys(KERNEL_GATES).sort());
+  });
+
+  it("serializes every state the builder's edits reach as flat steps", () => {
+    let s: EditorState = setField(blankEditor(0), { name: "x", description: "d" });
+    expectKernelShape(toSpec(s));
+
+    // Append, insert at the front, insert between, then append again — every
+    // way the canvas adds a step.
+    for (const index of [undefined, 0, 1, undefined]) {
+      s = insertStep(s, newStep(editorStepIds(s)), index);
+      expectKernelShape(toSpec(s));
+    }
+
+    // Give every step an agent, instructions and each gate the inspector offers.
+    for (const [i, step] of s.blocks.entries()) {
+      s = setAgent(s, step.nid, i % 2 ? "codex" : "claude", []);
+      s = patchStep(s, step.nid, { goal: `goal ${i}`, gate: { type: GATE_MODES[i % 2].id } });
+      expectKernelShape(toSpec(s));
+    }
+
+    s = removeStep(s, s.blocks[1].nid);
+    const spec = toSpec(s);
+    expectKernelShape(spec);
+    expect(spec.workflow.map((e) => e.step.id)).toEqual(s.blocks.map((b) => b.stepId));
+    expect(validateEditor(s).ok).toBe(true);
+  });
+
+  it("keeps the shape for a loaded definition", () => {
+    expectKernelShape(toSpec(fromDefinition(asDefinition(canonicalSpec()))));
   });
 });
 
@@ -180,7 +206,7 @@ describe("agent aliasing", () => {
 });
 
 describe("validation mirrors the load-bearing §5.2 rules", () => {
-  it("accepts the canonical example", () => {
+  it("accepts the canonical pipeline", () => {
     expect(validateEditor(fromDefinition(asDefinition(canonicalSpec()))).ok).toBe(true);
   });
 
@@ -199,53 +225,12 @@ describe("validation mirrors the load-bearing §5.2 rules", () => {
     expect(v.byNode[step.nid]?.some((m) => m.includes("agent"))).toBe(true);
   });
 
-  it("flags loop.max = 0 on the loop node", () => {
+  it("flags a duplicate step id on the second occurrence", () => {
     const editor = fromDefinition(asDefinition(canonicalSpec()));
-    const loop = editor.blocks.find((b) => b.kind === "loop");
-    if (loop?.kind === "loop") loop.max = 0;
+    editor.blocks[2].stepId = "plan";
     const v = validateEditor(editor);
     expect(v.ok).toBe(false);
-    if (loop) expect(v.byNode[loop.nid]?.some((m) => m.includes("max"))).toBe(true);
-  });
-
-  it("flags orchestrate integrate: merge as unsupported", () => {
-    const editor = fromDefinition(asDefinition(canonicalSpec()));
-    const orch = editor.blocks.find((b) => b.kind === "orchestrate");
-    if (orch?.kind === "orchestrate") orch.integrate = "merge";
-    const v = validateEditor(editor);
-    expect(v.ok).toBe(false);
-    if (orch) expect(v.byNode[orch.nid]?.some((m) => m.includes("not supported"))).toBe(true);
-  });
-
-  it("flags a non-step block inside a loop body", () => {
-    const editor = fromDefinition(asDefinition(canonicalSpec()));
-    const loop = editor.blocks.find((b) => b.kind === "loop");
-    if (loop?.kind === "loop") {
-      loop.body.push({
-        kind: "parallel",
-        nid: "n-par",
-        join: "all",
-        integrate: "none",
-        maxConcurrent: null,
-        steps: [],
-      });
-    }
-    const v = validateEditor(editor);
-    expect(v.ok).toBe(false);
-    if (loop) {
-      expect(v.byNode[loop.nid]?.some((m) => m.includes("must be steps"))).toBe(true);
-    }
-  });
-
-  it("rejects an absolute artifact path", () => {
-    const s = blankEditor(0);
-    s.name = "x";
-    const step = s.blocks[0];
-    if (step.kind === "step") {
-      step.agent = "claude";
-      step.gate = { type: "artifact", path: "/etc/passwd" };
-    }
-    const v = validateEditor(s);
-    expect(v.byNode[step.nid]?.some((m) => m.includes("repo-relative"))).toBe(true);
+    expect(v.byNode[editor.blocks[0].nid]).toBeUndefined();
+    expect(v.byNode[editor.blocks[2].nid]?.some((m) => m.includes("duplicate"))).toBe(true);
   });
 });

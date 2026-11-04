@@ -55,7 +55,3 @@ Some menus stay bespoke on purpose — `Select` (own keyboard/focus), `ModelPick
 (own `model-dd-*` classes + side panel), and the `@`/`#`/`/` autocomplete
 (parent-controlled highlight + per-item scroll). The `Dropdown*` primitives
 cover the simpler click-to-pick menus.
-
-Likewise `.rv-modal` (the approval-review surface) keeps its own shell: it's a
-third card shape, already shared between its two mounts. New modals should reach
-for `Modal` or `ModalSheet` rather than adding a fourth.

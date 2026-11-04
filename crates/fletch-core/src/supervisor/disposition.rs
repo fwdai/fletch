@@ -395,7 +395,6 @@ impl Supervisor {
         self.activities.lock().remove(agent_id);
         self.statuses.lock().remove(agent_id);
         self.native_inputs.lock().remove(agent_id);
-        self.rpc_dispatchers.lock().remove(agent_id);
         self.live_turns.lock().remove(agent_id);
         self.delivery_locks.lock().remove(agent_id);
         self.checkout_locks.lock().remove(agent_id);
@@ -547,7 +546,7 @@ async fn choose_restore_branch_name(repo_path: &Path, desired: &str) -> String {
 ///
 /// An *adopted* checkout is skipped: the agent was a tenant of a working tree
 /// something else owns (the workflow kernel's shared run workspace, which the
-/// run's own delete reclaims — see `workflow::scheduler`), so disposing of the
+/// run's own delete reclaims — see `workflow::service`), so disposing of the
 /// agent must leave the directory exactly where it is. Every step of a run
 /// passes through here as it is archived, so the run's work would not survive
 /// its first completed step otherwise.

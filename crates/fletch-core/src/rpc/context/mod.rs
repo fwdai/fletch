@@ -1,6 +1,6 @@
 //! The `context_*` RPC ops: how an agent reads the project context and writes
 //! what it learned or decided back. Wraps whichever dispatcher the spawn chose
-//! (git, roadmap, workflow comms) and delegates everything else to it, so the
+//! (git, roadmap, review) and delegates everything else to it, so the
 //! layer is one wrapper regardless of the agent's purpose.
 //!
 //! Every write is stamped here, never from `args`: the agent and provider from

@@ -467,8 +467,7 @@ impl WorkspaceManager {
 
     /// Ingest timestamp (ms epoch) of the most recent `session_records` row for
     /// the workspace's current session, or `None` if nothing has been ingested
-    /// yet. The workflow stall watchdog compares this against `stall_timeout` to
-    /// tell a working agent from a silent one (see `workflow::attempt`).
+    /// yet. Auto-archive reads it as the agent's last activity.
     pub fn last_activity(&self, workspace_id: &str) -> Option<i64> {
         let conn = self.db.lock();
         let sid = current_session_id(&conn, workspace_id)?;
@@ -515,8 +514,8 @@ impl WorkspaceManager {
     }
 
     /// The current session's own records, in seq order — what this session's
-    /// agent actually produced, for internal readers (the workflow budget
-    /// ledger). Display reads use the stitched `read_history_records`.
+    /// agent actually produced, for internal readers (transcript capture).
+    /// Display reads use the stitched `read_history_records`.
     pub fn read_session_records(&self, workspace_id: &str) -> Result<Vec<SessionRecord>> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {

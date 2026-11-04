@@ -1,9 +1,9 @@
-// WorkflowBuilder.tsx — the block-tree editor (spec §14.1), v2 layout: a
-// vertical pipeline canvas on the left, a sticky inspector on the right editing
-// the selected node (or the workflow overview). A shared `ctx` lets any nested
-// card dispatch an edit, select itself, or open the agent picker. Validation
-// from `model.ts` renders inline and gates the save. Persistence is the
-// caller's job (Save hands back the editor state).
+// WorkflowBuilder.tsx — the step-list editor (spec §14.1): a vertical pipeline
+// canvas on the left, a sticky inspector on the right editing the selected step
+// (or the workflow overview). A shared `ctx` lets any card dispatch an edit,
+// select itself, or open the agent picker. Validation from `model.ts` renders
+// inline and gates the save. Persistence is the caller's job (Save hands back
+// the editor state).
 
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../../components/Icon";
@@ -13,15 +13,11 @@ import { resolveAlias } from "../shared";
 import { BlockSequence } from "./blocks/BlockSequence";
 import type { BuilderCtx, Pop, PopRect } from "./ctx";
 import {
-  type AgentRole,
-  addBlock,
-  addStepToContainer,
   editorStepIds,
-  findNode,
-  newBlockOfType,
-  patchBlock,
+  findStep,
+  insertStep,
   patchStep,
-  removeNode,
+  removeStep,
   setAgent,
   setField,
 } from "./edits";
@@ -71,10 +67,10 @@ export function WorkflowBuilder({
     return () => document.body.classList.remove("wb-drawer-open");
   }, []);
 
-  // A deleted node can't stay selected — fall back to the overview.
-  const selected = sel ? findNode(state, sel) : null;
+  // A deleted step can't stay selected — fall back to the overview.
+  const selected = sel ? findStep(state, sel) : null;
   useEffect(() => {
-    if (sel && !findNode(state, sel)) setSel(null);
+    if (sel && !findStep(state, sel)) setSel(null);
   }, [state, sel]);
 
   const ctx: BuilderCtx = useMemo(
@@ -86,23 +82,16 @@ export function WorkflowBuilder({
       selectedNid: sel,
       select: setSel,
       patchStep: (nid, patch) => setState((s) => patchStep(s, nid, patch)),
-      patchBlock: (nid, patch) => setState((s) => patchBlock(s, nid, patch)),
-      removeNode: (nid) => setState((s) => removeNode(s, nid)),
-      // Structural adds build the node eagerly (fixed nid to select; the global
-      // id counters keep step ids unique) but insert with a functional update,
-      // so rapid successive adds merge instead of overwriting each other.
-      addStepToContainer: (nid) => {
+      removeStep: (nid) => setState((s) => removeStep(s, nid)),
+      // An add builds the step eagerly (a fixed nid to select; the global id
+      // counter keeps step ids unique) but inserts with a functional update, so
+      // rapid successive adds merge instead of overwriting each other.
+      addStep: (index) => {
         const step = newStep(editorStepIds(state));
-        setState((s) => addStepToContainer(s, nid, step));
+        setState((s) => insertStep(s, step, index));
         setSel(step.nid);
       },
-      addBlock: (seqNid, type, index) => {
-        const block = newBlockOfType(editorStepIds(state), type);
-        setState((s) => addBlock(s, seqNid, block, index));
-        setSel(block.nid);
-      },
-      openAgent: (nid, role: AgentRole, e) =>
-        setPop({ type: "agent", nid, role, rect: rectFrom(e) }),
+      openAgent: (nid, e) => setPop({ type: "agent", nid, rect: rectFrom(e) }),
     }),
     // validation is derived from state, so ctx refreshes on every edit — the
     // closures over `state` above stay current.
@@ -138,7 +127,7 @@ export function WorkflowBuilder({
               />
             </div>
 
-            <BlockSequence blocks={state.blocks} seqNid={null} ctx={ctx} />
+            <BlockSequence steps={state.blocks} ctx={ctx} />
           </div>
 
           <Inspector
@@ -154,14 +143,14 @@ export function WorkflowBuilder({
           <div className="wb-summary">
             {validation.ok ? (
               <>
-                Ready to save · <b>{state.blocks.length}</b> block
+                Ready to save · <b>{state.blocks.length}</b> step
                 {state.blocks.length === 1 ? "" : "s"}
               </>
             ) : (
               <span className="wb-summary-err">
                 <Icon name="close" size={11} />{" "}
                 {validation.form[0] ??
-                  `${Object.keys(validation.byNode).length} block(s) need attention`}
+                  `${Object.keys(validation.byNode).length} step(s) need attention`}
               </span>
             )}
             {saveError && <span className="wb-summary-err"> · {saveError}</span>}
@@ -188,7 +177,7 @@ export function WorkflowBuilder({
           rect={pop.rect}
           agents={agents}
           onPick={(id) => {
-            setState((s) => setAgent(s, pop.nid, pop.role, id, agents));
+            setState((s) => setAgent(s, pop.nid, id, agents));
             closePop();
           }}
         />

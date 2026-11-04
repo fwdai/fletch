@@ -37,21 +37,46 @@ pub struct Definition {
     pub updated_at: i64,
 }
 
-fn row_to_definition(r: &Row) -> rusqlite::Result<Definition> {
-    let spec_json: String = r.get("spec_json")?;
-    let spec: Spec = serde_json::from_str(&spec_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-    })?;
-    Ok(Definition {
-        id: r.get("id")?,
-        name: r.get("name")?,
-        description: r.get("description")?,
-        hue: r.get("hue")?,
-        spec,
-        run_count: r.get("run_count")?,
-        created_at: r.get("created_at")?,
-        updated_at: r.get("updated_at")?,
-    })
+/// A `wf_definition` row with its spec still serialized. Parsing is a separate
+/// step so the listing can skip a row whose spec this build no longer reads
+/// instead of failing whole.
+struct StoredDefinition {
+    id: String,
+    name: String,
+    description: String,
+    hue: Option<i64>,
+    spec_json: String,
+    run_count: i64,
+    created_at: i64,
+    updated_at: i64,
+}
+
+impl StoredDefinition {
+    fn from_row(r: &Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: r.get("id")?,
+            name: r.get("name")?,
+            description: r.get("description")?,
+            hue: r.get("hue")?,
+            spec_json: r.get("spec_json")?,
+            run_count: r.get("run_count")?,
+            created_at: r.get("created_at")?,
+            updated_at: r.get("updated_at")?,
+        })
+    }
+
+    fn parse(self) -> Result<Definition, serde_json::Error> {
+        Ok(Definition {
+            spec: serde_json::from_str(&self.spec_json)?,
+            id: self.id,
+            name: self.name,
+            description: self.description,
+            hue: self.hue,
+            run_count: self.run_count,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
 }
 
 /// Reject an invalid spec with all §5.2 messages joined into one error string.
@@ -94,12 +119,17 @@ pub async fn wf_def_save_impl(
         "SELECT id, name, description, hue, spec_json, run_count, created_at, updated_at \
          FROM wf_definition WHERE id = ?1",
         [&id],
-        row_to_definition,
+        StoredDefinition::from_row,
     )
+    .map_err(|e| e.to_string())?
+    .parse()
     .map_err(|e| e.to_string())
 }
 
-/// Every definition, newest-edited first.
+/// Every definition, newest-edited first. A definition whose spec this build
+/// can no longer read — one written for a block or gate kind the engine no
+/// longer has — is left out with a warning naming it, so one stale row never
+/// takes the whole library down with it. The row itself is untouched.
 pub async fn wf_def_list_impl(db: &Db) -> Result<Vec<Definition>, String> {
     let conn = db.lock();
     let mut stmt = conn
@@ -109,11 +139,21 @@ pub async fn wf_def_list_impl(db: &Db) -> Result<Vec<Definition>, String> {
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], row_to_definition)
+        .query_map([], StoredDefinition::from_row)
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
+        let stored = row.map_err(|e| e.to_string())?;
+        let (id, name) = (stored.id.clone(), stored.name.clone());
+        match stored.parse() {
+            Ok(def) => out.push(def),
+            Err(e) => tracing::warn!(
+                definition_id = %id,
+                definition_name = %name,
+                error = %e,
+                "skipping a workflow definition whose spec this build cannot read"
+            ),
+        }
     }
     Ok(out)
 }
@@ -345,7 +385,7 @@ pub(super) struct StepDeliverables {
     pub skills: Vec<crate::agent_profile::SkillSnapshot>,
     pub mcp_servers: Vec<crate::agent_profile::McpServerSnapshot>,
     /// The linked custom agent's reasoning effort, when one resolves. The
-    /// scheduler applies it only as a fallback — an explicit `AgentSpec.effort`
+    /// kernel applies it only as a fallback — an explicit `AgentSpec.effort`
     /// override wins (§3.2). `None` when there's no custom agent, its row is
     /// gone, or its effort column is null.
     pub effort: Option<String>,
@@ -443,7 +483,7 @@ pub(super) fn resolve_step_deliverables(
                     // Collapse blank (incl. whitespace-only) values to `None` so
                     // a live step and an export+imported one resolve the same and
                     // neither spawns with an empty argument — the trim-based twin
-                    // of `scheduler::nonblank` on the AgentSpec-override side.
+                    // of `runner::spawn::nonblank` on the AgentSpec-override side.
                     effort = e.filter(|v| !v.trim().is_empty());
                     model = mdl.filter(|v| !v.trim().is_empty());
                     instructions = Some(instr).filter(|v| !v.trim().is_empty());
@@ -687,6 +727,48 @@ mod tests {
         assert_eq!(def.name, "demo");
         assert_eq!(def.run_count, 0);
         assert_eq!(def.spec, sample_spec());
+    }
+
+    #[tokio::test]
+    async fn a_definition_whose_spec_no_longer_parses_is_skipped_by_the_list() {
+        let db = test_db();
+        save(&db, &sample_spec(), Some("kept")).await;
+        // A definition saved for the deleted clone-per-step engine: its
+        // `parallel` block no longer deserializes.
+        let parallel = serde_json::json!({
+            "version": 1,
+            "name": "fan-out",
+            "agents": { "coder": { "base": "claude" } },
+            "workflow": [
+                { "step": { "id": "plan", "agent": "coder", "goal": "plan" } },
+                { "parallel": {
+                    "join": "all",
+                    "integrate": "none",
+                    "steps": [{ "id": "a", "agent": "coder", "goal": "a" }]
+                } }
+            ]
+        });
+        db.lock()
+            .execute(
+                "INSERT INTO wf_definition (id, name, spec_json, created_at, updated_at)
+                 VALUES ('stale', 'fan-out', ?1, 0, 0)",
+                [parallel.to_string()],
+            )
+            .unwrap();
+
+        let listed = wf_def_list_impl(&db).await.expect("the list still loads");
+        let ids: Vec<&str> = listed.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, vec!["kept"]);
+        // Skipped, not deleted: the row is still there.
+        let rows: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM wf_definition WHERE id = 'stale'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[tokio::test]

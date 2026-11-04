@@ -10,15 +10,12 @@
 // is in motion". Nothing here is a decision, so there is no bucket ordering and
 // no action per entry beyond the jump every entry shares.
 //
-// Every word an entry says is borrowed, never restated: a pause is named by
-// `pausedLabel` (the item card's chip and the sidebar badge use the same one) and
-// a PR's gate by `mergeGate.ts` through `reviewGate`. A rail that called
-// "review required" something else would be the drift those modules exist to
-// prevent.
+// Every word an entry says is borrowed, never restated: a PR's gate is named by
+// `mergeGate.ts` through `reviewGate`. A rail that called "review required"
+// something else would be the drift that module exists to prevent.
 
 import type { RoadmapItem, RoadmapItemReview, WfRun } from "@/api";
 import type { MergeGateTone } from "@/mergeGate";
-import { pausedLabel } from "@/workflows/run/status";
 import { reviewGate } from "../useItemReviews";
 
 /** Which half of the pipeline an entry is in. `active` is in the build lane (not
@@ -34,15 +31,14 @@ export interface RailEntry {
   code: string;
   title: string;
   /** What it is doing, in the vocabulary its own card already uses — a run's
-   *  pause, a PR's merge gate, or the plain word when there is nothing more
+   *  ending, a PR's merge gate, or the plain word when there is nothing more
    *  specific to say yet. */
   state: string;
   /** Severity for the state chip, the shared `MergeGateTone` so an `in_review`
    *  entry and its card's gate chip cannot read differently. */
   tone: MergeGateTone;
   /** Whether tokens are actually being spent on this row right now. Only an
-   *  `active` row with a live run is; a hold, a pause or a run that already ended
-   *  is not, and the strip's count must not add it to "being built". */
+   *  `active` row with a live run is; a hold or a run that already ended is not, and the strip's count must not add it to "being built". */
   building: boolean;
   /** The run building an `active` row, when one is recorded — the drainer flips
    *  the status a beat before the run exists, so this can be absent on a row
@@ -82,22 +78,15 @@ function isOver(run: WfRun | undefined): boolean {
  *  the item is not going anywhere until it is released (the Needs-you strip above
  *  carries that affordance; this strip only has to stop claiming motion).
  *
- *  Then the run's own status, every branch of it. Collapsing "not paused" to
+ *  Then the run's own status, every branch of it. Collapsing everything else to
  *  "running" is how a failed run kept a live clock on this strip for a tick — or
- *  forever. `paused` is unconditional: a pause with no recorded reason is still a
- *  pause, not motion. */
+ *  forever. */
 function activeState(
   item: RoadmapItem,
   run: WfRun | undefined,
 ): { state: string; tone: MergeGateTone; building: boolean } {
   if (item.hold_reason) return { state: "held", tone: "attention", building: false };
   switch (run?.status) {
-    case "paused":
-      return {
-        state: run.paused_reason ? `paused — ${pausedLabel(run.paused_reason)}` : "paused",
-        tone: "warn",
-        building: false,
-      };
     case "failed":
       return { state: "run failed", tone: "attention", building: false };
     case "canceled":
@@ -154,8 +143,8 @@ export function buildInFlight(input: RailInput): RailEntry[] {
           runId: run?.id,
           // No clock on a run that has stopped: a span that keeps counting is the
           // strip asserting work is happening, which is the lie this rail exists to
-          // avoid. A held or paused row keeps it — that elapsed time is the cost of
-          // the decision the user hasn't made.
+          // avoid. A held row keeps it — that elapsed time is the cost of the
+          // decision the user hasn't made.
           startedAt: isOver(run) ? undefined : run?.created_at,
         },
       });

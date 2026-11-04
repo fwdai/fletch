@@ -1,9 +1,8 @@
-// run/status.ts — display mapping for the workflows-v1 run / attempt / paused
-// vocabulary (spec §6.2). Shared by the monitor, the attempt rail, the sidebar
-// row badge, and the paused-reason banner. Pure presentation; the semantics
-// live in the Rust engine.
+// run/status.ts — display mapping for the workflows-v1 run / attempt vocabulary
+// (spec §6.2). Shared by the monitor, the attempt rail, and the sidebar row
+// badge. Pure presentation; the semantics live in the Rust engine.
 
-import type { WfAttemptStatus, WfPausedReason, WfRunStatus } from "../../api";
+import type { WfAttemptStatus, WfRunStatus } from "../../api";
 import type { IconName } from "../../components/Icon";
 
 export const GREEN = "oklch(0.72 0.15 150)";
@@ -31,6 +30,8 @@ export function attemptChip(s: WfAttemptStatus): Chip {
     case "blocked":
       return { label: "blocked", icon: "minus", tone: AMBER };
     case "awaiting_approval":
+      // The kernel has no approval gate, but exec rows the retired engine wrote
+      // still hold this status, so their runs keep reading.
       return { label: "needs approval", icon: "user", tone: AMBER };
     case "abandoned":
       return { label: "abandoned", icon: "minus", tone: "var(--fg-3)" };
@@ -47,30 +48,9 @@ export function runChip(s: WfRunStatus): { label: string; tone: string } {
       return { label: "complete", tone: GREEN };
     case "failed":
       return { label: "failed", tone: "var(--danger)" };
-    case "paused":
-      return { label: "paused", tone: AMBER };
     case "canceled":
       return { label: "canceled", tone: "var(--fg-3)" };
     default:
       return { label: "pending", tone: "var(--fg-3)" };
-  }
-}
-
-/** One-line plain-language name for why a run paused (spec §6.2), used by the
- *  sidebar badge and as the banner title. */
-export function pausedLabel(reason: WfPausedReason): string {
-  switch (reason) {
-    case "approval":
-      return "needs approval";
-    case "question":
-      return "awaiting answer";
-    case "blocked_gate":
-      return "gate not met";
-    case "budget_exceeded":
-      return "budget reached";
-    case "conflict":
-      return "merge conflict";
-    case "stalled":
-      return "stalled";
   }
 }

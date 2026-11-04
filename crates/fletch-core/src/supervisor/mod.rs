@@ -175,12 +175,6 @@ pub struct Supervisor {
     /// an `Arc` so the fire-and-forget task can drop its entry without borrowing
     /// `self`. See `trigger_turn_end_verification` in `session_sync`.
     pub verify_inflight: Arc<Mutex<HashSet<String>>>,
-    /// Per-agent RPC dispatchers, so the mailbox can be drained on demand
-    /// (`settle_agent_rpc`) in addition to the polling watcher — the scheduler
-    /// drains a step agent's mailbox at turn end so a `wf_ask` is dispatched
-    /// before it acts on the gate (§10.4). Overwritten on each (re)spawn; removed
-    /// on teardown.
-    pub rpc_dispatchers: Mutex<HashMap<String, Arc<dyn crate::rpc::RpcDispatcher>>>,
     /// The current turn's `agent:event` stream per agent, for a client that
     /// missed it (see `live_turn`). Cleared at the next turn start; removed on
     /// teardown. In-memory only.
@@ -219,7 +213,6 @@ impl Supervisor {
             interrupted: Mutex::new(HashSet::new()),
             sync_health: Arc::new(Mutex::new(HashMap::new())),
             verify_inflight: Arc::new(Mutex::new(HashSet::new())),
-            rpc_dispatchers: Mutex::new(HashMap::new()),
             live_turns: Mutex::new(HashMap::new()),
             logins: Mutex::new(login_refresh::Logins::default()),
             // Capacity is generous: a lagging subscriber gets `Lagged` and
@@ -229,27 +222,10 @@ impl Supervisor {
         }
     }
 
-    /// Drain `agent_id`'s RPC mailbox once, synchronously, dispatching any
-    /// requests it has already written (e.g. a `wf_ask` from the turn that just
-    /// ended) before the caller acts on that turn's result. The per-agent watcher
-    /// also processes on its tick; `process_pending` is idempotent and
-    /// in-flight-guarded, so the two never double-dispatch. A no-op for an agent
-    /// with no registered dispatcher.
-    pub async fn settle_agent_rpc(self: &Arc<Self>, ctx: &Arc<EngineCtx>, agent_id: &str) {
-        let dispatcher = self.rpc_dispatchers.lock().get(agent_id).cloned();
-        let Some(dispatcher) = dispatcher else {
-            return;
-        };
-        let Ok(rpc_dir) = crate::rpc::mailbox_dir(agent_id) else {
-            return;
-        };
-        rpc_watch::process_agent_rpc_once(self, ctx, agent_id, dispatcher.as_ref(), &rpc_dir).await;
-    }
-
     /// Subscribe to runtime status transitions across all agents. To avoid a
     /// race the caller MUST subscribe *first*, then read [`Supervisor::status_of`],
     /// then loop on `recv()` — the subscribe-before-read discipline is what makes
-    /// a fast `Running → Idle` flap unlosable (see `workflow::attempt`).
+    /// a fast `Running → Idle` flap unlosable (see `workflow::runner`).
     pub fn subscribe_status(&self) -> broadcast::Receiver<StatusEvent> {
         self.status_tx.subscribe()
     }
@@ -262,20 +238,11 @@ impl Supervisor {
             .or_else(|| self.workspace.agent(agent_id).ok().map(|r| r.status))
     }
 
-    /// Ingest timestamp (ms) of this agent's most recent session record — the
-    /// stall-detection clock. `None` before the first record lands.
+    /// Ingest timestamp (ms) of this agent's most recent session record — how
+    /// recently it did anything (auto-archive reads it). `None` before the first
+    /// record lands.
     pub fn last_activity(&self, agent_id: &str) -> Option<i64> {
         self.workspace.last_activity(agent_id)
-    }
-
-    /// This agent's canonical session records (seq order) — the raw provider
-    /// bodies as ingested. The workflow budget ledger reads token `usage` out of
-    /// them (spec §11.2); a read error degrades to an empty slice (tokens then
-    /// go uncounted, exactly as for a provider that exposes no usage).
-    pub fn read_session_records(&self, agent_id: &str) -> Vec<crate::workspace::SessionRecord> {
-        self.workspace
-            .read_session_records(agent_id)
-            .unwrap_or_default()
     }
 
     /// The events of this agent's current (or, once idle, most recent) turn,
@@ -732,7 +699,7 @@ impl Supervisor {
 
     pub async fn delete_project(
         self: Arc<Self>,
-        workflows: &crate::workflow::scheduler::WorkflowService,
+        workflows: &crate::workflow::service::WorkflowService,
         project_id: &str,
     ) -> Result<ProjectDeleteResult> {
         if !self.deleting_projects.lock().insert(project_id.to_string()) {
@@ -750,7 +717,7 @@ impl Supervisor {
 
     async fn delete_project_inner(
         self: Arc<Self>,
-        workflows: &crate::workflow::scheduler::WorkflowService,
+        workflows: &crate::workflow::service::WorkflowService,
         project_id: &str,
     ) -> Result<ProjectDeleteResult> {
         // Lock workflow creation/deletion first, then agent startup. Workflow

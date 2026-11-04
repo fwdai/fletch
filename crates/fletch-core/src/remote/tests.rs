@@ -626,14 +626,7 @@ fn allowlist_matches_the_protocol_table() {
         "wf_run_agents",
         "wf_launch",
         "wf_cancel",
-        "wf_resume",
-        "wf_retry",
-        "wf_approve",
-        "wf_reject",
-        "wf_run_diff",
-        "wf_resolve_conflict",
         "wf_delete_run",
-        "wf_answer",
         "wf_def_save",
         "wf_def_list",
         "wf_def_delete",
@@ -953,9 +946,9 @@ fn the_whole_wf_and_roadmap_surface_is_exposed() {
         .iter()
         .filter(|op| op.starts_with("roadmap_"))
         .count();
-    // 18 `wf_*` commands + `wf_run_agents`; 26 `roadmap_*` commands +
+    // 11 `wf_*` commands + `wf_run_agents`; 26 `roadmap_*` commands +
     // `roadmap_discard_proposal`, which is remote-only.
-    assert_eq!((wf, roadmap), (19, 27));
+    assert_eq!((wf, roadmap), (12, 27));
     for op in dispatch::WITHHELD_WF_ROADMAP_OPS {
         assert!(
             !op.0.starts_with("wf_") && !op.0.starts_with("roadmap_"),
@@ -1316,23 +1309,7 @@ async fn run_control_reaches_the_scheduler_rather_than_answering_unknown_op() {
     let (d, _dir) = wf_roadmap_dispatch();
     for (op, args) in [
         ("wf_cancel", json!({ "runId": "r1" })),
-        ("wf_retry", json!({ "runId": "r1" })),
-        ("wf_approve", json!({ "runId": "r1" })),
-        ("wf_resume", json!({ "runId": "r1", "budgetPatch": null })),
-        ("wf_reject", json!({ "runId": "r1", "note": "no" })),
         ("wf_delete_run", json!({ "runId": "r1" })),
-        (
-            "wf_resolve_conflict",
-            json!({ "runId": "r1", "mode": "agent" }),
-        ),
-        (
-            "wf_run_diff",
-            json!({ "runId": "r1", "fromSha": "a", "toSha": "b", "path": null }),
-        ),
-        (
-            "wf_answer",
-            json!({ "projectId": "p1", "runId": "r1", "messageId": "m1", "body": "yes" }),
-        ),
     ] {
         assert_eq!(
             d.dispatch(op, args).await,

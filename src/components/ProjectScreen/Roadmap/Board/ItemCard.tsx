@@ -12,7 +12,6 @@ import { Icon, type IconName } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { formatAge } from "@/util/format";
-import { pausedLabel } from "@/workflows/run/status";
 import { EVENT_LABEL, eventDetailUrl, eventLine } from "../itemHistory";
 import { buildProposalDiff, isEmptyDiff } from "../proposalDiff";
 import { cardRuling } from "../ruling";
@@ -132,9 +131,7 @@ interface Props {
   /** Open the run this item is being built by. Only on an item with a run. */
   onOpenRun?: () => void;
   /** The live row of the run this item is tied to (`run_id`), when the workflow
-   *  engine still has one. Read for the pearl's label and, when the run is
-   *  paused, for the reason chip — an `active` card that has stopped moving must
-   *  say why without a trip to the monitor. */
+   *  engine still has one. Read for the pearl's label. */
   run?: WfRun;
   /** The workflow this item would run under ("Project default" resolved), or
    *  null when nothing would run it — the queue would stall on it. */
@@ -228,7 +225,6 @@ export function ItemCard({
    *  number, which is exactly the state `merge_sweep::pollable` skips. */
   const unpollable =
     item.status === "in_review" && !!item.item.pr_url && item.item.pr_number == null;
-  const paused = run?.status === "paused" ? run.paused_reason : null;
   const source = SOURCE[item.source];
   const state = STATE[item.status];
   /** The single question this card is asking, if any — one answer for the bar and
@@ -284,18 +280,6 @@ export function ItemCard({
           <span className="rm-live iflex-center mono text-xs">
             <span className="rm-pearl" />
             <span className="truncate">{run?.name ?? agentName ?? "running"}</span>
-          </span>
-        )}
-        {/* A paused run is the board's most important state and the one it used
-            to hide: the pearl keeps pulsing while nothing happens. Say why here,
-            on the row, so the trip to the monitor is a choice. */}
-        {paused && (
-          <span
-            className="rm-paused iflex-center text-xs"
-            title="Its run is waiting on something — open the run to deal with it"
-          >
-            <Icon name="hand" size={11} />
-            Paused — {pausedLabel(paused)}
           </span>
         )}
         {state && (

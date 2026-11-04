@@ -1,17 +1,16 @@
-//! Workflow definition spec: the block tree, agent specs, budgets, gates, and
+//! Workflow definition spec: a flat list of steps, the agents they run on, and
 //! the validation that rejects a malformed definition with precise messages.
 //!
 //! These are the *canonical* domain types. They serialize to JSON for the
 //! `wf_definition.spec_json` / `wf_run.spec_json` columns via plain serde; the
 //! shareable YAML file format is a separate concern handled entirely in
 //! `yaml.rs`, which converts to and from these types. Nothing here touches YAML
-//! or the database — `validate()` is a pure function so the builder (F1) and
-//! every save/import/launch path share one source of truth (spec §5.2).
+//! or the database — `validate()` is a pure function so the builder and every
+//! save/import/launch path share one source of truth (spec §5.2).
 
-use std::collections::BTreeMap;
-use std::path::{Component, Path};
+use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The only spec version this build understands.
 pub const SPEC_VERSION: u32 = 1;
@@ -33,14 +32,12 @@ pub struct Spec {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budgets: Option<Budgets>,
     /// Local alias → agent spec.
     #[serde(default)]
     pub agents: BTreeMap<String, AgentSpec>,
-    /// The top level is an implicit sequence of blocks.
-    #[serde(default)]
-    pub workflow: Vec<Block>,
+    /// The steps, run in order in one shared workspace.
+    #[serde(default, with = "step_blocks")]
+    pub workflow: Vec<Step>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finalize: Option<Finalize>,
 }
@@ -55,7 +52,7 @@ pub struct AgentSpec {
     pub model: Option<String>,
     /// Reasoning effort (`low`/`medium`/`high`), applied at step spawn the same
     /// way a session's `--effort` is. `None` inherits the linked custom agent's
-    /// effort (if any), then the provider CLI default (spec §11 / §3.2). Left
+    /// effort (if any), then the provider CLI default (spec §3.2). Left
     /// free-form and unvalidated, exactly like `model`: an unknown value is the
     /// provider's problem, not a spec violation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,197 +99,27 @@ pub struct McpServerDef {
     pub header_keys: Vec<String>,
 }
 
-/// A control-flow node (spec §5.1). Serialized externally tagged for JSON
-/// (`{"step": {...}}`); the YAML file uses its own irregular shape (`yaml.rs`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Block {
-    Step(Step),
-    Parallel(Parallel),
-    Loop(Loop),
-    Orchestrate(Orchestrate),
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Step {
-    /// Unique within the whole spec.
+    /// Unique within the spec.
     pub id: String,
     /// Key into `Spec.agents`.
     pub agent: String,
     pub goal: String,
     #[serde(default)]
     pub gate: Gate,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budgets: Option<Budgets>,
-    /// Declared comms permissions (spec §10.1). `report`/`ask` for a step;
-    /// `notify` is orchestrator-only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub comms: Vec<CommsCap>,
 }
 
-/// The deterministic predicate that marks a step attempt done (spec §9). The
-/// default is `Verdict`.
+/// The deterministic predicate that marks a step done (spec §9). The default is
+/// `Verdict`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Gate {
     /// `verdict.json.result == "done"`.
     #[default]
     Verdict,
-    /// HEAD moved vs the fork point.
+    /// The step's turn ended; the boundary commit records whatever it changed.
     Commit,
-    /// A repo-relative file exists (no absolute path, no `..`).
-    Artifact { path: String },
-    /// The project test command exits 0. When no test command can be resolved the
-    /// gate has verified nothing, so it blocks as unverifiable rather than falling
-    /// back to the agent's self-reported verdict (spec §9.4) — a step that wants
-    /// self-report declares `gate: verdict`.
-    Tests,
-    /// A human approves — optionally only after the listed deterministic gates
-    /// pass first (`require: [tests]`, spec §9). The approval pause is
-    /// unreachable while a required gate is unmet: a red `require: [tests]`
-    /// behaves exactly like a failing `tests` gate (blocked + re-prompt).
-    Approval {
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        require: Vec<Require>,
-        /// A repo-relative file the human reviews (spec §9) — `artifact` and
-        /// `approval` are two ends of one dial, and this is the middle: the
-        /// pause is unreachable until the file exists (missing → blocked +
-        /// re-prompt, exactly like an unmet `require`), and its content rides
-        /// in the `gate_evidence` payload. Same path rules as `Gate::Artifact`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        artifact: Option<String>,
-    },
-}
-
-/// A deterministic prerequisite an `approval` gate can demand before it will
-/// pause for a human (spec §9). Only `tests` today; modeled as an enum so an
-/// unknown value fails deserialization loudly rather than being silently
-/// dropped, and so adding future prerequisites stays a typed change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Require {
-    Tests,
-}
-
-impl Gate {
-    /// Whether satisfying this gate requires running the project's tests: a
-    /// `tests` gate always, or an `approval` gate listing `require: [tests]`.
-    /// The attempt lifecycle consults this to decide whether to run the test
-    /// runner before evaluating the gate (spec §9.4).
-    pub fn requires_tests(&self) -> bool {
-        match self {
-            Gate::Tests => true,
-            Gate::Approval { require, .. } => require.contains(&Require::Tests),
-            _ => false,
-        }
-    }
-
-    /// The repo-relative artifact this gate watches, if any: the `artifact`
-    /// gate's path, or an `approval` gate's optional reviewed file. One answer
-    /// for validation, the attempt's existence probe, and evidence capture, so
-    /// the two gate shapes can't drift apart.
-    pub fn artifact_path(&self) -> Option<&str> {
-        match self {
-            Gate::Artifact { path } => Some(path),
-            Gate::Approval {
-                artifact: Some(path),
-                ..
-            } => Some(path),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Parallel {
-    pub join: Join,
-    pub integrate: Integrate,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_concurrent: Option<u32>,
-    /// v1: children are plain steps.
-    pub steps: Vec<Step>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Loop {
-    /// Maximum iterations; required, ≥ 1.
-    pub max: u32,
-    pub until: Until,
-    pub body: Vec<Block>,
-}
-
-/// The loop exit condition: read `until.step`'s verdict; `done` exits.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Until {
-    pub step: String,
-    #[serde(default)]
-    pub verdict: LoopVerdict,
-}
-
-/// The loop only ever exits on the `until.step`'s `done` verdict (spec §5.2 /
-/// §6.6). Modeled as an enum so the YAML `verdict: done` round-trips and future
-/// exit words stay a typed change.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LoopVerdict {
-    #[default]
-    Done,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Orchestrate {
-    pub agent: String,
-    pub goal: String,
-    /// Dynamic fan-out template (authorizes `spawn_child` only; nothing
-    /// auto-spawns from it).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub children: Option<ChildTemplate>,
-    /// Static children, auto-spawned at stage entry (may be empty).
-    #[serde(default)]
-    pub body: Vec<Step>,
-    pub join: Join,
-    pub integrate: Integrate,
-    /// Children's caps; the orchestrator itself gets all.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub comms: Vec<CommsCap>,
-    /// `None` = dynamic composition disabled (spec §10.3).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compose: Option<ComposeLimits>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ChildTemplate {
-    pub agent: String,
-    pub max: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ComposeLimits {
-    pub max_sub_runs: u32,
-    /// Absolute cap 2 (spec §10.3).
-    pub max_depth: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Join {
-    All,
-    Any,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Integrate {
-    None,
-    Merge,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CommsCap {
-    Report,
-    Ask,
-    Notify,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -303,55 +130,33 @@ pub struct Finalize {
     pub pr_base: Option<String>,
 }
 
-/// Turn / token / clock / attempt caps (spec §11.1). One struct covers both the
-/// run-level and step-level `budgets`; the scope of each field is documented in
-/// §11.1. All optional — a missing field falls back to the app default at
-/// launch. Signed so a negative value parses and is caught by validation with a
-/// precise message rather than failing deserialization opaquely.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Budgets {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turns: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tokens: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wall_clock_mins: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turns_per_attempt: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_attempts: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spawn_timeout_secs: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_start_timeout_secs: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stall_timeout_secs: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nudge_timeout_secs: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tests_timeout_secs: Option<i64>,
-}
+/// The JSON framing of `Spec.workflow`: each step is wrapped as `{"step": {...}}`.
+/// The wrapper is what every stored `spec_json` and the frontend already speak,
+/// so a definition saved before the list became steps-only still reads, and one
+/// holding any other block kind (`parallel`, `loop`, `orchestrate`) fails to
+/// parse with that kind named.
+mod step_blocks {
+    use super::*;
 
-impl Budgets {
-    /// (field name, value) for every set field — drives the positivity check.
-    fn present_fields(&self) -> Vec<(&'static str, i64)> {
-        let mut out = Vec::new();
-        let mut push = |name: &'static str, v: Option<i64>| {
-            if let Some(v) = v {
-                out.push((name, v));
-            }
-        };
-        push("turns", self.turns);
-        push("tokens", self.tokens);
-        push("wall_clock_mins", self.wall_clock_mins);
-        push("turns_per_attempt", self.turns_per_attempt);
-        push("max_attempts", self.max_attempts);
-        push("spawn_timeout_secs", self.spawn_timeout_secs);
-        push("turn_start_timeout_secs", self.turn_start_timeout_secs);
-        push("stall_timeout_secs", self.stall_timeout_secs);
-        push("nudge_timeout_secs", self.nudge_timeout_secs);
-        push("tests_timeout_secs", self.tests_timeout_secs);
-        out
+    #[derive(Serialize)]
+    #[serde(rename_all = "snake_case")]
+    enum Out<'a> {
+        Step(&'a Step),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum In {
+        Step(Step),
+    }
+
+    pub fn serialize<S: Serializer>(steps: &[Step], ser: S) -> Result<S::Ok, S::Error> {
+        ser.collect_seq(steps.iter().map(Out::Step))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<Step>, D::Error> {
+        let blocks = Vec::<In>::deserialize(de)?;
+        Ok(blocks.into_iter().map(|In::Step(s)| s).collect())
     }
 }
 
@@ -370,245 +175,30 @@ pub fn validate(spec: &Spec) -> Result<(), Vec<String>> {
         ));
     }
 
-    if let Some(b) = &spec.budgets {
-        check_budgets("run", b, &mut errors);
+    if spec.workflow.is_empty() {
+        errors.push("workflow has no steps".into());
     }
 
-    // Step ids are unique across the *entire* spec, and every `agent` reference
-    // resolves. Walk the tree once collecting both.
-    //
-    // Note on `orchestrate` inside `orchestrate` (spec §5.2): it is unreachable
-    // by construction — `Orchestrate.body` and `Parallel.steps` are `Vec<Step>`
-    // and only `Loop.body`/the top level hold `Vec<Block>`, none of which flow
-    // back into an orchestrate. A hand-written spec that tries to nest one fails
-    // at (de)serialization (a `Step` has no orchestrate shape). The YAML layer
-    // has a fixture asserting that rejection.
-    let mut seen_ids: BTreeMap<String, ()> = BTreeMap::new();
-    walk_blocks(&spec.workflow, spec, &mut seen_ids, &mut errors);
+    let mut seen_ids = BTreeSet::new();
+    for step in &spec.workflow {
+        if step.id.trim().is_empty() {
+            errors.push("step id must not be empty".into());
+        } else if !seen_ids.insert(step.id.as_str()) {
+            errors.push(format!("duplicate step id '{}'", step.id));
+        }
+        if !spec.agents.contains_key(&step.agent) {
+            errors.push(format!(
+                "step '{}' references agent '{}', which is not defined in `agents`",
+                step.id, step.agent
+            ));
+        }
+    }
 
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors)
     }
-}
-
-/// Recursively validate a block sequence.
-fn walk_blocks(
-    blocks: &[Block],
-    spec: &Spec,
-    seen_ids: &mut BTreeMap<String, ()>,
-    errors: &mut Vec<String>,
-) {
-    for block in blocks {
-        match block {
-            Block::Step(step) => check_step(step, spec, seen_ids, errors),
-            Block::Parallel(par) => {
-                if par.steps.is_empty() {
-                    errors.push("parallel block has no steps".into());
-                }
-                if matches!(par.max_concurrent, Some(0)) {
-                    // A cap of 0 launches no children, so the join can never be
-                    // met — the stage would stall forever. `None` = unbounded.
-                    errors.push("parallel.max_concurrent must be ≥ 1".into());
-                }
-                for step in &par.steps {
-                    check_step(step, spec, seen_ids, errors);
-                }
-            }
-            Block::Loop(lp) => check_loop(lp, spec, seen_ids, errors),
-            Block::Orchestrate(orch) => {
-                check_agent_ref("orchestrate", &orch.agent, spec, errors);
-                if matches!(orch.integrate, Integrate::Merge) {
-                    // The engine runs orchestrate stages with `integrate: none`
-                    // only (§6.6); merge over the parallel-stage machinery is a
-                    // follow-up. Rejecting here keeps a definition that would
-                    // die at launch from ever persisting.
-                    errors.push(format!(
-                        "orchestrate '{}' integrate: merge is not supported yet — \
-                         use integrate: none",
-                        orch.agent
-                    ));
-                }
-                if orch.comms.contains(&CommsCap::Notify) {
-                    // `comms` is the children's caps; children are steps, so
-                    // `notify` (orchestrator-only, §5.1) is invalid here too.
-                    errors.push(format!(
-                        "orchestrate '{}' comms grants children 'notify', which is \
-                         orchestrator-only",
-                        orch.agent
-                    ));
-                }
-                if let Some(children) = &orch.children {
-                    check_agent_ref("orchestrate children", &children.agent, spec, errors);
-                    if children.max < 1 {
-                        errors.push(format!(
-                            "orchestrate '{}' children.max must be ≥ 1",
-                            orch.agent
-                        ));
-                    }
-                }
-                if let Some(c) = &orch.compose {
-                    if c.max_depth == 0 || c.max_depth > 2 {
-                        errors.push(format!(
-                            "orchestrate '{}' compose.max_depth must be 1 or 2",
-                            orch.agent
-                        ));
-                    }
-                    if c.max_sub_runs < 1 {
-                        errors.push(format!(
-                            "orchestrate '{}' compose.max_sub_runs must be ≥ 1",
-                            orch.agent
-                        ));
-                    }
-                }
-                for step in &orch.body {
-                    check_step(step, spec, seen_ids, errors);
-                }
-            }
-        }
-    }
-}
-
-fn check_loop(
-    lp: &Loop,
-    spec: &Spec,
-    seen_ids: &mut BTreeMap<String, ()>,
-    errors: &mut Vec<String>,
-) {
-    if lp.max < 1 {
-        errors.push("loop.max must be ≥ 1".into());
-    }
-    // The engine executes loop bodies of plain steps only (§6.6); nesting
-    // parallel/loop/orchestrate inside a body is a follow-up. Reject at
-    // validation so the shape never saves, rather than dying at launch.
-    for b in &lp.body {
-        if !matches!(b, Block::Step(_)) {
-            errors.push(
-                "loop body blocks must be steps — nested parallel/loop/orchestrate \
-                 inside a loop is not supported yet"
-                    .into(),
-            );
-        }
-    }
-    // The `until.step` must be a step *inside this loop's body*, and its gate
-    // must be `verdict` — the exit reads that verdict, so a tests/commit gate
-    // would conflate "gate unmet" with "loop again" (spec §5.2).
-    let until_step = find_step_in_body(&lp.body, &lp.until.step);
-    match until_step {
-        None => errors.push(format!(
-            "loop.until.step '{}' is not a step in the loop body",
-            lp.until.step
-        )),
-        Some(step) if !matches!(step.gate, Gate::Verdict) => errors.push(format!(
-            "loop.until.step '{}' must have a verdict gate (its verdict is the \
-             loop exit condition)",
-            lp.until.step
-        )),
-        Some(_) => {}
-    }
-    walk_blocks(&lp.body, spec, seen_ids, errors);
-}
-
-fn check_step(
-    step: &Step,
-    spec: &Spec,
-    seen_ids: &mut BTreeMap<String, ()>,
-    errors: &mut Vec<String>,
-) {
-    if step.id.trim().is_empty() {
-        errors.push("step id must not be empty".into());
-    } else if seen_ids.insert(step.id.clone(), ()).is_some() {
-        errors.push(format!("duplicate step id '{}'", step.id));
-    } else if step.id.starts_with("orchestrate-")
-        || step.id.starts_with("__")
-        || step.id.contains("::")
-    {
-        // Reserved for engine-synthesized execs (`orchestrate-<block>`,
-        // `__merge_<i>`, `__resolve_<i>`, `<id>::dyn-<n>`): comms role checks
-        // and routing key off these shapes, so a user-authored step must never
-        // wear them — a composed fragment naming a step `orchestrate-…` would
-        // otherwise acquire the orchestrator's caps and decision surface (§15).
-        errors.push(format!(
-            "step id '{}' uses a reserved pattern (prefix 'orchestrate-' or '__', or '::')",
-            step.id
-        ));
-    }
-    check_agent_ref(&format!("step '{}'", step.id), &step.agent, spec, errors);
-    // Both gate shapes that name a file (`artifact`, `approval.artifact`)
-    // share the repo-relative rules — one probe, one rule set.
-    if let Some(path) = step.gate.artifact_path() {
-        check_artifact_path(&step.id, path, errors);
-    }
-    if let Some(b) = &step.budgets {
-        check_budgets(&format!("step '{}'", step.id), b, errors);
-    }
-    // `notify` is orchestrator-only (spec §5.1); a plain step may only declare
-    // `report`/`ask`. Reject a step that claims it so an unsupported capability
-    // never persists.
-    if step.comms.contains(&CommsCap::Notify) {
-        errors.push(format!(
-            "step '{}' declares comms cap 'notify', which is orchestrator-only",
-            step.id
-        ));
-    }
-}
-
-fn check_agent_ref(context: &str, alias: &str, spec: &Spec, errors: &mut Vec<String>) {
-    if !spec.agents.contains_key(alias) {
-        errors.push(format!(
-            "{context} references agent '{alias}', which is not defined in `agents`"
-        ));
-    }
-}
-
-fn check_artifact_path(step_id: &str, path: &str, errors: &mut Vec<String>) {
-    let p = Path::new(path);
-    if path.trim().is_empty() {
-        errors.push(format!("step '{step_id}' artifact path is empty"));
-    } else if p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir)) {
-        errors.push(format!(
-            "step '{step_id}' artifact path '{path}' must be repo-relative (no \
-             leading '/' and no '..')"
-        ));
-    }
-}
-
-fn check_budgets(context: &str, budgets: &Budgets, errors: &mut Vec<String>) {
-    for (field, value) in budgets.present_fields() {
-        if value <= 0 {
-            errors.push(format!(
-                "{context} budget '{field}' must be a positive number (got {value})"
-            ));
-        }
-    }
-}
-
-/// Depth-first search for a step with `id` inside a block sequence (used for the
-/// loop `until` check — the target must live in the loop body).
-fn find_step_in_body<'a>(blocks: &'a [Block], id: &str) -> Option<&'a Step> {
-    for block in blocks {
-        match block {
-            Block::Step(s) if s.id == id => return Some(s),
-            Block::Parallel(p) => {
-                if let Some(s) = p.steps.iter().find(|s| s.id == id) {
-                    return Some(s);
-                }
-            }
-            Block::Loop(l) => {
-                if let Some(s) = find_step_in_body(&l.body, id) {
-                    return Some(s);
-                }
-            }
-            Block::Orchestrate(o) => {
-                if let Some(s) = o.body.iter().find(|s| s.id == id) {
-                    return Some(s);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -634,16 +224,13 @@ mod tests {
             version: 1,
             name: "t".into(),
             description: None,
-            budgets: None,
             agents,
-            workflow: vec![Block::Step(Step {
+            workflow: vec![Step {
                 id: "build".into(),
                 agent: "coder".into(),
                 goal: "do it".into(),
                 gate: Gate::Verdict,
-                budgets: None,
-                comms: vec![],
-            })],
+            }],
             finalize: None,
         }
     }
@@ -658,39 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn reserved_step_ids_are_rejected() {
-        // Engine-synthesized exec shapes (§15): a user step wearing one would
-        // spoof the orchestrator role or collide with merge/resolve/dyn execs.
-        for bad in [
-            "orchestrate-0",
-            "orchestrate-anything",
-            "__merge_1",
-            "__x",
-            "impl::dyn-2",
-        ] {
-            let mut s = minimal();
-            if let Block::Step(step) = &mut s.workflow[0] {
-                step.id = bad.to_string();
-            }
-            assert!(
-                errors(&s).iter().any(|e| e.contains("reserved")),
-                "expected reserved-id rejection for '{bad}'"
-            );
-        }
-        // Legit ids that merely *contain* the words stay valid.
-        for ok in ["orchestrated-rollout", "my__step", "review"] {
-            let mut s = minimal();
-            if let Block::Step(step) = &mut s.workflow[0] {
-                step.id = ok.to_string();
-            }
-            assert!(
-                !errors(&s).iter().any(|e| e.contains("reserved")),
-                "'{ok}' must not be rejected"
-            );
-        }
-    }
-
-    #[test]
     fn unknown_version_rejected() {
         let mut s = minimal();
         s.version = 2;
@@ -698,440 +252,68 @@ mod tests {
     }
 
     #[test]
+    fn empty_workflow_rejected() {
+        let mut s = minimal();
+        s.workflow.clear();
+        assert!(errors(&s).iter().any(|e| e.contains("no steps")));
+    }
+
+    #[test]
     fn duplicate_step_id_rejected() {
         let mut s = minimal();
-        if let Block::Step(step) = &s.workflow[0] {
-            let dup = step.clone();
-            s.workflow.push(Block::Step(dup));
-        }
+        let dup = s.workflow[0].clone();
+        s.workflow.push(dup);
         assert!(errors(&s).iter().any(|e| e.contains("duplicate step id")));
+    }
+
+    #[test]
+    fn empty_step_id_rejected() {
+        let mut s = minimal();
+        s.workflow[0].id = "  ".into();
+        assert!(errors(&s).iter().any(|e| e.contains("must not be empty")));
     }
 
     #[test]
     fn unresolved_agent_rejected() {
         let mut s = minimal();
-        if let Block::Step(step) = &mut s.workflow[0] {
-            step.agent = "ghost".into();
-        }
+        s.workflow[0].agent = "ghost".into();
         assert!(errors(&s)
             .iter()
             .any(|e| e.contains("agent 'ghost'") && e.contains("not defined")));
     }
 
     #[test]
-    fn loop_until_step_not_in_body_rejected() {
-        let mut s = minimal();
-        s.workflow = vec![Block::Loop(Loop {
-            max: 3,
-            until: Until {
-                step: "elsewhere".into(),
-                verdict: LoopVerdict::Done,
-            },
-            body: vec![Block::Step(Step {
-                id: "review".into(),
-                agent: "coder".into(),
-                goal: "g".into(),
-                gate: Gate::Verdict,
-                budgets: None,
-                comms: vec![],
-            })],
-        })];
-        assert!(errors(&s)
-            .iter()
-            .any(|e| e.contains("until.step 'elsewhere'") && e.contains("not a step")));
-    }
-
-    #[test]
-    fn loop_max_zero_rejected() {
-        let mut s = minimal();
-        s.workflow = vec![Block::Loop(Loop {
-            max: 0,
-            until: Until {
-                step: "review".into(),
-                verdict: LoopVerdict::Done,
-            },
-            body: vec![Block::Step(Step {
-                id: "review".into(),
-                agent: "coder".into(),
-                goal: "g".into(),
-                gate: Gate::Verdict,
-                budgets: None,
-                comms: vec![],
-            })],
-        })];
-        assert!(errors(&s).iter().any(|e| e.contains("loop.max must be")));
-    }
-
-    #[test]
-    fn loop_until_step_with_non_verdict_gate_rejected() {
-        let mut s = minimal();
-        s.workflow = vec![Block::Loop(Loop {
-            max: 3,
-            until: Until {
-                step: "review".into(),
-                verdict: LoopVerdict::Done,
-            },
-            body: vec![Block::Step(Step {
-                id: "review".into(),
-                agent: "coder".into(),
-                goal: "g".into(),
-                gate: Gate::Commit,
-                budgets: None,
-                comms: vec![],
-            })],
-        })];
-        assert!(errors(&s)
-            .iter()
-            .any(|e| e.contains("must have a verdict gate")));
-    }
-
-    #[test]
-    fn valid_orchestrate_and_compose_limits() {
-        let mut s = minimal();
-        s.workflow = vec![Block::Orchestrate(Orchestrate {
-            agent: "coder".into(),
-            goal: "lead".into(),
-            children: Some(ChildTemplate {
-                agent: "coder".into(),
-                max: 3,
-            }),
-            body: vec![],
-            join: Join::All,
-            integrate: Integrate::None,
-            comms: vec![CommsCap::Report, CommsCap::Ask],
-            compose: Some(ComposeLimits {
-                max_sub_runs: 2,
-                max_depth: 2,
-            }),
-        })];
-        assert!(validate(&s).is_ok(), "{:?}", errors(&s));
-    }
-
-    #[test]
-    fn orchestrate_integrate_merge_rejected() {
-        // The engine only runs orchestrate with `integrate: none` (§6.6) — the
-        // unsupported shape must fail validation, not die at launch.
-        let mut s = minimal();
-        s.workflow = vec![Block::Orchestrate(Orchestrate {
-            agent: "coder".into(),
-            goal: "lead".into(),
-            children: None,
-            body: vec![],
-            join: Join::All,
-            integrate: Integrate::Merge,
-            comms: vec![],
-            compose: None,
-        })];
-        assert!(errors(&s)
-            .iter()
-            .any(|e| e.contains("integrate: merge is not supported")));
-    }
-
-    #[test]
-    fn loop_with_nested_block_rejected() {
-        // Loop bodies are plain steps in v1 (§6.6) — a nested parallel must fail
-        // validation, not die at launch.
-        let mut s = minimal();
-        s.workflow = vec![Block::Loop(Loop {
-            max: 2,
-            until: Until {
-                step: "check".into(),
-                verdict: LoopVerdict::Done,
-            },
-            body: vec![
-                Block::Parallel(Parallel {
-                    join: Join::All,
-                    integrate: Integrate::None,
-                    max_concurrent: None,
-                    steps: vec![Step {
-                        id: "fan".into(),
-                        agent: "coder".into(),
-                        goal: "g".into(),
-                        gate: Gate::Verdict,
-                        budgets: None,
-                        comms: vec![],
-                    }],
-                }),
-                Block::Step(Step {
-                    id: "check".into(),
-                    agent: "coder".into(),
-                    goal: "g".into(),
-                    gate: Gate::Verdict,
-                    budgets: None,
-                    comms: vec![],
-                }),
-            ],
-        })];
-        assert!(errors(&s)
-            .iter()
-            .any(|e| e.contains("loop body blocks must be steps")));
-    }
-
-    #[test]
-    fn compose_depth_over_two_rejected() {
-        let mut s = minimal();
-        s.workflow = vec![Block::Orchestrate(Orchestrate {
-            agent: "coder".into(),
-            goal: "lead".into(),
-            children: None,
-            body: vec![],
-            join: Join::All,
-            integrate: Integrate::None,
-            comms: vec![],
-            compose: Some(ComposeLimits {
-                max_sub_runs: 1,
-                max_depth: 3,
-            }),
-        })];
-        assert!(errors(&s).iter().any(|e| e.contains("max_depth")));
-    }
-
-    #[test]
-    fn empty_parallel_rejected() {
-        let mut s = minimal();
-        s.workflow = vec![Block::Parallel(Parallel {
-            join: Join::All,
-            integrate: Integrate::None,
-            max_concurrent: None,
-            steps: vec![],
-        })];
-        assert!(errors(&s).iter().any(|e| e.contains("has no steps")));
-    }
-
-    #[test]
-    fn parallel_max_concurrent_zero_rejected() {
-        let mut s = minimal();
-        s.workflow = vec![Block::Parallel(Parallel {
-            join: Join::All,
-            integrate: Integrate::None,
-            max_concurrent: Some(0),
-            steps: vec![Step {
-                id: "a".into(),
-                agent: "coder".into(),
-                goal: "g".into(),
-                gate: Gate::Verdict,
-                budgets: None,
-                comms: vec![],
-            }],
-        })];
-        assert!(errors(&s)
-            .iter()
-            .any(|e| e.contains("max_concurrent must be")));
-    }
-
-    #[test]
-    fn notify_cap_on_plain_step_rejected() {
-        let mut s = minimal();
-        if let Block::Step(step) = &mut s.workflow[0] {
-            step.comms = vec![CommsCap::Report, CommsCap::Notify];
-        }
-        assert!(errors(&s)
-            .iter()
-            .any(|e| e.contains("'notify'") && e.contains("orchestrator-only")));
-    }
-
-    #[test]
-    fn tests_gate_is_accepted() {
-        // The `tests` gate (spec §9.4) is implemented in S6 — a step may declare it.
-        let mut s = minimal();
-        if let Block::Step(step) = &mut s.workflow[0] {
-            step.gate = Gate::Tests;
-        }
-        assert!(validate(&s).is_ok(), "{:?}", errors(&s));
-    }
-
-    #[test]
-    fn approval_gate_with_and_without_require_is_accepted() {
-        // A bare `approval` gate and one that gates on tests first both validate.
-        for require in [vec![], vec![Require::Tests]] {
-            let mut s = minimal();
-            if let Block::Step(step) = &mut s.workflow[0] {
-                step.gate = Gate::Approval {
-                    require,
-                    artifact: None,
-                };
-            }
-            assert!(validate(&s).is_ok(), "{:?}", errors(&s));
-        }
-    }
-
-    #[test]
-    fn approval_artifact_path_shares_the_artifact_gate_rules() {
-        // `approval.artifact` names a file exactly like the `artifact` gate, so
-        // it obeys the same repo-relative rules (no absolute path, no `..`,
-        // non-empty) — and a valid path validates.
-        for bad in ["/etc/passwd", "../secrets", "  "] {
-            let mut s = minimal();
-            if let Block::Step(step) = &mut s.workflow[0] {
-                step.gate = Gate::Approval {
-                    require: vec![],
-                    artifact: Some(bad.into()),
-                };
-            }
-            assert!(
-                !errors(&s).is_empty(),
-                "expected rejection for approval artifact '{bad}'"
-            );
-        }
-        let mut s = minimal();
-        if let Block::Step(step) = &mut s.workflow[0] {
-            step.gate = Gate::Approval {
-                require: vec![Require::Tests],
-                artifact: Some("PLAN.md".into()),
-            };
-        }
-        assert!(validate(&s).is_ok(), "{:?}", errors(&s));
-    }
-
-    #[test]
-    fn bare_approval_gate_json_round_trips_and_is_backward_compatible() {
-        // The pre-`require` on-disk shape is `{"type":"approval"}`; it must still
-        // deserialize (empty `require`), and an empty `require` must serialize
-        // back to that exact shape so old definitions round-trip byte-for-byte.
-        let bare: Gate = serde_json::from_str(r#"{"type":"approval"}"#).unwrap();
-        assert_eq!(
-            bare,
-            Gate::Approval {
-                require: vec![],
-                artifact: None
-            }
-        );
-        assert_eq!(
-            serde_json::to_string(&bare).unwrap(),
-            r#"{"type":"approval"}"#
-        );
-        let with: Gate =
-            serde_json::from_str(r#"{"type":"approval","require":["tests"]}"#).unwrap();
-        assert_eq!(
-            with,
-            Gate::Approval {
-                require: vec![Require::Tests],
-                artifact: None
-            }
-        );
-        assert!(with.requires_tests());
-        assert!(!bare.requires_tests());
-        assert!(Gate::Tests.requires_tests());
-        // The reviewed-artifact shape round-trips, and `artifact_path` answers
-        // for both file-naming gates.
-        let reviewed: Gate =
-            serde_json::from_str(r#"{"type":"approval","artifact":"PLAN.md"}"#).unwrap();
-        assert_eq!(reviewed.artifact_path(), Some("PLAN.md"));
-        assert_eq!(
-            serde_json::to_string(&reviewed).unwrap(),
-            r#"{"type":"approval","artifact":"PLAN.md"}"#
-        );
-        assert_eq!(
-            Gate::Artifact {
-                path: "PLAN.md".into()
-            }
-            .artifact_path(),
-            Some("PLAN.md")
-        );
-        assert_eq!(bare.artifact_path(), None);
-    }
-
-    #[test]
-    fn report_and_ask_caps_on_step_allowed() {
-        let mut s = minimal();
-        if let Block::Step(step) = &mut s.workflow[0] {
-            step.comms = vec![CommsCap::Report, CommsCap::Ask];
-        }
-        assert!(validate(&s).is_ok(), "{:?}", errors(&s));
-    }
-
-    #[test]
-    fn notify_cap_on_orchestrate_children_rejected() {
-        let mut s = minimal();
-        s.workflow = vec![Block::Orchestrate(Orchestrate {
-            agent: "coder".into(),
-            goal: "lead".into(),
-            children: None,
-            body: vec![],
-            join: Join::All,
-            integrate: Integrate::None,
-            comms: vec![CommsCap::Notify],
-            compose: None,
-        })];
-        assert!(errors(&s)
-            .iter()
-            .any(|e| e.contains("'notify'") && e.contains("orchestrator-only")));
-    }
-
-    #[test]
-    fn absolute_artifact_path_rejected() {
-        let mut s = minimal();
-        if let Block::Step(step) = &mut s.workflow[0] {
-            step.gate = Gate::Artifact {
-                path: "/etc/passwd".into(),
-            };
-        }
-        assert!(errors(&s).iter().any(|e| e.contains("repo-relative")));
-    }
-
-    #[test]
-    fn parent_dir_artifact_path_rejected() {
-        let mut s = minimal();
-        if let Block::Step(step) = &mut s.workflow[0] {
-            step.gate = Gate::Artifact {
-                path: "../secrets".into(),
-            };
-        }
-        assert!(errors(&s).iter().any(|e| e.contains("repo-relative")));
-    }
-
-    #[test]
-    fn zero_budget_rejected() {
-        let mut s = minimal();
-        s.budgets = Some(Budgets {
-            turns: Some(0),
-            tokens: None,
-            wall_clock_mins: None,
-            turns_per_attempt: None,
-            max_attempts: None,
-            spawn_timeout_secs: None,
-            turn_start_timeout_secs: None,
-            stall_timeout_secs: None,
-            nudge_timeout_secs: None,
-            tests_timeout_secs: None,
-        });
-        assert!(errors(&s).iter().any(|e| e.contains("must be a positive")));
-    }
-
-    #[test]
-    fn negative_budget_rejected() {
-        let mut s = minimal();
-        if let Block::Step(step) = &mut s.workflow[0] {
-            step.budgets = Some(Budgets {
-                turns: None,
-                tokens: None,
-                wall_clock_mins: None,
-                turns_per_attempt: Some(-3),
-                max_attempts: None,
-                spawn_timeout_secs: None,
-                turn_start_timeout_secs: None,
-                stall_timeout_secs: None,
-                nudge_timeout_secs: None,
-                tests_timeout_secs: None,
-            });
-        }
-        assert!(errors(&s).iter().any(|e| e.contains("must be a positive")));
-    }
-
-    #[test]
-    fn empty_step_id_rejected() {
-        let mut s = minimal();
-        if let Block::Step(step) = &mut s.workflow[0] {
-            step.id = "  ".into();
-        }
-        assert!(errors(&s).iter().any(|e| e.contains("must not be empty")));
-    }
-
-    #[test]
-    fn spec_json_round_trips() {
+    fn spec_json_round_trips_in_the_step_wrapper() {
         let s = minimal();
-        let json = serde_json::to_string(&s).unwrap();
-        let back: Spec = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["workflow"][0]["step"]["id"], "build");
+        let back: Spec = serde_json::from_value(json).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn a_block_other_than_step_fails_to_parse_and_names_its_kind() {
+        let json = serde_json::json!({
+            "version": 1,
+            "name": "t",
+            "agents": { "coder": { "base": "claude" } },
+            "workflow": [{ "parallel": { "join": "all", "integrate": "none", "steps": [] } }],
+        });
+        let err = serde_json::from_value::<Spec>(json)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("parallel"), "{err}");
+    }
+
+    #[test]
+    fn a_gate_other_than_verdict_or_commit_fails_to_parse() {
+        let err = serde_json::from_str::<Gate>(r#"{"type":"tests"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("tests"), "{err}");
+        assert_eq!(
+            serde_json::from_str::<Gate>(r#"{"type":"commit"}"#).unwrap(),
+            Gate::Commit
+        );
     }
 }

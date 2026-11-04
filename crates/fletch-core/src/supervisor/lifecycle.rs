@@ -383,15 +383,9 @@ pub struct SpawnRequest {
     /// Base the checkout forks from, which also becomes the agent's recorded
     /// parent branch (PR base / ahead-behind). The new-agent screen passes the
     /// chosen base branch here; a workflow step instead passes the previous
-    /// step's HEAD (a commit-ish). `None` falls back to the repo's current
+    /// step's pinned ref (a commit-ish). `None` falls back to the repo's current
     /// branch.
     pub fork_base: Option<String>,
-    /// For a workflow step: the run repository (`~/.fletch/runs/<id>/repo`) to
-    /// fetch `fork_base` from before detaching (§12.1), since a previous step's
-    /// commit lives only there. When `Some`, provisioning forks from the run
-    /// repo instead of resolving the base against the source repo. `None` for a
-    /// normal user spawn.
-    pub run_repo: Option<PathBuf>,
     /// The workflow run that owns this agent, when spawned as a workflow step.
     /// Persisted on the record so run-owned agents are filterable from the
     /// normal sidebar and cleaned up by `wf_delete_run`. `None` for a normal
@@ -399,7 +393,7 @@ pub struct SpawnRequest {
     pub owner_run_id: Option<String>,
     /// A pre-provisioned checkout this agent adopts as its primary workspace
     /// instead of cloning one — the workflow kernel's shared run workspace.
-    /// When set, provisioning is skipped (`fork_base`/`run_repo` are ignored)
+    /// When set, provisioning is skipped (`fork_base` only names the parent)
     /// and teardown must never remove the directory: the run owns it, not the
     /// agent. `None` for every non-kernel spawn.
     pub existing_workspace: Option<PathBuf>,
@@ -549,7 +543,6 @@ impl Supervisor {
             skills,
             mcp_servers,
             fork_base,
-            run_repo,
             owner_run_id,
             // Taken above, where the adopted tree decided the engine.
             existing_workspace: _,
@@ -619,8 +612,6 @@ impl Supervisor {
         // moved into `primary` below.
         let parent_for_fork = parent_branch.clone();
         let subdir_for_fork = subdir.clone();
-        // A workflow step forks from its `fork_base` ref in this run repo.
-        let run_repo_for_task = run_repo.clone();
 
         let primary = TrackedRepo {
             repo_path: repo_path.clone(),
@@ -813,9 +804,8 @@ impl Supervisor {
             //
             // An adopted tree skips every rung of this: it already exists at the
             // commit the run put it on, so there is no fork to make, no base to
-            // fetch, and no freshness to degrade — `fork_base`/`run_repo` are
-            // inputs to provisioning only, and provisioning is what adoption
-            // replaces.
+            // fetch, and no freshness to degrade — `fork_base` is an input to
+            // provisioning only, and provisioning is what adoption replaces.
             let mut base_freshness = None;
             // The agent dir exists from here on, but no checkout does yet — so
             // that dir is the whole of what this task has to undo.
@@ -823,48 +813,24 @@ impl Supervisor {
                 discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
                 return;
             }
-            let provision_result = match &run_repo_for_task {
-                _ if adopted_for_task => Ok(()),
-                // A workflow step's fork reads the run repo, a host path the
-                // guest cannot see; fail closed rather than clone a stale base.
-                Some(_) if !engine_kind.caps().workflow_steps => Err(Error::Other(
-                    "workflow step agents don't run in box sandboxes yet".into(),
-                )),
-                // Workflow step (§12.1): fork from `fork_base` in the run repo.
-                // `base_ref` is used as-is and never fetched from `origin` —
-                // it's a run-internal commit-ish, not a branch: step 1's
-                // `base_sha` is already in the fresh source clone, and step N's
-                // `refs/wf/steps/<prev>` is fetched from the run repo instead.
-                Some(run_repo) => {
-                    let spec = CheckoutSpec {
-                        source_repo: &repo_path,
-                        base_ref: &parent_for_fork,
-                        dest: &primary_checkout,
-                    };
-                    provision::provision_forking_run_repo(&spec, run_repo).await
-                }
-                None => {
-                    // Offline fallback: the base as this machine already knows
-                    // it, never `HEAD` — that is the source repo's checked-out
-                    // branch, unrelated to the base the user picked (see
-                    // `git::base_tip`). With no local copy at all, pass the
-                    // branch name so an unreachable `origin` fails the spawn
-                    // instead of opening somewhere arbitrary.
-                    let fallback = git::base_tip(&repo_path, &parent_for_fork).await;
-                    let spec = CheckoutSpec {
-                        source_repo: &repo_path,
-                        base_ref: fallback.as_deref().unwrap_or(&parent_for_fork),
-                        dest: &primary_checkout,
-                    };
-                    sandbox::provision_checkout(
-                        engine_kind,
-                        &record_for_task,
-                        &spec,
-                        &parent_for_fork,
-                    )
+            let provision_result = if adopted_for_task {
+                Ok(())
+            } else {
+                // Offline fallback: the base as this machine already knows it,
+                // never `HEAD` — that is the source repo's checked-out branch,
+                // unrelated to the base the user picked (see `git::base_tip`).
+                // With no local copy at all, pass the branch name so an
+                // unreachable `origin` fails the spawn instead of opening
+                // somewhere arbitrary.
+                let fallback = git::base_tip(&repo_path, &parent_for_fork).await;
+                let spec = CheckoutSpec {
+                    source_repo: &repo_path,
+                    base_ref: fallback.as_deref().unwrap_or(&parent_for_fork),
+                    dest: &primary_checkout,
+                };
+                sandbox::provision_checkout(engine_kind, &record_for_task, &spec, &parent_for_fork)
                     .await
                     .map(|freshness| base_freshness = Some(freshness))
-                }
             };
             if let Err(e) = provision_result {
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
@@ -916,9 +882,9 @@ impl Supervisor {
             // project too, so the agent works across all of them from turn one
             // (untouched repos are just clean clones). Runs before
             // start_process so the git RPC dispatcher sees the full repo set. Workflow step agents stay
-            // single-repo — a run targets one repo (see `wf_launch`), which
-            // covers both the forking and the adopting shape of a step spawn.
-            if run_repo_for_task.is_none() && !adopted_for_task {
+            // single-repo — a run targets one repo (see `wf_launch`), and a step
+            // agent adopts that run's tree.
+            if !adopted_for_task {
                 for source in sup.workspace.project_repo_paths(&project_id_for_task) {
                     if source == repo_path {
                         continue;
@@ -1211,38 +1177,27 @@ impl Supervisor {
                 .with_close_issue(agent_id, close_issue)
                 .with_approval(ctx.sink.clone(), agent_id)
                 .with_review(ctx.clone(), agent_id);
-        // A run-owned step agent also gets the workflow comms ops (wf_report /
-        // wf_ask / wf_notify, §10); a roadmap PM chat gets the roadmap ops
-        // (roadmap_list / roadmap_propose), scoped to its own project. Both
+        // A roadmap PM chat gets the roadmap ops (roadmap_list /
+        // roadmap_propose), scoped to its own project; a local reviewer gets
+        // `review_submit` (`rpc::review`), the one op its mandate needs. Both
         // wrap the git dispatcher, and everything else still falls through to
-        // it. Plain agents keep the git dispatcher unchanged.
-        // A local reviewer gets `review_submit` (`rpc::review`), the one op
-        // its mandate needs.
-        let roadmap_pm = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_ROADMAP_PM);
-        let reviewer = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_REVIEWER);
-        let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> =
-            match (&record.owner_run_id, roadmap_pm, reviewer) {
-                (Some(run_id), _, _) => {
-                    Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
-                        ctx.clone(),
-                        run_id.clone(),
-                        agent_id.to_string(),
-                        git_dispatcher,
-                    ))
-                }
-                (None, true, _) => Arc::new(rpc::roadmap::RoadmapDispatcher::new(
+        // it. Every other agent, a run-owned step agent included, keeps the git
+        // dispatcher unchanged (its `caps` above already fence what it may
+        // publish).
+        let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> = match record.purpose.as_deref() {
+            Some(crate::workspace::PURPOSE_ROADMAP_PM) => {
+                Arc::new(rpc::roadmap::RoadmapDispatcher::new(
                     ctx.clone(),
                     ctx.db.clone(),
                     record.project_id.clone(),
                     git_dispatcher,
-                )),
-                (None, false, true) => Arc::new(rpc::review::ReviewDispatcher::new(
-                    ctx.clone(),
-                    agent_id,
-                    git_dispatcher,
-                )),
-                (None, false, false) => Arc::new(git_dispatcher),
-            };
+                ))
+            }
+            Some(crate::workspace::PURPOSE_REVIEWER) => Arc::new(
+                rpc::review::ReviewDispatcher::new(ctx.clone(), agent_id, git_dispatcher),
+            ),
+            _ => Arc::new(git_dispatcher),
+        };
         // Every agent can drive its own Run-panel process and raise a
         // notification (`rpc::run`): the ops publish nothing, so there is no
         // grant to check, and a step agent verifying its change by running
@@ -1383,13 +1338,6 @@ impl Supervisor {
         if should_live_sync(&record.provider, record.view) {
             spawn_live_transcript_sync(self.clone(), ctx.clone(), agent_id_str.clone(), my_gen);
         }
-
-        // Register the dispatcher so the mailbox can also be drained on demand
-        // (`settle_agent_rpc`), not only on the watcher's tick. Overwrites any
-        // prior generation's entry.
-        self.rpc_dispatchers
-            .lock()
-            .insert(agent_id_str.clone(), rpc_dispatcher.clone());
 
         // Watch this agent's RPC mailbox for the life of this generation,
         // executing allowlisted ops and writing responses back.

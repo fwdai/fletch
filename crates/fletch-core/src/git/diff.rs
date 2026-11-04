@@ -47,29 +47,6 @@ fn parse_numstat_lines(text: &str) -> Vec<(String, u32, u32)> {
     files
 }
 
-/// The unified diff of `from_sha..to_sha` in `repo`, optionally scoped to one
-/// `path` (`-U3`, matching the file-diff view's context). Both refs are objects
-/// in the same repo — for the review surface, the run repo where the ferried step
-/// ref and the run base both live — so no checkout is needed.
-pub async fn diff_refs(
-    repo: &Path,
-    from_sha: &str,
-    to_sha: &str,
-    path: Option<&str>,
-) -> Result<String> {
-    let range = format!("{from_sha}..{to_sha}");
-    // --no-ext-diff: patch output must come from git's own engine, not a
-    // configured `diff.external` (see `hardening::NEUTRALISED` on why this
-    // can't be neutralised at the spawn seam).
-    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-U3", &range];
-    if let Some(p) = path {
-        args.push("--");
-        args.push(p);
-    }
-    let out = run_git(repo, &args, "diff -U3 range").await?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
 fn parse_shortstat(s: &str) -> (u32, u32) {
     let mut adds = 0u32;
     let mut dels = 0u32;

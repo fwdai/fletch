@@ -394,7 +394,7 @@ Context tab's **Map project**:
 |---|---|
 | Text search beyond token match (FTS5, then embeddings) | `compile::by_text`; an embedding column is derived data, rebuilt on replay |
 | Symbol anchors | `paths[]` already; a resolver over the checkout's `.codegraph/codegraph.db` at retrieval time (the host never queries it today), next to the path check in `compile` |
-| Roadmap rulings and `wf_report` as deterministic sources | `capture/ingest/`, same `MergedPr`-style entry |
+| Roadmap rulings as a deterministic source | `capture/ingest/`, same `MergedPr`-style entry |
 | Gap mining (what did the agent discover that it was not served) | A second question in the extractor prompt; same proposal pipeline |
 | Host-side injection at turn start | The overview block is step one; no per-turn mechanism exists yet |
 | Multi-host | Not an extension of what is here. The log replays each host in `seq` order and merges hosts by `recorded_at`, failing loudly on an out-of-order status event — honest for one host, not sufficient for two: they need causal ordering (vector clock or HLC on every event), a fold that tolerates a status event arriving before its assertion, and a rule for forked supersession chains. Writer-minted ids and the stamp keep the door open; the fold is a redesign. |

@@ -1,9 +1,12 @@
 // ThreadView/segments.ts — the thread's spine: one transcript segment per step
 // attempt, in execution order.
 //
-// Execution order, never timestamps. A sequential run's steps run in spec order,
-// so the step's position in the flattened spec is the primary key and the
-// attempt's (iteration, retry) its tie-break. Interleaving by `started_at` would
+// Execution order, never timestamps. Steps run in spec order, so the step's
+// top-level block is the primary key, then the attempt's iteration, then the
+// step's position inside its block, then the retry. The iteration sits above
+// the position because the retired engine ran a loop's whole body once per
+// iteration; for the kernel's flat specs iteration and position are always 0,
+// so the key is simply the step's place. Interleaving by `started_at` would
 // reorder the thread whenever two rows share a millisecond, and a step's rows
 // must stay adjacent regardless.
 
@@ -39,7 +42,17 @@ export function deriveSegments(
   const order = new Map(steps.map((s, i) => [s.id, i]));
   // A row whose step_id is absent from the spec (hand-edited spec, renamed step)
   // sorts after every known step rather than to the front.
-  const rank = (exec: WfStepExec) => order.get(exec.step_id) ?? steps.length;
+  const key = (exec: WfStepExec): [number, number, number, number] => {
+    const step = steps[order.get(exec.step_id) ?? -1];
+    return step
+      ? [step.block, exec.iteration, step.position, exec.attempt]
+      : [Number.POSITIVE_INFINITY, exec.iteration, 0, exec.attempt];
+  };
+  const before = (a: WfStepExec, b: WfStepExec) => {
+    const ka = key(a);
+    const kb = key(b);
+    return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2] || ka[3] - kb[3];
+  };
 
   const rows = attempts
     .slice()
@@ -48,12 +61,15 @@ export function deriveSegments(
     // names that moment — a marker here would announce the step twice. A row that
     // ended without an agent (spawn failed, abandoned) is real history and stays.
     .filter((a) => a.agent_id != null || !UNSTARTED_STATUSES.has(a.status))
-    .sort((a, b) => rank(a) - rank(b) || a.iteration - b.iteration || a.attempt - b.attempt);
+    .sort(before);
 
-  const seenPerStep = new Map<string, number>();
+  // Retries count within one (step, iteration): a loop's next iteration is a
+  // fresh first attempt at the step, not a retry of the last one.
+  const seen = new Map<string, number>();
   return rows.map((exec) => {
-    const retryIndex = seenPerStep.get(exec.step_id) ?? 0;
-    seenPerStep.set(exec.step_id, retryIndex + 1);
+    const pass = `${exec.step_id}\u0000${exec.iteration}`;
+    const retryIndex = seen.get(pass) ?? 0;
+    seen.set(pass, retryIndex + 1);
     const stepIndex = order.get(exec.step_id) ?? -1;
     return {
       exec,

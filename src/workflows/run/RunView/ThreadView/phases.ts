@@ -6,8 +6,8 @@
 // label and a live timer instead of a blank pane. The kernel journals each
 // transition as it happens (runner/mod.rs), so the phase is a pure function of
 // the run row plus the event tail — the last *phase-bearing* event decides it,
-// and bookkeeping events in between (budget ticks, missing-skill warnings,
-// routed messages) are skipped rather than mistaken for progress.
+// and bookkeeping events in between (missing-skill warnings and the like) are
+// skipped rather than mistaken for progress.
 
 import type { WfEvent, WfRun, WfStepExec } from "../../../../api";
 import type { StepDesc } from "../flatten";
@@ -16,7 +16,6 @@ export type PhaseKind =
   | "preparing"
   | "starting"
   | "working"
-  | "resuming"
   | "committing"
   | "pushing"
   | "publishing"
@@ -52,8 +51,6 @@ export interface PhaseInput {
  *  else is bookkeeping and must not reset the phase clock. */
 const PHASE_EVENTS: ReadonlySet<string> = new Set([
   "run_launched",
-  "run_resumed",
-  "run_paused",
   "attempt_spawned",
   "attempt_ready",
   "prompt_sent",
@@ -83,13 +80,9 @@ function lastOf(events: WfEvent[], type: string): WfEvent | undefined {
 }
 
 export function derivePhase({ run, events, steps, attempts, streaming }: PhaseInput): Phase | null {
-  if (run.status === "done" || run.status === "canceled") {
+  if (run.status === "done" || run.status === "failed" || run.status === "canceled") {
     return terminalPhase(run, events);
   }
-  if (run.status === "failed") return terminalPhase(run, events);
-  // A paused run's cause and its one action live in the banner; a second
-  // "waiting" row under the thread would only say it again.
-  if (run.status === "paused") return null;
 
   const tail = (() => {
     for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -109,10 +102,6 @@ export function derivePhase({ run, events, steps, attempts, streaming }: PhaseIn
       // The workspace is provisioned; the first step's agent is coming up. Its
       // exec row may not exist yet, so name the first step directly.
       return { kind: "starting", startedAt: at, stepIndex: steps.length > 0 ? 0 : undefined };
-    case "run_resumed":
-      return { kind: "resuming", startedAt: at };
-    case "run_paused":
-      return null;
     case "attempt_spawned":
     case "attempt_ready":
       return { kind: "starting", startedAt: at, stepIndex };
@@ -192,8 +181,6 @@ export function phaseLabel(phase: Phase, agentName?: string): string {
       return agentName ? `Starting ${agentName}…` : "Starting the next step…";
     case "working":
       return agentName ? `${agentName} is working…` : "Working…";
-    case "resuming":
-      return "Resuming the run…";
     case "committing":
       return "Committing work…";
     case "pushing":

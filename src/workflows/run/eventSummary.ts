@@ -3,13 +3,14 @@
 // JSON is shown only behind an expand affordance in the Timeline component
 // (spec §14.2 guardrail) — this module never stringifies it into the summary.
 //
-// Payloads arrive parsed but untyped (`unknown`), and later slices (S5/S9–S12)
-// attach richer fields, so every read is defensive: an unknown type or a missing
-// field degrades to a sensible humanized label rather than throwing.
+// Payloads arrive parsed but untyped (`unknown`), and old journals still hold
+// event types the kernel never writes, so every read is defensive: an unknown
+// type or a missing field degrades to a sensible humanized label rather than
+// throwing.
 
-import type { WfEvent, WfPausedReason } from "../../api";
+import type { WfEvent } from "../../api";
 import type { IconName } from "../../components/Icon";
-import { AMBER, GREEN, pausedLabel } from "./status";
+import { AMBER, GREEN } from "./status";
 
 const ACCENT = "var(--accent)";
 const DANGER = "var(--danger)";
@@ -49,17 +50,6 @@ export function summarizeEvent(ev: WfEvent): EventSummary {
   switch (ev.type) {
     case "run_launched":
       return { icon: "play", tone: ACCENT, title: "Run launched" };
-    case "run_resumed":
-      return { icon: "play", tone: ACCENT, title: "Run resumed" };
-    case "run_paused": {
-      const reason = str(p, "reason") as WfPausedReason | undefined;
-      return {
-        icon: "pause",
-        tone: AMBER,
-        title: `Paused — ${reason ? pausedLabel(reason) : "paused"}`,
-        detail: str(p, "detail"),
-      };
-    }
     case "run_done":
       return { icon: "check", tone: GREEN, title: "Run complete" };
     case "run_failed":
@@ -92,18 +82,8 @@ export function summarizeEvent(ev: WfEvent): EventSummary {
       };
     case "attempt_ready":
       return { icon: "dot", tone: MUTED, title: "Agent ready" };
-    case "prompt_sent": {
-      const kind = str(p, "kind") ?? "step";
-      const title =
-        kind === "nudge"
-          ? "Nudge sent"
-          : kind === "reprompt"
-            ? "Re-prompted"
-            : kind === "message"
-              ? "Message delivered"
-              : "Prompt sent";
-      return { icon: "arrowUp", tone: MUTED, title };
-    }
+    case "prompt_sent":
+      return { icon: "arrowUp", tone: MUTED, title: "Prompt sent" };
     case "turn_ended": {
       const status = str(p, "status");
       return {
@@ -119,8 +99,12 @@ export function summarizeEvent(ev: WfEvent): EventSummary {
       if (outcome === "done") {
         return { icon: "check", tone: GREEN, title: `Gate \`${mode}\` passed`, detail: reason };
       }
-      const word = outcome === "awaiting_approval" ? "needs approval" : outcome || "unmet";
-      return { icon: "minus", tone: AMBER, title: `Gate \`${mode}\` — ${word}`, detail: reason };
+      return {
+        icon: "minus",
+        tone: AMBER,
+        title: `Gate \`${mode}\` — ${outcome || "unmet"}`,
+        detail: reason,
+      };
     }
     case "boundary_commit":
       return { icon: "commit", tone: GREEN, title: `Committed ${short(str(p, "sha"))}` };
@@ -134,55 +118,6 @@ export function summarizeEvent(ev: WfEvent): EventSummary {
       };
     case "attempt_error":
       return { icon: "close", tone: DANGER, title: "Attempt error", detail: str(p, "error") };
-    case "watchdog_stalled":
-      return { icon: "clock", tone: AMBER, title: "No activity — nudging the agent" };
-
-    case "budget_tick":
-      return { icon: "gauge", tone: MUTED, title: "Budget updated" };
-    case "budget_exceeded":
-      return {
-        icon: "gauge",
-        tone: AMBER,
-        title: `Budget reached${str(p, "which") ? ` — ${str(p, "which")}` : ""}`,
-      };
-
-    case "message_routed": {
-      const kind = str(p, "kind") ?? "message";
-      return { icon: "inbox", tone: ACCENT, title: `Message routed — ${kind}` };
-    }
-    case "decision":
-      return {
-        icon: "sparkle",
-        tone: ACCENT,
-        title: `Decision — ${str(p, "decision") ?? "issued"}`,
-      };
-    case "child_spawn_requested":
-      return { icon: "combine", tone: MUTED, title: "Child spawn requested" };
-    case "child_spawn_approved":
-      return { icon: "combine", tone: GREEN, title: "Child spawn approved" };
-    case "child_spawn_denied":
-      return {
-        icon: "combine",
-        tone: AMBER,
-        title: "Child spawn denied",
-        detail: str(p, "reason"),
-      };
-    case "subrun_launched":
-      return { icon: "combine", tone: ACCENT, title: "Sub-run launched" };
-    case "subrun_finished":
-      return {
-        icon: "combine",
-        tone: MUTED,
-        title: `Sub-run finished${str(p, "status") ? ` — ${str(p, "status")}` : ""}`,
-      };
-
-    case "merge_started":
-      return { icon: "merge", tone: ACCENT, title: "Merging children" };
-    case "merge_conflict":
-      return { icon: "close", tone: DANGER, title: "Merge conflict", detail: strList(p, "files") };
-    case "merge_done":
-      return { icon: "merge", tone: GREEN, title: `Merged ${short(str(p, "sha"))}` };
-
     case "finalize_pushed":
       return {
         icon: "push",

@@ -1,7 +1,7 @@
 // Timeline reducer tests: replaying a recorded journal fixture renders a
-// correct timeline. The fixture below is a
-// realistic linear run's journal — the same event shapes the Rust engine emits
-// (see attempt.rs / scheduler.rs) — replayed through summarizeEvent.
+// correct timeline. The fixture below is a realistic linear run's journal — the
+// same event shapes the kernel runner emits (see runner/mod.rs) — replayed
+// through summarizeEvent.
 
 import { describe, expect, it } from "vitest";
 import type { WfEvent } from "../../api";
@@ -12,20 +12,20 @@ function ev(seq: number, type: string, payload: unknown): WfEvent {
   return { run_id: "r1", seq, ts: seq * 1000, step_exec_id: `e${seq}`, type, payload };
 }
 
-/** A recorded 2-step linear run that ends paused on a blocked gate. */
+/** A recorded 2-step linear run whose second step fails its verdict gate. */
 const FIXTURE: WfEvent[] = [
   ev(1, "run_launched", {}),
   ev(2, "attempt_spawned", { agent_id: "a1", fork_base: "main" }),
   ev(3, "attempt_ready", {}),
   ev(4, "prompt_sent", { kind: "step" }),
   ev(5, "turn_ended", { status: "idle" }),
-  ev(6, "gate_evaluated", { mode: "artifact", outcome: "done", reason: "PLAN.md exists" }),
+  ev(6, "gate_evaluated", { mode: "commit", outcome: "done", reason: "" }),
   ev(7, "boundary_commit", { sha: "deadbeefcafe" }),
   ev(8, "attempt_spawned", { agent_id: "a2", fork_base: "deadbeef" }),
   ev(9, "prompt_sent", { kind: "step" }),
   ev(10, "turn_ended", { status: "idle" }),
-  ev(11, "gate_evaluated", { mode: "tests", outcome: "blocked", reason: "3 failing tests" }),
-  ev(12, "run_paused", { reason: "blocked_gate", detail: "tests unmet" }),
+  ev(11, "gate_evaluated", { mode: "verdict", outcome: "blocked", reason: "3 failing tests" }),
+  ev(12, "attempt_error", { error: "3 failing tests" }),
 ];
 
 describe("summarizeEvent", () => {
@@ -37,47 +37,27 @@ describe("summarizeEvent", () => {
       "Agent ready",
       "Prompt sent",
       "Turn ended",
-      "Gate `artifact` passed",
+      "Gate `commit` passed",
       "Committed deadbee",
       "Agent spawned",
       "Prompt sent",
       "Turn ended",
-      "Gate `tests` — blocked",
-      "Paused — gate not met",
+      "Gate `verdict` — blocked",
+      "Attempt error",
     ]);
   });
 
   it("surfaces the gate reason as a detail line, not in the title", () => {
-    const passed = summarizeEvent(FIXTURE[5]);
-    expect(passed.title).not.toContain("PLAN.md");
-    expect(passed.detail).toBe("PLAN.md exists");
-
     const blocked = summarizeEvent(FIXTURE[10]);
+    expect(blocked.title).not.toContain("failing");
     expect(blocked.detail).toBe("3 failing tests");
-  });
-
-  it("distinguishes prompt kinds", () => {
-    expect(summarizeEvent(ev(1, "prompt_sent", { kind: "nudge" })).title).toBe("Nudge sent");
-    expect(summarizeEvent(ev(1, "prompt_sent", { kind: "reprompt" })).title).toBe("Re-prompted");
-    expect(summarizeEvent(ev(1, "prompt_sent", { kind: "message" })).title).toBe(
-      "Message delivered",
-    );
-  });
-
-  it("names each paused reason", () => {
-    const reasons = ["approval", "question", "budget_exceeded", "conflict", "stalled"];
-    const titles = reasons.map((r) => summarizeEvent(ev(1, "run_paused", { reason: r })).title);
-    expect(titles).toEqual([
-      "Paused — needs approval",
-      "Paused — awaiting answer",
-      "Paused — budget reached",
-      "Paused — merge conflict",
-      "Paused — stalled",
-    ]);
   });
 
   it("degrades unknown types and missing fields without throwing", () => {
     expect(summarizeEvent(ev(1, "some_future_event", null)).title).toBe("Some future event");
+    // Old journals still hold the retired engine's events; they read as their
+    // humanized type rather than vanishing.
+    expect(summarizeEvent(ev(1, "run_paused", { reason: "approval" })).title).toBe("Run paused");
     // A gate event missing its payload fields still produces a line.
     expect(summarizeEvent(ev(1, "gate_evaluated", {})).title).toBe("Gate `gate` — unmet");
     expect(summarizeEvent(ev(1, "boundary_commit", {})).title).toBe("Committed ");

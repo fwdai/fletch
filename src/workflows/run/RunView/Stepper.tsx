@@ -1,15 +1,11 @@
 // RunView/Stepper.tsx — the run's spine as a horizontal progress strip under
 // the header. Each step is one node: a status glyph, the step's name, and its
 // duration — enough to read the run's shape at a glance. Everything else
-// (goal, agent, gate, attempt history) is progressive disclosure: a hover card
-// on the node, and a click that focuses that step's chat in the main pane.
-//
-// Attempts stay first-class but out of the way: a node whose step retried or
-// looped carries a ×N count, and the AttemptStrip (rendered by RunView only
-// when the focused step has more than one attempt) lists every attempt —
-// abandoned ones dimmed, never hidden.
+// (goal, agent, gate, attempts) is progressive disclosure: a hover card on the
+// node, and a click that scrolls the thread to that step. A node whose step ran
+// more than once carries a ×N count.
 
-import { Fragment, type MouseEvent as ReactMouseEvent, type ReactNode, useState } from "react";
+import { Fragment, type MouseEvent as ReactMouseEvent, useState } from "react";
 import type { WfStepExec } from "../../../api";
 import { Icon } from "../../../components/Icon";
 import { fmtDur, LiveTimer } from "../../../components/Workspace/RunTimer";
@@ -18,20 +14,22 @@ import type { ResolvedAgent } from "../../shared";
 import { attemptChip } from "../status";
 import type { StepDesc } from "./flatten";
 
-/** Attempts of one step, in execution order (loop iteration, then retry). */
-export function stepAttempts(attempts: WfStepExec[], stepId: string): WfStepExec[] {
+/** Attempts of one step, in execution order (the row's iteration, then its
+ *  attempt). */
+function stepAttempts(attempts: WfStepExec[], stepId: string): WfStepExec[] {
   return attempts
     .filter((a) => a.step_id === stepId)
     .sort((a, b) => a.iteration - b.iteration || a.attempt - b.attempt);
 }
 
-/** The attempt a step click should focus — the newest by iteration/retry. */
-export function latestAttempt(rows: WfStepExec[]): WfStepExec | undefined {
+/** The step's newest attempt — the one its node and hover card describe. */
+function latestAttempt(rows: WfStepExec[]): WfStepExec | undefined {
   return rows[rows.length - 1];
 }
 
 /** Node visual state, collapsed from the latest attempt's status. `attention`
- *  covers the amber "a human or a gate is holding this" family. */
+ *  is the amber family: a gate that wasn't met, and the approval pause old exec
+ *  rows still hold. */
 type NodeState = "done" | "live" | "attention" | "error" | "pending";
 
 function nodeState(s: WfStepExec["status"] | undefined): NodeState {
@@ -68,15 +66,12 @@ export function Stepper({
   resolve,
   selectedStepId,
   onSelectStep,
-  trailing,
 }: {
   steps: StepDesc[];
   attempts: WfStepExec[];
   resolve: (alias: string) => ResolvedAgent | null;
   selectedStepId: string | null;
   onSelectStep: (step: StepDesc) => void;
-  /** Right-pinned extras (the compact budget meters). */
-  trailing?: ReactNode;
 }) {
   const [card, setCard] = useState<HoverCard | null>(null);
 
@@ -121,7 +116,6 @@ export function Stepper({
           );
         })}
       </div>
-      {trailing}
       {card && hoveredStep && (
         <StepCard
           step={hoveredStep}
@@ -186,14 +180,10 @@ function StepCard({
 }) {
   const latest = latestAttempt(rows);
   const chip = attemptChip(latest?.status ?? "pending");
-  const iterations = rows.length > 0 ? rows[rows.length - 1].iteration + 1 : 0;
   return (
     <div className="wf-node-card" style={{ left: x, top: y, width: CARD_W }}>
       <div className="wf-nc-head">
-        <span className="wf-nc-idx">
-          Step {index + 1}
-          {step.container && ` · ${step.container}`}
-        </span>
+        <span className="wf-nc-idx">Step {index + 1}</span>
         <span className="wf-nc-status" style={{ color: chip.tone }}>
           <Icon name={chip.icon} size={10} />
           {chip.label}
@@ -225,15 +215,10 @@ function StepCard({
         {rows.length > 0 && (
           <div className="wf-nc-row">
             <span className="k">Attempts</span>
-            <span className="v">
-              {rows.length}
-              {iterations > 1 && ` across ${iterations} iterations`}
-            </span>
+            <span className="v">{rows.length}</span>
           </div>
         )}
       </div>
-      {/* Neutral across both run modes: a click opens the step's chat in the
-          per-step view, and scrolls to its segment in the thread view. */}
       <div className="wf-nc-foot">Click to view this step</div>
     </div>
   );
@@ -246,57 +231,7 @@ function gateLabel(gate: string): string {
       return "agent reports done";
     case "commit":
       return "work is committed";
-    case "artifact":
-      return "artifact is produced";
-    case "tests":
-      return "tests pass";
-    case "approval":
-      return "you approve";
     default:
       return gate;
   }
-}
-
-/** The focused step's attempt history — rendered by RunView only when there is
- *  history to show (more than one attempt), keeping the common case clean. */
-export function AttemptStrip({
-  stepId,
-  rows,
-  selectedId,
-  onSelect,
-}: {
-  stepId: string;
-  rows: WfStepExec[];
-  selectedId: string | null;
-  onSelect: (attempt: WfStepExec) => void;
-}) {
-  const iterated = rows.some((r) => r.iteration > 0);
-  return (
-    <div className="wf-attempt-strip">
-      <span className="wf-as-label">{stepId}</span>
-      {rows.map((row) => {
-        const chip = attemptChip(row.status);
-        return (
-          <button
-            type="button"
-            key={row.id}
-            className={`wf-attempt ${selectedId === row.id ? "sel" : ""} ${
-              row.status === "abandoned" ? "dim" : ""
-            }`}
-            onClick={() => onSelect(row)}
-          >
-            <span className="wf-attempt-chip" style={{ color: chip.tone }}>
-              <Icon name={chip.icon} size={10} />
-            </span>
-            <span className="wf-attempt-label">
-              {iterated ? `iter ${row.iteration + 1} · ` : ""}attempt {row.attempt}
-            </span>
-            <span className="wf-attempt-state" style={{ color: chip.tone }}>
-              {chip.label}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
 }

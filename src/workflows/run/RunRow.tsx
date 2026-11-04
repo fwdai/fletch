@@ -18,28 +18,16 @@ import { AgentAvatar } from "../builder/AgentAvatar";
 import { resolveAlias } from "../shared";
 import type { Spec } from "../spec";
 import { flattenSteps } from "./RunView/flatten";
-import { pausedLabel } from "./status";
 import { useRunAgents } from "./useRunAgents";
-
-/** Step-agent children are only meaningful — and only fetched — while a run is
- *  live or waiting: a finished run's step agents are archived, and a pending run
- *  hasn't spawned any yet. Both auto-expand (an active run wants its steps in
- *  view; a paused run needs attention). */
-function hasStepChildren(status: WfRun["status"]): boolean {
-  return status === "running" || status === "paused";
-}
 
 export function RunRow({
   run,
   selected,
   onSelect,
-  nested = false,
 }: {
   run: WfRun;
   selected: boolean;
   onSelect: () => void;
-  /** A composed sub-run (§10.3), rendered indented under its parent run. */
-  nested?: boolean;
 }) {
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
@@ -54,23 +42,17 @@ export function RunRow({
   const deletable = run.status === "done" || run.status === "failed" || run.status === "canceled";
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  // Expandable step-agent children. Default expanded for live/waiting runs;
-  // `userExpanded` (null until the user toggles) overrides that default. Agents
-  // are fetched only while expanded, so collapsed runs cost nothing.
-  const canExpand = hasStepChildren(run.status);
+  // Expandable step-agent children, only while the run is live: a finished
+  // run's step agents are archived, and a pending run hasn't spawned any yet.
+  // Default expanded; `userExpanded` (null until the user toggles) overrides
+  // that. Agents are fetched only while expanded, so collapsed runs cost nothing.
+  const canExpand = working;
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const expanded = canExpand && (userExpanded ?? true);
   const stepChildren = deriveStepChildren(useRunAgents(run.id, expanded));
-  // Same left-spine vocabulary as an agent row: live → green, paused → amber
-  // (the turn is the user's, same as an agent awaiting input), failed → danger,
+  // Same left-spine vocabulary as an agent row: live → green, failed → danger,
   // everything else (pending/done/canceled) → the faint idle grey.
-  const railClass = working
-    ? "run"
-    : run.status === "paused"
-      ? "wait"
-      : run.status === "failed"
-        ? "err"
-        : "idle";
+  const railClass = working ? "run" : run.status === "failed" ? "err" : "idle";
   const age = formatAge(new Date(run.created_at).toISOString(), now);
 
   // The flow's lead (first) agent — a representative chip; the workflow tile is
@@ -82,10 +64,9 @@ export function RunRow({
     : null;
 
   // The status meta is wider than the reserved 21px slot when it carries a text
-  // badge; and when the row offers no hover actions, the meta must not fade out
-  // on hover (there is nothing to cross-fade to).
-  const wideMeta = (run.status === "paused" && !!run.paused_reason) || run.status === "failed";
-  const hasActions = stoppable || deletable;
+  // badge. Every status offers Stop or Delete, so the meta always cross-fades to
+  // the hover actions.
+  const wideMeta = run.status === "failed";
 
   const onStop = async (e: MouseEvent) => {
     e.stopPropagation();
@@ -118,9 +99,7 @@ export function RunRow({
   return (
     <>
       <div
-        className={`agent ${selected ? "active" : ""} ${nested ? "run-nested" : ""} ${
-          hasActions ? "" : "no-actions"
-        }`}
+        className={`agent ${selected ? "active" : ""}`}
         role="button"
         tabIndex={0}
         aria-current={selected ? "page" : undefined}
@@ -167,9 +146,6 @@ export function RunRow({
           <span className="ag-slot iflex-center">
             <span className={`ag-meta ${wideMeta ? "wide" : ""}`}>
               {working && <span className="ag-loader" aria-label="Working" />}
-              {run.status === "paused" && run.paused_reason && (
-                <Badge variant="warn">{pausedLabel(run.paused_reason)}</Badge>
-              )}
               {run.status === "failed" && <Badge variant="err">failed</Badge>}
               {run.status === "done" && (
                 <span className="ag-run-done tip" data-tip="Completed" aria-label="Completed">

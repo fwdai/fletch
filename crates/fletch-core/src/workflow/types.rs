@@ -1,10 +1,9 @@
-//! Workflow v1 domain types — the run / attempt /
-//! event / message rows and their status enums, with serde for the command
-//! surface and `from_row` constructors for the journal + read commands.
+//! Workflow v1 domain types — the run / attempt / event rows and their status
+//! enums, with serde for the command surface and `from_row` constructors for the
+//! journal + read commands.
 //!
-//! The spec/block types (`Spec`, `Block`, `Gate`, …) deliberately live in
-//! `spec.rs` (a separate slice): this module only models what is persisted in
-//! the v1 tables. JSON-typed columns (`spec_json`, `payload_json`, …) are parsed
+//! The spec types (`Spec`, `Step`, `Gate`, …) deliberately live in `spec.rs`:
+//! this module only models what is persisted in the v1 tables. JSON-typed columns (`spec_json`, `payload_json`, …) are parsed
 //! into `serde_json::Value` so the frontend receives real objects, not strings.
 
 use rusqlite::types::Type;
@@ -55,12 +54,10 @@ macro_rules! db_enum {
 }
 
 db_enum! {
-    /// Run lifecycle (§6.2): `pending → running → { paused ⇄ running } →
-    /// done | failed | canceled`.
+    /// Run lifecycle (§6.2): `pending → running → done | failed | canceled`.
     RunStatus {
         Pending  => "pending",
         Running  => "running",
-        Paused   => "paused",
         Done     => "done",
         Failed   => "failed",
         Canceled => "canceled",
@@ -68,20 +65,11 @@ db_enum! {
 }
 
 db_enum! {
-    /// Why a run is paused (§6.2). Set only while `RunStatus::Paused`.
-    PausedReason {
-        Approval       => "approval",
-        Question       => "question",
-        BlockedGate    => "blocked_gate",
-        BudgetExceeded => "budget_exceeded",
-        Conflict       => "conflict",
-        Stalled        => "stalled",
-    }
-}
-
-db_enum! {
-    /// Step-attempt lifecycle (§6.2). The last five are terminal and, once
-    /// reached, the attempt row is never mutated again.
+    /// Step-attempt lifecycle (§6.2). The kernel writes `spawning → running →
+    /// done | blocked | error | abandoned`; `pending`, `gating` and
+    /// `awaiting_approval` appear only on rows an earlier engine wrote, and stay
+    /// readable so those runs still open. Once terminal, a row is never mutated
+    /// again.
     AttemptStatus {
         Pending           => "pending",
         Spawning          => "spawning",
@@ -95,34 +83,12 @@ db_enum! {
     }
 }
 
-db_enum! {
-    /// `wf_message.kind` (§10).
-    MessageKind {
-        Report   => "report",
-        Ask      => "ask",
-        Answer   => "answer",
-        Notify   => "notify",
-        Decision => "decision",
-    }
-}
-
-db_enum! {
-    /// `wf_message.status` (§10.4).
-    MessageStatus {
-        Queued    => "queued",
-        Delivered => "delivered",
-        Answered  => "answered",
-        Expired   => "expired",
-    }
-}
-
 /// The journal event type names (§7.1). Kept as string constants rather than an
-/// enum so later slices can attach payloads and add types without a central
-/// match to touch; the journal's `type` column is always one of these.
+/// enum so a layer can attach payloads and add types without a central match to
+/// touch. These are what the kernel writes; a run an earlier engine journaled
+/// may carry other names, which `Event` passes through as plain strings.
 pub mod event_type {
     pub const RUN_LAUNCHED: &str = "run_launched";
-    pub const RUN_RESUMED: &str = "run_resumed";
-    pub const RUN_PAUSED: &str = "run_paused";
     pub const RUN_DONE: &str = "run_done";
     pub const RUN_FAILED: &str = "run_failed";
     pub const RUN_CANCELED: &str = "run_canceled";
@@ -156,39 +122,9 @@ pub mod event_type {
     pub const PROMPT_SENT: &str = "prompt_sent";
     pub const TURN_ENDED: &str = "turn_ended";
     pub const GATE_EVALUATED: &str = "gate_evaluated";
-    /// The review evidence assembled when an `approval` gate pauses the run
-    /// (spec §9): the verification report, the ferried diff vs the run base,
-    /// budget spend vs cap, and the step's verdict summary. Carried on its own
-    /// event (keyed to the awaiting step exec) so ReviewSurface can query the
-    /// latest one from `wf_events` without parsing `run_paused`.
-    pub const GATE_EVIDENCE: &str = "gate_evidence";
     pub const BOUNDARY_COMMIT: &str = "boundary_commit";
     pub const ATTEMPT_ABANDONED: &str = "attempt_abandoned";
     pub const ATTEMPT_ERROR: &str = "attempt_error";
-    pub const WATCHDOG_STALLED: &str = "watchdog_stalled";
-    pub const LOOP_ITERATION: &str = "loop_iteration";
-    pub const LOOP_MAX_REACHED: &str = "loop_max_reached";
-    pub const BUDGET_TICK: &str = "budget_tick";
-    pub const BUDGET_EXCEEDED: &str = "budget_exceeded";
-    pub const MESSAGE_ROUTED: &str = "message_routed";
-    pub const DECISION: &str = "decision";
-    pub const CHILD_SPAWN_REQUESTED: &str = "child_spawn_requested";
-    pub const CHILD_SPAWN_APPROVED: &str = "child_spawn_approved";
-    pub const CHILD_SPAWN_DENIED: &str = "child_spawn_denied";
-    /// An orchestrator `wf_compose` passed validation and a sub-run was authorized
-    /// (spec §10.3). The `subrun_launched` event follows once its driver starts.
-    pub const COMPOSE_REQUESTED: &str = "compose_requested";
-    /// A `wf_compose` was rejected — invalid fragment, over-depth, over-budget, or
-    /// a caps escalation (spec §10.3, §15). Carries the human-readable reason.
-    pub const COMPOSE_DENIED: &str = "compose_denied";
-    pub const SUBRUN_LAUNCHED: &str = "subrun_launched";
-    pub const SUBRUN_FINISHED: &str = "subrun_finished";
-    /// A parallel/orchestrate stage with `integrate: none` finished; a child's
-    /// committed work was left on its (unpushed) fork rather than merged (§12.3).
-    pub const INTEGRATE_SKIPPED: &str = "integrate_skipped";
-    pub const MERGE_STARTED: &str = "merge_started";
-    pub const MERGE_CONFLICT: &str = "merge_conflict";
-    pub const MERGE_DONE: &str = "merge_done";
     pub const FINALIZE_PUSHED: &str = "finalize_pushed";
     pub const FINALIZE_PR: &str = "finalize_pr";
 }
@@ -198,7 +134,6 @@ pub mod event_type {
 pub struct Run {
     pub id: String,
     pub definition_id: Option<String>,
-    pub parent_run_id: Option<String>,
     pub name: String,
     pub spec: Value,
     pub task: String,
@@ -208,10 +143,6 @@ pub struct Run {
     pub branch: String,
     pub base_sha: String,
     pub status: RunStatus,
-    pub paused_reason: Option<PausedReason>,
-    pub cursor: Option<Value>,
-    pub budgets: Value,
-    pub spent: Value,
     pub error: Option<String>,
     /// The PR this run's finalize opened (0029). Both `None` until a finalize
     /// actually proposes one — a `push`-only spec, a `pr create` that failed,
@@ -234,7 +165,6 @@ impl Run {
         Ok(Self {
             id: r.get("id")?,
             definition_id: r.get("definition_id")?,
-            parent_run_id: r.get("parent_run_id")?,
             name: r.get("name")?,
             spec: json_col(r, "spec_json")?,
             task: r.get("task")?,
@@ -244,10 +174,6 @@ impl Run {
             branch: r.get("branch")?,
             base_sha: r.get("base_sha")?,
             status: enum_col(r, "status", RunStatus::from_db)?,
-            paused_reason: opt_enum_col(r, "paused_reason", PausedReason::from_db)?,
-            cursor: opt_json_col(r, "cursor_json")?,
-            budgets: json_col(r, "budgets_json")?,
-            spent: json_col(r, "spent_json")?,
             error: r.get("error")?,
             pr_number: r.get("pr_number")?,
             pr_url: r.get("pr_url")?,
@@ -323,42 +249,11 @@ impl Event {
     }
 }
 
-/// A `wf_message` row (§4, §10).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub id: String,
-    pub run_id: String,
-    pub from_step_exec_id: Option<String>,
-    pub to_step_exec_id: Option<String>,
-    pub kind: MessageKind,
-    pub body: Value,
-    pub status: MessageStatus,
-    pub created_at: i64,
-    pub delivered_at: Option<i64>,
-}
-
-impl Message {
-    pub fn from_row(r: &Row) -> rusqlite::Result<Self> {
-        Ok(Self {
-            id: r.get("id")?,
-            run_id: r.get("run_id")?,
-            from_step_exec_id: r.get("from_step_exec_id")?,
-            to_step_exec_id: r.get("to_step_exec_id")?,
-            kind: enum_col(r, "kind", MessageKind::from_db)?,
-            body: json_col(r, "body_json")?,
-            status: enum_col(r, "status", MessageStatus::from_db)?,
-            created_at: r.get("created_at")?,
-            delivered_at: r.get("delivered_at")?,
-        })
-    }
-}
-
-/// `wf_get_run` payload (§7.2): a run plus its attempts and messages.
+/// `wf_get_run` payload (§7.2): a run plus its attempts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunDetail {
     pub run: Run,
     pub attempts: Vec<StepExec>,
-    pub messages: Vec<Message>,
 }
 
 // ───────────────────────────── row helpers ──────────────────────────────
@@ -388,19 +283,4 @@ fn opt_json_col(r: &Row, col: &str) -> rusqlite::Result<Option<Value>> {
 fn enum_col<T>(r: &Row, col: &str, parse: fn(&str) -> Option<T>) -> rusqlite::Result<T> {
     let raw: String = r.get(col)?;
     parse(&raw).ok_or_else(|| conversion_err(col, format!("unexpected value {raw:?}")))
-}
-
-/// Parse a nullable enum TEXT column via its `from_db`.
-fn opt_enum_col<T>(
-    r: &Row,
-    col: &str,
-    parse: fn(&str) -> Option<T>,
-) -> rusqlite::Result<Option<T>> {
-    let raw: Option<String> = r.get(col)?;
-    match raw {
-        None => Ok(None),
-        Some(s) => parse(&s)
-            .map(Some)
-            .ok_or_else(|| conversion_err(col, format!("unexpected value {s:?}"))),
-    }
 }

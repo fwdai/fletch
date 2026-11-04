@@ -158,56 +158,6 @@ async fn clone_detached(spec: &CheckoutSpec<'_>) -> Result<()> {
     .await
 }
 
-/// Provision a workflow step workspace: a `--shared` clone of the source repo
-/// that then forks from `spec.base_ref` **in the run repository** (spec §12.1).
-///
-/// A previous step's commit exists only in that step's (now-disposable) clone
-/// and was ferried into the run repo, so it is unreachable from a fresh clone of
-/// the source. This is the one provisioning extension §12.1 calls for: after the
-/// source clone, `git fetch <run-repo> <base_ref>` before detaching. Step 1's
-/// base is the run's `base_sha` (already present in the source clone), so the
-/// fetch is skipped when the ref already resolves — that is just the presence
-/// gate every [`ensure_present`] ladder opens with.
-///
-/// A one-rung ladder, and a mandatory one: the run repo is the only place a
-/// previous step's commit exists, so nothing weaker can substitute for it.
-/// There is no degradation here the way there is for restore — a missing fork
-/// base means the run itself is broken, not that the workspace should open
-/// somewhere else.
-pub async fn provision_forking_run_repo(spec: &CheckoutSpec<'_>, run_repo: &Path) -> Result<()> {
-    clone_base(spec).await?;
-    fixups(spec, |dest| async move {
-        let remote = path_str(run_repo)?;
-        // `<ref>:<ref>`, not a bare source ref: step N's base is the pinned
-        // `refs/wf/steps/<prev>` (an explicit ref, so the run repo needs no
-        // `allowAnySHA1InWant`), and a one-sided fetch would leave it in
-        // `FETCH_HEAD` only — the *name* would still not resolve locally, so
-        // neither the presence re-check nor the checkout could use it. Writing
-        // the same name on both sides makes the ref real in the clone.
-        let refspec = format!("{}:{}", spec.base_ref, spec.base_ref);
-        if !ensure_present(
-            &dest,
-            spec.source_repo,
-            spec.base_ref,
-            &[Rung::Repo {
-                path: &remote,
-                refspec: &refspec,
-            }],
-        )
-        .await
-        {
-            return Err(Error::Git(format!(
-                "fork ref {} is absent from the source clone and could not be \
-                 fetched from the run repo at {}",
-                spec.base_ref,
-                run_repo.display()
-            )));
-        }
-        checkout_detached(&dest, spec.base_ref).await
-    })
-    .await
-}
-
 /// Create the workspace for a restored agent that had already materialized a
 /// branch, checked out at `spec.base_ref` (its archived tip). Returns `true`
 /// when it landed on the branch, `false` when it degraded to a detached
@@ -973,10 +923,6 @@ enum Rung<'a> {
     /// a tip whose branch is gone — GitHub serves any commit still reachable
     /// from an advertised ref, so a merged-then-deleted tip stays fetchable.
     Commit(&'a str),
-    /// An explicit `src:dst` refspec from a local repository Fletch owns (the
-    /// workflow run repo), which must land the commit under a local ref
-    /// rather than only in `FETCH_HEAD`.
-    Repo { path: &'a str, refspec: &'a str },
 }
 
 /// The fetch `rung` names into the clone at `repo` — the single primitive
@@ -985,36 +931,13 @@ enum Rung<'a> {
 ///
 /// The user's repository's remote is reached through `git::Transport` — the
 /// user's config and the app's GitHub token over the clone's objects — never
-/// through the clone's own `origin`. A run repo is a local path: the fetch
-/// runs in the clone with no credentials, under the config refusal like every
-/// host-side git there.
+/// through the clone's own `origin`.
 async fn fetch(repo: &Path, source_repo: &Path, rung: Rung<'_>) -> Result<()> {
-    let (path, refspec) = match rung {
-        Rung::Branch(branch) => {
-            return git::Transport::open(repo, source_repo)
-                .await?
-                .fetch_branches(git::Branches::One(branch))
-                .await
-        }
-        Rung::Commit(sha) => {
-            return git::Transport::open(repo, source_repo)
-                .await?
-                .fetch_commit(sha)
-                .await
-        }
-        Rung::Repo { path, refspec } => (path, refspec),
-    };
-    crate::git::hardening::refuse_steerable_config(repo).await?;
-    let mut cmd = crate::git_dist::command(repo);
-    cmd.args(["fetch", path, refspec]);
-    let out = git::output_timed(&mut cmd, "git fetch").await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "fetch {path} {refspec} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+    let transport = git::Transport::open(repo, source_repo).await?;
+    match rung {
+        Rung::Branch(branch) => transport.fetch_branches(git::Branches::One(branch)).await,
+        Rung::Commit(sha) => transport.fetch_commit(sha).await,
     }
-    Ok(())
 }
 
 /// Make `commit` resolvable inside the clone at `dest`, trying each
@@ -1027,8 +950,7 @@ async fn fetch(repo: &Path, source_repo: &Path, rung: Rung<'_>) -> Result<()> {
 ///
 ///   * **Presence first.** The commit is very often already there, borrowed
 ///     through the `--shared` alternates link: a legacy worktree-mode archive
-///     whose commits landed in the source object store, or a workflow step 1
-///     forking from the run's `base_sha`. Checking first keeps the common case
+///     whose commits landed in the source object store. Checking first keeps the common case
 ///     offline and instant instead of paying a pointless network round-trip.
 ///   * **Re-check after every fetch.** A fetch that *succeeds* does not prove
 ///     it brought the commit. A branch rebased or force-pushed past an
@@ -2648,127 +2570,6 @@ mod tests {
         let err = provision_recovering(&spec, None).await.unwrap_err();
         assert!(err.to_string().contains(lost), "got: {err}");
         assert!(!dest2.exists());
-    }
-
-    /// Init a run repo (a `--shared` clone of `source`) carrying one extra
-    /// commit pinned under an explicit `refs/wf/steps/<id>` ref — the shape
-    /// `gitops::ferry` leaves behind for the next step to fork from. Returns
-    /// (run_repo, refname).
-    fn run_repo_with_step_ref(dir: &Path, source: &Path, step: &str) -> (PathBuf, String) {
-        let run_repo = dir.join("run-repo");
-        run(
-            dir,
-            &[
-                "clone",
-                "-q",
-                "--shared",
-                source.to_str().unwrap(),
-                run_repo.to_str().unwrap(),
-            ],
-        );
-        run(&run_repo, &["config", "user.email", "r@example.com"]);
-        run(&run_repo, &["config", "user.name", "Runner"]);
-        std::fs::write(run_repo.join("step.txt"), b"step output").unwrap();
-        run(&run_repo, &["add", "-A"]);
-        run(&run_repo, &["commit", "-q", "-m", "step 1 output"]);
-        let refname = format!("refs/wf/steps/{step}");
-        run(&run_repo, &["update-ref", &refname, "HEAD"]);
-        (run_repo, refname)
-    }
-
-    #[tokio::test]
-    async fn forking_run_repo_fetches_a_base_that_lives_only_there() {
-        // Step N (§12.1): the previous step's commit was made in a workspace
-        // that no longer exists and ferried into the run repo, so a fresh clone
-        // of the *source* cannot see it. The run-repo rung must bring it in.
-        let td = tempfile::tempdir().unwrap();
-        let (repo, _first, _head) = fixture_repo(td.path());
-        let (run_repo, step_ref) = run_repo_with_step_ref(td.path(), &repo, "step-1");
-        let step_tip = run(&run_repo, &["rev-parse", &step_ref]);
-        // Precondition: the source repo genuinely does not have this commit.
-        // `^{commit}` is load-bearing — bare `rev-parse --verify <full sha>`
-        // echoes any well-formed hex string back without touching the object
-        // store (which is why `commit_present` peels too).
-        let probe = std::process::Command::new("git")
-            .current_dir(&repo)
-            .args([
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("{step_tip}^{{commit}}"),
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            !probe.status.success(),
-            "fixture must fork from a run-only commit"
-        );
-
-        let dest = td.path().join("clone");
-        let spec = CheckoutSpec {
-            source_repo: &repo,
-            base_ref: &step_ref,
-            dest: &dest,
-        };
-        provision_forking_run_repo(&spec, &run_repo).await.unwrap();
-
-        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), step_tip);
-        assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
-        // The fetch wrote the ref under its own name, not just FETCH_HEAD.
-        assert_eq!(run(&dest, &["rev-parse", &step_ref]), step_tip);
-        assert!(dest.join("step.txt").exists());
-    }
-
-    #[tokio::test]
-    async fn forking_run_repo_skips_the_fetch_when_the_base_is_already_local() {
-        // Step 1 forks from the run's `base_sha`, which the fresh source clone
-        // already has: the presence gate must short-circuit the ladder. Proven
-        // by pointing at a run repo that does not exist — any attempted fetch
-        // would fail the provision.
-        let td = tempfile::tempdir().unwrap();
-        let (repo, first, _head) = fixture_repo(td.path());
-        let missing_run_repo = td.path().join("no-such-run-repo");
-
-        let dest = td.path().join("clone");
-        let spec = CheckoutSpec {
-            source_repo: &repo,
-            base_ref: &first,
-            dest: &dest,
-        };
-        provision_forking_run_repo(&spec, &missing_run_repo)
-            .await
-            .unwrap();
-        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), first);
-        assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
-    }
-
-    #[tokio::test]
-    async fn forking_run_repo_errors_when_the_base_is_nowhere() {
-        // The fork base is the one thing this path cannot degrade past: it is
-        // absent from the source clone and the run repo can't supply it, so the
-        // run is broken and the error must say which ref was missing.
-        let td = tempfile::tempdir().unwrap();
-        let (repo, _first, _head) = fixture_repo(td.path());
-        let (run_repo, _step_ref) = run_repo_with_step_ref(td.path(), &repo, "step-1");
-
-        let dest = td.path().join("clone");
-        let absent = "refs/wf/steps/step-nope";
-        let spec = CheckoutSpec {
-            source_repo: &repo,
-            base_ref: absent,
-            dest: &dest,
-        };
-        let err = provision_forking_run_repo(&spec, &run_repo)
-            .await
-            .expect_err("a fork base nowhere to be found must fail");
-        assert!(
-            err.to_string().contains(absent),
-            "the error must name the missing fork ref, got: {err}"
-        );
-        assert!(
-            !dest.exists(),
-            "a failed provision must leave nothing behind"
-        );
     }
 
     #[tokio::test]

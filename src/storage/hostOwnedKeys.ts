@@ -44,7 +44,6 @@ export const HOST_PROJECT_SETTING_KEYS = [
   "roadmap.autoqueue",
   "roadmap.max_concurrent",
   "roadmap.settle_review",
-  "roadmap.midrun_awareness",
   "linear.team_id",
   "linear.team_name",
   "context.enabled",

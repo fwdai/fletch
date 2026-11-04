@@ -35,7 +35,7 @@ pub const MAX_CONCURRENT_ROADMAP_CEILING: usize = 4;
 // Idle wake interval; nudges also wake immediately.
 const TICK: Duration = Duration::from_secs(15);
 
-const LIVE_RUN_STATUSES: &str = "'pending','running','paused'";
+const LIVE_RUN_STATUSES: &str = "'pending','running'";
 
 fn signal() -> &'static Notify {
     static SIGNAL: OnceLock<Notify> = OnceLock::new();
@@ -169,9 +169,7 @@ pub(crate) fn release_kind(why: &str) -> EventKind {
 pub(crate) fn settle(status: Option<RunStatus>, pr: Option<&FinalizedPr>) -> Settlement {
     match status {
         None => Settlement::Released(RUN_DELETED),
-        Some(RunStatus::Pending) | Some(RunStatus::Running) | Some(RunStatus::Paused) => {
-            Settlement::Running
-        }
+        Some(RunStatus::Pending) | Some(RunStatus::Running) => Settlement::Running,
         Some(RunStatus::Done) if pr.is_some() => Settlement::InReview,
         Some(RunStatus::Done) => Settlement::Done,
         Some(RunStatus::Failed) => Settlement::Released(RUN_FAILED),
@@ -248,11 +246,7 @@ struct Plan {
     brief: String,
 }
 
-pub fn spawn(
-    ctx: Arc<EngineCtx>,
-    db: Db,
-    service: Arc<crate::workflow::scheduler::WorkflowService>,
-) {
+pub fn spawn(ctx: Arc<EngineCtx>, db: Db, service: Arc<crate::workflow::service::WorkflowService>) {
     crate::host::spawn(async move {
         let said: Arc<SaidNotes> = Arc::new(Mutex::new(HashMap::new()));
         loop {
@@ -275,7 +269,7 @@ pub fn spawn(
 async fn tick(
     ctx: &Arc<EngineCtx>,
     db: &Db,
-    service: &Arc<crate::workflow::scheduler::WorkflowService>,
+    service: &Arc<crate::workflow::service::WorkflowService>,
     said: &SaidNotes,
 ) {
     for project_id in projects_with_work(db) {
@@ -744,7 +738,7 @@ fn claim_item(
 async fn dispatch(
     ctx: &Arc<EngineCtx>,
     db: &Db,
-    service: &Arc<crate::workflow::scheduler::WorkflowService>,
+    service: &Arc<crate::workflow::service::WorkflowService>,
     plan: Plan,
 ) {
     let Plan {

@@ -151,7 +151,6 @@ impl Supervisor {
             skills: parent.skills.clone(),
             mcp_servers: parent.mcp_servers.clone(),
             fork_base,
-            run_repo: None,
             owner_run_id: None,
             existing_workspace: None,
             code_from,

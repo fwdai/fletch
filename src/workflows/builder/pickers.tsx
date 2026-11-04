@@ -1,6 +1,6 @@
 // pickers.tsx — the builder's agent-picker popover, fixed-positioned (escaping
-// the canvas clip) from a measured rect. Gate and budget editing moved inline
-// into the inspector (see inspector/), so this is the one popover left.
+// the canvas clip) from a measured rect. Gate editing lives inline in the
+// inspector (see inspector/), so this is the one popover.
 
 import { PROVIDERS } from "../../data/providers";
 import type { CustomAgent } from "../../storage/customAgents";

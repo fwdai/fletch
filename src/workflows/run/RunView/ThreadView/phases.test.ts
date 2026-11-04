@@ -1,17 +1,17 @@
 // The "no silent second" contract, asserted against the kernel runner's actual
-// event sequence (src-tauri/src/workflow/runner/mod.rs): every point in a run
+// event sequence (crates/fletch-core/src/workflow/runner/mod.rs): every point in a run
 // either has an agent streaming or resolves to a named phase. A null phase with
 // nothing streaming is the bug these tests exist to catch.
 
 import { describe, expect, it } from "vitest";
 import type { WfEvent, WfRun, WfStepExec } from "../../../../api";
 import type { StepDesc } from "../flatten";
-import { composerRoute, disabledHint } from "./composer";
+import { disabledHint } from "./composer";
 import { derivePhase, type PhaseInput, phaseLabel } from "./phases";
 
 const steps: StepDesc[] = [
-  { id: "plan", agentAlias: "planner", goal: "" },
-  { id: "code", agentAlias: "coder", goal: "" },
+  { id: "plan", agentAlias: "planner", goal: "", block: 0, position: 0 },
+  { id: "code", agentAlias: "coder", goal: "", block: 1, position: 0 },
 ];
 
 const attempts: WfStepExec[] = [stepExec("exec-plan", "plan"), stepExec("exec-code", "code")];
@@ -47,7 +47,6 @@ function run(over: Partial<WfRun> = {}): WfRun {
     created_at: 500,
     updated_at: 9000,
     error: null,
-    paused_reason: null,
     ...over,
   } as WfRun;
 }
@@ -123,21 +122,16 @@ describe("derivePhase — the kernel's sequence", () => {
   });
 
   it("ignores bookkeeping events between phases", () => {
-    // A budget tick or a missing-skill warning must not reset the phase clock or
-    // rename the phase.
+    // A missing-skill warning (or an event this build doesn't know) must not
+    // reset the phase clock or rename the phase.
     const events = [
       ev("attempt_spawned", "exec-plan"),
       ev("skills_missing", "exec-plan", { skills: ["x"] }),
-      ev("budget_tick", null),
+      ev("some_future_event", null),
     ];
     const p = phase(events);
     expect(p?.kind).toBe("starting");
     expect(p?.startedAt).toBe(events[0].ts);
-  });
-
-  it("goes quiet while paused — the banner owns that moment", () => {
-    const events = [ev("run_paused", null, { reason: "question" })];
-    expect(phase(events, { run: run({ status: "paused", paused_reason: "question" }) })).toBeNull();
   });
 
   it("names the failure from the journal before the run row catches up", () => {
@@ -220,21 +214,8 @@ describe("phaseLabel", () => {
   });
 });
 
-describe("composerRoute", () => {
-  const agent = { id: "ag-1" } as never;
-
-  it("talks to the live step agent", () => {
-    expect(composerRoute(run(), agent)).toBe("live");
-  });
-
-  it("answers the run's question even when a step agent is still up", () => {
-    expect(composerRoute(run({ status: "paused", paused_reason: "question" }), agent)).toBe(
-      "question",
-    );
-  });
-
-  it("disables itself between steps rather than dropping a message", () => {
-    expect(composerRoute(run(), undefined)).toBe("disabled");
+describe("disabledHint", () => {
+  it("names what the user is waiting for between steps rather than dropping a message", () => {
     expect(disabledHint(run())).toMatch(/starts automatically/);
     expect(disabledHint(run({ status: "done" }))).toMatch(/finished/);
   });

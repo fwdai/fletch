@@ -30,7 +30,7 @@ use crate::host::sink::{BroadcastSink, FanoutSink, Sink, EVENT_BUFFER};
 use crate::host::{EngineCtx, Event};
 use crate::roadmap::Db;
 use crate::supervisor::Supervisor;
-use crate::workflow::scheduler::WorkflowService;
+use crate::workflow::service::WorkflowService;
 use crate::workspace::WorkspaceManager;
 use crate::{
     bin_resolve, codegraph, database, git_dist, github, linear, publish_prefs, rpc, sandbox,
@@ -560,9 +560,9 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         hook(&supervisor);
     }
 
-    // Workflow engine (S4): the run scheduler + active-run registry. Its driver
-    // wraps the supervisor; runs left `pending`/`running` by a prior session are
-    // re-driven now (paused runs wait for a user action).
+    // Workflow engine: the run service + active-run registry. Its driver wraps
+    // the supervisor; runs left `pending`/`running` by a prior session are
+    // re-driven now.
     let wf_driver: Arc<dyn crate::workflow::driver::AgentDriver> = Arc::new(
         crate::workflow::driver::SupervisorDriver::new(supervisor.clone(), ctx.clone()),
     );

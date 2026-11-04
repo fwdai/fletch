@@ -1,20 +1,23 @@
-//! The workflow journal: an append-only `wf_event` log per run.
+//! The workflow journal: an append-only `wf_event` log per run, and the run-row
+//! status writes it narrates.
 //!
 //! `append` allocates the next per-run `seq` and inserts within the caller's DB
 //! lock — every workflow writer serializes through the single connection mutex
 //! (`Arc<Mutex<Connection>>`), so the `MAX(seq)+1` read and the INSERT are one
 //! atomic step and `seq` stays monotonic per run even under concurrent
-//! appenders. Status-row changes are written in the same transaction as the
-//! event that caused them (that wiring lands with the scheduler); this module
-//! owns the event write and the frontend notification (§7.2).
+//! appenders. A status change is written under the same lock as the event that
+//! caused it ([`fail_run`] is the pair for failure). This module also owns the
+//! frontend notifications for both (§7.2).
+
+use std::sync::Arc;
 
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use crate::host::{emit, EventSink};
+use crate::host::{emit, EngineCtx, EventSink};
 use crate::workflow::now_ms;
-use crate::workflow::types::{Event, Run};
+use crate::workflow::types::{event_type, Event, Run};
 
 /// Append an event to `run_id`'s journal and return the persisted row.
 ///
@@ -106,6 +109,79 @@ pub fn emit_run(sink: &dyn EventSink, run: &Run) {
 /// so the sidebar drops the row instead of upserting it.
 pub fn emit_run_deleted(sink: &dyn EventSink, run_id: &str) {
     emit(sink, "wf:run-deleted", run_id);
+}
+
+/// Append a journal event and emit `wf:event` (when an engine ctx is present).
+pub(crate) fn journal_event(
+    conn: &Connection,
+    engine: Option<&Arc<EngineCtx>>,
+    run_id: &str,
+    event_type: &str,
+    step_exec_id: Option<&str>,
+    payload: &Value,
+) {
+    match append(conn, run_id, event_type, step_exec_id, payload) {
+        Ok(ev) => {
+            if let Some(engine) = engine {
+                emit_event(engine.sink.as_ref(), &ev);
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, run_id, event_type, "journal append failed"),
+    }
+}
+
+/// Update the run row's status (and terminal `error`) and emit `wf:run` (when an
+/// engine ctx is present).
+pub(crate) fn set_status(
+    conn: &Connection,
+    engine: Option<&Arc<EngineCtx>>,
+    run_id: &str,
+    status: &str,
+    error: Option<&str>,
+) {
+    let _ = conn.execute(
+        "UPDATE wf_run SET status = ?1, error = ?2, updated_at = ?3 WHERE id = ?4",
+        params![status, error, now_ms(), run_id],
+    );
+    emit_run_row(conn, engine, run_id);
+}
+
+/// Mark a run `failed`: journal `run_failed {error}` first, then update the row.
+/// A failure is an append-only timeline event (§6.1, §7.1) — the observability
+/// goal (§1.2) requires every terminal outcome to be a journal event, not only a
+/// materialized-row change. Mirrors the `run_done` journal+status pair, so a
+/// panic, a step failure, or an unreadable spec all leave a `run_failed` in the
+/// timeline with the same human-readable cause stored on `wf_run.error`.
+pub(crate) fn fail_run(
+    conn: &Connection,
+    engine: Option<&Arc<EngineCtx>>,
+    run_id: &str,
+    error: &str,
+) {
+    journal_event(
+        conn,
+        engine,
+        run_id,
+        event_type::RUN_FAILED,
+        None,
+        &json!({ "error": error }),
+    );
+    set_status(conn, engine, run_id, "failed", Some(error));
+}
+
+/// Re-read the run row and emit it as `wf:run`, so the sidebar and monitor see
+/// a write without a round-trip.
+pub(crate) fn emit_run_row(conn: &Connection, engine: Option<&Arc<EngineCtx>>, run_id: &str) {
+    let Some(engine) = engine else {
+        return;
+    };
+    if let Ok(run) = conn.query_row(
+        "SELECT * FROM wf_run WHERE id = ?1",
+        [run_id],
+        Run::from_row,
+    ) {
+        emit_run(engine.sink.as_ref(), &run);
+    }
 }
 
 #[cfg(test)]

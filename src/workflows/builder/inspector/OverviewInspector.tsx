@@ -1,71 +1,26 @@
-// OverviewInspector.tsx — the inspector when nothing is selected: run-level
-// stats, a compact flow map, accent hue, run budgets, and finalize actions.
+// OverviewInspector.tsx — the inspector when nothing is selected: the step
+// count, a compact flow map, accent hue, and finalize actions.
 
 import { Icon } from "../../../components/Icon";
 import { AgentAvatar } from "../AgentAvatar";
-import { ContainerErrors } from "../blocks/ContainerErrors";
 import type { BuilderCtx } from "../ctx";
-import type { EBlock, EditorState } from "../model";
+import type { EditorState, EStep } from "../model";
 import { WF_HUES } from "../model";
-import { BudgetFields, Field, RUN_BUDGET_FIELDS } from "./bits";
+import { ErrorStrip, Field } from "./bits";
 
-function countSteps(blocks: EBlock[]): number {
-  let n = 0;
-  for (const b of blocks) {
-    if (b.kind === "step") n += 1;
-    else if (b.kind === "parallel") n += b.steps.length;
-    else if (b.kind === "loop") n += countSteps(b.body);
-    else n += b.body.length;
-  }
-  return n;
-}
-
-/** Loops anywhere in the tree — imported specs may nest them in loop bodies. */
-function countLoops(blocks: EBlock[]): number {
-  let n = 0;
-  for (const b of blocks) {
-    if (b.kind === "loop") n += 1 + countLoops(b.body);
-  }
-  return n;
-}
-
-function FlowRow({ index, block, ctx }: { index: number; block: EBlock; ctx: BuilderCtx }) {
-  const idx = String(index + 1).padStart(2, "0");
-  if (block.kind === "step") {
-    const a = ctx.resolve(block.agent);
-    return (
-      <button className="wb-ov-step" onClick={() => ctx.select(block.nid)}>
-        <span className="i">{idx}</span>
-        {a ? (
-          <AgentAvatar
-            custom={a.custom}
-            slug={a.providerId}
-            short={a.short}
-            hue={a.hue}
-            size={22}
-          />
-        ) : (
-          <span className="wb-step-mono empty sm">
-            <Icon name="plus" size={10} />
-          </span>
-        )}
-        <span className="n">{a?.name ?? "Unassigned"}</span>
-      </button>
-    );
-  }
-  const meta =
-    block.kind === "parallel"
-      ? { icon: "layers" as const, label: `Parallel · ${block.steps.length} branches` }
-      : block.kind === "loop"
-        ? { icon: "loop" as const, label: `Loop · up to ${block.max}×` }
-        : { icon: "combine" as const, label: "Orchestrate" };
+function FlowRow({ index, step, ctx }: { index: number; step: EStep; ctx: BuilderCtx }) {
+  const a = ctx.resolve(step.agent);
   return (
-    <button className="wb-ov-step" onClick={() => ctx.select(block.nid)}>
-      <span className="i">{idx}</span>
-      <span className="wb-ov-cont-ic">
-        <Icon name={meta.icon} size={12} />
-      </span>
-      <span className="n">{meta.label}</span>
+    <button className="wb-ov-step" onClick={() => ctx.select(step.nid)}>
+      <span className="i">{String(index + 1).padStart(2, "0")}</span>
+      {a ? (
+        <AgentAvatar custom={a.custom} slug={a.providerId} short={a.short} hue={a.hue} size={22} />
+      ) : (
+        <span className="wb-step-mono empty sm">
+          <Icon name="plus" size={10} />
+        </span>
+      )}
+      <span className="n">{a?.name ?? "Unassigned"}</span>
     </button>
   );
 }
@@ -81,33 +36,24 @@ export function OverviewInspector({
   onField: (patch: Partial<EditorState>) => void;
   formErrors: string[];
 }) {
-  const steps = countSteps(state.blocks);
-  const loops = countLoops(state.blocks);
+  const steps = state.blocks.length;
   const finalize = state.finalize;
 
   return (
     <>
-      <ContainerErrors errors={formErrors.length ? formErrors : undefined} />
+      <ErrorStrip errors={formErrors} />
 
       <div className="wb-stats">
         <div className="wb-stat">
-          <div className="v">{state.blocks.length}</div>
-          <div className="k">block{state.blocks.length === 1 ? "" : "s"}</div>
-        </div>
-        <div className="wb-stat">
           <div className="v">{steps}</div>
           <div className="k">step{steps === 1 ? "" : "s"}</div>
-        </div>
-        <div className="wb-stat">
-          <div className="v">{loops}</div>
-          <div className="k">loop{loops === 1 ? "" : "s"}</div>
         </div>
       </div>
 
       <Field label="Flow">
         <div className="wb-ov-flow">
-          {state.blocks.map((b, i) => (
-            <FlowRow key={b.nid} index={i} block={b} ctx={ctx} />
+          {state.blocks.map((s, i) => (
+            <FlowRow key={s.nid} index={i} step={s} ctx={ctx} />
           ))}
         </div>
       </Field>
@@ -123,14 +69,6 @@ export function OverviewInspector({
             />
           ))}
         </div>
-      </Field>
-
-      <Field label="Run budgets" hint="pauses when exceeded">
-        <BudgetFields
-          fields={RUN_BUDGET_FIELDS}
-          value={state.budgets}
-          onChange={(next) => onField({ budgets: next })}
-        />
       </Field>
 
       <Field label="When the run finishes">
@@ -169,7 +107,7 @@ export function OverviewInspector({
           </label>
           {finalize?.open_pr && (
             <div className="wb-box-cfg">
-              <label className="wb-budget-field">
+              <label className="wb-inline-field">
                 <span>PR base branch</span>
                 <input
                   className="ca-input sm"

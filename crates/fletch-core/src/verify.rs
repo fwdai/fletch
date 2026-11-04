@@ -3,20 +3,15 @@
 //! Verification runs a project's own checks (`install` → `test` → `lint`) in a
 //! checkout, each bounded and sandboxed under the Run-panel seatbelt profile,
 //! and reports a [`VerificationReport`]: one [`CheckResult`] per check with its
-//! outcome, timing, and output tail. It is the shared core behind two callers:
-//!
-//! * the workflow `tests` gate (spec §9.4), via the thin
-//!   [`crate::workflow::tests_gate`] adapter, which asks for a *tests-only*
-//!   report and maps it back to a `TestsOutcome`; and
-//! * ad-hoc agent checkouts, via the `run_verification` Tauri command, which
-//!   surfaces the full report (lint included) to the UI.
+//! outcome, timing, and output tail. Its callers are ad-hoc agent checkouts,
+//! via the `run_verification` Tauri command, which surfaces the full report to
+//! the UI, and the turn-end verification.
 //!
 //! Invariants worth preserving:
 //! * **Setup once per worktree.** The `install` command runs at most once per
-//!   worktree per [`Verifier`] (spec §9.4); the workflow scheduler holds one
-//!   `Verifier` across an attempt's gate evaluations, so a re-prompt does not
-//!   re-install. A fresh `Verifier` (as the Tauri command builds) always
-//!   installs once.
+//!   worktree per [`Verifier`], so a caller that verifies the same worktree
+//!   again with the same `Verifier` does not re-install. A fresh `Verifier` (as
+//!   the Tauri command builds) always installs once.
 //! * **Same ecosystem for install + test.** Detected commands come from the
 //!   highest-confidence config that actually defines a `test` row, and its
 //!   `install` pairs with it — so a mixed repo whose primary ecosystem has no
@@ -27,7 +22,7 @@
 //!   the setup ecosystem is the top-ranked one, so an ad-hoc lint check still
 //!   works without a test command.
 //! * **Project overrides win.** A non-empty `run.test` / `run.install` /
-//!   `run.lint` override beats detection, same layering as the tests gate.
+//!   `run.lint` override beats detection, same layering as the Run panel.
 //! * **Graceful degrade off-macOS.** The seatbelt profile needs `sandbox-exec`;
 //!   where it's absent every check is `Skipped` rather than run unsandboxed.
 //!
@@ -155,43 +150,18 @@ impl Verifier {
     /// ([`crate::run_env::resolve`]) injected into every check command — these
     /// are app-spawned sandboxed processes, the same trust class as the Run
     /// panel, so they get the same membrane. Pass `&[]` where the caller has no
-    /// project context. A parameter rather than a field because the tests gate
-    /// resolves per step worktree (the `{{worktree}}` interpolation target),
-    /// which exists only once an attempt has spawned its agent.
+    /// project context. A parameter rather than a field because the env is
+    /// resolved per worktree (the `{{worktree}}` interpolation target).
     pub async fn verify(&self, worktree: &Path, env: &[(String, String)]) -> VerificationReport {
-        self.run(worktree, /* include_lint = */ true, env).await
-    }
-
-    /// Run only `install` (once) → `test`, for the workflow tests gate, which has
-    /// no use for a lint result and must stay byte-identical to its prior shape.
-    pub async fn verify_tests_only(
-        &self,
-        worktree: &Path,
-        env: &[(String, String)],
-    ) -> VerificationReport {
-        self.run(worktree, /* include_lint = */ false, env).await
-    }
-
-    async fn run(
-        &self,
-        worktree: &Path,
-        include_lint: bool,
-        env: &[(String, String)],
-    ) -> VerificationReport {
         // The checks run under the Run-panel seatbelt profile, which needs macOS
         // `sandbox-exec`. Where it isn't present we can't safely run a
-        // repo-derived command, so skip every check rather than run unsandboxed
-        // (the tests gate then degrades to the verdict gate — spec §9.4).
+        // repo-derived command, so skip every check rather than run unsandboxed.
         if !sandbox_available() {
             tracing::warn!(
                 "verify: `{}` unavailable on this host; skipping checks",
                 crate::sandbox::SANDBOX_EXEC
             );
-            let mut checks = vec![skipped("test", "")];
-            if include_lint {
-                checks.push(skipped("lint", ""));
-            }
-            return VerificationReport { checks };
+            return all_skipped();
         }
         // The checks run on the host, in the worktree; a box keeps its
         // checkout in the guest, which they cannot reach yet. Skipped and
@@ -204,11 +174,7 @@ impl Verifier {
                 worktree = %worktree.display(),
                 "verify: the checkout is inside a box; skipping checks"
             );
-            let mut checks = vec![skipped("test", "")];
-            if include_lint {
-                checks.push(skipped("lint", ""));
-            }
-            return VerificationReport { checks };
+            return all_skipped();
         }
 
         let resolved = resolve(
@@ -218,16 +184,10 @@ impl Verifier {
             &self.lint_override,
         );
 
-        // Nothing to verify: no test and (for the full suite) no lint. Report the
-        // requested checks as skipped so the shape is stable; the tests-gate
-        // mapping turns a skipped test into `NoCommand`.
-        let will_run = resolved.test.is_some() || (include_lint && resolved.lint.is_some());
-        if !will_run {
-            let mut checks = vec![skipped("test", "")];
-            if include_lint {
-                checks.push(skipped("lint", ""));
-            }
-            return VerificationReport { checks };
+        // Nothing to verify: no test and no lint. Report both as skipped so the
+        // shape is stable.
+        if resolved.test.is_none() && resolved.lint.is_none() {
+            return all_skipped();
         }
 
         let mut checks = Vec::new();
@@ -259,13 +219,9 @@ impl Verifier {
             }
         }
 
-        // test, then (optionally) lint — each skipped when unresolved, or marked
-        // `SetupFailed` when the install above failed so they never ran.
-        let mut order: Vec<(&str, &Option<String>)> = vec![("test", &resolved.test)];
-        if include_lint {
-            order.push(("lint", &resolved.lint));
-        }
-        for (name, cmd) in order {
+        // test, then lint — each skipped when unresolved, or marked `SetupFailed`
+        // when the install above failed so they never ran.
+        for (name, cmd) in [("test", &resolved.test), ("lint", &resolved.lint)] {
             match cmd {
                 None => checks.push(skipped(name, "")),
                 Some(cmd) if setup_failed => checks.push(CheckResult {
@@ -317,8 +273,8 @@ impl Verifier {
         (outcome_tail.0, duration_ms, outcome_tail.1)
     }
 
-    /// The synthetic tail line for a timed-out check. Preserves the exact wording
-    /// the tests gate has always journaled: `install` → "setup command …".
+    /// The synthetic tail line for a timed-out check, naming what ran out of
+    /// time: `install` → "setup command …".
     fn timeout_note(&self, name: &str) -> String {
         let what = match name {
             "install" => "setup command",
@@ -368,6 +324,13 @@ impl Verifier {
 }
 
 /// A `Skipped` check with no command resolved.
+/// The report for a worktree nothing could be run in: both checks skipped.
+fn all_skipped() -> VerificationReport {
+    VerificationReport {
+        checks: vec![skipped("test", ""), skipped("lint", "")],
+    }
+}
+
 fn skipped(name: &str, command: &str) -> CheckResult {
     CheckResult {
         name: name.to_string(),
@@ -629,7 +592,7 @@ mod tests {
     #[test]
     fn resolve_takes_test_from_php_in_a_laravel_vite_repo() {
         // Laravel + Vite: the lockfile-backed Node project ranks first but has
-        // no `test` script, so the tests gate takes test + install from PHP.
+        // no `test` script, so verification takes test + install from PHP.
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),

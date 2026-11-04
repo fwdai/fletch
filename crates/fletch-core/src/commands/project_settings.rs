@@ -23,7 +23,6 @@ const PROJECT_SETTING_KEYS: &[&str] = &[
     "roadmap.autoqueue",
     "roadmap.max_concurrent",
     "roadmap.settle_review",
-    "roadmap.midrun_awareness",
     "linear.team_id",
     "linear.team_name",
     // Both opt-out: absent is on, `"false"` is off (`context::project_flag`).
@@ -171,7 +170,6 @@ mod tests {
             "roadmap.autoqueue",
             "roadmap.max_concurrent",
             "roadmap.settle_review",
-            "roadmap.midrun_awareness",
             "linear.team_id",
             "linear.team_name",
             "context.enabled",

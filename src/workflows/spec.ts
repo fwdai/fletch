@@ -1,37 +1,17 @@
 // Workflow definition spec — the TypeScript mirror of the Rust `workflow::spec`
-// types (see src-tauri/src/workflow/spec.rs).
+// types (see crates/fletch-core/src/workflow/spec.rs).
 //
 // These match the serde JSON representation exactly, so a `Spec` sent to
-// `wf_def_save` and one read back from `wf_def_list` are the same shape. The
-// block tree is externally tagged in JSON (`{ step: {...} }`), while gates are
-// internally tagged (`{ type: "artifact", path }`). Optional fields correspond
-// to Rust `Option`/`Vec` defaults that serde omits when empty.
+// `wf_def_save` and one read back from `wf_def_list` are the same shape. Each
+// workflow entry is wrapped as `{ step: {...} }`, while gates are internally
+// tagged (`{ type: "commit" }`). Optional fields correspond to Rust
+// `Option`/`Vec` defaults that serde omits when empty.
 
 /** The only spec version this build understands (mirrors `spec.rs`). */
 export const SPEC_VERSION = 1;
 
 /** Provider id a workflow agent targets (claude/codex/cursor/opencode/pi/…). */
 export type ProviderBase = string;
-
-export type Join = "all" | "any";
-export type Integrate = "none" | "merge";
-export type CommsCap = "report" | "ask" | "notify";
-export type LoopVerdict = "done";
-
-/** Turn / token / clock / attempt caps (spec §11.1). All optional; a missing
- *  field falls back to the app default at launch. */
-export interface Budgets {
-  turns?: number;
-  tokens?: number;
-  wall_clock_mins?: number;
-  turns_per_attempt?: number;
-  max_attempts?: number;
-  spawn_timeout_secs?: number;
-  turn_start_timeout_secs?: number;
-  stall_timeout_secs?: number;
-  nudge_timeout_secs?: number;
-  tests_timeout_secs?: number;
-}
 
 /** An MCP server embedded in a shared workflow (spec §5.3): the registry row
  *  minus its local id/timestamps and minus every secret value — only env/header
@@ -64,76 +44,22 @@ export interface AgentSpec {
   custom_agent?: string;
 }
 
-/** A deterministic prerequisite an `approval` gate can require first (spec §9). */
-export type Require = "tests";
-
-/** The deterministic predicate that marks a step attempt done (spec §9). An
- *  `approval` gate may list `require: [tests]` — the human pause is unreachable
- *  until the project's tests pass (optional, defaults to none) — and may name a
- *  repo-relative `artifact` the human reviews: the pause is likewise unreachable
- *  until that file exists, and its content rides in the gate evidence. */
-export type Gate =
-  | { type: "verdict" }
-  | { type: "commit" }
-  | { type: "artifact"; path: string }
-  | { type: "tests" }
-  | { type: "approval"; require?: Require[]; artifact?: string };
+/** The deterministic predicate that marks a step done (spec §9). A step with
+ *  no `gate` is a `verdict` step, matching serde's default on the Rust side. */
+export type Gate = { type: "verdict" } | { type: "commit" };
 
 export interface Step {
   id: string;
   agent: string;
   goal: string;
   gate?: Gate;
-  budgets?: Budgets;
-  comms?: CommsCap[];
 }
 
-export interface Parallel {
-  join: Join;
-  integrate: Integrate;
-  max_concurrent?: number;
-  steps: Step[];
+/** One entry of `Spec.workflow`: a step in the `{ step }` wrapper every stored
+ *  spec already speaks (`step_blocks` in spec.rs). */
+export interface Block {
+  step: Step;
 }
-
-export interface Until {
-  step: string;
-  verdict?: LoopVerdict;
-}
-
-export interface Loop {
-  max: number;
-  until: Until;
-  body: Block[];
-}
-
-export interface ChildTemplate {
-  agent: string;
-  max: number;
-}
-
-export interface ComposeLimits {
-  max_sub_runs: number;
-  /** Absolute cap 2 (spec §10.3). */
-  max_depth: number;
-}
-
-export interface Orchestrate {
-  agent: string;
-  goal: string;
-  children?: ChildTemplate;
-  body?: Step[];
-  join: Join;
-  integrate: Integrate;
-  comms?: CommsCap[];
-  compose?: ComposeLimits;
-}
-
-/** A control-flow node: externally tagged, exactly one key present. */
-export type Block =
-  | { step: Step }
-  | { parallel: Parallel }
-  | { loop: Loop }
-  | { orchestrate: Orchestrate };
 
 export interface Finalize {
   push: boolean;
@@ -146,7 +72,6 @@ export interface Spec {
   version: number;
   name: string;
   description?: string;
-  budgets?: Budgets;
   agents: Record<string, AgentSpec>;
   workflow: Block[];
   finalize?: Finalize;

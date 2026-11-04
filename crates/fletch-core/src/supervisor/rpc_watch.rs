@@ -46,13 +46,10 @@ pub(super) fn spawn_rpc_watcher(
 }
 
 /// Process every request currently pending in `agent_id`'s mailbox once, applying
-/// the resulting git/PR events. Shared by the polling watcher and the scheduler's
-/// synchronous drain (`Supervisor::settle_agent_rpc`): `process_pending` is
-/// idempotent and in-flight-guarded, so a concurrent tick and drain never
-/// double-dispatch. A request the agent wrote during its turn (e.g. a `wf_ask`)
-/// is therefore dispatched — and its message persisted — deterministically before
-/// the scheduler acts on that turn's gate outcome (§10.4).
-pub(super) async fn process_agent_rpc_once(
+/// the resulting git/PR events. `process_pending` is idempotent and
+/// in-flight-guarded, so a request is dispatched exactly once however the ticks
+/// fall.
+async fn process_agent_rpc_once(
     sup: &Arc<Supervisor>,
     ctx: &Arc<EngineCtx>,
     agent_id: &str,

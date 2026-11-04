@@ -530,35 +530,30 @@ mod tests {
         assert!(inner.runs.is_empty());
     }
 
-    // Mirrors the scheduler wiring: an orchestrate parent whose only live
-    // drivers are its sub-runs (each `register_driver`'d under a distinct run
-    // id) must stay active until the *last* driver deregisters, and a sub-run
-    // finishing must never clear the parent's own activity. Exercised on a
+    // Mirrors the workflow service's wiring: every drive task is
+    // `register_driver`'d under its own run id, so concurrent runs count
+    // independently — one finishing never clears another's activity, and
+    // activity reaches 0 only when the last driver deregisters. Exercised on a
     // standalone armed monitor so the shared global stays unarmed for other
     // tests; the IOKit FFI is bypassed under `cfg(test)`. A runtime because
     // going idle schedules the debounced release on it.
     #[tokio::test]
-    async fn active_run_count_tracks_parent_and_subruns_independently() {
+    async fn active_run_count_tracks_each_run_independently() {
         let m = ActivityMonitor::fresh();
         m.arm(std::sync::Arc::new(|_, _| {}));
 
-        // Parent begins driving; then it spawns two sub-runs. All three are
-        // distinct run ids, so all three count.
-        m.set_run_active("parent", true);
-        m.set_run_active("parent::child-1", true);
-        m.set_run_active("parent::child-2", true);
+        m.set_run_active("run-a", true);
+        m.set_run_active("run-b", true);
+        m.set_run_active("run-c", true);
         assert_eq!(m.active_run_count(), 3);
 
-        // Both sub-runs finish. The parent's activity is untouched — the exact
-        // "sub-runs skip activity / parent drops mid-work" regression this
-        // guards against.
-        m.set_run_active("parent::child-1", false);
-        m.set_run_active("parent::child-2", false);
+        // Two finish; the third's activity is untouched.
+        m.set_run_active("run-b", false);
+        m.set_run_active("run-c", false);
         assert_eq!(m.active_run_count(), 1);
-        assert!(m.is_run_active("parent"));
+        assert!(m.is_run_active("run-a"));
 
-        // Only when the last driver (the parent) is gone does activity reach 0.
-        m.set_run_active("parent", false);
+        m.set_run_active("run-a", false);
         assert_eq!(m.active_run_count(), 0);
     }
 

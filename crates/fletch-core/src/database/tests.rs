@@ -779,6 +779,83 @@ fn run_pr_columns_land_nullable_on_existing_runs() {
     assert_eq!(stored.1.as_deref(), Some("https://github.com/o/r/pull/142"));
 }
 
+/// Schema version just before 0056 retired the clone-per-step engine's run
+/// states. Pinned like the versions above.
+const V_BEFORE_ENGINE_RETIREMENT: usize = 55;
+
+/// 0056: a `paused` run — a state only the deleted engine produced, and one
+/// nothing can lift any more — is failed with a reason that says so, with the
+/// `run_failed` event appended to its journal; a composed sub-run is detached
+/// from its parent, and failed when it was still live. Other runs are untouched.
+#[test]
+fn engine_retirement_fails_paused_runs_and_detaches_sub_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_BEFORE_ENGINE_RETIREMENT)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO wf_run (id, parent_run_id, name, spec_json, task, project_id, repo_path,
+                             run_dir, branch, base_sha, status, paused_reason, budgets_json,
+                             spent_json, created_at, updated_at)
+              VALUES ('run-paused', NULL, 'wf', '{}', 't', 'p', '/r', '/d', 'wf/a', 'abc',
+                      'paused', 'approval', '{}', '{}', 0, 0),
+                     ('run-done', NULL, 'wf', '{}', 't', 'p', '/r', '/d', 'wf/b', 'abc',
+                      'done', NULL, '{}', '{}', 0, 0),
+                     ('run-child', 'run-done', 'wf', '{}', 't', 'p', '/r', '/d', 'wf/c', 'abc',
+                      'running', NULL, '{}', '{}', 0, 0);
+         INSERT INTO wf_event (run_id, seq, ts, type, payload_json)
+              VALUES ('run-paused', 1, 0, 'run_paused', '{\"reason\":\"approval\"}');",
+    )
+    .unwrap();
+    drop(conn);
+
+    init(dir.path()).unwrap();
+
+    let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
+    let row = |id: &str| -> (String, Option<String>, Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT status, paused_reason, error, parent_run_id FROM wf_run WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap()
+    };
+
+    let (status, reason, error, _) = row("run-paused");
+    assert_eq!(status, "failed");
+    assert_eq!(reason, None, "the pause it described is gone");
+    let error = error.expect("the failure names its cause");
+    assert!(error.contains("no longer exists"), "{error}");
+    let (seq, ty, payload_error): (i64, String, String) = conn
+        .query_row(
+            "SELECT seq, type, json_extract(payload_json, '$.error') FROM wf_event
+              WHERE run_id = 'run-paused' ORDER BY seq DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (seq, ty.as_str()),
+        (2, "run_failed"),
+        "appended to the journal"
+    );
+    assert_eq!(payload_error, error, "the timeline and the row agree");
+
+    let (status, _, error, _) = row("run-done");
+    assert_eq!(
+        (status.as_str(), error),
+        ("done", None),
+        "a finished run is untouched"
+    );
+
+    let (status, _, error, parent) = row("run-child");
+    assert_eq!(status, "failed");
+    assert!(error.unwrap().contains("orchestrate"));
+    assert_eq!(parent, None, "a sub-run stands alone");
+}
+
 #[test]
 fn fresh_init_creates_no_backup() {
     let dir = tempfile::tempdir().unwrap();
@@ -1751,6 +1828,11 @@ const TABLES_SHRUNK_BY_MIGRATIONS: &[(&str, u32)] = &[];
 /// new name must hold every row the old one had. Empty for the same reason.
 const TABLES_RENAMED_BY_MIGRATIONS: &[(&str, &str, u32)] = &[];
 
+/// Tables a migration after `V_FIXTURE` appends rows to, with the migration
+/// that does it: every row the table had survives, so its count may only grow.
+/// 0056 journals a `run_failed` for each run it fails.
+const TABLES_GROWN_BY_MIGRATIONS: &[(&str, u32)] = &[("wf_event", 56)];
+
 /// A populated install at `V_FIXTURE`: two projects with repos, checkouts and
 /// PRs; a workspace holding two sessions (0041 must supersede the older one);
 /// a roadmap parent/child pair populating the columns 0035 drops, with events
@@ -1933,6 +2015,15 @@ fn upgrading_a_populated_database_keeps_every_row() {
             .iter()
             .find(|(old, _, _)| old == table)
             .map_or(table.as_str(), |(_, new, _)| new);
+        if TABLES_GROWN_BY_MIGRATIONS.iter().any(|(t, _)| t == table) {
+            assert!(
+                after.get(name).is_some_and(|n| n >= rows),
+                "{table}: lost rows across migrations {}..{}",
+                V_FIXTURE + 1,
+                MIGRATIONS.len()
+            );
+            continue;
+        }
         assert_eq!(
             after.get(name),
             Some(rows),
