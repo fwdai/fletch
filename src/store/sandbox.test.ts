@@ -5,16 +5,30 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
-import type { BoxStateEvent, BoxVm, PublishApproval, PublishApprovalResolved } from "@/api";
+import type {
+  BoxEgressEvent,
+  BoxStateEvent,
+  BoxVm,
+  EgressAnswer,
+  EgressPrompt,
+  EgressPromptResolved,
+  PublishApproval,
+  PublishApprovalResolved,
+} from "@/api";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { createSandboxSlice } from "./sandbox";
 
-const { answerPublishApproval, listPublishApprovals, boxList } = vi.hoisted(() => ({
-  answerPublishApproval: vi.fn(),
-  listPublishApprovals: vi.fn(),
-  boxList: vi.fn(),
+const { answerPublishApproval, listPublishApprovals, boxList, boxEgressAnswer, boxEgressPending } =
+  vi.hoisted(() => ({
+    answerPublishApproval: vi.fn(),
+    listPublishApprovals: vi.fn(),
+    boxList: vi.fn(),
+    boxEgressAnswer: vi.fn(),
+    boxEgressPending: vi.fn(),
+  }));
+vi.mock("@/api", () => ({
+  api: { answerPublishApproval, listPublishApprovals, boxList, boxEgressAnswer, boxEgressPending },
 }));
-vi.mock("@/api", () => ({ api: { answerPublishApproval, listPublishApprovals, boxList } }));
 
 /** The slice creator and the actions, loosely typed: the test store carries
  *  only the sandbox slice, not the whole AppState. */
@@ -284,5 +298,73 @@ describe("refreshBoxVms", () => {
     await refresh(s);
 
     expect(s.getState().boxVms).toBeNull();
+  });
+});
+
+// The held-host queue of the Ask me posture: one entry per prompt, answered
+// through the host and dropped at once, taken down by `box:egress-resolved`,
+// and the refusal that follows an unanswered one raises no second toast.
+describe("egress prompts", () => {
+  function store() {
+    boxEgressAnswer.mockClear();
+    boxEgressAnswer.mockResolvedValue(undefined);
+    return create<Record<string, unknown>>((set, get) => ({
+      ...(createSandboxSlice as unknown as SliceFn)(set, get),
+    }));
+  }
+  const prompt = (over: Partial<EgressPrompt> = {}): EgressPrompt => ({
+    id: "h1",
+    agent_id: "a1",
+    project_id: "p1",
+    host: "api.stripe.com",
+    port: 443,
+    requested_at: "2026-11-04T00:00:00Z",
+    ...over,
+  });
+  const pending = (s: ReturnType<typeof store>) =>
+    (s.getState().pendingEgressPrompts as EgressPrompt[]).map((p) => p.id);
+  const receive = (s: ReturnType<typeof store>, p: EgressPrompt) =>
+    (s.getState().receiveEgressPrompt as (p: EgressPrompt) => void)(p);
+
+  it("queues each held host once and answers nothing by itself", () => {
+    const s = store();
+    receive(s, prompt());
+    receive(s, prompt());
+    receive(s, prompt({ id: "h2", host: "docs.python.org" }));
+    expect(pending(s)).toEqual(["h1", "h2"]);
+    expect(boxEgressAnswer).not.toHaveBeenCalled();
+  });
+
+  it("drops the prompt as it answers, and when the host says it is over", async () => {
+    const s = store();
+    receive(s, prompt());
+    receive(s, prompt({ id: "h2", host: "docs.python.org" }));
+    await (s.getState().answerEgressPrompt as (id: string, a: EgressAnswer) => Promise<void>)(
+      "h1",
+      "project",
+    );
+    expect(boxEgressAnswer).toHaveBeenCalledWith("h1", "project");
+    expect(pending(s)).toEqual(["h2"]);
+    (s.getState().resolveEgressPrompt as (e: EgressPromptResolved) => void)({
+      id: "h2",
+      outcome: "expired",
+    });
+    expect(pending(s)).toEqual([]);
+  });
+
+  it("does not raise the couldn't-reach toast for a host the user was asked about", () => {
+    const s = store();
+    receive(s, prompt());
+    (s.getState().resolveEgressPrompt as (e: EgressPromptResolved) => void)({
+      id: "h1",
+      outcome: "expired",
+    });
+    const refused = (e: BoxEgressEvent) =>
+      (s.getState().receiveBoxEgress as (e: BoxEgressEvent) => void)(e);
+    refused({ agent_id: "a1", host: "api.stripe.com", port: 443, allowed: false, quiet: false });
+    refused({ agent_id: "a1", host: "other.test", port: 443, allowed: false, quiet: false });
+    const blocked = s.getState().boxEgressBlocked as { host: string; seen: boolean }[];
+    expect(blocked.find((b) => b.host === "api.stripe.com")?.seen).toBe(true);
+    expect(blocked.find((b) => b.host === "other.test")?.seen).toBe(false);
   });
 });

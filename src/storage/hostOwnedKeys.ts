@@ -18,6 +18,7 @@ export const HOST_SETTING_KEYS = [
   "box_disk_gib",
   "box_image_url",
   "box_idle_stop_minutes",
+  "box_egress_mode",
   "git_branch_prefix",
   "github_draft_prs",
   "publish_confirmation",
@@ -49,6 +50,7 @@ export const HOST_PROJECT_SETTING_KEYS = [
   "context.enabled",
   "context.extract",
   "sandbox.placement",
+  "sandbox.egress_mode",
 ] as const;
 
 /** `run.<row>` and `run.agent.<agentId>.<row>`. */

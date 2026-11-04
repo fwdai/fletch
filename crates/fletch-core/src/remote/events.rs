@@ -50,6 +50,11 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "verify:report",
     "publish:approval-requested",
     "publish:approval-resolved",
+    // A box's held connection asks for a host (`sandbox::boxes::egress_prompt`)
+    // and stops asking: a held prompt like the publish approval, answered
+    // with `box_egress_answer` and listed by `box_egress_pending`.
+    "box:egress-requested",
+    "box:egress-resolved",
     // Delegations are a host fact (`supervisor::delegation`): every client
     // mirrors the same lifecycle instead of tracking its own.
     "delegation:changed",

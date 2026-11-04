@@ -94,6 +94,8 @@
 //! other phase (`mirror::record_disposal`, `sandbox::disposal_at_stop`).
 
 pub mod allowlist;
+pub mod egress_log;
+pub mod egress_prompt;
 pub mod executor;
 pub mod home;
 mod launch_files;
@@ -1869,6 +1871,12 @@ pub async fn discard_if_any(agent_id: &str) -> Result<()> {
     // Whatever came of it: the workspace is on its way out either way.
     list_changed();
     outcome
+}
+
+/// A turn of `agent_id` ended, however it ended: a network opened for it
+/// (`box_egress_open_turn`) closes. A no-op for every other agent.
+pub fn turn_ended(agent_id: &str) {
+    BoxRegistry::global().set_turn_open(agent_id, false);
 }
 
 /// Tell clients the set of VMs changed ([`EVENT_LIST`]).

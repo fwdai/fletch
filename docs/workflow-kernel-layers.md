@@ -46,7 +46,7 @@ rather than pretending.
   engine left `running`. Its stale execs are abandoned and their agents
   stopped. Nothing is re-run, because the workspace already contains the
   finished steps' commits. Runs that engine left `paused` were failed by
-  migration 0056.
+  migration 0057.
 - **No retries.** A step that errors, times out, or fails its gate fails the run,
   with the cause journaled and on `wf_run.error`.
 - **`commit` and `verdict` gates only.** `commit` is satisfied by the turn

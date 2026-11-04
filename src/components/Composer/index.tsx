@@ -22,6 +22,7 @@ import { EffortPicker } from "./EffortPicker";
 import { FolderAccess } from "./FolderAccess";
 import { IssuePicker } from "./IssuePicker";
 import { type AccountControl, ModelPicker } from "./ModelPicker";
+import { NetworkTurn } from "./NetworkTurn";
 import { PrimaryControl, primaryState } from "./PrimaryControl";
 import { RunRail } from "./RunRail";
 import { UsageMeter } from "./UsageMeter";
@@ -117,6 +118,10 @@ interface Props {
   onChangeGrantedFolder?: (path: string, writable: boolean) => void;
   /** Take a granted folder back. */
   onRevokeFolder?: (path: string) => void;
+  /** The workspace's VM network for this turn (`NetworkTurn`), beside the
+   *  folders: whether it is open, and the switch. Omit where there is nothing
+   *  to open — the macOS sandbox, an open posture, a host that cannot. */
+  network?: { open: boolean; onToggle: (open: boolean) => void };
   /** Lists open tracker issues (GitHub, Linear) for the footer issue picker;
    *  picking one appends its brief to the prompt so the agent works that
    *  exact issue. Omit to hide the picker. */
@@ -216,6 +221,7 @@ export function Composer({
   grantedFolders,
   onChangeGrantedFolder,
   onRevokeFolder,
+  network,
   listIssues,
   listIssueComments,
   onPickIssue,
@@ -522,6 +528,7 @@ export function Composer({
               onRevoke={(path) => onRevokeFolder?.(path)}
             />
           )}
+          {network && <NetworkTurn open={network.open} onToggle={network.onToggle} />}
           <IconButton className="composer-action" tip="Attach files" onClick={input.browse}>
             <Icon name="attach" size={15} />
           </IconButton>

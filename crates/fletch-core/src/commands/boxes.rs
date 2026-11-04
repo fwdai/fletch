@@ -3,12 +3,13 @@
 //! `src-tauri` wraps each in a `#[tauri::command]` and `remote::dispatch` in
 //! a remote op.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::sandbox::boxes::{
-    self, registry::ToolsStatus, settings, setup, BoxRegistry, StopReason,
+    self, egress_log, egress_prompt, registry::ToolsStatus, settings, setup, BoxRegistry,
+    StopReason,
 };
 use crate::workspace::WorkspaceManager;
 use crate::{database, sandbox};
@@ -286,15 +287,19 @@ pub fn box_egress_overview_impl(
     })
 }
 
-/// `set_box_egress_global(delta)`: replace the user's global changes over the
-/// template — hosts every project's boxes may also reach, template entries
-/// turned off. Validated and normalized; every running box takes the new list
-/// from its next connection. Answers what was stored.
+/// `set_box_egress_global(delta)`: replace the user's global additions over
+/// the template — hosts every project's boxes may also reach. Validated and
+/// normalized; a `remove` (template entries turned off, a control that is
+/// gone) is dropped on the way in. Every running box takes the new list from
+/// its next connection. Answers what was stored.
 pub fn set_box_egress_global_impl(
     ctx: &EngineCtx,
     delta: &boxes::allowlist::Delta,
 ) -> Result<boxes::allowlist::Delta> {
-    let delta = delta.normalized()?;
+    let delta = boxes::allowlist::Delta {
+        add: delta.normalized()?.add,
+        remove: Vec::new(),
+    };
     {
         let conn = ctx.db.lock();
         database::set_setting(
@@ -313,10 +318,94 @@ pub fn set_box_egress_global_impl(
     Ok(delta)
 }
 
+/// `box_egress_pending`: the hosts boxes are held waiting to reach, oldest
+/// first, for a client that connected after the prompts were raised.
+pub fn box_egress_pending_impl() -> Vec<egress_prompt::PendingEgressPrompt> {
+    egress_prompt::pending()
+}
+
+/// One answer to a `box:egress-requested` prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EgressAnswer {
+    /// Allow the host for the project, in its in-app list (`box.egress_allow`).
+    Project,
+    /// Allow the host in every project (the global list).
+    Always,
+    /// Refuse it on this box until the box restarts.
+    Block,
+    /// Open this box's network until the turn ends.
+    Turn,
+}
+
+/// `box_egress_answer(id, answer)`: answer one held host. The allow travels
+/// the list it lands in, so every box of that scope takes it; the held
+/// connections follow at once. An id the host no longer holds (answered
+/// elsewhere, expired) is ignored.
+pub fn box_egress_answer_impl(ctx: &EngineCtx, id: &str, answer: EgressAnswer) -> Result<()> {
+    let Some(prompt) = egress_prompt::get(id) else {
+        return Ok(());
+    };
+    let outcome = match answer {
+        EgressAnswer::Project => {
+            box_egress_allow_impl(ctx, &prompt.project_id, &prompt.host)?;
+            egress_prompt::Outcome::Allowed
+        }
+        EgressAnswer::Always => {
+            let mut global = settings::global_egress();
+            if !global.add.contains(&prompt.host) {
+                global.add.push(prompt.host.clone());
+            }
+            set_box_egress_global_impl(ctx, &global)?;
+            egress_prompt::Outcome::Allowed
+        }
+        EgressAnswer::Turn => {
+            BoxRegistry::global().set_turn_open(&prompt.agent_id, true);
+            egress_prompt::Outcome::Allowed
+        }
+        EgressAnswer::Block => {
+            // Closed before the refusal lands, so the refusal closes nothing
+            // twice and the card says "blocked", not "expired".
+            egress_prompt::resolve(&prompt.id, egress_prompt::Outcome::Blocked);
+            BoxRegistry::global().decline_host(&prompt.agent_id, &prompt.host);
+            return Ok(());
+        }
+    };
+    egress_prompt::resolve(&prompt.id, outcome);
+    Ok(())
+}
+
+/// `box_egress_activity(project_id?, hours?)`: the hosts boxes reached or were
+/// refused in the last `hours` (24 by default, a month at most), newest
+/// first, grouped by host; with a project, its boxes only.
+pub fn box_egress_activity_impl(
+    ctx: &EngineCtx,
+    project_id: Option<&str>,
+    hours: Option<u64>,
+) -> Result<Vec<egress_log::HostActivity>> {
+    let hours = hours.unwrap_or(24).clamp(1, 24 * 30) as i64;
+    let since = database::now_millis() - hours * 3_600_000;
+    egress_log::activity(&ctx.db.lock(), project_id, since)
+}
+
+/// `box_egress_open_turn(agent_id, open)`: open the agent's box's network
+/// until its turn ends, or close it again. Refused for a workspace with no
+/// box.
+pub fn box_egress_open_turn_impl(agent_id: &str, open: bool) -> Result<()> {
+    if BoxRegistry::global().set_turn_open(agent_id, open) {
+        Ok(())
+    } else {
+        Err(Error::Other(
+            "this workspace does not run in a Linux VM".into(),
+        ))
+    }
+}
+
 /// Write one box setting (`box_memory_mib`, `box_cpus`, `box_disk_gib`,
-/// `box_image_url`, `box_idle_stop_minutes`), validated, and mirror it for the
-/// engine; `None` restores the default. The Sandbox page's knobs go through here, not the
-/// client-side `set_setting`, since the engine reads these.
+/// `box_image_url`, `box_idle_stop_minutes`, `box_egress_mode`), validated, and
+/// mirror it for the engine; `None` restores the default. The Sandbox page's
+/// knobs go through here, not the client-side `set_setting`, since the engine
+/// reads these. A new posture reaches every running box at once.
 pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> Result<()> {
     let normalized = match value {
         Some(value) => Some(
@@ -339,6 +428,9 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
             }
         }
         settings::set(settings::load(&conn));
+    }
+    if key == settings::EGRESS_MODE_SETTING {
+        BoxRegistry::global().update_egress_all();
     }
     announce(ctx, key, normalized.as_deref());
     Ok(())
@@ -483,10 +575,14 @@ mod tests {
 
     /// The global list is validated, stored, mirrored and announced; the
     /// overview's base list and a project's entries both follow it, the
-    /// project's own in-app additions on top.
+    /// project's own in-app additions on top. A `remove` is dropped on the
+    /// way in: the control that wrote one is gone, and the template entry
+    /// stays allowed.
     #[test]
     fn the_global_list_reaches_every_project() {
         use crate::sandbox::boxes::allowlist::{Delta, Source};
+        // The global list's mirror is process-wide (`settings::TEST_LOCK`).
+        let _serial = settings::TEST_LOCK.blocking_lock();
         let (ctx, sink, _dir) = test_ctx();
         ctx.db
             .lock()
@@ -509,6 +605,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stored.add, vec!["internal.example.com"]);
+        assert!(stored.remove.is_empty(), "a turn-off is not stored");
         assert_eq!(
             Delta::parse(
                 database::get_setting(
@@ -528,7 +625,8 @@ mod tests {
         let overview = box_egress_overview_impl(&ctx, Some("pg")).unwrap();
         let base: Vec<&str> = overview.base.iter().map(|e| e.pattern.as_str()).collect();
         assert!(base.contains(&"internal.example.com"));
-        assert!(!base.contains(&"rubygems.org"));
+        assert!(base.contains(&"rubygems.org"), "the template entry stays");
+        assert!(overview.global.remove.is_empty());
         let project = overview.project.unwrap();
         let mine = project
             .entries
@@ -541,6 +639,123 @@ mod tests {
 
         // Process-wide: leave it as the other tests expect it.
         settings::set_global_egress(Delta::default());
+    }
+
+    /// A held host answered for the project lands in the project's in-app
+    /// list, answered for every project in the global list, and a block
+    /// closes its prompt; each prompt closes once, and a late answer to a
+    /// closed one changes nothing.
+    #[test]
+    fn a_held_host_is_answered_into_a_list_and_its_prompt_closes() {
+        use crate::sandbox::boxes::allowlist::{Delta, GLOBAL_SETTING};
+        use crate::sandbox::boxes::egress_prompt;
+        let _serial = settings::TEST_LOCK.blocking_lock();
+        let (ctx, _sink, _dir) = test_ctx();
+        ctx.db
+            .lock()
+            .execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('pa', 'p', 0)",
+                [],
+            )
+            .unwrap();
+        egress_prompt::request("held-fuji", "pa", "api.stripe.com", 443, 1);
+        egress_prompt::request("held-fuji", "pa", "docs.python.org", 443, 2);
+        egress_prompt::request("held-etna", "pa", "evil.test", 443, 1);
+        let mine = |host: &str| {
+            egress_prompt::pending()
+                .into_iter()
+                .find(|p| p.host == host && p.project_id == "pa")
+                .unwrap()
+        };
+
+        let stripe = mine("api.stripe.com");
+        box_egress_answer_impl(&ctx, &stripe.id, EgressAnswer::Project).unwrap();
+        assert_eq!(
+            settings::egress_allow("pa"),
+            vec!["api.stripe.com".to_string()]
+        );
+        assert!(
+            egress_prompt::get(&stripe.id).is_none(),
+            "the prompt closed"
+        );
+        box_egress_answer_impl(&ctx, &stripe.id, EgressAnswer::Always).unwrap();
+        assert_eq!(
+            settings::egress_allow("pa").len(),
+            1,
+            "a late answer changes nothing"
+        );
+
+        let docs = mine("docs.python.org");
+        box_egress_answer_impl(&ctx, &docs.id, EgressAnswer::Always).unwrap();
+        let stored = Delta::parse(database::get_setting(&ctx.db.lock(), GLOBAL_SETTING).as_deref());
+        assert!(stored.add.contains(&"docs.python.org".to_string()));
+        assert!(egress_prompt::get(&docs.id).is_none());
+
+        let evil = mine("evil.test");
+        box_egress_answer_impl(&ctx, &evil.id, EgressAnswer::Block).unwrap();
+        assert!(egress_prompt::get(&evil.id).is_none());
+        assert!(!settings::egress_allow("pa").contains(&"evil.test".to_string()));
+
+        // Process-wide: leave it as the other tests expect it.
+        settings::set_global_egress(Delta::default());
+    }
+
+    /// The posture is a validated box setting with a per-project override that
+    /// is validated the same way, spelled the one way when stored, mirrored
+    /// for the proxies, and cleared back to the global by a `null`.
+    #[test]
+    fn the_posture_is_validated_globally_and_per_project() {
+        use crate::sandbox::boxes::settings::{EgressMode, EGRESS_MODE_KEY, EGRESS_MODE_SETTING};
+        let _serial = settings::TEST_LOCK.blocking_lock();
+        let (ctx, _sink, _dir) = test_ctx();
+        ctx.db
+            .lock()
+            .execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('pp', 'p', 0)",
+                [],
+            )
+            .unwrap();
+        assert!(set_box_setting_impl(&ctx, EGRESS_MODE_SETTING, Some("yolo")).is_err());
+        set_box_setting_impl(&ctx, EGRESS_MODE_SETTING, Some(" ask ")).unwrap();
+        assert_eq!(
+            database::get_setting(&ctx.db.lock(), EGRESS_MODE_SETTING).as_deref(),
+            Some("ask"),
+            "stored trimmed"
+        );
+        // The in-process mirror is shared with every other test's `set`, so the
+        // project is checked against whatever the global reads right now.
+        assert_eq!(settings::egress_mode("pp"), settings::current().egress_mode);
+
+        assert!(
+            super::super::set_project_setting_impl(&ctx, "pp", EGRESS_MODE_KEY, Some("never"))
+                .is_err()
+        );
+        super::super::set_project_setting_impl(&ctx, "pp", EGRESS_MODE_KEY, Some("allowlist "))
+            .unwrap();
+        assert_eq!(settings::egress_mode("pp"), EgressMode::AllowList);
+        assert_eq!(
+            super::super::get_project_settings_impl(&ctx, "pp")
+                .unwrap()
+                .get(EGRESS_MODE_KEY)
+                .map(String::as_str),
+            Some("allowlist"),
+            "stored in the one spelling"
+        );
+        super::super::set_project_setting_impl(&ctx, "pp", EGRESS_MODE_KEY, None).unwrap();
+        assert_eq!(
+            settings::egress_mode("pp"),
+            settings::current().egress_mode,
+            "back to the global"
+        );
+
+        set_box_setting_impl(&ctx, EGRESS_MODE_SETTING, None).unwrap();
+        assert_eq!(
+            database::get_setting(&ctx.db.lock(), EGRESS_MODE_SETTING),
+            None,
+            "a null restores the default"
+        );
+        assert_eq!(settings::load(&ctx.db.lock()).egress_mode, EgressMode::Open);
+        settings::set(settings::BoxSettings::default());
     }
 
     #[test]
