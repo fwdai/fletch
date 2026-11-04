@@ -6,6 +6,7 @@ import {
   type BoxSettingKey,
   type BoxStateEvent,
   type BoxToolsStatus,
+  type BoxVm,
   type ContainerAuthStatus,
   type PublishApproval,
   type PublishApprovalResolved,
@@ -20,6 +21,10 @@ import type { SliceCreator } from "./types";
  *  two can be out at once and answer out of order. One order for all of them,
  *  as everywhere else a whole list is replaced (util/newestWins). */
 const approvalLoads = newestWins();
+
+/** `box_list` is re-read on entering a host, on `box:list` and when the page
+ *  opens, so two can be out at once (util/newestWins). */
+const vmLoads = newestWins();
 
 /** Approval events seen while an `approvals_list` is in flight, replayed over
  *  its answer so the snapshot cannot undo them (see util/publishApprovals).
@@ -55,6 +60,11 @@ export interface SandboxSlice {
   /** Each supported provider's tools disk by provider id: seeded by the probe,
    *  then every `box:tools`. */
   boxTools: Record<string, BoxToolsStatus>;
+  /** Every VM on the active host (`box_list`), hidden workspaces included:
+   *  `null` until the host answers, and on one that cannot. A per-host value, so
+   *  `environmentSwitch` parks it with the rest; `box:list` says when to re-read
+   *  it, and `box:state` carries phases in between. */
+  boxVms: BoxVm[] | null;
   /** Each box agent's phase by agent id, from `box:state`. */
   boxStates: Record<string, BoxStateEvent>;
   /** Hosts a box's egress proxy refused, one entry per workspace and host
@@ -106,6 +116,8 @@ export interface SandboxSlice {
   /** Re-probe the box runtime into `boxProbe`; a host that cannot answer
    *  leaves it as is. */
   refreshBoxProbe: () => Promise<void>;
+  /** Re-read `boxVms`, and with it every VM's phase. */
+  refreshBoxVms: () => Promise<void>;
   /** Read the image's install state into `boxImage`. */
   refreshBoxImage: () => Promise<void>;
   /** Start (or retry) the image install and the tools builds after it, or
@@ -181,6 +193,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   boxProbe: null,
   boxImage: null,
   boxTools: {},
+  boxVms: null,
   boxStates: {},
   boxEgressBlocked: [],
 
@@ -281,6 +294,30 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
       // was on screen; the probe is advisory.
     }
   },
+  refreshBoxVms: async () => {
+    const claim = vmLoads.claim();
+    const asked = get().boxStates;
+    try {
+      // Two guards, as for the approvals: after a switch this is another host's
+      // list, and a newer read owns it too, since an older answer landing last
+      // would put back a VM that is gone.
+      const vms = await forActiveEnvironment(() => api.boxList());
+      if (!vms || !claim.current()) return;
+      set((s) => ({
+        boxVms: vms,
+        boxStates: Object.fromEntries(
+          vms.map((vm) => {
+            const id = vm.agent_id;
+            // A phase `box:state` reported during the read is newer than this.
+            const moved = s.boxStates[id] !== asked[id];
+            return [id, moved ? s.boxStates[id] : vm.state];
+          }),
+        ),
+      }));
+    } catch {
+      // A host from before `box_list` keeps `null`: the list says why.
+    }
+  },
   refreshBoxImage: async () => {
     try {
       const image = await forActiveEnvironment(() => api.boxImageStatus());
@@ -294,7 +331,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     // cleared before this one answers, so a switch never shows host A's
     // download on host B.
     set({ boxProbe: null, boxImage: null, boxTools: {} });
-    await Promise.all([get().refreshBoxProbe(), get().refreshBoxImage()]);
+    await Promise.all([get().refreshBoxProbe(), get().refreshBoxImage(), get().refreshBoxVms()]);
   },
   installBoxImage: async () => {
     try {

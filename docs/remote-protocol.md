@@ -1357,7 +1357,7 @@ roadmap:queue-note
 settings:changed       project_settings:changed
 context:changed
 box:state              box:egress             box:image
-box:tools              box:policy
+box:tools              box:policy             box:list
 project_file:changed
 ```
 
@@ -1368,6 +1368,9 @@ outcome, and a provider's tools disk build. All of them happen on the host, so
 a remote Settings page and workspace follow them as the desktop's do. A
 `box:tools` with `phase: "failed"` carries `error` and, while the backoff
 holds a launch's or the prebuild's next build off, `retry_at` (unix ms); nothing builds at that time by itself. `box_tools_retry` builds now.
+
+`box:list` says the set of VMs changed, one registered or discarded, hidden
+workspaces included; it carries nothing, so a client re-reads `box_list`.
 
 `box:policy { project_id }` says what boxes may reach changed in the app: the
 user's global list (`project_id: null`) or one project's in-app additions.

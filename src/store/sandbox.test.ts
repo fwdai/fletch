@@ -5,15 +5,16 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
-import type { PublishApproval, PublishApprovalResolved } from "@/api";
+import type { BoxStateEvent, BoxVm, PublishApproval, PublishApprovalResolved } from "@/api";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { createSandboxSlice } from "./sandbox";
 
-const { answerPublishApproval, listPublishApprovals } = vi.hoisted(() => ({
+const { answerPublishApproval, listPublishApprovals, boxList } = vi.hoisted(() => ({
   answerPublishApproval: vi.fn(),
   listPublishApprovals: vi.fn(),
+  boxList: vi.fn(),
 }));
-vi.mock("@/api", () => ({ api: { answerPublishApproval, listPublishApprovals } }));
+vi.mock("@/api", () => ({ api: { answerPublishApproval, listPublishApprovals, boxList } }));
 
 /** The slice creator and the actions, loosely typed: the test store carries
  *  only the sandbox slice, not the whole AppState. */
@@ -180,5 +181,108 @@ describe("receivePublishApproval", () => {
 
       expect(listPublishApprovals).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("refreshBoxVms", () => {
+  const state = (id: string, phase: BoxStateEvent["phase"]): BoxStateEvent => ({
+    agent_id: id,
+    phase,
+  });
+  const vm = (id: string, phase: BoxStateEvent["phase"] = "stopped"): BoxVm => ({
+    agent_id: id,
+    name: id,
+    project_id: "p",
+    created_at: "1",
+    state: state(id, phase),
+  });
+  const ids = (s: { getState: () => Record<string, unknown> }) =>
+    (s.getState().boxVms as BoxVm[] | null)?.map((v) => v.agent_id);
+  const activeIs = (id: string) =>
+    setEnvironmentsSource(() => ({
+      activeEnvironmentId: id,
+      environments: {
+        [id]: { id, name: id, kind: "remote", connection: "connected" } as EnvironmentEntry,
+      },
+    }));
+
+  function store() {
+    boxList.mockReset();
+    activeIs(LOCAL_ENVIRONMENT_ID);
+    return create<Record<string, unknown>>((set, get) => ({
+      ...(createSandboxSlice as unknown as SliceFn)(set, get),
+    }));
+  }
+  const refresh = (s: ReturnType<typeof store>) => (s.getState().refreshBoxVms as Load)();
+
+  it("holds the host's list and each VM's phase", async () => {
+    const s = store();
+    boxList.mockResolvedValue([vm("a", "running"), vm("b")]);
+
+    await refresh(s);
+
+    expect(ids(s)).toEqual(["a", "b"]);
+    expect(s.getState().boxStates).toEqual({ a: state("a", "running"), b: state("b", "stopped") });
+  });
+
+  it("drops a VM the host no longer lists, and its phase", async () => {
+    const s = store();
+    boxList.mockResolvedValue([vm("hidden-chat"), vm("kept")]);
+    await refresh(s);
+
+    boxList.mockResolvedValue([vm("kept")]);
+    await refresh(s);
+
+    expect(ids(s)).toEqual(["kept"]);
+    expect(s.getState().boxStates).toEqual({ kept: state("kept", "stopped") });
+  });
+
+  it("drops an answer that lands after a switch to another host", async () => {
+    const s = store();
+    boxList.mockImplementation(async () => {
+      activeIs("other-host");
+      return [vm("fuji", "running")];
+    });
+
+    await refresh(s);
+
+    expect(s.getState().boxVms).toBeNull();
+    expect(s.getState().boxStates).toEqual({});
+  });
+
+  it("lets the newest of two overlapping reads own the list", async () => {
+    const s = store();
+    let finishOlder: (vms: BoxVm[]) => void = () => {};
+    boxList.mockReturnValueOnce(new Promise((resolve) => (finishOlder = resolve)));
+    const older = refresh(s);
+    boxList.mockResolvedValueOnce([vm("newer")]);
+    await refresh(s);
+
+    // The older read still has the VM a discard just removed.
+    finishOlder([vm("newer"), vm("discarded")]);
+    await older;
+
+    expect(ids(s)).toEqual(["newer"]);
+  });
+
+  it("keeps a phase box:state reported while the read was in flight", async () => {
+    const s = store();
+    boxList.mockImplementation(async () => {
+      (s.getState().applyBoxState as (e: BoxStateEvent) => void)(state("a", "stopping"));
+      return [vm("a", "running")];
+    });
+
+    await refresh(s);
+
+    expect((s.getState().boxStates as Record<string, BoxStateEvent>).a.phase).toBe("stopping");
+  });
+
+  it("stays unknown on a host that cannot answer", async () => {
+    const s = store();
+    boxList.mockRejectedValue(new Error("unknown op"));
+
+    await refresh(s);
+
+    expect(s.getState().boxVms).toBeNull();
   });
 });

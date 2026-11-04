@@ -369,6 +369,9 @@ pub const EVENT_TOOLS: &str = "box:tools";
 /// `box_egress_overview`. A project's settings files say so with
 /// `project_file:changed` instead.
 pub const EVENT_POLICY: &str = "box:policy";
+/// The set of VMs changed: one was registered or discarded. Carries nothing:
+/// a client re-reads `box_list`. A phase change is `box:state`, not this.
+pub const EVENT_LIST: &str = "box:list";
 
 static SINK: OnceLock<Sink> = OnceLock::new();
 
@@ -381,6 +384,8 @@ pub fn set_event_sink(sink: Sink) {
 }
 
 pub(crate) fn emit<T: Serialize>(event: &str, payload: &T) {
+    #[cfg(test)]
+    tests::note_event(event);
     if let Some(sink) = SINK.get() {
         crate::host::emit(sink.as_ref(), event, payload);
     }
@@ -1798,9 +1803,17 @@ pub async fn discard_if_any(agent_id: &str) -> Result<()> {
     if !dir.exists() && !registry.knows(agent_id) {
         return Ok(());
     }
-    registry.discard(agent_id).await.inspect_err(|e| {
+    let outcome = registry.discard(agent_id).await.inspect_err(|e| {
         tracing::warn!(agent_id, error = %e, "box discard failed");
-    })
+    });
+    // Whatever came of it: the workspace is on its way out either way.
+    list_changed();
+    outcome
+}
+
+/// Tell clients the set of VMs changed ([`EVENT_LIST`]).
+pub(crate) fn list_changed() {
+    emit(EVENT_LIST, &serde_json::json!({}));
 }
 
 /// Stop every running box cleanly; app exit (`Supervisor::shutdown`).

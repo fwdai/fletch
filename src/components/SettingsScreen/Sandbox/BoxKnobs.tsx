@@ -106,9 +106,12 @@ export function BoxKnobs({ last }: { last?: boolean }) {
     box_disk_gib: useAppStore((s) => s.boxDiskGib),
     box_idle_stop_minutes: useAppStore((s) => s.boxIdleStopMinutes),
   };
+  // Disk shipped with `box_list`: a host without the op refuses the setting.
+  const oldHost = !!useGate("vmList");
+  const scales = BOX_SCALES.filter((s) => !(oldHost && s.key === "box_disk_gib"));
   return (
     <SetGroup label="Resources" last={last}>
-      {BOX_SCALES.map((scale) => (
+      {scales.map((scale) => (
         <BoxScaleRow key={scale.key} scale={scale} stored={stored[scale.key] ?? ""} />
       ))}
     </SetGroup>

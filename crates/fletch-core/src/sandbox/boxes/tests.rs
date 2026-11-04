@@ -417,6 +417,50 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
     assert_eq!(super::setup::image_status().phase, "installed");
 }
 
+thread_local! {
+    /// The `box:*` events this thread emitted, while a test is listening.
+    static EVENTS: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Record an emitted event, for the test on this thread that asked to.
+pub(super) fn note_event(event: &str) {
+    EVENTS.with(|events| {
+        if let Some(events) = events.borrow_mut().as_mut() {
+            events.push(event.to_string());
+        }
+    });
+}
+
+/// The registry says when the set of VMs changes, which is what keeps a client's
+/// list honest about a hidden workspace: nothing else tells it one is gone. A
+/// box it already knows is not news.
+#[tokio::test(flavor = "current_thread")]
+async fn the_list_event_fires_when_a_box_is_registered_or_discarded() {
+    let id = "list-event-test";
+    let identity = BoxIdentity::new(id, "p", "claude").unwrap();
+    let registry = BoxRegistry::global();
+    let list_events = || {
+        EVENTS.with(|events| {
+            let events = events.borrow();
+            let events = events.as_ref().unwrap();
+            events.iter().filter(|e| *e == super::EVENT_LIST).count()
+        })
+    };
+    EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+
+    registry.register(identity.clone());
+    assert_eq!(list_events(), 1, "a new box");
+    registry.register(identity);
+    assert_eq!(list_events(), 1, "a box it knows");
+
+    super::discard_if_any(id).await.unwrap();
+    assert_eq!(list_events(), 2, "a discarded box");
+    super::discard_if_any(id).await.unwrap();
+    assert_eq!(list_events(), 2, "nothing left to discard");
+
+    EVENTS.with(|events| *events.borrow_mut() = None);
+}
+
 /// A box exists once it has a data disk: a tools build's throwaway box and a
 /// directory that never got one are not VMs.
 #[test]
