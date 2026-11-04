@@ -63,10 +63,13 @@ export function deriveSegments(
     .filter((a) => a.agent_id != null || !UNSTARTED_STATUSES.has(a.status))
     .sort(before);
 
-  const seenPerStep = new Map<string, number>();
+  // Retries count within one (step, iteration): a loop's next iteration is a
+  // fresh first attempt at the step, not a retry of the last one.
+  const seen = new Map<string, number>();
   return rows.map((exec) => {
-    const retryIndex = seenPerStep.get(exec.step_id) ?? 0;
-    seenPerStep.set(exec.step_id, retryIndex + 1);
+    const pass = `${exec.step_id}\u0000${exec.iteration}`;
+    const retryIndex = seen.get(pass) ?? 0;
+    seen.set(pass, retryIndex + 1);
     const stepIndex = order.get(exec.step_id) ?? -1;
     return {
       exec,

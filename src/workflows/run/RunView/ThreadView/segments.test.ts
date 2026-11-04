@@ -167,17 +167,23 @@ describe("deriveSegments", () => {
       exec({ id: "review-0", step_id: "review", iteration: 0 }),
       exec({ id: "ship", step_id: "ship" }),
       exec({ id: "fix-0", step_id: "fix", iteration: 0 }),
+      exec({ id: "fix-1-retry", step_id: "fix", iteration: 1, attempt: 1 }),
       exec({ id: "review-1", step_id: "review", iteration: 1 }),
       exec({ id: "plan", step_id: "plan" }),
     ];
-    expect(deriveSegments(flattenSteps(old), rows, []).map((s) => s.exec.id)).toEqual([
+    const segments = deriveSegments(flattenSteps(old), rows, []);
+    expect(segments.map((s) => s.exec.id)).toEqual([
       "plan",
       "review-0",
       "fix-0",
       "review-1",
       "fix-1",
+      "fix-1-retry",
       "ship",
     ]);
+    // A new iteration is a first attempt, not a retry; only the real retry
+    // inside iteration 1 counts as one.
+    expect(segments.map((s) => s.retryIndex)).toEqual([0, 0, 0, 0, 0, 1, 0]);
   });
 
   it("seats an archived orchestrator and its on-request children in their block", () => {

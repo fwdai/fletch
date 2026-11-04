@@ -118,4 +118,57 @@ describe("flattenSteps", () => {
       [1, 3],
     ]);
   });
+
+  it("seats a retired run's conflict resolver after its block's work and before its merge", () => {
+    const old = spec([
+      legacy({
+        parallel: {
+          steps: [
+            { id: "review", agent: "a", goal: "g" },
+            { id: "test", agent: "a", goal: "g" },
+          ],
+        },
+      }),
+      legacy({
+        orchestrate: {
+          agent: "lead",
+          goal: "coordinate",
+          body: [{ id: "child-a", agent: "a", goal: "g" }],
+        },
+      }),
+      { step: { id: "ship", agent: "a", goal: "g" } },
+    ]);
+    const attempts = [
+      { step_id: "ship" },
+      { step_id: "__resolve_1" },
+      { step_id: "__merge_0" },
+      { step_id: "__resolve_0" },
+      { step_id: "review" },
+    ];
+    const steps = flattenSteps(old, attempts);
+    expect(steps.map((s) => s.id)).toEqual([
+      "review",
+      "test",
+      "__resolve_0",
+      "__merge_0",
+      "orchestrate-1",
+      "child-a",
+      "__resolve_1",
+      "ship",
+    ]);
+    // The parallel resolver ran as the conflicted child's agent, the
+    // orchestrate one as the orchestrator; both sit inside their block.
+    expect(steps.find((s) => s.id === "__resolve_0")?.agentAlias).toBe("a");
+    expect(steps.find((s) => s.id === "__resolve_1")?.agentAlias).toBe("lead");
+    expect(steps.map((s) => [s.block, s.position])).toEqual([
+      [0, 0],
+      [0, 1],
+      [0, 2],
+      [0, 3],
+      [1, 0],
+      [1, 1],
+      [1, 2],
+      [2, 0],
+    ]);
+  });
 });
