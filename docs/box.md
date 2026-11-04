@@ -128,8 +128,15 @@ agent's home read-only whole, so the provider's state (a hook, an MCP
 config, a plugin the agent would run) stays as the agent left it, with the
 checkout, the project's toolchain cache and the scratch and toolchain dirs a
 build writes outside its tree (`~/.cache`, `~/.config`, `~/.local`, `~/.npm`,
-`~/.cargo`, …, made before the launch) given back. The confined view also
-hides `/data`, where every launch's env file lies, the agent's own with its
+`~/.cargo`, …, made before the launch) given back. Provider state that lies
+inside those carve-outs — opencode's `~/.config/opencode` and
+`~/.local/share/opencode`, as every adapter's `shared_state` names it — is a
+private copy-on-write view, as a confined tenant gets it, with its stores
+under `<agent root>/.fletch-cow/run-<launch>/`, removed with the launch: a
+toolchain writes where it likes there, while nothing a project script
+writes reaches what a provider runs or reads. A state dir that cannot be
+made takes its carve-out down with it. The confined view also hides
+`/data`, where every launch's env file lies, the agent's own with its
 access token among them. A guest that cannot confine the command (an image
 before 0.3.1) refuses the run. Not hidden: a credential file a provider
 keeps in the home for the agent's launch (codex's launch `auth.json`), which

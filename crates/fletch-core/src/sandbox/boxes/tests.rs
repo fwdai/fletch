@@ -321,7 +321,9 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
                   ' data=' + fs.existsSync('/data/run') + \
                   ' home=' + w(process.env.HOME + '/run-probe') + \
                   ' cwd=' + w('run-probe') + \
-                  ' cache=' + w(process.env.HOME + '/.cache/run-probe'))).listen(process.env.PORT, \
+                  ' cache=' + w(process.env.HOME + '/.cache/run-probe') + \
+                  ' occfg=' + w(process.env.HOME + '/.config/opencode/run-probe') + \
+                  ' ocdata=' + w(process.env.HOME + '/.local/share/opencode/run-probe'))).listen(process.env.PORT, \
                   '127.0.0.1', () => console.log('listening ' + process.env.PORT))\"";
 
     struct Up {
@@ -446,7 +448,32 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
         assert!(body.contains(" data=false "), "{body}");
         assert!(body.contains(" home=EROFS "), "{body}");
         assert!(body.contains(" cwd=yes "), "{body}");
-        assert!(body.contains(" cache=yes"), "{body}");
+        assert!(body.contains(" cache=yes "), "{body}");
+        // OpenCode's config and data dirs lie inside those carve-outs: the
+        // Run writes them, into a private copy; the dirs the agent's
+        // opencode reads take nothing of it.
+        assert!(body.contains(" occfg=yes "), "{body}");
+        assert!(body.contains(" ocdata=yes"), "{body}");
+        let channel = registry.channel_for_running(&up.agent_id).unwrap();
+        let home = up.identity.home.to_string_lossy().into_owned();
+        let untouched = super::executor::run(
+            &channel,
+            &[
+                "sh",
+                "-c",
+                "test ! -e \"$1/.config/opencode/run-probe\" && \
+                 test ! -e \"$1/.local/share/opencode/run-probe\" && \
+                 test -e \"$1/.cache/run-probe\"",
+                "sh",
+                &home,
+            ],
+            None,
+        )
+        .unwrap();
+        assert!(
+            untouched.status.success(),
+            "[{name}] the Run's writes reached opencode's own dirs, or missed ~/.cache"
+        );
     }
 
     // Stop: the guest process is gone, the host port is free, the box
@@ -498,6 +525,25 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
         assert!(
             registry.nothing_attached(&up.agent_id),
             "[{name}] the run released the box"
+        );
+        // The launch's copy-on-write stores went with it.
+        let cow = up.identity.writable_root.join(super::COW_DIR);
+        let stores = super::executor::run(
+            &channel,
+            &[
+                "sh",
+                "-c",
+                "ls -d \"$1\"/run-* 2>/dev/null | wc -l",
+                "sh",
+                &cow.to_string_lossy(),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&stores.stdout).trim(),
+            "0",
+            "[{name}] a Run's stores outlived it"
         );
     }
     for up in ups {

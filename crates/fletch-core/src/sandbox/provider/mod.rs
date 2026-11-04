@@ -201,6 +201,12 @@ pub fn for_provider(provider: &str) -> Option<&'static dyn ProviderHome> {
     ALL.iter().copied().find(|h| h.id() == provider)
 }
 
+/// Every provider's adapter: for what any launch in a box may have left in
+/// its guest, whichever provider the box's owner runs.
+pub fn adapters() -> &'static [&'static dyn ProviderHome] {
+    ALL
+}
+
 /// The adapter of `provider`, or the error a launch reports.
 pub fn require(provider: &str) -> Result<&'static dyn ProviderHome> {
     for_provider(provider)

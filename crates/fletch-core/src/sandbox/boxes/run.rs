@@ -40,7 +40,9 @@ use fletch_box::channel::Forward;
 use fletch_box::Channel;
 
 use super::registry::{BoxIdentity, BoxRegistry, RunningBox};
-use super::{box_holding, executor, launch_files, BoxEngine, ConfinedView, Hold, ENV_DENY};
+use super::{
+    box_holding, executor, launch_files, BoxEngine, ConfinedView, Hold, COW_DIR, ENV_DENY,
+};
 use crate::error::{Error, Result};
 use crate::sandbox::KillHandle;
 
@@ -83,25 +85,31 @@ const FREE_PORT_SCRIPT: &str = "end=$(($1 + $2)); p=$1; \
 const MAKE_DIRS_SCRIPT: &str = "for d in \"$@\"; do mkdir -p -- \"$d\" 2>/dev/null; \
     [ -d \"$d\" ] && printf '%s\\n' \"$d\"; done; exit 0";
 
-/// Ends the process group of the Run launch `$1` in the guest: the oldest
-/// process whose arguments name the launch's env file is the `fletch-guest
-/// exec` sshd started, the leader of the group every process of the run
-/// is in — those in the confined pid namespace too, seen from outside it —
-/// so one `TERM` to the group reaches them all, and a `KILL` follows for
-/// what is still there after two seconds. The bracketed first character
-/// keeps the pattern from matching this script's own shell. Run by bash:
-/// the guest's `sh` is dash, whose `kill` takes neither `--` nor a group.
-/// Exits 0 whether or not anything was left to end.
-const END_SCRIPT: &str = "pid=$(pgrep -of -- \"[/]data/run/$1.env\") || exit 0; \
-    pgid=$(ps -o pgid= -p \"$pid\" | tr -d ' ') || exit 0; [ -n \"$pgid\" ] || exit 0; \
-    kill -TERM -- \"-$pgid\" 2>/dev/null || exit 0; \
-    for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 -- \"-$pgid\" 2>/dev/null || exit 0; sleep 0.2; done; \
-    kill -KILL -- \"-$pgid\" 2>/dev/null; exit 0";
+/// Ends the process group of the Run launch `$1` in the guest, then removes
+/// `$2`, the launch's copy-on-write stores, if given. The oldest process
+/// whose arguments name the launch's env file is the `fletch-guest exec`
+/// sshd started, the leader of the group every process of the run is in —
+/// those in the confined pid namespace too, seen from outside it — so one
+/// `TERM` to the group reaches them all, and a `KILL` follows for what is
+/// still there after two seconds. The bracketed first character keeps the
+/// pattern from matching this script's own shell. Run by bash: the guest's
+/// `sh` is dash, whose `kill` takes neither `--` nor a group. Exits 0
+/// whether or not anything was left to end.
+const END_SCRIPT: &str = "end() { pid=$(pgrep -of -- \"[/]data/run/$1.env\") || return 0; \
+    pgid=$(ps -o pgid= -p \"$pid\" | tr -d ' ') || return 0; [ -n \"$pgid\" ] || return 0; \
+    kill -TERM -- \"-$pgid\" 2>/dev/null || return 0; \
+    for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 -- \"-$pgid\" 2>/dev/null || return 0; sleep 0.2; done; \
+    kill -KILL -- \"-$pgid\" 2>/dev/null; }; \
+    end \"$1\"; [ -n \"$2\" ] && rm -rf -- \"$2\"; exit 0";
 
-/// End the Run launch `launch_id`'s process group in the guest
-/// ([`END_SCRIPT`]); best-effort, since the box may be going down with it.
-pub(super) fn end_in_guest(channel: &Channel, launch_id: &str) {
-    let words = ["bash", "-c", END_SCRIPT, "bash", launch_id];
+/// End the Run launch `launch_id`'s process group in the guest and remove
+/// its copy-on-write `stores` ([`END_SCRIPT`]); best-effort, since the box
+/// may be going down with it.
+pub(super) fn end_in_guest(channel: &Channel, launch_id: &str, stores: Option<&Path>) {
+    let stores = stores
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let words = ["bash", "-c", END_SCRIPT, "bash", launch_id, &stores];
     match executor::run(channel, &words, None) {
         Ok(out) if !out.status.success() => tracing::warn!(
             launch_id,
@@ -222,15 +230,20 @@ impl GuestRun {
     ) -> Result<(PathBuf, Vec<String>, KillHandle)> {
         let (cache_root, cache_env) =
             super::guest_toolchain_cache(&self.identity.home, &self.identity.project_id)?;
-        let mut view = run_view(&self.identity.home, cwd, &cache_root);
-        // Every dir the view gives back, made first, since the guest binds
-        // only what exists; one the guest cannot make (the cache root under
-        // a `~/.fletch` the guest's init owns, as before an agent launch) is
-        // left out of the view, read-only like the rest of the home, and the
-        // toolchains keep their defaults when it is the cache root.
+        let stores = run_stores(&self.identity.writable_root, &self.launch_id);
+        let mut view = run_view(&self.identity.home, cwd, &cache_root, &stores);
+        // Every dir the view gives back or overlays, made first, since the
+        // guest binds only what exists; one the guest cannot make (the cache
+        // root under a `~/.fletch` the guest's init owns, as before an agent
+        // launch) is left out of the view, read-only like the rest of the
+        // home, and the toolchains keep their defaults when it is the cache
+        // root. A provider's state dir that could not be made, or the stores
+        // every overlay needs, takes the carve-out it lies in down with it:
+        // read-only beats a dir a script could create and seed.
         let dirs: Vec<String> = view
             .writable_dirs
             .iter()
+            .chain(view.cow_dirs.iter().map(|(dir, _)| dir))
             .map(|d| d.to_string_lossy().into_owned())
             .collect();
         let mut words: Vec<&str> = vec!["sh", "-c", MAKE_DIRS_SCRIPT, "sh"];
@@ -241,6 +254,18 @@ impl GuestRun {
             .map(PathBuf::from)
             .collect();
         view.writable_dirs.retain(|d| present.contains(d));
+        let unprotected: Vec<PathBuf> = view
+            .cow_dirs
+            .iter()
+            .map(|(dir, _)| dir.clone())
+            .filter(|dir| !present.contains(dir) || !present.contains(&stores))
+            .collect();
+        view.writable_dirs
+            .retain(|w| !unprotected.iter().any(|dir| dir.starts_with(w)));
+        view.cow_dirs.retain(|(dir, _)| !unprotected.contains(dir));
+        let carved = |p: &Path| view.writable_dirs.iter().any(|w| super::inside(p, w));
+        view.cow_files
+            .retain(|(file, _)| carved(file) && present.contains(&stores));
         if !super::guest_confines(&self.running, &view)? {
             return Err(Error::SandboxUnavailable(
                 "the box image predates the Run panel's confinement of project code; update \
@@ -276,7 +301,7 @@ impl GuestRun {
         if let Some(forward) = self.forward.take() {
             BoxEngine::shared().park_forward(&self.launch_id, forward);
         }
-        BoxEngine::shared().note_run(&self.launch_id);
+        BoxEngine::shared().note_run(&self.launch_id, stores);
         let kill = self
             .hold
             .take()
@@ -286,26 +311,69 @@ impl GuestRun {
     }
 }
 
+/// Where the Run launch `launch_id`'s copy-on-write stores lie: under the
+/// agent's own root, in [`COW_DIR`], a dir of this launch's own, removed
+/// with the launch ([`END_SCRIPT`]).
+fn run_stores(own_root: &Path, launch_id: &str) -> PathBuf {
+    own_root.join(COW_DIR).join(format!("run-{launch_id}"))
+}
+
 /// The Run's view of the guest: `home` read-only whole, with `cwd` (the
-/// checkout), `cache_root` (the project's toolchain cache) and
-/// [`RUN_WRITABLE_HOME_DIRS`] writable again — each only when it lies under
-/// `home`, since a path outside it is not held read-only to begin with.
-/// Parents first, as the guest binds them.
-fn run_view(home: &Path, cwd: &Path, cache_root: &Path) -> ConfinedView {
+/// checkout), `cache_root` (the project's toolchain cache), `stores` (the
+/// launch's own stores) and [`RUN_WRITABLE_HOME_DIRS`] writable again —
+/// each only when it lies under `home`, since a path outside it is not held
+/// read-only to begin with — and, inside those, every provider's shared
+/// state a private copy-on-write view, as a confined tenant gets it: a
+/// toolchain writes where it likes under `~/.config` or `~/.local`, while
+/// opencode's config and data dirs there take nothing a project script
+/// writes, so no hook, MCP config or login of a provider is the Run's to
+/// change. Provider state outside every carve-out (`~/.claude`, `~/.codex`,
+/// `~/.cursor`, `~/.pi`, `~/.claude.json`) is read-only with the rest of the
+/// home. Parents first, as the guest binds them.
+fn run_view(home: &Path, cwd: &Path, cache_root: &Path, stores: &Path) -> ConfinedView {
     let mut writable_dirs: Vec<PathBuf> = RUN_WRITABLE_HOME_DIRS
         .iter()
         .map(|d| home.join(d))
         .collect();
     writable_dirs.push(cwd.to_path_buf());
     writable_dirs.push(cache_root.to_path_buf());
+    writable_dirs.push(stores.to_path_buf());
     writable_dirs.retain(|d| d.starts_with(home) && d != home);
     writable_dirs.sort_by_key(|d| (d.components().count(), d.clone()));
     writable_dirs.dedup();
+
+    let carved = |p: &Path| writable_dirs.iter().any(|w| super::inside(p, w));
+    let holds_a_carve_out = |d: &Path| writable_dirs.iter().any(|w| w.starts_with(d));
+    let (mut shared_dirs, mut shared_files) = (Vec::new(), Vec::new());
+    for adapter in crate::sandbox::provider::adapters() {
+        let state = adapter.shared_state(home);
+        shared_dirs.extend(state.dirs);
+        shared_files.extend(state.files);
+    }
+    let cow_dirs = shared_dirs
+        .iter()
+        .map(PathBuf::as_path)
+        .filter(|&dir| carved(dir) && !holds_a_carve_out(dir));
+    let cow_dirs: Vec<(PathBuf, PathBuf)> = super::outermost(cow_dirs)
+        .into_iter()
+        .map(|dir| {
+            let store = stores.join(super::cow_name(home, &dir));
+            (dir, store)
+        })
+        .collect();
+    let cow_files = shared_files
+        .into_iter()
+        .filter(|file| carved(file) && !cow_dirs.iter().any(|(dir, _)| file.starts_with(dir)))
+        .map(|file| {
+            let copy = stores.join(super::cow_name(home, &file));
+            (file, copy)
+        })
+        .collect();
     ConfinedView {
         read_only: vec![home.to_path_buf()],
         writable_dirs,
-        cow_dirs: Vec::new(),
-        cow_files: Vec::new(),
+        cow_dirs,
+        cow_files,
     }
 }
 
@@ -326,8 +394,8 @@ fn confined_pty_args(
         Some(env_file),
         &view.read_only(),
         &view.writable(),
-        &[],
-        &[],
+        &view.cow_dirs(),
+        &view.cow_files(),
         cmd,
     )
     .join(" ");
@@ -347,20 +415,25 @@ fn confined_pty_args(
 mod tests {
     use super::*;
 
-    /// The Run's view: the home read-only, the checkout, the cache root and
-    /// the scratch and toolchain dirs writable, parents before children, and
-    /// nothing outside the home (which is not held) listed.
+    /// The Run's view: the home read-only, the checkout, the cache root, the
+    /// stores and the scratch and toolchain dirs writable, parents before
+    /// children, nothing outside the home (which is not held) listed, and
+    /// every provider's state inside a carve-out a private copy-on-write
+    /// view with its store under the launch's own stores dir.
     #[test]
     fn the_run_view_gives_back_the_checkout_cache_and_toolchain_dirs_under_the_home() {
         let home = Path::new("/Users/u");
-        let cwd = Path::new("/Users/u/.fletch/workspaces/a1/repo");
+        let root = Path::new("/Users/u/.fletch/workspaces/a1");
+        let cwd = root.join("repo");
         let cache = Path::new("/Users/u/.fletch/toolchain-cache/p1");
-        let view = run_view(home, cwd, cache);
+        let stores = run_stores(root, "l1");
+        assert_eq!(stores, root.join(".fletch-cow").join("run-l1"));
+        let view = run_view(home, &cwd, cache, &stores);
         assert_eq!(view.read_only, vec![home.to_path_buf()]);
-        assert!(view.cow_dirs.is_empty() && view.cow_files.is_empty());
         let writable = view.writable();
-        assert!(writable.contains(&cwd), "{writable:?}");
+        assert!(writable.contains(&cwd.as_path()), "{writable:?}");
         assert!(writable.contains(&cache), "{writable:?}");
+        assert!(writable.contains(&stores.as_path()), "{writable:?}");
         for dir in RUN_WRITABLE_HOME_DIRS {
             assert!(writable.contains(&home.join(dir).as_path()), "{dir}");
         }
@@ -368,8 +441,36 @@ mod tests {
         let depth = |p: &&Path| p.components().count();
         assert!(writable.windows(2).all(|w| depth(&w[0]) <= depth(&w[1])));
 
+        // opencode keeps its config and data under `~/.config` and
+        // `~/.local`, both carved out: each is overlaid, its store named
+        // for it under the launch's stores. `~/.claude` and the like lie
+        // outside every carve-out, read-only with the home, so not overlaid.
+        let cow: Vec<(&Path, &Path)> = view.cow_dirs();
+        assert!(
+            cow.contains(&(
+                Path::new("/Users/u/.config/opencode"),
+                stores.join(".config%2Fopencode").as_path()
+            )),
+            "{cow:?}"
+        );
+        assert!(
+            cow.contains(&(
+                Path::new("/Users/u/.local/share/opencode"),
+                stores.join(".local%2Fshare%2Fopencode").as_path()
+            )),
+            "{cow:?}"
+        );
+        assert!(cow
+            .iter()
+            .all(|(dir, _)| !dir.starts_with("/Users/u/.claude")));
+        assert!(
+            view.cow_files.is_empty(),
+            "no provider keeps a state file inside a carve-out: {:?}",
+            view.cow_files
+        );
+
         // A checkout outside the home is not held, so not listed either.
-        let elsewhere = run_view(home, Path::new("/srv/repo"), cache);
+        let elsewhere = run_view(home, Path::new("/srv/repo"), cache, &stores);
         assert!(!elsewhere.writable().contains(&Path::new("/srv/repo")));
     }
 
@@ -380,7 +481,13 @@ mod tests {
     fn the_confined_pty_args_name_the_view_and_take_their_own_connection_when_long() {
         let home = Path::new("/Users/u");
         let cwd = Path::new("/Users/u/.fletch/workspaces/a1/repo");
-        let view = run_view(home, cwd, Path::new("/Users/u/.fletch/toolchain-cache/p1"));
+        let stores = run_stores(Path::new("/Users/u/.fletch/workspaces/a1"), "l1");
+        let view = run_view(
+            home,
+            cwd,
+            Path::new("/Users/u/.fletch/toolchain-cache/p1"),
+            &stores,
+        );
         let args = confined_pty_args(
             Path::new("/b/ssh_config"),
             cwd,
@@ -391,7 +498,8 @@ mod tests {
         assert_eq!(&args[..4], ["-F", "/b/ssh_config", "-tt", "box"]);
         let remote = args.last().unwrap();
         assert!(
-            remote.starts_with("/opt/fletch/bin/fletch-guest exec --env-file /data/run/l1.env --read-only /Users/u --writable "),
+            remote.starts_with("/opt/fletch/bin/fletch-guest exec --env-file /data/run/l1.env --read-only /Users/u --writable ")
+                && remote.contains(" --cow /Users/u/.config/opencode '/Users/u/.fletch/workspaces/a1/.fletch-cow/run-l1/.config%2Fopencode' "),
             "{remote}"
         );
         assert!(remote

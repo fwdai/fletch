@@ -484,10 +484,11 @@ pub struct BoxEngine {
     /// The port forward of every live Run launch, by launch id
     /// ([`run::GuestRun`]): dropped, and so ended, by the launch's kill.
     forwards: Mutex<std::collections::HashMap<String, fletch_box::Forward>>,
-    /// Every live Run launch, by launch id ([`run::GuestRun`]): its kill
-    /// ends the command's process group in the guest itself, rather than
-    /// leave that to the tty hangup the ssh client's end causes.
-    runs: Mutex<std::collections::HashSet<String>>,
+    /// Every live Run launch, by launch id, with its copy-on-write stores
+    /// ([`run::GuestRun`]): its kill ends the command's process group in the
+    /// guest itself, rather than leave that to the tty hangup the ssh
+    /// client's end causes, and removes the stores.
+    runs: Mutex<std::collections::HashMap<String, PathBuf>>,
 }
 
 impl BoxEngine {
@@ -499,7 +500,7 @@ impl BoxEngine {
                     pending: Mutex::new(std::collections::HashMap::new()),
                     files: Mutex::new(std::collections::HashMap::new()),
                     forwards: Mutex::new(std::collections::HashMap::new()),
-                    runs: Mutex::new(std::collections::HashSet::new()),
+                    runs: Mutex::new(std::collections::HashMap::new()),
                 })
             })
             .clone()
@@ -514,13 +515,14 @@ impl BoxEngine {
             .insert(launch_id.to_string(), forward);
     }
 
-    /// Launch `launch_id` is a Run: its kill ends its process group in the
-    /// guest ([`run::end_in_guest`]).
-    fn note_run(&self, launch_id: &str) {
+    /// Launch `launch_id` is a Run with its copy-on-write stores at `stores`:
+    /// its kill ends its process group in the guest and removes the stores
+    /// ([`run::end_in_guest`]).
+    fn note_run(&self, launch_id: &str, stores: PathBuf) {
         self.runs
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(launch_id.to_string());
+            .insert(launch_id.to_string(), stores);
     }
 }
 
@@ -1556,13 +1558,13 @@ impl SandboxEngine for BoxEngine {
         // A Run's command is ended in the guest first, by name: a stop must
         // not depend on what its process tree makes of the tty hangup that
         // follows, and a stopped box has nothing left to end.
-        let is_run = self
+        let run = self
             .runs
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(launch_id);
-        if let (true, Some(channel)) = (is_run, &channel) {
-            run::end_in_guest(channel, launch_id);
+        if let (Some(stores), Some(channel)) = (run, &channel) {
+            run::end_in_guest(channel, launch_id, Some(&stores));
         }
         files.close(|stem| {
             if let Some(channel) = &channel {
