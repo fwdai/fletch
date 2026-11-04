@@ -1,5 +1,5 @@
 // WorkflowList.tsx — the list view: one card per definition with a compact
-// block-chain preview, plus the "New workflow" entry point.
+// step-chain preview, plus the "New workflow" entry point.
 
 import { Fragment } from "react";
 import { Icon } from "../../components/Icon";
@@ -8,7 +8,7 @@ import { Button } from "../../components/ui/Button";
 import type { ModelMeta } from "../../data/modelCatalog/types";
 import type { CustomAgent } from "../../storage/customAgents";
 import { type resolveAgent, resolveAlias } from "../shared";
-import type { Block, Definition, Spec } from "../spec";
+import type { Definition, Spec } from "../spec";
 import { AgentAvatar } from "./AgentAvatar";
 
 function timeAgo(ms: number): string {
@@ -53,32 +53,16 @@ function WorkflowMini({
   modelsByAgent: Record<string, ModelMeta[]>;
 }) {
   const resolve = (alias?: string) => resolveAlias(spec.agents, alias, agents, modelsByAgent);
-  const blocks = spec.workflow ?? [];
   return (
     <div className="wf-mini">
-      {blocks.map((b: Block, i) => (
-        <Fragment key={i}>
+      {(spec.workflow ?? []).map(({ step }, i) => (
+        <Fragment key={step.id}>
           {i > 0 && (
             <span className="wf-mini-arrow">
               <Icon name="arrowR" />
             </span>
           )}
-          {"step" in b && <StepChip label={b.step.id} agent={resolve(b.step.agent)} />}
-          {"parallel" in b && (
-            <span className="wf-mini-loop">
-              <Icon name="layers" /> {b.parallel.steps.length} parallel
-            </span>
-          )}
-          {"loop" in b && (
-            <span className="wf-mini-loop">
-              <Icon name="loop" /> loop ×{b.loop.max}
-            </span>
-          )}
-          {"orchestrate" in b && (
-            <span className="wf-mini-loop">
-              <Icon name="combine" /> orchestrate
-            </span>
-          )}
+          <StepChip label={step.id} agent={resolve(step.agent)} />
         </Fragment>
       ))}
     </div>

@@ -1,9 +1,8 @@
-// bits.tsx — small shared pieces of the inspector: labelled fields, the agent
-// select button, and the budget field groups (formerly the budgets popover).
+// bits.tsx — small shared pieces of the inspector: labelled fields, the inline
+// error strip, and the agent select button.
 
 import { Icon } from "../../../components/Icon";
 import type { ResolvedAgent } from "../../shared";
-import type { Budgets } from "../../spec";
 import { AgentAvatar } from "../AgentAvatar";
 
 export function Field({
@@ -24,6 +23,20 @@ export function Field({
         {hint && <span className="hint">{hint}</span>}
       </div>
       {children}
+    </div>
+  );
+}
+
+/** Validation messages at the top of an inspector pane; nothing when clean. */
+export function ErrorStrip({ errors }: { errors: string[] | undefined }) {
+  if (!errors?.length) return null;
+  return (
+    <div className="wb-errs">
+      {errors.map((msg) => (
+        <span className="wb-err" key={msg}>
+          <Icon name="close" size={9} /> {msg}
+        </span>
+      ))}
     </div>
   );
 }
@@ -64,63 +77,5 @@ export function AgentButton({
       </span>
       <Icon name="chevD" size={13} />
     </button>
-  );
-}
-
-interface BudgetFieldDef {
-  key: keyof Budgets;
-  label: string;
-  placeholder: string;
-}
-
-/** Curated per-scope fields; the rest of §11.1 (timeouts) keep their defaults. */
-export const RUN_BUDGET_FIELDS: BudgetFieldDef[] = [
-  { key: "turns", label: "Total turns", placeholder: "100" },
-  { key: "tokens", label: "Total tokens", placeholder: "unlimited" },
-  { key: "wall_clock_mins", label: "Wall-clock (min)", placeholder: "480" },
-];
-export const STEP_BUDGET_FIELDS: BudgetFieldDef[] = [
-  { key: "turns", label: "Turns", placeholder: "—" },
-  { key: "turns_per_attempt", label: "Turns / attempt", placeholder: "10" },
-  { key: "max_attempts", label: "Max attempts", placeholder: "2" },
-];
-
-export function BudgetFields({
-  fields,
-  value,
-  onChange,
-}: {
-  fields: BudgetFieldDef[];
-  value: Budgets | undefined;
-  onChange: (next: Budgets | undefined) => void;
-}) {
-  const set = (key: keyof Budgets, raw: string) => {
-    const next: Budgets = { ...(value ?? {}) };
-    const n = raw.trim() === "" ? undefined : Number(raw);
-    if (n == null || Number.isNaN(n)) delete next[key];
-    else next[key] = n;
-    onChange(Object.keys(next).length ? next : undefined);
-  };
-
-  return (
-    <div className="wb-budget-grid">
-      {fields.map((f) => (
-        <label className="wb-budget-field" key={f.key}>
-          <span>{f.label}</span>
-          <input
-            className="ca-input sm"
-            type="number"
-            min={1}
-            value={value?.[f.key] ?? ""}
-            placeholder={f.placeholder}
-            onChange={(e) => set(f.key, e.target.value)}
-          />
-        </label>
-      ))}
-      <div className="wb-field-note">
-        Blank uses the app default. Exceeding a budget pauses the run, so it never overspends
-        silently.
-      </div>
-    </div>
   );
 }

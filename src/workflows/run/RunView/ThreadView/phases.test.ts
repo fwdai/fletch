@@ -1,5 +1,5 @@
 // The "no silent second" contract, asserted against the kernel runner's actual
-// event sequence (src-tauri/src/workflow/runner/mod.rs): every point in a run
+// event sequence (crates/fletch-core/src/workflow/runner/mod.rs): every point in a run
 // either has an agent streaming or resolves to a named phase. A null phase with
 // nothing streaming is the bug these tests exist to catch.
 

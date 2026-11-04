@@ -174,25 +174,9 @@
   width: 12px;
   height: 12px;
 }
-.wf-mini-loop {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-left: 8px;
-  padding: 3px 9px 3px 7px;
-  border-radius: 999px;
-  border: 1px dashed var(--accent-line);
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-.wf-mini-loop svg {
-  width: 11px;
-  height: 11px;
-}
 
 /* ───────────────────── Builder: vertical pipeline editor ─────────────────────
-   A full-width canvas (a vertical flow of collapsed block cards) with a
+   A full-width canvas (a vertical flow of collapsed step cards) with a
    full-height inspector drawer pinned to the right edge of the settings shell.
    Cards carry previews and summary chips only; all field editing happens in the
    inspector (builder/inspector/). */
@@ -331,7 +315,7 @@
   height: 12px;
 }
 
-/* add block / add branch */
+/* add step */
 .wb-add {
   display: flex;
   align-items: center;
@@ -364,16 +348,6 @@
 .wb-add .wb-add-ic svg {
   width: 12px;
   height: 12px;
-}
-.wb-add.sm {
-  min-height: 38px;
-  margin-top: 0;
-  border-radius: var(--r-md);
-  font-size: 11.5px;
-}
-.wb-add-menu {
-  z-index: 56;
-  width: 270px;
 }
 
 /* ── step card (collapsed; edits happen in the inspector) ───────────── */
@@ -490,8 +464,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wb-step .wb-step-menu,
-.wb-cont .wb-step-menu {
+.wb-step .wb-step-menu {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -509,18 +482,15 @@
     color 0.12s;
   z-index: 3;
 }
-.wb-step .wb-step-menu svg,
-.wb-cont .wb-step-menu svg {
+.wb-step .wb-step-menu svg {
   width: 14px;
   height: 14px;
 }
-.wb-step .wb-step-menu:hover,
-.wb-cont .wb-step-menu:hover {
+.wb-step .wb-step-menu:hover {
   background: color-mix(in oklch, var(--danger) 14%, transparent);
   color: var(--danger);
 }
-.wb-step:hover > .wb-step-h .wb-step-menu,
-.wb-cont:hover > .wb-cont-h .wb-step-menu {
+.wb-step:hover > .wb-step-h .wb-step-menu {
   opacity: 1;
 }
 .wb-step-goal {
@@ -580,105 +550,6 @@
 }
 .wb-chip.err svg {
   color: var(--danger);
-}
-
-/* ── container blocks (parallel / loop / orchestrate) ───────────────── */
-.wb-cont {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--bd);
-  border-radius: var(--r-lg);
-  background: var(--bg-1);
-  box-shadow: var(--shadow-1);
-  cursor: pointer;
-  transition:
-    border-color 0.14s var(--ease),
-    box-shadow 0.14s var(--ease);
-}
-.wb-cont:hover {
-  border-color: var(--bd-strong);
-}
-.wb-cont.sel {
-  border-color: var(--accent);
-  box-shadow:
-    0 0 0 3px var(--accent-soft),
-    var(--shadow-1);
-}
-.wb-cont.has-err {
-  border-color: color-mix(in srgb, var(--danger) 55%, var(--bd));
-}
-.wb-loop {
-  border-left: 3px solid var(--accent-line);
-}
-.wb-cont-h {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  /* right padding clears the absolute remove button */
-  padding: 11px 34px 11px 14px;
-}
-.wb-cont-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 10.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-1);
-}
-.wb-cont-badge.loop {
-  color: var(--accent);
-}
-.wb-cont-sum {
-  font-size: 11.5px;
-  color: var(--fg-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.wb-cont-sum b {
-  color: var(--fg-0);
-  font-weight: 500;
-}
-.wb-cont-body {
-  padding: 12px 14px 14px;
-  border-top: 1px solid var(--bd-soft);
-  cursor: default;
-}
-.wb-branches {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 10px;
-}
-.wb-branches > .wb-add.sm {
-  grid-column: 1 / -1;
-}
-.wb-loop-body .wb-seq .wb-conn {
-  height: 24px;
-}
-.wb-loop-body .wb-add {
-  margin-top: 18px;
-  min-height: 40px;
-}
-
-/* orchestrate lead row */
-.wb-orch-lead {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  padding: 12px 14px 13px 16px;
-  border-top: 1px solid var(--bd-soft);
-}
-.wb-orch-lead .wb-step-goal {
-  margin: 0;
-  padding: 0;
-  border-top: 0;
-}
-.wb-orch-lead .wb-step-foot {
-  padding: 0;
-  border-top: 0;
 }
 
 /* ── inspector drawer ───────────────────────────────────────────────────
@@ -947,7 +818,7 @@ body.wb-drawer-open .set-main {
   text-wrap: pretty;
 }
 
-/* grouped boxes (finalize, dynamic children, sub-workflows) */
+/* grouped box (finalize) */
 .wb-box {
   display: flex;
   flex-direction: column;
@@ -963,11 +834,6 @@ body.wb-drawer-open .set-main {
   gap: 8px;
   padding-left: 22px;
 }
-.wb-box-cfg.row {
-  flex-direction: row;
-  align-items: flex-end;
-  gap: 10px;
-}
 .wb-toggle {
   display: flex;
   align-items: center;
@@ -977,13 +843,8 @@ body.wb-drawer-open .set-main {
   cursor: pointer;
 }
 
-/* budget fields */
-.wb-budget-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.wb-budget-field {
+/* a label and a small input on one row (the PR base branch) */
+.wb-inline-field {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -991,32 +852,9 @@ body.wb-drawer-open .set-main {
   font-size: 11.5px;
   color: var(--fg-2);
 }
-.wb-budget-field .ca-input,
-.wb-budget-field .ca-select {
+.wb-inline-field .ca-input {
   width: 110px;
   flex-shrink: 0;
-}
-
-/* comms toggles */
-.wb-comms {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.wb-comm {
-  padding: 3px 10px;
-  border: 1px solid var(--bd);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg-3);
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.14s var(--ease);
-}
-.wb-comm.on {
-  border-color: transparent;
-  background: color-mix(in oklch, var(--accent) 18%, transparent);
-  color: var(--fg-1);
 }
 
 /* overview: stats, flow map, hue picker */
@@ -1069,18 +907,6 @@ body.wb-drawer-open .set-main {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.wb-ov-cont-ic {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--bd-soft);
-  background: var(--bg-2);
-  color: var(--fg-2);
-  flex-shrink: 0;
 }
 .wb-hues {
   display: flex;
@@ -1427,18 +1253,10 @@ button.wf-run-rm:hover {
   min-width: 0;
 }
 
-/* The chat is the run's main surface — full width under the stepper. */
-.wf-run-chat {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
 /* ── stepper: the run's spine as a horizontal progress strip ───────────────
    One node per step: status glyph + step name + duration. Details live on the
-   hover card; a click focuses the step's chat. The track scrolls sideways when
-   a flow outgrows the pane. */
+   hover card; a click scrolls the thread to the step. The track scrolls
+   sideways when a flow outgrows the pane. */
 .wf-stepper {
   display: flex;
   align-items: center;
@@ -1516,7 +1334,7 @@ button.wf-run-rm:hover {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-/* Retry/iteration count — only present when a step ran more than once. */
+/* Attempt count — only present when a step ran more than once. */
 .wf-node-x {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -1645,70 +1463,6 @@ button.wf-run-rm:hover {
   margin-top: 9px;
   font-size: 10.5px;
   color: var(--fg-3);
-}
-
-/* Attempt strip — the focused step's history, shown only when it has one. */
-.wf-attempt-strip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 14px;
-  flex-shrink: 0;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--bd-soft);
-  background: var(--bg-1);
-}
-.wf-as-label {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-  margin-right: 4px;
-  flex-shrink: 0;
-}
-.wf-attempt {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 22px;
-  padding: 0 9px;
-  flex-shrink: 0;
-  border: 1px solid var(--bd-soft);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg-2);
-  font-size: var(--fs-xs);
-  cursor: pointer;
-  transition:
-    background 0.12s,
-    border-color 0.12s;
-}
-.wf-attempt:hover {
-  background: var(--hover);
-}
-.wf-attempt.sel {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-  color: var(--fg-0);
-}
-.wf-attempt.dim {
-  opacity: 0.55;
-}
-.wf-attempt-chip {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-.wf-attempt-label {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  white-space: nowrap;
-}
-.wf-attempt-state {
-  font-size: 10px;
-  white-space: nowrap;
 }
 
 /* Failed-run banner: the run's error, under the stepper. */

@@ -60,9 +60,9 @@ describe("installStarterPack", () => {
     }
     // A flat chain the kernel runs: plan → implement → review → test → ship,
     // each a plain step on a gate it supports.
-    const steps = spec.workflow.map((block) => ("step" in block ? block.step : null));
-    expect(steps.map((st) => st?.id)).toEqual(["plan", "implement", "review", "test", "ship"]);
-    expect(steps.map((st) => st?.gate?.type)).toEqual([
+    const steps = spec.workflow.map((entry) => entry.step);
+    expect(steps.map((st) => st.id)).toEqual(["plan", "implement", "review", "test", "ship"]);
+    expect(steps.map((st) => st.gate?.type)).toEqual([
       "verdict",
       "commit",
       "verdict",

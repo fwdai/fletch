@@ -57,7 +57,7 @@ describe("deriveSegments", () => {
     expect(segments.map((s) => s.retryIndex)).toEqual([0, 0, 1]);
   });
 
-  it("sorts loop iterations before retries within a step", () => {
+  it("orders a step's rows by iteration, then attempt", () => {
     const rows = [
       exec({ id: "i1-a1", step_id: "code", iteration: 1, attempt: 0 }),
       exec({ id: "i0-a1", step_id: "code", iteration: 0, attempt: 1 }),

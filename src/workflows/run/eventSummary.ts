@@ -3,9 +3,10 @@
 // JSON is shown only behind an expand affordance in the Timeline component
 // (spec §14.2 guardrail) — this module never stringifies it into the summary.
 //
-// Payloads arrive parsed but untyped (`unknown`), and later slices (S5/S9–S12)
-// attach richer fields, so every read is defensive: an unknown type or a missing
-// field degrades to a sensible humanized label rather than throwing.
+// Payloads arrive parsed but untyped (`unknown`), and old journals still hold
+// event types the kernel never writes, so every read is defensive: an unknown
+// type or a missing field degrades to a sensible humanized label rather than
+// throwing.
 
 import type { WfEvent } from "../../api";
 import type { IconName } from "../../components/Icon";

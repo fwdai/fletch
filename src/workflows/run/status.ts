@@ -30,6 +30,8 @@ export function attemptChip(s: WfAttemptStatus): Chip {
     case "blocked":
       return { label: "blocked", icon: "minus", tone: AMBER };
     case "awaiting_approval":
+      // The kernel has no approval gate, but exec rows the retired engine wrote
+      // still hold this status, so their runs keep reading.
       return { label: "needs approval", icon: "user", tone: AMBER };
     case "abandoned":
       return { label: "abandoned", icon: "minus", tone: "var(--fg-3)" };

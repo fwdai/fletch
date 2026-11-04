@@ -1,11 +1,11 @@
 // ThreadView/segments.ts — the thread's spine: one transcript segment per step
 // attempt, in execution order.
 //
-// Execution order, never timestamps. A sequential run's steps run in spec order,
-// so the step's position in the flattened spec is the primary key and the
-// attempt's (iteration, retry) its tie-break. Interleaving by `started_at` would
-// reorder the thread whenever two rows share a millisecond, and a step's rows
-// must stay adjacent regardless.
+// Execution order, never timestamps. A run's steps run in spec order, so the
+// step's position in the flattened spec is the primary key and the exec row's
+// (iteration, attempt) its tie-break. Interleaving by `started_at` would reorder
+// the thread whenever two rows share a millisecond, and a step's rows must stay
+// adjacent regardless.
 
 import type { AgentRecord, WfStepExec } from "../../../../api";
 import type { StepDesc } from "../flatten";

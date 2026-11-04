@@ -1,5 +1,5 @@
 // ───────────────────────────── Workflows v1 types ───────────────────────────
-// Mirror the serialized Rust rows in src-tauri/src/workflow/types.rs.
+// Mirror the serialized Rust rows in crates/fletch-core/src/workflow/types.rs.
 // JSON-typed columns arrive as parsed objects (`unknown`), not strings.
 
 export type WfRunStatus = "pending" | "running" | "done" | "failed" | "canceled";

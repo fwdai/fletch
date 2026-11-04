@@ -1,28 +1,11 @@
 // inspector/index.tsx — the right-hand inspector: a sticky panel that edits the
-// selected canvas node, or shows the workflow overview when nothing is selected.
+// selected step, or shows the workflow overview when nothing is selected.
 
 import { Icon } from "../../../components/Icon";
 import type { BuilderCtx } from "../ctx";
-import type { EBlock, EditorState } from "../model";
-import { LoopInspector, OrchestrateInspector, ParallelInspector } from "./ContainerInspectors";
+import type { EditorState, EStep } from "../model";
 import { OverviewInspector } from "./OverviewInspector";
 import { StepInspector } from "./StepInspector";
-
-function headerFor(selected: EBlock | null, state: EditorState, ctx: BuilderCtx) {
-  if (!selected) return { eyebrow: "Overview", title: state.name.trim() || "Untitled workflow" };
-  switch (selected.kind) {
-    case "step": {
-      const a = ctx.resolve(selected.agent);
-      return { eyebrow: `Step · ${selected.stepId}`, title: a?.name ?? "Unassigned" };
-    }
-    case "parallel":
-      return { eyebrow: "Block", title: "Parallel" };
-    case "loop":
-      return { eyebrow: "Block", title: "Loop" };
-    case "orchestrate":
-      return { eyebrow: "Block", title: "Orchestrate" };
-  }
-}
 
 export function Inspector({
   state,
@@ -32,12 +15,17 @@ export function Inspector({
   formErrors,
 }: {
   state: EditorState;
-  selected: EBlock | null;
+  selected: EStep | null;
   ctx: BuilderCtx;
   onField: (patch: Partial<EditorState>) => void;
   formErrors: string[];
 }) {
-  const head = headerFor(selected, state, ctx);
+  const head = selected
+    ? {
+        eyebrow: `Step · ${selected.stepId}`,
+        title: ctx.resolve(selected.agent)?.name ?? "Unassigned",
+      }
+    : { eyebrow: "Overview", title: state.name.trim() || "Untitled workflow" };
 
   return (
     <aside className="wb-insp">
@@ -55,13 +43,11 @@ export function Inspector({
         )}
       </div>
       <div className="wb-insp-body" key={selected?.nid ?? "overview"}>
-        {!selected && (
+        {selected ? (
+          <StepInspector step={selected} ctx={ctx} />
+        ) : (
           <OverviewInspector state={state} ctx={ctx} onField={onField} formErrors={formErrors} />
         )}
-        {selected?.kind === "step" && <StepInspector step={selected} ctx={ctx} />}
-        {selected?.kind === "parallel" && <ParallelInspector block={selected} ctx={ctx} />}
-        {selected?.kind === "loop" && <LoopInspector block={selected} ctx={ctx} />}
-        {selected?.kind === "orchestrate" && <OrchestrateInspector block={selected} ctx={ctx} />}
       </div>
     </aside>
   );
