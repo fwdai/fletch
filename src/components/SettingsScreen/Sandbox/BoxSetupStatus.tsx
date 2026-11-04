@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { SetGroup } from "../primitives";
 import { boxSetup } from "./boxSetup";
 
@@ -19,6 +20,7 @@ export function BoxSetupStatus() {
   const install = useAppStore((s) => s.installBoxImage);
   const cancel = useAppStore((s) => s.cancelBoxImage);
   const retryTools = useAppStore((s) => s.retryBoxTools);
+  const canAct = !useGate("vmSetup");
 
   useEffect(() => {
     void refreshImage();
@@ -30,12 +32,12 @@ export function BoxSetupStatus() {
     <SetGroup>
       <div className="set-row-s text-sm set-box-setup" data-state={setup.state}>
         <span>{setup.text}</span>
-        {setup.state === "busy" && setup.cancel && (
+        {canAct && setup.state === "busy" && setup.cancel && (
           <Button variant="ghost" onClick={() => void cancel()}>
             Cancel
           </Button>
         )}
-        {setup.state === "error" && (
+        {canAct && setup.state === "error" && (
           <Button
             variant="ghost"
             onClick={() => void (setup.retry === "tools" ? retryTools(setup.provider) : install())}

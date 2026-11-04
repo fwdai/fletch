@@ -3,12 +3,14 @@ import { useAppStore } from "@/store";
 import { SetGroup, SetHead } from "../primitives";
 import { BoxKnobs } from "./BoxKnobs";
 import { BoxSetupStatus } from "./BoxSetupStatus";
-import { EgressGlobal } from "./EgressGlobal";
+import { SandboxSwitch } from "./SandboxSwitch";
 import { VmDetails } from "./VmDetails";
+import { VmList } from "./VmList";
 
-/** Settings › Sandbox: the Linux VM's resources and what it may reach, with
- *  setup shown only while it needs attention and the versions tucked behind VM
- *  details. Nothing here chooses an engine:
+/** Settings › Sandbox › Linux VM: the VMs' resources and the VMs themselves,
+ *  with setup shown only while it needs attention and the details tucked away.
+ *  What they may reach is the Network tab. The macOS sandbox has nothing to set:
+ *  its rules are fixed boundaries. Nothing here chooses an engine:
  *  every new workspace runs in a Linux VM when one can boot, in the macOS
  *  sandbox otherwise; a project or a single workspace overrides that where
  *  the override is made (the project page, the composer). */
@@ -26,8 +28,9 @@ export function SandboxPane() {
     <div className="set-pane">
       <SetHead
         eyebrow="Settings · Sandbox"
-        title="Sandbox"
-        desc="Where agents run and what they can reach."
+        eyebrowAside={boxProbe && !runtimeOk ? undefined : <SandboxSwitch />}
+        title="Linux VM"
+        desc="The VMs agents run in and what each one can use."
       />
 
       {boxProbe && !runtimeOk ? (
@@ -44,7 +47,7 @@ export function SandboxPane() {
       )}
 
       {runtimeOk && <BoxKnobs />}
-      {runtimeOk && <EgressGlobal />}
+      {runtimeOk && <VmList />}
       <VmDetails />
     </div>
   );

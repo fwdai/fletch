@@ -70,6 +70,11 @@ export const BOX_PHASE_LABEL: Record<BoxStateEvent["phase"], string> = {
   failed: "Failed",
 };
 
+/** Whether a box is up, and so something a user can stop. */
+export function boxIsUp(phase: BoxStateEvent["phase"] | undefined): boolean {
+  return phase === "running" || phase === "starting";
+}
+
 /** `Preparing · downloading image 43%`: a box waiting on the host's setup
  *  says what for, so a launch during the setup reads as late, not stuck. */
 export function boxPhaseLabel(state: BoxStateEvent): string {

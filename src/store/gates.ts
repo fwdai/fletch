@@ -140,6 +140,27 @@ export const GATES = {
     label: "Box network allow-list",
     reason: "This host is too old to show or change what VMs may reach. Change it on the host.",
   },
+  /** Stopping a VM. Its own gate because it needs the `agents` scope where
+   *  reading the list needs only `observe`, so a device can see a VM it may not
+   *  stop. */
+  stopVm: {
+    op: "box_stop",
+    label: "Stopping a VM",
+    reason: "This device can't stop VMs on this host.",
+  },
+  /** Downloading the VM image and retrying its tools. Reading where setup
+   *  stands needs only `observe`; acting on it needs `projects`. */
+  vmSetup: {
+    op: ["box_image_install", "box_image_cancel", "box_tools_retry"],
+    label: "VM setup",
+    reason: "This device can't change VM setup on this host.",
+  },
+  /** The Workspace VMs list on Settings › Sandbox. */
+  vmList: {
+    op: "box_list",
+    label: "The VM list",
+    reason: "This host is too old to list its VMs. Update it.",
+  },
   sideShell: {
     op: "open_agent_shell",
     label: "Terminals",

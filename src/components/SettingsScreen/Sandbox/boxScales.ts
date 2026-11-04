@@ -8,19 +8,23 @@ export interface HostResources {
   host_memory_mib?: number | null;
 }
 
-/** One numeric box setting, picked from a scale. `engineDefault` is what the
- *  engine uses when the setting is unset (`sandbox/boxes/settings.rs`). */
+/** One numeric box setting, picked from a scale. `engineDefault`, `min` and
+ *  `max` mirror the engine's parser for it (`sandbox/boxes/settings.rs`), which
+ *  reads anything outside them as its default. */
 export interface BoxScale {
   key: BoxSettingKey;
   title: string;
   sub: string;
   engineDefault: number;
+  min: number;
+  max: number;
   stops: (host: HostResources) => number[];
   label: (value: number) => string;
 }
 
 const MEMORY_STOPS_MIB = [1024, 2048, 4096, 8192, 16384, 32768, 65536];
 const CPU_STOPS = [1, 2, 4, 6, 8, 12, 16];
+const DISK_STOPS_GIB = [8, 16, 32, 64];
 const IDLE_STOPS_MINUTES = [5, 10, 30, 60, 0];
 
 /** Without word from the host, what any machine that boots a box can give. */
@@ -44,6 +48,8 @@ export const BOX_SCALES: BoxScale[] = [
     title: "Memory",
     sub: "RAM each VM can use, from its next start.",
     engineDefault: 2048,
+    min: 512,
+    max: 0xffffffff,
     stops: ({ host_memory_mib }) => {
       const limit = host_memory_mib ? host_memory_mib / 2 : UNKNOWN_HOST_MEMORY_MIB;
       return MEMORY_STOPS_MIB.filter((mib) => mib <= limit);
@@ -55,24 +61,43 @@ export const BOX_SCALES: BoxScale[] = [
     title: "CPUs",
     sub: "Cores each VM can use, from its next start.",
     engineDefault: 2,
+    min: 1,
+    max: 32,
     stops: ({ host_cpus }) => CPU_STOPS.filter((n) => n <= (host_cpus || UNKNOWN_HOST_CPUS)),
     label: String,
+  },
+  {
+    key: "box_disk_gib",
+    title: "Disk",
+    sub: "Space for each new VM. Existing VMs keep theirs.",
+    engineDefault: 8,
+    min: 4,
+    max: 256,
+    stops: () => DISK_STOPS_GIB,
+    label: (gib) => `${gib} GB`,
   },
   {
     key: "box_idle_stop_minutes",
     title: "Idle stop",
     sub: "Stop a VM after this long with nothing running.",
     engineDefault: 10,
+    min: 0,
+    max: 1440,
     stops: () => IDLE_STOPS_MINUTES,
     label: formatIdle,
   },
 ];
 
-/** The value in force: the stored one, or the engine's default when it is
- *  unset or unreadable (the engine reads a bad row as its default too). */
+/** What the engine's unsigned parsers accept. */
+const WHOLE_NUMBER = /^\+?\d+$/;
+
+/** The value in force: the stored one, or the engine's default when it is unset
+ *  or anything the engine would refuse, so the scale never shows a value that
+ *  isn't the one running. */
 export function scaleValue(scale: BoxScale, stored: string): number {
-  const value = Number.parseInt(stored, 10);
-  return Number.isNaN(value) ? scale.engineDefault : value;
+  const text = stored.trim();
+  const value = WHOLE_NUMBER.test(text) ? Number(text) : Number.NaN;
+  return value >= scale.min && value <= scale.max ? value : scale.engineDefault;
 }
 
 /** Never sits past every number of minutes. */

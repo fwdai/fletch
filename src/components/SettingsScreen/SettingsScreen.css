@@ -249,6 +249,11 @@
   flex: 1;
   min-width: 0;
 }
+.set-row-lead {
+  flex: 1;
+  min-width: 0;
+  gap: 12px;
+}
 .set-row-t {
   color: var(--fg-0);
   font-weight: 500;
@@ -267,6 +272,31 @@
 .set-row-c {
   flex-shrink: 0;
   gap: 8px;
+}
+.set-row.compact {
+  min-height: 40px;
+  padding: 6px 0;
+}
+.set-row.compact .set-row-lead {
+  gap: 10px;
+}
+.set-row.compact .set-row-l {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.set-row.compact .set-row-t,
+.set-row.compact .set-row-s {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The name gives way before the status, which is what the row is for. */
+.set-row.compact .set-row-s {
+  flex: 0 0 auto;
+  max-width: 60%;
 }
 
 /* `SetDisclosure`: a link, not a row — it should not compete with the

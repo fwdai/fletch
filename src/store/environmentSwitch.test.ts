@@ -203,6 +203,26 @@ describe("switchEnvironment", () => {
     expect(store.getState().loadAutopilot).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps one host's VMs off the other's same-named agents", async () => {
+    const store = newStore();
+    // Stop acts on the host on screen, so a row held over from this Mac would
+    // aim it at whatever `fuji` happens to be over there.
+    const vms = [{ agent_id: "fuji" }] as never;
+    const states = { fuji: { agent_id: "fuji", phase: "running" } } as never;
+    store.setState({ boxVms: vms, boxStates: states });
+
+    await store.getState().switchEnvironment(HOST);
+
+    // Unknown until the host answers, not this Mac's list held over.
+    expect(store.getState().boxVms).toBeNull();
+    expect(store.getState().boxStates).toEqual({});
+
+    // Parked, not lost: switching back shows it while it is re-read.
+    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
+    expect(store.getState().boxVms).toBe(vms);
+    expect(store.getState().boxStates).toBe(states);
+  });
+
   it("re-registers the engine listeners against the new transport", async () => {
     const store = newStore();
 

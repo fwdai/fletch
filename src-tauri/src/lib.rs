@@ -1181,6 +1181,7 @@ pub fn run() {
             commands::box_tools_retry,
             commands::box_state,
             commands::available_workspace_types,
+            commands::box_list,
             commands::box_stop,
             commands::box_egress_allow,
             commands::set_box_setting,

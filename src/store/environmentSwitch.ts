@@ -105,6 +105,12 @@ const STASH_KEYS = [
   // on one, and `loadPendingPublishApprovals` re-reads the entered
   // environment's queue rather than trusting what was parked.
   "pendingPublishApprovals",
+  // Its VMs and their phases. An agent id means something on one host only, so
+  // neither may survive a switch: Stop acts on the host on screen, and a row
+  // left over from the last one would aim it at the wrong VM. `loadBoxSetup`
+  // re-reads both on entry.
+  "boxVms",
+  "boxStates",
   // Whose GitHub answers for this environment's checkouts. Parked so switching
   // back shows the last known answer while `refreshGithub` re-probes, rather
   // than blanking the push/PR affordances for a moment.
@@ -175,6 +181,8 @@ const BLANK: Pick<AppState, StashKey> = {
   autopilotPausedAgents: [],
   reviews: {},
   pendingPublishApprovals: [],
+  boxVms: null,
+  boxStates: {},
   github: null,
   composerSeeds: {},
   composerDrafts: {},

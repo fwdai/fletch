@@ -19,6 +19,7 @@ import { ProvidersPane } from "./ProvidersPane";
 import { RemoteControlPane } from "./RemoteControl";
 import { ReviewPane } from "./ReviewPane";
 import { SandboxPane } from "./Sandbox";
+import { NetworkPane } from "./Sandbox/NetworkPane";
 import { ShortcutsPane } from "./ShortcutsPane";
 import { SkillsPane } from "./Skills";
 
@@ -55,6 +56,10 @@ type NavItem = {
 // "Customize" nav entry with an in-pane segmented switch (see CustomizeSwitch).
 // The nav entry's `id` is the default sub-tab.
 const CUSTOMIZE_IDS: SettingsSection[] = ["agents", "tools", "skills"];
+
+// Network sits under Sandbox rather than beside it: it is a property of the VM,
+// and neither the app nor the macOS sandbox limits what it can reach.
+const SANDBOX_IDS: SettingsSection[] = ["sandbox", "network"];
 
 // The agent view itself: what appears around an agent and how you talk to it.
 // Not "Workspace" — the title bar already calls agent sessions workspaces, and
@@ -98,7 +103,14 @@ const NAV: NavItem[] = [
   // Sandbox leads the group so the header's meaning lands at a glance. The box
   // is the app's existing sandbox glyph (the title bar's box workspaces, the
   // env-vars sandbox toggle), so the nav entry matches it.
-  { id: "sandbox", label: "Sandbox", icon: "cube", order: 50, group: GUARDRAILS_GROUP },
+  {
+    id: "sandbox",
+    label: "Sandbox",
+    icon: "cube",
+    order: 50,
+    group: GUARDRAILS_GROUP,
+    subsections: SANDBOX_IDS,
+  },
   { id: "git", label: "Git", icon: "branch", order: 53, group: GUARDRAILS_GROUP },
   // Beside Git: what leaves a workspace is reviewed before it does.
   { id: "review", label: "Review", icon: "search", order: 56, group: GUARDRAILS_GROUP },
@@ -236,6 +248,7 @@ export function SettingsScreen() {
           {visible && section === "git" && <GitPane />}
           {visible && section === "review" && <ReviewPane />}
           {visible && section === "sandbox" && <SandboxPane />}
+          {visible && section === "network" && <NetworkPane />}
           {visible && section === "remote" && <RemoteControlPane />}
           {visible && section === "providers" && <ProvidersPane />}
           {visible && section === "agents" && <CustomAgentsPane />}

@@ -6,12 +6,12 @@ import { useGate } from "@/store/capabilities";
 import { EGRESS_CATEGORIES, useEgressOverview } from "@/util/useEgressOverview";
 import { SetDisclosure, SetGroup, SetRow, SetToggle } from "../primitives";
 
-/** Network › every project: the hosts boxes may reach, as Fletch's template
+/** Sandbox › Network, for every project: the hosts boxes may reach, as Fletch's template
  *  (maintained with the app, grouped by what it serves) plus the user's own
  *  changes — hosts added for every project, template entries turned off. A
  *  project's `.fletch/settings.json` can change them again for that project.
  *  Telemetry the agent CLIs reach for is listed as blocked quietly. */
-export function EgressGlobal({ last }: { last?: boolean }) {
+export function EgressGlobal() {
   const gate = useGate("egressPolicy");
   const { overview } = useEgressOverview(null, !!gate);
   const [draft, setDraft] = useState("");
@@ -19,7 +19,7 @@ export function EgressGlobal({ last }: { last?: boolean }) {
 
   if (gate) {
     return (
-      <SetGroup label="Network" last={last}>
+      <SetGroup>
         <SetRow title="Hosts VMs may reach" sub={gate} />
       </SetGroup>
     );
@@ -48,7 +48,7 @@ export function EgressGlobal({ last }: { last?: boolean }) {
   };
 
   return (
-    <SetGroup label="Network" last={last}>
+    <SetGroup>
       <SetRow
         title="Hosts VMs may reach"
         sub="Fletch maintains this list. Changes apply to every project unless its .fletch/settings.json overrides them."

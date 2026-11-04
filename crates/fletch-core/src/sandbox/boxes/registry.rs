@@ -652,14 +652,19 @@ impl BoxRegistry {
     /// a changed identity for a known agent replaces the old one.
     pub fn register(&self, identity: BoxIdentity) {
         let mut entries = self.entries.lock();
+        let new = !entries.contains_key(&identity.agent_id);
         let entry = entries
             .entry(identity.agent_id.clone())
             .or_insert_with(|| Entry::new(identity.clone()));
         entry.identity = identity.clone();
+        drop(entries);
         crate::exec::register_root(
             identity.writable_root.clone(),
             BoxExecutor::new(&identity.agent_id),
         );
+        if new {
+            super::list_changed();
+        }
     }
 
     pub fn knows(&self, agent_id: &str) -> bool {
@@ -2063,7 +2068,7 @@ async fn boot(
     let authorized = channel::authorized_key(&key)?;
     let data = dir.join(DATA_DISK);
     if !data.exists() {
-        disks::create_sparse(&data, disks::DEFAULT_DATA_DISK_BYTES)?;
+        disks::create_sparse(&data, u64::from(settings::current().disk_gib) << 30)?;
     }
     let dirty = Dirty::in_dir(&dir);
     if dirty.set()? {
