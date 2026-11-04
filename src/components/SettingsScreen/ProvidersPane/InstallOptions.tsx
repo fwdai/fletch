@@ -30,7 +30,7 @@ export function InstallOptions({
       <p className="set-prov-hint text-sm">
         {command
           ? `Fletch runs ${providerLabel}'s official installer and re-scans your PATH when it finishes. Nothing else on your system is touched.`
-          : `${providerLabel} has no one-click installer. Follow the vendor's guide, then re-scan — or point Fletch at the binary below.`}
+          : `${providerLabel} has no one-click installer. Follow the vendor's guide, then re-scan, or point Fletch at the binary below.`}
       </p>
 
       {command && (

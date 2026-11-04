@@ -78,7 +78,7 @@ export function StepCard({
       </div>
 
       <div className={`wb-step-goal ${step.goal.trim() ? "" : "empty"}`}>
-        {step.goal.trim() || "No instructions yet — select to add."}
+        {step.goal.trim() || "No instructions yet. Select to add."}
       </div>
 
       <div className="wb-step-foot">

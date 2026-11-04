@@ -27,7 +27,7 @@ export function AgentPick({
       <div className="dd-sect">Custom agents</div>
       {agents.length === 0 && (
         <div style={{ padding: "4px 9px 8px", fontSize: 11.5, color: "var(--fg-3)" }}>
-          None yet — create some under Custom agents.
+          None yet. Create some under Custom agents.
         </div>
       )}
       {agents.map((a) => (

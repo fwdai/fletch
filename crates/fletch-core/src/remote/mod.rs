@@ -464,7 +464,7 @@ impl RemoteState {
             }
             Some(url) => {
                 return Err(Error::Other(format!(
-                    "A relay URL has to start with ws:// or wss:// — {url} does not."
+                    "A relay URL has to start with ws:// or wss://, and {url} does not."
                 )))
             }
         };

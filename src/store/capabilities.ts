@@ -123,7 +123,7 @@ export function hostProvidersNote(env: EnvironmentEntry): { summary: string; tip
     .filter(Boolean)
     .join(" · ");
   const tip = [
-    ...out.map((p) => `${p.label}: signed out — ${fixFor(p)}`),
+    ...out.map((p) => `${p.label}: signed out (${fixFor(p)})`),
     ...missing.map((p) => `${p.label}: not installed on ${env.name}`),
   ].join("\n");
   return { summary, tip };
@@ -138,7 +138,7 @@ export function hostProvidersNote(env: EnvironmentEntry): { summary: string; tip
  *  have always done — so the answer is a sentence, not a closed switch. */
 export function hostAccountNote(env: EnvironmentEntry): string | null {
   if (env.kind === "local") return null;
-  return `This is this Mac's account. ${env.name} signs in with its own — connect it there with \`fletch-host github login\`.`;
+  return `This is this Mac's account. ${env.name} signs in with its own. Connect it there with \`fletch-host github login\`.`;
 }
 
 /** The host's own version, for the rows that identify it. Null for the local

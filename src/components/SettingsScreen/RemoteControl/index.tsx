@@ -50,7 +50,7 @@ export function RemoteControlPane() {
   // nothing beyond its switches.
   const problem = listening
     ? status?.addresses.length === 0
-      ? "No network address found — connect this Mac to Wi-Fi or Ethernet."
+      ? "No network address found. Connect this Mac to Wi-Fi or Ethernet."
       : null
     : enabled
       ? "On, but the port could not be opened."

@@ -93,7 +93,7 @@ export const GATES = {
       "set_agent_bin_override",
     ],
     label: "Host settings",
-    reason: "This host is too old to change its settings from here — change them on the host.",
+    reason: "This host is too old to change its settings from here. Change them on the host.",
   },
   /** Settings › Git's publishing preferences and attribution. Their own gate
    *  because they are `publish`-scoped: a device paired without it reads them
@@ -109,7 +109,7 @@ export const GATES = {
     ],
     label: "Publishing settings",
     reason:
-      "This host is too old, or this device isn't paired to publish — change publishing settings on the host.",
+      "This host is too old, or this device isn't paired to publish. Change publishing settings on the host.",
   },
   /** A project page's run commands, env sharing, Linear team, roadmap
    *  autonomy and turn-end verify — every `project_settings` row the host
@@ -138,7 +138,7 @@ export const GATES = {
   egressPolicy: {
     op: ["box_egress_overview", "set_box_egress_global"],
     label: "Box network allow-list",
-    reason: "This host is too old to show or change what boxes may reach — change it on the host.",
+    reason: "This host is too old to show or change what VMs may reach. Change it on the host.",
   },
   sideShell: {
     op: "open_agent_shell",
@@ -175,7 +175,7 @@ export const GATES = {
   review: {
     op: "review_start",
     label: "Local review",
-    reason: "This host is too old to run a local reviewer — update it.",
+    reason: "This host is too old to run a local reviewer. Update it.",
   },
   nativeView: {
     op: "switch_view",

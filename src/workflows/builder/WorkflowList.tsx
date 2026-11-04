@@ -197,8 +197,8 @@ export function WorkflowList({
                       {installing ? "Installing starter pack…" : "Install the starter pack"}
                     </div>
                     <div className="wf-desc">
-                      Seeds five specialist agents — Project Manager, Architect, Coder, Reviewer,
-                      Tester — and a ready-to-run Feature pipeline that chains the last four.
+                      Seeds five specialist agents (Project Manager, Architect, Coder, Reviewer,
+                      Tester) and a ready-to-run Feature pipeline that chains the last four.
                     </div>
                   </div>
                 </div>

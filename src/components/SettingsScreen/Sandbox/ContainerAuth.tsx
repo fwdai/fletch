@@ -156,7 +156,7 @@ function AutoConnect({
       <>
         <div className="ghc-lede text-sm">
           Connect your Claude account so agents in Linux VMs can authenticate. This opens your
-          browser once to sign in — no copy-paste.
+          browser once to sign in.
         </div>
         <div className="modal-actions">
           <Button variant="primary" onClick={connect}>

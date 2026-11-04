@@ -414,7 +414,7 @@ pub fn status() -> ContainerAuthStatus {
 pub fn normalize_token(raw: &str) -> Result<(String, bool), String> {
     let token = raw.trim();
     if token.is_empty() {
-        return Err("Token is empty — run `claude setup-token` and paste its output.".into());
+        return Err("Token is empty. Run `claude setup-token` and paste its output.".into());
     }
     Ok((token.to_string(), token.starts_with(SETUP_TOKEN_PREFIX)))
 }

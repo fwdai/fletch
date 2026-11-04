@@ -49,7 +49,7 @@ export const GATE_MODES: GateModeDef[] = [
     label: "You approve",
     short: "approval",
     icon: "hand",
-    note: "Pauses the run for you to approve the handoff — no gate the agent can satisfy itself.",
+    note: "Pauses the run for you to approve the handoff. The agent can't satisfy this gate itself.",
   },
 ];
 
@@ -70,7 +70,7 @@ export const STEP_COMMS: CommsCapDef[] = [
   {
     id: "ask",
     label: "Ask",
-    note: "Ask a question — routed to the orchestrator, else pauses for you.",
+    note: "Ask a question. It goes to the orchestrator, or pauses for you if there isn't one.",
   },
 ];
 

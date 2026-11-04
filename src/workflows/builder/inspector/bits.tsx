@@ -118,7 +118,8 @@ export function BudgetFields({
         </label>
       ))}
       <div className="wb-field-note">
-        Blank uses the app default. Exceeding a budget pauses the run — never a silent overspend.
+        Blank uses the app default. Exceeding a budget pauses the run, so it never overspends
+        silently.
       </div>
     </div>
   );

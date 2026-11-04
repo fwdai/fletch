@@ -79,7 +79,7 @@ export function ProvidersPane() {
           than let the rows read as the host's. */}
       {env.kind === "remote" && (
         <p className="set-prov-hint text-sm">
-          These are this Mac's providers. {env.name}'s are managed on {env.name} — except a custom
+          These are this Mac's providers. {env.name}'s are managed on {env.name}, except a custom
           binary path and agent attribution, which are {env.name}'s settings and edit it.
         </p>
       )}

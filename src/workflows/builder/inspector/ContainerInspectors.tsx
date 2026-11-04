@@ -22,8 +22,8 @@ export function ParallelInspector({ block, ctx }: { block: EParallel; ctx: Build
           value={block.join}
           onChange={(e) => ctx.patchBlock(block.nid, { join: e.target.value as EParallel["join"] })}
         >
-          <option value="all">all — every branch must finish</option>
-          <option value="any">any — the first finished branch wins</option>
+          <option value="all">all: every branch must finish</option>
+          <option value="any">any: the first finished branch wins</option>
         </select>
       </Field>
 
@@ -35,8 +35,8 @@ export function ParallelInspector({ block, ctx }: { block: EParallel; ctx: Build
             ctx.patchBlock(block.nid, { integrate: e.target.value as EParallel["integrate"] })
           }
         >
-          <option value="none">none — branches stay on their own worktrees</option>
-          <option value="merge">merge — combine branch results</option>
+          <option value="none">none: branches stay on their own worktrees</option>
+          <option value="merge">merge: combine branch results</option>
         </select>
       </Field>
 
@@ -146,8 +146,8 @@ export function OrchestrateInspector({ block, ctx }: { block: EOrchestrate; ctx:
             ctx.patchBlock(block.nid, { join: e.target.value as EOrchestrate["join"] })
           }
         >
-          <option value="all">all — every child must finish</option>
-          <option value="any">any — the first finished child wins</option>
+          <option value="all">all: every child must finish</option>
+          <option value="any">any: the first finished child wins</option>
         </select>
       </Field>
 
