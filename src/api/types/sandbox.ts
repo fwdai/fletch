@@ -85,6 +85,10 @@ export interface BoxRuntimeProbe {
   hypervisor: boolean;
   image: BoxImageStatus;
   tools: BoxToolsStatus[];
+  /** The host's logical cores and physical memory. Absent on a host from
+   *  before these fields, null where its OS will not say. */
+  host_cpus?: number | null;
+  host_memory_mib?: number | null;
 }
 
 /** A workspace type a new agent may be given (`sandbox::placement::Placement`
@@ -171,5 +175,4 @@ export type BoxSettingKey =
   | "box_memory_mib"
   | "box_cpus"
   | "box_image_url"
-  | "box_idle_stop_minutes"
-  | "box_layers";
+  | "box_idle_stop_minutes";

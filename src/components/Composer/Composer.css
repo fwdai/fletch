@@ -486,10 +486,7 @@ button.run-piece:hover,
   font-variant-numeric: tabular-nums;
 }
 
-/* composer · the effort scale
-   The levels side by side, low on the left and the most on the right, as one
-   segmented meter: every level up to the one in force is filled, deepening
-   left to right. Hover or the arrows preview the fill; a click picks. */
+/* composer · the effort popover around its `Scale` */
 .effort-pop {
   position: absolute;
   z-index: var(--z-dropdown);
@@ -516,47 +513,6 @@ button.run-piece:hover,
   letter-spacing: 0;
   text-transform: none;
   color: var(--fg-0);
-}
-.effort-track {
-  display: grid;
-  gap: 3px;
-}
-.effort-seg {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  padding: 4px 2px 3px;
-  border-radius: 6px;
-  color: var(--fg-2);
-  transition:
-    background 0.12s var(--ease),
-    color 0.12s var(--ease);
-}
-.effort-seg:hover,
-.effort-seg:focus-visible {
-  background: var(--hover);
-  color: var(--fg-0);
-  outline: none;
-}
-.effort-bar {
-  height: 6px;
-  border-radius: 99px;
-  background: var(--bd);
-  transition: background 0.14s var(--ease);
-}
-/* Deepens by opacity, never by hue: mixing the accent with a grey would
-   drift it through other colours on the way. */
-.effort-seg.is-filled .effort-bar {
-  background: color-mix(in srgb, var(--accent) calc(40% + 60% * var(--depth, 1)), transparent);
-}
-.effort-label {
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.effort-seg.is-current {
-  color: var(--fg-0);
-  font-weight: 600;
 }
 .effort-note {
   max-width: 260px;

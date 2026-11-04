@@ -32,7 +32,6 @@ const HOST_SETTING_KEYS: &[&str] = &[
     sandbox::boxes::settings::CPUS_SETTING,
     sandbox::boxes::settings::IMAGE_URL_SETTING,
     sandbox::boxes::settings::IDLE_STOP_SETTING,
-    sandbox::boxes::settings::LAYERS_SETTING,
     publish_prefs::BRANCH_PREFIX_SETTING,
     publish_prefs::DRAFT_PRS_SETTING,
     rpc::approval::SETTING,
@@ -292,7 +291,6 @@ mod tests {
             "box_cpus",
             "box_image_url",
             "box_idle_stop_minutes",
-            "box_layers",
             "agent_bin_path_claude",
         ] {
             assert!(is_host_setting_key(key), "{key} must be answered");

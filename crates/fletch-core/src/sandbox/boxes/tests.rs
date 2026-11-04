@@ -47,7 +47,7 @@ async fn setup() -> tempfile::TempDir {
     });
     let t0 = Instant::now();
     let installed = super::image_store()
-        .install(&super::pinned_image(), &settings::current().layers, |_| {
+        .install(&super::pinned_image(), &super::image_layers(), |_| {
             std::ops::ControlFlow::Continue(())
         })
         .await
@@ -382,6 +382,7 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
             "images": [
                 {"name": "base", "file": "base.erofs", "size": 5, "sha256": "0".repeat(64)},
                 {"name": "devtools", "file": "layer-devtools.erofs", "size": 5, "sha256": "1".repeat(64)},
+                {"name": "browser", "file": "layer-browser.erofs", "size": 5, "sha256": "2".repeat(64)},
             ],
         })
         .to_string()
@@ -402,23 +403,18 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
     std::fs::write(dir.join("manifest.json"), manifest(&pin.version)).unwrap();
     assert!(
         super::installed_image().unwrap().is_none(),
-        "the default devtools layer is not there yet"
+        "the layers are not there yet"
     );
     std::fs::write(dir.join("layer-devtools.erofs"), b"layer").unwrap();
-    let installed = super::installed_image().unwrap().expect("the pinned image");
-    assert_eq!(installed.version, pin.version);
-    assert_eq!(installed.layers.len(), 1);
-    assert_eq!(super::setup::image_status().phase, "installed");
-
-    settings::set(BoxSettings {
-        layers: vec!["devtools".into(), "browser".into()],
-        ..BoxSettings::default()
-    });
     assert!(
         super::installed_image().unwrap().is_none(),
-        "a layer turned on but not downloaded holds the image back"
+        "a layer still on its way holds the image back"
     );
-    settings::set(BoxSettings::default());
+    std::fs::write(dir.join("layer-browser.erofs"), b"layer").unwrap();
+    let installed = super::installed_image().unwrap().expect("the pinned image");
+    assert_eq!(installed.version, pin.version);
+    assert_eq!(installed.layers.len(), 2);
+    assert_eq!(super::setup::image_status().phase, "installed");
 }
 
 // `block_on` from the sync seams (`launch_agent`, the executor).

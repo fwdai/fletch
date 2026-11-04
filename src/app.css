@@ -71,6 +71,7 @@
 @import "./components/ui/Modal.css";
 @import "./components/ui/Spinner.css";
 @import "./components/ui/ProgressBar.css";
+@import "./components/ui/Scale.css";
 @import "./components/ui/DeviceCode.css";
 @import "./components/ReviewSurface/ReviewSurface.css";
 @import "./components/Feedback/Feedback.css";

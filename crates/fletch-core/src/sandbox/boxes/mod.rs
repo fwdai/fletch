@@ -330,9 +330,16 @@ pub fn ready_for(provider: &str) -> bool {
         && registry::built_tools_disk(provider).is_some()
 }
 
-/// This build's image with the enabled layers (`box_layers`), when all of
-/// them are installed; `None` while a layer the user turned on is still on
-/// its way, so a launch waits for it like for the base.
+/// The layers every box gets besides the base.
+pub(crate) fn image_layers() -> Vec<String> {
+    fletch_box::image_store::OPTIONAL_LAYERS
+        .iter()
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// This build's image with its layers, when all of them are installed; `None`
+/// while one is still on its way, so a launch waits for it like for the base.
 pub fn installed_image() -> Result<Option<InstalledImage>> {
     // This build's version, never the newest on disk: a newer image left by a
     // later build would boot a guest whose init contract this build does not
@@ -340,7 +347,7 @@ pub fn installed_image() -> Result<Option<InstalledImage>> {
     // first boot of a session (the registry), which is where damage is caught.
     Ok(image_store()
         .find(&pinned_image().version)
-        .and_then(|image| image.with_layers(&settings::current().layers)))
+        .and_then(|image| image.with_layers(&image_layers())))
 }
 
 /// The runtime probe alone, for the Settings page: `None` when no runtime

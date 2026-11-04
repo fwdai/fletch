@@ -34,6 +34,10 @@ pub struct BoxRuntimeProbe {
     pub image: BoxImageStatus,
     /// Each supported provider's tools disk.
     pub tools: Vec<ToolsStatus>,
+    /// This machine's logical cores and physical memory: what the Sandbox
+    /// page's memory and CPU scales stop at. `None` where the OS will not say.
+    pub host_cpus: Option<usize>,
+    pub host_memory_mib: Option<u64>,
 }
 
 pub fn box_image_status_impl() -> BoxImageStatus {
@@ -67,6 +71,8 @@ pub fn box_runtime_probe_impl() -> BoxRuntimeProbe {
         hypervisor: probe.as_ref().is_some_and(|p| p.hypervisor),
         image,
         tools,
+        host_cpus: std::thread::available_parallelism().ok().map(|n| n.get()),
+        host_memory_mib: fletch_box::host_memory_mib(),
     }
 }
 
@@ -262,11 +268,9 @@ pub fn set_box_egress_global_impl(
 }
 
 /// Write one box setting (`box_memory_mib`, `box_cpus`, `box_image_url`,
-/// `box_idle_stop_minutes`, `box_layers`), validated, and mirror it for the
-/// engine; `None` restores the default. The Sandbox page's knobs go through
-/// here, not the client-side `set_setting`, since the engine reads these. A
-/// layer turned on starts the image install (the next boot of every box
-/// attaches it).
+/// `box_idle_stop_minutes`), validated, and mirror it for the engine; `None`
+/// restores the default. The Sandbox page's knobs go through here, not the
+/// client-side `set_setting`, since the engine reads these.
 pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> Result<()> {
     let normalized = match value {
         Some(value) => Some(
@@ -291,11 +295,6 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
         settings::set(settings::load(&conn));
     }
     announce(ctx, key, normalized.as_deref());
-    if key == settings::LAYERS_SETTING {
-        if let Err(e) = setup::start_install() {
-            tracing::warn!(error = %e, "the box layer install did not start");
-        }
-    }
     Ok(())
 }
 

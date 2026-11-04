@@ -1,19 +1,15 @@
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Icon } from "@/components/Icon";
+import { Scale } from "@/components/ui/Scale";
 import { Scrim } from "@/components/ui/Scrim";
 import type { ThinkingLevel } from "@/data/providerDetail";
 import { RailGroup, RailPiece } from "./RunRail";
 
 /** The rail's last piece: the thinking effort the agent runs at. A click
- *  opens a horizontal scale of the levels the current model offers, low on
- *  the left and the most on the right, filled up to the level in force like
- *  a meter. Hovering previews the fill; a click picks and closes.
- *
- *  Keys: the scale opens with the current level focused, ←/→ (and
- *  Home/End) move between levels, Enter or Space picks, Escape closes. The
- *  arrows only move the focus — on a provider that bakes effort into the
- *  process each pick restarts the agent, so nothing is committed by passing
- *  over a level. On such a session the scale says so. */
+ *  opens a `Scale` of the levels the current model offers, with the level in
+ *  force focused; a pick closes it, and so does Escape. On a provider that
+ *  bakes effort into the process each pick restarts the agent, and the scale
+ *  says so. */
 export function EffortPicker({
   levels,
   value,
@@ -27,51 +23,22 @@ export function EffortPicker({
   onPick: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  // The level the pointer or the keyboard is on, previewing the fill.
-  const [hot, setHot] = useState<number | null>(null);
-  const segs = useRef<(HTMLButtonElement | null)[]>([]);
-  const currentIdx = levels.findIndex((l) => l.value === value);
-  const current = levels[currentIdx];
+  // The level being previewed, named in the head while there is one.
+  const [previewed, setPreviewed] = useState<string | null>(null);
+  const current = levels.find((l) => l.value === value);
   const tip = restarts
     ? "Thinking effort — changing restarts the agent (rebuilds cache)"
     : "Thinking effort";
 
-  // Focus the level in force when the scale opens, so the arrows start there.
-  useEffect(() => {
-    if (open) segs.current[Math.max(0, currentIdx)]?.focus();
-  }, [open, currentIdx]);
-
   function close() {
     setOpen(false);
-    setHot(null);
+    setPreviewed(null);
   }
 
-  function pick(i: number) {
+  function pick(next: string) {
     close();
-    if (i !== currentIdx) onPick(levels[i].value);
+    if (next !== value) onPick(next);
   }
-
-  function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    const from = hot ?? Math.max(0, currentIdx);
-    const to =
-      e.key === "ArrowRight"
-        ? Math.min(levels.length - 1, from + 1)
-        : e.key === "ArrowLeft"
-          ? Math.max(0, from - 1)
-          : e.key === "Home"
-            ? 0
-            : e.key === "End"
-              ? levels.length - 1
-              : null;
-    if (to === null) return;
-    e.preventDefault();
-    setHot(to);
-    segs.current[to]?.focus();
-  }
-
-  // What the meter shows filled: the preview while there is one, else the
-  // level in force.
-  const shown = hot ?? currentIdx;
 
   return (
     <RailGroup>
@@ -91,49 +58,16 @@ export function EffortPicker({
           <div className="effort-pop" style={{ bottom: "calc(100% + 8px)", left: 0 }}>
             <div className="effort-head flex-center text-xs">
               <span>Thinking effort</span>
-              <span className="effort-now">{levels[Math.max(0, shown)]?.label}</span>
+              <span className="effort-now">{previewed ?? current?.label ?? levels[0]?.label}</span>
             </div>
-            <div
-              className="effort-track"
-              role="radiogroup"
-              aria-label="Thinking effort"
-              onKeyDown={onKeyDown}
-              onMouseLeave={() => setHot(null)}
-              style={{ gridTemplateColumns: `repeat(${levels.length}, minmax(44px, 1fr))` }}
-            >
-              {levels.map((l, i) => {
-                const cls = [
-                  "effort-seg",
-                  i <= shown ? "is-filled" : "",
-                  i === currentIdx ? "is-current" : "",
-                  hot !== null && i === hot ? "is-hot" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ");
-                return (
-                  <button
-                    key={l.value}
-                    ref={(el) => {
-                      segs.current[i] = el;
-                    }}
-                    type="button"
-                    role="radio"
-                    aria-checked={i === currentIdx}
-                    // Roving focus: one stop for the group, arrows within it.
-                    tabIndex={i === (hot ?? Math.max(0, currentIdx)) ? 0 : -1}
-                    className={cls}
-                    // The fill deepens left to right: each level's share.
-                    style={{ ["--depth" as string]: (i + 1) / levels.length }}
-                    onMouseEnter={() => setHot(i)}
-                    onFocus={() => setHot(i)}
-                    onClick={() => pick(i)}
-                  >
-                    <span className="effort-bar" />
-                    <span className="effort-label text-xs">{l.label}</span>
-                  </button>
-                );
-              })}
-            </div>
+            <Scale
+              stops={levels}
+              value={value}
+              ariaLabel="Thinking effort"
+              autoFocus
+              onPreview={(stop) => setPreviewed(stop?.label ?? null)}
+              onPick={pick}
+            />
             {restarts && (
               <div className="effort-note text-xs">
                 Changing it restarts the agent, which rebuilds its cache.

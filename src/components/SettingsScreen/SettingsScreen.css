@@ -294,6 +294,13 @@
 .set-row-c .ui-select {
   width: 240px;
 }
+/* One width, so scales with different numbers of stops line up in a column. */
+.set-scale {
+  width: 320px;
+}
+.set-vm-version {
+  color: var(--fg-2);
+}
 
 /* Shortcuts: a keycap per chord. Body-sized and raised off the page (a lifted
    face with a heavier bottom edge) so the key is the thing the eye lands on
