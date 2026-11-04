@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type {
-  RoadmapItem,
-  RoadmapItemEvent,
-  RoadmapProjectHold,
-  WfPausedReason,
-  WfRun,
-} from "@/api";
+import type { RoadmapItem, RoadmapItemEvent, RoadmapProjectHold } from "@/api";
 import { buildNeedsYou, latestByItem, mergeLatest, upsertLatest } from "./select";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -60,33 +54,6 @@ function projectHold(over: Partial<RoadmapProjectHold> = {}): RoadmapProjectHold
   };
 }
 
-function run(over: Partial<WfRun> & { id: string }): WfRun {
-  return {
-    definition_id: null,
-    parent_run_id: null,
-    name: `run-${over.id}`,
-    spec: null,
-    task: "",
-    project_id: "p1",
-    repo_path: "/repo",
-    run_dir: "/runs/x",
-    branch: "wf/x",
-    base_sha: "abc",
-    status: "paused",
-    paused_reason: "question",
-    cursor: null,
-    budgets: null,
-    spent: null,
-    error: null,
-    pr_number: null,
-    pr_url: null,
-    roadmap_item_id: null,
-    created_at: 0,
-    updated_at: 1,
-    ...over,
-  };
-}
-
 function event(
   over: Partial<RoadmapItemEvent> & { id: string; item_id: string },
 ): RoadmapItemEvent {
@@ -100,65 +67,10 @@ function event(
   };
 }
 
-/** The default shape: one item per case, no runs, no events. */
+/** The default shape: one item per case, no events. */
 function input(over: Partial<Parameters<typeof buildNeedsYou>[0]> = {}) {
-  return { items: [], runs: [], latestEvents: [], ...over };
+  return { items: [], latestEvents: [], ...over };
 }
-
-// ── one card per reason ───────────────────────────────────────────────────────
-
-describe("buildNeedsYou — the pauses that are the user's", () => {
-  const cases: { reason: WfPausedReason; card: string | null }[] = [
-    { reason: "question", card: "workflow-question" },
-    { reason: "approval", card: "workflow-approval" },
-    { reason: "conflict", card: "workflow-conflict" },
-    { reason: "budget_exceeded", card: "workflow-budget" },
-    // The engine's own pauses: a gate retries, a stall is the supervisor's.
-    { reason: "blocked_gate", card: null },
-    { reason: "stalled", card: null },
-  ];
-
-  for (const { reason, card } of cases) {
-    it(`${reason} → ${card ?? "no card"}`, () => {
-      const cards = buildNeedsYou(
-        input({
-          items: [item({ id: "a" })],
-          runs: [run({ id: "r", paused_reason: reason, roadmap_item_id: "a" })],
-        }),
-      );
-      expect(cards.map((c) => c.reason)).toEqual(card ? [card] : []);
-    });
-  }
-
-  it("names the item and carries the run for the card's actions", () => {
-    const cards = buildNeedsYou(
-      input({
-        items: [item({ id: "a", code: "MCA-104", title: "Ship the drainer" })],
-        runs: [run({ id: "r", roadmap_item_id: "a" })],
-      }),
-    );
-    expect(cards[0]).toMatchObject({
-      id: "run:r",
-      code: "MCA-104",
-      title: "Ship the drainer",
-      runId: "r",
-      pausedReason: "question",
-    });
-  });
-
-  it("ignores a run that isn't paused, and one with no roadmap item", () => {
-    const cards = buildNeedsYou(
-      input({
-        items: [item({ id: "a" })],
-        runs: [
-          run({ id: "running", status: "running", paused_reason: null, roadmap_item_id: "a" }),
-          run({ id: "adhoc", roadmap_item_id: null }),
-        ],
-      }),
-    );
-    expect(cards).toEqual([]);
-  });
-});
 
 // ── the durable board wedge ───────────────────────────────────────────────────
 
@@ -308,31 +220,11 @@ describe("buildNeedsYou — holds", () => {
 // ── the join ──────────────────────────────────────────────────────────────────
 
 describe("buildNeedsYou — join misses", () => {
-  it("skips a paused run whose item isn't on this board", () => {
-    // Another project's run, or one whose item shipped since: still a real run,
-    // just not a decision about this board.
-    const cards = buildNeedsYou(
-      input({ items: [item({ id: "a" })], runs: [run({ id: "r", roadmap_item_id: "zzz" })] }),
-    );
-    expect(cards).toEqual([]);
-  });
-
   it("skips an event whose item isn't on this board", () => {
     const cards = buildNeedsYou(
       input({ items: [item({ id: "a" })], latestEvents: [event({ id: "e", item_id: "zzz" })] }),
     );
     expect(cards).toEqual([]);
-  });
-
-  it("cards an item with no run and a run with no card side by side", () => {
-    const cards = buildNeedsYou(
-      input({
-        items: [item({ id: "a", status: "queued" }), item({ id: "b" })],
-        runs: [run({ id: "r", paused_reason: "approval", roadmap_item_id: "b" })],
-        latestEvents: [event({ id: "e", item_id: "a" })],
-      }),
-    );
-    expect(cards.map((c) => c.id)).toEqual(["run:r", "blocked:a"]);
   });
 });
 
@@ -340,48 +232,30 @@ describe("buildNeedsYou — join misses", () => {
 
 describe("buildNeedsYou — ordering", () => {
   it("is most-decidable-first across the reasons", () => {
-    const items = ["a", "b", "c", "d", "e"].map((id) =>
-      item({ id, status: id === "e" ? "queued" : "active" }),
-    );
     const cards = buildNeedsYou(
       input({
-        items: [...items, held("f", "wrong scope")],
-        runs: [
-          run({ id: "budget", paused_reason: "budget_exceeded", roadmap_item_id: "a" }),
-          run({ id: "conflict", paused_reason: "conflict", roadmap_item_id: "b" }),
-          run({ id: "approval", paused_reason: "approval", roadmap_item_id: "c" }),
-          run({ id: "question", paused_reason: "question", roadmap_item_id: "d" }),
-        ],
+        items: [item({ id: "e", status: "queued" }), held("f", "wrong scope")],
         latestEvents: [event({ id: "ev", item_id: "e" })],
         projectHold: projectHold(),
       }),
     );
-    // The two holds sit above the gates: Release is one click and needs no
-    // evidence surface, and the board's hold stops the most.
-    expect(cards.map((c) => c.reason)).toEqual([
-      "workflow-question",
-      "project-held",
-      "item-held",
-      "workflow-approval",
-      "workflow-conflict",
-      "workflow-budget",
-      "item-blocked",
-    ]);
+    // The two holds sit above the wedge: Release is one click, and the board's
+    // hold stops the most.
+    expect(cards.map((c) => c.reason)).toEqual(["project-held", "item-held", "item-blocked"]);
   });
 
   it("breaks a bucket tie on recency, then on id", () => {
     const cards = buildNeedsYou(
       input({
-        items: [item({ id: "a" }), item({ id: "b" }), item({ id: "c" })],
-        runs: [
-          run({ id: "old", roadmap_item_id: "a", updated_at: 10 }),
-          run({ id: "new", roadmap_item_id: "b", updated_at: 20 }),
+        items: [
+          held("old", "why", { held_at: 10 }),
+          held("new", "why", { held_at: 20 }),
           // Same instant as `new`: the id decides, so the order never flickers.
-          run({ id: "also", roadmap_item_id: "c", updated_at: 20 }),
+          held("also", "why", { held_at: 20 }),
         ],
       }),
     );
-    expect(cards.map((c) => c.runId)).toEqual(["also", "new", "old"]);
+    expect(cards.map((c) => c.itemId)).toEqual(["also", "new", "old"]);
   });
 });
 

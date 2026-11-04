@@ -22,8 +22,8 @@ import type { RailEntry } from "./select";
 
 /** What the strip is looking at, in the counts' own words. Three buckets because
  *  they mean three different things to the reader: one is spending tokens, one is
- *  waiting on GitHub, and one is a row in the build lane that has stopped — paused,
- *  held, or a run that ended without the board catching up. Counting that last
+ *  waiting on GitHub, and one is a row in the build lane that has stopped — held,
+ *  or a run that ended without the board catching up. Counting that last
  *  group as "being built" is a claim about work nobody is doing, so it gets its own
  *  word. */
 function hint(entries: readonly RailEntry[]): string {

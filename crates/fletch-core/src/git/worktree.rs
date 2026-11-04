@@ -276,19 +276,6 @@ pub(crate) async fn apply_snapshot(checkout: &Path, snapshot: &str, head: &str) 
     Ok(())
 }
 
-pub async fn worktree_remove(repo: &Path, worktree_path: &Path, force: bool) -> Result<()> {
-    let mut args = vec!["worktree", "remove"];
-    if force {
-        args.push("--force");
-    }
-    let path_str = worktree_path
-        .to_str()
-        .ok_or_else(|| Error::InvalidPath(worktree_path.display().to_string()))?;
-    args.push(path_str);
-    run_git(repo, &args, "worktree remove").await?;
-    Ok(())
-}
-
 /// Drop any internal `.git/worktrees/<id>` refs whose linked working tree
 /// no longer exists. Safe to run unconditionally — git just no-ops when
 /// there's nothing to prune.

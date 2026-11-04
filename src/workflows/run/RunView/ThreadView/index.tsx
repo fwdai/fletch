@@ -11,7 +11,7 @@
 // rendering of work that isn't a line.
 
 import { useEffect, useMemo } from "react";
-import type { AgentRecord, WfEvent, WfMessage, WfRun, WfStepExec } from "../../../../api";
+import type { AgentRecord, WfEvent, WfRun, WfStepExec } from "../../../../api";
 import { isAgentBusy } from "../../../../helpers";
 import { useAppStore } from "../../../../store";
 import type { ResolvedAgent } from "../../../shared";
@@ -38,7 +38,6 @@ export function ThreadView({
   agents,
   events,
   resolve,
-  question,
   focus,
 }: {
   run: WfRun;
@@ -48,7 +47,6 @@ export function ThreadView({
   agents: AgentRecord[];
   events: WfEvent[];
   resolve: (alias: string) => ResolvedAgent | null;
-  question?: WfMessage;
   focus: FocusRequest | null;
 }) {
   const { scrollRef, innerRef, onScroll, toBottom } = useThreadScroll(run.id);
@@ -103,7 +101,7 @@ export function ThreadView({
           </div>
         </div>
       </div>
-      <ThreadComposer run={run} question={question} live={live} onSend={toBottom} />
+      <ThreadComposer run={run} live={live} onSend={toBottom} />
     </div>
   );
 }

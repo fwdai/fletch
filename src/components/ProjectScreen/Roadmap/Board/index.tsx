@@ -216,22 +216,21 @@ export function Board({
       )}
 
       {/* The decisions the pipeline is waiting on the user for. Above the batch
-          bar because a run that has stopped moving outranks a suggestion that
+          bar because an item that has stopped moving outranks a suggestion that
           hasn't started, and above the scroller for the same reason both bars
           are: the items it names can be in three different horizons. Renders
           nothing when nothing is waiting. */}
       <NeedsYou
         cards={needsYou}
         onFocusItem={revealItem}
-        onOpenRun={openRun}
         onReleaseItem={readOnly ? undefined : releaseItem}
         onReleaseProject={readOnly ? undefined : releaseProject}
       />
 
       {/* The pipeline, right under the decisions. The pair is the board's status
           line: the strip above is every decision you owe it, this is the state of
-          everything the pipeline is holding. They overlap on purpose — a paused or
-          held row is a card up there *and* a line down here, because the two
+          everything the pipeline is holding. They overlap on purpose — a held
+          row is a card up there *and* a line down here, because the two
           answer different questions: what you have to do about it, and where it
           sits. Decisions come first because an item that stopped moving outranks
           one that hasn't, and the rail renders nothing when the pipeline is idle. */}

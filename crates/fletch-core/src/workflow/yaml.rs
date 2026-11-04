@@ -1,13 +1,16 @@
 //! YAML (de)serialization of a workflow [`Spec`] — the portable, shareable file
 //! format (spec §5.3).
 //!
-//! The YAML shape is deliberately hand-authored and *irregular*: a `step` block
-//! is a flat map whose `step:` key holds the id, while `parallel`/`loop`/
-//! `orchestrate` blocks nest their body under a single kind key. That doesn't
-//! map onto any of serde's automatic enum representations, so block/step framing
-//! is converted by hand here. Every *leaf* type (budgets, gate, join, agents, …)
-//! already serializes to the right shape via its derive, so those go through
-//! `serde_yaml` directly — the hand-work is confined to the block tree.
+//! The YAML shape is hand-authored: the workflow is a list of flat step maps
+//! whose `step:` key holds the id. That doesn't map onto any of serde's
+//! automatic representations, so step framing is converted by hand here. Every
+//! *leaf* type (gate, agents, finalize, …) already serializes to the right
+//! shape via its derive, so those go through `serde_yaml` directly.
+//!
+//! Parsing is strict about keys: a file written for a richer engine (a
+//! `parallel`/`loop`/`orchestrate` block, `budgets`, `comms`, a gate other than
+//! `verdict`/`commit`) fails with the unsupported thing named, rather than
+//! importing as a quietly different workflow.
 //!
 //! This module is DB-free on purpose: `from_yaml`/`to_yaml` are pure, and import
 //! resolution ([`build_import_report`]) takes the local skill/agent inventory as
@@ -17,10 +20,20 @@
 use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
 
-use super::spec::{
-    AgentSpec, Block, ChildTemplate, ComposeLimits, Gate, Loop, Orchestrate, Parallel, Spec, Step,
-    Until, KNOWN_PROVIDERS,
-};
+use super::spec::{AgentSpec, Gate, Spec, Step, KNOWN_PROVIDERS};
+
+/// The keys a workflow document may carry.
+const SPEC_KEYS: &[&str] = &[
+    "version",
+    "name",
+    "description",
+    "agents",
+    "workflow",
+    "finalize",
+];
+
+/// The keys a step map may carry.
+const STEP_KEYS: &[&str] = &["step", "agent", "goal", "gate"];
 
 // ───────────────────────────── serialize ─────────────────────────────
 
@@ -45,11 +58,8 @@ fn spec_to_value(spec: &Spec) -> Result<Value, String> {
     if let Some(d) = &spec.description {
         m.insert(key("description"), tv(d)?);
     }
-    if let Some(b) = &spec.budgets {
-        m.insert(key("budgets"), tv(b)?);
-    }
     m.insert(key("agents"), tv(&spec.agents)?);
-    let workflow: Result<Vec<Value>, String> = spec.workflow.iter().map(block_to_value).collect();
+    let workflow: Result<Vec<Value>, String> = spec.workflow.iter().map(step_to_value).collect();
     m.insert(key("workflow"), Value::Sequence(workflow?));
     if let Some(f) = &spec.finalize {
         m.insert(key("finalize"), tv(f)?);
@@ -57,17 +67,8 @@ fn spec_to_value(spec: &Spec) -> Result<Value, String> {
     Ok(Value::Mapping(m))
 }
 
-fn block_to_value(block: &Block) -> Result<Value, String> {
-    match block {
-        Block::Step(s) => step_to_value(s),
-        Block::Parallel(p) => Ok(wrap("parallel", parallel_to_value(p)?)),
-        Block::Loop(l) => Ok(wrap("loop", loop_to_value(l)?)),
-        Block::Orchestrate(o) => Ok(wrap("orchestrate", orchestrate_to_value(o)?)),
-    }
-}
-
-/// A step is a flat map: `{ step: <id>, agent, goal, gate?, budgets?, comms? }`.
-/// The default `verdict` gate is omitted so it round-trips as "no gate line".
+/// A step is a flat map: `{ step: <id>, agent, goal, gate? }`. The default
+/// `verdict` gate is omitted so it round-trips as "no gate line".
 fn step_to_value(s: &Step) -> Result<Value, String> {
     let mut m = Mapping::new();
     m.insert(key("step"), tv(&s.id)?);
@@ -76,59 +77,7 @@ fn step_to_value(s: &Step) -> Result<Value, String> {
     if !matches!(s.gate, Gate::Verdict) {
         m.insert(key("gate"), tv(&s.gate)?);
     }
-    if let Some(b) = &s.budgets {
-        m.insert(key("budgets"), tv(b)?);
-    }
-    if !s.comms.is_empty() {
-        m.insert(key("comms"), tv(&s.comms)?);
-    }
     Ok(Value::Mapping(m))
-}
-
-fn parallel_to_value(p: &Parallel) -> Result<Value, String> {
-    let mut m = Mapping::new();
-    m.insert(key("join"), tv(p.join)?);
-    m.insert(key("integrate"), tv(p.integrate)?);
-    if let Some(mc) = p.max_concurrent {
-        m.insert(key("max_concurrent"), tv(mc)?);
-    }
-    m.insert(key("steps"), steps_to_value(&p.steps)?);
-    Ok(Value::Mapping(m))
-}
-
-fn loop_to_value(l: &Loop) -> Result<Value, String> {
-    let mut m = Mapping::new();
-    m.insert(key("max"), tv(l.max)?);
-    m.insert(key("until"), tv(&l.until)?);
-    let body: Result<Vec<Value>, String> = l.body.iter().map(block_to_value).collect();
-    m.insert(key("body"), Value::Sequence(body?));
-    Ok(Value::Mapping(m))
-}
-
-fn orchestrate_to_value(o: &Orchestrate) -> Result<Value, String> {
-    let mut m = Mapping::new();
-    m.insert(key("agent"), tv(&o.agent)?);
-    m.insert(key("goal"), tv(&o.goal)?);
-    if let Some(ct) = &o.children {
-        m.insert(key("children"), tv(ct)?);
-    }
-    if !o.body.is_empty() {
-        m.insert(key("body"), steps_to_value(&o.body)?);
-    }
-    m.insert(key("join"), tv(o.join)?);
-    m.insert(key("integrate"), tv(o.integrate)?);
-    if !o.comms.is_empty() {
-        m.insert(key("comms"), tv(&o.comms)?);
-    }
-    if let Some(c) = &o.compose {
-        m.insert(key("compose"), tv(c)?);
-    }
-    Ok(Value::Mapping(m))
-}
-
-fn steps_to_value(steps: &[Step]) -> Result<Value, String> {
-    let seq: Result<Vec<Value>, String> = steps.iter().map(step_to_value).collect();
-    Ok(Value::Sequence(seq?))
 }
 
 // ───────────────────────────── deserialize ─────────────────────────────
@@ -143,11 +92,16 @@ pub fn from_yaml(yaml: &str) -> Result<Spec, String> {
 
 fn value_to_spec(v: &Value) -> Result<Spec, String> {
     let m = as_map(v, "workflow document")?;
+    if let Some(k) = unknown_key(m, SPEC_KEYS) {
+        return Err(format!(
+            "'{k}' is not supported: a workflow document has {}",
+            SPEC_KEYS.join(", ")
+        ));
+    }
     Ok(Spec {
         version: from_field(m, "version", "version")?,
         name: req_str(m, "name", "name")?,
         description: opt_field(m, "description")?,
-        budgets: opt_field(m, "budgets")?,
         agents: m
             .get(key("agents"))
             .map(|a| from_value(a, "agents"))
@@ -155,99 +109,54 @@ fn value_to_spec(v: &Value) -> Result<Spec, String> {
             .unwrap_or_default(),
         workflow: seq(m, "workflow")?
             .iter()
-            .map(value_to_block)
+            .map(value_to_step)
             .collect::<Result<_, _>>()?,
         finalize: opt_field(m, "finalize")?,
     })
 }
 
-fn value_to_block(v: &Value) -> Result<Block, String> {
-    let m = as_map(v, "block")?;
-    if m.contains_key(key("step")) {
-        Ok(Block::Step(value_to_step(v)?))
-    } else if let Some(inner) = m.get(key("parallel")) {
-        Ok(Block::Parallel(value_to_parallel(inner)?))
-    } else if let Some(inner) = m.get(key("loop")) {
-        Ok(Block::Loop(value_to_loop(inner)?))
-    } else if let Some(inner) = m.get(key("orchestrate")) {
-        Ok(Block::Orchestrate(value_to_orchestrate(inner)?))
-    } else {
-        Err("block is not one of step / parallel / loop / orchestrate".into())
-    }
-}
-
-/// A flat step map. Used both for top-level steps and for the `steps`/`body`
-/// children of parallel/orchestrate — where requiring the `step` key is what
-/// rejects a non-step block nested there (spec §5.2).
+/// One `workflow` entry, which must be a flat step map. Anything else — a
+/// `parallel`/`loop`/`orchestrate` block, a key a step no longer has — is
+/// refused by name.
 fn value_to_step(v: &Value) -> Result<Step, String> {
-    let m = as_map(v, "step")?;
+    let m = as_map(v, "workflow entry")?;
+    if !m.contains_key(key("step")) {
+        let kind = m.keys().next().and_then(Value::as_str).unwrap_or("unnamed");
+        return Err(format!(
+            "'{kind}' blocks are not supported: a workflow is a list of steps"
+        ));
+    }
     let id = req_str(m, "step", "step")?;
+    if let Some(k) = unknown_key(m, STEP_KEYS) {
+        return Err(format!("step '{id}': '{k}' is not supported"));
+    }
     Ok(Step {
         agent: req_str(m, "agent", &format!("step '{id}'"))?,
         goal: req_str(m, "goal", &format!("step '{id}'"))?,
-        gate: m
-            .get(key("gate"))
-            .map(|g| from_value::<Gate>(g, &format!("step '{id}' gate")))
-            .transpose()?
-            .unwrap_or_default(),
-        budgets: opt_field(m, "budgets")?,
-        comms: m
-            .get(key("comms"))
-            .map(|c| from_value(c, &format!("step '{id}' comms")))
-            .transpose()?
-            .unwrap_or_default(),
+        gate: match m.get(key("gate")) {
+            Some(g) => value_to_gate(g, &id)?,
+            None => Gate::default(),
+        },
         id,
     })
 }
 
-fn value_to_parallel(v: &Value) -> Result<Parallel, String> {
-    let m = as_map(v, "parallel")?;
-    Ok(Parallel {
-        join: from_field(m, "join", "parallel.join")?,
-        integrate: from_field(m, "integrate", "parallel.integrate")?,
-        max_concurrent: opt_field(m, "max_concurrent")?,
-        steps: seq(m, "steps")?
-            .iter()
-            .map(value_to_step)
-            .collect::<Result<_, _>>()?,
-    })
+/// A step's gate. A gate kind the kernel has no gate for is refused by name; a
+/// malformed gate gets serde's own complaint.
+fn value_to_gate(v: &Value, step_id: &str) -> Result<Gate, String> {
+    match v.get("type").and_then(Value::as_str) {
+        Some(kind) if !matches!(kind, "verdict" | "commit") => Err(format!(
+            "step '{step_id}': gate '{kind}' is not supported (a step's gate is verdict or commit)"
+        )),
+        _ => from_value(v, &format!("step '{step_id}' gate")),
+    }
 }
 
-fn value_to_loop(v: &Value) -> Result<Loop, String> {
-    let m = as_map(v, "loop")?;
-    Ok(Loop {
-        max: from_field(m, "max", "loop.max")?,
-        until: from_field::<Until>(m, "until", "loop.until")?,
-        body: seq(m, "body")?
-            .iter()
-            .map(value_to_block)
-            .collect::<Result<_, _>>()?,
-    })
-}
-
-fn value_to_orchestrate(v: &Value) -> Result<Orchestrate, String> {
-    let m = as_map(v, "orchestrate")?;
-    let body = match m.get(key("body")) {
-        Some(b) => as_seq(b, "orchestrate.body")?
-            .iter()
-            .map(value_to_step)
-            .collect::<Result<_, _>>()?,
-        None => Vec::new(),
-    };
-    Ok(Orchestrate {
-        agent: req_str(m, "agent", "orchestrate")?,
-        goal: req_str(m, "goal", "orchestrate")?,
-        children: opt_field::<ChildTemplate>(m, "children")?,
-        body,
-        join: from_field(m, "join", "orchestrate.join")?,
-        integrate: from_field(m, "integrate", "orchestrate.integrate")?,
-        comms: m
-            .get(key("comms"))
-            .map(|c| from_value(c, "orchestrate.comms"))
-            .transpose()?
-            .unwrap_or_default(),
-        compose: opt_field::<ComposeLimits>(m, "compose")?,
-    })
+/// The first key of `m` outside `allowed`, if any.
+fn unknown_key<'a>(m: &'a Mapping, allowed: &[&str]) -> Option<&'a str> {
+    m.keys()
+        .filter_map(Value::as_str)
+        .find(|k| !allowed.contains(k))
 }
 
 // ───────────────────────────── import resolution ─────────────────────────────
@@ -368,13 +277,6 @@ fn key(k: &str) -> Value {
     Value::String(k.to_string())
 }
 
-/// Wrap a block body under its single kind key: `{ <kind>: <inner> }`.
-fn wrap(kind: &str, inner: Value) -> Value {
-    let mut m = Mapping::new();
-    m.insert(key(kind), inner);
-    Value::Mapping(m)
-}
-
 /// Serialize any leaf type to a YAML value (infallible for our types).
 fn tv<T: Serialize>(x: T) -> Result<Value, String> {
     serde_yaml::to_value(x).map_err(|e| e.to_string())
@@ -436,8 +338,7 @@ mod tests {
     const CANONICAL: &str = r#"
 version: 1
 name: feature-pipeline
-description: Plan, implement in parallel, review loop, ship
-budgets: { turns: 120, wall_clock_mins: 240, tokens: 2000000 }
+description: Plan, implement, review, ship
 
 agents:
   planner:
@@ -452,32 +353,16 @@ workflow:
   - step: plan
     agent: planner
     goal: Analyze the task and write PLAN.md describing independent slices.
-    gate: { type: artifact, path: PLAN.md }
-    budgets: { turns: 3 }
 
-  - orchestrate:
-      agent: planner
-      goal: >
-        Assign one slice from PLAN.md per coder. Answer their questions.
-        When a slice a sibling depends on lands, notify that sibling.
-      children: { agent: coder, max: 3 }
-      join: all
-      integrate: none
-      comms: [report, ask]
-      compose: { max_sub_runs: 2, max_depth: 2 }
+  - step: build
+    agent: coder
+    goal: Implement PLAN.md.
+    gate: { type: commit }
 
-  - loop:
-      max: 3
-      until: { step: review, verdict: done }
-      body:
-        - step: review
-          agent: reviewer
-          goal: Review the full diff vs the run base. Write verdict.json with
-            result "done" or "revise" and concrete feedback in detail.
-        - step: fix
-          agent: coder
-          goal: Address the reviewer's feedback (blackboard review/verdict.json).
-          gate: { type: commit }
+  - step: review
+    agent: reviewer
+    goal: Review the full diff vs the run base. Write verdict.json with
+      result "done" or "revise" and concrete feedback in detail.
 
 finalize: { push: true, open_pr: true, pr_base: main }
 "#;
@@ -488,6 +373,7 @@ finalize: { push: true, open_pr: true, pr_base: main }
         // Sanity on the parse before the round-trip.
         assert_eq!(spec.name, "feature-pipeline");
         assert_eq!(spec.workflow.len(), 3);
+        assert_eq!(spec.workflow[1].gate, Gate::Commit);
         super::super::spec::validate(&spec).expect("canonical spec is valid");
 
         let yaml = to_yaml(&spec).expect("serialize");
@@ -498,7 +384,7 @@ finalize: { push: true, open_pr: true, pr_base: main }
     #[test]
     fn default_verdict_gate_is_omitted_and_restored() {
         let spec = from_yaml(CANONICAL).unwrap();
-        // `review` has no gate line → defaults to Verdict.
+        // `plan` and `review` have no gate line → default to Verdict.
         let yaml = to_yaml(&spec).unwrap();
         assert!(
             !yaml.contains("type: verdict"),
@@ -508,35 +394,64 @@ finalize: { push: true, open_pr: true, pr_base: main }
         assert_eq!(spec, reparsed);
     }
 
+    /// A file written for a richer engine is refused with the unsupported thing
+    /// named, never imported as a quietly smaller workflow.
     #[test]
-    fn approval_gate_artifact_and_require_round_trip() {
-        // The full approval dial (spec §9) — `require: [tests]` plus the
-        // reviewed `artifact` — must survive spec → yaml → spec, and a bare
-        // approval must not grow either field.
-        use super::super::spec::Require;
-        let mut spec = from_yaml(CANONICAL).unwrap();
-        if let Block::Step(step) = &mut spec.workflow[0] {
-            step.gate = Gate::Approval {
-                require: vec![Require::Tests],
-                artifact: Some("PLAN.md".into()),
-            };
+    fn unsupported_shapes_fail_naming_what_is_unsupported() {
+        let doc = |top: &str, workflow: &str| {
+            format!(
+                "version: 1\nname: bad\nagents: {{ a: {{ base: claude }} }}\n{top}\
+                 workflow:\n{workflow}"
+            )
+        };
+        let step = "  - step: s\n    agent: a\n    goal: go\n";
+        let cases = [
+            (
+                doc(
+                    "",
+                    "  - parallel:\n      join: all\n      integrate: none\n      steps: []\n",
+                ),
+                "'parallel' blocks",
+            ),
+            (
+                doc("", "  - loop:\n      max: 2\n      body: []\n"),
+                "'loop' blocks",
+            ),
+            (
+                doc("", "  - orchestrate:\n      agent: a\n      goal: lead\n"),
+                "'orchestrate' blocks",
+            ),
+            (doc("budgets: { turns: 10 }\n", step), "'budgets'"),
+            (
+                doc("", &format!("{step}    budgets: {{ turns: 3 }}\n")),
+                "'budgets'",
+            ),
+            (doc("", &format!("{step}    comms: [ask]\n")), "'comms'"),
+            (
+                doc("", &format!("{step}    gate: {{ type: tests }}\n")),
+                "gate 'tests'",
+            ),
+            (
+                doc(
+                    "",
+                    &format!("{step}    gate: {{ type: artifact, path: PLAN.md }}\n"),
+                ),
+                "gate 'artifact'",
+            ),
+            (
+                doc("", &format!("{step}    gate: {{ type: approval }}\n")),
+                "gate 'approval'",
+            ),
+        ];
+        for (yaml, named) in cases {
+            let err = from_yaml(&yaml).unwrap_err();
+            assert!(
+                err.contains(named) && err.contains("not supported"),
+                "expected {named} to be refused, got: {err}\n{yaml}"
+            );
         }
-        let yaml = to_yaml(&spec).unwrap();
-        assert!(yaml.contains("artifact: PLAN.md"), "{yaml}");
-        let back = from_yaml(&yaml).unwrap();
-        assert_eq!(spec, back, "approval artifact + require must round-trip");
-
-        // Bare approval stays bare on the wire.
-        if let Block::Step(step) = &mut spec.workflow[0] {
-            step.gate = Gate::Approval {
-                require: vec![],
-                artifact: None,
-            };
-        }
-        let yaml = to_yaml(&spec).unwrap();
-        assert!(!yaml.contains("artifact:"), "{yaml}");
-        assert!(!yaml.contains("require"), "{yaml}");
-        assert_eq!(from_yaml(&yaml).unwrap(), spec);
+        // The supported shape around them parses.
+        assert!(from_yaml(&doc("", step)).is_ok());
     }
 
     #[test]
@@ -641,50 +556,6 @@ finalize: { push: true, open_pr: true, pr_base: main }
             .warnings
             .iter()
             .any(|w| w.contains("matches multiple")));
-    }
-
-    #[test]
-    fn nested_orchestrate_fails_to_parse() {
-        // orchestrate.body children must be steps; a nested orchestrate map has
-        // no `step:` key, so parsing rejects it (spec §5.2 nesting rule).
-        let yaml = r#"
-version: 1
-name: bad
-agents: { a: { base: claude } }
-workflow:
-  - orchestrate:
-      agent: a
-      goal: outer
-      join: all
-      integrate: none
-      body:
-        - orchestrate:
-            agent: a
-            goal: inner
-            join: all
-            integrate: none
-"#;
-        let err = from_yaml(yaml).unwrap_err();
-        assert!(err.contains("string 'step'"), "got: {err}");
-    }
-
-    #[test]
-    fn parallel_with_non_step_child_fails_to_parse() {
-        let yaml = r#"
-version: 1
-name: bad
-agents: { a: { base: claude } }
-workflow:
-  - parallel:
-      join: all
-      integrate: none
-      steps:
-        - loop:
-            max: 1
-            until: { step: x, verdict: done }
-            body: []
-"#;
-        assert!(from_yaml(yaml).is_err());
     }
 
     #[test]

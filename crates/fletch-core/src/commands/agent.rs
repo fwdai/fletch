@@ -59,7 +59,6 @@ pub async fn spawn_agent_impl(
             fork_base,
             // User-initiated spawns fork from the source repo, not a run repo,
             // and are never run-owned; the scheduler sets both for a step spawn.
-            run_repo: None,
             owner_run_id: None,
             // Adopting a shared run workspace is a workflow-kernel-only path.
             existing_workspace: None,

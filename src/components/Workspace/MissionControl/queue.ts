@@ -1,9 +1,9 @@
 // MissionControl/queue.ts — the fleet review queue derivation (PR 3, §1). A pure
 // function that composes the app's already-polled state (agents + their diff /
-// unseen / PR signals, and workflow runs) into one ordered list of "needs you"
-// items. No store, no IPC, no React here — so the ordering, dedupe, signature,
-// and dismissal-filter logic are unit-testable in isolation (queue.test.ts) and
-// the hook (useReviewQueue) is a thin adapter over this.
+// unseen / PR signals) into one ordered list of "needs you" items. No store, no
+// IPC, no React here — so the ordering, dedupe, signature, and dismissal-filter
+// logic are unit-testable in isolation (queue.test.ts) and the hook
+// (useReviewQueue) is a thin adapter over this.
 
 import type {
   AgentRecord,
@@ -14,8 +14,6 @@ import type {
   PrState,
   ShortStats,
   VerificationReport,
-  WfPausedReason,
-  WfRun,
 } from "@/api";
 import { checkoutPrs } from "@/util/prSummary";
 
@@ -27,12 +25,7 @@ export type TestsEvidence = "passed" | "failed";
 /** Why an item is in the queue. One card can carry several (an agent with both
  *  unseen results and a failing PR is ONE item with both reasons — see the
  *  dedupe in buildReviewQueue). */
-export type ReviewReason =
-  | "workflow-approval"
-  | "workflow-conflict"
-  | "unseen-results"
-  | "checks-failing"
-  | "unresolved-comments";
+export type ReviewReason = "unseen-results" | "checks-failing" | "unresolved-comments";
 
 /** A "base moved under this agent" signal — quiet information, not an alarm (a
  *  moved base is normal in a parallel fleet). Fed from the fleet-wide `gitMeta`
@@ -74,11 +67,10 @@ export interface FanoutInfo {
 }
 
 export interface ReviewItem {
-  /** Stable id — `wf:<runId>` for a workflow item, `agent:<agentId>` for an
-   *  agent item, `fanout:<repo>:<base>` for a merge fan-out. Drives keyboard
-   *  focus and dismissal. */
+  /** Stable id — `agent:<agentId>` for an agent item, `fanout:<repo>:<base>`
+   *  for a merge fan-out. Drives keyboard focus and dismissal. */
   id: string;
-  kind: "workflow" | "agent" | "fanout";
+  kind: "agent" | "fanout";
   /** Ordering bucket (see BUCKET). Lower = more decidable = higher in the queue. */
   bucket: number;
   /** Fingerprint of the item's *volatile* signals. Dismissal is keyed on this,
@@ -87,7 +79,7 @@ export interface ReviewItem {
   signature: string;
   /** Deterministic within-bucket tiebreak — most recent activity first. */
   activityAt: number;
-  /** Who: the agent / run display name. */
+  /** Who: the agent's display name, or the merged PR's title for a fan-out. */
   title: string;
   /** What (the one-line brief): the session's task text, first line only. */
   goal: string;
@@ -95,10 +87,6 @@ export interface ReviewItem {
 
   // ── agent items ──
   agent?: AgentRecord;
-
-  // ── workflow items ──
-  runId?: string;
-  pausedReason?: WfPausedReason;
 
   // ── evidence (all optional — omit when unknown; never fake a zero) ──
   diff?: ShortStats;
@@ -124,17 +112,13 @@ export interface ReviewItem {
 /** Ordering buckets, most-decidable-first. Rationale: an item is ranked by its
  *  most-decidable reason, so a card with evidence you can act on in one gesture
  *  floats above one that just needs a look.
- *   0 workflow approval — a dedicated evidence surface + one-click promote.
- *   1 workflow conflict — a clear decision with a defined action.
- *   2 merge fan-out — one gesture ("Update all") clears a moved base for many.
- *   3 PR items (failing checks / unresolved threads) — CI evidence is present.
- *   4 plain unseen-diff agent items — a turn landed with changes to look at. */
+ *   0 merge fan-out — one gesture ("Update all") clears a moved base for many.
+ *   1 PR items (failing checks / unresolved threads) — CI evidence is present.
+ *   2 plain unseen-diff agent items — a turn landed with changes to look at. */
 export const BUCKET = {
-  workflowApproval: 0,
-  workflowConflict: 1,
-  fanout: 2,
-  pr: 3,
-  unseen: 4,
+  fanout: 0,
+  pr: 1,
+  unseen: 2,
 } as const;
 
 export interface QueueInput {
@@ -152,7 +136,6 @@ export interface QueueInput {
   /** Latest turn-end verification report per agent (keyed by agent_id). Absent
    *  = never verified. */
   verificationReports: Record<string, VerificationReport>;
-  runs: readonly WfRun[];
   /** Item id → signal signature it was dismissed at. */
   dismissed: Record<string, string>;
 }
@@ -436,31 +419,10 @@ function buildFanoutItems(input: QueueInput): ReviewItem[] {
 }
 
 /** Compose the fleet review queue from current app state. Pure and synchronous:
- *  it never blocks on evidence (workflow approvals rank top because they carry a
- *  dedicated review surface, not because their evidence has finished loading). */
+ *  it never blocks on evidence. */
 export function buildReviewQueue(input: QueueInput): ReviewItem[] {
   const items: ReviewItem[] = [];
   const overlaps = computeOverlaps(input);
-
-  // ── workflow runs paused on a human decision (§1: approval or conflict) ──
-  for (const run of input.runs) {
-    if (run.status !== "paused") continue;
-    if (run.paused_reason !== "approval" && run.paused_reason !== "conflict") continue;
-    const approval = run.paused_reason === "approval";
-    items.push({
-      id: `wf:${run.id}`,
-      kind: "workflow",
-      bucket: approval ? BUCKET.workflowApproval : BUCKET.workflowConflict,
-      // Status + reason: dismissed until the run moves off this pause.
-      signature: `${run.status}:${run.paused_reason}`,
-      activityAt: run.updated_at,
-      title: run.name,
-      goal: firstLine(run.task) || run.name,
-      reasons: [approval ? "workflow-approval" : "workflow-conflict"],
-      runId: run.id,
-      pausedReason: run.paused_reason,
-    });
-  }
 
   // ── agents (one card per agent; multiple reasons dedupe onto its chips) ──
   for (const agent of input.agents) {

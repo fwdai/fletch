@@ -58,9 +58,17 @@ describe("installStarterPack", () => {
     for (const alias of Object.values(spec.agents)) {
       expect(alias.custom_agent).toMatch(/^new-\d+$/);
     }
-    // Architect → implement → parallel[review, test] → ship.
-    expect(spec.workflow.length).toBe(4);
-    expect("parallel" in spec.workflow[2]).toBe(true);
+    // A flat chain the kernel runs: plan → implement → review → test → ship,
+    // each a plain step on a gate it supports.
+    const steps = spec.workflow.map((block) => ("step" in block ? block.step : null));
+    expect(steps.map((st) => st?.id)).toEqual(["plan", "implement", "review", "test", "ship"]);
+    expect(steps.map((st) => st?.gate?.type)).toEqual([
+      "verdict",
+      "commit",
+      "verdict",
+      "verdict",
+      "commit",
+    ]);
   });
 
   it("is idempotent: reuses existing agents by name and skips an existing workflow", async () => {

@@ -76,10 +76,8 @@ engine enforces) and `docs/box.md` is the box runtime.
 7. **Gaps are declared, not discovered.** A feature an engine cannot serve
    yet is a `false` in `caps()`, read by the feature's entry point. `caps()`
    holds facts only; the user-facing reason lives at the feature's refusal
-   site, written beside the cap read: the step provisioning in
-   `supervisor/lifecycle.rs` for workflow steps (`workflow_steps`);
-   `supervisor/run.rs` reads `run_panel` the same way, though every engine
-   says yes today. What the UI shows comes from a refusal
+   site, written beside the cap read: `supervisor/run.rs` reads `run_panel`
+   that way, though every engine says yes today. What the UI shows comes from a refusal
    site too, never from the struct: `sandbox::workspace_types` carries the
    sentence a box spawn would fail with. Nothing refuses by probing a path.
 
@@ -136,7 +134,6 @@ engine enforces) and `docs/box.md` is the box runtime.
 | `shares_host_fs` | yes | no |
 | `share_roots` | any | `/Users`, `/Volumes` |
 | `run_panel` | yes | yes |
-| `workflow_steps` | yes | no |
 
 The struct holds only these facts. A `no` has its user-facing reason at the
 feature's refusal site, beside the cap read (rule 7), not in `caps()`.

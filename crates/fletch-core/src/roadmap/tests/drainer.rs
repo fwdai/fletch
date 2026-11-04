@@ -495,7 +495,7 @@ fn no_workflow_anywhere_resolves_to_nothing() {
 
 #[test]
 fn a_live_run_leaves_its_item_alone() {
-    for status in [RunStatus::Pending, RunStatus::Running, RunStatus::Paused] {
+    for status in [RunStatus::Pending, RunStatus::Running] {
         assert_eq!(settle(Some(status), None), Settlement::Running);
     }
 }
@@ -786,7 +786,7 @@ fn a_conditional_verdict_that_misses_records_nothing() {
 
 /// hand-written JSON so it cannot quietly drift out of validity — `definition_spec`
 fn minimal_spec() -> String {
-    use crate::workflow::spec::{AgentSpec, Block, Gate, Step};
+    use crate::workflow::spec::{AgentSpec, Gate, Step};
     let mut agents = std::collections::BTreeMap::new();
     agents.insert(
         "coder".to_string(),
@@ -804,16 +804,13 @@ fn minimal_spec() -> String {
         version: 1,
         name: "t".into(),
         description: None,
-        budgets: None,
         agents,
-        workflow: vec![Block::Step(Step {
+        workflow: vec![Step {
             id: "build".into(),
             agent: "coder".into(),
             goal: "do it".into(),
             gate: Gate::Verdict,
-            budgets: None,
-            comms: vec![],
-        })],
+        }],
         finalize: None,
     })
     .unwrap()

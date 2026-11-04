@@ -7,14 +7,13 @@ import {
   DEFAULT_MAX_CONCURRENT,
   flagOn,
   MAX_CONCURRENT_KEY,
-  MIDRUN_AWARENESS_KEY,
   parseCap,
   SETTLE_REVIEW_KEY,
 } from "./Roadmap/autonomy";
 
 /** The autonomy dial: how much of the roadmap pipeline runs without you.
  *
- *  Four per-project settings, all read host-side (`roadmap/drainer.rs`,
+ *  Three per-project settings, all read host-side (`roadmap/drainer.rs`,
  *  `roadmap/review.rs`) — the keys and the spellings live in `Roadmap/autonomy.ts`,
  *  which both this section and the board read, so nothing here decides anything
  *  the queue doesn't also see.
@@ -34,18 +33,14 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
   const autoqueue = flagOn(all[AUTOQUEUE_KEY], false);
   const cap = parseCap(all[MAX_CONCURRENT_KEY]);
   const settleReview = flagOn(all[SETTLE_REVIEW_KEY], true);
-  const midrunAwareness = flagOn(all[MIDRUN_AWARENESS_KEY], true);
 
   const toggleAutoqueue = (next: boolean) => save(AUTOQUEUE_KEY, next ? "1" : null);
 
   const pickCap = (next: number) =>
     save(MAX_CONCURRENT_KEY, next === DEFAULT_MAX_CONCURRENT ? null : String(next));
 
-  // On is the default for the two PM switches, so *off* is the row that has to
-  // exist.
+  // On is the default for the PM switch, so *off* is the row that has to exist.
   const toggleSettleReview = (next: boolean) => save(SETTLE_REVIEW_KEY, next ? null : "0");
-
-  const toggleMidrunAwareness = (next: boolean) => save(MIDRUN_AWARENESS_KEY, next ? null : "0");
 
   return (
     <section className="ps-section">
@@ -116,25 +111,6 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
         what deviated — as notes on the card and proposals you rule on. On by default; it costs one
         chat turn per finished run, and turning it off leaves nobody watching whether the work
         matched the plan.
-      </p>
-
-      <div className="ps-field ps-name-row">
-        <label className="ps-label text-sm" htmlFor="ps-rm-midrun">
-          The PM follows runs as they happen
-        </label>
-        <Toggle
-          value={midrunAwareness}
-          onChange={toggleMidrunAwareness}
-          disabled={locked}
-          title={gate ?? undefined}
-        />
-      </div>
-      <p className="ps-section-lead text-sm">
-        A run reports its progress while it works. With this on the PM reads those as they arrive,
-        so it can flag a run building the wrong thing before its pull request exists, and hold the
-        item so nothing else builds on it — instead of judging it afterwards. Canceling the run
-        itself stays with you. Off, the PM only sees finished runs. Questions a run asks you are
-        never routed here either; those stay yours.
       </p>
     </section>
   );

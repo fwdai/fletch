@@ -8,7 +8,6 @@ import type {
   PrState,
   ShortStats,
   VerificationReport,
-  WfRun,
 } from "@/api";
 import { BUCKET, buildReviewQueue, type QueueInput } from "./queue";
 
@@ -70,33 +69,6 @@ const comments = (n: number): PrComments => ({
   })),
 });
 
-function run(over: Partial<WfRun> & { id: string }): WfRun {
-  return {
-    definition_id: null,
-    parent_run_id: null,
-    name: over.id,
-    spec: {},
-    task: "Ship it",
-    project_id: "p1",
-    repo_path: "/repo",
-    run_dir: "/run",
-    branch: "wf/x",
-    base_sha: "abc",
-    status: "paused",
-    paused_reason: "approval",
-    cursor: null,
-    budgets: {},
-    spent: {},
-    error: null,
-    pr_number: null,
-    pr_url: null,
-    roadmap_item_id: null,
-    created_at: 1,
-    updated_at: 1000,
-    ...over,
-  };
-}
-
 const meta = (over: Partial<GitMeta>): GitMeta => ({
   base: "main",
   behind: null,
@@ -120,7 +92,6 @@ function input(over: Partial<QueueInput>): QueueInput {
     prComments: {},
     prSets: {},
     verificationReports: {},
-    runs: [],
     dismissed: {},
     ...over,
   };
@@ -332,7 +303,7 @@ describe("buildReviewQueue", () => {
     expect(withSibling("pending")).toBe(withSibling("passing"));
   });
 
-  it("orders approval < conflict < pr < unseen", () => {
+  it("orders pr < unseen", () => {
     const q = buildReviewQueue(
       input({
         agents: [agent({ id: "unseenAgent" }), agent({ id: "prAgent" })],
@@ -340,43 +311,23 @@ describe("buildReviewQueue", () => {
         gitShortstats: { unseenAgent: stats(1, 0), prAgent: stats(2, 0) },
         prStates: { prAgent: openPr(9) },
         prChecks: { prAgent: checks({ rollup: "failing" }) },
-        runs: [
-          run({ id: "conflict", paused_reason: "conflict" }),
-          run({ id: "approval", paused_reason: "approval" }),
-        ],
       }),
     );
-    expect(q.map((i) => i.id)).toEqual([
-      "wf:approval",
-      "wf:conflict",
-      "agent:prAgent",
-      "agent:unseenAgent",
-    ]);
-  });
-
-  it("ignores workflow runs not paused on approval/conflict", () => {
-    const q = buildReviewQueue(
-      input({
-        runs: [
-          run({ id: "q", paused_reason: "question" }),
-          run({ id: "b", paused_reason: "budget_exceeded" }),
-          run({ id: "r", status: "running", paused_reason: null }),
-        ],
-      }),
-    );
-    expect(q).toEqual([]);
+    expect(q.map((i) => i.id)).toEqual(["agent:prAgent", "agent:unseenAgent"]);
   });
 
   it("tiebreaks a bucket by most-recent activity", () => {
     const q = buildReviewQueue(
       input({
-        runs: [
-          run({ id: "old", paused_reason: "approval", updated_at: 100 }),
-          run({ id: "new", paused_reason: "approval", updated_at: 900 }),
+        agents: [
+          agent({ id: "old", created_at: "2026-07-01T00:00:00.000Z" }),
+          agent({ id: "new", created_at: "2026-07-09T00:00:00.000Z" }),
         ],
+        unseenResults: { old: true, new: true },
+        gitShortstats: { old: stats(1, 0), new: stats(1, 0) },
       }),
     );
-    expect(q.map((i) => i.id)).toEqual(["wf:new", "wf:old"]);
+    expect(q.map((i) => i.id)).toEqual(["agent:new", "agent:old"]);
   });
 
   it("hides an item dismissed at its current signature", () => {

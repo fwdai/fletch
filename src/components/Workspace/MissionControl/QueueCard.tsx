@@ -7,8 +7,6 @@ import type { ReviewItem, ReviewReason } from "./queue";
 /** The "what" line — a short phrase per reason, joined when a card carries
  *  several (an agent with unseen results AND a failing PR). */
 const REASON_LABEL: Record<ReviewReason, string> = {
-  "workflow-approval": "Awaiting approval",
-  "workflow-conflict": "Merge conflict",
   "unseen-results": "New results to review",
   "checks-failing": "Checks failing",
   "unresolved-comments": "Unresolved comments",
@@ -62,13 +60,7 @@ export function QueueCard({
       <span className="mc-card-rail" />
       <div className="mc-card-body">
         <div className="mc-card-head">
-          {item.kind === "workflow" ? (
-            <span className="mc-wf-chip iflex-center" title="Workflow run">
-              <Icon name="combine" size={14} />
-            </span>
-          ) : (
-            item.agent && <AgentIdentityChip agent={item.agent} size={18} />
-          )}
+          {item.agent && <AgentIdentityChip agent={item.agent} size={18} />}
           <span className="mc-card-title truncate">{item.title}</span>
           <span className="mc-card-reason">{reasonLine(item)}</span>
         </div>

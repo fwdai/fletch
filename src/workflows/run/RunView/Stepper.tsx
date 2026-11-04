@@ -9,7 +9,7 @@
 // when the focused step has more than one attempt) lists every attempt —
 // abandoned ones dimmed, never hidden.
 
-import { Fragment, type MouseEvent as ReactMouseEvent, type ReactNode, useState } from "react";
+import { Fragment, type MouseEvent as ReactMouseEvent, useState } from "react";
 import type { WfStepExec } from "../../../api";
 import { Icon } from "../../../components/Icon";
 import { fmtDur, LiveTimer } from "../../../components/Workspace/RunTimer";
@@ -68,15 +68,12 @@ export function Stepper({
   resolve,
   selectedStepId,
   onSelectStep,
-  trailing,
 }: {
   steps: StepDesc[];
   attempts: WfStepExec[];
   resolve: (alias: string) => ResolvedAgent | null;
   selectedStepId: string | null;
   onSelectStep: (step: StepDesc) => void;
-  /** Right-pinned extras (the compact budget meters). */
-  trailing?: ReactNode;
 }) {
   const [card, setCard] = useState<HoverCard | null>(null);
 
@@ -121,7 +118,6 @@ export function Stepper({
           );
         })}
       </div>
-      {trailing}
       {card && hoveredStep && (
         <StepCard
           step={hoveredStep}

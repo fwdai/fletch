@@ -1,10 +1,9 @@
 // MissionControl — Home as the fleet review queue (PR 3). When no agent is
 // selected, the center pane answers "what needs me?": one ordered card per
-// "needs you" signal across every agent and workflow run, most-decidable-first.
-// The derivation is a pure selector (queue.ts); this file is the pane shell,
-// keyboard triage, and the workflow review modal host.
+// "needs you" signal across every agent, most-decidable-first. The derivation
+// is a pure selector (queue.ts); this file is the pane shell and keyboard
+// triage.
 
-import { useState } from "react";
 import { Icon } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
 import { useAppStore } from "@/store";
@@ -15,18 +14,14 @@ import { QueueCard } from "./QueueCard";
 import { useQueueActions } from "./useQueueActions";
 import { useQueueKeyboard } from "./useQueueKeyboard";
 import { useReviewQueue } from "./useReviewQueue";
-import { WorkflowReviewModal } from "./WorkflowReviewModal";
 
 export function MissionControl() {
   const agentCount = useAppStore((s) => s.workspace?.agents.length ?? 0);
 
   const items = useReviewQueue();
-  const [reviewRunId, setReviewRunId] = useState<string | null>(null);
-  const actions = useQueueActions(setReviewRunId);
-  // Triage keys pause while the review modal is open.
+  const actions = useQueueActions();
   const { index, setIndex } = useQueueKeyboard({
     items,
-    active: reviewRunId === null,
     onEnter: actions.enter,
     onApprove: actions.approve,
     onRequestChanges: actions.requestChanges,
@@ -102,10 +97,6 @@ export function MissionControl() {
             the review queue, quieter, and self-hiding when there's nothing. */}
         <IssueInbox />
       </div>
-
-      {reviewRunId && (
-        <WorkflowReviewModal runId={reviewRunId} onClose={() => setReviewRunId(null)} />
-      )}
     </div>
   );
 }

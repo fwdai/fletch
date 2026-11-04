@@ -1,15 +1,13 @@
 // NeedsYou/select.ts — the roadmap board's decision-card derivation. A pure
-// function that composes state the board already holds (its rows, the `wf:run`
-// list, the newest durable event per item, and the board's own hold) into one
-// ordered list of "needs you" cards. No store, no IPC, no React — so the join,
-// the ordering and the reason vocabulary are unit-testable in isolation
-// (select.test.ts) and the strip is a thin renderer over this.
+// function that composes state the board already holds (its rows, the newest
+// durable event per item, and the board's own hold) into one ordered list of
+// "needs you" cards. No store, no IPC, no React — so the join, the ordering and
+// the reason vocabulary are unit-testable in isolation (select.test.ts) and the
+// strip is a thin renderer over this.
 //
 // Modelled on MissionControl/queue.ts, deliberately: the two surfaces answer the
 // same question at different altitudes (one fleet-wide, one for this project's
-// board), so `workflow-approval` and `workflow-conflict` keep the names they have
-// there — a card that reads one way in Mission Control must not read another way
-// here. The roadmap-only reasons extend that vocabulary rather than renaming it.
+// board), so the ordering follows the same most-decidable-first principle.
 //
 // What is NOT here: dismissal. Mission Control lets the user hide a card until
 // its signal changes because it is a fleet-wide inbox nobody finishes; this strip
@@ -19,66 +17,30 @@
 // can pull the brake and has no way to lift it, so this strip is the only place
 // (with the card itself) a hold can end.
 
-import type {
-  RoadmapItem,
-  RoadmapItemEvent,
-  RoadmapProjectHold,
-  WfPausedReason,
-  WfRun,
-} from "@/api";
+import type { RoadmapItem, RoadmapItemEvent, RoadmapProjectHold } from "@/api";
 
-/** Why a card is on the strip. `workflow-approval` / `workflow-conflict` are
- *  Mission Control's names for the same two signals (queue.ts `ReviewReason`);
- *  the rest are roadmap-scoped, named the same way — `workflow-*` for something
- *  a run is waiting on, `item-*` for something the board itself is wedged on,
- *  and `project-*` for something about the whole board. */
-export type NeedsReason =
-  | "workflow-question"
-  | "project-held"
-  | "item-held"
-  | "workflow-approval"
-  | "workflow-conflict"
-  | "workflow-budget"
-  | "item-blocked";
+/** Why a card is on the strip: `item-*` for something the board itself is
+ *  wedged on, `project-*` for something about the whole board. */
+export type NeedsReason = "project-held" | "item-held" | "item-blocked";
 
 /** Ordering buckets, most-decidable-first — the same principle as queue.ts's
  *  BUCKET (a card you can clear in one gesture floats above one that needs a
- *  detour), and the same relative order for the two reasons both surfaces carry.
- *   0 question     — answered inline on the card, one gesture, nothing else to open.
- *   1 project-held — one click, and it is the widest thing stopped: nothing on
+ *  detour).
+ *   0 project-held — one click, and it is the widest thing stopped: nothing on
  *                    this board dispatches until it is lifted.
- *   2 item-held    — one click, one item. Below the board-wide hold because it
- *                    stops less, above the gates because Release needs no
- *                    evidence surface: the reason is on the card.
- *   3 approval     — a dedicated evidence surface plus a one-click approve.
- *   4 conflict     — a decision with a defined action, taken in the run.
- *   5 budget       — a decision with a defined action, but "is it worth more"
- *                    needs the run's spend to answer.
- *   6 blocked      — the wedge that needs editing dependencies, not a ruling. */
+ *   1 item-held    — one click, one item. Below the board-wide hold because it
+ *                    stops less.
+ *   2 blocked      — the wedge that needs editing dependencies, not a ruling. */
 export const BUCKET: Record<NeedsReason, number> = {
-  "workflow-question": 0,
-  "project-held": 1,
-  "item-held": 2,
-  "workflow-approval": 3,
-  "workflow-conflict": 4,
-  "workflow-budget": 5,
-  "item-blocked": 6,
-};
-
-/** Which pauses are the *user's* to clear, and under which reason. A pause left
- *  out here is the engine's or the run's own business (`blocked_gate` retries,
- *  `stalled` is a supervisor state) and never opens a card. */
-const PAUSE_REASON: Partial<Record<WfPausedReason, NeedsReason>> = {
-  question: "workflow-question",
-  approval: "workflow-approval",
-  conflict: "workflow-conflict",
-  budget_exceeded: "workflow-budget",
+  "project-held": 0,
+  "item-held": 1,
+  "item-blocked": 2,
 };
 
 export interface NeedsCard {
-  /** Stable id — `run:<runId>` for a run's pause, `blocked:<itemId>` for a
-   *  board wedge, `held:<itemId>` / `project-held:<projectId>` for a hold. Drives
-   *  the render key and nothing else: there is no dismissal to key on. */
+  /** Stable id — `blocked:<itemId>` for a board wedge, `held:<itemId>` /
+   *  `project-held:<projectId>` for a hold. Drives the render key and nothing
+   *  else: there is no dismissal to key on. */
   id: string;
   reason: NeedsReason;
   /** Ordering bucket (see BUCKET). Lower = more decidable = higher up. */
@@ -92,11 +54,6 @@ export interface NeedsCard {
   itemId?: string;
   code?: string;
   title?: string;
-  /** The run whose pause this is, for the run-scoped reasons. */
-  runId?: string;
-  /** The pause as the engine named it, so the card can label it with the same
-   *  `pausedLabel` the item card and the sidebar use. */
-  pausedReason?: WfPausedReason;
   /** Why, in the writer's own words: the named cycle behind `item-blocked`
    *  ("MCA-101 → MCA-104 → MCA-101"), or a hold's reason. Absent when the writer
    *  recorded none (a hold always has one — it is required). */
@@ -104,12 +61,9 @@ export interface NeedsCard {
 }
 
 export interface NeedsInput {
-  /** The rows the board renders (a shipped item has left the board, so its run's
-   *  old pause is nobody's decision). */
+  /** The rows the board renders. An event for a row not in `items` is skipped,
+   *  which is also what scopes the strip to this board. */
   items: readonly RoadmapItem[];
-  /** This project's live run rows. A run for an item not in `items` is skipped,
-   *  which is also what scopes the strip: another project's runs never join. */
-  runs: readonly WfRun[];
   /** The newest durable event per item (`roadmap_latest_events` + live
    *  `roadmap:item-event` rows). Several rows for one item are tolerated — the
    *  newest wins — so a caller need not pre-reduce. */
@@ -157,35 +111,10 @@ export function mergeLatest(
   return out;
 }
 
-/** Compose the strip from the board's current state. Pure and synchronous: it
- *  never waits on evidence (an approval card ranks high because it *has* a
- *  review surface, not because that surface has loaded). */
+/** Compose the strip from the board's current state. Pure and synchronous. */
 export function buildNeedsYou(input: NeedsInput): NeedsCard[] {
   const byId = new Map(input.items.map((i) => [i.id, i]));
   const cards: NeedsCard[] = [];
-
-  // ── runs paused on something only the user can clear ──
-  for (const run of input.runs) {
-    if (run.status !== "paused" || !run.roadmap_item_id || !run.paused_reason) continue;
-    const reason = PAUSE_REASON[run.paused_reason];
-    if (!reason) continue;
-    // Join miss: a run for an item this board doesn't render (another project's,
-    // or one that shipped since). The run is still visible in Mission Control and
-    // its own tab — it just isn't a decision *about this board*.
-    const item = byId.get(run.roadmap_item_id);
-    if (!item) continue;
-    cards.push({
-      id: `run:${run.id}`,
-      reason,
-      bucket: BUCKET[reason],
-      activityAt: run.updated_at,
-      itemId: item.id,
-      code: item.code,
-      title: item.title,
-      runId: run.id,
-      pausedReason: run.paused_reason,
-    });
-  }
 
   // ── the brake, at both scopes ──
   // Read off state, not off the trail: a hold is a *current* fact (the row's

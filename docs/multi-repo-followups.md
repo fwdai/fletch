@@ -248,12 +248,12 @@ unchanged.
 ## 7. Multi-repo workflows  ·  priority: parked  ·  size: L — design first
 
 `wf_run` has `repo_path` + `base_branch` baked into schema (migration 0019 /
-0020) and every step provisions from that one repo
-(`workflow/scheduler.rs::wf_launch`, `provision_forking_run_repo` call sites).
+0020) and every step works in that one repo's run workspace
+(`workflow/service.rs::launch`, `workflow/runner/`).
 Options when demand appears: (a) run-level repo set with per-step primary,
 (b) per-step repo scope in workflow YAML (`src/workflows/spec.ts` `Step`),
 (c) keep runs single-repo and compose one run per repo. Don't start without a
-design doc; the scheduler's step hand-off (refs `refs/wf/steps/<prev>`) is
+design doc; the kernel's step hand-off (refs `refs/wf/steps/<prev>`) is
 single-repo throughout, and finalize (`Finalize { push, open_pr, pr_base }`)
 assumes one PR target. Free-form agents already cover multi-repo tasks — this
 is the deliberate v1 boundary.

@@ -1,14 +1,12 @@
-// MissionControl/useQueueActions.ts — the action layer (§3/§4). One surface, two
-// backends: a workflow item decides through the workflow commands (wfApprove /
-// wfReject via the ReviewSurface modal); an ad-hoc agent item routes through the
-// shared remediation ladder (`readiness.ts`) that the Git panel classifies from
-// too — this surface holds no copy of it. No new backend commands, and never a
-// dead action: any rung that isn't an agent's to run falls back to opening the
-// agent's Git tab.
+// MissionControl/useQueueActions.ts — the action layer (§3/§4). An agent item
+// routes through the shared remediation ladder (`readiness.ts`) that the Git
+// panel classifies from too — this surface holds no copy of it; a fan-out item
+// delegates `update-branch` to every agent it names. No new backend commands,
+// and never a dead action: any rung that isn't an agent's to run falls back to
+// opening the agent's Git tab.
 
 import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
-import { api } from "@/api";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { type LadderContext, nextRung } from "@/readiness";
 import { useAppStore } from "@/store";
@@ -40,21 +38,18 @@ function commitMode(action: GitCommitAction): LadderContext["commitMode"] {
 }
 
 export interface QueueActions {
-  /** ↵ — open the item's review (workflow: the ReviewSurface modal; agent: its
-   *  Git tab). */
+  /** ↵ — open the item's review (agent: its Git tab; fan-out: the merged PR). */
   enter: (item: ReviewItem) => void;
-  /** a — approve / advance (workflow: wfApprove; agent: the delegation ladder). */
+  /** a — approve / advance (agent: the delegation ladder; fan-out: Update all). */
   approve: (item: ReviewItem) => void;
-  /** r — request changes (workflow: the reject form in the modal; agent: seed
-   *  its composer). */
+  /** r — request changes (agent: seed its composer). */
   requestChanges: (item: ReviewItem) => void;
   /** The dismiss affordance — hides the card until its signal changes. */
   dismiss: (item: ReviewItem) => void;
 }
 
-/** Build the queue's action handlers. `openReview` hands a workflow run id up to
- *  the pane, which mounts the shared ReviewSurface over it. */
-export function useQueueActions(openReview: (runId: string) => void): QueueActions {
+/** Build the queue's action handlers. */
+export function useQueueActions(): QueueActions {
   const selectAgent = useAppStore((s) => s.selectAgent);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const seedComposer = useAppStore((s) => s.seedComposer);
@@ -163,10 +158,9 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
         if (item.fanout) void open(item.fanout.merged.url);
         return;
       }
-      if (item.kind === "workflow" && item.runId) openReview(item.runId);
-      else if (item.agent) openAgentGit(item.agent.id);
+      if (item.agent) openAgentGit(item.agent.id);
     },
-    [openReview, openAgentGit],
+    [openAgentGit],
   );
 
   const approve = useCallback(
@@ -175,16 +169,12 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
         updateAll(item);
         return;
       }
-      if (item.kind === "workflow" && item.runId) {
-        void api.wfApprove(item.runId).catch((e) => setLastError(`Approve failed: ${e}`));
-        return;
-      }
       // Only a PR card's PR is worth moving the focus for: approving a card
       // about unseen results never moves the Git panel's focus.
       const prNumber = item.bucket === BUCKET.pr ? item.pr?.number : undefined;
       if (item.agent) void approveAgent(item.agent.id, item.prSubdir, prNumber);
     },
-    [approveAgent, updateAll, setLastError],
+    [approveAgent, updateAll],
   );
 
   const requestChanges = useCallback(
@@ -192,18 +182,12 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
       // A fan-out card has no "request changes" gesture — its only action is
       // Update all (bound to `a`). `r` is a no-op here.
       if (item.kind === "fanout") return;
-      // Workflow reject needs a note — that lives in the ReviewSurface's reject
-      // form, so open the same modal rather than rejecting blind.
-      if (item.kind === "workflow" && item.runId) {
-        openReview(item.runId);
-        return;
-      }
       if (item.agent) {
         seedComposer(item.agent.id, requestChangesSeed(item.prSubdir));
         selectAgent(item.agent.id);
       }
     },
-    [openReview, seedComposer, selectAgent],
+    [seedComposer, selectAgent],
   );
 
   const dismiss = useCallback(

@@ -1,8 +1,8 @@
 // run/useRunEvents.ts — the journal, live. Pages the run's whole event log
 // forward from seq 0 (spec §7.2) and follows `wf:event` appends with a
 // coalesced tail fetch (the envelope carries no payload). Shared by the
-// Activity panel (its timeline) and useRunDetail (the run monitor needs the
-// same journal for its paused/evidence lookups).
+// Activity panel (its timeline) and useRunDetail (the run monitor's thread
+// derives its phase rows from the same journal).
 
 import { useEffect, useRef, useState } from "react";
 import { api, onWfEvent, type WfEvent } from "../../api";

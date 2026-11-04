@@ -507,7 +507,7 @@ export function useRoadmap(repoPath: string) {
   );
 
   /** This project's live runs. Scoped here so a busy install's other runs reach
-   *  neither a card nor the strip. */
+   *  neither a card nor the rail. */
   const runs = useMemo(
     () => allRuns.filter((r) => r.project_id === projectId),
     [allRuns, projectId],
@@ -526,13 +526,13 @@ export function useRoadmap(repoPath: string) {
    *  checkout to key that machinery by; see useItemReviews.ts. */
   const { reviews, refreshReview } = useItemReviews(rows);
 
-  /** The open decisions this board is waiting on the user for — paused runs and
+  /** The open decisions this board is waiting on the user for — holds and
    *  wedged items, as ordered cards. Derived from state this hook already holds,
-   *  so a pause the queue hits shows up on the next `wf:run` with no polling of
-   *  its own. The rules live in NeedsYou/select.ts. */
+   *  so a wedge the queue hits shows up on the next `roadmap:item-event` with no
+   *  polling of its own. The rules live in NeedsYou/select.ts. */
   const needsYou = useMemo(
-    () => buildNeedsYou({ items: onBoard, runs, latestEvents, projectHold }),
-    [onBoard, runs, latestEvents, projectHold],
+    () => buildNeedsYou({ items: onBoard, latestEvents, projectHold }),
+    [onBoard, latestEvents, projectHold],
   );
 
   /** The rows whose position in the order can still change, in priority order —
@@ -1072,7 +1072,7 @@ export function useRoadmap(repoPath: string) {
      *  domain and the order preview's reference. */
     orderable,
     /** The project's live workflow runs, by run id — an item's `run_id` resolves
-     *  here for the card's pearl label and pause reason. */
+     *  here for the card's pearl label and the rail's run state. */
     runsById,
     /** The board's open decisions, most-decidable-first — the "Needs you" strip.
      *  Empty when nothing is waiting, and the strip then renders nothing. */

@@ -1,5 +1,5 @@
 // RunView — the workflows-v1 run monitor (spec §14.2). Journal-driven: the run
-// row, attempts and messages come from `wf_get_run`, and both stay live over
+// row and attempts come from `wf_get_run`, and both stay live over
 // `wf:run` / `wf:event`. The pane is a pure view + command surface — the Rust
 // scheduler owns all execution.
 //
@@ -11,7 +11,7 @@
 // way the agent panels are.
 
 import { useEffect, useMemo, useState } from "react";
-import type { AgentRecord, GateEvidence, WfRunStatus, WfStepExec } from "../../../api";
+import type { AgentRecord, WfRun, WfRunStatus, WfStepExec } from "../../../api";
 import { api } from "../../../api";
 import { Icon } from "../../../components/Icon";
 import { PanelToggle } from "../../../components/PanelToggle";
@@ -21,10 +21,7 @@ import { useAppStore } from "../../../store";
 import { resolveAlias } from "../../shared";
 import type { Spec } from "../../spec";
 import { runChip } from "../status";
-import { BudgetMeter, hasBudgets } from "./BudgetMeter";
 import { flattenSteps, isSequentialSpec, type StepDesc } from "./flatten";
-import { PausedBanner } from "./PausedBanner";
-import { selectPendingQuestion } from "./pendingQuestion";
 import { RoadmapChip } from "./RoadmapChip";
 import { AttemptStrip, latestAttempt, Stepper, stepAttempts } from "./Stepper";
 import { type FocusRequest, ThreadView } from "./ThreadView";
@@ -55,23 +52,6 @@ export function RunView({ id }: { id: string }) {
   // A flat sequence of steps reads as one conversation; anything else keeps the
   // per-step chat (see ThreadView).
   const sequential = useMemo(() => isSequentialSpec(spec), [spec]);
-
-  // The most recent `run_paused` event — the source of both the paused-reason
-  // detail and the exec whose question the human must answer.
-  const pausedEvent = useMemo(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      if (events[i].type === "run_paused") return events[i];
-    }
-    return undefined;
-  }, [events]);
-
-  // The pending human question for a `paused(question)` run. Keyed on the paused
-  // exec (the ask's sender), mirroring the backend — never on the recipient,
-  // which escalations/engine-authored asks set to a step exec.
-  const pendingQuestion = useMemo(
-    () => selectPendingQuestion(detail?.messages ?? [], pausedEvent?.step_exec_id ?? null),
-    [detail?.messages, pausedEvent],
-  );
 
   // Resolve a spec agent alias to its display identity (custom agent or provider).
   const resolve = useMemo(
@@ -133,26 +113,6 @@ export function RunView({ id }: { id: string }) {
     }
     clearFocusedStepAgent();
   }, [focusedStepAgentId, attempts, loading, clearFocusedStepAgent]);
-
-  const pausedDetail = useMemo(() => {
-    const p = pausedEvent?.payload;
-    if (p && typeof p === "object" && "detail" in p) {
-      const d = (p as { detail: unknown }).detail;
-      if (typeof d === "string") return d;
-    }
-    return undefined;
-  }, [pausedEvent]);
-
-  // The review evidence for an approval pause: the most recent `gate_evidence`
-  // event (keyed to the awaiting step exec). Only meaningful while the run is
-  // paused on approval; the ReviewSurface renders a "preparing" state if absent.
-  const gateEvidence = useMemo<GateEvidence | null>(() => {
-    if (run?.status !== "paused" || run.paused_reason !== "approval") return null;
-    for (let i = events.length - 1; i >= 0; i--) {
-      if (events[i].type === "gate_evidence") return events[i].payload as GateEvidence;
-    }
-    return null;
-  }, [events, run?.status, run?.paused_reason]);
 
   if (loading && !run) {
     return (
@@ -246,31 +206,17 @@ export function RunView({ id }: { id: string }) {
         <PanelToggle side="right" />
       </div>
 
-      {/* Also mounted for step-less specs when budgets exist — the strip is the
-          meters' only home, so it must not vanish with the nodes. */}
-      {(steps.length > 0 || hasBudgets(run.budgets)) && (
+      {steps.length > 0 && (
         <Stepper
           steps={steps}
           attempts={attempts}
           resolve={resolve}
           selectedStepId={selectedStepId}
           onSelectStep={onSelectStep}
-          trailing={
-            <BudgetMeter budgets={run.budgets} spent={run.spent} createdAt={run.created_at} />
-          }
         />
       )}
 
-      <PausedBanner
-        run={run}
-        detail={pausedDetail}
-        question={pendingQuestion}
-        evidence={gateEvidence}
-        evidencePending={loading}
-        // In thread mode the answer belongs at the bottom, where the user is
-        // already typing — the banner keeps the cause and its other actions.
-        hideAnswer={sequential}
-      />
+      {run.status === "failed" && <FailedBanner run={run} />}
 
       {sequential ? (
         <ThreadView
@@ -280,7 +226,6 @@ export function RunView({ id }: { id: string }) {
           agents={agents}
           events={events}
           resolve={resolve}
-          question={pendingQuestion}
           focus={focus}
         />
       ) : (
@@ -314,6 +259,24 @@ export function RunView({ id }: { id: string }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** Why a failed run stopped, under the stepper — the one resting state that
+ *  owes the user a reason the header's pill can't carry. */
+function FailedBanner({ run }: { run: WfRun }) {
+  return (
+    <div className="wf-banner danger">
+      <span className="wf-banner-icon">
+        <Icon name="close" size={14} />
+      </span>
+      <div className="wf-banner-text">
+        <div className="wf-banner-title">Run failed</div>
+        <div className="wf-banner-body">
+          {run.error || "The run stopped with an unrecoverable error."}
+        </div>
+      </div>
     </div>
   );
 }

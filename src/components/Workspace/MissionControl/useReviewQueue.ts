@@ -1,12 +1,11 @@
 import { useMemo } from "react";
 import { EMPTY_AGENTS, useAppStore } from "@/store";
-import { useRuns } from "@/workflows/run/useRuns";
 import { buildReviewQueue, type ReviewItem } from "./queue";
 
-/** The live fleet review queue: subscribes to the already-polled store slices +
- *  the reactive run list and folds them through the pure `buildReviewQueue`
- *  selector. Derives instantly from state we already hold, so there's no spinner
- *  — the queue paints with the pane. */
+/** The live fleet review queue: subscribes to the already-polled store slices
+ *  and folds them through the pure `buildReviewQueue` selector. Derives
+ *  instantly from state we already hold, so there's no spinner — the queue
+ *  paints with the pane. */
 export function useReviewQueue(): ReviewItem[] {
   const agents = useAppStore((s) => s.workspace?.agents ?? EMPTY_AGENTS);
   const gitShortstats = useAppStore((s) => s.gitShortstats);
@@ -18,7 +17,6 @@ export function useReviewQueue(): ReviewItem[] {
   const prSets = useAppStore((s) => s.prSets);
   const verificationReports = useAppStore((s) => s.verificationReports);
   const dismissed = useAppStore((s) => s.reviewDismissed);
-  const runs = useRuns();
 
   return useMemo(
     () =>
@@ -32,7 +30,6 @@ export function useReviewQueue(): ReviewItem[] {
         prComments,
         prSets,
         verificationReports,
-        runs,
         dismissed,
       }),
     [
@@ -45,7 +42,6 @@ export function useReviewQueue(): ReviewItem[] {
       prComments,
       prSets,
       verificationReports,
-      runs,
       dismissed,
     ],
   );

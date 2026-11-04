@@ -1,7 +1,7 @@
 // RunView/useRunDetail.ts — the monitor's data source. Loads the run detail
-// (run row + attempts + messages) and the full journal, then keeps both live:
-// `wf:run` patches the row instantly (status / paused_reason), and `wf:event`
-// triggers a coalesced refetch of the run detail plus the new journal page.
+// (run row + attempts) and the full journal, then keeps both live: `wf:run`
+// patches the row instantly (status / error), and `wf:event` triggers a
+// coalesced refetch of the run detail plus the new journal page.
 //
 // The journal is paged forward from seq 0 (spec §7.2). Live `wf:event` envelopes
 // carry no payload, so an append refetches the page after our max seq to pick up

@@ -1261,7 +1261,7 @@ button.ag-wf-tile {
   color: var(--success);
 }
 
-/* A row with no hover actions (e.g. a paused run) keeps its status meta on
+/* A row with no hover actions (a subagent row) keeps its status meta on
    hover — there is nothing to cross-fade to, so fading it out just blanks
    the row's most important signal. */
 .agent.no-actions:hover .ag-slot .ag-meta {
@@ -1270,14 +1270,6 @@ button.ag-wf-tile {
 .agent.no-actions:hover .ag-slot .ag-actions {
   opacity: 0;
   pointer-events: none;
-}
-
-/* A composed sub-run (§10.3) sits indented under its parent run in the sidebar,
-   with a faint guide rail so the nesting reads at a glance. */
-.agent.run-nested {
-  margin-left: 14px;
-  border-left: 1px solid var(--bd-soft);
-  padding-left: 6px;
 }
 
 /* A run's step agents nest under it — indented past the run's rail with a faint
@@ -1299,44 +1291,8 @@ button.ag-wf-tile {
   color: var(--fg-1);
 }
 
-/* Activity panel: the sub-runs section above the timeline (§10.3, §14.2). */
-.wf-subruns {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 0 8px 8px;
-  border-bottom: 1px solid var(--bd-soft);
-  flex-shrink: 0;
-}
-.wf-subrun-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  border: none;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--fg-1);
-  text-align: left;
-  cursor: pointer;
-  font-size: 12px;
-}
-.wf-subrun-row:hover {
-  background: var(--hover);
-}
-.wf-subrun-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.wf-subrun-status {
-  font-size: 11px;
-  flex-shrink: 0;
-}
-
-/* Workflow tile (composer selector chip) + status dot (run monitor rail). The
-   sidebar run row otherwise reuses the agent-row classes (.agent/.ag-*). */
+/* Workflow tile (composer selector chip). The sidebar run row otherwise reuses
+   the agent-row classes (.agent/.ag-*). */
 .wf-srow-tile {
   width: 22px;
   height: 22px;
@@ -1347,12 +1303,6 @@ button.ag-wf-tile {
   justify-content: center;
   color: oklch(0.2 0.03 var(--h));
   background: oklch(0.72 0.13 var(--h));
-}
-.wf-srow-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
 }
 
 /* ── new-agent page: workflow step preview, built into the composer top ── */
@@ -1485,23 +1435,10 @@ button.wf-run-rm:hover {
   display: flex;
   flex-direction: column;
 }
-/* Section eyebrow inside the Activity side panel (sub-runs). */
-.wf-side-head {
-  /* Lives inside .wf-subruns (8px inset) — 6px more lands the text at the
-     same 14px gutter the timeline rows use. */
-  padding: 9px 6px 5px;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-  flex-shrink: 0;
-}
-
 /* ── stepper: the run's spine as a horizontal progress strip ───────────────
    One node per step: status glyph + step name + duration. Details live on the
    hover card; a click focuses the step's chat. The track scrolls sideways when
-   a flow outgrows the pane; the budget meters stay pinned on the right. */
+   a flow outgrows the pane. */
 .wf-stepper {
   display: flex;
   align-items: center;
@@ -1774,50 +1711,7 @@ button.wf-run-rm:hover {
   white-space: nowrap;
 }
 
-/* Budget meters — compact bars pinned to the stepper's right edge. Quiet by
-   design: labels and small tracks, the full numbers in each meter's tooltip. */
-.wf-budget {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-shrink: 0;
-}
-.wf-budget-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-}
-.wf-budget-label {
-  color: var(--fg-3);
-}
-.wf-budget-track {
-  width: 52px;
-  height: 4px;
-  border-radius: 3px;
-  background: var(--bg-3);
-  overflow: hidden;
-}
-.wf-budget-fill {
-  display: block;
-  height: 100%;
-  border-radius: 3px;
-  background: var(--accent);
-  transition: width 0.3s var(--ease);
-}
-.wf-budget-fill.near {
-  background: var(--danger);
-}
-.wf-budget-num {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--fg-1);
-}
-.wf-budget-cap {
-  color: var(--fg-3);
-}
-
-/* Paused / failed banner. */
+/* Failed-run banner: the run's error, under the stepper. */
 .wf-banner {
   display: flex;
   align-items: center;
@@ -1825,9 +1719,6 @@ button.wf-run-rm:hover {
   padding: 11px 14px;
   border-bottom: 1px solid var(--bd-soft);
   flex-shrink: 0;
-}
-.wf-banner.amber {
-  background: oklch(0.78 0.14 75 / 0.12);
 }
 .wf-banner.danger {
   background: oklch(0.63 0.2 25 / 0.12);
@@ -1852,89 +1743,6 @@ button.wf-run-rm:hover {
   font-size: 11.5px;
   color: var(--fg-2);
   line-height: 1.4;
-}
-.wf-banner-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-/* Inline answer form for a paused(question) run. */
-.wf-answer {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.wf-answer-hint {
-  margin-top: 6px;
-  font-size: 11px;
-  font-style: italic;
-  color: var(--fg-3);
-}
-.wf-answer-q {
-  font-size: 11.5px;
-  color: var(--fg-1);
-  line-height: 1.4;
-}
-.wf-answer-opts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.wf-answer-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
-.wf-answer-input {
-  flex: 1;
-  min-width: 0;
-  min-height: 34px;
-  max-height: 120px;
-  resize: vertical;
-  padding: 7px 9px;
-  font: inherit;
-  font-size: 11.5px;
-  line-height: 1.4;
-  color: var(--fg-0);
-  background: var(--bg-0);
-  border: 1px solid var(--bd-soft);
-  border-radius: 6px;
-}
-.wf-answer-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-/* Inline "raise the budget and resume" form for a paused(budget_exceeded) run. */
-.wf-budget-patch {
-  margin-top: 8px;
-  display: flex;
-  align-items: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-.wf-budget-field {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 10.5px;
-  color: var(--fg-2);
-}
-.wf-budget-field input {
-  width: 76px;
-  padding: 5px 7px;
-  font: inherit;
-  font-size: 11.5px;
-  color: var(--fg-0);
-  background: var(--bg-0);
-  border: 1px solid var(--bd-soft);
-  border-radius: 6px;
-}
-.wf-budget-field input:focus {
-  outline: none;
-  border-color: var(--accent);
 }
 
 /* Timeline — virtualized uniform rows + a raw-payload drawer. */
@@ -2305,8 +2113,8 @@ button.wf-run-rm:hover {
   margin-top: 2px;
 }
 
-/* Composer slot when the thread has nobody to talk to, and when it has an
-   answer to collect instead. Both sit in the composer's own padding. */
+/* Composer slot when the thread has nobody to talk to. Sits in the composer's
+   own padding. */
 .wf-thread-hint {
   padding: 10px 12px;
   border: 1px dashed var(--bd-soft);
@@ -2314,13 +2122,4 @@ button.wf-run-rm:hover {
   font-size: var(--fs-xs);
   color: var(--fg-3);
   text-align: center;
-}
-.wf-thread-answer {
-  padding: 10px 12px;
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-md);
-  background: var(--bg-1);
-}
-.wf-thread-answer .wf-answer {
-  margin-top: 0;
 }

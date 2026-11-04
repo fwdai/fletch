@@ -1,17 +1,17 @@
-//! Workflows v1 backend.
+//! Workflows backend: one engine, the sequential kernel.
 //!
-//! This module lands the persistence substrate: the domain types (`types`), the
-//! append-only journal (`journal`), and the read-only command surface below
-//! (all S1). The definition layer (`spec`, `yaml`, `definition` — S2) adds the
-//! spec types + validation, the portable YAML format, and the `wf_def_*`
-//! storage commands. The scheduler, gates, budgets, comms and git transport
-//! arrive in later slices; until one of them populates the run tables, the read
-//! commands simply return empty results.
+//! - Definitions: the spec types + validation (`spec`), the portable YAML format
+//!   (`yaml`), and the `wf_def_*` storage commands (`definition`).
+//! - Runs: `service` launches, cancels and deletes them and keeps one drive task
+//!   per active run; each drive runs the kernel (`runner`) against the agent
+//!   seam (`driver`), deciding steps with `gates`, handing off through the
+//!   `blackboard`, prompting with `prompts`, and committing through `gitops`.
+//! - Persistence: the domain rows (`types`), the append-only journal and the
+//!   run-status writes it narrates (`journal`), run deletion (`cleanup`), and the
+//!   read-only run commands below.
 
-pub mod attempt;
 pub mod blackboard;
-pub mod budget;
-pub mod comms;
+pub mod cleanup;
 pub mod definition;
 pub mod driver;
 pub mod gates;
@@ -19,9 +19,8 @@ pub mod gitops;
 pub mod journal;
 pub mod prompts;
 pub mod runner;
-pub mod scheduler;
+pub mod service;
 pub mod spec;
-pub mod tests_gate;
 pub mod types;
 pub mod yaml;
 
@@ -31,7 +30,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::workflow::types::{Event, Message, Run, RunDetail, StepExec};
+use crate::workflow::types::{Event, Run, RunDetail, StepExec};
 
 pub type Db = Arc<Mutex<Connection>>;
 
@@ -68,7 +67,7 @@ pub async fn wf_list_runs_impl(project_id: Option<String>, db: &Db) -> Result<Ve
     }
 }
 
-/// A run plus its attempts and messages (§7.2). `None` if the run doesn't exist.
+/// A run plus its attempts (§7.2). `None` if the run doesn't exist.
 pub async fn wf_get_run_impl(run_id: String, db: &Db) -> Result<Option<RunDetail>, String> {
     let conn = db.lock();
     let map_err = |e: rusqlite::Error| e.to_string();
@@ -96,22 +95,7 @@ pub async fn wf_get_run_impl(run_id: String, db: &Db) -> Result<Option<RunDetail
             .map_err(map_err)?
     };
 
-    let messages = {
-        let mut stmt = conn
-            .prepare("SELECT * FROM wf_message WHERE run_id = ?1 ORDER BY created_at, rowid")
-            .map_err(map_err)?;
-        let rows = stmt
-            .query_map([&run_id], Message::from_row)
-            .map_err(map_err)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(map_err)?
-    };
-
-    Ok(Some(RunDetail {
-        run,
-        attempts,
-        messages,
-    }))
+    Ok(Some(RunDetail { run, attempts }))
 }
 
 /// Hard cap on one journal page. `limit` is caller-controlled and feeds

@@ -105,7 +105,7 @@ pub fn rename_project(
 #[tauri::command]
 pub async fn delete_project(
     supervisor: State<'_, Arc<Supervisor>>,
-    workflows: State<'_, Arc<crate::workflow::scheduler::WorkflowService>>,
+    workflows: State<'_, Arc<crate::workflow::service::WorkflowService>>,
     project_id: String,
 ) -> Result<ProjectDeleteResult> {
     supervisor

@@ -1,17 +1,16 @@
 // run/useRuns.ts — the reactive list of workflow runs for the sidebar, the
 // review queue, and the roadmap board. Loads the runs (newest-updated first) and
 // keeps the list live: `wf:run` fires the full row on every run-row change, so a
-// launch, a status flip, or a pause upserts in place. Run resumption after an app
-// restart is owned by the backend (`resume_active_runs` on startup), so this hook
-// is a pure view.
+// launch or a status flip upserts in place. This hook is a pure view; the backend
+// owns every run's lifecycle.
 //
 // The load subscribes *before* it fetches and replays what arrived in between
-// (see rowSync.ts). Fetch-first lost pauses: the snapshot's wholesale replace
-// clobbers a `wf:run` that landed while the request was in flight, and a paused
-// run emits nothing further — it is waiting on a human — so the pause stayed
-// invisible until something else moved the row. Every surface that decides from a
-// pause (the sidebar badge, Mission Control, the roadmap's "Needs you" strip)
-// reads this list, so one lost event was silent in all of them at once.
+// (see rowSync.ts). Fetch-first lost terminal flips: the snapshot's wholesale
+// replace clobbers a `wf:run` that landed while the request was in flight, and a
+// run that has finished emits nothing further, so the stale `running` stayed on
+// screen until something else moved the row. Every surface that reads a run's
+// state (the sidebar row, the roadmap board's cards and rail) reads this list, so
+// one lost event was wrong in all of them at once.
 
 import { useEffect, useState } from "react";
 import { createRowSync, type RowSync } from "@/rowSync";
@@ -26,7 +25,7 @@ function newestFirst(rows: WfRun[]): WfRun[] {
 
 /** The hook's ordering guarantee without React: a run-row sequencer that keeps
  *  the list sorted and hands each committed list to `commit`. Exported for the
- *  test — a lost pause has no other observable surface. */
+ *  test — a lost terminal flip has no other observable surface. */
 export function createRunSync(commit: (rows: WfRun[]) => void): RowSync<WfRun> {
   let rows: WfRun[] = [];
   return createRowSync<WfRun>((update) => {

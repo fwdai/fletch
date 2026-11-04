@@ -18,7 +18,7 @@ interface Props {
  *  which flips each affected agent into its delegated/running state through the
  *  existing update-branch machinery. The affected agents are listed as quiet
  *  chips so the scope is visible without extra UI. Shares the queue-card shell
- *  so it reads as one system with the agent/workflow cards. */
+ *  so it reads as one system with the agent cards. */
 export function FanoutCard({ item, focused, onFocus, onEnter, onUpdateAll, onDismiss }: Props) {
   const fanout = item.fanout;
   if (!fanout) return null;

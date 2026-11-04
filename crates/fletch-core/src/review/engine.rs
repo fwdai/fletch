@@ -1221,7 +1221,6 @@ async fn ensure_reviewer(
             .map(|p| p.mcp_servers.clone())
             .unwrap_or_default(),
         fork_base: Some(repo.base_branch().await),
-        run_repo: None,
         owner_run_id: None,
         existing_workspace: Some(checkout),
         code_from: None,

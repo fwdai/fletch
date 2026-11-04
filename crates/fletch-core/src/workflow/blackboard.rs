@@ -13,14 +13,10 @@
 //!   export/                   # reserved: journal.jsonl export (derived)
 //! ```
 //!
-//! This module owns four things: **provisioning** the directory and writing
-//! `task.md`; a **defensive `verdict.json` reader** that never panics and
-//! distinguishes missing from malformed (both are gate-unmet, but the
-//! re-prompt quotes the parse error); the **stale-verdict archival** helper
-//! that keeps a leftover verdict from a previous loop iteration or retry from
-//! satisfying a fresh gate (spec §8.3); and the **foreign-write scan** that
-//! lets the engine journal a note when a step wrote outside its own lane
-//! (spec §8.4 — prompt-enforced ownership, this is the detector).
+//! This module owns three things: **provisioning** the directory and writing
+//! `task.md`; the run's launch **attachments** sidecar; and a **defensive
+//! `verdict.json` reader** that never panics and distinguishes missing from
+//! malformed (both are gate-unmet, but the gate reason quotes the parse error).
 //!
 //! The sandbox *grant* that makes the blackboard writable from inside a step
 //! agent is plumbed separately through [`crate::sandbox`] (seatbelt subpath +
@@ -35,8 +31,7 @@ use crate::error::{Error, Result};
 
 /// Env var naming the blackboard directory inside a step agent's environment.
 /// Seatbelt sets it to the path the agent should read/write (a workflow step
-/// never runs in a box). The step-protocol
-/// prompt (S4) points the agent at `$WF_BLACKBOARD`.
+/// never runs in a box). The step prompt points the agent at `$WF_BLACKBOARD`.
 pub const WF_BLACKBOARD_ENV: &str = "WF_BLACKBOARD";
 
 /// Env var overriding the runs root (default `~/.fletch/runs`). Mirrors
@@ -77,9 +72,9 @@ fn validate_id(kind: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `~/.fletch/runs/<run-id>/` — one run's host-owned directory (blackboard +,
-/// once S4 lands, the run repository and journal export). Errors if `run_id`
-/// is not a safe path component ([`validate_id`]).
+/// `~/.fletch/runs/<run-id>/` — one run's host-owned directory (blackboard, run
+/// repository, reserved journal export). Errors if `run_id` is not a safe path
+/// component ([`validate_id`]).
 pub fn run_dir(run_id: &str) -> Result<PathBuf> {
     validate_id("run", run_id)?;
     Ok(runs_root()?.join(run_id))
@@ -108,13 +103,13 @@ pub fn step_dir(blackboard: &Path, step_id: &str) -> Result<PathBuf> {
 
 /// Provision the run directory layout and write `task.md`, returning the
 /// blackboard path (the sandbox grant path). Idempotent: re-provisioning an
-/// existing run dir re-creates any missing subdirs and rewrites `task.md`, so
-/// resume after a restart is safe. Step subdirectories are created lazily by
+/// existing run dir re-creates any missing subdirs and rewrites `task.md`. Step
+/// subdirectories are created lazily by
 /// the agents themselves (they hold the write grant); only `shared/`, the
 /// blackboard root, and `export/` are provisioned here.
 ///
-/// `task_md` is the full contents of `task.md` — the engine (S4) composes it
-/// from the run task and a spec summary; this module just persists it.
+/// `task_md` is the full contents of `task.md` — launch composes it from the run
+/// task and spec name; this module just persists it.
 pub fn provision(run_dir: &Path, task_md: &str) -> Result<PathBuf> {
     let blackboard = blackboard_dir(run_dir);
     std::fs::create_dir_all(blackboard.join("shared"))?;
@@ -126,8 +121,7 @@ pub fn provision(run_dir: &Path, task_md: &str) -> Result<PathBuf> {
 /// `<run-dir>/attachments.json` — the run's launch-time file attachments. Kept
 /// at the run-dir root (host only), NOT under `blackboard/`, so the raw path
 /// list isn't exposed into step sandboxes. Write-once at launch, read-only
-/// thereafter: the engine renders them into the entry step's prompt, re-reading
-/// on every drive so a resume needs no delivery state.
+/// thereafter: the kernel renders them into the entry step's prompt.
 fn attachments_path(run_dir: &Path) -> PathBuf {
     run_dir.join("attachments.json")
 }
@@ -157,7 +151,7 @@ pub fn read_attachments(run_dir: &Path) -> Vec<String> {
 /// `<step-id>/verdict.json` (spec §8.3). `deny_unknown_fields` keeps the shape
 /// narrow: an unexpected key (a typo'd field name, a prompt-injected extra)
 /// makes the verdict `Malformed` rather than being silently dropped, and the
-/// re-prompt (§6.5) quotes the offending field back to the agent.
+/// gate reason quotes the offending field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Verdict {
@@ -170,7 +164,8 @@ pub struct Verdict {
     /// Optional; e.g. structured review feedback.
     #[serde(default)]
     pub detail: Option<String>,
-    /// Optional step-id to revise (loops only; must be inside the same loop).
+    /// Optional step-id a `revise` points at. Part of the file format the step
+    /// prompt documents, so a verdict carrying it parses; nothing acts on it.
     #[serde(default)]
     pub target: Option<String>,
 }
@@ -184,16 +179,16 @@ pub enum VerdictResult {
 }
 
 /// Why reading a verdict did not yield a usable [`Verdict`]. Both variants mean
-/// "gate unmet"; they differ only in what the engine journals and re-prompts:
-/// a missing verdict is silent (the agent simply isn't done), a malformed one
-/// carries the parse error so the re-prompt can quote it back (spec §8.3, §6.5).
+/// "gate unmet"; they differ only in the reason: a missing verdict means the
+/// agent simply isn't done, a malformed one carries the parse error so the gate
+/// reason can quote it (spec §8.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerdictError {
     /// No `verdict.json` at the expected path.
     Missing,
     /// The file exists but could not be read or parsed into a [`Verdict`]. The
-    /// string is a human-readable cause suitable for a journal note and a
-    /// re-prompt.
+    /// string is a human-readable cause suitable for the journal and the run's
+    /// error.
     Malformed(String),
 }
 
@@ -214,43 +209,6 @@ pub fn read_verdict(step_dir: &Path) -> std::result::Result<Verdict, VerdictErro
     };
     serde_json::from_slice::<Verdict>(&bytes)
         .map_err(|e| VerdictError::Malformed(format!("invalid verdict.json: {e}")))
-}
-
-/// Move an existing `<step-dir>/verdict.json` aside before a fresh attempt's
-/// prompt is sent, so a leftover verdict from a previous iteration or retry
-/// cannot satisfy the new gate (spec §8.3, the loop/retry staleness bug class).
-/// The verdict is moved to `<step-dir>/history/attempt-<attempt>.iter-<iteration>.verdict.json`;
-/// the history files double as the loop's feedback trail. Returns the archive
-/// destination when a verdict was moved, or `None` when there was none (the
-/// common first-attempt case). The caller journals the move.
-///
-/// `attempt` and `iteration` label the verdict being archived — i.e. the
-/// attempt/iteration that *wrote* it, not the one about to run.
-pub fn archive_stale_verdict(
-    step_dir: &Path,
-    attempt: u32,
-    iteration: u32,
-) -> Result<Option<PathBuf>> {
-    let src = step_dir.join("verdict.json");
-    match src.symlink_metadata() {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(Error::Io(e)),
-    }
-    let history = step_dir.join("history");
-    std::fs::create_dir_all(&history)?;
-    // The same attempt can archive more than once (a blocked gate's re-prompt
-    // archives again with the same labels) — never overwrite an earlier file.
-    let mut dest = history.join(format!("attempt-{attempt}.iter-{iteration}.verdict.json"));
-    let mut seq = 1;
-    while dest.exists() {
-        seq += 1;
-        dest = history.join(format!(
-            "attempt-{attempt}.iter-{iteration}.{seq}.verdict.json"
-        ));
-    }
-    std::fs::rename(&src, &dest)?;
-    Ok(Some(dest))
 }
 
 #[cfg(test)]
@@ -325,7 +283,7 @@ mod tests {
         let dir = tmp();
         let run = dir.path().join("run-1");
         provision(&run, "first").expect("provision");
-        // A step wrote a file; re-provisioning (resume) must not wipe it.
+        // A step wrote a file; re-provisioning must not wipe it.
         let board = run.join("blackboard");
         std::fs::create_dir_all(board.join("plan")).unwrap();
         std::fs::write(board.join("plan/handoff.md"), "notes").unwrap();
@@ -404,63 +362,5 @@ mod tests {
             read_verdict(dir.path()),
             Err(VerdictError::Malformed(_))
         ));
-    }
-
-    #[test]
-    fn archive_stale_verdict_moves_and_labels() {
-        let dir = tmp();
-        let step = dir.path();
-        std::fs::write(step.join("verdict.json"), r#"{"result":"revise"}"#).unwrap();
-
-        let dest = archive_stale_verdict(step, 1, 0).expect("archive").unwrap();
-        assert_eq!(
-            dest,
-            step.join("history").join("attempt-1.iter-0.verdict.json")
-        );
-        assert!(!step.join("verdict.json").exists());
-        assert!(dest.is_file());
-    }
-
-    #[test]
-    fn archive_stale_verdict_never_overwrites_same_labels() {
-        // A blocked gate's re-prompt archives again with the same attempt/
-        // iteration labels; the second archive must not replace the first.
-        let dir = tmp();
-        let step = dir.path();
-        std::fs::write(step.join("verdict.json"), r#"{"result":"revise"}"#).unwrap();
-        let first = archive_stale_verdict(step, 1, 0).expect("archive").unwrap();
-
-        std::fs::write(step.join("verdict.json"), r#"{"result":"blocked"}"#).unwrap();
-        let second = archive_stale_verdict(step, 1, 0).expect("archive").unwrap();
-
-        assert_ne!(first, second);
-        assert_eq!(
-            std::fs::read_to_string(&first).unwrap(),
-            r#"{"result":"revise"}"#
-        );
-        assert_eq!(
-            std::fs::read_to_string(&second).unwrap(),
-            r#"{"result":"blocked"}"#
-        );
-    }
-
-    #[test]
-    fn archive_stale_verdict_noop_when_absent() {
-        let dir = tmp();
-        assert_eq!(
-            archive_stale_verdict(dir.path(), 2, 3).expect("archive"),
-            None
-        );
-    }
-
-    #[test]
-    fn archived_verdict_does_not_satisfy_a_new_gate() {
-        // The staleness bug: a leftover done-verdict must not survive to the
-        // next iteration's gate. After archival, the step dir has no verdict.
-        let dir = tmp();
-        let step = dir.path();
-        std::fs::write(step.join("verdict.json"), r#"{"result":"done"}"#).unwrap();
-        archive_stale_verdict(step, 1, 0).expect("archive");
-        assert_eq!(read_verdict(step), Err(VerdictError::Missing));
     }
 }

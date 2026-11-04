@@ -146,6 +146,6 @@ describe("host-owned settings", () => {
       expect(isHostProjectSettingKey(key)).toBe(false);
     }
     expect(HOST_SETTING_KEYS).toHaveLength(15);
-    expect(HOST_PROJECT_SETTING_KEYS).toHaveLength(13);
+    expect(HOST_PROJECT_SETTING_KEYS).toHaveLength(12);
   });
 });

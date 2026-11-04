@@ -8,9 +8,8 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
-use crate::workflow::attempt::Deadlines;
-use crate::workflow::driver::{BoxFuture, SpawnedAgent, TurnUsage};
-use crate::workflow::spec::{AgentSpec, Finalize, Integrate, Join, Parallel};
+use crate::workflow::driver::{BoxFuture, SpawnedAgent};
+use crate::workflow::spec::{AgentSpec, Finalize, Step};
 
 fn sh(dir: &Path, args: &[&str]) {
     crate::git::testing::git(dir, args);
@@ -115,10 +114,7 @@ impl AgentDriver for Stub {
                 id
             };
             self.set(&id, AgentStatus::Idle);
-            Ok(SpawnedAgent {
-                agent_id: id,
-                worktree: workspace,
-            })
+            Ok(SpawnedAgent { agent_id: id })
         })
     }
 
@@ -169,14 +165,6 @@ impl AgentDriver for Stub {
             Ok(())
         })
     }
-
-    fn last_activity(&self, _id: &str) -> Option<i64> {
-        None
-    }
-
-    fn turn_usage(&self, _id: &str) -> Option<TurnUsage> {
-        None
-    }
 }
 
 fn step(id: &str, gate: Gate) -> Step {
@@ -185,12 +173,10 @@ fn step(id: &str, gate: Gate) -> Step {
         agent: "coder".to_string(),
         goal: format!("do {id}"),
         gate,
-        budgets: None,
-        comms: vec![],
     }
 }
 
-fn spec_of(blocks: Vec<Block>, finalize: Option<Finalize>) -> Spec {
+fn spec_of(steps: Vec<Step>, finalize: Option<Finalize>) -> Spec {
     let mut agents = BTreeMap::new();
     agents.insert(
         "coder".to_string(),
@@ -208,9 +194,8 @@ fn spec_of(blocks: Vec<Block>, finalize: Option<Finalize>) -> Spec {
         version: 1,
         name: "demo".to_string(),
         description: None,
-        budgets: None,
         agents,
-        workflow: blocks,
+        workflow: steps,
         finalize,
     }
 }
@@ -281,9 +266,6 @@ fn ctx_with(fx: &Fixture, driver: Arc<dyn AgentDriver>) -> RunCtx {
         driver,
         engine: None,
         cancel: fx.cancel.clone(),
-        pending_ask: Arc::new(AtomicBool::new(false)),
-        deadlines: Deadlines::default(),
-        runs: None,
     }
 }
 
@@ -324,10 +306,7 @@ async fn two_steps_share_one_workspace_and_land_on_one_line() {
     let tmp = tempfile::tempdir().unwrap();
     let branch = "wf/demo-abcdef12";
     let spec = spec_of(
-        vec![
-            Block::Step(step("plan", Gate::Commit)),
-            Block::Step(step("build", Gate::Commit)),
-        ],
+        vec![step("plan", Gate::Commit), step("build", Gate::Commit)],
         Some(Finalize {
             push: true,
             open_pr: false,
@@ -415,10 +394,7 @@ async fn two_steps_share_one_workspace_and_land_on_one_line() {
 async fn verdict_done_advances_the_run() {
     let tmp = tempfile::tempdir().unwrap();
     let spec = spec_of(
-        vec![
-            Block::Step(step("plan", Gate::Verdict)),
-            Block::Step(step("build", Gate::Verdict)),
-        ],
+        vec![step("plan", Gate::Verdict), step("build", Gate::Verdict)],
         None,
     );
     let fx = scaffold(tmp.path(), "run-v", "wf/demo-1", &spec);
@@ -446,10 +422,7 @@ async fn verdict_done_advances_the_run() {
 async fn verdict_revise_fails_the_run_with_the_reason() {
     let tmp = tempfile::tempdir().unwrap();
     let spec = spec_of(
-        vec![
-            Block::Step(step("plan", Gate::Verdict)),
-            Block::Step(step("build", Gate::Verdict)),
-        ],
+        vec![step("plan", Gate::Verdict), step("build", Gate::Verdict)],
         None,
     );
     let fx = scaffold(tmp.path(), "run-v2", "wf/demo-2", &spec);
@@ -487,7 +460,7 @@ async fn verdict_revise_fails_the_run_with_the_reason() {
 #[tokio::test]
 async fn a_missing_verdict_fails_the_run() {
     let tmp = tempfile::tempdir().unwrap();
-    let spec = spec_of(vec![Block::Step(step("plan", Gate::Verdict))], None);
+    let spec = spec_of(vec![step("plan", Gate::Verdict)], None);
     let fx = scaffold(tmp.path(), "run-v3", "wf/demo-3", &spec);
     let driver = Stub::new(
         Behavior {
@@ -511,7 +484,7 @@ async fn a_missing_verdict_fails_the_run() {
 #[tokio::test]
 async fn a_spawn_failure_fails_the_run() {
     let tmp = tempfile::tempdir().unwrap();
-    let spec = spec_of(vec![Block::Step(step("plan", Gate::Commit))], None);
+    let spec = spec_of(vec![step("plan", Gate::Commit)], None);
     let fx = scaffold(tmp.path(), "run-e", "wf/demo-e", &spec);
     let driver = Stub::new(
         Behavior {
@@ -541,7 +514,7 @@ async fn a_spawn_failure_fails_the_run() {
 #[tokio::test]
 async fn a_wedged_step_hits_the_wall_timeout_and_fails_the_run() {
     let tmp = tempfile::tempdir().unwrap();
-    let spec = spec_of(vec![Block::Step(step("plan", Gate::Commit))], None);
+    let spec = spec_of(vec![step("plan", Gate::Commit)], None);
     let fx = scaffold(tmp.path(), "run-t", "wf/demo-t", &spec);
     let driver = Stub::new(
         Behavior {
@@ -567,10 +540,7 @@ async fn a_wedged_step_hits_the_wall_timeout_and_fails_the_run() {
 async fn a_cancel_mid_step_stops_the_agent_and_marks_the_run_canceled() {
     let tmp = tempfile::tempdir().unwrap();
     let spec = spec_of(
-        vec![
-            Block::Step(step("plan", Gate::Commit)),
-            Block::Step(step("build", Gate::Commit)),
-        ],
+        vec![step("plan", Gate::Commit), step("build", Gate::Commit)],
         None,
     );
     let fx = scaffold(tmp.path(), "run-c", "wf/demo-c", &spec);
@@ -600,7 +570,7 @@ async fn a_cancel_mid_step_stops_the_agent_and_marks_the_run_canceled() {
 #[tokio::test]
 async fn a_pre_canceled_run_spawns_nothing() {
     let tmp = tempfile::tempdir().unwrap();
-    let spec = spec_of(vec![Block::Step(step("plan", Gate::Commit))], None);
+    let spec = spec_of(vec![step("plan", Gate::Commit)], None);
     let fx = scaffold(tmp.path(), "run-c0", "wf/demo-c0", &spec);
     fx.cancel.store(true, Ordering::SeqCst);
     let driver = Stub::new(
@@ -616,12 +586,12 @@ async fn a_pre_canceled_run_spawns_nothing() {
     assert!(driver.adopted().is_empty());
 }
 
-// ────────────────────────────── resume & routing ─────────────────────────────
+// ─────────────────────────────────── resume ──────────────────────────────────
 
 #[tokio::test]
 async fn a_non_terminal_kernel_run_is_failed_rather_than_resumed() {
     let tmp = tempfile::tempdir().unwrap();
-    let spec = spec_of(vec![Block::Step(step("plan", Gate::Commit))], None);
+    let spec = spec_of(vec![step("plan", Gate::Commit)], None);
     let fx = scaffold(tmp.path(), "run-r", "wf/demo-r", &spec);
     // The state a crash leaves behind: a `running` run with a live-looking exec.
     {
@@ -660,7 +630,7 @@ async fn a_non_terminal_kernel_run_is_failed_rather_than_resumed() {
 #[tokio::test]
 async fn a_terminal_run_is_not_redriven() {
     let tmp = tempfile::tempdir().unwrap();
-    let spec = spec_of(vec![Block::Step(step("plan", Gate::Commit))], None);
+    let spec = spec_of(vec![step("plan", Gate::Commit)], None);
     let fx = scaffold(tmp.path(), "run-d", "wf/demo-d", &spec);
     fx.db
         .lock()
@@ -680,81 +650,77 @@ async fn a_terminal_run_is_not_redriven() {
     assert!(event_types(&fx.db, "run-d").is_empty());
 }
 
-#[test]
-fn eligibility_admits_plain_steps_with_commit_or_verdict_gates_only() {
-    let commit_and_verdict = spec_of(
-        vec![
-            Block::Step(step("a", Gate::Commit)),
-            Block::Step(step("b", Gate::Verdict)),
-        ],
-        None,
-    );
-    assert!(kernel_eligible(&commit_and_verdict));
+// ──────────────────────────────── the journal ────────────────────────────────
 
-    // A gate the kernel can't decide by itself.
-    for gate in [
-        Gate::Artifact {
-            path: "PLAN.md".into(),
+#[tokio::test]
+async fn a_failed_run_journals_exactly_one_run_failed_with_the_cause() {
+    // §6.1/§7.1: a run that fails must leave an append-only `run_failed`
+    // journal event, not only a materialized-row status — every terminal
+    // outcome is a timeline event.
+    let tmp = tempfile::tempdir().unwrap();
+    let spec = spec_of(vec![step("plan", Gate::Commit)], None);
+    let fx = scaffold(tmp.path(), "run-f", "wf/demo-f", &spec);
+    let driver = Stub::new(
+        Behavior {
+            fail_spawn: true,
+            ..Default::default()
         },
-        Gate::Tests,
-        Gate::Approval {
-            require: vec![],
-            artifact: None,
-        },
-    ] {
-        let spec = spec_of(vec![Block::Step(step("a", gate))], None);
-        assert!(!kernel_eligible(&spec));
-    }
-
-    // A block kind the kernel doesn't execute.
-    let parallel = spec_of(
-        vec![Block::Parallel(Parallel {
-            join: Join::All,
-            integrate: Integrate::None,
-            max_concurrent: None,
-            steps: vec![step("a", Gate::Commit)],
-        })],
-        None,
+        blackboard::blackboard_dir(&fx.run_dir),
+        vec!["plan".into()],
     );
-    assert!(!kernel_eligible(&parallel));
+    let ctx = ctx_with(&fx, driver);
 
-    // Nothing to run is not the kernel's business either.
-    assert!(!kernel_eligible(&spec_of(vec![], None)));
+    run_kernel(&ctx, "run-f").await;
+
+    let (n, err): (i64, Option<String>) = fx
+        .db
+        .lock()
+        .query_row(
+            "SELECT COUNT(*), MAX(json_extract(payload_json,'$.error'))
+                 FROM wf_event WHERE run_id='run-f' AND type=?1",
+            [event_type::RUN_FAILED],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "one run_failed event");
+    assert!(
+        err.as_deref().is_some_and(|e| e.contains("spawn failed")),
+        "run_failed payload carries the cause, got {err:?}"
+    );
 }
 
-#[test]
-fn routing_reads_the_runs_frozen_spec() {
+#[tokio::test]
+async fn a_spec_this_build_cannot_read_fails_the_run_naming_what_is_unsupported() {
+    // A run launched for the deleted clone-per-step engine keeps its frozen
+    // spec; the kernel refuses it loudly rather than running part of it.
     let tmp = tempfile::tempdir().unwrap();
-    let eligible = spec_of(vec![Block::Step(step("a", Gate::Commit))], None);
-    let ineligible = spec_of(vec![Block::Step(step("a", Gate::Tests))], None);
-    let db = crate::database::init(tmp.path()).unwrap();
-    let insert = |conn: &rusqlite::Connection, id: &str, spec: &Spec| {
-        conn.execute(
-            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
-                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
-             VALUES (?1,'demo',?2,'t','p','/tmp/r','/tmp/d','wf/x','sha','pending','{}','{}',0,0)",
-            rusqlite::params![id, serde_json::to_string(spec).unwrap()],
+    let spec = spec_of(vec![step("plan", Gate::Commit)], None);
+    let fx = scaffold(tmp.path(), "run-u", "wf/demo-u", &spec);
+    fx.db
+        .lock()
+        .execute(
+            "UPDATE wf_run SET spec_json = ?1 WHERE id = 'run-u'",
+            [serde_json::json!({
+                "version": 1,
+                "name": "demo",
+                "agents": { "coder": { "base": "codex" } },
+                "workflow": [{ "loop": { "max": 2, "until": { "step": "plan" }, "body": [] } }],
+            })
+            .to_string()],
         )
         .unwrap();
-    };
-    {
-        let conn = db.lock();
-        insert(&conn, "kernel", &eligible);
-        insert(&conn, "legacy", &ineligible);
-        conn.execute(
-            "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
-                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
-             VALUES ('broken','demo','not json','t','p','/tmp/r','/tmp/d','wf/x','sha',
-                     'pending','{}','{}',0,0)",
-            [],
-        )
-        .unwrap();
-    }
+    let driver = Stub::new(
+        Behavior::default(),
+        blackboard::blackboard_dir(&fx.run_dir),
+        vec!["plan".into()],
+    );
+    let ctx = ctx_with(&fx, driver.clone());
 
-    assert!(routes_to_kernel(&db, "kernel"));
-    assert!(!routes_to_kernel(&db, "legacy"));
-    // An unreadable spec and a missing run both belong to the old engine, which
-    // owns reporting that failure.
-    assert!(!routes_to_kernel(&db, "broken"));
-    assert!(!routes_to_kernel(&db, "nope"));
+    run_kernel(&ctx, "run-u").await;
+
+    let (status, error) = run_status(&fx.db, "run-u");
+    assert_eq!(status, "failed");
+    let error = error.unwrap();
+    assert!(error.contains("loop"), "{error}");
+    assert!(driver.adopted().is_empty(), "nothing ran");
 }

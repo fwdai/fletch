@@ -72,7 +72,7 @@ records. History is stored once, and children reference it.
   serve, so desktop and mobile get them unchanged. They are two reads rather
   than one because each command needs only its half, and records are the
   expensive half. Every internal read (ingestion, turn matching,
-  `last_activity`, record counts, usage, workflow ledger) stays
+  `last_activity`, record counts, usage) stays
   own-session-only.
 - **Usage** counts only records with `inherited == false`. A workspace's
   recorded spend also counts the own records of the sessions it superseded

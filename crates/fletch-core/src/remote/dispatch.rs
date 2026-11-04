@@ -91,7 +91,7 @@ pub const RESPONSE_TOO_LARGE: &str = "response too large";
 pub const WORKFLOWS_UNAVAILABLE: &str = "this host is not running the workflow scheduler";
 
 /// What the workflow and roadmap *flows* still cannot reach remotely, with the
-/// reason each one stays off. All 48 `wf_*`/`roadmap_*` commands themselves are
+/// reason each one stays off. Every `wf_*`/`roadmap_*` command itself is
 /// exposed — none opens a dialog, touches desktop-only state or is a host
 /// policy decision — so what is left here is the ops those surfaces call from
 /// *other* command families, which keep the exclusions their own family has.
@@ -211,14 +211,7 @@ pub const OPS: &[&str] = &[
     "wf_run_agents",
     "wf_launch",
     "wf_cancel",
-    "wf_resume",
-    "wf_retry",
-    "wf_approve",
-    "wf_reject",
-    "wf_run_diff",
-    "wf_resolve_conflict",
     "wf_delete_run",
-    "wf_answer",
     "wf_def_save",
     "wf_def_list",
     "wf_def_delete",
@@ -543,14 +536,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("wf_run_agents", Scope::Workflows),
     ("wf_launch", Scope::Workflows),
     ("wf_cancel", Scope::Workflows),
-    ("wf_resume", Scope::Workflows),
-    ("wf_retry", Scope::Workflows),
-    ("wf_approve", Scope::Workflows),
-    ("wf_reject", Scope::Workflows),
-    ("wf_run_diff", Scope::Observe),
-    ("wf_resolve_conflict", Scope::Workflows),
     ("wf_delete_run", Scope::Workflows),
-    ("wf_answer", Scope::Workflows),
     ("wf_def_save", Scope::Workflows),
     ("wf_def_list", Scope::Observe),
     ("wf_def_delete", Scope::Workflows),
@@ -1393,7 +1379,7 @@ impl Dispatch for SupervisorDispatch {
                 // first and passes what `attachment_end` answered.
                 "wf_launch" => {
                     let a: WfLaunchArgs = parse(args)?;
-                    ok(crate::workflow::scheduler::wf_launch_impl(
+                    ok(crate::workflow::service::wf_launch_impl(
                         a.spec,
                         a.task,
                         a.project_id,
@@ -1411,70 +1397,9 @@ impl Dispatch for SupervisorDispatch {
                 "wf_cancel" => {
                     let a: RunArgs = parse(args)?;
                     ok(
-                        crate::workflow::scheduler::wf_cancel_impl(a.run_id, &workflows(ctx)?)
+                        crate::workflow::service::wf_cancel_impl(a.run_id, &workflows(ctx)?)
                             .await?,
                     )
-                }
-
-                "wf_resume" => {
-                    let a: WfResumeArgs = parse(args)?;
-                    ok(crate::workflow::scheduler::wf_resume_impl(
-                        a.run_id,
-                        a.budget_patch,
-                        &workflows(ctx)?,
-                    )
-                    .await?)
-                }
-
-                "wf_retry" => {
-                    let a: RunArgs = parse(args)?;
-                    ok(
-                        crate::workflow::scheduler::wf_retry_impl(a.run_id, &workflows(ctx)?)
-                            .await?,
-                    )
-                }
-
-                "wf_approve" => {
-                    let a: RunArgs = parse(args)?;
-                    ok(
-                        crate::workflow::scheduler::wf_approve_impl(a.run_id, &workflows(ctx)?)
-                            .await?,
-                    )
-                }
-
-                "wf_reject" => {
-                    let a: WfRejectArgs = parse(args)?;
-                    ok(crate::workflow::scheduler::wf_reject_impl(
-                        a.run_id,
-                        a.note,
-                        &workflows(ctx)?,
-                    )
-                    .await?)
-                }
-
-                "wf_run_diff" => {
-                    let a: WfRunDiffArgs = parse(args)?;
-                    ok(crate::workflow::scheduler::wf_run_diff_impl(
-                        a.run_id,
-                        a.from_sha,
-                        a.to_sha,
-                        a.path,
-                        &workflows(ctx)?,
-                    )
-                    .await?)
-                }
-
-                // `mode: "human"` says the conflict was resolved by hand in the
-                // host's own integration worktree, so a remote client without a
-                // shell there sends `"agent"`; the host rules on it either way.
-                "wf_resolve_conflict" => {
-                    let a: WfConflictArgs = parse(args)?;
-                    ok(crate::workflow::scheduler::wf_resolve_conflict_impl(
-                        a.run_id,
-                        a.mode,
-                        &workflows(ctx)?,
-                    )
-                    .await?)
                 }
 
                 // Destructive, like `discard_agent`: the run's step agents,
@@ -1482,22 +1407,10 @@ impl Dispatch for SupervisorDispatch {
                 // the command calls, so there is no softer remote variant.
                 "wf_delete_run" => {
                     let a: RunArgs = parse(args)?;
-                    ok(crate::workflow::scheduler::wf_delete_run_impl(
+                    ok(crate::workflow::service::wf_delete_run_impl(
                         a.run_id,
                         &workflows(ctx)?,
                         sup,
-                    )
-                    .await?)
-                }
-
-                "wf_answer" => {
-                    let a: WfAnswerArgs = parse(args)?;
-                    ok(crate::workflow::comms::wf_answer_impl(
-                        a.project_id,
-                        a.run_id,
-                        a.message_id,
-                        a.body,
-                        &workflows(ctx)?,
                     )
                     .await?)
                 }
@@ -2287,7 +2200,7 @@ fn remote_purpose(purpose: Option<String>) -> Option<String> {
 /// published it is equally assumed.
 fn workflows(
     ctx: &EngineCtx,
-) -> std::result::Result<Arc<crate::workflow::scheduler::WorkflowService>, String> {
+) -> std::result::Result<Arc<crate::workflow::service::WorkflowService>, String> {
     ctx.workflows()
         .ok_or_else(|| WORKFLOWS_UNAVAILABLE.to_string())
 }
@@ -3144,50 +3057,6 @@ struct WfLaunchArgs {
     attachments: Vec<String>,
     #[serde(default)]
     issue_ref: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WfResumeArgs {
-    run_id: String,
-    /// Additively raises the run-level caps before re-driving; absent resumes
-    /// on the budget the run already has.
-    #[serde(default)]
-    budget_patch: Option<crate::workflow::spec::Budgets>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WfRejectArgs {
-    run_id: String,
-    note: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WfRunDiffArgs {
-    run_id: String,
-    from_sha: String,
-    to_sha: String,
-    #[serde(default)]
-    path: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WfConflictArgs {
-    run_id: String,
-    /// `"agent"` or `"human"`; the host rules on anything else.
-    mode: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WfAnswerArgs {
-    project_id: String,
-    run_id: String,
-    message_id: String,
-    body: String,
 }
 
 #[derive(Deserialize)]

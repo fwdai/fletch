@@ -36,7 +36,6 @@ function item(over: Partial<RoadmapItem> & { id: string }): RoadmapItem {
 function run(over: Partial<WfRun> & { id: string }): WfRun {
   return {
     definition_id: null,
-    parent_run_id: null,
     name: `run-${over.id}`,
     spec: null,
     task: "",
@@ -46,10 +45,6 @@ function run(over: Partial<WfRun> & { id: string }): WfRun {
     branch: "wf/x",
     base_sha: "abc",
     status: "running",
-    paused_reason: null,
-    cursor: null,
-    budgets: null,
-    spent: null,
     error: null,
     pr_number: null,
     pr_url: null,
@@ -114,28 +109,6 @@ describe("buildInFlight — active rows", () => {
         startedAt: 5_000,
       },
     ]);
-  });
-
-  it("names a pause in the same words the item card's chip uses", () => {
-    const rail = railOf(item({ id: "a", run_id: "r" }), {
-      runsById: new Map([["r", run({ id: "r", status: "paused", paused_reason: "approval" })]]),
-    });
-    expect(rail[0]).toMatchObject({
-      state: "paused — needs approval",
-      tone: "warn",
-      building: false,
-    });
-  });
-
-  it("calls a pause with no recorded reason a pause, not motion", () => {
-    // The reason is what names the pause; without one there is still nothing
-    // happening, and the old guard let this row through as "running".
-    const rail = railOf(item({ id: "a", run_id: "r" }), {
-      runsById: new Map([["r", run({ id: "r", status: "paused", paused_reason: null })]]),
-    });
-    expect(rail[0]).toMatchObject({ state: "paused", tone: "warn", building: false });
-    // Keeps its clock: that elapsed time is what the pause is costing.
-    expect(rail[0].startedAt).toBe(1_000);
   });
 
   it("says a run failed rather than showing it as still running", () => {

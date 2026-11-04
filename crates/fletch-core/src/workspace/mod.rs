@@ -322,7 +322,7 @@ pub struct AgentRecord {
     #[serde(default)]
     pub account: Option<String>,
     /// The workflow run that owns this agent, when it was spawned as a
-    /// workflow step (see `workflow::scheduler`). Run-owned agents are hidden
+    /// workflow step (see `workflow::service`). Run-owned agents are hidden
     /// from the normal sidebar (they render under their run) and are cleaned up
     /// by `wf_delete_run` rather than by DB cascade. `None` for a normal,
     /// user-spawned agent.

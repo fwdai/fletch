@@ -1,9 +1,9 @@
 // The run list's load ordering. The bug these cover: `useRuns` fetched its
 // snapshot and subscribed concurrently, so a `wf:run` that arrived while the
-// fetch was in flight was clobbered by the wholesale replace. For a *paused* run
-// there is no follow-up event to repair that — it is waiting on a human — so the
-// pause stayed invisible until something else moved the row, in the sidebar, in
-// Mission Control, and on the roadmap board at once.
+// fetch was in flight was clobbered by the wholesale replace. For a *finished*
+// run there is no follow-up event to repair that, so the stale state stayed on
+// screen until something else moved the row, in the sidebar and on the roadmap
+// board at once.
 
 import { describe, expect, it } from "vitest";
 import type { WfRun } from "@/api";
@@ -12,7 +12,6 @@ import { createRunSync } from "./useRuns";
 function run(over: Partial<WfRun> & { id: string }): WfRun {
   return {
     definition_id: null,
-    parent_run_id: null,
     name: `run-${over.id}`,
     spec: null,
     task: "",
@@ -22,10 +21,6 @@ function run(over: Partial<WfRun> & { id: string }): WfRun {
     branch: "wf/x",
     base_sha: "abc",
     status: "running",
-    paused_reason: null,
-    cursor: null,
-    budgets: null,
-    spent: null,
     error: null,
     pr_number: null,
     pr_url: null,
@@ -53,23 +48,23 @@ function sink() {
 }
 
 describe("createRunSync", () => {
-  it("keeps a pause that arrived while the snapshot was in flight", () => {
+  it("keeps a terminal flip that arrived while the snapshot was in flight", () => {
     const s = sink();
 
-    // The run pauses on a question the moment after the backend read its rows.
+    // The run fails the moment after the backend read its rows.
     s.sync.push({
       kind: "upsert",
-      row: run({ id: "a", status: "paused", paused_reason: "question", updated_at: 5 }),
+      row: run({ id: "a", status: "failed", error: "gate unmet", updated_at: 5 }),
     });
     expect(s.rows).toEqual([]); // nothing committed until the snapshot lands
 
     // The stale snapshot still says `running` — the replay must win, because no
-    // further `wf:run` is coming for a run that is waiting on a human.
+    // further `wf:run` is coming for a run that has finished.
     s.sync.settle([run({ id: "a", status: "running", updated_at: 1 })]);
 
     expect(s.rows).toHaveLength(1);
-    expect(s.rows[0].status).toBe("paused");
-    expect(s.rows[0].paused_reason).toBe("question");
+    expect(s.rows[0].status).toBe("failed");
+    expect(s.rows[0].error).toBe("gate unmet");
   });
 
   it("does not let the snapshot resurrect a run deleted during the load", () => {

@@ -40,14 +40,12 @@ impl EngineKind {
                 shares_host_fs: true,
                 share_roots: None,
                 run_panel: true,
-                workflow_steps: true,
             },
             Self::Box => EngineCaps {
                 checkout_on_host: false,
                 shares_host_fs: false,
                 share_roots: Some(&["/Users", "/Volumes"]),
                 run_panel: true,
-                workflow_steps: false,
             },
         }
     }
@@ -83,9 +81,6 @@ pub struct EngineCaps {
     /// checkout (seatbelt), or in the guest that holds the checkout with the
     /// server's port forwarded to the host (a box, `sandbox::guest_run`).
     pub run_panel: bool,
-    /// The agent can be a workflow step. A step forks from the run repo, a
-    /// host path a guest cannot see.
-    pub workflow_steps: bool,
 }
 
 pub struct AgentLaunchCtx<'a> {
@@ -435,7 +430,6 @@ mod tests {
             vec![],
             "every engine runs the Run panel's process"
         );
-        assert_eq!(with(|k| !k.caps().workflow_steps), vec![Box]);
     }
 
     #[test]

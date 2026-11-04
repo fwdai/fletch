@@ -672,7 +672,7 @@ The six scopes, and what each one covers:
 | `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `list_provider_accounts`, `get_provider_limits`, `refresh_provider_limits` (a vendor read the host stores, as its own Refresh button does), `scan_usage_transcripts`, `approvals_list`, `get_settings`, `get_project_settings` |
 | `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, switch the provider account (`switch_agent_account`), dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`, `clear_checkout_config`), and choosing which of a checkout's PRs is focused (`set_focused_pr`) |
 | `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; every project setting (`set_project_setting`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides, and which provider account the host's agents run under (`set_active_provider_account`) |
-| `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
+| `workflows` | launch, cancel and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
 | `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be — and `autopilot_set`, for the same reason: an enrolled checkout's pushes skip the prompt (see "Autopilot"), so switching autopilot on is a standing publish grant; plus the five settings that decide how a publish happens: `set_publish_confirmation`, `set_publish_approval_wait`, `set_branch_prefix`, `set_draft_prs`, `set_agent_attribution_removed` |
 
@@ -733,7 +733,9 @@ older than the other. The rules that make that safe:
   keys. So `protocol.version` stays **2** across an addition: putting the whole
   `wf_*` / `roadmap_*` surface and its 14 new events on the wire added rows and
   names and repurposed nothing, and an older client is unaffected because it
-  gates on the names it knows.
+  gates on the names it knows. A removal surfaces the same way: when the
+  clone-per-step workflow engine was deleted, its run-control ops left `ops`
+  with it, and a client gating on `ops` finds them absent.
 - **`protocol` says what this host answers.** `{ version, ops, events, features }`:
   `ops` is every name the device may send (the dispatcher's allowlist plus the
   ops the session layer answers itself), `events` the forwarded-event whitelist,
@@ -853,14 +855,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `wf_run_agents` | `{ runId }` — a run's step agents, live and archived; they are hidden from `get_workspace`, so the monitor reads them here | `AgentRecord[]` |
 | `wf_launch` | as command — `attachments` are host paths from `attachment_end`, exactly as `send_user_message` takes them; the host resolves `projectId` from `repoPath` itself | `string` (the new run id) |
 | `wf_cancel` | `{ runId }` | `null` |
-| `wf_resume` | `{ runId, budgetPatch? }` — the patch additively raises the run-level caps | `null` |
-| `wf_retry` | `{ runId }` | `null` |
-| `wf_approve` | `{ runId }` | `null` |
-| `wf_reject` | `{ runId, note }` | `null` |
-| `wf_run_diff` | `{ runId, fromSha, toSha, path? }` — read-only, inside the run's own repo | `string` |
-| `wf_resolve_conflict` | `{ runId, mode: "agent" \| "human" }` — `"human"` says the conflict was already resolved by hand in the host's integration worktree, so a client without a shell there sends `"agent"` | `null` |
-| `wf_delete_run` | `{ runId }` — destructive: the run's step agents and their chats, its directory and its rows all go; refused while any run in the tree is active | `null` |
-| `wf_answer` | `{ projectId, runId, messageId, body }` | `null` |
+| `wf_delete_run` | `{ runId }` — destructive: the run's step agents and their chats, its directory and its rows all go; refused while the run is active | `null` |
 | `wf_def_save` | `{ spec, id?, hue? }` — omit `id` to create; an existing id edits in place | `Definition` |
 | `wf_def_list` | `{}` | `Definition[]` |
 | `wf_def_delete` | `{ id }` — in-flight runs keep their own launch snapshot | `null` |
@@ -1104,7 +1099,7 @@ unconditional twin, for the board's own Remove.
 
 Workflows and the roadmap board are on the wire whole, so a paired desktop or
 phone drives autopilot, workflows and planning against a headless host
-(docs/multi-host-plan.md §5.3, item 2). All 18 `wf_*` and 30 `roadmap_*`
+(docs/multi-host-plan.md §5.3, item 2). All 11 `wf_*` and 30 `roadmap_*`
 commands have a row above, plus `wf_run_agents` and the remote-only
 `roadmap_discard_proposal`: none of them opens a dialog on the host, touches
 desktop-only state, or is a host policy decision, so there was nothing to
@@ -1178,7 +1173,7 @@ it:
 | `workflow.default` | the roadmap queue, the workflow composer | a definition id |
 | `roadmap.autoqueue` | the roadmap queue | `"1"` on; absent off |
 | `roadmap.max_concurrent` | the roadmap queue | an integer; absent is one |
-| `roadmap.settle_review`, `roadmap.midrun_awareness` | the PM's review | `"0"` off; absent on |
+| `roadmap.settle_review` | the PM's review | `"0"` off; absent on |
 | `roadmap.declined_issues` | the issue funnel | JSON array of issue URLs |
 | `linear.team_id`, `linear.team_name` | the issue inbox and picker | a Linear team id; its display name |
 | `context.enabled`, `context.extract` | the context layer (its ops, instruction block, ingesters) and its background extractor | `"false"` off; absent on |

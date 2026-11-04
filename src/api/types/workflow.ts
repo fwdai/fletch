@@ -2,15 +2,7 @@
 // Mirror the serialized Rust rows in src-tauri/src/workflow/types.rs.
 // JSON-typed columns arrive as parsed objects (`unknown`), not strings.
 
-export type WfRunStatus = "pending" | "running" | "paused" | "done" | "failed" | "canceled";
-
-export type WfPausedReason =
-  | "approval"
-  | "question"
-  | "blocked_gate"
-  | "budget_exceeded"
-  | "conflict"
-  | "stalled";
+export type WfRunStatus = "pending" | "running" | "done" | "failed" | "canceled";
 
 export type WfAttemptStatus =
   | "pending"
@@ -23,14 +15,9 @@ export type WfAttemptStatus =
   | "error"
   | "abandoned";
 
-export type WfMessageKind = "report" | "ask" | "answer" | "notify" | "decision";
-
-export type WfMessageStatus = "queued" | "delivered" | "answered" | "expired";
-
 export interface WfRun {
   id: string;
   definition_id: string | null;
-  parent_run_id: string | null;
   name: string;
   spec: unknown;
   task: string;
@@ -40,10 +27,6 @@ export interface WfRun {
   branch: string;
   base_sha: string;
   status: WfRunStatus;
-  paused_reason: WfPausedReason | null;
-  cursor: unknown | null;
-  budgets: unknown;
-  spent: unknown;
   error: string | null;
   /** The PR this run's finalize opened, when it opened one. Null for a
    *  `push`-only spec, a `pr create` that failed, and every run that never
@@ -85,22 +68,9 @@ export interface WfEvent {
   payload: unknown;
 }
 
-export interface WfMessage {
-  id: string;
-  run_id: string;
-  from_step_exec_id: string | null;
-  to_step_exec_id: string | null;
-  kind: WfMessageKind;
-  body: unknown;
-  status: WfMessageStatus;
-  created_at: number;
-  delivered_at: number | null;
-}
-
 export interface WfRunDetail {
   run: WfRun;
   attempts: WfStepExec[];
-  messages: WfMessage[];
 }
 
 /** `wf:event` envelope (§7.2): the addressing fields only — fetch the payload

@@ -97,7 +97,7 @@ Report findings, not impressions:
 - No style, naming or formatting nits unless asked. Note a simplification only when it removes a real risk.
 - When nothing material is wrong, say so plainly and approve. A padded review costs more than a short one.
 
-Never edit, commit or publish anything: you are reading, and the author is who acts on what you find. When you run as a workflow step, write the step's verdict.json with result "done" when the change is sound, or "revise" with your findings.`,
+Never edit, commit or publish anything: you are reading, and the author is who acts on what you find. When you run as a workflow step, write the step's verdict.json with result "done", a one-line summary, and your findings in detail: the next step acts on them, so review feedback never stops the run.`,
   skillIds: [],
   mcpServerIds: [],
 };
@@ -165,7 +165,7 @@ export const STARTER_AGENTS: AgentPreset[] = [
 - Where practical, exercise the real flow the change touches, not only unit tests.
 - Distinguish pre-existing failures from ones this change introduced.
 - Keep tests deterministic and fast; avoid flaky sleeps and network dependence.
-- The tests gate passes only when the project test command exits cleanly.`,
+- Report the step done only when the project test command exits cleanly.`,
       skillIds: [],
       mcpServerIds: [],
     },
@@ -179,14 +179,15 @@ export const STARTER_WORKFLOW_NAME = "Feature pipeline";
 export const STARTER_WORKFLOW_HUE = 265;
 
 /** Build the "Feature pipeline" spec, wiring each alias to the seeded custom
- *  agent's local id (`idByRole`). Architect → Coder → Parallel[Reviewer,
- *  Tester] → an approval-gated ship step, ending in push + open PR. */
+ *  agent's local id (`idByRole`). One agent after another in the shared
+ *  workspace — Architect → Coder → Reviewer → Tester → Coder (ship) — ending in
+ *  push + open PR. */
 export function buildFeaturePipelineSpec(idByRole: Record<string, string>): Spec {
   const alias = (role: string) => ({ base, custom_agent: idByRole[role] });
   return {
     version: SPEC_VERSION,
     name: STARTER_WORKFLOW_NAME,
-    description: "Plan, implement, then review and test in parallel before an approved ship.",
+    description: "Plan, implement, review, test, then ship — one agent after another.",
     agents: {
       architect: alias("Architect"),
       coder: alias("Coder"),
@@ -198,8 +199,8 @@ export function buildFeaturePipelineSpec(idByRole: Record<string, string>): Spec
         step: {
           id: "plan",
           agent: "architect",
-          goal: "Analyze the task and write PLAN.md describing small, independently testable slices in dependency order. The run pauses on PLAN.md for human review before implementation.",
-          gate: { type: "approval", artifact: "PLAN.md" },
+          goal: "Analyze the task and write PLAN.md describing small, independently testable slices in dependency order.",
+          gate: { type: "verdict" },
         },
       },
       {
@@ -211,31 +212,27 @@ export function buildFeaturePipelineSpec(idByRole: Record<string, string>): Spec
         },
       },
       {
-        parallel: {
-          join: "all",
-          integrate: "none",
-          steps: [
-            {
-              id: "review",
-              agent: "reviewer",
-              goal: "Review the full diff vs the run base. Write verdict.json with result done or revise plus concrete feedback.",
-              gate: { type: "verdict" },
-            },
-            {
-              id: "test",
-              agent: "tester",
-              goal: "Run the project's tests and add coverage for the change. The step passes only when tests are green.",
-              gate: { type: "tests" },
-            },
-          ],
+        step: {
+          id: "review",
+          agent: "reviewer",
+          goal: "Review the full diff vs the run base. Write verdict.json with result done, a one-line summary, and concrete file-and-line findings in detail for the next step to address.",
+          gate: { type: "verdict" },
+        },
+      },
+      {
+        step: {
+          id: "test",
+          agent: "tester",
+          goal: "Run the project's tests and add coverage for the change. The step passes only when tests are green.",
+          gate: { type: "verdict" },
         },
       },
       {
         step: {
           id: "ship",
           agent: "coder",
-          goal: "Address review and test feedback, then prepare the change for merge. Waits for human approval.",
-          gate: { type: "approval" },
+          goal: "Address review and test feedback, then prepare the change for merge. Commit the work.",
+          gate: { type: "commit" },
         },
       },
     ],

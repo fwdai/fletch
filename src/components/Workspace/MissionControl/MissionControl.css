@@ -1,6 +1,6 @@
 /* Mission Control — the fleet review queue (Home). Tokens only: no hardcoded
- * colors or font-sizes, so it reads as one system with the sidebar, ReviewSurface,
- * and empty states in both themes. Quiet until something needs attention; the
+ * colors or font-sizes, so it reads as one system with the sidebar and empty
+ * states in both themes. Quiet until something needs attention; the
  * focused card gets a subtle accent rail + tint for keyboard triage. */
 
 .mc-scroll {
@@ -96,18 +96,6 @@
   font-size: var(--fs-sm);
   color: var(--fg-1);
   min-width: 0;
-}
-
-/* workflow identity glyph — mirrors the .ag-prov-chip footprint */
-.mc-wf-chip {
-  width: 18px;
-  height: 18px;
-  border-radius: var(--r-xs);
-  justify-content: center;
-  flex-shrink: 0;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-line);
 }
 
 /* ── evidence chips ───────────────────────────────────────────────────────── */

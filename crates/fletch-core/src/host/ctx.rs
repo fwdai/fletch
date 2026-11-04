@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 use crate::host::Sink;
 use crate::roadmap::Db;
 use crate::supervisor::Supervisor;
-use crate::workflow::scheduler::WorkflowService;
+use crate::workflow::service::WorkflowService;
 
 /// The engine's view of its host. One instance per process, held as
 /// `Arc<EngineCtx>` by everything the engine spawns.
