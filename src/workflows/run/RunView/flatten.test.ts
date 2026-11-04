@@ -140,12 +140,15 @@ describe("flattenSteps", () => {
     ]);
     const attempts = [
       { step_id: "ship" },
+      { step_id: "__merge_1" },
       { step_id: "__resolve_1" },
       { step_id: "__merge_0" },
       { step_id: "__resolve_0" },
       { step_id: "review" },
     ];
     const steps = flattenSteps(old, attempts);
+    // Both block kinds integrated through the same machinery: resolver, then
+    // merge, then whatever block came next.
     expect(steps.map((s) => s.id)).toEqual([
       "review",
       "test",
@@ -154,6 +157,7 @@ describe("flattenSteps", () => {
       "orchestrate-1",
       "child-a",
       "__resolve_1",
+      "__merge_1",
       "ship",
     ]);
     // The parallel resolver ran as the conflicted child's agent, the
@@ -168,7 +172,49 @@ describe("flattenSteps", () => {
       [1, 0],
       [1, 1],
       [1, 2],
+      [1, 3],
       [2, 0],
     ]);
+  });
+
+  it("attributes a parallel resolver to the branch whose agent actually ran it", () => {
+    // The engine sent the conflicted child's own agent; the exec row only
+    // names the agent record, whose provider or custom agent tells the
+    // branches apart.
+    const old: Spec = {
+      version: 1,
+      name: "s",
+      agents: {
+        reviewer: { base: "claude", custom_agent: "ca-reviewer" },
+        tester: { base: "codex" },
+        coder: { base: "claude" },
+      },
+      workflow: [
+        legacy({
+          parallel: {
+            steps: [
+              { id: "review", agent: "reviewer", goal: "g" },
+              { id: "test", agent: "tester", goal: "g" },
+              { id: "code", agent: "coder", goal: "g" },
+            ],
+          },
+        }),
+      ],
+    };
+    const resolver = (agentId: string) =>
+      flattenSteps(
+        old,
+        [{ step_id: "__resolve_0", agent_id: agentId }],
+        [
+          { id: "ag-tester", provider: "codex" },
+          { id: "ag-coder", provider: "claude", custom_agent_id: null },
+          { id: "ag-reviewer", provider: "claude", custom_agent_id: "ca-reviewer" },
+        ],
+      ).find((s) => s.id === "__resolve_0")?.agentAlias;
+    expect(resolver("ag-tester")).toBe("tester");
+    expect(resolver("ag-coder")).toBe("coder");
+    expect(resolver("ag-reviewer")).toBe("reviewer");
+    // No record to go on: the first branch stands in.
+    expect(resolver("ag-gone")).toBe("reviewer");
   });
 });

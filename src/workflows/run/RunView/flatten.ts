@@ -3,7 +3,7 @@
 // Attempts key on `step_id`, so each entry is the step's id plus what those
 // surfaces show about it.
 
-import type { Spec, Step } from "../../spec";
+import type { AgentSpec, Spec, Step } from "../../spec";
 
 export interface StepDesc {
   id: string;
@@ -25,6 +25,15 @@ export interface StepDesc {
  *  run created on the fly. */
 interface AttemptRef {
   step_id: string;
+  agent_id?: string | null;
+}
+
+/** A run-owned agent record, as far as the walker needs it to tell which
+ *  spec alias an attempt's agent was spawned from. */
+interface AgentIdentity {
+  id: string;
+  provider: string;
+  custom_agent_id?: string | null;
 }
 
 /** A block as a run's frozen launch snapshot may still hold it. The retired
@@ -40,9 +49,9 @@ interface LegacyBlock {
 }
 
 /** The ids the retired engine gave the stages it ran beside the spec's own
- *  steps: a parallel block's integration merge, the agent it sent in when that
- *  merge (or an orchestrate block's) conflicted, an orchestrate block's
- *  orchestrator, and the children the orchestrator spawned on request. */
+ *  steps: the integration merge of a parallel or orchestrate block, the agent
+ *  it sent in when that merge conflicted, an orchestrate block's orchestrator,
+ *  and the children the orchestrator spawned on request. */
 const LEGACY_MERGE_PREFIX = "__merge_";
 const LEGACY_RESOLVE_PREFIX = "__resolve_";
 const LEGACY_ORCHESTRATOR_PREFIX = "orchestrate-";
@@ -50,7 +59,11 @@ const LEGACY_DYNAMIC_CHILD_INFIX = "::dyn-";
 
 class Walker {
   readonly out: StepDesc[] = [];
-  constructor(private readonly attempts: AttemptRef[]) {}
+  constructor(
+    private readonly aliases: Record<string, AgentSpec>,
+    private readonly attempts: AttemptRef[],
+    private readonly records: AgentIdentity[],
+  ) {}
 
   topLevel(blocks: LegacyBlock[]): void {
     blocks.forEach((b, i) => {
@@ -86,6 +99,44 @@ class Walker {
     return true;
   }
 
+  /** The tail of a parallel or orchestrate block as the engine ran it: the
+   *  resolver it sent in when the merge conflicted, then the merge itself —
+   *  each only when recorded, both before the next block. */
+  private integration(index: number, resolverAlias: string, what: string, position: number) {
+    let next = position;
+    if (
+      this.stage(
+        `${LEGACY_RESOLVE_PREFIX}${index}`,
+        resolverAlias,
+        `Resolve the conflicts the merge of the ${what} left.`,
+        index,
+        next,
+      )
+    ) {
+      next += 1;
+    }
+    this.stage(`${LEGACY_MERGE_PREFIX}${index}`, "", `Integrate the ${what}.`, index, next);
+  }
+
+  /** Which of `candidates` the engine sent to resolve a parallel block's
+   *  conflict: it used the conflicted child's own agent, and the exec row does
+   *  not say which child that was. The attempt's agent record does, by what
+   *  it was spawned from — its custom agent, else its bare provider — so the
+   *  candidate whose spec matches is the one; the first candidate stands in
+   *  when nothing matches (no record yet, a hand-edited spec). */
+  private resolverAlias(id: string, candidates: Step[]): string {
+    const first = candidates[0]?.agent ?? "";
+    const agentId = this.attempts.find((a) => a.step_id === id && a.agent_id)?.agent_id;
+    const record = agentId ? this.records.find((r) => r.id === agentId) : undefined;
+    if (!record) return first;
+    const spawnedFrom = (spec: AgentSpec | undefined) =>
+      !!spec &&
+      (spec.custom_agent
+        ? spec.custom_agent === record.custom_agent_id
+        : !record.custom_agent_id && spec.base === record.provider);
+    return candidates.find((s) => spawnedFrom(this.aliases[s.agent]))?.agent ?? first;
+  }
+
   private block(b: LegacyBlock, index: number): void {
     if (b.step) {
       this.push(b.step, index, 0);
@@ -94,29 +145,11 @@ class Walker {
       steps.forEach((s, i) => {
         this.push(s, index, i);
       });
-      // The engine sent the conflicted child's own agent to resolve, then
-      // completed the merge. Which child conflicted is not on the exec row, so
-      // the resolver's alias is exact when the children share one and the
-      // first child's otherwise; the attempt's agent record still names the
-      // agent that actually ran.
-      let position = steps.length;
-      if (
-        this.stage(
-          `${LEGACY_RESOLVE_PREFIX}${index}`,
-          steps[0]?.agent ?? "",
-          "Resolve the conflicts the merge of the parallel work left.",
-          index,
-          position,
-        )
-      ) {
-        position += 1;
-      }
-      this.stage(
-        `${LEGACY_MERGE_PREFIX}${index}`,
-        "",
-        "Integrate the parallel steps' results.",
+      this.integration(
         index,
-        position,
+        this.resolverAlias(`${LEGACY_RESOLVE_PREFIX}${index}`, steps),
+        "parallel work",
+        steps.length,
       );
     } else if (b.loop) {
       let position = 0;
@@ -147,23 +180,22 @@ class Walker {
           position: body.length + 1 + i,
         });
       });
-      // A conflicted integration of the children's work was resolved by the
-      // orchestrator's own agent, after every child and before the next block.
-      this.stage(
-        `${LEGACY_RESOLVE_PREFIX}${index}`,
-        o.agent,
-        "Resolve the conflicts the merge of the children's work left.",
-        index,
-        body.length + 1 + dynamic.length,
-      );
+      // The orchestrator's own agent resolved a conflicted integration of the
+      // children's work.
+      this.integration(index, o.agent, "children's work", body.length + 1 + dynamic.length);
     }
   }
 }
 
-/** The spec's steps in document order — the rail's backbone. `attempts` lets
- *  a retired run's on-the-fly stages be named; a definition has none. */
-export function flattenSteps(spec: Spec | null, attempts: AttemptRef[] = []): StepDesc[] {
-  const walker = new Walker(attempts);
+/** The spec's steps in document order — the rail's backbone. `attempts` and
+ *  the run's `agents` let a retired run's on-the-fly stages be named and
+ *  attributed; a definition has neither. */
+export function flattenSteps(
+  spec: Spec | null,
+  attempts: AttemptRef[] = [],
+  agents: AgentIdentity[] = [],
+): StepDesc[] {
+  const walker = new Walker(spec?.agents ?? {}, attempts, agents);
   walker.topLevel(spec?.workflow ?? []);
   return walker.out;
 }
