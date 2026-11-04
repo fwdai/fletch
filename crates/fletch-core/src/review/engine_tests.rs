@@ -683,19 +683,16 @@ fn a_start_queued_behind_a_busy_coder_runs_once_it_is_free() {
         Trigger::PrOpen,
         "the first stays"
     );
-    assert_eq!(t.take_pending(false), None, "the coder is still busy");
-    let pending = t.take_pending(true).expect("free: the start runs");
+    let pending = t.claim_pending().expect("the start runs");
     assert_eq!(pending.trigger, Trigger::PrOpen);
     assert_ne!(t.derive(0), Phase::Queued);
+    assert!(t.starting, "taken and claimed in one step");
 
     let mut t = begun(Trigger::Manual, None);
     t.queue(Trigger::ReReview, None);
     assert_eq!(t.derive(0), Phase::Reviewing, "a flight outranks the queue");
-    assert_eq!(
-        t.take_pending(true),
-        None,
-        "never while a round is in flight"
-    );
+    assert_eq!(t.claim_pending(), None, "never while a round is in flight");
+    assert!(t.pending.is_some(), "and it stays queued");
     let mut failed = reviewed();
     failed.record_failure(FailureOrigin::Round, "boom", None);
     failed.queue(Trigger::Manual, None);
@@ -713,17 +710,16 @@ fn stopping_a_queued_start_cancels_it() {
     t.stop();
     assert_eq!(t.pending, None);
     assert_eq!(t.derive(0), Phase::Idle);
-    assert_eq!(t.take_pending(true), None);
+    assert_eq!(t.claim_pending(), None);
+    assert!(!t.starting, "nothing queued, nothing claimed");
 }
 
-/// A queued start that can't begin is recorded as a queued failure; one
-/// beaten by a round already on the checkout waits its turn again.
+/// A queued start that can't begin is recorded as a queued failure.
 #[test]
-fn a_queued_start_that_cannot_begin_reads_failed_or_waits_again() {
+fn a_queued_start_that_cannot_begin_reads_failed() {
     let mut t = Tracked::default();
     t.queue(Trigger::PrOpen, None);
-    let _ = t.take_pending(true).unwrap();
-    t.claim().unwrap();
+    let _ = t.claim_pending().unwrap();
     t.record_failure(
         FailureOrigin::Queued,
         "queued review not started: No reviewer is set up — pick one in Settings › Review",
@@ -734,14 +730,20 @@ fn a_queued_start_that_cannot_begin_reads_failed_or_waits_again() {
         t.error().as_deref(),
         Some("queued review not started: No reviewer is set up — pick one in Settings › Review")
     );
+}
 
-    let mut t = Tracked::default();
-    t.queue(Trigger::Manual, Some("ca-1".into()));
-    let pending = t.take_pending(true).unwrap();
-    t.requeue(pending.clone());
-    assert_eq!(t.pending, Some(pending), "put back, not failed");
-    assert_eq!(t.failure, None);
-    assert_eq!(t.derive(0), Phase::Queued);
+#[test]
+fn a_claim_is_refused_while_the_coder_is_busy_or_a_round_holds_the_checkout() {
+    let table = Table::default();
+    let key: Key = ("aare".into(), None);
+    assert_eq!(claim_if_free(&table, &key, || false), Claim::CoderBusy);
+    assert!(
+        !table.reviewing(&key),
+        "a busy coder leaves nothing claimed"
+    );
+    assert_eq!(claim_if_free(&table, &key, || true), Claim::Claimed);
+    assert!(table.reviewing(&key));
+    assert_eq!(claim_if_free(&table, &key, || true), Claim::AlreadyRunning);
 }
 
 #[test]

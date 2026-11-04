@@ -717,10 +717,51 @@ async fn deliver(
         .map(|_| ())
 }
 
-/// Hand `action` to the agent: compose the trigger, record the delegation, and
-/// send it now — or, while the agent is running, hold it for the driver to
-/// deliver when the turn settles.
-async fn delegate(
+/// What `delegate_git` is refused with while a local review holds the checkout.
+const REVIEW_HOLDS_CHECKOUT: &str =
+    "A local review is reading this checkout. Wait for it to finish, or stop it.";
+
+/// Who takes a checkout next is decided one at a time. A delegation and a local
+/// review each read the other's table and then write their own, so with
+/// nothing around those two steps both could find the checkout free.
+static ADMISSION: Mutex<()> = Mutex::new(());
+
+/// Decide who takes a checkout, with no other such decision in between. Never
+/// held across an await, and taken before either table's own lock.
+pub(crate) fn admit<T>(decide: impl FnOnce() -> T) -> T {
+    let _one_at_a_time = ADMISSION.lock();
+    decide()
+}
+
+/// Record a delegation on `key`, unless a local review holds it.
+fn record_unless_reviewed(
+    table: &Delegations,
+    reviews: &crate::review::engine::Table,
+    key: &Key,
+    kind: DelegationKind,
+    prompt: &str,
+    queued: bool,
+) -> Option<(u64, DelegationView)> {
+    admit(|| {
+        (!reviews.reviewing(key))
+            .then(|| table.record(key.clone(), kind, prompt.to_string(), queued, now_ms()))
+    })
+}
+
+/// A delegation that holds its checkout and has not been sent yet.
+pub(crate) struct Admitted {
+    key: Key,
+    id: u64,
+    prompt: String,
+    queued: bool,
+    shown: DelegationView,
+}
+
+/// Compose the trigger and record the delegation, which is what takes the
+/// checkout. `None` when a local review has it, with nothing recorded. Apart
+/// from [`run_admitted`], so a caller can act on the answer before the send
+/// (autopilot opens its cycle).
+pub(crate) fn admit_to(
     table: &Delegations,
     sup: &Arc<Supervisor>,
     ctx: &Arc<EngineCtx>,
@@ -728,7 +769,7 @@ async fn delegate(
     subdir: Option<&str>,
     action: &str,
     params: &BTreeMap<String, String>,
-) -> Result<DelegationView> {
+) -> Result<Option<Admitted>> {
     let kind = DelegationKind::from_action(action)
         .ok_or_else(|| Error::Other(format!("unknown git action {action:?}")))?;
     let record = sup.workspace.agent(agent_id)?;
@@ -752,10 +793,38 @@ async fn delegate(
     let queued = sup.status_of(agent_id) == Some(AgentStatus::Running);
     let key: Key = (agent_id.to_string(), subdir);
     // Recorded before the send, so the `Running` that delivery raises finds it.
-    let (id, shown) = table.record(key.clone(), kind, prompt.clone(), queued, now_ms());
+    let reviews = crate::review::engine::global();
+    let Some((id, shown)) = record_unless_reviewed(table, reviews, &key, kind, &prompt, queued)
+    else {
+        return Ok(None);
+    };
     emit(ctx.sink.as_ref(), &shown);
+    Ok(Some(Admitted {
+        key,
+        id,
+        prompt,
+        queued,
+        shown,
+    }))
+}
+
+/// Send an admitted delegation now — or, while the agent is running, leave it
+/// for the driver to deliver when the turn settles.
+pub(crate) async fn run_admitted(
+    table: &Delegations,
+    sup: &Arc<Supervisor>,
+    ctx: &Arc<EngineCtx>,
+    admitted: Admitted,
+) -> Result<DelegationView> {
+    let Admitted {
+        key,
+        id,
+        prompt,
+        queued,
+        shown,
+    } = admitted;
     if !queued {
-        if let Err(e) = deliver(sup, ctx, agent_id, &prompt).await {
+        if let Err(e) = deliver(sup, ctx, &key.0, &prompt).await {
             if let Some(gone) = table.finish(&key, id, Phase::Abandoned, Some(UNDELIVERED_NOTICE)) {
                 emit(ctx.sink.as_ref(), &gone);
             }
@@ -764,6 +833,22 @@ async fn delegate(
     }
     nudge();
     Ok(shown)
+}
+
+/// Hand `action` to the agent, refused while a local review holds the checkout.
+async fn delegate(
+    table: &Delegations,
+    sup: &Arc<Supervisor>,
+    ctx: &Arc<EngineCtx>,
+    agent_id: &str,
+    subdir: Option<&str>,
+    action: &str,
+    params: &BTreeMap<String, String>,
+) -> Result<DelegationView> {
+    match admit_to(table, sup, ctx, agent_id, subdir, action, params)? {
+        Some(admitted) => run_admitted(table, sup, ctx, admitted).await,
+        None => Err(Error::Other(REVIEW_HOLDS_CHECKOUT.into())),
+    }
 }
 
 /// `delegate_git`: the `_impl` the Tauri command and the remote dispatcher

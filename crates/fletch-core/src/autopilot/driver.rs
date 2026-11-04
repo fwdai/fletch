@@ -31,7 +31,7 @@ use crate::error::Result;
 use crate::git_state::GitState;
 use crate::github::{PrComments, PrLive, PrStatus};
 use crate::host::EngineCtx;
-use crate::supervisor::delegation::{DelegationKind, Key};
+use crate::supervisor::delegation::{self, DelegationKind, Key};
 use crate::supervisor::Supervisor;
 use crate::verify::VerificationReport;
 use crate::workspace::{AgentRecord, AgentStatus};
@@ -64,25 +64,29 @@ fn now_ms() -> i64 {
 /// the database. One implementation drives the real supervisor; the tests
 /// script another.
 pub(crate) trait World: Send + Sync + 'static {
+    /// A rung that holds its checkout, waiting to be handed over.
+    type Admitted: Send;
+
     /// Live, non-archived agents.
     fn agents(&self) -> Vec<AgentRecord>;
     /// The agent is mid-turn (running or still spawning).
     fn busy(&self, agent_id: &str) -> bool;
     /// A delegation is live on this checkout.
     fn delegation_live(&self, key: &Key) -> bool;
-    /// A local review is reading this checkout.
-    fn review_running(&self, key: &Key) -> bool;
     /// The checkout's git state; `None` when unreadable or refused.
     fn git(&self, key: &Key) -> impl Future<Output = Option<GitState>> + Send;
     fn pr(&self, key: &Key) -> impl Future<Output = Option<PrLive>> + Send;
     fn threads(&self, key: &Key) -> impl Future<Output = Option<PrComments>> + Send;
-    /// Hand a rung to the agent, as `delegate_git` would.
-    fn dispatch(
+    /// Take the checkout for a rung, as `delegate_git` would; `None` when a
+    /// local review has it.
+    fn admit(
         &self,
         key: &Key,
         action: &str,
         params: &BTreeMap<String, String>,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<Option<Self::Admitted>>;
+    /// Hand an admitted rung to the agent.
+    fn dispatch(&self, admitted: Self::Admitted) -> impl Future<Output = Result<()>> + Send;
     /// Run the project's verify commands in this checkout; `None` when they
     /// couldn't run (which must never read as a fix that failed).
     fn verify(&self, key: &Key) -> impl Future<Output = Option<VerificationReport>> + Send;
@@ -95,6 +99,8 @@ pub(crate) struct Live {
 }
 
 impl World for Live {
+    type Admitted = delegation::Admitted;
+
     fn agents(&self) -> Vec<AgentRecord> {
         super::live_agents(&self.sup)
     }
@@ -107,11 +113,7 @@ impl World for Live {
     }
 
     fn delegation_live(&self, key: &Key) -> bool {
-        crate::supervisor::delegation::is_live(key)
-    }
-
-    fn review_running(&self, key: &Key) -> bool {
-        crate::review::engine::global().reviewing(key)
+        delegation::is_live(key)
     }
 
     /// A poll, so a sleeping box is not woken: its state reads as unknown and
@@ -140,13 +142,14 @@ impl World for Live {
             .flatten()
     }
 
-    async fn dispatch(
+    fn admit(
         &self,
         key: &Key,
         action: &str,
         params: &BTreeMap<String, String>,
-    ) -> Result<()> {
-        crate::commands::delegate_git_impl(
+    ) -> Result<Option<Self::Admitted>> {
+        delegation::admit_to(
+            delegation::global(),
             &self.sup,
             &self.ctx,
             &key.0,
@@ -154,8 +157,12 @@ impl World for Live {
             action,
             params,
         )
-        .await
-        .map(|_| ())
+    }
+
+    async fn dispatch(&self, admitted: Self::Admitted) -> Result<()> {
+        delegation::run_admitted(delegation::global(), &self.sup, &self.ctx, admitted)
+            .await
+            .map(|_| ())
     }
 
     async fn verify(&self, key: &Key) -> Option<VerificationReport> {
@@ -300,13 +307,12 @@ pub(crate) async fn run_pass<W: World>(
         }
         let busy = world.busy(&key.0) || dispatched_to.contains(&key.0);
         let in_flight = world.delegation_live(&key);
-        let reviewing = world.review_running(&key);
         let cycle = tracked.state.cycle.as_ref();
         let awaiting_since = cycle
             .filter(|c| c.phase == CyclePhase::AwaitingEvidence)
             .map(|c| c.phase_since);
         let needs_world = match cycle {
-            None => !busy && !in_flight && !reviewing,
+            None => !busy && !in_flight,
             Some(_) => awaiting_since.is_some(),
         };
         let readiness = if needs_world {
@@ -322,8 +328,6 @@ pub(crate) async fn run_pass<W: World>(
         } else {
             ReadinessInput::default()
         };
-        // The reads above can take seconds, and a review can start during them.
-        let reviewing = reviewing || world.review_running(&key);
         let base = readiness
             .git
             .as_ref()
@@ -340,23 +344,23 @@ pub(crate) async fn run_pass<W: World>(
             ladder: &ladder,
             agent_busy: busy,
             delegation_in_flight: in_flight,
-            review_running: reviewing,
             verification: tracked.verdict.as_ref(),
             now,
         });
         if table.generation() != generation {
             return;
         }
-        if matches!(effect, Effect::Dispatch { .. }) {
+        if apply(table, ctx, world, &switches, agent, &key, effect, now).await {
             dispatched_to.insert(key.0.clone());
         }
-        apply(table, ctx, world, &switches, agent, &key, effect, now).await;
     }
 }
 
 /// Perform one effect, announcing the row it changed and logging the four
 /// effects a user would ask about (`wait` is most ticks; `verify` and
 /// `await-evidence` are steps inside a cycle whose outcome says how it went).
+/// Answers whether it opened a cycle: a rung refused for a review doesn't, and
+/// must not cost the agent's other checkouts their turn this pass.
 #[allow(clippy::too_many_arguments)]
 async fn apply<W: World>(
     table: &'static Table,
@@ -367,7 +371,7 @@ async fn apply<W: World>(
     key: &Key,
     effect: Effect,
     now: i64,
-) {
+) -> bool {
     let announce = || emit_row(ctx, &row(table, switches, agent, key.1.clone()));
     let attempt_now = || {
         table
@@ -383,6 +387,11 @@ async fn apply<W: World>(
             signature,
             situation,
         } => {
+            // Admitted before anything is recorded: a review holding the
+            // checkout leaves no cycle, no history row and no spent budget.
+            let Some(admitted) = world.admit(key, action, &params).transpose() else {
+                return false;
+            };
             table.update(key, |t| {
                 t.state.open_cycle(rung, signature, situation, now);
                 t.verdict = None;
@@ -392,11 +401,16 @@ async fn apply<W: World>(
                 ctx,
                 &log_row(key, now, Outcome::Dispatch, rung, attempt_now(), None),
             );
-            if let Err(e) = world.dispatch(key, action, &params).await {
+            let sent = match admitted {
+                Ok(admitted) => world.dispatch(admitted).await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = sent {
                 // The cycle stays open: the next tick finds the agent free and
                 // judges it, which spends a budget slot rather than looping.
                 tracing::warn!(agent_id = %key.0, error = %e, "autopilot: rung not delegated");
             }
+            return true;
         }
         Effect::AwaitEvidence => {
             table.update(key, |t| t.state.advance(CyclePhase::AwaitingEvidence, now));
@@ -457,6 +471,7 @@ async fn apply<W: World>(
         }
         Effect::Wait { .. } => {}
     }
+    false
 }
 
 /// Start the driver: a pass every [`TICK`] and on every [`nudge`].

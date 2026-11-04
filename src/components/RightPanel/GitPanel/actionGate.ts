@@ -3,7 +3,7 @@
 // every action the footer emits — the primary and each menu row — and again by
 // `runAction` before it dispatches, so nothing reaches the host that the
 // button wouldn't: not a stale menu, not the composer's shortcut, not a row
-// picked on a lane the action isn't about. Five rules, in the order a user
+// picked on a lane the action isn't about. Six rules, in the order a user
 // would want to hear them.
 //
 // Store-free, so the phone runs the same gate over the same footer: the one
@@ -31,6 +31,8 @@ export interface GateContext {
   delegationActive: boolean;
   /** One of the panel's own actions is in flight on this checkout. */
   busy: boolean;
+  /** A local review is queued or running on this checkout. */
+  reviewActive: boolean;
   /** The checkout is the agent's primary repo. */
   primaryCheckout: boolean;
   /** Uncommitted files or commits origin lacks since the PR merged — work
@@ -79,16 +81,32 @@ const HARMLESS = new Set([
   "review-setup",
 ]);
 
+/** What stays open while a local review reads the checkout: an allow-list, so
+ *  a new action is closed until someone says it leaves the code alone. These
+ *  don't change what the reviewer is reading: pushing and opening a PR send the
+ *  same commits, and merging happens on GitHub. Anything handed to the agent
+ *  is out, however small, because a turn can change anything. */
+const LEAVES_CODE_ALONE = new Set([
+  ...HARMLESS,
+  "merge",
+  "push",
+  "open-pr",
+  "publish",
+  "publish-public",
+]);
+
+export const reviewAllows = (key: string): boolean => LEAVES_CODE_ALONE.has(key);
+
 export function gateAction(key: string, ctx: GateContext): Gate | null {
   if (key === "loading") return { reason: "Loading git state", quiet: true };
-  if (key === "review-wait") {
-    return { reason: "A local review is running. Merge PR is in the menu." };
-  }
   if (ctx.delegationActive && !HARMLESS.has(key)) {
     return { reason: "The agent is working on this checkout", quiet: true };
   }
   if (ctx.busy && !HARMLESS.has(key)) {
     return { reason: "An action is already running on this checkout", quiet: true };
+  }
+  if (ctx.reviewActive && !reviewAllows(key)) {
+    return { reason: "A local review is reading this checkout. Stop it to act now." };
   }
   const host = ctx.hostRefusal(key);
   if (host) return { reason: host };

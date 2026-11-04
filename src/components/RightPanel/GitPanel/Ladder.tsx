@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { ChangesList } from "./ChangesList";
 import { ChecksSection, CommentsSection } from "./cards";
-import type { FooterAction } from "./footerModel";
+import { type FooterAction, reviewInFlight } from "./footerModel";
 import type { PrOrigin } from "./hooks/usePrOrigin";
 import type { LadderRow, RungKey } from "./ladderModel";
 import { GitLink } from "./shared";
@@ -147,8 +147,7 @@ function rowTrailing(row: LadderRow, b: LadderBodies): ReactNode {
     // The reviewer's one control, on the row itself: set one up, start, re-run,
     // or stop (which also cancels a queued start).
     const { label, onRun } = b.review.action;
-    const phase = b.review.state?.phase;
-    const stopping = phase === "reviewing" || phase === "queued";
+    const stopping = reviewInFlight(b.review.state);
     return (
       <Button
         variant={stopping ? "ghost" : "outline"}

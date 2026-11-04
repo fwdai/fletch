@@ -34,6 +34,7 @@ const open: GateContext = {
   mergeAllowed: true,
   delegationActive: false,
   busy: false,
+  reviewActive: false,
   primaryCheckout: true,
   workSinceMerge: false,
 };
@@ -57,10 +58,64 @@ describe("gateAction", () => {
     );
   });
 
-  it("keeps the review's waiting primary inert, and says where Merge PR went", () => {
-    const gate = gateAction("review-wait", open);
-    expect(gate?.reason).toContain("Merge PR is in the menu");
-    expect(gate?.quiet).toBeUndefined();
+  describe("while a local review holds the checkout", () => {
+    const reviewing = { ...open, reviewActive: true };
+
+    it("closes everything that could change the code it is reading, and says why", () => {
+      for (const key of [
+        "agent-commit",
+        "agent-commit-push",
+        "agent-commit-pr",
+        "agent-open-pr",
+        "agent-resolve",
+        "agent-update-branch",
+        "agent-fix",
+        "agent-resolve-comments",
+        "commit-direct",
+        "commit-pr-direct",
+        "pull",
+        "rebase",
+        "stash",
+        "discard",
+        "abort",
+        "clear-config",
+        "delete-branch",
+        "archive",
+      ]) {
+        expect(gateAction(key, reviewing)?.reason).toContain("local review");
+      }
+    });
+
+    it("closes what no one has said is safe: the list is what stays open, not what closes", () => {
+      expect(gateAction("a-key-added-tomorrow", reviewing)).not.toBeNull();
+    });
+
+    it("keeps its own waiting primary inert, and not quietly", () => {
+      const gate = gateAction("review-wait", reviewing);
+      expect(gate?.reason).toContain("Stop it");
+      expect(gate?.quiet).toBeUndefined();
+    });
+
+    it("leaves open what doesn't touch the code", () => {
+      for (const key of [
+        "view-pr",
+        "focus-pr",
+        "connect-github",
+        "review-stop",
+        "review-open",
+        "merge",
+        "push",
+        "open-pr",
+        "publish",
+        "publish-public",
+      ]) {
+        expect(gateAction(key, reviewing)).toBeNull();
+      }
+    });
+
+    it("gates nothing once it is over", () => {
+      expect(gateAction("agent-fix", open)).toBeNull();
+    });
   });
 
   it("explains a host that cannot run the op, for any key", () => {

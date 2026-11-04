@@ -285,8 +285,6 @@ pub enum WaitReason {
     NotEnrolled,
     AgentBusy,
     DelegationInFlight,
-    /// A local review is reading the code; a fix now would only invalidate it.
-    ReviewRunning,
     /// No open PR: autopilot's job hasn't started.
     NoPr,
     /// The ladder wants something autopilot never does.
@@ -350,8 +348,6 @@ pub struct AutopilotInput<'a> {
     pub agent_busy: bool,
     /// A delegation is already live on this checkout (possibly the user's).
     pub delegation_in_flight: bool,
-    /// A local review is reading this checkout.
-    pub review_running: bool,
     /// Local verification produced for the current cycle, or `None`.
     pub verification: Option<&'a VerificationReport>,
     pub now: i64,
@@ -387,9 +383,6 @@ pub fn autopilot_step(input: &AutopilotInput) -> Effect {
     }
     if input.delegation_in_flight {
         return wait(WaitReason::DelegationInFlight);
-    }
-    if input.review_running {
-        return wait(WaitReason::ReviewRunning);
     }
 
     match next_rung(readiness, input.ladder) {

@@ -11,6 +11,7 @@ import { ActionBar } from "./ActionBar";
 import { AutopilotHistory } from "./Autopilot";
 import { CommitComposer, CommitStatus } from "./CommitComposer";
 import { BlockedConfigCard } from "./cards";
+import { reviewInFlight } from "./footerModel";
 import { useCommitDraft } from "./hooks/useCommitDraft";
 import { useFooterModel } from "./hooks/useFooterModel";
 import { useGitActions } from "./hooks/useGitActions";
@@ -245,7 +246,7 @@ export function GitRepoSection({
   // The Review row's controls: one button (set up / start / re-run / stop), and
   // the per-thread fix and dismiss. On a lane the footer doesn't act on, none.
   // Stop also cancels a start the host is holding for the coder's turn.
-  const reviewing = review?.phase === "reviewing" || review?.phase === "queued";
+  const reviewing = reviewInFlight(review);
   const reviewAgain = review != null && review.phase !== "idle" && review.phase !== "failed";
   const reviewBodies: ReviewBodies | null =
     acting && !reviewGate

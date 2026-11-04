@@ -29,8 +29,6 @@ struct Fake {
     busy: Mutex<HashSet<String>>,
     in_flight: Mutex<HashSet<Key>>,
     reviewing: Mutex<HashSet<Key>>,
-    /// A review that starts on this checkout while its git is being read.
-    review_starts_during_read: Mutex<Option<Key>>,
     git: Mutex<HashMap<Key, GitState>>,
     pr: Mutex<HashMap<Key, PrLive>>,
     threads: Mutex<HashMap<Key, PrComments>>,
@@ -42,6 +40,8 @@ struct Fake {
 }
 
 impl World for Fake {
+    type Admitted = Dispatched;
+
     fn agents(&self) -> Vec<AgentRecord> {
         self.agents.lock().clone()
     }
@@ -54,15 +54,8 @@ impl World for Fake {
         self.in_flight.lock().contains(key)
     }
 
-    fn review_running(&self, key: &Key) -> bool {
-        self.reviewing.lock().contains(key)
-    }
-
     async fn git(&self, key: &Key) -> Option<GitState> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        if let Some(started) = self.review_starts_during_read.lock().take() {
-            self.reviewing.lock().insert(started);
-        }
         self.git.lock().get(key).cloned()
     }
 
@@ -75,15 +68,20 @@ impl World for Fake {
         self.threads.lock().get(key).cloned()
     }
 
-    async fn dispatch(
+    fn admit(
         &self,
         key: &Key,
         action: &str,
         params: &BTreeMap<String, String>,
-    ) -> Result<()> {
-        self.dispatched
-            .lock()
-            .push((key.clone(), action.to_string(), params.clone()));
+    ) -> Result<Option<Dispatched>> {
+        if self.reviewing.lock().contains(key) {
+            return Ok(None);
+        }
+        Ok(Some((key.clone(), action.to_string(), params.clone())))
+    }
+
+    async fn dispatch(&self, admitted: Dispatched) -> Result<()> {
+        self.dispatched.lock().push(admitted);
         Ok(())
     }
 
@@ -362,44 +360,35 @@ async fn never_dispatches_over_a_live_delegation_or_a_running_turn() {
 }
 
 #[tokio::test]
-async fn holds_a_fix_until_the_local_review_on_its_checkout_ends() {
+async fn a_review_holding_a_checkout_costs_autopilot_nothing() {
     let h = Harness::new(vec![agent("aare", "p1", &["repo", "web"])]);
     let reviewed = key("aare", None);
     let sibling = key("aare", Some("web"));
     failing(&h.world, &reviewed, "sha1");
-    h.world.reviewing.lock().insert(reviewed.clone());
-    h.pass(NOW).await;
-    assert!(h.dispatched().is_empty());
-    assert_eq!(
-        h.world.reads.load(Ordering::SeqCst),
-        1,
-        "only the sibling is read: the reviewed checkout has nothing to act on"
-    );
-
-    // Another checkout of the agent isn't the one being read.
     failing(&h.world, &sibling, "sha2");
-    h.pass(NOW + 10_000).await;
+    h.world.reviewing.lock().insert(reviewed.clone());
+
+    h.pass(NOW).await;
+
+    assert_eq!(h.cycle(&reviewed), None, "no cycle to judge");
+    assert!(
+        h.log().iter().all(|row| row.subdir.is_some()),
+        "nothing was handed over, so nothing says so"
+    );
+    // The refusal doesn't cost the agent's other checkout its turn.
     assert_eq!(h.dispatched().len(), 1);
     assert_eq!(h.dispatched()[0].0, sibling);
 
     h.world.dispatched.lock().clear();
     h.world.reviewing.lock().remove(&reviewed);
-    h.pass(NOW + 20_000).await;
+    h.pass(NOW + 10_000).await;
     assert_eq!(h.dispatched().len(), 1);
     assert_eq!(h.dispatched()[0].0, reviewed);
-}
-
-#[tokio::test]
-async fn a_review_that_starts_during_the_reads_still_holds_the_fix() {
-    let h = Harness::new(vec![agent("aare", "p1", &["repo"])]);
-    let k = key("aare", None);
-    failing(&h.world, &k, "sha1");
-    *h.world.review_starts_during_read.lock() = Some(k.clone());
-
-    h.pass(NOW).await;
-
-    assert_eq!(h.world.reads.load(Ordering::SeqCst), 1, "it did read");
-    assert!(h.dispatched().is_empty());
+    assert_eq!(
+        h.cycle(&reviewed).unwrap().attempt,
+        1,
+        "the budget is untouched"
+    );
 }
 
 // ── what a pass reads ──────────────────────────────────────────────────────

@@ -381,6 +381,74 @@ describe("buildFooter · the local reviewer", () => {
     });
   });
 
+  describe("any other next step, while a review is running", () => {
+    const inPhase = (phase: ReviewState["phase"]) => menu({ state: { phase } as ReviewState });
+    const failing = checks({
+      merge_state: "unstable",
+      rollup: "failing",
+      failed: 1,
+      required_failing: ["test"],
+    });
+    const cases: [string, string, Partial<FooterInput>][] = [
+      [
+        "failing checks",
+        "agent-fix",
+        { git: git({ ahead: 1 }), pr: pr(), checks: failing, mergeState: "unstable" },
+      ],
+      ["a conflict", "agent-resolve", { git: git({ files: [file("conflicted")] }), pr: pr() }],
+      [
+        "unanswered comments",
+        "agent-resolve-comments",
+        {
+          git: git({ ahead: 1 }),
+          pr: pr(),
+          checks: checks(),
+          mergeState: "clean",
+          comments: { unresolved: [thread(false)] },
+        },
+      ],
+      ["uncommitted work", "agent-commit-pr", { git: git({ files: [file()] }) }],
+      [
+        "a branch to update",
+        "agent-update-branch",
+        {
+          git: git({ ahead: 1 }),
+          pr: pr(),
+          checks: checks({ merge_state: "behind" }),
+          mergeState: "behind",
+        },
+      ],
+      ["a clean tree", "pull", { git: git() }],
+    ];
+
+    it.each(cases)("holds the primary on %s, which runs again afterwards", (_, key, over) => {
+      expect(footer({ ...over, reviewMenu: menu() }).primary.key).toBe(key);
+      for (const phase of ["queued", "reviewing"] as const) {
+        expect(footer({ ...over, reviewMenu: inPhase(phase) }).primary.key).toBe("review-wait");
+      }
+    });
+
+    it("leaves a push alone: it sends the same commits and changes nothing being read", () => {
+      const f = footer({
+        git: git({ ahead: 1, unpushed: 1 }),
+        pr: pr(),
+        reviewMenu: inPhase("reviewing"),
+      });
+      expect(f.primary.key).toBe("push");
+    });
+
+    it("keeps a way to stop the review in the menu", () => {
+      const f = footer({
+        git: git({ ahead: 1 }),
+        pr: pr(),
+        checks: failing,
+        mergeState: "unstable",
+        reviewMenu: inPhase("reviewing"),
+      });
+      expect(group(f, "Review")?.items[0]).toMatchObject({ key: "review-stop" });
+    });
+  });
+
   it("hands the reviewer's pre-PR findings to the agent as the primary", () => {
     const f = footer({
       git: git({ ahead: 1 }),

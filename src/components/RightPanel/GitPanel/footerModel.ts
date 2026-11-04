@@ -15,6 +15,7 @@ import type { ActionTone, GitCommitAction } from "@/components/RightPanel/primar
 import { describeMergeGate } from "@/mergeGate";
 import { nextRung, type Rung } from "@/readiness";
 import { plural } from "@/util/format";
+import { reviewAllows } from "./actionGate";
 import type { LadderInput } from "./ladderModel";
 
 export interface FooterAction {
@@ -90,6 +91,10 @@ export function applyGate(
     mainReason: main && !main.quiet ? main.reason : null,
   };
 }
+
+/** A review is queued for the checkout or reading it. */
+export const reviewInFlight = (state: ReviewState | null | undefined): boolean =>
+  state?.phase === "queued" || state?.phase === "reviewing";
 
 /** The local reviewer as the footer offers it. Absent on a client with no
  *  reviewer to offer (the phone), so its menu is unchanged. */
@@ -177,11 +182,19 @@ export function githubUnblock(
 
 const VIEW_PR: FooterAction = { key: "view-pr", label: "View on GitHub", icon: "github" };
 
+/** The primary while a review holds the checkout. Inert: `reviewAllows` has no
+ *  such key, so the gate closes it and says why. */
+const REVIEW_WAIT: FooterAction = {
+  key: "review-wait",
+  label: "Reviewing…",
+  icon: "search",
+  tone: "ghost",
+};
+
 /** The primary for a rung. `unblock` replaces anything that would reach GitHub. */
 function primaryOf(rung: Rung, input: FooterInput, unblock: FooterAction | null): FooterAction {
   const { git, pr, customActive, base } = input;
   const unpushed = git?.unpushed ?? 0;
-  const reviewPhase = input.reviewMenu?.state?.phase;
   switch (rung.do) {
     case "wait":
       return rung.why === "unknown-state"
@@ -239,13 +252,7 @@ function primaryOf(rung: Rung, input: FooterInput, unblock: FooterAction | null)
           return VIEW_PR;
       }
     case "merge":
-      if (unblock) return unblock;
-      // A review the user chose to have is still to report: don't ask for the
-      // merge over it. The ladder is unchanged, so Merge PR moves to the menu
-      // rather than going away.
-      return reviewPhase === "queued" || reviewPhase === "reviewing"
-        ? { key: "review-wait", label: "Reviewing…", icon: "search", tone: "ghost" }
-        : { key: "merge", label: "Merge PR", icon: "merge", tone: "success" };
+      return unblock ?? { key: "merge", label: "Merge PR", icon: "merge", tone: "success" };
     case "ready":
       // Nothing blocking. With an open PR the gate just isn't positively open
       // (no checks data), so the decision is GitHub's to show; without one the
@@ -268,10 +275,16 @@ export function buildFooter(input: FooterInput): Footer {
     ? nextRung({ git, pr, checks, comments }, { base, commitMode: ladderCommitMode(commitMode) })
     : { do: "wait", why: "unknown-state" };
   const unblock = githubUnblock(input);
-  const primary = primaryOf(rung, input, unblock);
+  const next = primaryOf(rung, input, unblock);
   // Nothing is known yet: no menu either, rather than a Pull that would run
   // against a checkout the panel hasn't read.
-  if (!git) return { primary, groups: [] };
+  if (!git) return { primary: next, groups: [] };
+  // A running review holds the main button on anything the gate would close,
+  // and on the merge: nothing should ask for that before the review reports.
+  // The merge stays in the menu, where choosing not to wait is deliberate.
+  const held =
+    reviewInFlight(input.reviewMenu?.state) && (next.key === "merge" || !reviewAllows(next.key));
+  const primary = held ? REVIEW_WAIT : next;
 
   const files = git.files.length;
   const conflicted = git.files.some((f) => f.kind === "conflicted");
