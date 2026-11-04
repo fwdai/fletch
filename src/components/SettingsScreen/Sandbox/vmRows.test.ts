@@ -1,55 +1,46 @@
 import { describe, expect, it } from "vitest";
-import type { AgentRecord, BoxStateEvent } from "@/api";
+import type { BoxStateEvent, BoxVm } from "@/api";
 import { foldVmRows, vmRows } from "./vmRows";
-
-function agent(id: string, created: string, over: Partial<AgentRecord> = {}): AgentRecord {
-  return { id, created_at: created, sandbox_engine: "box", ...over } as AgentRecord;
-}
 
 function state(id: string, phase: BoxStateEvent["phase"], detail?: string): BoxStateEvent {
   return { agent_id: id, phase, detail };
 }
 
-const ids = (rows: { agent: AgentRecord }[]) => rows.map((row) => row.agent.id);
+function vm(id: string, created: string, phase: BoxStateEvent["phase"] = "stopped"): BoxVm {
+  return { agent_id: id, name: id, project_id: "p", created_at: created, state: state(id, phase) };
+}
+
+const ids = (rows: { vm: BoxVm }[]) => rows.map((row) => row.vm.agent_id);
 
 describe("vmRows", () => {
-  it("lists only live workspaces that run in a VM", () => {
-    const rows = vmRows(
-      [
-        agent("vm", "1"),
-        agent("mac", "2", { sandbox_engine: "sandbox-exec" }),
-        agent("none", "3", { sandbox_engine: null }),
-        agent("gone", "4", { archive: {} as AgentRecord["archive"] }),
-      ],
-      {},
-    );
-    expect(ids(rows)).toEqual(["vm"]);
-  });
-
   it("puts live VMs first, then the rest newest first", () => {
     const rows = vmRows(
-      [agent("old", "2026-01"), agent("new", "2026-03"), agent("up", "2026-02")],
-      { up: state("up", "running") },
+      [vm("old", "2026-01"), vm("new", "2026-03"), vm("up", "2026-02", "running")],
+      {},
     );
     expect(ids(rows)).toEqual(["up", "new", "old"]);
   });
 
-  it("says a VM with no state, or a stopped one, is not running", () => {
-    const rows = vmRows([agent("a", "2"), agent("b", "1")], { b: state("b", "stopped") });
-    expect(rows.map((row) => row.status)).toEqual(["Not running", "Not running"]);
+  it("says a stopped VM is not running", () => {
+    expect(vmRows([vm("a", "1")], {})[0].status).toBe("Not running");
   });
 
   it("spells out any other phase", () => {
-    const rows = vmRows([agent("a", "1"), agent("b", "2")], {
+    const rows = vmRows([vm("a", "1"), vm("b", "2")], {
       a: state("a", "preparing", "downloading image 43%"),
       b: state("b", "failed"),
     });
     expect(rows.map((row) => row.status)).toEqual(["Preparing · downloading image 43%", "Failed"]);
   });
+
+  it("trusts a later box:state over the list's snapshot", () => {
+    const rows = vmRows([vm("a", "1", "running")], { a: state("a", "stopped") });
+    expect(rows[0].status).toBe("Not running");
+  });
 });
 
 describe("foldVmRows", () => {
-  const stopped = (n: number) => Array.from({ length: n }, (_, i) => agent(`s${i}`, String(i)));
+  const stopped = (n: number) => Array.from({ length: n }, (_, i) => vm(`s${i}`, String(i)));
 
   it("shows a short list whole", () => {
     expect(foldVmRows(vmRows(stopped(5), {})).folded).toEqual([]);
@@ -62,9 +53,8 @@ describe("foldVmRows", () => {
   });
 
   it("never folds a VM that is up", () => {
-    const up = Array.from({ length: 7 }, (_, i) => agent(`u${i}`, String(i)));
-    const states = Object.fromEntries(up.map((a) => [a.id, state(a.id, "running")]));
-    const { shown, folded } = foldVmRows(vmRows([...up, ...stopped(2)], states));
+    const up = Array.from({ length: 7 }, (_, i) => vm(`u${i}`, String(i), "running"));
+    const { shown, folded } = foldVmRows(vmRows([...up, ...stopped(2)], {}));
     expect(shown).toHaveLength(7);
     expect(ids(folded)).toEqual(["s1", "s0"]);
   });

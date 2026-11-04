@@ -8,6 +8,7 @@ import type {
   BoxRuntimeProbe,
   BoxSettingKey,
   BoxStateEvent,
+  BoxVm,
   EgressDelta,
   EgressOverview,
   WorkspaceTypeOption,
@@ -27,6 +28,8 @@ export const boxesApi = {
   boxToolsRetry: (provider: string) => invoke<void>("box_tools_retry", { provider }),
   /** The registry's phase for one agent's box. */
   boxState: (agentId: string) => invoke<BoxStateEvent>("box_state", { agentId }),
+  /** Every VM that exists, running or not, hidden workspaces included. */
+  boxList: () => invoke<BoxVm[]>("box_list"),
   /** The workspace types a new agent of `provider` in the repo at `repoPath`
    *  may be given, each with why not when it cannot, and which one a spawn
    *  with no choice picks. */

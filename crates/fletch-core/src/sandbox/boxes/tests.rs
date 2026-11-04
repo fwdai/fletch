@@ -417,6 +417,29 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
     assert_eq!(super::setup::image_status().phase, "installed");
 }
 
+/// A box exists once it has a data disk: a tools build's throwaway box and a
+/// directory that never got one are not VMs.
+#[test]
+fn a_created_box_is_a_directory_with_a_data_disk() {
+    let root = tempfile::tempdir().unwrap();
+    let disk = |dir: &str, with_disk: bool| {
+        let dir = root.path().join(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if with_disk {
+            std::fs::write(dir.join(super::registry::DATA_DISK), b"").unwrap();
+        }
+    };
+    disk("vm", true);
+    disk("never-booted", false);
+    disk("tools-build", true);
+
+    let boxes = super::boxes_in(root.path());
+    assert_eq!(
+        boxes.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["vm"]
+    );
+}
+
 // `block_on` from the sync seams (`launch_agent`, the executor).
 
 /// More sync waits than the runtime has workers, each on a worker and

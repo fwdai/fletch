@@ -1,9 +1,9 @@
-import type { AgentRecord, BoxStateEvent } from "@/api";
+import type { BoxStateEvent, BoxVm } from "@/api";
 import { boxIsUp, boxPhaseLabel } from "@/components/TitleBar/WorkspaceStatus/isolation";
 
 export interface VmRow {
-  agent: AgentRecord;
-  phase: BoxStateEvent["phase"] | undefined;
+  vm: BoxVm;
+  phase: BoxStateEvent["phase"];
   status: string;
 }
 
@@ -16,24 +16,22 @@ function isLive(phase: VmRow["phase"]): boolean {
   return boxIsUp(phase) || phase === "preparing" || phase === "stopping";
 }
 
-/** Every workspace's VM: the live ones first, then the rest, newest first. No
- *  state on record means the VM has not run since this window opened. */
-export function vmRows(agents: AgentRecord[], states: Record<string, BoxStateEvent>): VmRow[] {
-  return agents
-    .filter((agent) => agent.sandbox_engine === "box" && !agent.archive)
-    .map((agent) => {
-      const state = states[agent.id];
-      const quiet = !state || state.phase === "stopped";
+/** The VMs as rows: the live ones first, then the rest, newest first. `states`
+ *  is what `box:state` has said since, so it outranks the list's snapshot. */
+export function vmRows(vms: BoxVm[], states: Record<string, BoxStateEvent>): VmRow[] {
+  return vms
+    .map((vm) => {
+      const state = states[vm.agent_id] ?? vm.state;
       return {
-        agent,
-        phase: state?.phase,
-        status: quiet ? "Not running" : boxPhaseLabel(state),
+        vm,
+        phase: state.phase,
+        status: state.phase === "stopped" ? "Not running" : boxPhaseLabel(state),
       };
     })
     .sort(
       (a, b) =>
         Number(isLive(b.phase)) - Number(isLive(a.phase)) ||
-        b.agent.created_at.localeCompare(a.agent.created_at),
+        b.vm.created_at.localeCompare(a.vm.created_at),
     );
 }
 

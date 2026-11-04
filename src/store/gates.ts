@@ -140,6 +140,12 @@ export const GATES = {
     label: "Box network allow-list",
     reason: "This host is too old to show or change what VMs may reach. Change it on the host.",
   },
+  /** The Workspace VMs list on Settings › Sandbox. */
+  vmList: {
+    op: "box_list",
+    label: "The VM list",
+    reason: "This host is too old to list its VMs. Update it.",
+  },
   sideShell: {
     op: "open_agent_shell",
     label: "Terminals",

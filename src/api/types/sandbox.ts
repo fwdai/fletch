@@ -118,6 +118,16 @@ export interface BoxStateEvent {
   detail?: string | null;
 }
 
+/** One VM on Settings › Sandbox (`box_list`). `agent_id` may be a workspace the
+ *  sidebar hides, such as a Roadmap chat. */
+export interface BoxVm {
+  agent_id: string;
+  name: string;
+  project_id: string;
+  created_at: string;
+  state: BoxStateEvent;
+}
+
 /** `box:egress`: the proxy answered one connection request from a box. */
 export interface BoxEgressEvent {
   agent_id: string;

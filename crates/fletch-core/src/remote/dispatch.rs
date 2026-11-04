@@ -298,6 +298,7 @@ pub const OPS: &[&str] = &[
     "box_image_cancel",
     "box_tools_retry",
     "box_state",
+    "box_list",
     "box_stop",
     "box_egress_allow",
     "set_box_setting",
@@ -614,6 +615,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("box_runtime_probe", Scope::Observe),
     ("box_image_status", Scope::Observe),
     ("box_state", Scope::Observe),
+    ("box_list", Scope::Observe),
     // The workspace types a new agent may be given: a read.
     ("available_workspace_types", Scope::Observe),
     ("box_image_install", Scope::Projects),
@@ -1874,6 +1876,7 @@ impl Dispatch for SupervisorDispatch {
                 | "box_image_cancel"
                 | "box_tools_retry"
                 | "box_state"
+                | "box_list"
                 | "box_stop"
                 | "box_egress_allow"
                 | "set_box_setting"
@@ -2113,6 +2116,7 @@ async fn boxes_op(ctx: &Arc<EngineCtx>, op: &str, args: Value) -> DispatchResult
             let a: AgentArgs = parse(args)?;
             ok(c::box_state_impl(&a.agent_id))
         }
+        "box_list" => res(c::box_list_impl(ctx)),
         "box_stop" => {
             let a: AgentArgs = parse(args)?;
             res(c::box_stop_impl(&a.agent_id).await)
