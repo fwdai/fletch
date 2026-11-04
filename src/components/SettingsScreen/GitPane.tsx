@@ -20,7 +20,7 @@ const WAIT_OPTIONS: { value: string; label: string }[] = [
 ];
 
 /** How agents publish: the Git panel's default action, the approval gate and
- *  its wait, draft PRs, and the branch prefix. */
+ *  its wait, draft PRs, agent attribution, and the branch prefix. */
 export function GitPane() {
   const gitCommitAction = useAppStore((s) => s.gitCommitAction);
   const setGitCommitAction = useAppStore((s) => s.setGitCommitAction);
@@ -30,6 +30,8 @@ export function GitPane() {
   const setPublishApprovalWait = useAppStore((s) => s.setPublishApprovalWait);
   const draftPrs = useAppStore((s) => s.draftPrs);
   const setDraftPrs = useAppStore((s) => s.setDraftPrs);
+  const attributionRemoved = useAppStore((s) => s.agentAttributionRemoved);
+  const setAttributionRemoved = useAppStore((s) => s.setAgentAttributionRemoved);
   // Everything but the default Git action is the host's: its publish path
   // reads them. The default action is this window's own preference.
   const gate = useGate("publishSettings");
@@ -81,6 +83,19 @@ export function GitPane() {
           <SetToggle
             on={draftPrs}
             onClick={() => void setDraftPrs(!draftPrs)}
+            disabled={!!gate}
+            tip={tip}
+          />
+        </SetRow>
+        {/* PRs read this as they open; an agent's commit hook takes it from the
+            env it started with. */}
+        <SetRow
+          title="Remove agent attribution"
+          sub="Strip agents' Co-Authored-By trailers and “Generated with” footers from commits and PRs."
+        >
+          <SetToggle
+            on={attributionRemoved}
+            onClick={() => void setAttributionRemoved(!attributionRemoved)}
             disabled={!!gate}
             tip={tip}
           />

@@ -11,9 +11,9 @@ import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { activeEntry, useGate } from "@/store/capabilities";
+import { activeEntry } from "@/store/capabilities";
 import { useProviderPoll } from "@/util/useProviderPoll";
-import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
+import { SetGroup, SetHead } from "../primitives";
 import { ProviderRow } from "./ProviderRow";
 
 export function ProvidersPane() {
@@ -80,43 +80,17 @@ export function ProvidersPane() {
       {env.kind === "remote" && (
         <p className="set-prov-hint text-sm">
           These are this Mac's providers. {env.name}'s are managed on {env.name}, except a custom
-          binary path and agent attribution, which are {env.name}'s settings and edit it.
+          binary path, which edits {env.name}'s setting.
         </p>
       )}
 
-      <SetGroup label="Agents on this system">
+      <SetGroup label="Agents on this system" last>
         <div className="set-prov-list">
           {PROVIDERS.map((p) => (
             <ProviderRow key={p.id} provider={p} />
           ))}
         </div>
       </SetGroup>
-
-      <SetGroup label="Commits & pull requests" last>
-        <AttributionRow />
-      </SetGroup>
     </div>
-  );
-}
-
-/** PRs read the setting as they open; an agent's commit hook takes it from the
- *  env it started with. */
-function AttributionRow() {
-  const removed = useAppStore((s) => s.agentAttributionRemoved);
-  const setRemoved = useAppStore((s) => s.setAgentAttributionRemoved);
-  // The host's publish path strips the trailers, so this is its setting.
-  const gate = useGate("publishSettings");
-  return (
-    <SetRow
-      title="Remove agent attribution"
-      sub="Strip agents' Co-Authored-By trailers and “Generated with” footers from commits and PRs."
-    >
-      <SetToggle
-        on={removed}
-        onClick={() => void setRemoved(!removed)}
-        disabled={!!gate}
-        tip={gate ?? undefined}
-      />
-    </SetRow>
   );
 }
