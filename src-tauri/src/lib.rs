@@ -1364,6 +1364,10 @@ pub fn run() {
             commands::project_file_edit,
             commands::box_egress_overview,
             commands::set_box_egress_global,
+            commands::box_egress_pending,
+            commands::box_egress_answer,
+            commands::box_egress_activity,
+            commands::box_egress_open_turn,
             // The project context layer, shared with the remote dispatcher.
             commands::context_overview,
             commands::context_preview,

@@ -731,6 +731,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // never waits on it.
     sandbox::boxes::settings::seed(&db.lock());
     sandbox::boxes::set_event_sink(sink.clone());
+    // The record of what boxes reach: written from the proxies' event path,
+    // which has no ctx, and trimmed to its window once per start.
+    sandbox::boxes::egress_log::install(db.clone());
+    sandbox::boxes::egress_log::prune(&db.lock());
     sandbox::boxes::startup(&workspace);
     // A move between sandboxes the last run didn't finish: each workspace's
     // stamp says which side is it, and the other is cleared. Waited for, so

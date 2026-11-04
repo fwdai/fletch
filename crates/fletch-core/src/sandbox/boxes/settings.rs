@@ -21,9 +21,17 @@ pub const DISK_SETTING: &str = "box_disk_gib";
 pub const IMAGE_URL_SETTING: &str = "box_image_url";
 /// Minutes a box with no attached launch stays up; `0` is never.
 pub const IDLE_STOP_SETTING: &str = "box_idle_stop_minutes";
+/// What a box does with a host off its allow-list ([`EgressMode`]): `open`,
+/// `ask` or `allowlist`. Absent is open.
+pub const EGRESS_MODE_SETTING: &str = "box_egress_mode";
 /// Project setting: a JSON array of host patterns added to the default egress
 /// allow-list.
 pub const EGRESS_ALLOW_KEY: &str = "box.egress_allow";
+/// Project setting: the project's own [`EgressMode`] over the global one, in
+/// the same spelling; absent is the global. A host-owned row, never read from
+/// `.fletch/settings.json`: an agent can edit a file in its repository, and a
+/// mode it could set to open would widen its own sandbox.
+pub const EGRESS_MODE_KEY: &str = "sandbox.egress_mode";
 
 /// Every global key, for the host-owned allowlist.
 pub const KEYS: &[&str] = &[
@@ -32,7 +40,53 @@ pub const KEYS: &[&str] = &[
     DISK_SETTING,
     IMAGE_URL_SETTING,
     IDLE_STOP_SETTING,
+    EGRESS_MODE_SETTING,
 ];
+
+/// What a box does with a host its allow-list does not name. The posture a
+/// user picks on Settings › Sandbox › Network, and a project may override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EgressMode {
+    /// Any host on an allowed port passes; every connection is recorded.
+    #[default]
+    Open,
+    /// The connection is held while the user is asked, once per host; nobody
+    /// answering ends in a refusal.
+    Ask,
+    /// Refused at once, no prompt.
+    AllowList,
+}
+
+impl EgressMode {
+    /// `open`, `ask` or `allowlist`; blank is open; anything else is refused.
+    pub fn parse(raw: Option<&str>) -> Result<EgressMode> {
+        match raw.map(str::trim).filter(|s| !s.is_empty()) {
+            None | Some("open") => Ok(EgressMode::Open),
+            Some("ask") => Ok(EgressMode::Ask),
+            Some("allowlist") => Ok(EgressMode::AllowList),
+            Some(other) => Err(Error::Other(format!(
+                "{EGRESS_MODE_SETTING} must be open, ask or allowlist; got {other:?}"
+            ))),
+        }
+    }
+
+    pub fn as_setting(self) -> &'static str {
+        match self {
+            EgressMode::Open => "open",
+            EgressMode::Ask => "ask",
+            EgressMode::AllowList => "allowlist",
+        }
+    }
+
+    /// The proxy's own spelling of the same posture.
+    pub fn proxy_mode(self) -> fletch_box::EgressMode {
+        match self {
+            EgressMode::Open => fletch_box::EgressMode::Open,
+            EgressMode::Ask => fletch_box::EgressMode::Hold,
+            EgressMode::AllowList => fletch_box::EgressMode::Refuse,
+        }
+    }
+}
 
 pub const DEFAULT_MEMORY_MIB: u32 = 2048;
 pub const MIN_MEMORY_MIB: u32 = 512;
@@ -52,6 +106,8 @@ pub struct BoxSettings {
     pub image_url: Option<String>,
     /// `None` is never.
     pub idle_stop: Option<Duration>,
+    /// The global posture; a project may override it ([`egress_mode`]).
+    pub egress_mode: EgressMode,
 }
 
 impl Default for BoxSettings {
@@ -62,6 +118,7 @@ impl Default for BoxSettings {
             disk_gib: DEFAULT_DISK_GIB,
             image_url: None,
             idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
+            egress_mode: EgressMode::Open,
         }
     }
 }
@@ -72,10 +129,14 @@ static SETTINGS: RwLock<BoxSettings> = RwLock::new(BoxSettings {
     disk_gib: DEFAULT_DISK_GIB,
     image_url: None,
     idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
+    egress_mode: EgressMode::Open,
 });
 
 /// `project_id → patterns`, the per-project egress additions.
 static EGRESS: RwLock<Option<HashMap<String, Vec<String>>>> = RwLock::new(None);
+
+/// `project_id → mode`, the projects that override the global posture.
+static EGRESS_MODES: RwLock<Option<HashMap<String, EgressMode>>> = RwLock::new(None);
 
 /// The user's global egress changes over the template
 /// (`allowlist::GLOBAL_SETTING`).
@@ -107,29 +168,44 @@ pub fn load(conn: &Connection) -> BoxSettings {
         image_url: parse_image_url(raw(IMAGE_URL_SETTING).as_deref()).unwrap_or(None),
         idle_stop: parse_idle_stop(raw(IDLE_STOP_SETTING).as_deref())
             .unwrap_or(Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60))),
+        egress_mode: EgressMode::parse(raw(EGRESS_MODE_SETTING).as_deref()).unwrap_or_default(),
     }
 }
 
-/// Seed both mirrors from the database (boot).
+/// Seed every mirror from the database (boot).
 pub fn seed(conn: &Connection) {
     set(load(conn));
     set_global_egress(super::allowlist::Delta::parse(
         database::get_setting(conn, super::allowlist::GLOBAL_SETTING).as_deref(),
     ));
-    let mut map = HashMap::new();
-    if let Ok(mut stmt) =
-        conn.prepare("SELECT project_id, value FROM project_settings WHERE key = ?1")
-    {
-        let rows = stmt.query_map([EGRESS_ALLOW_KEY], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        });
-        if let Ok(rows) = rows {
-            for (project_id, value) in rows.flatten() {
-                map.insert(project_id, parse_egress_allow(&value));
-            }
+    let mut allow = HashMap::new();
+    for (project_id, value) in project_rows(conn, EGRESS_ALLOW_KEY) {
+        allow.insert(project_id, parse_egress_allow(&value));
+    }
+    *EGRESS.write() = Some(allow);
+    let mut modes = HashMap::new();
+    for (project_id, value) in project_rows(conn, EGRESS_MODE_KEY) {
+        // A hand-edited row reads as no override rather than as a posture the
+        // setter would have refused.
+        if let Ok(mode) = EgressMode::parse(Some(&value)) {
+            modes.insert(project_id, mode);
         }
     }
-    *EGRESS.write() = Some(map);
+    *EGRESS_MODES.write() = Some(modes);
+}
+
+/// Every project's value of `key`, for the mirrors.
+fn project_rows(conn: &Connection, key: &str) -> Vec<(String, String)> {
+    let Ok(mut stmt) =
+        conn.prepare("SELECT project_id, value FROM project_settings WHERE key = ?1")
+    else {
+        return Vec::new();
+    };
+    stmt.query_map([key], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })
+    .map(|rows| rows.flatten().collect())
+    .unwrap_or_default()
 }
 
 /// A whole number of MiB, at least [`MIN_MEMORY_MIB`]; `None` when absent or
@@ -214,6 +290,7 @@ pub fn validate(key: &str, value: &str) -> Option<Result<String>> {
         IDLE_STOP_SETTING => {
             parse_idle_stop(Some(value)).map(|d| d.map_or(0, |d| d.as_secs() / 60).to_string())
         }
+        EGRESS_MODE_SETTING => EgressMode::parse(Some(value)).map(|m| m.as_setting().to_string()),
         _ => return None,
     })
 }
@@ -241,14 +318,46 @@ pub fn egress_allow(project_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The user's global egress changes, from the mirror.
+/// The user's global egress changes, from the mirror: additions only. A
+/// template entry turned off globally (`remove`) has no control any more and
+/// is ignored; the next write clears it. A project's `egress.disable` is the
+/// route that remains.
 pub fn global_egress() -> super::allowlist::Delta {
     GLOBAL_EGRESS.read().clone().unwrap_or_default()
 }
 
-/// Replace the global egress changes in the mirror (the setter persists).
+/// Replace the global egress changes in the mirror (the setter persists),
+/// keeping the additions only.
 pub fn set_global_egress(delta: super::allowlist::Delta) {
-    *GLOBAL_EGRESS.write() = Some(delta);
+    *GLOBAL_EGRESS.write() = Some(super::allowlist::Delta {
+        add: delta.add,
+        remove: Vec::new(),
+    });
+}
+
+/// The posture `project_id`'s boxes answer an unlisted host with: the
+/// project's override, else the global setting.
+pub fn egress_mode(project_id: &str) -> EgressMode {
+    EGRESS_MODES
+        .read()
+        .as_ref()
+        .and_then(|m| m.get(project_id).copied())
+        .unwrap_or_else(|| current().egress_mode)
+}
+
+/// Replace a project's posture override in the mirror (the setter persists);
+/// `None` is back to the global.
+pub fn set_egress_mode_override(project_id: &str, mode: Option<EgressMode>) {
+    let mut modes = EGRESS_MODES.write();
+    let modes = modes.get_or_insert_with(HashMap::new);
+    match mode {
+        Some(mode) => {
+            modes.insert(project_id.to_string(), mode);
+        }
+        None => {
+            modes.remove(project_id);
+        }
+    }
 }
 
 /// Replace a project's egress additions in the mirror (the setter persists).
@@ -304,6 +413,55 @@ mod tests {
         assert!(validate("docker_image", "x").is_none());
     }
 
+    /// The posture spells three ways, blank is open, and a project's override
+    /// wins over the global for that project alone.
+    #[test]
+    fn the_egress_mode_parses_and_a_project_overrides_it() {
+        let _serial = TEST_LOCK.blocking_lock();
+        assert_eq!(EgressMode::parse(None).unwrap(), EgressMode::Open);
+        assert_eq!(EgressMode::parse(Some(" ask ")).unwrap(), EgressMode::Ask);
+        assert_eq!(
+            EgressMode::parse(Some("allowlist")).unwrap(),
+            EgressMode::AllowList
+        );
+        assert!(EgressMode::parse(Some("yolo")).is_err());
+        assert_eq!(
+            validate(EGRESS_MODE_SETTING, "ask").unwrap().unwrap(),
+            "ask"
+        );
+        assert!(validate(EGRESS_MODE_SETTING, "never").unwrap().is_err());
+        assert_eq!(EgressMode::Ask.proxy_mode(), fletch_box::EgressMode::Hold);
+        assert_eq!(
+            EgressMode::AllowList.proxy_mode(),
+            fletch_box::EgressMode::Refuse
+        );
+
+        set(BoxSettings {
+            egress_mode: EgressMode::Ask,
+            ..BoxSettings::default()
+        });
+        assert_eq!(egress_mode("p-mode"), EgressMode::Ask);
+        set_egress_mode_override("p-mode", Some(EgressMode::AllowList));
+        assert_eq!(egress_mode("p-mode"), EgressMode::AllowList);
+        assert_eq!(egress_mode("p-other"), EgressMode::Ask);
+        set_egress_mode_override("p-mode", None);
+        assert_eq!(egress_mode("p-mode"), EgressMode::Ask);
+        set(BoxSettings::default());
+    }
+
+    /// A global `remove` is read as nothing: the control that wrote it is gone.
+    #[test]
+    fn the_global_turn_offs_are_ignored() {
+        set_global_egress(super::super::allowlist::Delta {
+            add: vec!["a.test".into()],
+            remove: vec!["rubygems.org".into()],
+        });
+        let global = global_egress();
+        assert_eq!(global.add, vec!["a.test".to_string()]);
+        assert!(global.remove.is_empty());
+        set_global_egress(super::super::allowlist::Delta::default());
+    }
+
     #[test]
     fn egress_additions_are_a_json_array_of_patterns() {
         assert_eq!(
@@ -325,9 +483,11 @@ mod tests {
         database::set_setting(&conn, MEMORY_SETTING, "3072").unwrap();
         database::set_setting(&conn, IDLE_STOP_SETTING, "0").unwrap();
         database::set_setting(&conn, CPUS_SETTING, "bogus").unwrap();
+        database::set_setting(&conn, EGRESS_MODE_SETTING, "allowlist").unwrap();
         let loaded = load(&conn);
         assert_eq!(loaded.memory_mib, 3072);
         assert_eq!(loaded.idle_stop, None);
         assert_eq!(loaded.cpus, DEFAULT_CPUS, "a bad row reads as the default");
+        assert_eq!(loaded.egress_mode, EgressMode::AllowList);
     }
 }

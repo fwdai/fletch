@@ -503,6 +503,13 @@ pub async fn discard_agent_state(agent_id: &str) -> Result<()> {
     boxes::discard_if_any(agent_id).await
 }
 
+/// A turn of `agent_id` ended, however it ended: whatever the engine opened
+/// for that turn closes (a box's network opened from the composer). A no-op
+/// for every other agent, so callers run it unconditionally.
+pub fn turn_ended(agent_id: &str) {
+    boxes::turn_ended(agent_id);
+}
+
 /// Stop every engine-held VM cleanly as the app quits, once the agents'
 /// sessions are gone, so no box disk is left dirty.
 pub fn shutdown_all() {

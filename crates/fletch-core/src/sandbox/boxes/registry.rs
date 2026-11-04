@@ -180,12 +180,15 @@ pub struct BoxStateReport {
     pub reason: Option<String>,
     /// What a `preparing` box waits on.
     pub detail: Option<String>,
+    /// The network is open for the turn ([`BoxRegistry::set_turn_open`]).
+    pub turn_open: bool,
 }
 
 impl BoxStateReport {
     fn new(agent_id: &str, phase: &BoxPhase) -> Self {
         Self {
             agent_id: agent_id.to_string(),
+            turn_open: false,
             phase: phase.name(),
             since: match phase {
                 BoxPhase::Running { since } => Some(*since),
@@ -325,6 +328,10 @@ struct Entry {
     /// The boot in flight, for every caller that wants the box meanwhile to
     /// join ([`BoxRegistry::ensure_running`]); `None` once it has ended.
     boot: Option<BootInFlight>,
+    /// The user opened this box's network for the turn in progress (or the
+    /// next one): any host passes until the turn ends
+    /// ([`BoxRegistry::set_turn_open`]). Never persisted.
+    turn_open: bool,
 }
 
 impl Entry {
@@ -338,6 +345,16 @@ impl Entry {
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             discarding: false,
             boot: None,
+            turn_open: false,
+        }
+    }
+
+    /// What this box's proxy does with a host off the list, now.
+    fn proxy_mode(&self) -> fletch_box::EgressMode {
+        if self.turn_open {
+            fletch_box::EgressMode::Open
+        } else {
+            settings::egress_mode(&self.identity.project_id).proxy_mode()
         }
     }
 }
@@ -688,7 +705,60 @@ impl BoxRegistry {
     }
 
     pub fn report(&self, agent_id: &str) -> BoxStateReport {
-        BoxStateReport::new(agent_id, &self.state(agent_id))
+        let (phase, turn_open) = self
+            .entries
+            .lock()
+            .get(agent_id)
+            .map_or((BoxPhase::Stopped, false), |e| {
+                (e.phase.clone(), e.turn_open)
+            });
+        BoxStateReport {
+            turn_open,
+            ..BoxStateReport::new(agent_id, &phase)
+        }
+    }
+
+    /// Whether `agent_id`'s box has its network open for the turn.
+    pub fn turn_open(&self, agent_id: &str) -> bool {
+        self.entries
+            .lock()
+            .get(agent_id)
+            .is_some_and(|e| e.turn_open)
+    }
+
+    /// Open `agent_id`'s box's network for the turn in progress, or the next
+    /// one, or close it again; the running proxy follows at once. `false` for
+    /// an agent with no box. The turn's end closes it
+    /// (`boxes::turn_ended`).
+    pub fn set_turn_open(&self, agent_id: &str, open: bool) -> bool {
+        let running = {
+            let mut entries = self.entries.lock();
+            let Some(entry) = entries.get_mut(agent_id) else {
+                return false;
+            };
+            if entry.turn_open == open {
+                return true;
+            }
+            entry.turn_open = open;
+            entry.running.clone().map(|r| (r, entry.proxy_mode()))
+        };
+        if let Some((running, mode)) = running {
+            if let Some(proxy) = running.proxy.lock().as_ref() {
+                proxy.update(egress_policy(&running.identity.project_id), mode);
+            }
+        }
+        self.emit_state(agent_id);
+        true
+    }
+
+    /// Refuse `host` on `agent_id`'s running box from now on, the held
+    /// connections included, until the box restarts or a list allows it.
+    pub fn decline_host(&self, agent_id: &str, host: &str) {
+        if let Some(running) = self.running(agent_id) {
+            if let Some(proxy) = running.proxy.lock().as_ref() {
+                proxy.decline(host);
+            }
+        }
     }
 
     pub fn running_ids(&self) -> Vec<String> {
@@ -896,7 +966,12 @@ impl BoxRegistry {
             return Err(refused);
         }
         self.set_phase(agent_id, BoxPhase::Starting);
-        let booted = boot(identity, &ready, tools_disks).await;
+        let mode = self
+            .entries
+            .lock()
+            .get(agent_id)
+            .map_or(fletch_box::EgressMode::Refuse, Entry::proxy_mode);
+        let booted = boot(identity, &ready, tools_disks, mode).await;
         drop(slot);
         match booted {
             Ok(running) => {
@@ -1834,18 +1909,21 @@ impl BoxRegistry {
         }
     }
 
+    /// Every running box of the project serves its list and posture from its
+    /// next connection, and what it holds is checked again: the list, the
+    /// project's posture or the global one changed.
     pub fn update_egress(&self, project_id: &str) {
         let policy = egress_policy(project_id);
-        for running in self
+        let boxes: Vec<(Arc<RunningBox>, fletch_box::EgressMode)> = self
             .entries
             .lock()
             .values()
-            .filter_map(|e| e.running.clone())
-        {
-            if running.identity.project_id == project_id {
-                if let Some(proxy) = running.proxy.lock().as_ref() {
-                    proxy.update(policy.clone());
-                }
+            .filter(|e| e.identity.project_id == project_id)
+            .filter_map(|e| e.running.clone().map(|r| (r, e.proxy_mode())))
+            .collect();
+        for (running, mode) in boxes {
+            if let Some(proxy) = running.proxy.lock().as_ref() {
+                proxy.update(policy.clone(), mode);
             }
         }
     }
@@ -2046,11 +2124,13 @@ pub fn egress_policy(project_id: &str) -> EgressPolicy {
     }
 }
 
-/// Boot one box (§7.2 step 1).
+/// Boot one box (§7.2 step 1). `mode` is what its proxy does with a host off
+/// the list until the first [`BoxRegistry::update_egress`].
 async fn boot(
     identity: &BoxIdentity,
     ready: &super::Ready,
     tools_leases: Vec<ToolsLease>,
+    mode: fletch_box::EgressMode,
 ) -> Result<RunningBox> {
     let agent_id = identity.agent_id.clone();
     let dir = identity.box_dir()?;
@@ -2082,10 +2162,12 @@ async fn boot(
 
     let proxy = {
         let agent_id = agent_id.clone();
+        let project_id = identity.project_id.clone();
         EgressProxy::start(
             &dir.join(EGRESS_SOCK),
             egress_policy(&identity.project_id),
-            move |event| on_egress(&agent_id, event),
+            mode,
+            move |event| on_egress(&agent_id, &project_id, event),
         )
         .map_err(|e| Error::Other(format!("start the egress proxy: {e}")))?
     };
@@ -2247,21 +2329,62 @@ async fn verify_shares(channel: &Channel, shares: &[FolderGrant]) -> Result<()> 
     )))
 }
 
-fn on_egress(agent_id: &str, event: EgressEvent) {
+/// The proxy's events, each recorded (`egress_log`) and surfaced
+/// (`box:egress`); a hold raises its prompt, and a refusal closes one.
+fn on_egress(agent_id: &str, project_id: &str, event: EgressEvent) {
+    use fletch_box::egress::{Admission, Denial};
     match event {
-        EgressEvent::Allowed { host, port, .. } => super::emit(
-            super::EVENT_EGRESS,
-            &EgressEventPayload {
-                agent_id: agent_id.to_string(),
-                host,
+        EgressEvent::Allowed {
+            host,
+            port,
+            admission,
+            bytes_up,
+            bytes_down,
+        } => {
+            let via = match admission {
+                Admission::Listed => "listed",
+                Admission::Open if BoxRegistry::global().turn_open(agent_id) => "turn",
+                Admission::Open => "open",
+            };
+            super::egress_log::record(&super::egress_log::Record {
+                agent_id,
+                project_id,
+                host: &host,
                 port,
                 allowed: true,
-                quiet: false,
-            },
-        ),
+                via,
+                bytes_up,
+                bytes_down,
+            });
+            super::emit(
+                super::EVENT_EGRESS,
+                &EgressEventPayload {
+                    agent_id: agent_id.to_string(),
+                    host,
+                    port,
+                    allowed: true,
+                    quiet: false,
+                },
+            )
+        }
         EgressEvent::Denied { host, port, reason } => {
             let quiet = fletch_box::egress::is_quiet(&host);
             tracing::info!(agent_id, host, port, %reason, quiet, "box egress denied");
+            super::egress_log::record(&super::egress_log::Record {
+                agent_id,
+                project_id,
+                host: &host,
+                port,
+                allowed: false,
+                via: match reason {
+                    Denial::Port => "port",
+                    Denial::Host if quiet => "quiet",
+                    Denial::Host => "host",
+                },
+                bytes_up: 0,
+                bytes_down: 0,
+            });
+            super::egress_prompt::refused(agent_id, &host);
             super::emit(
                 super::EVENT_EGRESS,
                 &EgressEventPayload {
@@ -2272,6 +2395,10 @@ fn on_egress(agent_id: &str, event: EgressEvent) {
                     quiet,
                 },
             )
+        }
+        EgressEvent::Held { host, port } => {
+            tracing::info!(agent_id, host, port, "box egress held for an answer");
+            super::egress_prompt::request(agent_id, project_id, &host, port);
         }
         EgressEvent::Error { host, message } => {
             tracing::info!(agent_id, ?host, message, "box egress error")
