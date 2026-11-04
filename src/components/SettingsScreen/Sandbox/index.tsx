@@ -3,13 +3,12 @@ import { useAppStore } from "@/store";
 import { SetGroup, SetHead } from "../primitives";
 import { BoxKnobs } from "./BoxKnobs";
 import { BoxSetupStatus } from "./BoxSetupStatus";
-import { ContainerAuth } from "./ContainerAuth";
 import { EgressGlobal } from "./EgressGlobal";
 import { VmDetails } from "./VmDetails";
 
-/** Settings › Sandbox: the Linux VM's resources, what it may reach, and how its
- *  claude signs in, with setup shown only while it needs attention and the
- *  versions tucked behind VM details. Nothing here chooses an engine:
+/** Settings › Sandbox: the Linux VM's resources and what it may reach, with
+ *  setup shown only while it needs attention and the versions tucked behind VM
+ *  details. Nothing here chooses an engine:
  *  every new workspace runs in a Linux VM when one can boot, in the macOS
  *  sandbox otherwise; a project or a single workspace overrides that where
  *  the override is made (the project page, the composer). */
@@ -46,9 +45,6 @@ export function SandboxPane() {
 
       {runtimeOk && <BoxKnobs />}
       {runtimeOk && <EgressGlobal />}
-      <SetGroup label="Claude sign-in">
-        <ContainerAuth />
-      </SetGroup>
       <VmDetails />
     </div>
   );
