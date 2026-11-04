@@ -22,6 +22,7 @@ import { useAppStore } from "../../store";
 import { AgentAvatar } from "../builder/AgentAvatar";
 import { resolveAlias } from "../shared";
 import type { Definition, Spec } from "../spec";
+import { pickDefinition } from "./pickDefinition";
 import { loadDefaultWorkflowId, rememberDefaultWorkflow } from "./projectPipeline";
 import { flattenSteps } from "./RunView/flatten";
 import { useDefinitions } from "./useDefinitions";
@@ -64,13 +65,17 @@ export function WorkflowComposer({ repoPath, baseBranch, projectId, onLaunched }
 
   const { definitions, loading } = useDefinitions();
   // "" until the user picks this session — then the project's remembered default
-  // (which may load async) leads, falling back to the first definition.
+  // leads, falling back to the first definition (see `pickDefinition`).
   const [defId, setDefId] = useState("");
   const [busy, setBusy] = useState(false);
-  const [defaultWorkflowId, setDefaultWorkflowId] = useState<string | null>(null);
+  // `undefined` until the project's remembered default has been read. The read
+  // is async and a workflow draft mounts this composer at once, so until it
+  // settles there is no definition to launch — otherwise a quick Enter would
+  // run the first definition instead of the one this project remembers.
+  const [defaultWorkflowId, setDefaultWorkflowId] = useState<string | null | undefined>();
   useEffect(() => {
     let cancelled = false;
-    setDefaultWorkflowId(null);
+    setDefaultWorkflowId(undefined);
     void loadDefaultWorkflowId(projectId ?? "").then((id) => {
       if (!cancelled) setDefaultWorkflowId(id);
     });
@@ -79,8 +84,9 @@ export function WorkflowComposer({ repoPath, baseBranch, projectId, onLaunched }
     };
   }, [projectId]);
 
-  const preferredId = defId || defaultWorkflowId || "";
-  const def = definitions.find((d) => d.id === preferredId) ?? definitions[0];
+  const def = pickDefinition(definitions, defId, defaultWorkflowId);
+  // Still reading the default and nothing picked yet: the composer isn't ready.
+  const settling = defaultWorkflowId === undefined && !defId;
 
   const pickDef = (id: string) => {
     setDefId(id);
@@ -136,7 +142,7 @@ export function WorkflowComposer({ repoPath, baseBranch, projectId, onLaunched }
   };
   submitRef.current = () => void launch();
 
-  if (loading) {
+  if (loading || settling) {
     return (
       <div className="wf-field-empty" style={{ textAlign: "center" }}>
         Loading workflows…
