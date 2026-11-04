@@ -62,7 +62,7 @@ const CUSTOMIZE_IDS: SettingsSection[] = ["agents", "tools", "skills"];
 const INTERFACE_GROUP = "Interface";
 const AGENTS_GROUP = "Agents";
 // Named for what the group is *for*, not the mechanism: what agents may touch
-// (sandbox isolation, the claude setup token) and how their work is allowed to
+// (sandbox isolation) and how their work is allowed to
 // leave (approval wait, ask before publishing, draft PRs). Future permission,
 // network or secrets settings belong here too. "Checkouts" or "Isolation" would
 // read as plain worktree-running, which is exactly the framing to avoid.

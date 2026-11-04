@@ -93,15 +93,15 @@ pub(crate) fn probe_default(id: &'static str) -> ProviderAuthProbe {
 /// account read as signed in at once, when it only ever authenticates the
 /// default.
 pub(crate) fn probe_dir(id: &str, dir: &Path) -> ProviderAuthProbe {
-    use crate::sandbox::provider::auth as provider_auth;
+    use super::host_login::claude as host_login;
     match id {
         "claude" if login_revoked(Some(dir)) => revoked_entry(),
         "claude" => {
             let keychain = crate::keychain::item_present(
-                &provider_auth::claude_keychain_service(Some(dir)),
+                &host_login::claude_keychain_service(Some(dir)),
                 None,
             );
-            let file = provider_auth::credentials_file_usable(
+            let file = host_login::credentials_file_usable(
                 read_file(&dir.join(".credentials.json")).as_deref(),
             );
             detailed(
@@ -146,16 +146,14 @@ fn probe_one(id: &'static str) -> ProviderAuthProbe {
 
 // ── Per-provider probes ───────────────────────────────────────────────────────
 
-/// claude reuses the host half of the box's auth chain (Keychain login,
-/// `~/.claude/.credentials.json`, or an Anthropic key in the login shell). The
-/// box-only pasted setup token is excluded there, and the Keychain step is
-/// a presence check that never reads the credential — see
-/// [`crate::sandbox::provider::auth::host_login_present`].
+/// A Keychain login, `~/.claude/.credentials.json`, or an Anthropic key in the
+/// login shell. The Keychain step is a presence check that never reads the
+/// credential: see [`super::host_login::claude::host_login_present`].
 fn claude_probe() -> ProviderAuthProbe {
     if login_revoked(None) {
         return revoked_entry();
     }
-    if crate::sandbox::provider::auth::host_login_present() {
+    if super::host_login::claude::host_login_present() {
         entry_ok("claude")
     } else if crate::agent::accounts::claude_config_override().is_some() {
         // The probe follows the shell's relocation, so a login kept under the
@@ -349,7 +347,7 @@ fn non_empty_file(path: &Path) -> bool {
 }
 
 /// Whether `var` is set non-blank in the app's process env or the user's login
-/// shell — the same two sources the box's auth chain consults, so a key that
+/// shell, the same two sources a box launch reads, so a key that
 /// only exists in `~/.zshrc` still counts. The value is tested for emptiness and
 /// dropped; it is never returned or logged.
 pub(crate) fn env_key_present(var: &str) -> bool {

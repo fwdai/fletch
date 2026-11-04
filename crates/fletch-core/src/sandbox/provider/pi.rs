@@ -10,10 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
-use super::auth::{multi_provider_auth_env, present_api_keys};
-use super::{
-    copy_tree, login_shell_var, Credential, CredentialFile, GuestEntry, ProviderHome, SharedState,
-};
+use super::auth::{multi_provider_credential, present_api_keys};
+use super::{copy_tree, Credential, CredentialFile, GuestEntry, ProviderHome, SharedState};
 use crate::error::Result;
 use crate::sandbox::engine::AgentLaunchCtx;
 
@@ -22,7 +20,7 @@ pub const MIRROR_DIR: &str = "pi-sessions";
 
 /// Launch-blocking message when there is neither a login nor a provider key.
 pub const NO_AUTH_MSG: &str =
-    "No Pi credentials for boxes — sign in with `pi` on the host (writes \
+    "No Pi credentials for Linux VMs. Sign in with `pi` on the host (writes \
      ~/.pi/agent/auth.json) or set a provider API key (e.g. ANTHROPIC_API_KEY or OPENAI_API_KEY).";
 
 pub struct Pi;
@@ -68,7 +66,7 @@ impl ProviderHome for Pi {
     /// The login file when the user has one, and every provider API key the
     /// login shell exports; one of the two is required.
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
-        credential_from(ctx.home, present_api_keys(login_shell_var))
+        credential_from(ctx.home, present_api_keys())
     }
 
     /// `~/.pi`: the agent dir with its login, settings and sessions.
@@ -88,8 +86,7 @@ fn credential_from(home: &Path, api_keys: Vec<(String, String)>) -> Result<Crede
         .then(|| CredentialFile::cli_owned(auth))
         .into_iter()
         .collect();
-    let env = multi_provider_auth_env(api_keys, !files.is_empty(), NO_AUTH_MSG)?;
-    Ok(Credential { env, files })
+    multi_provider_credential(api_keys, files, NO_AUTH_MSG)
 }
 
 #[cfg(test)]

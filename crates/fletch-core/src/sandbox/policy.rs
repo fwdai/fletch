@@ -114,8 +114,8 @@ const STATE_DIR_PROVIDERS: &[&str] = &["claude", "codex", "cursor", "gemini", "p
 
 /// The one **file** under a claude config dir that stays writable when the dir
 /// is otherwise read-only: claude's OAuth refresh rewrites the rotated token
-/// here, and the host-side `CredentialsFile` auth chain needs that write to
-/// land on the host. Seatbelt grants it as a file rule (see the seatbelt
+/// here, and the host reads that login back, so the write has to land on the
+/// host. Seatbelt grants it as a file rule (see the seatbelt
 /// caller).
 pub const CLAUDE_CREDENTIALS_FILE: &str = ".credentials.json";
 

@@ -38,7 +38,6 @@ impl EngineKind {
             Self::SandboxExec => EngineCaps {
                 checkout_on_host: true,
                 shares_host_fs: true,
-                token_only_launch: false,
                 share_roots: None,
                 run_panel: true,
                 workflow_steps: true,
@@ -46,7 +45,6 @@ impl EngineKind {
             Self::Box => EngineCaps {
                 checkout_on_host: false,
                 shares_host_fs: false,
-                token_only_launch: true,
                 share_roots: Some(&["/Users", "/Volumes"]),
                 run_panel: false,
                 workflow_steps: false,
@@ -77,10 +75,6 @@ pub struct EngineCaps {
     /// the OS reports for a path (symlinks resolved) is what the agent sees,
     /// and its provider CLI writes the host's own session dirs (seatbelt).
     pub shares_host_fs: bool,
-    /// A claude launch can be signed in only by a token the host hands over:
-    /// the engine has no view of the host's credential files, so the stored
-    /// setup-token is a valid fallback.
-    pub token_only_launch: bool,
     /// The roots a granted folder must lie under, `None` for any: a box guest
     /// mounts shares only under the mountpoints its image ships (both empty
     /// mountpoints; see `packaging/box-image/build.sh`).
@@ -434,7 +428,6 @@ mod tests {
             "only a box keeps the checkout off the host"
         );
         assert_eq!(with(|k| k.caps().shares_host_fs), vec![SandboxExec]);
-        assert_eq!(with(|k| k.caps().token_only_launch), vec![Box]);
         assert_eq!(with(|k| k.caps().share_roots.is_some()), vec![Box]);
         assert_eq!(Box.caps().share_roots, Some(&["/Users", "/Volumes"][..]));
         assert_eq!(with(|k| !k.caps().run_panel), vec![Box]);

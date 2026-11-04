@@ -318,7 +318,6 @@ mod tests {
             for (key, value) in [
                 ("github_token", "ghp_secret"),
                 ("linear_token", "lin_secret"),
-                ("claude_container_token", "sk-ant-oat-secret"),
                 ("telemetry_distinct_id", "abc"),
                 ("telemetry_enabled", "true"),
                 ("remote.enabled", "true"),

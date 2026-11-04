@@ -18,10 +18,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::auth::{multi_provider_auth_env, present_api_keys};
+use super::auth::{multi_provider_credential, present_api_keys};
 use super::{
-    copy_tree, login_shell_var, Credential, CredentialFile, FileOwner, GuestEntry, ProviderHome,
-    SharedState, Transport,
+    copy_tree, Credential, CredentialFile, FileOwner, GuestEntry, ProviderHome, SharedState,
+    Transport,
 };
 use crate::error::Result;
 use crate::sandbox::engine::AgentLaunchCtx;
@@ -35,7 +35,7 @@ const LOGIN_FILES: &[&str] = &["auth.json", "opencode.db"];
 
 /// Launch-blocking message when there is neither a login nor a provider key.
 pub const NO_AUTH_MSG: &str =
-    "No OpenCode credentials for boxes — sign in with `opencode auth login` on \
+    "No OpenCode credentials for Linux VMs. Sign in with `opencode auth login` on \
      the host or set a provider API key (e.g. ANTHROPIC_API_KEY or OPENAI_API_KEY).";
 
 pub struct OpenCode;
@@ -83,7 +83,7 @@ impl ProviderHome for OpenCode {
         credential_from(
             ctx.home,
             &policy::opencode_data_dir(ctx.home),
-            present_api_keys(login_shell_var),
+            present_api_keys(),
         )
     }
 
@@ -126,8 +126,7 @@ fn credential_from(
             owner: FileOwner::Cli,
         })
         .collect();
-    let env = multi_provider_auth_env(api_keys, !files.is_empty(), NO_AUTH_MSG)?;
-    Ok(Credential { env, files })
+    multi_provider_credential(api_keys, files, NO_AUTH_MSG)
 }
 
 #[cfg(test)]
