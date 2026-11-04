@@ -49,6 +49,7 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
     boxDiskGib: s.box_disk_gib || "",
     boxImageUrl: s.box_image_url || "",
     boxIdleStopMinutes: s.box_idle_stop_minutes || "",
+    boxEgressMode: s.box_egress_mode || "",
   };
 }
 

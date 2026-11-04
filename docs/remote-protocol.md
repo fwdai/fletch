@@ -669,7 +669,7 @@ The six scopes, and what each one covers:
 
 | scope | covers |
 |---|---|
-| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `list_provider_accounts`, `get_provider_limits`, `refresh_provider_limits` (a vendor read the host stores, as its own Refresh button does), `scan_usage_transcripts`, `approvals_list`, `get_settings`, `get_project_settings` |
+| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `list_provider_accounts`, `get_provider_limits`, `refresh_provider_limits` (a vendor read the host stores, as its own Refresh button does), `scan_usage_transcripts`, `approvals_list`, `box_egress_pending`, `box_egress_activity`, `get_settings`, `get_project_settings` |
 | `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, switch the provider account (`switch_agent_account`), dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`, `clear_checkout_config`), and choosing which of a checkout's PRs is focused (`set_focused_pr`) |
 | `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; every project setting (`set_project_setting`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides, and which provider account the host's agents run under (`set_active_provider_account`) |
 | `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
@@ -918,8 +918,12 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `project_file_approve` | `{ projectId, patterns: string[] }` — approve host patterns the files add, so the project's boxes may reach them; the files are re-read first and a pattern they do not hold now is refused. Updates the project's running boxes | `ProjectFileStatus` |
 | `project_file_edit` | `{ projectId, file: "shared" \| "local", edit: { allowAdd?, allowRemove?, disableAdd?, disableRemove? } }` — change the `egress` lists of one of the project's settings files on the host (`shared` is `.fletch/settings.json`, `local` is `.fletch/settings.local.json`, kept out of git through `info/exclude`); creates the file when missing. Hosts added this way are approved as they are written. Refused for a file with comments, which plain JSON would drop, and for a pattern that does not parse | `ProjectFileStatus` |
 | `box_egress_overview` | `{ projectId?: string }` — the egress allow-list layer by layer: the template with categories, the quiet (telemetry) list, the user's global changes, the list every project starts from, and with `projectId` that project's own entries (each with its source), settings files and in-app additions. Read-only | `EgressOverview` |
-| `set_box_egress_global` | `{ delta: { add: string[], remove: string[] } }` — replace the user's global changes over the template: hosts every project's boxes may also reach, template entries turned off. Validated and normalized; every running box takes the new list from its next connection | `{ add, remove }` (as stored) |
-| `set_box_setting` | `{ key, value: string \| null }` — one of the five host-owned box settings (see "Settings"), validated on the host; `null` restores the default (the host starts the image install on its own, at boot and after onboarding, wherever the runtime probe passes) | `null` |
+| `set_box_egress_global` | `{ delta: { add: string[], remove: string[] } }` — replace the user's global additions over the template: hosts every project's boxes may also reach. Validated and normalized; a `remove` (template entries turned off, a control that is gone) is dropped on the way in and answered empty. Every running box takes the new list from its next connection | `{ add, remove }` (as stored) |
+| `box_egress_pending` | `{}` — the hosts boxes are held waiting to reach under the `ask` posture, oldest first, for a client that connected after the `box:egress-requested` events fired. Read-only | `EgressPrompt[]` (the event's payload, with `requested_at`) |
+| `box_egress_answer` | `{ id, answer: "project" \| "always" \| "block" \| "turn" }` — answer one held host: allow it for the project (its in-app list, `box.egress_allow`), for every project (the global list), block it on that box until the box restarts, or open the box's network until its turn ends. The allow travels the list it lands in, so every box of that scope takes it; the held connections follow at once. An id the host no longer holds is ignored | `null` |
+| `box_egress_activity` | `{ projectId?: string, hours?: number }` — what boxes reached or were refused in the last `hours` (24 by default, a month at most), grouped by host, newest first, from the host's `egress_log`: connections allowed and refused, how the newest was answered (`last_via`: `listed`, `open`, `turn`; `host`, `port`, `quiet`), bytes up and down, the workspaces that reached it, and whether it is known telemetry. With `projectId`, that project's boxes only. Read-only | `HostActivity[]` |
+| `box_egress_open_turn` | `{ agentId, open?: boolean }` — open the agent's box's network until its turn ends (any host on an allowed port passes, recorded as `turn`), or close it again with `open: false`; the box's `box:state` carries `turn_open`. Refused for a workspace with no box | `null` |
+| `set_box_setting` | `{ key, value: string \| null }` — one of the six host-owned box settings (see "Settings"), validated on the host; a new `box_egress_mode` reaches every running box at once; `null` restores the default (the host starts the image install on its own, at boot and after onboarding, wherever the runtime probe passes) | `null` |
 | `available_workspace_types` | `{ repoPath, provider }` — the workspace types a new agent of `provider` in the repo at `repoPath` may be given, for the composer's choice: `host` (the macOS sandbox, always available) and `box` (an isolated VM, available exactly when a spawn asking for one would be accepted, else `reason` is the sentence it would fail with); `default` marks what a spawn with no choice picks (always `box` on a host off macOS, where there is no macOS sandbox). `spawn_agent` on the wire carries no workspace type yet, so a remote spawn always takes the default. Read-only | `{ kind: "host" \| "box", available: boolean, reason: string \| null, default: boolean }[]` |
 | `set_agent_bin_override` | `{ id, path: string \| null }` — `agent_bin_path_<id>`, a path *on the host*; blank or `null` clears it. Live agents on that provider are respawned so they exec the new binary | `null` |
 | `set_branch_prefix` | `{ prefix }` — `git_branch_prefix`; validated and trimmed on the host, empty clears it | `string` (the prefix as stored) |
@@ -1138,7 +1142,7 @@ default the host does):
 | `auto_archive_idle_days` | `set_auto_archive_idle_days` | `projects` |
 | `code_indexing_enabled` | `set_code_indexing_enabled` | `projects` |
 | `context_layer_enabled` | `set_context_layer_enabled` | `projects` |
-| `box_memory_mib`, `box_cpus`, `box_disk_gib`, `box_image_url`, `box_idle_stop_minutes` | `set_box_setting` | `projects` |
+| `box_memory_mib`, `box_cpus`, `box_disk_gib`, `box_image_url`, `box_idle_stop_minutes`, `box_egress_mode` | `set_box_setting` | `projects` |
 | `agent_bin_path_<id>` | `set_agent_bin_override` | `projects` |
 | `git_branch_prefix` | `set_branch_prefix` | `publish` |
 | `github_draft_prs` | `set_draft_prs` | `publish` |
@@ -1183,6 +1187,7 @@ it:
 | `linear.team_id`, `linear.team_name` | the issue inbox and picker | a Linear team id; its display name |
 | `context.enabled`, `context.extract` | the context layer (its ops, instruction block, ingesters) and its background extractor | `"false"` off; absent on |
 | `sandbox.placement` | the spawn path, under the `auto` engine | `"host"` (this Mac), `"box"` (always a box, waiting for the image); absent is automatic, which runs a repository that builds a macOS or iOS app on this Mac |
+| `sandbox.egress_mode` | the project's boxes' egress proxies | `"open"`, `"ask"` or `"allowlist"`, the project's posture for hosts off its allow-list over the global `box_egress_mode`; absent is the global. Validated on write; the project's running boxes take it at once |
 
 Every `run.` key is allowed, which is what lets the per-agent overrides through.
 The roadmap's code allocator (`roadmap.code_prefix`, `roadmap.code_seq`) is the
@@ -1358,6 +1363,7 @@ settings:changed       project_settings:changed
 context:changed
 box:state              box:egress             box:image
 box:tools              box:policy             box:list
+box:egress-requested   box:egress-resolved
 project_file:changed
 ```
 
@@ -1375,7 +1381,25 @@ workspaces included; it carries nothing, so a client re-reads `box_list`.
 `box:policy { project_id }` says what boxes may reach changed in the app: the
 user's global list (`project_id: null`) or one project's in-app additions.
 Reload `box_egress_overview`. A denied `box:egress` carries `quiet: true` for a
-known telemetry host, which is recorded but nothing to act on.
+known telemetry host, which is recorded but nothing to act on. Every answered
+connection, allowed or not, also lands in the host's `egress_log`, which
+`box_egress_activity` reads; a client that keeps a Reached or Blocked list
+re-reads it on `box:egress`.
+
+`box:egress-requested` is a held prompt like the publish approval: under the
+`ask` posture a box's proxy holds a connection to a host off its allow-list
+and the host raises one prompt per workspace and host — the payload is an
+`EgressPrompt` (`id`, `agent_id`, `project_id`, `host`, `port`,
+`requested_at`) — until someone answers with `box_egress_answer`, or about a
+minute passes and the proxy refuses it. A client that connected after the
+event asks `box_egress_pending` after every handshake and replaces its queue
+with the answer. `box:egress-resolved` `{ id, outcome: "allowed" | "blocked"
+| "expired" }` closes one, whoever ended it — `allowed` also when the host
+came to be allowed another way (the posture opened, a list gained it), and
+`expired` also when the box went away; a client drops the card and needs no
+other reaction. A `box:state` carries `turn_open: true` while the box's
+network is open for the turn (`box_egress_open_turn`); the turn's end clears
+it and emits the state again.
 
 `project_file:changed { project_id }` says a project's `.fletch/settings.json`
 (or `.fletch/settings.local.json`) changed on the host, or what of it is

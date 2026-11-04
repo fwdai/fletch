@@ -23,7 +23,7 @@ pub mod tools;
 pub mod version;
 
 pub use channel::{Channel, Forward};
-pub use egress::{EgressEvent, EgressPolicy, EgressProxy, HostPattern};
+pub use egress::{EgressEvent, EgressPolicy, EgressProxy, HostPattern, Mode as EgressMode};
 pub use error::{Error, Result};
 pub use image_store::{ImageStore, InstalledImage, InstalledLayer, PinnedImage};
 pub use runtime::{host_memory_mib, HostKey, Probe, RuntimePaths, StopOutcome, Vm, VmSpec};

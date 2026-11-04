@@ -102,6 +102,41 @@ pub fn set_box_egress_global(
     engine::set_box_egress_global_impl(&ctx, &delta)
 }
 
+/// The hosts boxes are held waiting to reach, oldest first.
+#[tauri::command]
+pub fn box_egress_pending() -> Vec<fletch_core::sandbox::boxes::egress_prompt::PendingEgressPrompt>
+{
+    engine::box_egress_pending_impl()
+}
+
+/// Answer one held host: allow it for the project or everywhere, block it on
+/// the box, or open the box's network for the turn.
+#[tauri::command]
+pub fn box_egress_answer(
+    ctx: State<'_, Arc<EngineCtx>>,
+    id: String,
+    answer: engine::EgressAnswer,
+) -> Result<()> {
+    engine::box_egress_answer_impl(&ctx, &id, answer)
+}
+
+/// What boxes reached or were refused lately, grouped by host; with a
+/// project, its boxes only.
+#[tauri::command]
+pub fn box_egress_activity(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: Option<String>,
+    hours: Option<u64>,
+) -> Result<Vec<fletch_core::sandbox::boxes::egress_log::HostActivity>> {
+    engine::box_egress_activity_impl(&ctx, project_id.as_deref(), hours)
+}
+
+/// Open an agent's box's network until its turn ends, or close it again.
+#[tauri::command]
+pub fn box_egress_open_turn(agent_id: String, open: Option<bool>) -> Result<()> {
+    engine::box_egress_open_turn_impl(&agent_id, open.unwrap_or(true))
+}
+
 /// Write one validated box setting; `null` restores its default.
 #[tauri::command]
 pub fn set_box_setting(

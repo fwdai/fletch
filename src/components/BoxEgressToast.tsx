@@ -1,4 +1,5 @@
 import { useAppStore } from "@/store";
+import { BoxEgressPrompt, promptsByAgent } from "./BoxEgressPrompt";
 import { Icon } from "./Icon";
 import { ProjectFilePrompt, useProjectFilePrompts } from "./ProjectFilePrompts";
 import { Button } from "./ui/Button";
@@ -8,19 +9,23 @@ import { Button } from "./ui/Button";
  * a host it has not been refused before says so once — one toast per
  * workspace, however many hosts and connections — and leads to the project's
  * Network section, where blocked hosts are reviewed and allowed. Known noise
- * (telemetry and the like) never prompts; it is only listed there. Fed by
- * `box:egress` through `foldBlocked` (store/sandbox).
+ * (telemetry and the like) never prompts; it is only listed there, and neither
+ * does a host the user was already asked about. Fed by `box:egress` through
+ * `foldBlocked` (store/sandbox).
  *
- * Above them sit the prompts of a project's `.fletch/settings.json` asking for
+ * Above them sit the questions of the Ask me posture (`BoxEgressPrompt`): a
+ * VM holding a connection until the user decides, one card per workspace. And
+ * above those the prompts of a project's `.fletch/settings.json` asking for
  * hosts the user has not approved (`ProjectFilePrompts`): the same stack,
- * since both are about what a box may reach. Renders nothing when there is
- * nothing to show, which is nearly always.
+ * since all three are about what a box may reach. Renders nothing when there
+ * is nothing to show, which is nearly always.
  */
 export function BoxEgressToast() {
   const blocked = useAppStore((s) => s.boxEgressBlocked);
   const dismiss = useAppStore((s) => s.dismissBoxEgress);
   const agents = useAppStore((s) => s.workspace?.agents);
   const openProjectScreen = useAppStore((s) => s.openProjectScreen);
+  const pendingPrompts = useAppStore((s) => s.pendingEgressPrompts);
   const { prompts, dismiss: dismissPrompt } = useProjectFilePrompts();
 
   // Unseen hosts, grouped by workspace in the order they were first refused.
@@ -29,8 +34,9 @@ export function BoxEgressToast() {
     if (b.seen) continue;
     byAgent.set(b.agent_id, [...(byAgent.get(b.agent_id) ?? []), b.host]);
   }
+  const held = promptsByAgent(pendingPrompts);
 
-  if (byAgent.size === 0 && prompts.length === 0) return null;
+  if (byAgent.size === 0 && prompts.length === 0 && held.size === 0) return null;
 
   return (
     <div className="docker-build-stack">
@@ -40,6 +46,9 @@ export function BoxEgressToast() {
           status={status}
           onDismiss={() => dismissPrompt(status)}
         />
+      ))}
+      {[...held].map(([agentId, waiting]) => (
+        <BoxEgressPrompt key={`held:${agentId}`} agentId={agentId} prompts={waiting} />
       ))}
       {[...byAgent].map(([agentId, hosts]) => {
         const agent = agents?.find((a) => a.id === agentId);

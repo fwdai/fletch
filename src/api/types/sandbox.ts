@@ -102,13 +102,16 @@ export interface WorkspaceTypeOption {
 
 /** `box_state(agent_id)` and the `box:state` event: one agent's box.
  *  `since` is set while running, `reason` when failed, `detail` while
- *  preparing (what the box waits for: the image download, the tools disk). */
+ *  preparing (what the box waits for: the image download, the tools disk).
+ *  `turn_open` says the network is open until the turn ends
+ *  (`box_egress_open_turn`); absent on a host from before it. */
 export interface BoxStateEvent {
   agent_id: string;
   phase: "stopped" | "preparing" | "starting" | "running" | "stopping" | "failed";
   since?: number | null;
   reason?: string | null;
   detail?: string | null;
+  turn_open?: boolean;
 }
 
 /** One VM on Settings › Sandbox (`box_list`). `agent_id` may be a workspace the
@@ -173,10 +176,64 @@ export interface BoxPolicyEvent {
   project_id: string | null;
 }
 
+/** What a VM does with a host its allow-list does not name: the posture on
+ *  Settings › Sandbox › Network (`box_egress_mode`), which a project may
+ *  override (`sandbox.egress_mode`). Absent is `open`. */
+export type EgressMode = "open" | "ask" | "allowlist";
+
+export const EGRESS_MODES: readonly EgressMode[] = ["open", "ask", "allowlist"];
+
+/** The stored spelling, as the host parses it. */
+export function parseEgressMode(raw: string | undefined | null): EgressMode {
+  return raw === "ask" || raw === "allowlist" ? raw : "open";
+}
+
+/** `box:egress-requested` and a row of `box_egress_pending`: a workspace's
+ *  VM is holding a connection to `host` until someone answers. The hold ends
+ *  in a refusal on its own after about a minute, so a prompt nobody answers
+ *  never hangs an agent. */
+export interface EgressPrompt {
+  id: string;
+  agent_id: string;
+  project_id: string;
+  host: string;
+  port: number;
+  requested_at: string;
+}
+
+/** `box:egress-resolved`: one `EgressPrompt` is over, whoever ended it. The
+ *  only reaction is to stop asking about `id`. */
+export interface EgressPromptResolved {
+  id: string;
+  outcome: "allowed" | "blocked" | "expired";
+}
+
+/** The answers `box_egress_answer` takes: allow the host for the project, for
+ *  every project, block it on that VM until it restarts, or open the VM's
+ *  network until the turn ends. */
+export type EgressAnswer = "project" | "always" | "block" | "turn";
+
+/** One host of `box_egress_activity`: every connection to it in the window,
+ *  across the workspaces that reached it, newest first. `last_via` is how the
+ *  newest was answered: `listed`, `open` or `turn` for a tunnel; `host`,
+ *  `port` or `quiet` for a refusal. */
+export interface HostActivity {
+  host: string;
+  allowed: number;
+  refused: number;
+  last_at: number;
+  last_via: string;
+  bytes_up: number;
+  bytes_down: number;
+  agent_ids: string[];
+  quiet: boolean;
+}
+
 /** The host-owned box settings `set_box_setting` accepts. */
 export type BoxSettingKey =
   | "box_memory_mib"
   | "box_cpus"
   | "box_disk_gib"
   | "box_image_url"
-  | "box_idle_stop_minutes";
+  | "box_idle_stop_minutes"
+  | "box_egress_mode";
