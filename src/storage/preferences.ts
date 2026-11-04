@@ -43,7 +43,7 @@ export interface FeatureFlags {
   tokenUsage: boolean;
   /** Float projects with recently launched or running agents to the top of
    *  the sidebar; the quiet ones keep the manual order beneath them. Off keeps
-   *  the whole list in manual order. */
+   *  the whole list in manual order, and only then can projects be dragged. */
   sidebarActiveFirst: boolean;
   /** Experimental: expose the Custom/Native view switcher so agents can be
    *  driven through the provider's own terminal UI. Off by default — native
