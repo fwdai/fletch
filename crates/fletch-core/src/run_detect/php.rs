@@ -1,19 +1,18 @@
 //! PHP / Composer detector (Laravel, Symfony, plain Composer packages).
 
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    Tree, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
 use serde_json::Value;
-use std::path::Path;
 
 pub struct PhpDetector;
 
 impl RunDetector for PhpDetector {
-    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
-        let raw = read_trimmed(checkout, "composer.json")?;
+    fn detect(&self, tree: &Tree) -> Option<DetectedConfig> {
+        let raw = tree.read_trimmed("composer.json")?;
         let manifest: Value = serde_json::from_str(&raw).ok()?;
-        let confidence = if exists(checkout, "composer.lock") {
+        let confidence = if tree.exists("composer.lock") {
             CONFIDENCE_LOCKFILE
         } else {
             CONFIDENCE_MANIFEST
@@ -34,7 +33,7 @@ impl RunDetector for PhpDetector {
         // `laravel/framework` isn't enough: a package can depend on it (often
         // with Testbench) and has no `artisan` to run, so it falls through to
         // its declared test runner instead.
-        let is_laravel = exists(checkout, "artisan");
+        let is_laravel = tree.exists("artisan");
 
         let mut rows = Vec::new();
 
@@ -153,12 +152,12 @@ impl RunDetector for PhpDetector {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{fixture, row, val};
+    use super::super::test_support::{detect_in, row, val};
     use super::super::{CONFIDENCE_LOCKFILE, CONFIDENCE_MANIFEST};
     use super::*;
 
     fn detect(files: &[(&str, &str)]) -> Option<DetectedConfig> {
-        PhpDetector.detect(fixture(files).path())
+        detect_in(&PhpDetector, files)
     }
 
     /// The `composer.json` a fresh Laravel 11+ app ships with (trimmed).

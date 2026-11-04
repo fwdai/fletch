@@ -1,29 +1,28 @@
 //! Python detector.
 
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    Tree, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
-use std::path::Path;
 
 pub struct PythonDetector;
 
 impl RunDetector for PythonDetector {
-    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
-        let has_pyproject = exists(checkout, "pyproject.toml");
-        let has_requirements = exists(checkout, "requirements.txt");
-        let has_pipfile = exists(checkout, "Pipfile");
+    fn detect(&self, tree: &Tree) -> Option<DetectedConfig> {
+        let has_pyproject = tree.exists("pyproject.toml");
+        let has_requirements = tree.exists("requirements.txt");
+        let has_pipfile = tree.exists("Pipfile");
         if !(has_pyproject || has_requirements || has_pipfile) {
             return None;
         }
 
         // install command + confidence keyed off the lockfile/manifest mix.
-        let (install, lock_present) = if exists(checkout, "uv.lock") {
+        let (install, lock_present) = if tree.exists("uv.lock") {
             ("uv sync", true)
-        } else if exists(checkout, "poetry.lock") {
+        } else if tree.exists("poetry.lock") {
             ("poetry install", true)
         } else if has_pipfile {
-            ("pipenv install", exists(checkout, "Pipfile.lock"))
+            ("pipenv install", tree.exists("Pipfile.lock"))
         } else if has_requirements {
             ("pip install -r requirements.txt", false)
         } else {
@@ -38,7 +37,7 @@ impl RunDetector for PythonDetector {
         // Combined lowercased dependency text for framework heuristics.
         let deps_text = ["requirements.txt", "pyproject.toml", "Pipfile"]
             .iter()
-            .filter_map(|f| read_trimmed(checkout, f))
+            .filter_map(|f| tree.read_trimmed(f))
             .collect::<Vec<_>>()
             .join("\n")
             .to_lowercase();
@@ -47,10 +46,10 @@ impl RunDetector for PythonDetector {
         let mut rows = Vec::new();
 
         // version: .python-version → pyproject requires-python.
-        if let Some((value, source)) = read_trimmed(checkout, ".python-version")
+        if let Some((value, source)) = tree.read_trimmed(".python-version")
             .map(|v| (v, ".python-version"))
             .or_else(|| {
-                read_trimmed(checkout, "pyproject.toml")
+                tree.read_trimmed("pyproject.toml")
                     .and_then(|s| requires_python(&s))
                     .map(|v| (v, "pyproject.toml · requires-python"))
             })
@@ -73,7 +72,7 @@ impl RunDetector for PythonDetector {
         ));
 
         // dev + port: Django (needs manage.py) → runserver:8000; Flask → 5000.
-        if exists(checkout, "manage.py") && has_dep("django") {
+        if tree.exists("manage.py") && has_dep("django") {
             rows.push(DetectedRow::new(
                 "dev",
                 RowGroup::Scripts,
@@ -123,7 +122,7 @@ impl RunDetector for PythonDetector {
         // package (`ruffus`, `ruff-lsp`) never triggers it — otherwise
         // verification would run `ruff check .` and fail where Ruff isn't
         // installed.
-        if declares_package(checkout, "ruff") {
+        if declares_package(tree, "ruff") {
             rows.push(DetectedRow::new(
                 "lint",
                 RowGroup::Scripts,
@@ -158,12 +157,12 @@ impl RunDetector for PythonDetector {
 ///
 /// Package names match by whole token, so an unrelated package containing `name`
 /// (`ruffus`, `sruff`, `ruff-lsp`) never counts.
-fn declares_package(checkout: &Path, name: &str) -> bool {
-    let in_requirements = read_trimmed(checkout, "requirements.txt")
+fn declares_package(tree: &Tree, name: &str) -> bool {
+    let in_requirements = tree.read_trimmed("requirements.txt")
         .is_some_and(|t| requirements_declare(&t.to_lowercase(), name));
     in_requirements
         || ["pyproject.toml", "Pipfile"].iter().any(|f| {
-            read_trimmed(checkout, f).is_some_and(|t| toml_declares(&t.to_lowercase(), name))
+            tree.read_trimmed(f).is_some_and(|t| toml_declares(&t.to_lowercase(), name))
         })
 }
 
@@ -351,12 +350,12 @@ fn requires_python(toml: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{fixture, val};
+    use super::super::test_support::{detect_in, val};
     use super::super::{CONFIDENCE_LOCKFILE, CONFIDENCE_MANIFEST};
     use super::*;
 
     fn detect(files: &[(&str, &str)]) -> Option<DetectedConfig> {
-        PythonDetector.detect(fixture(files).path())
+        detect_in(&PythonDetector, files)
     }
 
     #[test]

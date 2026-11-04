@@ -4,9 +4,14 @@ export interface RunStateSnapshot {
   phase: RunPhase;
   last_error: string | null;
   /** The port the dev server launched on (port-safe, may differ from the
-   *  configured one); null before the run phase, after a stop, and for a
-   *  command with no port. The same value `run:port` carried. */
+   *  configured one), where the server runs — a VM workspace's is inside the
+   *  guest; null before the run phase, after a stop, and for a command with
+   *  no port. The same value `run:port` carried. */
   port: number | null;
+  /** The port on this Mac that reaches the server: `port` itself when the
+   *  server runs on the host, the forwarded port for a VM workspace. What the
+   *  panel's link opens. Set and cleared with `port`. */
+  host_port: number | null;
   /** Raw PTY bytes accumulated since the panel was last cleared.
    *  Sent as a JSON array of u8 values; decode with TextDecoder. */
   log: number[];
@@ -71,10 +76,13 @@ export interface RunStateEvent {
   last_error: string | null;
 }
 
-/** The port the dev server is actually launching on — emitted just before the
- *  run phase spawns. May differ from the configured port when port-safety
- *  bumped it to the next free one. */
+/** The port the dev server is actually launching on, and the port on this Mac
+ *  that reaches it — emitted as the run phase spawns. `port` may differ from
+ *  the configured port when port-safety bumped it to the next free one;
+ *  `host_port` is `port` for a server on the host and the forwarded port for
+ *  one in a VM workspace's guest. The link and sidebar show `host_port`. */
 export interface RunPortEvent {
   agent_id: string;
   port: number;
+  host_port: number;
 }

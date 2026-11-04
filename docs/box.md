@@ -104,6 +104,38 @@ Settings (Settings › Sandbox › Linux VM): memory, CPUs, idle stop, and a
 toggle per layer (`box_layers`); the image URL is on Settings › Developer. A layer turned on is downloaded once and
 attached to every box from its next boot.
 
+## The Run panel
+
+The Run panel's setup and dev commands run in the guest, where the checkout
+is (`boxes::run`), as one more launch of the box: it holds the box against
+the idle stop from before it reaches it (booting a stopped one, under a
+"Starting the Linux VM…" line in the panel) until the command ends, and the
+launch's kill — Stop, the command's own exit, app exit — removes its env
+file, drops its port forward and detaches it, which arms the idle timer. The
+command is `fletch-guest exec --env-file /data/run/<launch>.env --cwd
+<checkout> -- bash -c 'set +m; <cmd>'` over `ssh -tt`, so it prints as on the
+host and one hangup of the guest tty reaches everything it started; the env
+file carries the guest env every launch gets, the project's toolchain cache
+in the guest, the project's shared Run env and the pinned `PORT`.
+
+Ports: the dev server binds its own port inside the guest, whose loopback is
+the VM's alone, so two workspaces on port 3000 never clash there; a port
+something in the guest already listens on is bumped to the next free one, as
+on the host. Each guest port is forwarded to a free port on the host — the
+same number when it is free there, else the next free one, noted in the
+panel — over `ssh -N -L 127.0.0.1:<host>:localhost:<guest>` on a connection
+of its own (`Channel::forward`): a forward requested through the box's
+shared master would outlive the client that asked for it, while this one
+ends with the launch, and with the guest. sshd connects to `localhost` in
+the guest, so a server bound to `127.0.0.1`, `::1` or every address is
+reached. The panel's link and the sidebar show the host port
+(`host_port` on `run:port` and the run snapshot); the agent's `app_status`
+reports the guest port as `port`, which is where the agent is, and the host
+port beside it to tell the user. A VM stopped or killed under a running
+command ends its ssh session, which the panel reports as the command's
+exit; a tools-disk reattach is refused while the command holds the box, as
+for any attached launch.
+
 ## Releases and updates
 
 An image release is the GitHub release `box-image-v<VERSION>` (VERSION file in
@@ -179,7 +211,8 @@ change is the pin constant.
   delta downloads against a local HTTP server, chunking); VM tests behind
   `--ignored` need the dev runtime.
 - `crates/fletch-core` `boxes::tests`: end to end against a real box
-  (`FLETCH_BOX_IMAGE_DIR`, `--ignored`).
+  (`FLETCH_BOX_IMAGE_DIR`, `--ignored`); `the_run_panel_serves_a_guest_app_on_a_host_port`
+  boots two boxes and drives a Run in each through the panel's own path.
 
 ## Building locally
 

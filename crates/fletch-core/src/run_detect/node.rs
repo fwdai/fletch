@@ -2,10 +2,9 @@
 
 use super::port::detect_port;
 use super::{
-    exists, read_trimmed, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
+    Tree, DetectedConfig, DetectedRow, RowGroup, RunDetector, CONFIDENCE_LOCKFILE,
     CONFIDENCE_MANIFEST,
 };
-use std::path::Path;
 
 pub struct NodeDetector;
 
@@ -20,12 +19,12 @@ const LOCKFILES: &[(&str, &str)] = &[
 ];
 
 impl RunDetector for NodeDetector {
-    fn detect(&self, checkout: &Path) -> Option<DetectedConfig> {
-        let raw = read_trimmed(checkout, "package.json")?;
+    fn detect(&self, tree: &Tree) -> Option<DetectedConfig> {
+        let raw = tree.read_trimmed("package.json")?;
         let pkg: serde_json::Value = serde_json::from_str(&raw).ok()?;
 
         // Package manager: `packageManager` field → lockfile → npm.
-        let lockfile = LOCKFILES.iter().find(|(f, _)| exists(checkout, f));
+        let lockfile = LOCKFILES.iter().find(|(f, _)| tree.exists(f));
         let pm = pkg
             .get("packageManager")
             .and_then(|v| v.as_str())
@@ -44,9 +43,9 @@ impl RunDetector for NodeDetector {
         let mut rows = Vec::new();
 
         // version: .nvmrc → .node-version → engines.node.
-        if let Some((value, source)) = read_trimmed(checkout, ".nvmrc")
+        if let Some((value, source)) = tree.read_trimmed(".nvmrc")
             .map(|v| (v, ".nvmrc"))
-            .or_else(|| read_trimmed(checkout, ".node-version").map(|v| (v, ".node-version")))
+            .or_else(|| tree.read_trimmed(".node-version").map(|v| (v, ".node-version")))
             .or_else(|| {
                 pkg.get("engines")
                     .and_then(|e| e.get("node"))
@@ -148,7 +147,7 @@ impl RunDetector for NodeDetector {
         }
 
         // env (optional): .env.local → .env.
-        if let Some(file) = [".env.local", ".env"].iter().find(|f| exists(checkout, f)) {
+        if let Some(file) = [".env.local", ".env"].iter().find(|f| tree.exists(f)) {
             rows.push(DetectedRow::new(
                 "env",
                 RowGroup::Server,
@@ -180,12 +179,11 @@ fn dependency_names(pkg: &serde_json::Value) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{fixture, val};
+    use super::super::test_support::{detect_in, val};
     use super::*;
 
     fn detect(files: &[(&str, &str)]) -> Option<DetectedConfig> {
-        let dir = fixture(files);
-        NodeDetector.detect(dir.path())
+        detect_in(&NodeDetector, files)
     }
 
     #[test]

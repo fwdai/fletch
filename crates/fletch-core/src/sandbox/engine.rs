@@ -48,7 +48,7 @@ impl EngineKind {
                 shares_host_fs: false,
                 token_only_launch: true,
                 share_roots: Some(&["/Users", "/Volumes"]),
-                run_panel: false,
+                run_panel: true,
                 workflow_steps: false,
             },
         }
@@ -85,9 +85,9 @@ pub struct EngineCaps {
     /// mounts shares only under the mountpoints its image ships (both empty
     /// mountpoints; see `packaging/box-image/build.sh`).
     pub share_roots: Option<&'static [&'static str]>,
-    /// The Run panel can run the agent's dev server. It runs on the host, in
-    /// the checkout; a box's checkout is in its guest, which needs port
-    /// forwarding over the channel first.
+    /// The Run panel can run the agent's dev server: on the host in the
+    /// checkout (seatbelt), or in the guest that holds the checkout with the
+    /// server's port forwarded to the host (a box, `sandbox::guest_run`).
     pub run_panel: bool,
     /// The agent can be a workflow step. A step forks from the run repo, a
     /// host path a guest cannot see.
@@ -437,7 +437,11 @@ mod tests {
         assert_eq!(with(|k| k.caps().token_only_launch), vec![Box]);
         assert_eq!(with(|k| k.caps().share_roots.is_some()), vec![Box]);
         assert_eq!(Box.caps().share_roots, Some(&["/Users", "/Volumes"][..]));
-        assert_eq!(with(|k| !k.caps().run_panel), vec![Box]);
+        assert_eq!(
+            with(|k| !k.caps().run_panel),
+            vec![],
+            "every engine runs the Run panel's process"
+        );
         assert_eq!(with(|k| !k.caps().workflow_steps), vec![Box]);
     }
 

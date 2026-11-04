@@ -290,6 +290,169 @@ async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
     }
 }
 
+/// The Run panel in a box, end to end, twice over on the same guest port:
+/// a tiny HTTP server bound to `127.0.0.1:3000` in each of two boxes'
+/// checkouts, launched the way the panel launches a run ([`super::run`])
+/// under a host PTY, reaches the browser on a host port of its own — the
+/// first on 3000, the second bumped past it; Stop ends the guest process,
+/// frees the host port and releases the box, whose idle timer may then stop
+/// it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "boots two real boxes; see the module docs"]
+async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
+    use super::run::GuestRun;
+    use crate::pty_session::{PtySession, PtySpawn};
+    use crate::sandbox::KillGuard;
+    use std::io::{Read, Write};
+
+    let _data = setup().await;
+    let registry = BoxRegistry::global();
+    let pid = std::process::id() % 10_000;
+    // Both bind the guest's own 3000: each VM's loopback is its own.
+    const GUEST_PORT: u16 = 3000;
+    let server = "node -e \"require('http').createServer((q, s) => s.end('hi from ' + \
+                  process.env.APP_NAME + ' on ' + process.env.PORT)).listen(process.env.PORT, \
+                  '127.0.0.1', () => console.log('listening ' + process.env.PORT))\"";
+
+    struct Up {
+        agent_id: String,
+        identity: BoxIdentity,
+        tree: PathBuf,
+        host_port: u16,
+        pty: PtySession,
+    }
+    let mut ups: Vec<Up> = Vec::new();
+    for (n, name) in ["first", "second"].into_iter().enumerate() {
+        let agent_id = format!("e2e-run-{name}-{pid}");
+        let identity = identity(&agent_id);
+        std::fs::create_dir_all(&identity.writable_root).unwrap();
+        let t0 = Instant::now();
+        let running = registry
+            .ensure_running(&identity)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        eprintln!("[{name}] box ready in {:.2?}", t0.elapsed());
+        let tree = identity.writable_root.join("app");
+        let out = running
+            .channel
+            .exec(None, None, &["mkdir", "-p", &tree.to_string_lossy()])
+            .await
+            .unwrap();
+        assert!(out.status.success());
+
+        // What the supervisor does for a run phase: hold and reach the box,
+        // settle the guest port, forward it, launch under a PTY.
+        let mut guest = GuestRun::open(&tree).unwrap().expect("the tree is in a box");
+        let port = guest.free_port(GUEST_PORT, 30).unwrap().unwrap();
+        assert_eq!(port, GUEST_PORT, "[{name}] the guest's own 3000 is free");
+        let host_port = guest.forward(port, 30).unwrap();
+        if n == 0 {
+            assert_eq!(host_port, GUEST_PORT, "the first forward takes 3000 on the host");
+        } else {
+            assert_ne!(host_port, ups[0].host_port, "the second forward is bumped past it");
+        }
+        let env = [
+            ("PORT".to_string(), port.to_string()),
+            ("APP_NAME".to_string(), name.to_string()),
+        ];
+        let (program, args, kill) = guest.launch(&tree, server, &env).unwrap();
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let pty = KillGuard::new(kill)
+            .start(|kill| {
+                PtySession::spawn(
+                    PtySpawn {
+                        program: &program,
+                        args: &args,
+                        cwd: &tree,
+                        env: &[],
+                        cols: 120,
+                        rows: 32,
+                        env_remove: &[],
+                        kill_plan: kill,
+                        after_exit: None,
+                    },
+                    move |bytes| {
+                        let _ = out_tx.send(bytes);
+                    },
+                    |_| {},
+                )
+            })
+            .unwrap();
+        // The server's own line reaches the panel's log through the PTY.
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !String::from_utf8_lossy(&seen).contains("listening") {
+            assert!(Instant::now() < deadline, "[{name}] no output: {seen:?}");
+            if let Ok(bytes) = out_rx.recv_timeout(Duration::from_millis(200)) {
+                seen.extend(bytes);
+            }
+        }
+        ups.push(Up {
+            agent_id,
+            identity,
+            tree,
+            host_port,
+            pty,
+        });
+    }
+
+    // Both answer on the Mac, each on its own host port, each from its box.
+    let fetch = |host_port: u16| -> String {
+        let mut stream =
+            std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], host_port).into(), Duration::from_secs(5))
+                .unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut body = String::new();
+        stream.read_to_string(&mut body).unwrap();
+        body
+    };
+    for (name, up) in ["first", "second"].iter().zip(&ups) {
+        let body = fetch(up.host_port);
+        eprintln!("[{name}] http://localhost:{} answered: {body:?}", up.host_port);
+        assert!(body.contains(&format!("hi from {name} on {GUEST_PORT}")), "{body}");
+    }
+
+    // Stop: the guest process is gone, the host port is free, the box
+    // released (its forward dropped with the launch, the other's kept).
+    for (n, (name, up)) in ["first", "second"].iter().zip(ups.iter()).enumerate() {
+        let t = Instant::now();
+        up.pty.kill().unwrap();
+        eprintln!("[{name}] stopped in {:.2?}", t.elapsed());
+        let channel = registry.channel_for_running(&up.agent_id).unwrap();
+        wait_for(
+            || {
+                super::executor::run(&channel, &["pgrep", "-f", "hi from"], None)
+                    .is_ok_and(|out| !out.status.success())
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+        wait_for(
+            || std::net::TcpListener::bind(("127.0.0.1", up.host_port)).is_ok(),
+            Duration::from_secs(10),
+        )
+        .await;
+        assert_eq!(
+            super::BoxEngine::shared().forwards.lock().unwrap().len(),
+            ups.len() - (n + 1),
+            "no forward outlives its launch, and no other's goes with it"
+        );
+        assert!(
+            registry.nothing_attached(&up.agent_id),
+            "[{name}] the run released the box"
+        );
+    }
+    for up in ups {
+        registry.discard(&up.agent_id).await.unwrap();
+        let _ = std::fs::remove_dir_all(&up.identity.writable_root);
+        let _ = std::fs::remove_dir_all(&up.identity.rpc_dir);
+        drop(up.tree);
+    }
+}
+
 /// A project pinned to boxes must not make providers boxes cannot run
 /// unsendable: they are stamped seatbelt. A provider boxes run — one with a
 /// guest-home adapter and a tools-disk script — lands in a box once one can

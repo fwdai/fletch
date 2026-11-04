@@ -5,8 +5,11 @@
 //! [`DetectedConfig`] with a confidence score. [`detect_all`] runs every
 //! detector and returns the surviving configs ranked by confidence.
 //!
-//! Detectors are pure (`&Path -> Option<DetectedConfig>`) so they can be
-//! unit-tested against fixture directories with no Tauri/DB setup.
+//! Detectors are pure (`&Tree -> Option<DetectedConfig>`) so they can be
+//! unit-tested against fixture directories with no Tauri/DB setup. A [`Tree`]
+//! is the checkout root as its executor sees it (`exec::for_path`): a box
+//! keeps its checkout in its guest, where the host path is an empty
+//! placeholder (docs/sandbox-foundation.md rule 2).
 //!
 //! The rows map onto the panel's hybrid schema: the core rows
 //! (`version`, `install`, `dev`, `test`, `build`) are attempted for every
@@ -16,7 +19,11 @@
 //! simply omitted.
 
 use serde::Serialize;
-use std::path::Path;
+use std::collections::HashSet;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use crate::exec::Executor;
 
 mod go;
 mod node;
@@ -80,7 +87,55 @@ const CONFIDENCE_LOCKFILE: u8 = 90;
 const CONFIDENCE_MANIFEST: u8 = 60;
 
 pub trait RunDetector {
-    fn detect(&self, checkout: &Path) -> Option<DetectedConfig>;
+    fn detect(&self, tree: &Tree) -> Option<DetectedConfig>;
+}
+
+/// A checkout root as the detectors read it: its entries listed once where
+/// the tree lives, each file read on demand through the same executor. One
+/// listing answers every "is there a lockfile" question, so a tree in a box
+/// costs one round trip plus one per file actually read.
+pub struct Tree {
+    exec: Executor,
+    root: PathBuf,
+    names: HashSet<String>,
+}
+
+impl Tree {
+    /// Open `root` where it lives. A host root the app cannot list detects
+    /// nothing, as a host read always did; a tree in a box that cannot be
+    /// reached — stopped, under a reader that must not boot it
+    /// (`exec::passive`), or failing to boot — is the error, so the caller
+    /// can say why nothing was detected rather than run nothing.
+    pub fn open(root: &Path) -> io::Result<Self> {
+        let exec = crate::exec::for_path(root);
+        let names = match exec.list(root) {
+            Ok(entries) => entries.into_iter().map(|e| e.name).collect(),
+            Err(_) if matches!(exec, Executor::Local) => HashSet::new(),
+            Err(e) => return Err(e),
+        };
+        Ok(Self {
+            exec,
+            root: root.to_path_buf(),
+            names,
+        })
+    }
+
+    /// Whether `name`, an entry of the root, is there.
+    fn exists(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+
+    /// The file `name` at the root, trimmed. `None` if absent, unreadable,
+    /// not UTF-8 or blank.
+    fn read_trimmed(&self, name: &str) -> Option<String> {
+        if !self.exists(name) {
+            return None;
+        }
+        let bytes = self.exec.read(&self.root.join(name)).ok()?;
+        let text = String::from_utf8(bytes).ok()?;
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_string())
+    }
 }
 
 fn detectors() -> Vec<Box<dyn RunDetector>> {
@@ -96,11 +151,20 @@ fn detectors() -> Vec<Box<dyn RunDetector>> {
 
 /// Run every detector over `checkout` and return the recognized configs
 /// ranked by confidence (highest first). Empty when nothing matched —
-/// callers treat that as the no-op fallback.
+/// callers treat that as the no-op fallback — and when the tree cannot be
+/// read at all; a caller that must tell those apart opens the [`Tree`]
+/// itself and uses [`detect_all_in`].
 pub fn detect_all(checkout: &Path) -> Vec<DetectedConfig> {
+    Tree::open(checkout)
+        .map(|tree| detect_all_in(&tree))
+        .unwrap_or_default()
+}
+
+/// [`detect_all`] over an opened tree.
+pub fn detect_all_in(tree: &Tree) -> Vec<DetectedConfig> {
     let mut configs: Vec<DetectedConfig> = detectors()
         .iter()
-        .filter_map(|d| d.detect(checkout))
+        .filter_map(|d| d.detect(tree))
         .collect();
     // Stable sort by confidence desc so ties keep detector registration
     // order (node before python before … — a deterministic primary).
@@ -108,24 +172,10 @@ pub fn detect_all(checkout: &Path) -> Vec<DetectedConfig> {
     configs
 }
 
-// ── shared file helpers ──────────────────────────────────────────────────────
-
-/// Read a file at `checkout/name`, trimmed. None if absent/unreadable.
-fn read_trimmed(checkout: &Path, name: &str) -> Option<String> {
-    std::fs::read_to_string(checkout.join(name))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-fn exists(checkout: &Path, name: &str) -> bool {
-    checkout.join(name).exists()
-}
-
 /// Shared fixture/assertion helpers for the per-detector test modules.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{DetectedConfig, DetectedRow};
+    use super::{DetectedConfig, DetectedRow, Tree};
     use std::fs;
     use tempfile::TempDir;
 
@@ -140,6 +190,15 @@ pub(crate) mod test_support {
             fs::write(full, contents).unwrap();
         }
         dir
+    }
+
+    /// Run `detector` over a fixture built from `files`.
+    pub(crate) fn detect_in(
+        detector: &dyn super::RunDetector,
+        files: &[(&str, &str)],
+    ) -> Option<DetectedConfig> {
+        let dir = fixture(files);
+        detector.detect(&Tree::open(dir.path()).unwrap())
     }
 
     pub(crate) fn row<'a>(cfg: &'a DetectedConfig, id: &str) -> Option<&'a DetectedRow> {

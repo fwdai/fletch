@@ -184,6 +184,13 @@ pub async fn passive<F: std::future::Future>(fut: F) -> F::Output {
     PASSIVE.scope((), fut).await
 }
 
+/// [`passive`] for a synchronous caller: `f` runs under the scope. A remote
+/// executor's sync methods read the scope as they are called, before any
+/// wait they hand to the runtime, so it holds through them.
+pub fn passive_sync<R>(f: impl FnOnce() -> R) -> R {
+    PASSIVE.sync_scope((), f)
+}
+
 /// Whether the caller runs inside [`passive`].
 pub(crate) fn is_passive() -> bool {
     PASSIVE.try_with(|()| ()).is_ok()

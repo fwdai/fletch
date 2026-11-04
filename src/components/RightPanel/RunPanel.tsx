@@ -62,9 +62,15 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     };
   }, [agent.project_id, agent.id]);
 
+  const isActive = phase === "setup" || phase === "running";
+
   // Detect the run config for this agent's checkout. Re-runs on agent
-  // switch. The highest-confidence ecosystem fills the table; an empty
-  // result means nothing was recognized (no-op fallback).
+  // switch, and when a run starts or stops: a VM workspace's checkout can't
+  // be read while its VM is stopped (the backend answers with the last
+  // detection, or nothing), and a start wakes the VM. The
+  // highest-confidence ecosystem fills the table; an empty result means
+  // nothing was recognized (no-op fallback).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: isActive is the intended re-run trigger, not an unused dep
   useEffect(() => {
     let cancelled = false;
     api
@@ -84,7 +90,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     return () => {
       cancelled = true;
     };
-  }, [agent.id]);
+  }, [agent.id, isActive]);
 
   // Mount a read-only xterm terminal and stream run output into it.
   // Rehydrate the snapshot on mount/agent-switch so the panel preserves logs
@@ -162,8 +168,11 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           const snap = await api.runState(agent.id);
           if (cancelled) return;
           // Rehydrate the store phase too, so a running app opened after an app
-          // reload lights the tab dot even before the next live event arrives.
+          // reload lights the tab dot even before the next live event arrives —
+          // and the port on this Mac that reaches it, which for a VM workspace
+          // is a forwarded one the configured port says nothing about.
           setRunPhase(agent.id, snap.phase);
+          if (snap.host_port != null) setRunPort(agent.id, String(snap.host_port));
           setLastError(snap.last_error);
           if (snap.log.length > 0) snapLog = new Uint8Array(snap.log);
           snapEnd = snap.log_seq;
@@ -203,7 +212,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         unlistenState?.();
       };
     },
-    [agent.id, setRunPhase],
+    [agent.id, setRunPhase, setRunPort],
     { autoFocus: false },
   );
 
@@ -225,7 +234,6 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
 
   const devCmd = fieldValue("dev");
   const port = fieldValue("port");
-  const isActive = phase === "setup" || phase === "running";
   const linkLive = phase === "running";
 
   // While running, the backend owns the port (it may have bumped the configured
