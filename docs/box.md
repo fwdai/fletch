@@ -110,6 +110,64 @@ scales. Memory and CPUs stop at what the host has (`box_runtime_probe`'s
 `host_cpus` and `host_memory_mib`), and disk reaches new boxes only, since a
 data disk is sized when it is created. The image URL is on Settings › Developer.
 
+## Network
+
+A box has no network device. Every connection leaves through the host's
+HTTP `CONNECT` proxy (`crates/fletch-box/src/egress`), on ports 80 and 443
+only, against an allow-list built from layers that each store only their own
+changes (`sandbox/boxes/allowlist.rs`): the template Fletch maintains in code
+(`egress::TEMPLATE`: the providers' APIs, the registries, the toolchains,
+source hosting, the guest's packages), the user's global additions
+(`box_egress_global`), the project's `.fletch/settings.json` and
+`.fletch/settings.local.json` (`egress.allow`, approved by the user;
+`egress.disable` turns an inherited entry off), and the project's in-app
+list (`box.egress_allow`), where a host answered "This project" in the prompt
+lands. Telemetry hosts the CLIs reach for on their own (`egress::QUIET`) are
+refused quietly.
+
+What the proxy does with a host off that list is the **posture**
+(`box_egress_mode`, Settings › Sandbox › Network; a project overrides it with
+`sandbox.egress_mode` on its page):
+
+| Posture | A host off the list |
+| --- | --- |
+| `open` (default) | Passes, telemetry included, and is recorded. |
+| `ask` | The connection is held and the user asked, once per host (`box:egress-requested`). The answer allows it for the project or for every project, blocks it on that box until the box restarts, or opens the box's network for the turn. Nobody answering refuses it after about a minute; telemetry is never asked about; at most four hosts are held per box, a further one is refused at once. |
+| `allowlist` | Refused at once. |
+
+A host blocked in the prompt stays refused on that box under every posture,
+and under a turn's open network, until the box restarts: the block is the
+user's answer about that host, and only a list that allows it wins. Every
+hold has an id and reports its own end to the engine
+(`EgressEvent::HoldEnded`, the same id as its `Held`), whichever way it
+ended, and that is what closes the prompt of that hold and no other: a retry
+of the host starts a new hold with a new id, so an end delivered after the
+retry began closes nothing of the retry's. A host that came to be
+allowed elsewhere (the posture opened, a list gained it) closes it as
+allowed at once, not when its tunnel happens to end, so no stale prompt can
+be answered later. Dropping the proxy (the box stopping) ends every hold at
+once.
+
+A workspace's network can also be opened for one turn from the composer
+(`box_egress_open_turn`): any host passes until the turn ends, then the
+posture resumes on its own. The flag lives in the registry and is never
+persisted.
+
+Every answered connection is a row of `egress_log` on the host (migration
+0056: host, port, allowed, how it was answered, bytes up and down, the
+workspace and project), pruned to 30 days at boot. `box_egress_activity`
+reads it grouped by host for the Reached recently and Blocked recently lists
+on the Network tab and the project page, which is what an open posture
+leaves the user to look at, and where a host reached while open is kept with
+one click before the posture is tightened.
+
+An allow lands in a list on the host and travels to every running box of its
+scope (`BoxRegistry::update_egress`); a held connection re-checks the policy
+on every change, so it proceeds without the agent retrying. Only the app's
+own ops reach an answer: nothing in an agent's mailbox or guest can widen its
+box's list or change its posture, and the posture is a host-owned row, never
+read from the repository's settings file.
+
 ## The Run panel
 
 The Run panel's setup and dev commands run in the guest, where the checkout

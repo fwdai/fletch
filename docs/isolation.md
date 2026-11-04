@@ -351,8 +351,11 @@ cannot go quietly unstated the way a doc caveat can. The
   read only its own disks and the folders you granted the workspace.
 - **Open network connections — under seatbelt.** Seatbelt's `(allow default)`
   leaves the network open; treat every seatbelt agent as network-capable. A box
-  has no network device: its egress goes only through the host proxy's
-  allow-list.
+  has no network device: its egress goes only through the host proxy, on ports
+  80 and 443, under the posture the user picked (Settings › Sandbox › Network,
+  `docs/box.md` "Network"). The default posture is open, so by default a box
+  agent reaches any host too, with every connection recorded; `ask` holds a
+  new host for the user's answer, and `allowlist` refuses it.
 
 **An agent CANNOT:**
 

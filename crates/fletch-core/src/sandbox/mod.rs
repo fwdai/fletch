@@ -288,6 +288,34 @@ pub fn engine_for_spawn(
     }
 }
 
+/// Whether a fresh agent of any of `providers` would land in a box for the
+/// project at `repo`, whose stored placement is `placement_setting`: the
+/// automatic choice [`engine_for_spawn`] makes when neither an adopted tree
+/// nor a session's own workspace type decides. For a feature whose agents
+/// adopt a host-side tree and so cannot honour that placement. Blocking, like
+/// [`engine_for_spawn`].
+pub fn fresh_agents_land_in_a_box<'a>(
+    placement_setting: Option<&str>,
+    repo: &Path,
+    providers: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    lands_in_a_box(placement_setting, repo, providers, boxes::ready_for)
+}
+
+/// [`fresh_agents_land_in_a_box`] with the runtime probe supplied as `ready`,
+/// so a test can fix the answer.
+fn lands_in_a_box<'a>(
+    placement_setting: Option<&str>,
+    repo: &Path,
+    providers: impl IntoIterator<Item = &'a str>,
+    ready: impl Fn(&str) -> bool,
+) -> bool {
+    let placement = placement::resolve(placement_setting, repo);
+    providers.into_iter().any(|provider| {
+        boxes::engine_for_new_agent_with(provider, placement, || ready(provider)) == EngineKind::Box
+    })
+}
+
 /// The engine a workspace of `provider` moves to for the user's choice
 /// `kind` (`host` or `box`, as [`WorkspaceType::parse`] reads it), or why it
 /// can't move there now, in the sentence the user sees. The spawn override's
@@ -502,6 +530,13 @@ pub fn setup_allowance(record: &AgentRecord) -> Duration {
 /// directory probe for every other agent, so callers run it unconditionally.
 pub async fn discard_agent_state(agent_id: &str) -> Result<()> {
     boxes::discard_if_any(agent_id).await
+}
+
+/// A turn of `agent_id` ended, however it ended: whatever the engine opened
+/// for that turn closes (a box's network opened from the composer). A no-op
+/// for every other agent, so callers run it unconditionally.
+pub fn turn_ended(agent_id: &str) {
+    boxes::turn_ended(agent_id);
 }
 
 /// Stop every engine-held VM cleanly as the app quits, once the agents'
@@ -1000,5 +1035,39 @@ mod tests {
              rule 1).\nnew files naming engine internals: {added:?}\nno longer naming them, \
              strike from sandbox::tests::ALLOWED: {gone:?}"
         );
+    }
+
+    /// The answer mirrors the spawn path's automatic choice: a project pinned
+    /// to boxes is boxed wherever one can boot, a project pinned to this Mac
+    /// never is, and an undecided project follows whether a box is ready.
+    #[test]
+    fn fresh_agents_are_boxed_exactly_when_a_spawn_would_box_them() {
+        use super::lands_in_a_box;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let claude = ["claude"];
+
+        assert!(lands_in_a_box(Some("box"), repo, claude, |_| true));
+        if cfg!(target_os = "macos") {
+            assert!(!lands_in_a_box(Some("host"), repo, claude, |_| true));
+            assert!(!lands_in_a_box(None, repo, claude, |_| false));
+            assert!(lands_in_a_box(None, repo, claude, |_| true));
+            // One boxed provider among several is enough.
+            assert!(lands_in_a_box(
+                None,
+                repo,
+                ["claude", "codex"],
+                |provider| provider == "codex"
+            ));
+            // A provider nobody asked about decides nothing.
+            assert!(!lands_in_a_box(None, repo, claude, |provider| provider == "codex"));
+            // A native-looking project runs on this Mac whatever is ready.
+            std::fs::create_dir(repo.join("App.xcodeproj")).unwrap();
+            assert!(!lands_in_a_box(None, repo, claude, |_| true));
+        } else {
+            // Off macOS there is no seatbelt: every fresh agent is a box.
+            assert!(lands_in_a_box(Some("host"), repo, claude, |_| false));
+        }
     }
 }

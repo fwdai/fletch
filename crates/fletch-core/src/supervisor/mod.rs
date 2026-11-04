@@ -476,6 +476,11 @@ impl Supervisor {
         let provider_run = (status != AgentStatus::Running)
             .then(|| self.provider_runs.lock().remove(agent_id))
             .flatten();
+        // And it ends the turn a sandbox's network was opened for: the open was
+        // for this turn, never for whatever the next message brings.
+        if status != AgentStatus::Running {
+            crate::sandbox::turn_ended(agent_id);
+        }
         // Close the in-flight turn's timer on any terminal state. Idle covers
         // the in-band turn-end and clean process exit; Error covers a crash.
         // A closed turn (started, not native, not the resting Idle at spawn)

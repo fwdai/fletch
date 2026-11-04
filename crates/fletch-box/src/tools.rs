@@ -554,11 +554,16 @@ async fn build_in(
 
     // Denials are logged, not fatal: the CLIs probe telemetry hosts the
     // default allow-list leaves out and carry on.
-    let proxy = EgressProxy::start(&dir.join("egress.sock"), EgressPolicy::default(), |event| {
-        if let EgressEvent::Denied { host, port, reason } = event {
-            tracing::info!(host, port, %reason, "tools build: egress denied");
-        }
-    })
+    let proxy = EgressProxy::start(
+        &dir.join("egress.sock"),
+        EgressPolicy::default(),
+        crate::egress::Mode::Refuse,
+        |event| {
+            if let EgressEvent::Denied { host, port, reason } = event {
+                tracing::info!(host, port, %reason, "tools build: egress denied");
+            }
+        },
+    )
     .map_err(Error::io("start the egress proxy"))?;
 
     let mut spec = VmSpec::new(id, image, disk, &dir.join("console.log"));
