@@ -694,9 +694,8 @@ struct VerificationReportPayload {
 }
 
 /// A turn-end verification (opt-in per project) finished for an ad-hoc agent —
-/// its Mission Control card renders a tests chip from this report. Fire-and-
-/// forget from `trigger_turn_end_verification`; the frontend stores the latest
-/// per agent.
+/// the phone renders a tests verdict from this report. Fire-and-forget from
+/// `trigger_turn_end_verification`; the phone stores the latest per agent.
 pub(crate) fn emit_verification(
     sink: &dyn EventSink,
     agent_id: &str,

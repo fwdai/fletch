@@ -73,7 +73,6 @@ import type {
   ProjectSettingsChangedEvent,
   SettingsChangedEvent,
 } from "./types/settings";
-import type { VerificationReportEvent } from "./types/verify";
 import type { WfEventEnvelope, WfRun } from "./types/workflow";
 
 /** Subscribe to one engine event on the environment the UI is driving, with the
@@ -379,12 +378,6 @@ export function onReviewChanged(cb: (e: ReviewState) => void): Promise<UnlistenF
 /** The host-side PR watcher saw a non-focused PR of a checkout's set change. */
 export function onPrSetEntryChanged(cb: (e: PrSetEntryChangedEvent) => void): Promise<UnlistenFn> {
   return on<PrSetEntryChangedEvent>("pr:set_entry_changed", cb);
-}
-
-export function onVerificationReport(
-  cb: (e: VerificationReportEvent) => void,
-): Promise<UnlistenFn> {
-  return on<VerificationReportEvent>("verify:report", cb);
 }
 
 export function onRunOutput(cb: (e: RunOutputEvent) => void): Promise<UnlistenFn> {

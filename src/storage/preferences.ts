@@ -49,10 +49,6 @@ export interface FeatureFlags {
    *  driven through the provider's own terminal UI. Off by default — native
    *  mode isn't equally solid across providers yet. */
   nativeView: boolean;
-  /** Use Mission Control (the fleet review queue) as the Home view. Off by
-   *  default — Home is then the quick-actions landing screen. Gated behind the
-   *  Developer tab. */
-  missionControl: boolean;
 }
 
 export const DEFAULT_FEATURES: FeatureFlags = {
@@ -64,7 +60,6 @@ export const DEFAULT_FEATURES: FeatureFlags = {
   tokenUsage: true,
   sidebarActiveFirst: true,
   nativeView: false,
-  missionControl: false,
 };
 
 export function parseFeatures(raw: string | undefined): FeatureFlags {
@@ -79,6 +74,7 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
       // removed features; drop any stored value on read
       autoEdit?: boolean;
       sidebarUsage?: boolean;
+      missionControl?: boolean;
     };
     // The old "Files" and "Diff" tabs were merged into the Code panel; honor a
     // saved preference for either when migrating an existing settings blob.
@@ -98,6 +94,7 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
       statusBar: _statusBar,
       autoEdit: _autoEdit,
       sidebarUsage: _sidebarUsage,
+      missionControl: _missionControl,
       ...rest
     } = saved;
     void _files;
@@ -105,6 +102,7 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
     void _statusBar;
     void _autoEdit;
     void _sidebarUsage;
+    void _missionControl;
     if (preMigration) delete rest.tokenUsage;
     return {
       ...DEFAULT_FEATURES,
@@ -174,29 +172,6 @@ export function parseDraftBaseBranches(raw: string | undefined): Record<string, 
     const out: Record<string, string> = {};
     for (const [repoPath, branch] of Object.entries(saved as Record<string, unknown>)) {
       if (typeof branch === "string" && branch.trim()) out[repoPath] = branch;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-// ---- Mission Control dismissals ----------------------------------------------
-
-/** Mission Control's "dismissed" marks: a review-queue item id → the signature
- *  of the signal state it was dismissed at (see MissionControl/queue.ts). A mark
- *  is honored only while the item's live signature still matches, so a dismissed
- *  item resurfaces the moment its underlying signal changes (a new turn, a new
- *  diff, a CI flip). Stored as one JSON object under `reviewDismissed`; a corrupt
- *  or missing blob reads as "nothing dismissed". */
-export function parseReviewDismissed(raw: string | undefined): Record<string, string> {
-  if (!raw) return {};
-  try {
-    const saved = JSON.parse(raw) as unknown;
-    if (!saved || typeof saved !== "object") return {};
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(saved as Record<string, unknown>)) {
-      if (typeof v === "string") out[k] = v;
     }
     return out;
   } catch {

@@ -7,9 +7,9 @@ import { providerChip, providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
 
 /** The agent's identity chip: a custom agent's colored monogram (its `color`
- *  hue + name initials), or the base provider glyph for a built-in spawn. Shared
- *  by the sidebar row and Mission Control so both read the same identity — the
- *  custom-agent lookup + provider fallback lives here once, not per call-site.
+ *  hue + name initials), or the base provider glyph for a built-in spawn. Lives
+ *  here so every surface reads the same identity — the custom-agent lookup +
+ *  provider fallback lives here once, not per call-site.
  *
  *  The glyph already says which agent it is, so the tooltip shows what it
  *  can't: the model and, for claude, the effort ("Claude Fable 5.1 · High").

@@ -6,7 +6,8 @@ import { IconButton, Scrim } from "../../../../components/ui";
 
 /** The approval review, framed as a modal over the run. Wires the shared
  *  `ReviewSurface` to this run's diff source and approve/reject commands; the
- *  surface itself is store-agnostic so a fleet queue can mount it elsewhere. */
+ *  surface itself is store-agnostic, so the roadmap's "Needs you" strip mounts
+ *  this same modal over a run it holds no tab for. */
 export function ReviewModal({
   run,
   evidence,

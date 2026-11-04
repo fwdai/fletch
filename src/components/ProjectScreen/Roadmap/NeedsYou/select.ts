@@ -5,16 +5,9 @@
 // the ordering and the reason vocabulary are unit-testable in isolation
 // (select.test.ts) and the strip is a thin renderer over this.
 //
-// Modelled on MissionControl/queue.ts, deliberately: the two surfaces answer the
-// same question at different altitudes (one fleet-wide, one for this project's
-// board), so `workflow-approval` and `workflow-conflict` keep the names they have
-// there — a card that reads one way in Mission Control must not read another way
-// here. The roadmap-only reasons extend that vocabulary rather than renaming it.
-//
-// What is NOT here: dismissal. Mission Control lets the user hide a card until
-// its signal changes because it is a fleet-wide inbox nobody finishes; this strip
-// is one project's open decisions and every card has an action that resolves it,
-// so a card leaves only when the underlying state moves. A hold is the clearest
+// What is NOT here: dismissal. This strip is one project's open decisions and
+// every card has an action that resolves it, so a card leaves only when the
+// underlying state moves. A hold is the clearest
 // case of that: Release *is* the resolution, and it is the user's alone — the PM
 // can pull the brake and has no way to lift it, so this strip is the only place
 // (with the card itself) a hold can end.
@@ -27,11 +20,9 @@ import type {
   WfRun,
 } from "@/api";
 
-/** Why a card is on the strip. `workflow-approval` / `workflow-conflict` are
- *  Mission Control's names for the same two signals (queue.ts `ReviewReason`);
- *  the rest are roadmap-scoped, named the same way — `workflow-*` for something
- *  a run is waiting on, `item-*` for something the board itself is wedged on,
- *  and `project-*` for something about the whole board. */
+/** Why a card is on the strip — `workflow-*` for something a run is waiting
+ *  on, `item-*` for something the board itself is wedged on, and `project-*`
+ *  for something about the whole board. */
 export type NeedsReason =
   | "workflow-question"
   | "project-held"
@@ -170,8 +161,8 @@ export function buildNeedsYou(input: NeedsInput): NeedsCard[] {
     const reason = PAUSE_REASON[run.paused_reason];
     if (!reason) continue;
     // Join miss: a run for an item this board doesn't render (another project's,
-    // or one that shipped since). The run is still visible in Mission Control and
-    // its own tab — it just isn't a decision *about this board*.
+    // or one that shipped since). The run is still visible in its own tab — it
+    // just isn't a decision *about this board*.
     const item = byId.get(run.roadmap_item_id);
     if (!item) continue;
     cards.push({

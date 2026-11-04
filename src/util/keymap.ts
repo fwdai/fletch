@@ -1,8 +1,8 @@
 // The app's keyboard map, as data. One place that both the global handler
 // (`util/shortcuts.ts`) and Settings › Shortcuts read, so what the list says a
 // key does and what the key does can't drift apart. Contextual bindings (the
-// composer's Enter, the sidebar's arrows, Mission Control's j/k) are handled by
-// their own components; they are listed here for the reader, not dispatched.
+// composer's Enter, the sidebar's arrows) are handled by their own components;
+// they are listed here for the reader, not dispatched.
 
 import { IS_MAC } from "@/util/platform";
 
@@ -62,7 +62,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
         id: "home",
         combos: ["Mod+Shift+H"],
         label: "Home",
-        description: "Leave the current agent for Home and its review queue.",
+        description: "Leave the current agent for Home.",
       },
       {
         id: "history",
@@ -201,15 +201,6 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       { id: "rowStep", combos: ["ArrowUp", "ArrowDown"], label: "Move between rows" },
       { id: "rowEnds", combos: ["Home", "End"], label: "First / last row" },
       { id: "rowOpen", combos: ["Enter", "Space"], label: "Open the row" },
-    ],
-  },
-  {
-    label: "Mission Control (Home)",
-    items: [
-      { id: "queueStep", combos: ["j", "k"], label: "Move between review cards" },
-      { id: "queueReview", combos: ["Enter"], label: "Review the card" },
-      { id: "queueApprove", combos: ["a"], label: "Approve" },
-      { id: "queueChanges", combos: ["r"], label: "Request changes" },
     ],
   },
   {

@@ -86,7 +86,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     void get().loadMcpServers();
     // Probe the GitHub connection once (async, non-blocking) so push/PR/clone
     // affordances know whether to act or prompt to connect. Same for Linear —
-    // it gates the issue inbox and the composer's issue picker.
+    // it gates the composer's issue picker.
     void get().refreshGithub();
     void get().refreshLinear();
     // Where the Linux VM stands (downloading, ready, unavailable), so the

@@ -2,11 +2,8 @@
 // pipeline is waiting on the user for, above the horizons. Level-2 injection
 // (answer a question, rule on a gate) without leaving level 1.
 //
-// The derivation is a pure selector (select.ts) in MissionControl/queue.ts's
-// style, and shares its reason vocabulary where the two overlap — Mission
-// Control is the same question fleet-wide, and the two surfaces must never
-// disagree about what a signal means. This file is the strip shell and the host
-// for the review modal Mission Control also mounts.
+// The derivation is a pure selector (select.ts); this file is the strip shell
+// and the host for the review modal.
 //
 // Nothing here removes a card: every action moves backend state (an answered
 // question resumes its run, an approval advances it, an edited dependency
@@ -17,9 +14,9 @@
 
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
-import { WorkflowReviewModal } from "@/components/Workspace/MissionControl/WorkflowReviewModal";
 import { DecisionCard } from "./Card";
 import type { NeedsCard } from "./select";
+import { WorkflowReviewModal } from "./WorkflowReviewModal";
 
 export function NeedsYou({
   cards,
@@ -70,9 +67,9 @@ export function NeedsYou({
           }}
         />
       ))}
-      {/* The same modal the review queue mounts: evidence from the run's
-          `gate_evidence` event, approve/reject through wfApprove / wfReject. It
-          closes itself when the run leaves the gate, however that happened. */}
+      {/* The run monitor's review modal: evidence from the run's `gate_evidence`
+          event, approve/reject through wfApprove / wfReject. It closes itself
+          when the run leaves the gate, however that happened. */}
       {reviewRunId && (
         <WorkflowReviewModal runId={reviewRunId} onClose={() => setReviewRunId(null)} />
       )}

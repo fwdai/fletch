@@ -2,8 +2,8 @@
 // snapshot and subscribed concurrently, so a `wf:run` that arrived while the
 // fetch was in flight was clobbered by the wholesale replace. For a *paused* run
 // there is no follow-up event to repair that — it is waiting on a human — so the
-// pause stayed invisible until something else moved the row, in the sidebar, in
-// Mission Control, and on the roadmap board at once.
+// pause stayed invisible until something else moved the row, in the sidebar and
+// on the roadmap board at once.
 
 import { describe, expect, it } from "vitest";
 import type { WfRun } from "@/api";

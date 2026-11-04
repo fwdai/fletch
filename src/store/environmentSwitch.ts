@@ -89,7 +89,6 @@ const STASH_KEYS = [
   "prSets",
   "delegations",
   "delegationNotices",
-  "verificationReports",
   // Autopilot as each host runs it: its rows and history per checkout, and its
   // two opt-out lists (a project or agent id means something on one host only).
   // Mirrors like `delegations`, so `loadAutopilot` re-reads them on entry.
@@ -180,7 +179,6 @@ const BLANK: Pick<AppState, StashKey> = {
   prSets: {},
   delegations: {},
   delegationNotices: {},
-  verificationReports: {},
   autopilot: {},
   autopilotLog: {},
   autopilotDisabledProjects: null,

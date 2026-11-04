@@ -1,6 +1,5 @@
 import { api, type FolderGrant, type WorkspaceKind } from "@/api";
 import { workspaceTypeToSend } from "@/components/Composer/workspaceType";
-import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
 import { discoverCommands } from "@/data/slashCommands";
@@ -97,12 +96,6 @@ export interface DraftsSlice {
     seedPrompt?: string,
     roadmapItemId?: string,
   ) => Promise<string | null>;
-  /** Start a draft from a Home-inbox issue (any tracker source): opens a new
-   *  draft on the issue's repo, seeds the composer with the issue brief
-   *  (title + body + url + a suggested branch), and tags it with the issue
-   *  ref so the agent's PR closes it. Lands the user in the composer, ready
-   *  to launch. */
-  startWorkFromIssue: (repoPath: string, issue: import("@/api").TrackerIssue) => Promise<void>;
   /** The hand-off after a project is added: open a draft on it, so the user
    *  lands one keypress from a running agent instead of back where they were
    *  with a new sidebar row. The user's first project (`first`) also gets the
@@ -311,21 +304,6 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     } catch (e) {
       get().setLastError(`Couldn't start a new agent: ${String(e)}`);
     }
-  },
-
-  startWorkFromIssue: async (repoPath, issue) => {
-    const environment = activeEnvironmentId();
-    const draft = await prepareDraft(get, repoPath);
-    if (!draft) return;
-    // Seed the composer for this draft (read as its initial text on mount) with
-    // the issue brief, so "Start work" lands fully prefilled — the user reviews
-    // and hits ↵ to launch (two clicks from issue to working agent). The
-    // discussion is fetched first (best-effort — a failure only loses the
-    // section) so the seed is one complete block, not text that shifts under
-    // the user after mount.
-    const comments = await api.issueComments(repoPath, issue.source, issue.key).catch(() => []);
-    if (activeEnvironmentId() !== environment) return;
-    openDraft(set, get, { ...draft, issueRef: issue.key }, composeIssueBrief(issue, comments));
   },
 
   updateDraft: (id, patch) =>

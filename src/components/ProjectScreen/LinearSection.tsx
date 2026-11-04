@@ -18,8 +18,8 @@ export function LinearSection({ projectId }: { projectId: string }) {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [teams, setTeams] = useState<LinearTeam[] | null>(null);
-  // The team is the host's row — its issue inbox reads it — while the Linear
-  // connection above it is this Mac's.
+  // The team is the host's row — the composer's issue picker reads it — while
+  // the Linear connection above it is this Mac's.
   const { settings, save } = useProjectSettings(projectId);
   const gate = useGate("projectSettings");
   const teamId = settings?.[LINEAR_TEAM_ID_KEY] ?? "";

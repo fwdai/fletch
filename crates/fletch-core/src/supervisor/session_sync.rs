@@ -172,9 +172,9 @@ impl Supervisor {
     /// Fire-and-forget turn-end verification for an ad-hoc agent, gated on the
     /// project's opt-in `verify.on_turn_end` flag. Runs the same engine as the
     /// `run_verification` command on the agent's primary checkout and emits
-    /// `verify:report`, so the agent's Mission Control card arrives with test
-    /// evidence (workflow items already carry gate evidence). Never blocks the
-    /// turn; any failure is silent.
+    /// `verify:report`, so the phone's view of the agent carries test evidence
+    /// (workflow items already carry gate evidence). Never blocks the turn; any
+    /// failure is silent.
     ///
     /// Guardrails (each a cheap early return): only ad-hoc agents (a workflow
     /// step agent has gates — `owner_run_id` set → skip), only when the flag is
