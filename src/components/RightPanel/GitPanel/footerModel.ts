@@ -98,7 +98,8 @@ export interface ReviewFooterInput {
   /** The custom agent that would review, for the label; null when none is
    *  configured. */
   reviewerName: string | null;
-  /** Why a review can't start now (an old host, no reviewer picked), or null. */
+  /** Why this host can't run a review (an old host), or null. No reviewer is
+   *  not a refusal: the reviewer is optional, so `reviewerName` says that. */
   refusal: string | null;
 }
 
@@ -115,8 +116,8 @@ export interface FooterInput extends LadderInput {
 
 /** The Review group: start, re-run, stop or cancel the local reviewer, and
  *  reach its transcript. Starting while the coder is mid-turn is fine — the
- *  host queues it. A review that can't start is offered disabled with the
- *  reason, so the way to enable it (Settings › Review) is one hover away. */
+ *  host queues it. With no reviewer it offers the way to add one; on a host
+ *  that can't run one it is offered disabled with the reason. */
 export function reviewActions(input: ReviewFooterInput): FooterAction[] {
   const { state, reviewerName, refusal } = input;
   const items: FooterAction[] = [];
@@ -124,6 +125,8 @@ export function reviewActions(input: ReviewFooterInput): FooterAction[] {
     items.push({ key: "review-stop", label: "Cancel queued review", icon: "close" });
   } else if (state?.phase === "reviewing") {
     items.push({ key: "review-stop", label: "Stop review", icon: "stop" });
+  } else if (!reviewerName && !refusal) {
+    items.push({ key: "review-setup", label: "Set up a reviewer", icon: "search" });
   } else {
     const again = state != null && state.phase !== "idle" && state.phase !== "failed";
     const who = reviewerName ?? state?.reviewer?.name ?? null;
@@ -178,6 +181,7 @@ const VIEW_PR: FooterAction = { key: "view-pr", label: "View on GitHub", icon: "
 function primaryOf(rung: Rung, input: FooterInput, unblock: FooterAction | null): FooterAction {
   const { git, pr, customActive, base } = input;
   const unpushed = git?.unpushed ?? 0;
+  const reviewPhase = input.reviewMenu?.state?.phase;
   switch (rung.do) {
     case "wait":
       return rung.why === "unknown-state"
@@ -235,7 +239,13 @@ function primaryOf(rung: Rung, input: FooterInput, unblock: FooterAction | null)
           return VIEW_PR;
       }
     case "merge":
-      return unblock ?? { key: "merge", label: "Merge PR", icon: "merge", tone: "success" };
+      if (unblock) return unblock;
+      // A review the user chose to have is still to report: don't ask for the
+      // merge over it. The ladder is unchanged, so Merge PR moves to the menu
+      // rather than going away.
+      return reviewPhase === "queued" || reviewPhase === "reviewing"
+        ? { key: "review-wait", label: "Reviewing…", icon: "search", tone: "ghost" }
+        : { key: "merge", label: "Merge PR", icon: "merge", tone: "success" };
     case "ready":
       // Nothing blocking. With an open PR the gate just isn't positively open
       // (no checks data), so the decision is GitHub's to show; without one the

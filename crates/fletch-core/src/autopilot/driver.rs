@@ -70,6 +70,8 @@ pub(crate) trait World: Send + Sync + 'static {
     fn busy(&self, agent_id: &str) -> bool;
     /// A delegation is live on this checkout.
     fn delegation_live(&self, key: &Key) -> bool;
+    /// A local review is reading this checkout.
+    fn review_running(&self, key: &Key) -> bool;
     /// The checkout's git state; `None` when unreadable or refused.
     fn git(&self, key: &Key) -> impl Future<Output = Option<GitState>> + Send;
     fn pr(&self, key: &Key) -> impl Future<Output = Option<PrLive>> + Send;
@@ -106,6 +108,10 @@ impl World for Live {
 
     fn delegation_live(&self, key: &Key) -> bool {
         crate::supervisor::delegation::is_live(key)
+    }
+
+    fn review_running(&self, key: &Key) -> bool {
+        crate::review::engine::global().reviewing(key)
     }
 
     /// A poll, so a sleeping box is not woken: its state reads as unknown and
@@ -294,12 +300,13 @@ pub(crate) async fn run_pass<W: World>(
         }
         let busy = world.busy(&key.0) || dispatched_to.contains(&key.0);
         let in_flight = world.delegation_live(&key);
+        let reviewing = world.review_running(&key);
         let cycle = tracked.state.cycle.as_ref();
         let awaiting_since = cycle
             .filter(|c| c.phase == CyclePhase::AwaitingEvidence)
             .map(|c| c.phase_since);
         let needs_world = match cycle {
-            None => !busy && !in_flight,
+            None => !busy && !in_flight && !reviewing,
             Some(_) => awaiting_since.is_some(),
         };
         let readiness = if needs_world {
@@ -331,6 +338,7 @@ pub(crate) async fn run_pass<W: World>(
             ladder: &ladder,
             agent_busy: busy,
             delegation_in_flight: in_flight,
+            review_running: reviewing,
             verification: tracked.verdict.as_ref(),
             now,
         });

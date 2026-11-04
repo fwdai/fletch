@@ -76,10 +76,14 @@ const HARMLESS = new Set([
   "review-start",
   "review-stop",
   "review-open",
+  "review-setup",
 ]);
 
 export function gateAction(key: string, ctx: GateContext): Gate | null {
   if (key === "loading") return { reason: "Loading git state", quiet: true };
+  if (key === "review-wait") {
+    return { reason: "A local review is running. Merge PR is in the menu." };
+  }
   if (ctx.delegationActive && !HARMLESS.has(key)) {
     return { reason: "The agent is working on this checkout", quiet: true };
   }

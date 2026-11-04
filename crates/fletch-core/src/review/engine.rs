@@ -755,6 +755,16 @@ impl Table {
         self.inner.lock().get(key).cloned()
     }
 
+    /// A reviewer is reading this checkout, or is being spawned to. Bounded by
+    /// [`WALL_TIMEOUT_MS`]. A queued start doesn't count: it reads nothing until
+    /// the coder is free.
+    pub fn reviewing(&self, key: &Key) -> bool {
+        self.inner
+            .lock()
+            .get(key)
+            .is_some_and(|t| t.flight.is_some() || t.starting)
+    }
+
     /// Apply `f` to a checkout's memory, creating it on first touch.
     pub fn update<T>(&self, key: &Key, f: impl FnOnce(&mut Tracked) -> T) -> T {
         f(self.inner.lock().entry(key.clone()).or_default())

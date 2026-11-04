@@ -28,6 +28,7 @@ struct Fake {
     agents: Mutex<Vec<AgentRecord>>,
     busy: Mutex<HashSet<String>>,
     in_flight: Mutex<HashSet<Key>>,
+    reviewing: Mutex<HashSet<Key>>,
     git: Mutex<HashMap<Key, GitState>>,
     pr: Mutex<HashMap<Key, PrLive>>,
     threads: Mutex<HashMap<Key, PrComments>>,
@@ -49,6 +50,10 @@ impl World for Fake {
 
     fn delegation_live(&self, key: &Key) -> bool {
         self.in_flight.lock().contains(key)
+    }
+
+    fn review_running(&self, key: &Key) -> bool {
+        self.reviewing.lock().contains(key)
     }
 
     async fn git(&self, key: &Key) -> Option<GitState> {
@@ -349,6 +354,34 @@ async fn never_dispatches_over_a_live_delegation_or_a_running_turn() {
     h.world.busy.lock().insert("rhone".to_string());
     h.pass(NOW).await;
     assert!(h.dispatched().is_empty());
+}
+
+#[tokio::test]
+async fn holds_a_fix_until_the_local_review_on_its_checkout_ends() {
+    let h = Harness::new(vec![agent("aare", "p1", &["repo", "web"])]);
+    let reviewed = key("aare", None);
+    let sibling = key("aare", Some("web"));
+    failing(&h.world, &reviewed, "sha1");
+    h.world.reviewing.lock().insert(reviewed.clone());
+    h.pass(NOW).await;
+    assert!(h.dispatched().is_empty());
+    assert_eq!(
+        h.world.reads.load(Ordering::SeqCst),
+        1,
+        "only the sibling is read: the reviewed checkout has nothing to act on"
+    );
+
+    // Another checkout of the agent isn't the one being read.
+    failing(&h.world, &sibling, "sha2");
+    h.pass(NOW + 10_000).await;
+    assert_eq!(h.dispatched().len(), 1);
+    assert_eq!(h.dispatched()[0].0, sibling);
+
+    h.world.dispatched.lock().clear();
+    h.world.reviewing.lock().remove(&reviewed);
+    h.pass(NOW + 20_000).await;
+    assert_eq!(h.dispatched().len(), 1);
+    assert_eq!(h.dispatched()[0].0, reviewed);
 }
 
 // ── what a pass reads ──────────────────────────────────────────────────────

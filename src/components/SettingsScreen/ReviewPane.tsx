@@ -68,7 +68,11 @@ export function ReviewPane() {
       <SetGroup label="When">
         <SetRow
           title="Review on PR open"
-          sub="Review each PR when it opens, and again after the agent addresses findings."
+          sub={
+            effective
+              ? "Review each PR when it opens, and again after the agent addresses findings."
+              : "Waits for a reviewer. Add one below and PRs get reviewed as they open."
+          }
         >
           <SetToggle
             on={onPrOpen}

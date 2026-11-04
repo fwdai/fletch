@@ -43,8 +43,6 @@ function localThreads(comments: PrComments | null): PrComments | null {
   return local.length > 0 ? { unresolved: local } : null;
 }
 
-const NO_REVIEWER = "Pick a reviewer in Settings › Review";
-
 /** The git panel: lanes (header) · ladder (body) · action bar (footer). The
  *  lanes span the workspace (`GitPanel` builds them); the ladder and the footer
  *  describe and act on the checkout the viewed lane belongs to — `repo` and
@@ -104,8 +102,9 @@ export function GitRepoSection({
   const hasOrigin = gitState?.has_origin ?? true;
 
   // The local reviewer on this checkout: the host's state (a mirror, like
-  // `delegations`), the custom agent that would review, and why a review
-  // can't start — an older host, or no reviewer picked.
+  // `delegations`), the custom agent that would review (none is fine: it is
+  // optional, and the controls offer to set one up), and the older host that
+  // can't run one.
   const review = useAppStore((s) => s.reviews[key] ?? null);
   const customAgents = useAppStore((s) => s.customAgents);
   const reviewAgentId = useAppStore((s) => s.reviewAgentId);
@@ -114,7 +113,6 @@ export function GitRepoSection({
     [customAgents, reviewAgentId],
   );
   const reviewGate = useGate("review");
-  const reviewRefusal = reviewGate ?? (reviewer ? null : NO_REVIEWER);
   const nowMs = useReviewClock(review?.phase);
   // Who a queued review waits for, as the composer names the agent: its
   // custom agent, else its provider.
@@ -167,7 +165,7 @@ export function GitRepoSection({
     githubConnected,
     primaryCheckout: subdir === undefined,
     reviewMenu: acting
-      ? { state: review, reviewerName: reviewer?.name ?? null, refusal: reviewRefusal }
+      ? { state: review, reviewerName: reviewer?.name ?? null, refusal: reviewGate }
       : undefined,
   });
 
@@ -244,8 +242,8 @@ export function GitRepoSection({
     nowMs,
   ]);
 
-  // The Review row's controls: one button (start / re-run / stop), and the
-  // per-thread fix and dismiss. On a lane the footer doesn't act on, none.
+  // The Review row's controls: one button (set up / start / re-run / stop), and
+  // the per-thread fix and dismiss. On a lane the footer doesn't act on, none.
   // Stop also cancels a start the host is holding for the coder's turn.
   const reviewing = review?.phase === "reviewing" || review?.phase === "queued";
   const reviewAgain = review != null && review.phase !== "idle" && review.phase !== "failed";
@@ -253,11 +251,14 @@ export function GitRepoSection({
     acting && !reviewGate
       ? {
           state: review,
-          action: {
-            label: reviewing ? "Stop" : reviewAgain ? "Re-review" : "Review",
-            reason: reviewing ? null : reviewRefusal,
-            onRun: () => runAction(reviewing ? "review-stop" : "review-start"),
-          },
+          action: reviewing
+            ? { label: "Stop", onRun: () => runAction("review-stop") }
+            : reviewer
+              ? {
+                  label: reviewAgain ? "Re-review" : "Review",
+                  onRun: () => runAction("review-start"),
+                }
+              : { label: "Set up", onRun: () => runAction("review-setup") },
           onFix: fixThread,
           onDismiss: dismissThread,
           onOpenReviewer: review?.reviewer?.agent_id ? () => runAction("review-open") : null,

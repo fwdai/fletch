@@ -613,6 +613,30 @@ fn a_start_claims_the_checkout_until_it_begins_or_lets_go() {
 }
 
 #[test]
+fn a_checkout_counts_as_reviewing_from_its_claim_to_the_end_of_the_round() {
+    let table = Table::default();
+    let key: Key = ("aare".into(), None);
+    assert!(!table.reviewing(&key), "never tracked");
+
+    table.update(&key, |t| t.queue(Trigger::PrOpen, None));
+    assert!(!table.reviewing(&key), "a queued start reads nothing yet");
+
+    table.update(&key, |t| t.claim().unwrap());
+    assert!(table.reviewing(&key), "claimed: its reviewer is coming up");
+
+    table.update(&key, |t| {
+        t.begin(reviewer(), Trigger::Manual, state("s", "d"), None, 0)
+            .unwrap();
+    });
+    assert!(table.reviewing(&key), "the round itself");
+
+    table.update(&key, |t| {
+        t.record_failure(FailureOrigin::Round, "boom", None)
+    });
+    assert!(!table.reviewing(&key), "over");
+}
+
+#[test]
 fn a_pr_that_had_a_round_is_not_reviewed_on_sight_again() {
     let mut t = Tracked::default();
     assert!(!t.reviewed_pr(7));

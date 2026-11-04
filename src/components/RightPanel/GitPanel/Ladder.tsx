@@ -16,9 +16,9 @@ import { GitLink } from "./shared";
  *  and reach the reviewer's own transcript. */
 export interface ReviewBodies {
   state: ReviewState | null;
-  /** The row's one button — Review / Re-review / Stop — or null when the
-   *  host has no reviewer to offer. `reason` says why it can't run now. */
-  action: { label: string; reason: string | null; onRun: () => void } | null;
+  /** The row's one button — Set up / Review / Re-review / Stop — or null when
+   *  the host has no reviewer to offer. */
+  action: { label: string; onRun: () => void } | null;
   /** Hand one thread to the coding agent (`resolve-comments`, scoped to it). */
   onFix: (c: PrComment) => void;
   /** Resolve a local finding by hand. */
@@ -144,25 +144,21 @@ function rowTrailing(row: LadderRow, b: LadderBodies): ReactNode {
     );
   }
   if (row.key === "review" && b.review?.action) {
-    // The reviewer's one control, on the row itself: start, re-run, or stop
-    // (which also cancels a queued start). Disabled with its reason on hover
-    // when the host or the settings refuse.
-    const { label, reason, onRun } = b.review.action;
+    // The reviewer's one control, on the row itself: set one up, start, re-run,
+    // or stop (which also cancels a queued start).
+    const { label, onRun } = b.review.action;
     const phase = b.review.state?.phase;
     const stopping = phase === "reviewing" || phase === "queued";
     return (
-      <span className={reason ? "tip" : undefined} data-tip={reason ?? undefined}>
-        <Button
-          variant={stopping ? "ghost" : "outline"}
-          size="sm"
-          className="rg-review-act"
-          disabled={reason != null}
-          onClick={onRun}
-        >
-          <Icon name={stopping ? "stop" : "search"} size={11} />
-          {label}
-        </Button>
-      </span>
+      <Button
+        variant={stopping ? "ghost" : "outline"}
+        size="sm"
+        className="rg-review-act"
+        onClick={onRun}
+      >
+        <Icon name={stopping ? "stop" : "search"} size={11} />
+        {label}
+      </Button>
     );
   }
   return null;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { GitState, PrChecks, PrComment, PrState } from "@/api";
+import type { GitState, PrChecks, PrComment, PrState, ReviewState } from "@/api";
 import { buildFooter, type FooterInput } from "./footerModel";
 
 function git(over: Partial<GitState> = {}): GitState {
@@ -317,16 +317,67 @@ describe("buildFooter · the local reviewer", () => {
     });
   });
 
-  it("is offered disabled, with the reason, when no reviewer can run", () => {
+  it("is offered disabled, with the reason, on a host that can't run one", () => {
+    const refusal = "This host is too old to run a local reviewer. Update it.";
     const f = footer({
       git: git({ files: [file()] }),
-      reviewMenu: menu({ reviewerName: null, refusal: "Pick a reviewer in Settings › Review" }),
+      reviewMenu: menu({ reviewerName: null, refusal }),
     });
     expect(group(f, "Review")?.items[0]).toMatchObject({
       key: "review-start",
       label: "Review now",
       disabled: true,
-      reason: "Pick a reviewer in Settings › Review",
+      reason: refusal,
+    });
+  });
+
+  it("offers to set one up when there is no reviewer, which is a choice and not a fault", () => {
+    const f = footer({
+      git: git({ files: [file()] }),
+      reviewMenu: menu({ reviewerName: null }),
+    });
+    expect(group(f, "Review")?.items).toEqual([
+      { key: "review-setup", label: "Set up a reviewer", icon: "search" },
+    ]);
+  });
+
+  describe("a PR ready to merge", () => {
+    const ready: Partial<FooterInput> = {
+      git: git({ ahead: 1 }),
+      pr: pr(),
+      checks: checks(),
+      mergeState: "clean",
+    };
+    const inPhase = (phase: ReviewState["phase"]) => menu({ state: { phase } as ReviewState });
+
+    it("holds the merge primary while a review is queued or running, keeping it in the menu", () => {
+      for (const p of ["queued", "reviewing"] as const) {
+        const f = footer({ ...ready, reviewMenu: inPhase(p) });
+        expect(f.primary).toMatchObject({ key: "review-wait", label: "Reviewing…", tone: "ghost" });
+        expect(group(f, "Pull request")?.items).toContainEqual(
+          expect.objectContaining({ key: "merge", disabled: false }),
+        );
+      }
+    });
+
+    it("asks for the merge once the review is over, however it ended", () => {
+      for (const p of ["idle", "clean", "findings", "stale", "failed"] as const) {
+        expect(footer({ ...ready, reviewMenu: inPhase(p) }).primary.key).toBe("merge");
+      }
+    });
+
+    it("asks for the merge with no local review in play", () => {
+      expect(footer({ ...ready, reviewMenu: menu() }).primary.key).toBe("merge");
+      expect(footer({ ...ready, reviewMenu: menu({ reviewerName: null }) }).primary.key).toBe(
+        "merge",
+      );
+      // A client with no reviewer to offer (the phone) passes no menu at all.
+      expect(footer(ready).primary.key).toBe("merge");
+    });
+
+    it("still gives way to connecting GitHub first", () => {
+      const f = footer({ ...ready, githubConnected: false, reviewMenu: inPhase("reviewing") });
+      expect(f.primary.key).toBe("connect-github");
     });
   });
 

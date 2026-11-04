@@ -104,6 +104,7 @@ struct Case {
     readiness: ReadinessInput,
     agent_busy: bool,
     delegation_in_flight: bool,
+    review_running: bool,
     verification: Option<VerificationReport>,
     now: i64,
 }
@@ -115,6 +116,7 @@ impl Case {
             readiness: failing(),
             agent_busy: false,
             delegation_in_flight: false,
+            review_running: false,
             verification: None,
             now: NOW,
         }
@@ -137,6 +139,7 @@ impl Case {
             ladder: &ladder(),
             agent_busy: self.agent_busy,
             delegation_in_flight: self.delegation_in_flight,
+            review_running: self.review_running,
             verification: self.verification.as_ref(),
             now: self.now,
         })
@@ -200,6 +203,20 @@ fn never_interleaves_with_a_turn_it_didnt_start() {
     let mut c = Case::new();
     c.delegation_in_flight = true;
     assert_eq!(c.step(), waits(WaitReason::DelegationInFlight));
+}
+
+#[test]
+fn never_opens_a_cycle_under_a_running_review() {
+    let mut c = Case::new();
+    c.review_running = true;
+    assert_eq!(c.step(), waits(WaitReason::ReviewRunning));
+}
+
+#[test]
+fn a_review_doesnt_stop_a_cycle_already_open_from_being_judged() {
+    let mut c = in_flight(CyclePhase::Working);
+    c.review_running = true;
+    assert_eq!(c.step(), Effect::Verify);
 }
 
 #[test]

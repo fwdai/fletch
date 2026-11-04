@@ -1632,8 +1632,9 @@ switches.
   follow), waits for the agent's turn to end, then judges it — `fix-checks` by
   running the project's own verify commands on the host (reported as
   `verify:report`), the others by the PR state alone. Never while the agent is
-  mid-turn or another delegation is live on the checkout, and never two
-  dispatches to one agent in one pass.
+  mid-turn, another delegation is live on the checkout or a local review is
+  reading it (a fix pushed then would only invalidate the review), and never
+  two dispatches to one agent in one pass.
 - **When it stops.** Each rung gets a budget per situation (`fix-checks` 3,
   the others 2); a cycle that changes nothing at all, a spent budget, or no CI
   verdict within 15 minutes ends in a `give-up`, after which autopilot waits
