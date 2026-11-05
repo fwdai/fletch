@@ -6,6 +6,7 @@
 
 import { builtinCommandsFor } from "@/data/slashCommands";
 import { agentRecord, isAgentBusy } from "@/helpers";
+import { sendOrder } from "./sendOrder";
 import type { AppState, SliceCreator } from "./types";
 import { SLASH_BUSY_LABELS } from "./workspace";
 
@@ -60,10 +61,15 @@ export const createCompactionSlice: SliceCreator<CompactionSlice> = (set, get) =
   compactRequested: {},
 
   compactAgent: async (agentId) => {
-    if (compactBlocker(get(), agentId)) return;
+    // A send still waiting in line hasn't raised `sending` yet, so the agent
+    // reads idle here while a turn is already on its way: refuse now rather
+    // than queue behind it. `idleOnly` re-checks at dispatch, for a turn that
+    // starts some other way (another client, autopilot) while ours waits on
+    // its own steps.
+    if (compactBlocker(get(), agentId) || sendOrder.pending(agentId)) return;
     set((s) => ({ compactRequested: { ...s.compactRequested, [agentId]: true } }));
     try {
-      await get().sendUserMessage(agentId, "/compact");
+      await get().sendUserMessage(agentId, "/compact", [], [], { idleOnly: true });
     } finally {
       set((s) => {
         const { [agentId]: _done, ...rest } = s.compactRequested;
