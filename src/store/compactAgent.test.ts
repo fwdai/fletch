@@ -1,7 +1,9 @@
-// `/compact` must open a turn of its own. A send waiting in line has not raised
-// `sending` yet, so the agent still reads idle; these pin that compaction is
-// refused behind one, and that a `/compact` whose agent turned busy before its
-// place in line came is dropped rather than delivered as a mid-turn follow-up.
+// Compaction against a real store. `/compact` must open a turn of its own: a
+// send waiting in line has not raised `sending` yet, so the agent still reads
+// idle, and these pin that compaction is refused behind one and that a
+// `/compact` whose agent turned busy before its place in line came is dropped
+// rather than delivered as a mid-turn follow-up. Then the stages: how long the
+// badge says "Compacting…", across turn boundaries and silences.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
@@ -20,7 +22,7 @@ vi.mock("@/data/slashCommands", async (importOriginal) => ({
 
 import type { RawEvent } from "@/adapters/types";
 import type { AgentRecord, FolderGrant } from "@/api";
-import { COMPACTION_SETTLE_MS, createCompactionSlice } from "./compaction";
+import { COMPACTION_QUIET_MS, COMPACTION_SETTLE_MS, createCompactionSlice } from "./compaction";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
 
@@ -196,6 +198,22 @@ describe("compaction stages", () => {
     expect(store.getState().compactions.a1).toBe("requested");
     vi.advanceTimersByTime(1);
     expect(store.getState().compactions.a1).toBeUndefined();
+  });
+
+  it("keeps a compaction Claude keeps announcing, and drops one that goes quiet", () => {
+    const store = makeStore();
+    const stage = () => store.getState().compactions.a1;
+    store.getState().observeCompactionEvent("a1", status("compacting"));
+    // Claude re-announces every 30s; each one restarts the quiet clock.
+    for (let i = 0; i < 4; i++) {
+      vi.advanceTimersByTime(30_000);
+      store.getState().observeCompactionEvent("a1", status("compacting"));
+    }
+    vi.advanceTimersByTime(COMPACTION_QUIET_MS - 1);
+    expect(stage()).toBe("running");
+    // An end this client never saw: give up rather than say "Compacting…" forever.
+    vi.advanceTimersByTime(1);
+    expect(stage()).toBeUndefined();
   });
 
   it("doesn't give up while the agent is busy", async () => {

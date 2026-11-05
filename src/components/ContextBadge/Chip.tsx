@@ -23,9 +23,11 @@ export function Chip({
 }) {
   const max = formatTokensK(view.max);
   const label =
-    view.pct == null
-      ? `Context usage unknown, ${max} window`
-      : `Context ${formatTokensK(view.used)} of ${max} used (${view.pct}%)`;
+    phase === "compacting"
+      ? "Compacting conversation"
+      : view.pct == null
+        ? `Context usage unknown, ${max} window`
+        : `Context ${formatTokensK(view.used)} of ${max} used (${view.pct}%)`;
   return (
     <button
       type="button"

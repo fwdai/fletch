@@ -33,6 +33,17 @@ export type CompactionStage = "requested" | "running" | "landing";
  *  that the compaction has started. */
 export const COMPACTION_SETTLE_MS = 8_000;
 
+/** How long a `running` compaction may go without Claude re-announcing it
+ *  (it does every 30s) before it is given up — an end this client missed,
+ *  say while another environment was in front. Busy or not: the
+ *  announcements don't depend on the turn. */
+export const COMPACTION_QUIET_MS = 75_000;
+
+/** When each agent's compaction was last heard of: requested here, or a
+ *  signal from Claude. Not store state: nothing renders it, and a heartbeat
+ *  every 30s shouldn't re-render anything. */
+const lastHeard = new Map<string, number>();
+
 export interface CompactionSlice {
   /** Each compacting agent's stage. Absent: not compacting. */
   compactions: Record<string, CompactionStage>;
@@ -82,6 +93,10 @@ export function compactBlocker(state: AppState, agentId: string): string | null 
   const agent = agentRecord(state, agentId);
   if (!agent || !supportsCompaction(agent.provider)) return "This agent can't compact";
   if (isCompacting(state, agentId)) return "Compacting…";
+  // The last compaction is still the newest thing in the window: compacting
+  // again would summarize a summary. The badge hides its button for the same
+  // reason; this keeps ⌘⇧K in step.
+  if (state.usage[agentId]?.context.compacted) return "Nothing new to compact";
   if (state.features.nativeView && agent.view === "native") {
     return "Type /compact in the terminal";
   }
@@ -97,24 +112,37 @@ export function compactBlocker(state: AppState, agentId: string): string | null 
 }
 
 export const createCompactionSlice: SliceCreator<CompactionSlice> = (set, get) => {
-  const stage = (agentId: string, next: CompactionStage | null) =>
+  const stage = (agentId: string, next: CompactionStage | null) => {
+    if (!next) lastHeard.delete(agentId);
     set((s) => {
       if ((s.compactions[agentId] ?? null) === next) return s;
       const { [agentId]: _was, ...rest } = s.compactions;
       return { compactions: next ? { ...rest, [agentId]: next } : rest };
     });
+  };
 
-  // Give up on a compaction Claude hasn't spoken for, if the agent is still
-  // idle once the clock runs out. `running` is never timed out: Claude reports
-  // its end, or the process goes and takes the compaction with it.
-  const settleLater = (agentId: string) =>
+  const heard = (agentId: string) => lastHeard.set(agentId, Date.now());
+
+  // Give up on a compaction that has gone quiet: `requested` / `landing` once
+  // the agent has sat idle without a word for the settle time, `running` once
+  // Claude has missed its re-announcements. Checked a beat after anything
+  // that could start either clock, so a check that finds the clock still
+  // running is simply superseded by a later one.
+  const settleLater = (agentId: string) => {
+    const at = get().compactions[agentId];
+    if (!at) return;
+    const wait = at === "running" ? COMPACTION_QUIET_MS : COMPACTION_SETTLE_MS;
     setTimeout(() => {
       const s = get();
       const now = s.compactions[agentId];
-      if ((now === "requested" || now === "landing") && !isAgentBusy(s, agentId)) {
-        stage(agentId, null);
-      }
-    }, COMPACTION_SETTLE_MS);
+      const quiet = Date.now() - (lastHeard.get(agentId) ?? 0);
+      const stale =
+        now === "running"
+          ? quiet >= COMPACTION_QUIET_MS
+          : now !== undefined && quiet >= COMPACTION_SETTLE_MS && !isAgentBusy(s, agentId);
+      if (stale) stage(agentId, null);
+    }, wait);
+  };
 
   return {
     compactions: {},
@@ -127,6 +155,7 @@ export const createCompactionSlice: SliceCreator<CompactionSlice> = (set, get) =
       // waits on its own steps.
       if (compactBlocker(get(), agentId) || sendOrder.pending(agentId)) return;
       stage(agentId, "requested");
+      heard(agentId);
       const sent = await get()
         .sendUserMessage(agentId, "/compact", [], [], { idleOnly: true })
         .catch(() => false);
@@ -141,9 +170,13 @@ export const createCompactionSlice: SliceCreator<CompactionSlice> = (set, get) =
 
     observeCompactionEvent: (agentId, ev) => {
       const signal = compactionSignal(ev);
-      if (signal === "started") stage(agentId, "running");
-      else if (signal === "failed") stage(agentId, null);
-      else if (signal === "ended" && get().compactions[agentId]) stage(agentId, "landing");
+      if (signal === "failed") {
+        stage(agentId, null);
+      } else if (signal === "started" || (signal === "ended" && get().compactions[agentId])) {
+        stage(agentId, signal === "started" ? "running" : "landing");
+        heard(agentId);
+        settleLater(agentId);
+      }
     },
 
     observeCompactionStatus: (agentId, status) => {

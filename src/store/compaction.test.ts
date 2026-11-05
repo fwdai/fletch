@@ -14,6 +14,7 @@ const stateWith = (a: AgentRecord, over: Partial<AppState> = {}): AppState =>
     sending: {},
     busyLabel: {},
     compactions: {},
+    usage: {},
     transcriptLoading: {},
     switchInFlight: {},
     features: { nativeView: false },
@@ -61,6 +62,13 @@ describe("compactionSignal", () => {
 });
 
 describe("compactBlocker", () => {
+  it("refuses until the conversation has moved on from the last compaction", () => {
+    const usage = { a1: { context: { compacted: { freed: 1_000 } } } };
+    expect(
+      compactBlocker(stateWith(agent(), { usage } as unknown as Partial<AppState>), "a1"),
+    ).toBe("Nothing new to compact");
+  });
+
   it("refuses while a compaction is in flight", () => {
     expect(compactBlocker(stateWith(agent(), { compactions: { a1: "running" } }), "a1")).toBe(
       "Compacting…",

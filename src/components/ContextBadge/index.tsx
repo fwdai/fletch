@@ -49,7 +49,7 @@ export function ContextBadge({ agent }: { agent: AgentRecord }) {
   return (
     <div
       ref={ref}
-      className={`husage tone-${view.tone} ${phase}${open ? " open" : ""}`}
+      className={`husage tone-${view.tone}${phase === "compacting" ? " compacting" : ""}${open ? " open" : ""}`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
