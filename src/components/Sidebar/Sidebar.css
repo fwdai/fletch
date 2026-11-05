@@ -142,8 +142,13 @@
   color: var(--fg-3);
   transition: color 0.12s;
 }
-.side-palette-hint:hover {
+.side-palette-hint:hover,
+.side-palette-hint:focus-visible {
   color: var(--fg-1);
+}
+.side-palette-hint:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: -1px;
 }
 .side-palette-hint .kbd {
   color: inherit;
