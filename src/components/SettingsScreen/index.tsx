@@ -14,7 +14,7 @@ import { GeneralPane } from "./GeneralPane";
 import { GitPane } from "./GitPane";
 import { LayoutPane } from "./LayoutPane";
 import { McpServersPane } from "./McpServers";
-import { settingsNav } from "./nav";
+import { developerUnlocked, settingsNav } from "./nav";
 import { ProvidersPane } from "./ProvidersPane";
 import { RemoteControlPane } from "./RemoteControl";
 import { ReviewPane } from "./ReviewPane";
@@ -44,8 +44,7 @@ export function SettingsScreen() {
   const admin = useAppStore((s) => s.admin);
   const workflowGate = useGate("workflows");
 
-  // Dev builds always expose Developer; production unlocks it only for admins.
-  const showDeveloper = import.meta.env.DEV || admin;
+  const showDeveloper = developerUnlocked(admin);
   const nav = useMemo(
     () => settingsNav({ workflows: !workflowGate, mac: IS_MAC, developer: showDeveloper }),
     [showDeveloper, workflowGate],

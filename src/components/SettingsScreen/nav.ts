@@ -127,6 +127,10 @@ const WORKFLOWS_NAV: NavItem = {
   group: AGENTS_GROUP,
 };
 
+/** Whether the Developer section is unlocked: dev builds always, production
+ *  only for an admin user. */
+export const developerUnlocked = (admin: boolean): boolean => import.meta.env.DEV || admin;
+
 /** The nav entries shown on this build and platform, in display order.
  *  `workflows` is offered only where the host runs them (the `workflows` gate),
  *  `developer` on dev builds and for admins, `dictation` on macOS. */

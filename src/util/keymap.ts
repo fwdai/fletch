@@ -50,7 +50,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
         combos: ["Mod+Shift+F"],
         label: "Filter the sidebar",
         description:
-          "Focus the sidebar filter, showing the sidebar if hidden. ↓ steps into the list. Find in the conversation, widened to every agent.",
+          "Focus the sidebar filter, showing the sidebar if hidden; ↓ steps into the list.",
       },
       {
         id: "prevAgent",

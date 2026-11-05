@@ -247,6 +247,9 @@ describe("rootItems", () => {
     const restore = find(c, "restore:gone");
     expect(restore.section).toBe(SEC.history);
     expect(restore.hint).toBe("fletch · archived 1d ago");
+    restore.run?.();
+    expect(c.s.closeSettingsScreen).toHaveBeenCalled();
+    expect(c.s.restore).toHaveBeenCalledWith("gone");
   });
 
   it("jumps to an agent through the one selection path, leaving every screen", () => {
@@ -262,7 +265,8 @@ describe("rootItems", () => {
     const c = ctx({ projectScreenRepoPath: "/w/fletch", projectScreenTab: "roadmap" });
     find(c, "projectSettings").run?.();
     expect(c.s.openProjectScreen).toHaveBeenCalledWith("/w/fletch", "settings");
-    expect(c.s.closeProjectScreen).not.toHaveBeenCalled();
+    // Any takeover closes first, then the page opens on Settings: it ends open.
+    expect(ranBefore(c.s.closeProjectScreen, c.s.openProjectScreen)).toBe(true);
   });
 
   it("offers every settings section, sub-tabs included, and the environments only once there are two", () => {
@@ -379,7 +383,7 @@ describe("emptySections", () => {
   it("suggests what fits the surface, then recents, then the agents worth a look", () => {
     const agents = [agent({ id: "fuji", status: "running" }), agent({ id: "etna" })];
     const c = ctx({ workspace: ws(agents), selectedAgentId: "fuji" });
-    const sections = emptySections(c, rootItems(c), ["history", "stopAgent", "usage"]);
+    const sections = emptySections(c.s, rootItems(c), ["history", "stopAgent", "usage"]);
     expect(sections.map((s) => s.label)).toEqual([SEC.suggested, SEC.recent, SEC.jump]);
     const [suggested, recent, jump] = sections.map((s) => s.rows.map((r) => r.item.id));
     expect(suggested[0]).toBe("stopAgent");
@@ -392,7 +396,7 @@ describe("emptySections", () => {
 
   it("leaves out a section with nothing in it", () => {
     const c = ctx();
-    const sections = emptySections(c, rootItems(c), []);
+    const sections = emptySections(c.s, rootItems(c), []);
     expect(sections.map((s) => s.label)).toEqual([SEC.suggested]);
     expect(sections[0].rows[0].item.id).toBe("newAgent");
   });

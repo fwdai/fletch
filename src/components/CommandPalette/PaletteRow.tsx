@@ -19,7 +19,7 @@ interface Props {
   row: Row;
   index: number;
   active: boolean;
-  onHover: () => void;
+  onHover: (e: React.MouseEvent) => void;
   onActivate: () => void;
 }
 

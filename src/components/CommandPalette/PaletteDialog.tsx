@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { DetectedEditor } from "@/api";
 import { Icon } from "@/components/Icon";
+import { developerUnlocked } from "@/components/SettingsScreen/nav";
 import { detectEditors } from "@/components/TitleBar/OpenInEditor/editors";
 import { Scrim } from "@/components/ui/Scrim";
 import { useAppStore } from "@/store";
@@ -42,7 +43,6 @@ export function PaletteDialog() {
   const [editors, setEditors] = useState<DetectedEditor[]>([]);
   const recents = useMemo(() => loadRecents(), []);
   const runs = useRuns();
-  const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -104,7 +104,7 @@ export function PaletteDialog() {
       s,
       runs,
       editors,
-      developer: import.meta.env.DEV || s.admin,
+      developer: developerUnlocked(s.admin),
       now: Date.now(),
       openUrl: (url) => void openExternal(url).catch((e) => setLastError(String(e))),
       copyText: (text) =>
@@ -113,14 +113,13 @@ export function PaletteDialog() {
     return pageRows(ctx, page);
   }, [trigger, page, runs, editors, setLastError]);
 
-  const sections = useMemo(() => {
-    if (page === "root" && !query.trim()) {
-      const s = useAppStore.getState();
-      const ctx = { s } as PaletteContext;
-      return emptySections(ctx, items, recents);
-    }
-    return searchSections(items, query);
-  }, [items, page, query, recents]);
+  const sections = useMemo(
+    () =>
+      page === "root" && !query.trim()
+        ? emptySections(useAppStore.getState(), items, recents)
+        : searchSections(items, query),
+    [items, page, query, recents],
+  );
 
   const rows = useMemo<Row[]>(() => sections.flatMap((sec) => sec.rows), [sections]);
   const indexOf = useMemo(() => new Map(rows.map((r, i) => [r.item.id, i])), [rows]);
@@ -136,6 +135,17 @@ export function PaletteDialog() {
       ?.querySelector<HTMLElement>(`[data-index="${cursor}"]`)
       ?.scrollIntoView({ block: "nearest" });
   }, [cursor]);
+
+  // The mouse moves the cursor only when it actually moves: scrolling a row
+  // into view from the keyboard slides the list under a resting pointer, and
+  // the mousemove that fires then must not snatch the cursor back.
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+  const onHover = useCallback((i: number, e: React.MouseEvent) => {
+    const last = pointer.current;
+    pointer.current = { x: e.clientX, y: e.clientY };
+    if (last && last.x === e.clientX && last.y === e.clientY) return;
+    setActive(i);
+  }, []);
 
   const back = useCallback(() => {
     setPage("root");
@@ -218,13 +228,18 @@ export function PaletteDialog() {
           {page === "root" ? (
             <Icon name="search" size={16} />
           ) : (
-            <button type="button" className="cp-crumb iflex-center" onClick={back}>
+            <button
+              type="button"
+              className="cp-crumb iflex-center"
+              // A click goes back without taking the caret from the input.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={back}
+            >
               <Icon name="chevL" size={12} />
               {spec.title}
             </button>
           )}
           <input
-            ref={inputRef}
             className="cp-input"
             autoFocus
             role="combobox"
@@ -266,7 +281,7 @@ export function PaletteDialog() {
                       row={row}
                       index={i}
                       active={i === cursor}
-                      onHover={() => setActive(i)}
+                      onHover={(e) => onHover(i, e)}
                       onActivate={() => activate(row.item)}
                     />
                   );
