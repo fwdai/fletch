@@ -17,6 +17,8 @@ export function TitleBar() {
   const historyOpen = useAppStore((s) => s.historyOpen);
   const toggleHistory = useAppStore((s) => s.toggleHistory);
   const openFeedback = useAppStore((s) => s.openFeedback);
+  const togglePalette = useAppStore((s) => s.togglePalette);
+  const paletteKeys = useShortcutKeys("palette");
   const historyKeys = useShortcutKeys("history");
   const settingsKeys = useShortcutKeys("quickSettings");
 
@@ -33,6 +35,13 @@ export function TitleBar() {
       </div>
       <div className="tb-right flex-center">
         <OpenInEditor />
+        <IconButton
+          tip={`Command palette (${paletteKeys})`}
+          onClick={() => togglePalette(true)}
+          aria-label="Command palette"
+        >
+          <Icon name="search" />
+        </IconButton>
         <IconButton tip="Send feedback" onClick={openFeedback} aria-label="Send feedback">
           <Icon name="megaphone" className="tb-megaphone" />
         </IconButton>

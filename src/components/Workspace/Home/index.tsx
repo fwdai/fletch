@@ -28,7 +28,7 @@ export function Home() {
   const openProjectGate = useGate("openProject");
   const keys = {
     newAgent: useShortcutKeys("newAgent"),
-    search: useShortcutKeys("search"),
+    palette: useShortcutKeys("palette"),
     sidebar: useShortcutKeys("toggleSidebar"),
     shortcuts: useShortcutKeys("shortcuts"),
   };
@@ -168,7 +168,7 @@ export function Home() {
           {hasProjects && (
             <div className="home-tips flex-center">
               <Tip k={keys.newAgent} label="New agent" />
-              <Tip k={keys.search} label="Search" />
+              <Tip k={keys.palette} label="Command palette" />
               <Tip k={keys.sidebar} label="Sidebar" />
               <Tip k={keys.shortcuts} label="All shortcuts" />
             </div>

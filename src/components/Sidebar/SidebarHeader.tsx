@@ -3,9 +3,10 @@ import { Icon } from "@/components/Icon";
 import { useShortcutKeys } from "@/util/shortcuts";
 import { EnvironmentSwitcher } from "./EnvironmentSwitcher";
 
-/** Search input that filters the agent list, and — once a host is paired — the
+/** Filter input that narrows the agent list, and — once a host is paired — the
  *  environment switcher beside it. The filter itself is applied in `Sidebar`;
- *  this component only owns the input. */
+ *  this component only owns the input. Finding one thing to jump to is the
+ *  command palette's job (⌘K); this is for keeping the list narrowed. */
 interface Props {
   query: string;
   onChange: (q: string) => void;
@@ -34,7 +35,7 @@ export function SidebarHeader({ query, onChange, onArrowDown }: Props) {
         <Icon name="search" size={12} />
         <input
           id="sidebar-search"
-          placeholder="Search agents, branches…"
+          placeholder="Filter agents, branches…"
           value={query}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}

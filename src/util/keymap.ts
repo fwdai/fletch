@@ -39,11 +39,18 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
     global: true,
     items: [
       {
-        id: "search",
+        id: "palette",
         combos: ["Mod+K"],
-        label: "Search agents",
+        label: "Command palette",
         description:
-          "Focus the sidebar search, showing the sidebar if hidden. ↓ steps into the list.",
+          "Every action and every agent, project and run in one search. Type to find, ↵ to run.",
+      },
+      {
+        id: "search",
+        combos: ["Mod+Shift+F"],
+        label: "Filter the sidebar",
+        description:
+          "Focus the sidebar filter, showing the sidebar if hidden. ↓ steps into the list. Find in the conversation, widened to every agent.",
       },
       {
         id: "prevAgent",
@@ -153,7 +160,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       // keys steps through agents, so the brackets are one small family.
       // ⌘B stays as an alternative: it was the binding before the brackets, and
       // it is what VS Code and Cursor hands reach for.
-      { id: "toggleSidebar", combos: ["Mod+[", "Mod+B"], label: "Toggle the sidebar" },
+      { id: "toggleSidebar", combos: ["Mod+["], label: "Toggle the sidebar" },
       { id: "togglePanel", combos: ["Mod+]"], label: "Toggle the side panel" },
       {
         id: "panelCode",

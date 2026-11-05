@@ -207,8 +207,16 @@ describe("overrides", () => {
   const search = SHORTCUT_BY_ID.search;
 
   it("uses the override when present and the defaults otherwise", () => {
-    expect(effectiveCombos(search, {})).toEqual(["Mod+K"]);
+    expect(effectiveCombos(search, {})).toEqual(["Mod+Shift+F"]);
     expect(effectiveCombos(search, { search: ["Mod+P"] })).toEqual(["Mod+P"]);
+  });
+
+  it("gives ⌘K to the command palette and the sidebar filter the wider ⌘F", () => {
+    expect(effectiveCombos(SHORTCUT_BY_ID.palette, {})).toEqual(["Mod+K"]);
+    expect(bindingProblem("search", "Mod+K", {})).toMatch(/Command palette/);
+    // One chord per action: the sidebar has ⌘[ alone, paired with ⌘] for the panel.
+    expect(SHORTCUT_BY_ID.toggleSidebar.combos).toEqual(["Mod+["]);
+    expect(SHORTCUT_BY_ID.togglePanel.combos).toEqual(["Mod+]"]);
   });
 
   it("refuses a chord without a modifier", () => {
@@ -225,7 +233,7 @@ describe("overrides", () => {
     expect(bindingProblem("search", "Mod+[", {})).toMatch(/Toggle the sidebar/);
     expect(bindingProblem("search", "Mod+P", { home: ["Mod+P"] })).toMatch(/Home/);
     // Rebinding to its own current chord, or one moved away by an override, is fine.
-    expect(bindingProblem("search", "Mod+K", {})).toBeNull();
+    expect(bindingProblem("search", "Mod+Shift+F", {})).toBeNull();
     expect(bindingProblem("search", "Mod+[", { toggleSidebar: ["Mod+P"] })).toBeNull();
   });
 
@@ -236,14 +244,14 @@ describe("overrides", () => {
   });
 
   it("blocks a reset whose default another shortcut has since taken", () => {
-    // Search moved off ⌘K, History moved onto it: Search can't go back yet.
-    const overrides = { search: ["Mod+P"], history: ["Mod+K"] };
+    // Search moved off ⌘⇧F, History moved onto it: Search can't go back yet.
+    const overrides = { search: ["Mod+P"], history: ["Mod+Shift+F"] };
     expect(resetProblem("search", overrides)).toMatch(/History/);
     expect(resetProblem("history", overrides)).toBeNull();
     // Once History is reset, Search can be.
     expect(resetProblem("search", { search: ["Mod+P"] })).toBeNull();
     // A shortcut on its defaults has nothing to reset.
-    expect(resetProblem("search", { history: ["Mod+K"] })).toBeNull();
+    expect(resetProblem("search", { history: ["Mod+Shift+F"] })).toBeNull();
   });
 
   it("records the platform's own modifier, not the other one", () => {

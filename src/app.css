@@ -74,6 +74,9 @@
 @import "./components/ui/DeviceCode.css";
 @import "./components/ui/CopyCmd.css";
 @import "./components/ui/DocsLink.css";
+/* After Modal.css and Scrim.css, whose layering it sits between, and after
+   WorkspaceStatus.css, whose status dot its agent rows reuse. */
+@import "./components/CommandPalette/CommandPalette.css";
 @import "./components/Feedback/Feedback.css";
 @import "./components/BootScreen/BootScreen.css";
 /* After terminal.css, whose `.xterm-slot` sizing the login terminal overrides. */
