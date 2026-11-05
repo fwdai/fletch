@@ -11,7 +11,7 @@
 
 import type { AgentRecord, DetectedEditor, WfRun } from "@/api";
 import type { IconName } from "@/components/Icon";
-import { settingsNav } from "@/components/SettingsScreen/nav";
+import { settingsDestinations } from "@/components/SettingsScreen/nav";
 import {
   EDITOR_PREF_KEY,
   editorsFor,
@@ -113,6 +113,9 @@ interface ShortcutRow {
   when?: (ctx: PaletteContext) => boolean;
   disabled?: (ctx: PaletteContext) => string | null;
   keywords?: string;
+  /** Command semantics where the chord toggles: a row always does the thing
+   *  its label says, never the reverse of it. Defaults to the chord's action. */
+  run?: (ctx: PaletteContext) => void;
 }
 
 const onAgent = (ctx: PaletteContext) => surfaceAgent(ctx.s) !== null;
@@ -248,6 +251,12 @@ const SHORTCUT_ROWS: ShortcutRow[] = [
     when: (ctx) => surfaceRepoPath(ctx.s) !== undefined,
     disabled: (ctx) => gateReason(env(ctx.s), "roadmap"),
     keywords: "run command  setup  env  repo",
+    // The chord toggles the page; from the palette this only ever opens it,
+    // on the Settings tab, wherever the project page currently is.
+    run: (ctx) => {
+      const repo = surfaceRepoPath(ctx.s);
+      if (repo) ctx.s.openProjectScreen(repo, "settings");
+    },
   },
   {
     id: "quickSettings",
@@ -326,7 +335,7 @@ function shortcutItems(ctx: PaletteContext): PaletteItem[] {
       shortcut: row.id,
       keywords: [row.keywords, shortcut.description].filter(Boolean).join("  "),
       disabled: row.disabled?.(ctx) ?? null,
-      run: () => runShortcutAction(row.id),
+      run: row.run ? () => row.run?.(ctx) : () => runShortcutAction(row.id),
       remember: true,
     });
   }
@@ -448,7 +457,7 @@ function pageItems(ctx: PaletteContext): PaletteItem[] {
       keywords: "pipeline  chain  automate  steps",
       disabled: gate,
       ...(one
-        ? { run: () => void s.createDraft(one, { kind: "workflow" }), remember: true }
+        ? { run: () => startDraft(s, one, "workflow"), remember: true }
         : { page: "workflow" as const }),
     });
   }
@@ -588,7 +597,7 @@ function entityItems(ctx: PaletteContext): PaletteItem[] {
     });
   }
 
-  const nav = settingsNav({
+  const nav = settingsDestinations({
     workflows: !gateReason(active, "workflows"),
     mac: IS_MAC,
     developer: ctx.developer,
@@ -653,6 +662,15 @@ function environmentRow(s: AppState, e: EnvironmentEntry, section: string): Pale
 
 // ── Pages ─────────────────────────────────────────────────────────────────────
 
+/** Start a draft where the user can see it: a draft selects itself but does
+ *  not leave Settings or a project page, so from one of those the composer
+ *  would open behind the takeover and the command look like it did nothing. */
+function startDraft(s: AppState, repoPath: string, kind: "agent" | "workflow"): void {
+  closeScreens(s);
+  if (kind === "workflow") void s.createDraft(repoPath, { kind });
+  else void s.createDraft(repoPath);
+}
+
 /** The projects a draft can start in, the one an agent last started in first. */
 function projectRows(ctx: PaletteContext, run: (repoPath: string) => void): PaletteItem[] {
   const { s } = ctx;
@@ -678,9 +696,9 @@ export function pageRows(ctx: PaletteContext, page: PageId): PaletteItem[] {
     case "root":
       return rootItems(ctx);
     case "new-agent":
-      return projectRows(ctx, (repo) => void s.createDraft(repo));
+      return projectRows(ctx, (repo) => startDraft(s, repo, "agent"));
     case "workflow":
-      return projectRows(ctx, (repo) => void s.createDraft(repo, { kind: "workflow" }));
+      return projectRows(ctx, (repo) => startDraft(s, repo, "workflow"));
     case "environment": {
       const order = (a: EnvironmentEntry, b: EnvironmentEntry) =>
         a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "local" ? -1 : 1;

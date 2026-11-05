@@ -98,6 +98,7 @@ function state(over: Partial<AppState> = {}): AppState {
     settingsScreenOpen: false,
     usageScreenOpen: false,
     projectScreenRepoPath: null,
+    projectScreenTab: "roadmap",
     historyOpen: false,
     onboardingOpen: false,
     lastRepoPath: "/w/relay",
@@ -257,9 +258,26 @@ describe("rootItems", () => {
     expect(c.s.selectAgent).toHaveBeenCalledWith("fuji");
   });
 
-  it("offers every settings section, and the environments only once there are two", () => {
+  it("opens the Settings tab from a project page rather than leaving it", () => {
+    const c = ctx({ projectScreenRepoPath: "/w/fletch", projectScreenTab: "roadmap" });
+    find(c, "projectSettings").run?.();
+    expect(c.s.openProjectScreen).toHaveBeenCalledWith("/w/fletch", "settings");
+    expect(c.s.closeProjectScreen).not.toHaveBeenCalled();
+  });
+
+  it("offers every settings section, sub-tabs included, and the environments only once there are two", () => {
     const rows = rootItems(ctx());
     expect(rows.find((r) => r.id === "settings:providers")?.label).toBe("Settings › Providers");
+    for (const [id, label, group] of [
+      ["network", "Network", "Sandbox"],
+      ["tools", "Tools", "Customize"],
+      ["skills", "Skills", "Customize"],
+    ]) {
+      const row = rows.find((r) => r.id === `settings:${id}`);
+      expect(row?.label, id).toBe(`Settings › ${label}`);
+      expect(row?.hint, id).toBe(group);
+    }
+    expect(rows.filter((r) => r.id === "settings:agents")).toHaveLength(1);
     expect(rows.some((r) => r.section === SEC.environments)).toBe(false);
     expect(ids(ctx())).not.toContain("environment");
 
@@ -303,6 +321,12 @@ describe("rootItems", () => {
 
 // ── pages ─────────────────────────────────────────────────────────────────────
 
+/** When a spy first ran, on vitest's global call clock. */
+const firstCall = (spy: unknown): number =>
+  (spy as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+/** Whether spy `first` ran before spy `second`. */
+const ranBefore = (first: unknown, second: unknown) => firstCall(first) < firstCall(second);
+
 describe("pageRows", () => {
   it("puts the last-used project first on the new-agent page and starts a draft there", () => {
     const c = ctx();
@@ -311,6 +335,26 @@ describe("pageRows", () => {
     expect(rows[0].meta).toBe("Last used");
     rows[1].run?.();
     expect(c.s.createDraft).toHaveBeenCalledWith("/w/fletch");
+  });
+
+  it("leaves Settings or a project page before starting a draft, so the composer is seen", () => {
+    const fromSettings = ctx({ settingsScreenOpen: true });
+    pageRows(fromSettings, "new-agent")[0].run?.();
+    expect(fromSettings.s.closeSettingsScreen).toHaveBeenCalled();
+    expect(ranBefore(fromSettings.s.closeSettingsScreen, fromSettings.s.createDraft)).toBe(true);
+
+    const fromProject = ctx({ projectScreenRepoPath: "/w/fletch", projectScreenTab: "roadmap" });
+    pageRows(fromProject, "workflow")[0].run?.();
+    expect(fromProject.s.closeProjectScreen).toHaveBeenCalled();
+    expect(fromProject.s.createDraft).toHaveBeenCalledWith("/w/relay", { kind: "workflow" });
+
+    const one = ctx({
+      settingsScreenOpen: true,
+      workspace: { repos: ["/w/fletch"], projects: [PROJECTS[0]], agents: [] },
+    });
+    find(one, "workflow-in").run?.();
+    expect(one.s.closeSettingsScreen).toHaveBeenCalled();
+    expect(one.s.createDraft).toHaveBeenCalledWith("/w/fletch", { kind: "workflow" });
   });
 
   it("lists the accents with the current one marked", () => {

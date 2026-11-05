@@ -93,7 +93,8 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
         id: "projectSettings",
         combos: ["Mod+Shift+,"],
         label: "Project settings",
-        description: "Open the current project's page on its Settings tab.",
+        description:
+          "Open the current project's page on its Settings tab; pressed there again, leave the page.",
       },
       {
         id: "shortcuts",

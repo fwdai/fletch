@@ -142,3 +142,35 @@ export function settingsNav(opts: {
     ...(opts.developer ? [DEVELOPER_NAV] : []),
   ].sort((a, b) => a.order - b.order);
 }
+
+/** A section the palette can jump to: a nav entry, or one of the sub-tabs a
+ *  grouped entry folds in (Tools and Skills under Customize, Network under
+ *  Sandbox). The sub-tab labels mirror `CustomizeSwitch` / `SandboxSwitch`. */
+export interface SettingsDestination {
+  id: SettingsSection;
+  label: string;
+  icon: IconName;
+  /** The nav header, or the grouped entry a sub-tab sits under. */
+  group?: string;
+}
+
+const SUBSECTIONS: Partial<Record<SettingsSection, { label: string; icon: IconName }>> = {
+  tools: { label: "Tools", icon: "webhook" },
+  skills: { label: "Skills", icon: "notebookPen" },
+  network: { label: "Network", icon: "globe" },
+};
+
+/** Every section reachable on this build, sub-tabs included, in nav order. */
+export function settingsDestinations(opts: {
+  workflows: boolean;
+  mac: boolean;
+  developer: boolean;
+}): SettingsDestination[] {
+  return settingsNav(opts).flatMap((n) => {
+    const own: SettingsDestination = { id: n.id, label: n.label, icon: n.icon, group: n.group };
+    const subs = (n.subsections ?? [])
+      .filter((id) => id !== n.id && SUBSECTIONS[id])
+      .map((id): SettingsDestination => ({ id, ...SUBSECTIONS[id]!, group: n.label }));
+    return [own, ...subs];
+  });
+}

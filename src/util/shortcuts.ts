@@ -118,8 +118,11 @@ const ACTIONS: Record<string, Action> = {
     whileTyping: true,
     run: () => {
       const s = useAppStore.getState();
+      // On the project page already: bring its Settings tab forward, and
+      // only a second press, with Settings showing, leaves the page.
       if (activeSurface(s).kind === "project") {
-        s.closeProjectScreen();
+        if (s.projectScreenTab === "settings") s.closeProjectScreen();
+        else s.setProjectScreenTab("settings");
         return;
       }
       // The store refuses this on an environment without a project page.
@@ -135,13 +138,13 @@ const ACTIONS: Record<string, Action> = {
 
   newAgent: {
     run: () => {
-      // Default to the last project an agent was started in (if it still
-      // exists); fall back to the project in front, then the first.
       const s = useAppStore.getState();
-      const repos = s.workspace?.repos ?? [];
-      const recent = s.lastRepoPath && repos.includes(s.lastRepoPath) ? s.lastRepoPath : undefined;
-      const active = recent ?? surfaceRepoPath(s);
-      if (active) void s.createDraft(active);
+      const active = newAgentRepoPath(s);
+      if (!active) return;
+      // A draft selects itself but does not leave Settings or a project
+      // page; close them so the composer is in front, not behind.
+      closeScreens(s);
+      void s.createDraft(active);
     },
   },
   addProject: {
