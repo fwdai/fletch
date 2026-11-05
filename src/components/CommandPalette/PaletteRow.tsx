@@ -19,14 +19,13 @@ interface Props {
   row: Row;
   index: number;
   active: boolean;
-  onHover: (e: React.MouseEvent) => void;
   onActivate: () => void;
 }
 
 /** One row: the glyph tile, the label with the query's letters in bold, the
  *  dimmer hint, and on the right whichever of these the row has — the reason
  *  it can't run, a chevron for a drill-in, its chord, or a status word. */
-export function PaletteRow({ row, index, active, onHover, onActivate }: Props) {
+export function PaletteRow({ row, index, active, onActivate }: Props) {
   const { item, indices } = row;
   const chord = useShortcutKeys(item.shortcut ?? "");
   const cls = ["cp-row", "flex-center", active && "active", item.disabled && "disabled"]
@@ -40,7 +39,6 @@ export function PaletteRow({ row, index, active, onHover, onActivate }: Props) {
       aria-selected={active}
       aria-disabled={item.disabled ? true : undefined}
       data-index={index}
-      onMouseMove={active ? undefined : onHover}
       onClick={onActivate}
     >
       <span className="cp-lead flex-center">

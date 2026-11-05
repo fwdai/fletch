@@ -13,6 +13,7 @@ import { useRuns } from "@/workflows/run/useRuns";
 import { emptySections, type PaletteContext, pageRows, searchSections } from "./items";
 import { PaletteFooter } from "./PaletteFooter";
 import { PaletteRow } from "./PaletteRow";
+import { type Point, pointerMoved } from "./pointer";
 import { loadRecents, noteRecent } from "./recents";
 import { PAGES, type PageId, type PaletteItem, type Row } from "./types";
 
@@ -136,15 +137,16 @@ export function PaletteDialog() {
       ?.scrollIntoView({ block: "nearest" });
   }, [cursor]);
 
-  // The mouse moves the cursor only when it actually moves: scrolling a row
-  // into view from the keyboard slides the list under a resting pointer, and
-  // the mousemove that fires then must not snatch the cursor back.
-  const pointer = useRef<{ x: number; y: number } | null>(null);
-  const onHover = useCallback((i: number, e: React.MouseEvent) => {
-    const last = pointer.current;
-    pointer.current = { x: e.clientX, y: e.clientY };
-    if (last && last.x === e.clientX && last.y === e.clientY) return;
-    setActive(i);
+  // The mouse moves the cursor only when it actually moves (see pointer.ts).
+  // Sampled on the list, so the pointer is known wherever it rests.
+  const pointer = useRef<Point | null>(null);
+  const onListMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const next = { x: e.clientX, y: e.clientY };
+    const moved = pointerMoved(pointer.current, next);
+    pointer.current = next;
+    if (!moved) return;
+    const row = (e.target as HTMLElement).closest<HTMLElement>("[data-index]");
+    if (row) setActive(Number(row.dataset.index));
   }, []);
 
   const back = useCallback(() => {
@@ -263,6 +265,7 @@ export function PaletteDialog() {
           ref={listRef}
           // Keep the caret in the input: a click picks, it never moves focus.
           onMouseDown={(e) => e.preventDefault()}
+          onMouseMove={onListMouseMove}
         >
           {rows.length === 0 ? (
             <div className="cp-empty text-sm">
@@ -281,7 +284,6 @@ export function PaletteDialog() {
                       row={row}
                       index={i}
                       active={i === cursor}
-                      onHover={(e) => onHover(i, e)}
                       onActivate={() => activate(row.item)}
                     />
                   );
