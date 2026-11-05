@@ -1,0 +1,235 @@
+/* ── Command palette ───────────────────────────────────────────────────
+ * One search over every action and every agent, project and run (⌘K).
+ * Top-anchored like a launcher rather than centered like a dialog, so the
+ * list grows downward as results arrive and the input never moves. Sits
+ * above every other surface (z 450, between the overlays and the toasts):
+ * it can be opened from Settings, History or a project page and leads out
+ * of them. Rows are `.cp-row`; the active one is the keyboard cursor, and
+ * the mouse moves it rather than painting a second hover state. */
+.cp {
+  position: fixed;
+  left: 50%;
+  top: clamp(56px, 14vh, 160px);
+  transform: translateX(-50%);
+  width: 640px;
+  max-width: calc(100vw - 48px);
+  max-height: min(68vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--r-lg);
+  box-shadow:
+    0 32px 90px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  animation: cp-in 0.16s var(--ease);
+}
+.theme-light .cp {
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.18),
+    0 0 0 1px rgba(0, 0, 0, 0.04);
+}
+@keyframes cp-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+/* ── input row ── */
+.cp-head {
+  flex-shrink: 0;
+  gap: 10px;
+  height: 54px;
+  padding: 0 16px 0 18px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.cp-head > svg {
+  color: var(--fg-3);
+}
+.cp-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  font-size: var(--fs-lg);
+  color: var(--fg-0);
+  letter-spacing: -0.01em;
+}
+.cp-input::placeholder {
+  color: var(--fg-3);
+}
+/* The page chip: where a drill-in is, and the way back (click or Esc). */
+.cp-crumb {
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px 0 6px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cp-crumb:hover {
+  background: color-mix(in oklch, var(--accent-soft) 70%, var(--accent) 30%);
+}
+.cp-head > .kbd {
+  text-transform: lowercase;
+}
+
+/* ── list ── */
+.cp-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px 8px;
+  overscroll-behavior: contain;
+}
+.cp-sect + .cp-sect {
+  margin-top: 4px;
+}
+.cp-sect-l {
+  padding: 10px 10px 4px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.cp-row {
+  gap: 11px;
+  height: 40px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+  cursor: default;
+}
+.cp-row.active {
+  background: var(--selected);
+  color: var(--fg-0);
+}
+.cp-row.disabled {
+  opacity: 0.55;
+}
+/* The glyph tile — a quiet square that lights up on the active row, so the
+   cursor is readable from the left edge alone. */
+.cp-lead {
+  width: 24px;
+  height: 24px;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: var(--r-xs);
+  background: var(--bg-3);
+  color: var(--fg-2);
+  transition: var(--transition-ui);
+}
+.cp-row.active .cp-lead {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.cp-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+.cp-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.cp-label {
+  flex-shrink: 0;
+  font-size: var(--fs-base);
+  color: var(--fg-0);
+}
+.cp-row.disabled .cp-label {
+  color: var(--fg-1);
+}
+/* Where the query landed. Weight, not colour: the accent is already busy
+   on the tile and the cursor. */
+.cp-hl {
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.cp-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--fg-3);
+}
+.cp-row.active .cp-hint {
+  color: var(--fg-2);
+}
+.cp-meta {
+  flex-shrink: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+.cp-row .cp-kbd {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  padding: 2px 6px;
+  min-width: 22px;
+  text-align: center;
+  color: var(--fg-2);
+  background: var(--bg-1);
+  border: 1px solid var(--bd-soft);
+  border-bottom-width: 2px;
+  border-radius: var(--r-xs);
+}
+.cp-row.active .cp-kbd {
+  color: var(--fg-1);
+  border-color: var(--bd);
+}
+.cp-chev {
+  flex-shrink: 0;
+  color: var(--fg-3);
+}
+.cp-empty {
+  padding: 36px 16px 40px;
+  text-align: center;
+  color: var(--fg-3);
+}
+.cp-empty strong {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 500;
+  color: var(--fg-1);
+}
+
+/* ── foot ── */
+.cp-foot {
+  flex-shrink: 0;
+  gap: 14px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--bd-soft);
+  color: var(--fg-3);
+}
+.cp-foot .kbd {
+  margin-right: 5px;
+  text-transform: lowercase;
+}
+.cp-foot-r {
+  margin-left: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp {
+    animation: none;
+  }
+}

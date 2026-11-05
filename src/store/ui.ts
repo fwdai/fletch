@@ -23,6 +23,10 @@ export type RightPanelTab = "code" | "git" | "run" | "term";
 export type ProjectScreenTab = "roadmap" | "activity" | "context" | "settings";
 
 export interface UiSlice {
+  /** The command palette (⌘K): one search over every action and every agent,
+   *  project and run. Opens over any surface; the dialog owns its own query
+   *  and page state, which reset each time it opens. */
+  paletteOpen: boolean;
   /** Quick-settings popover (gear / ⌘,). */
   settingsOpen: boolean;
   /** Dedicated full-screen settings surface (General / Account / Providers).
@@ -119,6 +123,9 @@ export interface UiSlice {
    *  section in production builds (dev builds always show it). */
   admin: boolean;
 
+  /** Open / close the command palette. Refused while onboarding has the
+   *  screen: the tour is the one surface that should not be skipped around. */
+  togglePalette: (open?: boolean) => void;
   toggleSettings: (open?: boolean) => void;
   openSettingsScreen: (section?: SettingsSection, intent?: SettingsIntent) => void;
   closeSettingsScreen: () => void;
@@ -187,6 +194,7 @@ export interface UiSlice {
 }
 
 export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
+  paletteOpen: false,
   settingsOpen: false,
   settingsScreenOpen: false,
   settingsSection: "general" as SettingsSection,
@@ -215,6 +223,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   admin: false,
 
   // ── UI ──────────────────────────────────────────────────────────────────────
+  togglePalette: (open) =>
+    set((s) => {
+      const paletteOpen = open ?? !s.paletteOpen;
+      if (paletteOpen && s.onboardingOpen) return s;
+      return { paletteOpen };
+    }),
   toggleSettings: (open) => set((s) => ({ settingsOpen: open ?? !s.settingsOpen })),
   openSettingsScreen: (section, intent) =>
     set((s) => ({

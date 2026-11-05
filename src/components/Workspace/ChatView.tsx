@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentRecord } from "@/api";
 import { useAppStore } from "@/store";
+import { matchesCombo } from "@/util/keymap";
 import { endedOnAccountError } from "./AccountPicker/accountError";
 import { SwitchAccountHint } from "./AccountPicker/SwitchAccountHint";
 import { ChatComposer } from "./ChatComposer";
@@ -30,10 +31,11 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
 
   // ⌘F / Ctrl+F opens find-in-conversation. A repeat press while open just
   // refocuses + selects the existing input (the bar is already mounted), which
-  // mirrors how browsers behave.
+  // mirrors how browsers behave. Matched as the exact chord, so ⌘⇧F (the
+  // sidebar filter) and ⌘⌥F never land here.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === "f" || e.key === "F")) {
+      if (matchesCombo(e, "Mod+F")) {
         // The right-panel terminal has its own ⌘F (handled by xterm); its
         // keydown still bubbles to window, so ignore presses originating there.
         if ((e.target as HTMLElement | null)?.closest(".term-panel")) return;

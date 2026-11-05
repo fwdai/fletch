@@ -52,6 +52,17 @@ export function editorsFor(agent: AgentRecord, editors: DetectedEditor[]): Detec
 
 export const EDITOR_PREF_KEY = "fletch:openInEditor";
 
+/** The editor the user last opened with, when it is among `editors`, else
+ *  the first of them. */
+export function preferredEditor(editors: DetectedEditor[]): DetectedEditor | undefined {
+  const id = localStorage.getItem(EDITOR_PREF_KEY);
+  return editors.find((e) => e.id === id) ?? editors[0];
+}
+
+export function rememberEditor(id: string): void {
+  localStorage.setItem(EDITOR_PREF_KEY, id);
+}
+
 /** Open an agent's checkout in `editorId`. A box checkout opens over ssh,
  *  which needs one `Include` line in the editor's ssh config and the
  *  editor's remote extension: the first time, the user is shown what Fletch

@@ -34,6 +34,15 @@ interface Action {
   whileTyping?: boolean;
 }
 
+/** Where ⌘N starts an agent: the project an agent was last started in, else
+ *  the one in front (`surfaceRepoPath`). Shared with the palette's "New agent"
+ *  row, whose hint names the project before it is pressed. */
+export function newAgentRepoPath(s: AppState): string | undefined {
+  const repos = s.workspace?.repos ?? [];
+  const recent = s.lastRepoPath && repos.includes(s.lastRepoPath) ? s.lastRepoPath : undefined;
+  return recent ?? surfaceRepoPath(s);
+}
+
 /** Reveal the sidebar if it is collapsed, then run `fn` once it has mounted. */
 function withSidebar(s: AppState, fn: () => void) {
   if (s.leftCollapsed) {
@@ -57,7 +66,11 @@ function showPanel(tab: RightPanelTab, feature: keyof FeatureFlags, gate?: GateN
   if (s.rightCollapsed) s.toggleRight();
 }
 
-function closeScreens(s: AppState) {
+/** Leave every full-screen surface and popover for whatever is beneath. The
+ *  palette closes too: a command that navigates has nothing to come back to. */
+export function closeScreens(s: AppState) {
+  s.togglePalette(false);
+  s.toggleHistory(false);
   s.toggleSettings(false);
   s.closeSettingsScreen();
   s.closeProjectScreen();
@@ -65,6 +78,7 @@ function closeScreens(s: AppState) {
 }
 
 const ACTIONS: Record<string, Action> = {
+  palette: { whileTyping: true, run: () => useAppStore.getState().togglePalette() },
   search: {
     run: () => {
       // The input mounts with the sidebar, so the focus waits a frame for it.
@@ -104,8 +118,11 @@ const ACTIONS: Record<string, Action> = {
     whileTyping: true,
     run: () => {
       const s = useAppStore.getState();
+      // On the project page already: bring its Settings tab forward, and
+      // only a second press, with Settings showing, leaves the page.
       if (activeSurface(s).kind === "project") {
-        s.closeProjectScreen();
+        if (s.projectScreenTab === "settings") s.closeProjectScreen();
+        else s.setProjectScreenTab("settings");
         return;
       }
       // The store refuses this on an environment without a project page.
@@ -121,13 +138,13 @@ const ACTIONS: Record<string, Action> = {
 
   newAgent: {
     run: () => {
-      // Default to the last project an agent was started in (if it still
-      // exists); fall back to the project in front, then the first.
       const s = useAppStore.getState();
-      const repos = s.workspace?.repos ?? [];
-      const recent = s.lastRepoPath && repos.includes(s.lastRepoPath) ? s.lastRepoPath : undefined;
-      const active = recent ?? surfaceRepoPath(s);
-      if (active) void s.createDraft(active);
+      const active = newAgentRepoPath(s);
+      if (!active) return;
+      // A draft selects itself but does not leave Settings or a project
+      // page; close them so the composer is in front, not behind.
+      closeScreens(s);
+      void s.createDraft(active);
     },
   },
   addProject: {
@@ -197,6 +214,13 @@ const ACTIONS: Record<string, Action> = {
   },
 };
 
+/** Run the global shortcut `id` as if its chord had been pressed — the command
+ *  palette's way of offering every shortcut as a row, so a row and its chord
+ *  can never do two different things. Unknown ids do nothing. */
+export function runShortcutAction(id: string): void {
+  ACTIONS[id]?.run();
+}
+
 /** Window-level keyboard shortcuts. The chords come from `util/keymap.ts` (what
  *  Settings › Shortcuts lists); this maps each id to what it does. Registered
  *  once — every action reads the store when it fires, and asks `store/surface`
@@ -209,9 +233,13 @@ export function useGlobalShortcuts() {
         tag === "INPUT" ||
         tag === "TEXTAREA" ||
         !!(e.target as HTMLElement | null)?.isContentEditable;
-      const overrides = useAppStore.getState().shortcutOverrides;
+      const { shortcutOverrides: overrides, paletteOpen } = useAppStore.getState();
       for (const shortcut of GLOBAL_SHORTCUTS) {
         if (!effectiveCombos(shortcut, overrides).some((c) => matchesCombo(e, c))) continue;
+        // With the palette up, the only chord that acts is the one that
+        // closes it; everything else is the palette's own (its rows carry
+        // these same actions), and a ⌘N under it would open a draft beneath.
+        if (paletteOpen && shortcut.id !== "palette") return;
         const action = ACTIONS[shortcut.id];
         if (!action || (typing && !action.whileTyping)) return;
         // Escape is a signal other layers (menus, search) also listen for;

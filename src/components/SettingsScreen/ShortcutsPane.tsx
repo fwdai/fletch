@@ -29,7 +29,7 @@ function Keys({ combos }: { combos: Combo[] }) {
 /** A rebindable row's control: the keycaps, which record a new chord when
  *  clicked, and a reset once the row is off its defaults. Recording captures
  *  the next keydown ahead of every other listener (so ⌘K rebinds rather than
- *  opening search), Esc backs out, and a chord the map refuses stays in the
+ *  opening the palette), Esc backs out, and a chord the map refuses stays in the
  *  row with the reason until a good one lands. The pane owns which row is
  *  recording, so clicking another row hands the listener over rather than
  *  stacking a second one. */

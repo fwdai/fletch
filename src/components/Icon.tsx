@@ -41,6 +41,7 @@ import {
   GripVertical,
   Hand,
   History,
+  House,
   Image,
   Inbox,
   Keyboard,
@@ -197,6 +198,8 @@ const ICON_COMPONENTS = {
   flask: FlaskConical,
   globe: Globe,
   history: History,
+  // Home — the center pane with nothing selected.
+  home: House,
   archive: Archive,
   archiveRestore: ArchiveRestore,
   moon: Moon,
