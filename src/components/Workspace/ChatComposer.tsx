@@ -59,7 +59,6 @@ export function ChatComposer({
   const switchingAccount = useAppStore((s) => s.switchingAccount[agent.id] === true);
   const stop = useAppStore((s) => s.stop);
   const runLocalCommand = useAppStore((s) => s.runLocalCommand);
-  const usage = useAppStore((s) => s.usage[agent.id]);
   // The custom agent this session was spawned from (if any, and still present),
   // so the chat surfaces the agent's name rather than its base provider.
   const customAgent = useAppStore((s) =>
@@ -143,7 +142,6 @@ export function ChatComposer({
           <Composer
             existingSession
             activeModel={activeModel}
-            usage={usage}
             defaultProvider={agent.provider}
             projectDir={agent.repos[0]?.repo_path}
             onLocalCommand={(action) => runLocalCommand(action, agent.id)}

@@ -54,6 +54,7 @@ import {
   MessageSquarePlus,
   Mic,
   MicOff,
+  Minimize2,
   Minus,
   Moon,
   MoreHorizontal,
@@ -154,6 +155,8 @@ const ICON_COMPONENTS = {
   download: Download,
   diff: FileDiff,
   shrink: ChevronsDownUp,
+  // Compacting a conversation: arrows drawn in to the centre.
+  compact: Minimize2,
   code: Code,
   combine: Combine,
   terminal: Terminal,

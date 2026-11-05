@@ -138,6 +138,13 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
         description: "Interrupt the selected agent's turn.",
       },
       {
+        id: "compactAgent",
+        combos: ["Mod+Shift+K"],
+        label: "Compact the conversation",
+        description:
+          "Summarize the selected agent's earlier turns to free context. Claude agents, while idle.",
+      },
+      {
         id: "archiveAgent",
         combos: ["Mod+Backspace"],
         label: "Archive the agent",

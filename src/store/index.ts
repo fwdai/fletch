@@ -6,6 +6,7 @@ import { createAppSlice } from "./app";
 import { createAppearanceSlice } from "./appearance";
 import { createAutopilotSlice } from "./autopilot";
 import { createBackgroundTasksSlice } from "./backgroundTasks";
+import { createCompactionSlice } from "./compaction";
 import { createComposerSlice } from "./composer";
 import { createCustomAgentsSlice } from "./customAgents";
 import { createDraftsSlice } from "./drafts";
@@ -51,6 +52,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createSandboxSlice(...a),
   ...createWorkspaceTypesSlice(...a),
   ...createLocalCommandsSlice(...a),
+  ...createCompactionSlice(...a),
 }));
 
 // The transport lookup and the PTY buffers read the active environment straight

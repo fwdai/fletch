@@ -816,12 +816,6 @@
   color: var(--fg-2);
   font-weight: 500;
 }
-.native-rail-foot {
-  justify-content: flex-end;
-  padding: 6px 12px;
-  border-top: 1px solid var(--bd-soft);
-  flex-shrink: 0;
-}
 /* The rail is narrow: let the log use its full width rather than the centred,
    max-width column the main chat pane uses. */
 .native-rail .chat-inner {

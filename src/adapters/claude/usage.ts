@@ -91,6 +91,7 @@ function boundaryEvents(body: RawEvent): UsageEvent[] {
 
   const meta = asRecord(micro ? body.microcompactMetadata : body.compactMetadata);
   const postTokens = asNumber(meta.postTokens);
+  const preTokens = asNumber(meta.preTokens);
   if (micro && postTokens <= 0) return [];
 
   return [
@@ -99,6 +100,8 @@ function boundaryEvents(body: RawEvent): UsageEvent[] {
       // The summary is re-sent as fresh input on the next request and cached
       // from there, so it belongs in the `input` slice of the breakdown.
       ...(postTokens > 0 ? { window: { input: postTokens, cacheRead: 0, cacheWrite: 0 } } : {}),
+      ...(micro ? {} : { compaction: true }),
+      ...(preTokens > 0 ? { before: preTokens } : {}),
     },
   ];
 }

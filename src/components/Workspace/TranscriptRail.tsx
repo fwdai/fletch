@@ -10,12 +10,9 @@
 // so tool activity appears within about a second, but a turn's final prose
 // lands atomically when the turn ends. This surface is therefore honest as
 // "structured progress", not as a mirror of the text typing out in the TUI.
-import { hasUsage } from "@/adapters/usage";
 import type { AgentRecord } from "@/api";
-import { UsageMeter } from "@/components/Composer/UsageMeter";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { useAppStore } from "@/store";
 import { TranscriptList } from "./messages/TranscriptList";
 import { useTranscript } from "./messages/useTranscript";
 import { useLiveBusy } from "./useLiveBusy";
@@ -34,22 +31,6 @@ export function TranscriptRail({ agent, onClose }: { agent: AgentRecord; onClose
         </IconButton>
       </div>
       <TranscriptList agent={agent} transcript={transcript} liveBusy={liveBusy} hideNav />
-      <UsageFoot agentId={agent.id} />
     </aside>
-  );
-}
-
-/** Context/token usage for the session. The custom view shows this in the
- *  composer foot, which native has no equivalent of — so without it here, cost
- *  stays invisible in native even though the store already has it (usage is
- *  folded from the same transcript records this rail renders). */
-function UsageFoot({ agentId }: { agentId: string }) {
-  const usage = useAppStore((s) => s.usage[agentId]);
-  const show = useAppStore((s) => s.features.tokenUsage);
-  if (!show || !usage || !hasUsage(usage)) return null;
-  return (
-    <div className="native-rail-foot flex-center">
-      <UsageMeter usage={usage} />
-    </div>
   );
 }
