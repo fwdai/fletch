@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { RawEvent } from "@/adapters/types";
 import type { AgentRecord } from "@/api";
-import { compactBlocker, isCompacting, supportsCompaction } from "./compaction";
+import { compactBlocker, compactionSignal, supportsCompaction } from "./compaction";
 import type { AppState } from "./types";
 
 const agent = (over: Partial<AgentRecord> = {}): AgentRecord =>
@@ -12,7 +13,7 @@ const stateWith = (a: AgentRecord, over: Partial<AppState> = {}): AppState =>
     offSidebarAgents: {},
     sending: {},
     busyLabel: {},
-    compactRequested: {},
+    compactions: {},
     transcriptLoading: {},
     switchInFlight: {},
     features: { nativeView: false },
@@ -29,20 +30,41 @@ describe("supportsCompaction", () => {
   });
 });
 
-describe("isCompacting", () => {
-  it("covers the hand-off, before the send has raised busy", () => {
-    const s = stateWith(agent(), { compactRequested: { a1: true } });
-    expect(isCompacting(s, "a1")).toBe(true);
+describe("compactionSignal", () => {
+  const sys = (fields: Record<string, unknown>) => ({ type: "system", ...fields }) as RawEvent;
+
+  it("reads Claude's compacting status as started, repeats included", () => {
+    expect(compactionSignal(sys({ subtype: "status", status: "compacting" }))).toBe("started");
   });
 
-  it("follows a turn running /compact, however it was sent", () => {
-    const s = stateWith(agent({ status: "running" }), { busyLabel: { a1: "Compacting" } });
-    expect(isCompacting(s, "a1")).toBe(true);
+  it("reads the closing status and the boundary as ended", () => {
+    expect(
+      compactionSignal(sys({ subtype: "status", status: null, compact_result: "success" })),
+    ).toBe("ended");
+    expect(compactionSignal(sys({ subtype: "compact_boundary" }))).toBe("ended");
   });
 
-  it("ignores other turns, and a label outliving its turn", () => {
-    expect(isCompacting(stateWith(agent({ status: "running" })), "a1")).toBe(false);
-    expect(isCompacting(stateWith(agent(), { busyLabel: { a1: "Compacting" } }), "a1")).toBe(false);
+  it("reads a compaction error as failed", () => {
+    expect(
+      compactionSignal(sys({ subtype: "status", status: null, compact_error: "too short" })),
+    ).toBe("failed");
+  });
+
+  it("ignores statuses that say nothing about a compaction", () => {
+    // The summary request itself can report "requesting".
+    expect(compactionSignal(sys({ subtype: "status", status: "requesting" }))).toBeNull();
+    expect(
+      compactionSignal(sys({ subtype: "status", status: null, permissionMode: "default" })),
+    ).toBeNull();
+    expect(compactionSignal({ type: "assistant" } as RawEvent)).toBeNull();
+  });
+});
+
+describe("compactBlocker", () => {
+  it("refuses while a compaction is in flight", () => {
+    expect(compactBlocker(stateWith(agent(), { compactions: { a1: "running" } }), "a1")).toBe(
+      "Compacting…",
+    );
   });
 });
 

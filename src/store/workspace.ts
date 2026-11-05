@@ -307,7 +307,7 @@ export async function handoffLog(provider: string | undefined, id: string): Prom
 // Labels shown alongside the busy spinner when a known slash command is
 // dispatched. The key is the bare command name (no leading slash). Any
 // command not listed falls back to the generic "thinking" indicator.
-export const SLASH_BUSY_LABELS: Record<string, string> = {
+const SLASH_BUSY_LABELS: Record<string, string> = {
   compact: "Compacting",
   init: "Initializing",
   help: "Helping",

@@ -15,6 +15,7 @@ import { isAgentBusy } from "@/helpers";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
+import { isCompacting } from "@/store/compaction";
 import { EGRESS_MODE_KEY, effectiveEgressMode } from "@/util/egressMode";
 import { useProjectSettings } from "@/util/useProjectSettings";
 import { currentAccountId } from "./AccountPicker/choices";
@@ -43,6 +44,9 @@ export function ChatComposer({
   // strip gets the question-aware `liveBusy` from the owner.
   const busy = useAppStore((s) => isAgentBusy(s, agent.id, agent.status));
   const busyLabel = useAppStore((s) => s.busyLabel[agent.id]);
+  // A compaction outlives the turn that asked for it (store/compaction), so
+  // the slash label alone would fall back to "is working" halfway through.
+  const compacting = useAppStore((s) => isCompacting(s, agent.id));
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   // Which step a fresh spawn is on, so the disabled composer says "Cloning
   // repository…" rather than only "Agent is not ready".
@@ -125,7 +129,12 @@ export function ChatComposer({
         <div className="composer-anchor">
           <ChatWorkingStatus
             visible={liveBusy}
-            label={busyLabel ?? `${customAgent?.name ?? providerLabel(agent.provider)} is working`}
+            label={
+              busyLabel ??
+              (compacting
+                ? "Compacting"
+                : `${customAgent?.name ?? providerLabel(agent.provider)} is working`)
+            }
             startedAt={liveStartedAt}
             notice={
               folderChangeWaiting
