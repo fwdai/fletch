@@ -26,7 +26,7 @@ export function CompactButton({
         if (!blocker) onCompact();
       }}
     >
-      <Icon name="compact" size={11} />
+      <Icon name="compact" size={13} strokeWidth={1.75} />
     </button>
   );
 }

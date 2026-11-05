@@ -45,7 +45,7 @@ export function CompactFooter({
         if (!blocker) onCompact();
       }}
     >
-      <Icon name="compact" size={13} />
+      <Icon name="compact" size={13} strokeWidth={1.75} />
       <span className="up-ctext">
         <span className="up-ct">{compacting ? "Compacting…" : "Compact conversation"}</span>
         <span className="up-cs">
