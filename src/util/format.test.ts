@@ -56,20 +56,22 @@ describe("formatClockTime", () => {
 });
 
 describe("formatTokensK", () => {
-  it("formats the Context Badge spec's examples", () => {
+  it("leaves counts under a thousand raw, then one decimal in K", () => {
     expect(formatTokensK(840)).toBe("840");
     expect(formatTokensK(7_240)).toBe("7.2K");
     expect(formatTokensK(63_100)).toBe("63.1K");
-    expect(formatTokensK(1_000_000)).toBe("1000K");
   });
 
   it("drops a trailing .0 and rounds to whole thousands from 100K", () => {
     expect(formatTokensK(12_000)).toBe("12K");
     expect(formatTokensK(200_000)).toBe("200K");
     expect(formatTokensK(151_400)).toBe("151K");
+    expect(formatTokensK(999_499)).toBe("999K");
   });
 
-  it("switches to millions only past the largest window", () => {
+  it("names a million-token window 1M, never 1000K", () => {
+    expect(formatTokensK(1_000_000)).toBe("1M");
+    expect(formatTokensK(999_500)).toBe("1M");
     expect(formatTokensK(1_200_000)).toBe("1.2M");
     expect(formatTokensK(12_000_000)).toBe("12M");
   });

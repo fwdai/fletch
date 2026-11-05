@@ -125,15 +125,14 @@ export function formatTokens(n: number): string {
   return `${(n / 1_000_000_000).toFixed(1)}B`;
 }
 
-/** A context-window token count, in thousands so a used/max pair reads in one
- *  unit (the Context Badge spec): raw under 1K, one decimal to 100K with a
- *  trailing `.0` dropped (7.2K, 63.1K, 12K), whole thousands from there up to a
- *  million, the largest window, so `1000K`. Above that, which only a session
- *  total reaches, millions the same way (12.3M). */
+/** A context-window token count, the way windows are named (200K, 1M): raw
+ *  under 1K, one decimal to 100K with a trailing `.0` dropped (7.2K, 63.1K,
+ *  12K), whole thousands to a million, then millions the same way (1M, 1.2M).
+ *  Anything that would round to 1000K reads 1M instead. */
 export function formatTokensK(n: number): string {
   const trim = (v: number) => v.toFixed(1).replace(/\.0$/, "");
   if (n < 1_000) return `${n}`;
-  if (n > 1_000_000) return `${trim(n / 1_000_000)}M`;
+  if (n >= 999_500) return `${trim(n / 1_000_000)}M`;
   const k = n / 1_000;
   return `${k >= 100 ? Math.round(k) : trim(k)}K`;
 }
