@@ -16,16 +16,19 @@ const SIDE_PANELS: FeatureItem[] = [
   { key: "terminal", title: "Terminal", sub: "Interactive shell scoped to the checkout." },
 ];
 
+const HEADER: FeatureItem[] = [
+  {
+    key: "tokenUsage",
+    title: "Token usage",
+    sub: "Show how much of the context window is used, with a way to compact it.",
+  },
+];
+
 const COMPOSER: FeatureItem[] = [
   {
     key: "thinkingBudget",
     title: "Thinking budget",
     sub: "Show a low / medium / high reasoning cap.",
-  },
-  {
-    key: "tokenUsage",
-    title: "Token usage",
-    sub: "Show how much of the context window is used.",
   },
 ];
 
@@ -49,8 +52,8 @@ function FeatureRows({ items }: { items: FeatureItem[] }) {
 }
 
 /** Settings › Interface › Layout: what appears where around an agent — the
- *  right-rail panels, the composer's optional controls, and the sidebar's
- *  extras. Group labels and order match the quick-settings popover so the same
+ *  right-rail panels, the header's context badge, the composer's optional
+ *  controls, and the sidebar's extras. Group labels and order match the quick-settings popover so the same
  *  toggle reads the same on both. */
 export function LayoutPane() {
   return (
@@ -63,6 +66,10 @@ export function LayoutPane() {
 
       <SetGroup label="Side panels">
         <FeatureRows items={SIDE_PANELS} />
+      </SetGroup>
+
+      <SetGroup label="Header">
+        <FeatureRows items={HEADER} />
       </SetGroup>
 
       <SetGroup label="Composer">

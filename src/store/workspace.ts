@@ -199,12 +199,19 @@ export interface WorkspaceSlice {
    *  mentions resolve) are granted first, in the message's place, so the agent
    *  can see them when it reads it; each then rides as an attachment. Resolves
    *  false when one was refused (`lastError` says why): nothing was sent and
-   *  the bubble is taken down. */
+   *  the bubble is taken down.
+   *
+   *  `idleOnly` refuses the message the same way if, when its turn in line
+   *  comes, the agent is busy — for a control command (`/compact`) that must
+   *  open a turn of its own, never ride a running one as a follow-up. Checked
+   *  at dispatch, because an earlier send can still be waiting in line, not yet
+   *  busy, when this one is made. */
   sendUserMessage: (
     id: string,
     text: string,
     attachments?: string[],
     folders?: FolderGrant[] | Promise<FolderGrant[]>,
+    opts?: { idleOnly?: boolean },
   ) => Promise<boolean>;
   /** Persist a mid-session reasoning-effort change and (for claude) restart to
    *  apply it. Serialized per agent so a subsequent send waits for it to land —
@@ -541,7 +548,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  sendUserMessage: (id, text, given = [], folders = []) => {
+  sendUserMessage: (id, text, given = [], folders = [], opts = {}) => {
     // Stable per-turn id: the bubble drawn now, the backend's
     // session_user_turns write (idempotent across the agent-not-ready retry)
     // and the `turn:sent` mirror all name the turn by it.
@@ -628,6 +635,11 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // whether to inject it live (claude) or queue it (per-turn agents); the
       // store never drives delivery.
       const wasBusy = isAgentBusy(get(), id);
+      if (wasBusy && opts.idleOnly) {
+        draw(null);
+        set({ lastError: `${text} wasn't sent: the agent started a turn first.` });
+        return false;
+      }
       try {
         set((state) => {
           const slashName = wasBusy

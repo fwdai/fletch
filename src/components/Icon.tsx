@@ -31,6 +31,7 @@ import {
   FlaskConical,
   Folder,
   FolderLock,
+  FoldVertical,
   Gauge,
   GitBranch,
   GitCommitHorizontal,
@@ -154,6 +155,10 @@ const ICON_COMPONENTS = {
   download: Download,
   diff: FileDiff,
   shrink: ChevronsDownUp,
+  // Compacting a conversation: the scroll squeezed toward a line. Not
+  // Minimize2, whose corner arrows read as window chrome beside the panel
+  // toggles. Faint below 13px — draw it at 13 with a 1.75 stroke.
+  compact: FoldVertical,
   code: Code,
   combine: Combine,
   terminal: Terminal,

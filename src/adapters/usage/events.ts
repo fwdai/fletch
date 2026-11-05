@@ -85,6 +85,13 @@ export type UsageEvent =
        *  (Claude's `compactMetadata.postTokens`). Absent = unknown until the
        *  next turn measures it, which the snapshot says rather than guessing. */
       window?: WindowFill;
+      /** A compaction proper — the conversation replaced by a summary — rather
+       *  than a partial eviction that keeps it (Claude's microcompact). Only a
+       *  compaction is reported back as one (`context.compacted`). */
+      compaction?: boolean;
+      /** Occupancy right before the boundary, when the provider reports it
+       *  (Claude's `compactMetadata.preTokens`). With `window`, what it freed. */
+      before?: number;
     };
 
 /** Whether records can be trusted to hold every call the session made.

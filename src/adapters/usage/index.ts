@@ -66,6 +66,10 @@ export interface UsageSnapshot {
     limit: number;
     /** The model whose window this describes; never a subagent's. */
     model?: string;
+    /** Present while a compaction is the last thing to have touched the
+     *  window — until the next call measures it. `freed` is what it gave back,
+     *  when the provider stated the window on both sides of it. */
+    compacted?: { freed: number | null };
   };
   coverage: Coverage;
 }
@@ -176,6 +180,7 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
   let limit = 0;
   let model: string | undefined;
   let priced = false;
+  let compacted: { freed: number | null } | undefined;
 
   // The model in force, for events that carry none of their own: codex states
   // it on a separate record ahead of the turn (a `model` hint), and any event
@@ -184,7 +189,7 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
   let currentModel: string | undefined;
 
   const observe = (next: WindowFill, nextModel?: string) => {
-    if (next.input + next.cacheRead + next.cacheWrite <= 0) return;
+    if (totalWindow(next) <= 0) return;
     state = "measured";
     fill = next;
     if (nextModel) model = nextModel;
@@ -202,6 +207,12 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
       state = "reset";
       fill = EMPTY_FILL;
       if (event.window) observe(event.window);
+      if (event.compaction) {
+        const after = event.window ? totalWindow(event.window) : undefined;
+        compacted = {
+          freed: event.before && after != null ? Math.max(0, event.before - after) : null,
+        };
+      }
       continue;
     }
 
@@ -213,7 +224,10 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
         calls.set(ownKey(), { tokens: delta, ...(currentModel ? { model: currentModel } : {}) });
       }
       if (event.limit && event.limit > 0) limit = event.limit;
-      if (event.window) observe(event.window, currentModel);
+      if (event.window) {
+        observe(event.window, currentModel);
+        compacted = undefined;
+      }
       continue;
     }
 
@@ -242,6 +256,8 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
         },
         event.model,
       );
+      // The conversation has moved on from the compaction: a call measured it.
+      compacted = undefined;
     }
   }
 
@@ -259,12 +275,17 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
     context: {
       state,
       fill,
-      tokens: fill.input + fill.cacheRead + fill.cacheWrite,
+      tokens: totalWindow(fill),
       limit,
       ...(model ? { model } : {}),
+      ...(compacted ? { compacted } : {}),
     },
     coverage,
   };
+}
+
+function totalWindow(w: WindowFill): number {
+  return w.input + w.cacheRead + w.cacheWrite;
 }
 
 function addTokens(a: TokenCounts, b: TokenCounts): TokenCounts {

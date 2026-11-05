@@ -1,6 +1,5 @@
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { hasUsage } from "@/adapters/usage";
 import type { DirListing, FolderGrant, IssueComment, PrSummary, TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -12,7 +11,6 @@ import {
 } from "@/data/providerDetail";
 import { DEFAULT_PROVIDER_ID } from "@/data/providers";
 import type { LocalCommandAction } from "@/data/slashCommands";
-import type { UsageSnapshot } from "@/store";
 import { useAppStore } from "@/store";
 import { composeIssueBrief } from "@/util/issueBrief";
 import { blockedSentence, useAgentAvailability } from "./availability";
@@ -25,7 +23,6 @@ import { type AccountControl, ModelPicker } from "./ModelPicker";
 import { NetworkTurn } from "./NetworkTurn";
 import { PrimaryControl, primaryState } from "./PrimaryControl";
 import { RunRail } from "./RunRail";
-import { UsageMeter } from "./UsageMeter";
 import { useComposerInput } from "./useComposerInput";
 
 /** System Settings › Privacy & Security › Microphone — where a denied grant is
@@ -170,10 +167,6 @@ interface Props {
    *  reflect the real spawn-time choice. Undefined for Cursor / Antigravity
    *  (no model in their transcript) or before the first agent turn. */
   activeModel?: string;
-  /** Per-agent token usage for the context gauge in the foot. Omit for new
-   *  sessions (no agent yet) or agents that report no usage (cursor,
-   *  antigravity) — the gauge then hides. */
-  usage?: UsageSnapshot;
 }
 
 /** The effective thinking level for a provider/model. Every candidate — the
@@ -233,7 +226,6 @@ export function Composer({
   onChangeEffort,
   onChangeModel,
   activeModel,
-  usage,
 }: Props) {
   const features = useAppStore((s) => s.features);
   const modelCatalog = useAppStore((s) => s.modelCatalog);
@@ -548,10 +540,6 @@ export function Composer({
             />
           )}
           <span className="composer-foot-sep" aria-hidden />
-          {/* Gated on spend, not on the context reading: a compacted session has
-           *  a known total and a temporarily unknown window, and hiding the
-           *  gauge there would look like the usage had been lost. */}
-          {features.tokenUsage && usage && hasUsage(usage) && <UsageMeter usage={usage} />}
           <PrimaryControl
             state={state}
             dictationAvailable={dictationAvailable}

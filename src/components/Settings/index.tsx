@@ -27,11 +27,12 @@ const FEATURE_GROUPS: { label: string; items: FeatureItem[] }[] = [
     ],
   },
   {
+    label: "Header",
+    items: [{ key: "tokenUsage", title: "Token usage", sub: "Context window badge with compact" }],
+  },
+  {
     label: "Composer",
-    items: [
-      { key: "thinkingBudget", title: "Thinking budget", sub: "Low / medium / high cap" },
-      { key: "tokenUsage", title: "Token usage", sub: "Context window % meter in the composer" },
-    ],
+    items: [{ key: "thinkingBudget", title: "Thinking budget", sub: "Low / medium / high cap" }],
   },
   {
     label: "Sidebar",

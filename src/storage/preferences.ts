@@ -39,7 +39,7 @@ export interface FeatureFlags {
   run: boolean;
   terminal: boolean;
   thinkingBudget: boolean;
-  /** Show the context-window usage meter in the composer foot. */
+  /** Show the context badge (usage + compact) in the conversation header. */
   tokenUsage: boolean;
   /** Float projects with recently launched or running agents to the top of
    *  the sidebar; the quiet ones keep the manual order beneath them. Off keeps

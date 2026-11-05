@@ -305,6 +305,53 @@ describe("claude compaction", () => {
       usageFromRecords("claude", records("claude", [big, micro({ postTokens: 90_000 })])).context
         .tokens,
     ).toBe(90_000);
+    // Evicting old tool results isn't a compaction the user would recognize.
+    expect(
+      usageFromRecords(
+        "claude",
+        records("claude", [big, micro({ preTokens: 180_040, postTokens: 90_000 })]),
+      ).context.compacted,
+    ).toBeUndefined();
+  });
+
+  it("reports what a compaction freed when both sides are stated", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        big,
+        boundary({ trigger: "manual", preTokens: 180_040, postTokens: 21_500 }),
+      ]),
+    );
+    expect(u.context.compacted).toEqual({ freed: 158_540 });
+  });
+
+  it("reports a compaction without a figure when the new window is unstated", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [big, boundary({ trigger: "auto", preTokens: 180_000 })]),
+    );
+    expect(u.context.compacted).toEqual({ freed: null });
+  });
+
+  it("stops reporting the compaction once the next call measures the window", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        big,
+        boundary({ preTokens: 180_040, postTokens: 21_500 }),
+        claudeAssistant({ msgId: "m2", input: 12, cacheWrite: 22_000 }),
+      ]),
+    );
+    expect(u.context.compacted).toBeUndefined();
+  });
+
+  it("keeps the compaction through a subagent's call, which runs in its own window", () => {
+    const sub = claudeAssistant({ msgId: "s1", input: 5, cacheRead: 9_000, sidechain: true });
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [big, boundary({ preTokens: 180_040, postTokens: 21_500 }), sub]),
+    );
+    expect(u.context.compacted).toEqual({ freed: 158_540 });
   });
 });
 

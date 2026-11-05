@@ -5,6 +5,7 @@ import {
   formatCost,
   formatPercent,
   formatTokens,
+  formatTokensK,
   recentDays,
 } from "./format";
 
@@ -51,6 +52,28 @@ describe("formatClockTime", () => {
     const text = formatClockTime(new Date(2026, 8, 17, 11, 0).getTime());
     expect(text).toMatch(/\b11[:.]00\b/);
     expect(formatClockTime(new Date(2026, 8, 17, 11, 30).getTime())).toMatch(/\b11[:.]30\b/);
+  });
+});
+
+describe("formatTokensK", () => {
+  it("leaves counts under a thousand raw, then one decimal in K", () => {
+    expect(formatTokensK(840)).toBe("840");
+    expect(formatTokensK(7_240)).toBe("7.2K");
+    expect(formatTokensK(63_100)).toBe("63.1K");
+  });
+
+  it("drops a trailing .0 and rounds to whole thousands from 100K", () => {
+    expect(formatTokensK(12_000)).toBe("12K");
+    expect(formatTokensK(200_000)).toBe("200K");
+    expect(formatTokensK(151_400)).toBe("151K");
+    expect(formatTokensK(999_499)).toBe("999K");
+  });
+
+  it("names a million-token window 1M, never 1000K", () => {
+    expect(formatTokensK(1_000_000)).toBe("1M");
+    expect(formatTokensK(999_500)).toBe("1M");
+    expect(formatTokensK(1_200_000)).toBe("1.2M");
+    expect(formatTokensK(12_000_000)).toBe("12M");
   });
 });
 

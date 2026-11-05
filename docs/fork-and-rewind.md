@@ -23,7 +23,9 @@ It is resolved by the backend into `(origin_session_id, cut_seq)`, where
   session that has a prompt record. A later turn without one is still running
   or was never delivered, so none of it is in the history to cut away. If no
   later turn has one, it cuts at `MAX(seq) + 1` as of the request.
-- **No anchor** (header fork) cuts at the end of the current session.
+- **No anchor** cuts at the end of the current session. The backend still
+  accepts it; the app no longer offers it, since the header's fork button gave
+  way to the context badge and every fork now starts from a turn.
 - The origin is the session that owns T. That may be an ancestor, when T is
   inherited, and then the new child references the ancestor directly. The cut
   is clamped to what the requesting conversation shows of the ancestor, so

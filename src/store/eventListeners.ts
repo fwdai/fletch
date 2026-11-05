@@ -268,6 +268,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   await bind(
     onAgentEvent((e) => {
       const ev = e.event as RawEvent;
+      // Claude's own word on a compaction (started / ended / failed), which
+      // outlives the turn that asked for it — see store/compaction.
+      get().observeCompactionEvent(e.agent_id, ev);
       // A held permission prompt the backend forwarded for a human to answer
       // (Claude's AskUserQuestion / ExitPlanMode). Record request_id ↔
       // tool_use_id so the widget can answer it; this is control plane, not a
@@ -388,6 +391,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
             // live, so an empty records result must not wipe it.
             usage: hasUsage(usage) ? { ...state.usage, [id]: usage } : state.usage,
           }));
+          // After the usage above: a compaction that has ended shows as
+          // compacted in the same render it stops showing as compacting.
+          get().observeCompactionRecords(id);
           if (hasUsage(usage)) {
             // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
             // spend belongs to its project like anyone else's.
@@ -553,6 +559,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       if (e.status === "stopped" || e.status === "error") {
         get().clearBackgroundTasks(e.agent_id);
       }
+      get().observeCompactionStatus(e.agent_id, e.status);
       set((state) => {
         // Read before the record changes: was it working, by every measure the
         // UI goes by, when this status arrived?

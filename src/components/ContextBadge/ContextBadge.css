@@ -1,0 +1,337 @@
+/* Context badge — the conversation header's context-window chip, the compact
+   segment attached to it, and the breakdown that drops from it. Mirrors the
+   Context Badge component spec (v2 `.husage` / `.usage-pop` / `.up-*`), with
+   its half-pixel type snapped to the scale tokens. */
+
+.husage {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.husage-group {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+/* chip: ring · used / max · caret */
+.husage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 6px 0 7px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--bd-soft);
+  background: color-mix(in oklch, var(--bg-2), transparent 30%);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.035);
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition:
+    border-color 0.12s,
+    background 0.12s,
+    color 0.12s;
+}
+.husage:hover .husage-chip,
+.husage.open .husage-chip {
+  border-color: var(--bd-strong);
+  background: var(--bg-2);
+  color: var(--fg-1);
+}
+.hu-ring {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.hu-frac b {
+  color: var(--fg-0);
+  font-weight: 500;
+}
+.hu-frac i {
+  font-style: normal;
+  color: var(--fg-3);
+  margin: 0 2px;
+}
+.hu-caret {
+  opacity: 0.55;
+  margin-left: -1px;
+  transition: transform 0.15s var(--ease);
+}
+.husage.open .hu-caret {
+  transform: rotate(180deg);
+}
+
+/* compact segment — shares the chip's height, border and surface, and its left
+   border is the seam, so the pair reads as one segmented control */
+.husage-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  border: 1px solid var(--bd-soft);
+  background: color-mix(in oklch, var(--bg-2), transparent 30%);
+  color: var(--fg-2);
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+}
+.husage-act:not([aria-disabled="true"]):hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.husage:hover .husage-act,
+.husage.open .husage-act {
+  border-color: var(--bd-strong);
+}
+.husage-act[aria-disabled="true"] {
+  opacity: 0.5;
+}
+
+/* ≥ 90%: the only colour change the chip ever makes */
+.husage.tone-danger .hu-ring,
+.husage.tone-danger .hu-frac b,
+.husage.tone-danger .husage-act {
+  color: var(--danger);
+}
+.husage.tone-danger .husage-chip,
+.husage.tone-danger .husage-act {
+  border-color: color-mix(in oklch, var(--danger), transparent 60%);
+  background: color-mix(in oklch, var(--danger), transparent 92%);
+}
+.husage.tone-danger .husage-act:not([aria-disabled="true"]):hover {
+  background: color-mix(in oklch, var(--danger), transparent 84%);
+}
+
+/* Last, so neither hover nor tone can bring back a doubled seam: with the
+   segment attached, the chip gives up its right edge to it. */
+.husage-group.has-act > .husage-chip {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right-color: transparent;
+}
+
+/* compacting: the ring spins, the label pulses */
+.husage.compacting .hu-ring {
+  animation: huSpin 1s linear infinite;
+}
+.hu-busy {
+  color: var(--fg-2);
+  animation: huPulse 1s ease-in-out infinite;
+}
+@keyframes huSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes huPulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+/* The label text still changes — it carries the state on its own. */
+@media (prefers-reduced-motion: reduce) {
+  .husage.compacting .hu-ring,
+  .hu-busy {
+    animation: none;
+  }
+}
+
+/* breakdown — always drops down from the header, arrow under the chip's end */
+.usage-pop {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  width: 256px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.32);
+  padding: 12px 13px 11px;
+  z-index: var(--z-popover);
+  animation: ddIn 0.14s var(--ease);
+  text-align: left;
+}
+.usage-pop::after {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  right: 14px;
+  border: 5px solid transparent;
+  border-bottom-color: var(--bg-2);
+  filter: drop-shadow(0 -1px 0 var(--bd));
+}
+/* An invisible bridge over the gap, so moving from the chip to the card
+   doesn't leave the badge and close it. */
+.usage-pop::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-pop {
+    animation: none;
+  }
+}
+.up-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+.up-title {
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.up-frac {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+.up-frac b {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+.up-bar {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  border-radius: 99px;
+  overflow: hidden;
+  margin-bottom: 11px;
+}
+.up-seg {
+  display: block;
+  min-width: 0;
+}
+.up-seg.track {
+  background: var(--bd-strong);
+}
+.up-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.up-leg {
+  gap: 8px;
+  color: var(--fg-1);
+}
+.up-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.up-dot.track {
+  background: var(--bd-strong);
+}
+.up-k {
+  flex: 1;
+}
+.up-v,
+.up-rv {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+}
+.up-sep {
+  height: 1px;
+  background: var(--bd-soft);
+  margin: 11px 0 9px;
+}
+.up-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.up-row {
+  justify-content: space-between;
+  color: var(--fg-1);
+}
+.up-row.total {
+  margin-top: 2px;
+}
+.up-row.total span:first-child {
+  color: var(--fg-2);
+}
+.up-row.total .up-rv {
+  color: var(--accent);
+}
+/* Prose caveat: why a number is missing or incomplete. Reads as a footnote so
+   it never competes with the figures above it. */
+.up-note {
+  color: var(--fg-3);
+  line-height: 1.45;
+  margin-top: 8px;
+}
+
+/* footer: the compact action, or the receipt once one has landed */
+.up-compact {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: calc(100% + 10px);
+  margin: 0 -5px -4px;
+  padding: 7px 8px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  color: var(--fg-1);
+  transition: background 0.12s;
+}
+.up-compact:not(.done):not([aria-disabled="true"]):hover {
+  background: var(--hover);
+}
+.up-compact[aria-disabled="true"] {
+  opacity: 0.7;
+}
+.up-compact > svg {
+  color: var(--accent);
+}
+.up-ctext {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+.up-ct {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--fg-0);
+}
+.up-cs {
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+}
+.up-cdot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  margin: 0 3px;
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--success), transparent 78%);
+}
+.up-kbd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  border: 1px solid var(--bd-soft);
+  border-bottom-width: 1.5px;
+  border-radius: var(--r-xs);
+  color: var(--fg-2);
+  background: var(--bg-0);
+  line-height: 1.4;
+  opacity: 0.8;
+}

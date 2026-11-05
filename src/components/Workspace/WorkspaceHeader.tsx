@@ -1,4 +1,5 @@
 import type { AgentRecord, AgentStatus, DiffStats } from "@/api";
+import { ContextBadge } from "@/components/ContextBadge";
 import { Icon } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
 import { IconButton } from "@/components/ui/IconButton";
@@ -7,14 +8,12 @@ import { useGate } from "@/store/capabilities";
 import { agentTitle } from "@/util/agentTitle";
 import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
-import { ForkMenu } from "./ForkMenu";
 import { ViewToggle } from "./ViewToggle";
 
 /** Header strip above the workspace body. Houses the left-sidebar toggle, the
- *  agent's title over its codename + branch + diff + age, the account picker
- *  (account providers only), the Custom/Native view switcher, and the
- *  right-panel toggle. A sub-agent thread's header (SubagentThread/ThreadHeader)
- *  keeps this exact skeleton — dot, title line, meta line — so stepping into
+ *  agent's title over its codename + branch + diff + age, the Custom/Native
+ *  view switcher, the context badge, and the right-panel toggle. A sub-agent
+ *  thread's header (SubagentThread/ThreadHeader) keeps this exact skeleton — dot, title line, meta line — so stepping into
  *  and out of a thread moves nothing but the words. */
 interface Props {
   agent: AgentRecord;
@@ -87,9 +86,9 @@ export function WorkspaceHeader({ agent }: Props) {
         </IconButton>
       )}
 
-      {/* The "start a new thread of work" entry point, anchored on the whole
-          conversation. Hides itself on a remote environment — see ForkMenu. */}
-      <ForkMenu agentId={agent.id} turnId={null} tip="Fork this workspace and conversation" />
+      {/* Forking lives under each message (TurnFooter), where it has a point
+          to fork from; the header carries what the conversation is using. */}
+      <ContextBadge agent={agent} />
 
       <PanelToggle side="right" />
     </div>
