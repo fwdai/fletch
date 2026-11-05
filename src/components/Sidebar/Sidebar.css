@@ -134,6 +134,22 @@
   padding: 4px 8px 12px;
 }
 
+/* Reads as a line of small print, not a control, until it is hovered. */
+.side-palette-hint {
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 6px 12px;
+  color: var(--fg-3);
+  transition: color 0.12s;
+}
+.side-palette-hint:hover {
+  color: var(--fg-1);
+}
+.side-palette-hint .kbd {
+  color: inherit;
+  background: none;
+}
+
 .side-section {
   padding: 4px;
 }

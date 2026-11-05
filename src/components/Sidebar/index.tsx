@@ -17,6 +17,7 @@ import { groupProjectRefs } from "@/util/projects";
 import { useRuns } from "@/workflows/run/useRuns";
 import { isGroupOpen, type OpenMap } from "./groupOpen";
 import { NewProjectPopover } from "./NewProjectPopover";
+import { PaletteHint } from "./PaletteHint";
 import { ProjectGroup } from "./ProjectGroup";
 import { bubbleActive } from "./recentProjects";
 import { focusRow, rowOf, SIDEBAR_LIST_ID, visibleRows } from "./rowNav";
@@ -415,6 +416,7 @@ export function Sidebar() {
         </div>
       </div>
 
+      <PaletteHint />
       <SidebarFooter />
 
       {npOpen && (
