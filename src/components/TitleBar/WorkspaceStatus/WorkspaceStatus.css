@@ -600,13 +600,6 @@
   color: var(--fg-2);
   white-space: nowrap;
 }
-.ws-plain-btn {
-  color: var(--fg-2);
-  transition: color 0.12s;
-}
-.ws-plain-btn:hover {
-  color: var(--fg-0);
-}
 .ws-plain-sep {
   color: var(--fg-3);
 }
