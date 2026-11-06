@@ -126,6 +126,14 @@
 .ps-tab.active svg {
   color: var(--accent);
 }
+/* Hairline before Settings: the feature tabs and the configuration tab. */
+.ps-tab-sep {
+  align-self: center;
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: var(--bd-soft);
+}
 
 /* body — one scrollable page; sections stack in a centered column */
 .ps-content {

@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { ProjectIcon } from "@/components/ProjectIcon";
 import { CountUp, Stat } from "@/components/Stats";
@@ -47,15 +48,18 @@ export function ProjectHeader({
 
       <nav className="ps-tabs">
         {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className={`ps-tab iflex-center text-sm ${tab === t.id ? "active" : ""}`}
-            onClick={() => onTab(t.id)}
-          >
-            <Icon name={t.icon} size={13} />
-            {t.label}
-          </button>
+          <Fragment key={t.id}>
+            {/* The feature tabs and the configuration tab are two things. */}
+            {t.id === "settings" && <span className="ps-tab-sep" />}
+            <button
+              type="button"
+              className={`ps-tab iflex-center text-sm ${tab === t.id ? "active" : ""}`}
+              onClick={() => onTab(t.id)}
+            >
+              <Icon name={t.icon} size={13} />
+              {t.label}
+            </button>
+          </Fragment>
         ))}
       </nav>
 
