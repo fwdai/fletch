@@ -116,6 +116,9 @@ export interface UiSlice {
    *  two columns split the page evenly and stay proportional as the window
    *  resizes; the first splitter drag pins it to a width. Persisted. */
   roadmapBoardWidth: number | null;
+  /** Show the PM thread beside the Roadmap board; closed, the board takes the
+   *  page. App-wide, like the transcript rail. Persisted. */
+  roadmapThreadOpen: boolean;
   /** Last-open right-rail tab per agent, keyed by agent id. Lets the panel
    *  restore the tab the user was on (e.g. Git) when they switch back to an
    *  agent, instead of always resetting to the first tab. In-memory only. */
@@ -195,6 +198,7 @@ export interface UiSlice {
   commitLeftWidth: (w: number) => void;
   commitRightWidth: (w: number) => void;
   commitRoadmapBoardWidth: (w: number) => void;
+  toggleRoadmapThread: () => void;
   /** Remember the right-rail tab an agent was last viewing. */
   setRightPanelTab: (agentId: string, tab: RightPanelTab) => void;
   /** Rebind a global shortcut; persists the whole override map. */
@@ -230,6 +234,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   leftWidth: DEFAULT_LEFT_WIDTH,
   rightWidth: DEFAULT_RIGHT_WIDTH,
   roadmapBoardWidth: null,
+  roadmapThreadOpen: true,
   rightPanelTabs: {},
   shortcutOverrides: {},
   admin: false,
@@ -371,6 +376,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   commitLeftWidth: (w) => setSetting("leftWidth", String(w)),
   commitRightWidth: (w) => setSetting("rightWidth", String(w)),
   commitRoadmapBoardWidth: (w) => setSetting("roadmapBoardWidth", String(w)),
+  toggleRoadmapThread: () =>
+    set((s) => {
+      const roadmapThreadOpen = !s.roadmapThreadOpen;
+      setSetting("roadmapThreadOpen", String(roadmapThreadOpen));
+      return { roadmapThreadOpen };
+    }),
   setRightPanelTab: (agentId, tab) =>
     set((s) => ({ rightPanelTabs: { ...s.rightPanelTabs, [agentId]: tab } })),
   setShortcut: (id, combos) =>

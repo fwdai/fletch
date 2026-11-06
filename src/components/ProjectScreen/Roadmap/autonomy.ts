@@ -1,8 +1,8 @@
 /** The autonomy dial: how much of the pipeline runs without a further click.
  *
  *  Three per-project settings and the words the board says because of them. Pure —
- *  no storage, no React — so the board and the Settings section read one
- *  implementation, and the label logic is testable without a DOM.
+ *  no storage, no React — so the board's labels and its autonomy popover read
+ *  one implementation, and the label logic is testable without a DOM.
  *
  *  Every key and every parse rule here mirrors a Rust constant
  *  (`roadmap/drainer.rs`, `roadmap/review.rs`). The spellings must agree: the
@@ -28,7 +28,7 @@ export const DEFAULT_MAX_CONCURRENT = 1;
  *  them. */
 export const MAX_CONCURRENT_CEILING = 4;
 
-/** Every setting the concurrency select offers, low to high. */
+/** Every stop the concurrency scale offers, low to high. */
 export const CONCURRENCY_CHOICES = Array.from({ length: MAX_CONCURRENT_CEILING }, (_, i) => i + 1);
 
 /** A stored boolean dial, in the spellings the host recognizes
@@ -55,7 +55,7 @@ export function flagOn(raw: string | undefined, fallback: boolean): boolean {
 }
 
 /** A stored concurrency cap, parsed and clamped exactly as the host does
- *  (`drainer::parse_cap`) — so the select shows the number that is actually in
+ *  (`drainer::parse_cap`) — so the scale shows the number that is actually in
  *  force, including for a row somebody hand-edited to `12`. */
 export function parseCap(raw: string | undefined): number {
   const text = raw?.trim() ?? "";

@@ -9,19 +9,19 @@ import type { RoadmapState } from "./useRoadmap";
 export type { RoadmapState } from "./useRoadmap";
 export { useRoadmap } from "./useRoadmap";
 
-/** The Roadmap tab of the project page: a real chat with the project's PM
- *  agent on the left, the board it maintains on the right.
+/** The Roadmap tab of the project page: the board, and — opened from the
+ *  board's header ("Plan with PM") — a real chat with the project's PM agent
+ *  beside it.
  *
- *  The columns split the page evenly and are resizable from the rule between
- *  them. Which of the two you want wide swings through the day — shaping a
- *  proposal is a reading task, triaging the board is a scanning one — and no
- *  single ratio serves both. The drag reuses the app shell's splitter, so it
- *  behaves exactly like the sidebar's; the width is persisted on drag end.
+ *  With the thread open the columns split the page evenly and are resizable
+ *  from the rule between them; the drag reuses the app shell's splitter, and
+ *  the width is persisted on drag end. Closed, the board takes the page.
  *
  *  Board state is owned by `useRoadmap` in the parent, because the page header
  *  shows the same counts the board does. The chats are owned by the Thread —
  *  nothing above it needs them. */
 export function Roadmap({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: string }) {
+  const threadOpen = useAppStore((s) => s.roadmapThreadOpen);
   const width = useAppStore((s) => s.roadmapBoardWidth);
   const setWidth = useAppStore((s) => s.setRoadmapBoardWidth);
   const commitWidth = useAppStore((s) => s.commitRoadmapBoardWidth);
@@ -45,9 +45,18 @@ export function Roadmap({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath
 
   return (
     <div className="rm">
-      <Thread roadmap={roadmap} repoPath={repoPath} />
-      <div className="splitter" onMouseDown={onDrag} />
-      <Board roadmap={roadmap} repoPath={repoPath} width={width} asideRef={board} />
+      {threadOpen && (
+        <>
+          <Thread roadmap={roadmap} repoPath={repoPath} />
+          <div className="splitter" onMouseDown={onDrag} />
+        </>
+      )}
+      <Board
+        roadmap={roadmap}
+        repoPath={repoPath}
+        width={threadOpen ? width : null}
+        asideRef={board}
+      />
     </div>
   );
 }

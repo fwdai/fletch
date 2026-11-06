@@ -1,7 +1,6 @@
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Horizon, RoadmapItem } from "@/api";
 import { Icon } from "@/components/Icon";
-import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { useProjectSettings } from "@/util/useProjectSettings";
 import { AUTOQUEUE_KEY, acceptActions, flagOn } from "../autonomy";
@@ -12,6 +11,7 @@ import { cardRuling, pendingDeltas, pendingElsewhere } from "../ruling";
 import { HORIZONS } from "../types";
 import { reviewGate } from "../useItemReviews";
 import type { RoadmapState } from "../useRoadmap";
+import { BoardHeader } from "./BoardHeader";
 import { BoardRulingActions } from "./DecisionBar";
 import { EmptyBoard } from "./EmptyBoard";
 import { HorizonGroup } from "./HorizonGroup";
@@ -146,10 +146,11 @@ export function Board({
   /** The project's autoqueue dial — what an accept *does*, so the accept buttons
    *  can say it (`acceptActions`). Read from the host, and kept live by
    *  `project_settings:changed`, so a dial changed on another tab or another
-   *  client is never stale on screen. Where an accept actually lands is decided
-   *  host-side either way — this only labels the button. */
-  const { settings: projectSettings } = useProjectSettings(projectId);
-  const autoqueue = flagOn(projectSettings?.[AUTOQUEUE_KEY], false);
+   *  client is never stale on screen; the header's autonomy popover writes
+   *  through it. Where an accept actually lands is decided host-side either
+   *  way — this only labels the button. */
+  const projectSettings = useProjectSettings(projectId);
+  const autoqueue = flagOn(projectSettings.settings?.[AUTOQUEUE_KEY], false);
   const cardAccept = acceptActions(autoqueue, "Accept");
   const batchAccept = acceptActions(autoqueue, "Accept all");
 
@@ -174,21 +175,12 @@ export function Board({
   // column is clamped back on render, not silently overflowed.
   return (
     <aside className="rm-board" ref={asideRef} style={width == null ? undefined : { width }}>
-      <div className="rm-board-h flex-center">
-        <span className="grow" />
-        {/* No shipped count here: the page header already carries it, and two
-            copies of the same number a centimetre apart is clutter, not
-            reinforcement. */}
-        {!readOnly && (
-          <IconButton
-            aria-label="Add roadmap item"
-            tip="Add an item"
-            onClick={() => openNew("next")}
-          >
-            <Icon name="plus" />
-          </IconButton>
-        )}
-      </div>
+      <BoardHeader
+        readOnly={readOnly}
+        projectSettings={projectSettings}
+        onNew={() => openNew("next")}
+        onCapture={(title) => addItem({ title, horizon: "later" })}
+      />
 
       {/* A repo with no project row of its own: the board renders, nothing on it
           can be written, and until now nothing said what was missing or how to

@@ -55,7 +55,7 @@ export function EffortPicker({
       {open && (
         <>
           <Scrim onClose={close} />
-          <div className="effort-pop" style={{ bottom: "calc(100% + 8px)", left: 0 }}>
+          <div className="pop" style={{ bottom: "calc(100% + 8px)", left: 0 }}>
             <div className="effort-head flex-center text-xs">
               <span>Thinking effort</span>
               <span className="effort-now">{previewed ?? current?.label ?? levels[0]?.label}</span>

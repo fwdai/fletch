@@ -1,6 +1,6 @@
 /* ─── Roadmap tab ────────────────────────────────────────────────────
- * Two columns under the project header: the PM conversation (left) and the
- * board it maintains (right). Message bubbles, the question card, the tool row
+ * The board under the project header, with the PM conversation (left) beside
+ * it while the thread is open. Message bubbles, the question card, the tool row
  * and the composer are reused from the agent transcript — only what is unique
  * to the roadmap is styled here. */
 .rm {
@@ -26,6 +26,7 @@
 }
 /* `.grow` is scoped per component in this app, not a global utility. */
 .rm-board-h .grow,
+.rm-capture .grow,
 .rm-board-ro .grow,
 .rm-props .grow,
 .rm-decbar .grow,
@@ -516,13 +517,33 @@
   min-height: 0;
   background: var(--bg-0);
 }
+/* The PM thread is closed: the board takes the page. */
+.rm-board:only-child {
+  flex: 1;
+  max-width: none;
+}
 .rm-board-h {
   flex-shrink: 0;
   height: var(--rm-head-h);
   gap: 10px;
-  /* Left gutter matches the rows below; the right is inset by the icon
-     button's own padding so its glyph lands on the same margin. */
-  padding: 0 10px 0 var(--rm-gut);
+  /* Inset by the icon buttons' own padding, so their glyphs land on the rows'
+     gutter. */
+  padding: 0 10px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+/* Anchored under the header's gauge, opening toward the board. */
+.rm-autonomy {
+  top: calc(100% + 6px);
+  right: 0;
+  width: 300px;
+  white-space: normal;
+}
+.rm-autonomy .ui-scale {
+  margin-top: 8px;
+}
+.rm-capture {
+  flex-shrink: 0;
+  padding: 10px var(--rm-gut);
   border-bottom: 1px solid var(--bd-soft);
 }
 .rm-board-scroll {
