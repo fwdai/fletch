@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STANDUP_PROMPT } from "@/components/ProjectScreen/Roadmap/Thread/standup";
+import { STANDUP_PROMPT } from "@/components/RoadmapScreen/Roadmap/Thread/standup";
 import {
   isSystemTurn,
   SYSTEM_TURN_MARKER,

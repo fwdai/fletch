@@ -251,8 +251,10 @@ describe("the draft after a project is added", () => {
     const { store, closeProjectScreen } = makeStore(workspaceOf([]));
     api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
     api.allocateDraftName.mockImplementation(async () => {
-      // biome-ignore lint/suspicious/noExplicitAny: partial store seed
-      store.setState({ selectedAgentId: "fuji", projectScreenRepoPath: "/repos/app" } as any);
+      store.setState({
+        selectedAgentId: "fuji",
+        projectScreen: { repoPath: "/repos/app", view: "roadmap" },
+      });
       return "everest";
     });
 

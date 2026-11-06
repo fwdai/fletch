@@ -48,7 +48,9 @@ function state(over: Partial<AppState> = {}): AppState {
     selectDraft: vi.fn(),
     selectRun: vi.fn(),
     createDraft: vi.fn(),
-    openProjectScreen: vi.fn(),
+    openRoadmap: vi.fn(),
+    openProjectContext: vi.fn(),
+    openProjectSettings: vi.fn(),
     captureToRoadmap: vi.fn(),
     openSettingsScreen: vi.fn(),
     openFeedback: vi.fn(),
@@ -98,8 +100,8 @@ function state(over: Partial<AppState> = {}): AppState {
     selectedRunId: null,
     settingsScreenOpen: false,
     usageScreenOpen: false,
-    projectScreenRepoPath: null,
-    projectScreenTab: "roadmap",
+    projectScreen: null,
+    contextLayerEnabled: false,
     historyOpen: false,
     onboardingOpen: false,
     lastRepoPath: "/w/relay",
@@ -161,7 +163,6 @@ describe("rootItems", () => {
     expect(onAgent).not.toContain("archiveAgent");
     expect(onAgent).toContain("panelGit");
     expect(onAgent).toContain("copy-branch");
-    expect(onAgent).toContain("open-project");
   });
 
   it("offers archiving, not stopping, once the agent is idle", () => {
@@ -262,16 +263,35 @@ describe("rootItems", () => {
     expect(c.s.selectAgent).toHaveBeenCalledWith("fuji");
   });
 
-  it("opens the Settings tab from a project page rather than leaving it", () => {
-    const c = ctx({ projectScreenRepoPath: "/w/fletch", projectScreenTab: "roadmap" });
+  it("opens the project in front's settings or roadmap rather than leaving the view", () => {
+    const c = ctx({ projectScreen: { repoPath: "/w/fletch", view: "settings" } });
     find(c, "projectSettings").run?.();
-    expect(c.s.openProjectScreen).toHaveBeenCalledWith("/w/fletch", "settings");
-    // Any takeover closes first, then the page opens on Settings: it ends open.
-    expect(ranBefore(c.s.closeProjectScreen, c.s.openProjectScreen)).toBe(true);
+    expect(c.s.openProjectSettings).toHaveBeenCalledWith("/w/fletch");
+    // Any takeover closes first, then the view opens: it ends open.
+    expect(ranBefore(c.s.closeProjectScreen, c.s.openProjectSettings)).toBe(true);
+    const roadmap = find(c, "roadmap");
+    expect(roadmap.hint).toBe("for fletch");
+    roadmap.run?.();
+    expect(c.s.openRoadmap).toHaveBeenCalledWith("/w/fletch");
+  });
+
+  it("names every project's roadmap, and the Context view only while the layer is on", () => {
+    const c = ctx();
+    const row = find(c, "project:/w/relay");
+    expect(row.label).toBe("Roadmap · relay");
+    row.run?.();
+    expect(c.s.openRoadmap).toHaveBeenCalledWith("/w/relay");
+
+    expect(ids(c)).not.toContain("project-context");
+    const on = ctx({ contextLayerEnabled: true });
+    const context = find(on, "project-context");
+    expect(context.label).toBe("Context · relay");
+    context.run?.();
+    expect(on.s.openProjectContext).toHaveBeenCalledWith("/w/relay");
   });
 
   it("opens the current project's board to capture into its inbox", () => {
-    const c = ctx({ projectScreenRepoPath: "/w/relay", projectScreenTab: "settings" });
+    const c = ctx({ projectScreen: { repoPath: "/w/relay", view: "settings" } });
     const row = find(c, "roadmap-capture");
     expect(row.label).toBe("Add to roadmap…");
     expect(row.hint).toContain("relay");
@@ -358,7 +378,7 @@ describe("pageRows", () => {
     expect(fromSettings.s.closeSettingsScreen).toHaveBeenCalled();
     expect(ranBefore(fromSettings.s.closeSettingsScreen, fromSettings.s.createDraft)).toBe(true);
 
-    const fromProject = ctx({ projectScreenRepoPath: "/w/fletch", projectScreenTab: "roadmap" });
+    const fromProject = ctx({ projectScreen: { repoPath: "/w/fletch", view: "roadmap" } });
     pageRows(fromProject, "workflow")[0].run?.();
     expect(fromProject.s.closeProjectScreen).toHaveBeenCalled();
     expect(fromProject.s.createDraft).toHaveBeenCalledWith("/w/relay", { kind: "workflow" });

@@ -1,7 +1,7 @@
-// Keyboard stepping through the sidebar's selectable rows (drafts, agents,
-// workflow runs). Read from the DOM on each keypress rather than mirrored in
-// state: the rendered rows already reflect search filtering, project order,
-// and collapsed groups, so there is nothing to keep in sync.
+// Keyboard stepping through the sidebar's selectable rows (project views,
+// drafts, agents, workflow runs). Read from the DOM on each keypress rather
+// than mirrored in state: the rendered rows already reflect search filtering,
+// project order, and collapsed groups, so there is nothing to keep in sync.
 
 const ROW = ".agent[role='button']";
 

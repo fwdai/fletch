@@ -90,11 +90,16 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
         description: "Theme, panels and providers in a popover; All settings from there.",
       },
       {
+        id: "roadmap",
+        combos: ["Mod+Shift+R"],
+        label: "Roadmap",
+        description: "Open the current project's roadmap; pressed there, leave it.",
+      },
+      {
         id: "projectSettings",
         combos: ["Mod+Shift+,"],
         label: "Project settings",
-        description:
-          "Open the current project's page on its Settings tab; pressed there again, leave the page.",
+        description: "Open the current project's settings; pressed there, leave them.",
       },
       {
         id: "shortcuts",

@@ -1,0 +1,243 @@
+/* ─── project settings ───────────────────────────────────────────────
+ * The settings view's own frame: a row of bare pills (`.ps-tab`, no track)
+ * under the header, then one pane of the shared `set-*` rows in the body
+ * column (`.ps-content`, ProjectScreen.css). Never `.set-screen` / `.set-nav`:
+ * that frame is the global screen's. */
+.proj-set-tabs {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+/* `SetGroup`'s label line when it carries an aside (the run commands'
+ * ecosystem badge). */
+.set-group-top {
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 6px;
+}
+.set-group-top .set-group-h {
+  margin-bottom: 0;
+}
+.ps-eco {
+  color: var(--fg-3);
+  padding: 2px 2px 2px;
+}
+.ps-eco code {
+  font-family: var(--font-mono);
+  color: var(--fg-1);
+  padding: 0 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: 3px;
+}
+.ps-error {
+  margin-top: 16px;
+  padding: 9px 12px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger), var(--bg-0) 86%);
+  border: 1px solid color-mix(in srgb, var(--danger), var(--bg-0) 70%);
+  border-radius: var(--r-sm);
+}
+
+/* repositories — the repos attached to this project */
+.ps-repo-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+}
+.ps-repo-row {
+  gap: 10px;
+  padding: 8px 11px;
+  border-top: 1px solid var(--bd-soft);
+  color: var(--fg-1);
+}
+.ps-repo-row:first-child {
+  border-top: none;
+}
+.ps-repo-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ps-repo-toprow {
+  gap: 7px;
+}
+/* Editable per-repo label: reads as text until hovered/focused. */
+.ps-repo-label {
+  min-width: 0;
+  max-width: 240px;
+  padding: 1px 5px;
+  margin-left: -5px;
+  color: var(--fg-0);
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  transition:
+    border-color 0.1s,
+    background 0.1s;
+}
+.ps-repo-label::placeholder {
+  color: var(--fg-1);
+  font-weight: 500;
+}
+.ps-repo-label:hover {
+  border-color: var(--bd-soft);
+}
+.ps-repo-label:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg-1);
+}
+.ps-repo-path {
+  color: var(--fg-3);
+}
+.ps-repo-primary {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  color: var(--fg-3);
+  border: 1px solid var(--bd-soft);
+  border-radius: 999px;
+}
+.ps-repo-add {
+  margin-top: 10px;
+}
+
+/* environment variables — the opt-in sandbox env membrane. No `overflow` here:
+ * clipping would cut off the value chip's tooltips at the list boundary. */
+.ev-list {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+}
+.ev-row {
+  gap: 12px;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-top: 1px solid var(--bd-soft);
+}
+.ev-row:first-child {
+  border-top: none;
+}
+/* A var that isn't shared with the sandbox reads as inactive. */
+.ev-row.ev-off {
+  opacity: 0.6;
+}
+.ev-l {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ev-key {
+  color: var(--fg-0);
+}
+.ev-cap {
+  gap: 5px;
+  color: var(--fg-3);
+}
+.ev-cap code {
+  font-family: var(--font-mono);
+  color: var(--fg-2);
+}
+.ev-cap .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+/* Overridden rows tint their caption like the run-config surface does. */
+.ev-cap:has(.dot) {
+  color: var(--accent);
+}
+/* Variable name + its revert-to-.env button (shown only when overridden). The
+ * revert sits by the name, not in the right cluster, so the value + share
+ * columns stay aligned on every row. */
+.ev-key-row {
+  gap: 4px;
+  min-width: 0;
+}
+.ev-r {
+  gap: 6px;
+  flex-shrink: 0;
+}
+/* share-with-sandbox toggle — the cube is the sandbox; it lights up and glows
+ * when the variable is shared in. */
+.ev-sbx {
+  width: 30px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-3);
+  background: transparent;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.ev-sbx:hover {
+  color: var(--fg-1);
+  border-color: var(--bd);
+}
+.ev-sbx[data-on="1"] {
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent), transparent 55%);
+  background: color-mix(in oklch, var(--accent), transparent 88%);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 85%);
+}
+.ev-sbx[data-on="1"]:hover {
+  background: color-mix(in oklch, var(--accent), transparent 82%);
+}
+.ev-empty-state {
+  margin-top: 14px;
+  padding: 14px;
+  color: var(--fg-3);
+  text-align: center;
+  border: 1px dashed var(--bd-soft);
+  border-radius: var(--r-sm);
+}
+.ev-empty-state code {
+  font-family: var(--font-mono);
+  color: var(--fg-2);
+}
+/* Add-a-variable control: a dashed button that opens an inline key/value form
+ * for a var that isn't in `.env` (stored as a shared override). */
+/* Spacing only — the dashed skin comes from `<Button variant="dashed">`. */
+.ev-add-btn {
+  margin-top: 10px;
+}
+.ev-add-form {
+  margin-top: 10px;
+}
+.ev-add-fields {
+  gap: 8px;
+}
+.ev-add-err {
+  margin-top: 6px;
+  color: var(--danger);
+}
+
+/* settings file — `.fletch/settings.json`: what went wrong reading it, and the
+ * hosts it adds that wait for approval (a `SetRow` inside the alert) */
+.ps-pf-error {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.ps-pf-pending {
+  padding: 0 14px;
+  border: 1px solid color-mix(in oklch, var(--warn), transparent 60%);
+  background: color-mix(in oklch, var(--warn), transparent 92%);
+  border-radius: var(--r-sm);
+}

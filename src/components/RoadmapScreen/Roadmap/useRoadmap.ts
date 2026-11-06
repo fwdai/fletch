@@ -976,7 +976,7 @@ export function useRoadmap(repoPath: string) {
     [loadEvents],
   );
 
-  const setProjectScreenTab = useAppStore((s) => s.setProjectScreenTab);
+  const setRoadmapTab = useAppStore((s) => s.setRoadmapTab);
 
   /** Show the user the item a code names — wherever it actually is.
    *
@@ -1013,13 +1013,13 @@ export function useRoadmap(repoPath: string) {
         if (row) void loadEvents(row.id);
         after(FOCUS_MS, () => setFocusCode(null));
       } else if (target.kind === "shipped") {
-        setProjectScreenTab("activity");
+        setRoadmapTab("activity");
       } else {
         setError(revealRefusal(target));
       }
       return target;
     },
-    [after, rows, loadEvents, setProjectScreenTab],
+    [after, rows, loadEvents, setRoadmapTab],
   );
 
   // A jump asked for from outside this screen — a run's roadmap chip

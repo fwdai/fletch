@@ -304,20 +304,20 @@
   background: var(--accent-soft);
   color: var(--accent);
 }
-/* "Open project" is revealed only when the row is engaged, so it doesn't
+/* The settings gear is revealed only when the row is engaged, so it doesn't
  * compete with the label or shift the always-visible "add agent" button. */
-.proj-h .padd-open {
+.proj-h .padd-settings {
   opacity: 0;
   pointer-events: none;
 }
-.proj-h:hover .padd-open {
+.proj-h:hover .padd-settings {
   opacity: 1;
   pointer-events: auto;
 }
 /* Keyboard focus reveals it too — a focused button at opacity:0 would make
  * the focus ring vanish and hide the action from keyboard users. */
-.proj-h:hover .padd-open:hover,
-.proj-h .padd-open:focus-visible {
+.proj-h:hover .padd-settings:hover,
+.proj-h .padd-settings:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
@@ -327,8 +327,8 @@
   flex-shrink: 0;
 }
 /* Icon size is driven by CSS here (like the + above), so it doesn't depend on
- * the size prop. It reads a touch larger than the +. */
-.proj-h .padd-open svg {
+ * the size prop. Gear reads a touch larger than the +. */
+.proj-h .padd-settings svg {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
@@ -480,6 +480,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* a project view row's glyph (ProjectViewRow), where an agent has its status */
+.agent-row .ag-view {
+  flex-shrink: 0;
+  color: var(--fg-2);
 }
 .ag-name.ag-name-draft {
   color: var(--fg-1);

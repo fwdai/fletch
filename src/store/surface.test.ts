@@ -18,7 +18,7 @@ function state(patch: Partial<AppState> = {}): AppState {
     historyOpen: false,
     settingsScreenOpen: false,
     usageScreenOpen: false,
-    projectScreenRepoPath: null,
+    projectScreen: null,
     activeDraftId: null,
     drafts: [],
     selectedRunId: null,
@@ -60,9 +60,11 @@ describe("activeSurface", () => {
 
   it("lets a full-screen takeover or an overlay cover the selected agent", () => {
     const selected = { selectedAgentId: "one" } as const;
-    expect(activeSurface(state({ ...selected, projectScreenRepoPath: "/a" }))).toEqual({
+    const project = { projectScreen: { repoPath: "/a", view: "roadmap" } } as const;
+    expect(activeSurface(state({ ...selected, ...project }))).toEqual({
       kind: "project",
       repoPath: "/a",
+      view: "roadmap",
     });
     expect(activeSurface(state({ ...selected, usageScreenOpen: true })).kind).toBe("usage");
     expect(activeSurface(state({ ...selected, settingsScreenOpen: true })).kind).toBe("settings");
@@ -70,7 +72,7 @@ describe("activeSurface", () => {
     expect(activeSurface(state({ ...selected, onboardingOpen: true })).kind).toBe("onboarding");
     // …and none of them leaves the agent actionable behind it.
     for (const patch of [
-      { projectScreenRepoPath: "/a" },
+      project,
       { usageScreenOpen: true },
       { settingsScreenOpen: true },
       { historyOpen: true },
@@ -90,7 +92,9 @@ describe("activeSurface", () => {
 describe("surfaceRepoPath", () => {
   it("prefers what is in front, then the last-used project, then the first", () => {
     expect(surfaceRepoPath(state({ selectedAgentId: "two" }))).toBe("/b");
-    expect(surfaceRepoPath(state({ projectScreenRepoPath: "/b" }))).toBe("/b");
+    expect(surfaceRepoPath(state({ projectScreen: { repoPath: "/b", view: "settings" } }))).toBe(
+      "/b",
+    );
     const drafts = [{ id: "d1", repoPath: "/b" }] as AppState["drafts"];
     expect(surfaceRepoPath(state({ activeDraftId: "d1", drafts }))).toBe("/b");
     expect(surfaceRepoPath(state({ lastRepoPath: "/b" }))).toBe("/b");

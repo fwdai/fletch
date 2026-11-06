@@ -11,9 +11,11 @@ import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
 import { Onboarding } from "./components/Onboarding";
 import { PairRequestPrompt } from "./components/PairRequest";
-import { ProjectScreen } from "./components/ProjectScreen";
+import { ProjectContextScreen } from "./components/ProjectContext";
+import { ProjectSettingsScreen } from "./components/ProjectSettingsScreen";
 import { PublishApproval } from "./components/PublishApproval";
 import { RightPanel } from "./components/RightPanel";
+import { RoadmapScreen } from "./components/RoadmapScreen";
 import { Settings } from "./components/Settings";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { Sidebar } from "./components/Sidebar";
@@ -66,7 +68,7 @@ function AppShell() {
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
   const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
   const onboardingOpen = useAppStore((s) => s.onboardingOpen);
-  const projectScreenRepoPath = useAppStore((s) => s.projectScreenRepoPath);
+  const projectScreen = useAppStore((s) => s.projectScreen);
   // Count of agents that finished a turn while the user wasn't looking at them
   // (set on completion, cleared when the agent is opened). This is the same
   // signal behind the sidebar "new" dots — mirror it onto the app icon badge.
@@ -115,8 +117,12 @@ function AppShell() {
           <SettingsScreen />
         ) : usageScreenOpen ? (
           <UsageScreen />
-        ) : projectScreenRepoPath ? (
-          <ProjectScreen repoPath={projectScreenRepoPath} />
+        ) : projectScreen?.view === "roadmap" ? (
+          <RoadmapScreen repoPath={projectScreen.repoPath} />
+        ) : projectScreen?.view === "context" ? (
+          <ProjectContextScreen repoPath={projectScreen.repoPath} />
+        ) : projectScreen ? (
+          <ProjectSettingsScreen repoPath={projectScreen.repoPath} />
         ) : (
           <>
             <div

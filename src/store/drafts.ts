@@ -244,7 +244,7 @@ function surfaceKey(s: AppState): string {
   const surface = activeSurface(s);
   switch (surface.kind) {
     case "project":
-      return `project:${surface.repoPath}`;
+      return `project:${surface.repoPath}:${surface.view}`;
     case "draft":
       return `draft:${surface.draft.id}`;
     case "run":
@@ -302,7 +302,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         { ...draft, afterProjectAdd: { seeded: first } },
         first ? FIRST_TASK_PROMPT : undefined,
       );
-      // The project page takes the center pane over a draft (App.tsx), so a
+      // A project view takes the center pane over a draft (App.tsx), so a
       // project added from the sidebar while one is open would leave the
       // draft invisible behind it. Still the page that was open when the add
       // began — a newer one changed the key above.

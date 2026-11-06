@@ -3,8 +3,8 @@
 // says here exactly what the Mac's Inbox lane says.
 
 import type { RoadmapItem } from "@desktop/api/types/roadmap";
-import { flagOn, TRIAGE_KEY } from "@desktop/components/ProjectScreen/Roadmap/autonomy";
-import { buildInbox, inboxChip } from "@desktop/components/ProjectScreen/Roadmap/inbox";
+import { flagOn, TRIAGE_KEY } from "@desktop/components/RoadmapScreen/Roadmap/autonomy";
+import { buildInbox, inboxChip } from "@desktop/components/RoadmapScreen/Roadmap/inbox";
 import type { RoadmapBoard } from "../store/roadmap";
 
 export interface RoadmapLists {

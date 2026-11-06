@@ -8,7 +8,7 @@
 
 import type { RoadmapItem, RoadmapItemEvent } from "@desktop/api/types/roadmap";
 import type { ProjectSettingsChangedEvent } from "@desktop/api/types/settings";
-import { upsertLatest } from "@desktop/components/ProjectScreen/Roadmap/NeedsYou/select";
+import { upsertLatest } from "@desktop/components/RoadmapScreen/Roadmap/NeedsYou/select";
 import { applyRowEvent } from "@desktop/rowSync";
 import type { Api } from "../api";
 import type { MobileState } from "./index";

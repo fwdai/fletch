@@ -9,6 +9,7 @@ import { RunRow } from "@/workflows/run/RunRow";
 import { AgentRow } from "./AgentRow";
 import { foldAgents } from "./foldAgents";
 import { ProjectAddButton } from "./ProjectAddButton";
+import { ProjectViewRow } from "./ProjectViewRow";
 
 interface Props {
   /** Project display name. */
@@ -66,7 +67,14 @@ export function ProjectGroup({
   const selectAgent = useAppStore((s) => s.selectAgent);
   const selectDraft = useAppStore((s) => s.selectDraft);
   const selectRun = useAppStore((s) => s.selectRun);
-  const openProjectScreen = useAppStore((s) => s.openProjectScreen);
+  const openRoadmap = useAppStore((s) => s.openRoadmap);
+  const openProjectContext = useAppStore((s) => s.openProjectContext);
+  const openProjectSettings = useAppStore((s) => s.openProjectSettings);
+  const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
+  // The project view open for this group, if any — its row shows selected.
+  const view = useAppStore((s) =>
+    s.projectScreen?.repoPath === repoPath ? s.projectScreen.view : null,
+  );
   const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
   const roadmapGate = useGate("roadmap");
 
@@ -87,11 +95,9 @@ export function ProjectGroup({
   );
   const foldable = hidden.length > 0;
 
-  function onOpenProject(e: React.MouseEvent) {
+  function onOpenSettings(e: React.MouseEvent) {
     e.stopPropagation();
-    // On the tab it was last left on; ⌘⇧, and the palette's "Project
-    // settings" are the ways straight to Settings.
-    openProjectScreen(repoPath);
+    openProjectSettings(repoPath);
   }
 
   const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";
@@ -127,23 +133,39 @@ export function ProjectGroup({
         <ProjectIcon project={project ?? { name: label }} size={14} />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
-        {/* The project page opens on the roadmap, so it is offered wherever
-            the board is; its settings sections gate themselves on the host's
-            project-settings ops (docs/remote-protocol.md, "Settings"). */}
-        {!roadmapGate && (
-          <button
-            className="padd padd-open tip"
-            data-tip="Open project"
-            onClick={onOpenProject}
-            aria-label="Open project"
-          >
-            <Icon name="map" size={14} />
-          </button>
-        )}
+        {/* The settings panes gate themselves on the host's project-settings
+            ops (docs/remote-protocol.md, "Settings"). */}
+        <button
+          className="padd padd-settings tip"
+          data-tip="Project settings"
+          onClick={onOpenSettings}
+          aria-label="Project settings"
+        >
+          <Icon name="settings" size={14} />
+        </button>
         <ProjectAddButton repoPath={repoPath} />
       </div>
 
       <div className={`agents ${open ? "" : "closed"}`}>
+        {/* The project's own views lead the group: the roadmap wherever a
+            board is driven, the context layer while its developer gate is
+            open. */}
+        {!roadmapGate && (
+          <ProjectViewRow
+            icon="map"
+            label="Roadmap"
+            active={view === "roadmap"}
+            onClick={() => openRoadmap(repoPath)}
+          />
+        )}
+        {contextLayerEnabled && (
+          <ProjectViewRow
+            icon="graph"
+            label="Context"
+            active={view === "context"}
+            onClick={() => openProjectContext(repoPath)}
+          />
+        )}
         {drafts.map((d) => (
           <AgentRow
             key={d.id}

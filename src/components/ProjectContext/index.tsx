@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ContextOverview } from "@/api";
 import { Icon } from "@/components/Icon";
+import { ProjectHeader } from "@/components/ProjectScreen/Header";
 import { SetHead } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { Chip } from "@/components/ui/Chip";
@@ -22,8 +23,23 @@ import { useContextOverview } from "./useContextOverview";
 type Area = "entities" | "review" | "preview";
 type Editor = { kind: "entity"; entityId?: string } | { kind: "decision"; about: string[] } | null;
 
-/** The project page's Context tab: what the host knows about the project and
- *  serves its agents, for the user to inspect and curate. Loads the overview,
+/** A project's Context view, full screen: the shared header over the body. */
+export function ProjectContextScreen({ repoPath }: { repoPath: string }) {
+  const projectId = useAppStore(
+    (s) => s.workspace?.projects.find((p) => p.path === repoPath)?.project_id,
+  );
+  return (
+    <div className="proj-screen">
+      <ProjectHeader repoPath={repoPath} view="context" />
+      <div className="ps-content">
+        <div className="ps-sections">{projectId && <ProjectContext projectId={projectId} />}</div>
+      </div>
+    </div>
+  );
+}
+
+/** The Context view's body: what the host knows about the project and serves
+ *  its agents, for the user to inspect and curate. Loads the overview,
  *  follows `context:changed`, and hands the rest to `ContextTab`. */
 export function ProjectContext({ projectId }: { projectId: string }) {
   const { overview, error } = useContextOverview(projectId);
@@ -67,8 +83,8 @@ export function ContextTab({
   const [area, setArea] = useState<Area>("entities");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editor, setEditor] = useState<Editor>(null);
-  const setTab = useAppStore((s) => s.setProjectScreenTab);
-  const setSection = useAppStore((s) => s.setProjectSettingsSection);
+  const repoPath = useAppStore((s) => s.projectScreen?.repoPath);
+  const openSettings = useAppStore((s) => s.openProjectSettings);
 
   const { graph, proposals, stats } = overview;
   // The settings hook is the live read; the overview's flags cover the beat
@@ -96,10 +112,7 @@ export function ContextTab({
           <Chip
             bordered
             tip="Settings › Agents"
-            onClick={() => {
-              setTab("settings");
-              setSection("agents");
-            }}
+            onClick={() => repoPath && openSettings(repoPath, "agents")}
           >
             {!enabled ? "Context off" : extract ? "Serving · extracting" : "Serving to agents"}
             <Icon name="chevR" />

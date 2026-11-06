@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ProjectIcon } from "@/components/ProjectIcon";
+import { VIEW_LABEL } from "@/components/ProjectScreen/Header";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
 import { Capsule } from "./Capsule";
@@ -8,14 +9,14 @@ import { StatusDot } from "./StatusDot";
 
 /** The center of the title bar. Adapts to context: the active agent's live
  *  status capsule, a draft's pending name, a quiet fleet summary at Home, or a
- *  plain crumb in the settings / usage / project screens. Replaces the old repo/agent
+ *  plain crumb in the settings / usage / project views. Replaces the old repo/agent
  *  breadcrumb. */
 export function WorkspaceStatus() {
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
   const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
   const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
   const closeUsageScreen = useAppStore((s) => s.closeUsageScreen);
-  const projectScreenRepoPath = useAppStore((s) => s.projectScreenRepoPath);
+  const projectScreen = useAppStore((s) => s.projectScreen);
   const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
   const workspace = useAppStore((s) => s.workspace);
   const selectedId = useAppStore((s) => s.selectedAgentId);
@@ -29,14 +30,16 @@ export function WorkspaceStatus() {
 
   if (settingsScreenOpen) return <ScreenCrumb label="Settings" onHome={closeSettingsScreen} />;
   if (usageScreenOpen) return <ScreenCrumb label="Usage" onHome={closeUsageScreen} />;
-  // The project page sits a level above any workspace: the same crumb, with
-  // the project's mark.
-  if (projectScreenRepoPath) {
-    const name = projectName(projectScreenRepoPath);
+  // A project view sits a level above any workspace: the same crumb, with
+  // the project's mark and the view's name.
+  if (projectScreen) {
+    const { repoPath, view } = projectScreen;
+    const name = projectName(repoPath);
     return (
       <ScreenCrumb
         label={name}
-        icon={<ProjectIcon project={projectRef(projectScreenRepoPath) ?? { name }} size={12} />}
+        icon={<ProjectIcon project={projectRef(repoPath) ?? { name }} size={12} />}
+        view={VIEW_LABEL[view]}
         onHome={closeProjectScreen}
       />
     );
@@ -125,14 +128,17 @@ function DraftCapsule({
   );
 }
 
-/** A full-screen surface (settings, usage, a project) — a plain crumb back to Home. */
+/** A full-screen surface (settings, usage, a project view) — a plain crumb
+ *  back to Home, ending on the view's name when there is one. */
 function ScreenCrumb({
   label,
   icon,
+  view,
   onHome,
 }: {
   label: string;
   icon?: ReactNode;
+  view?: string;
   onHome: () => void;
 }) {
   return (
@@ -142,7 +148,13 @@ function ScreenCrumb({
       </button>
       <span className="ws-plain-sep">/</span>
       {icon}
-      <span className="ws-plain-active">{label}</span>
+      <span className={view ? undefined : "ws-plain-active"}>{label}</span>
+      {view && (
+        <>
+          <span className="ws-plain-sep">/</span>
+          <span className="ws-plain-active">{view}</span>
+        </>
+      )}
     </div>
   );
 }

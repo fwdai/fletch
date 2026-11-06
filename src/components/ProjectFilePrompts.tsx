@@ -54,8 +54,8 @@ export function useProjectFilePrompts(): {
 }
 
 /** One project's settings file asks for hosts the user has not approved: say
- *  which project and how many, and lead to the project page where they are
- *  listed and approved. Rendered in the box network toast stack. */
+ *  which project and how many, and lead to the project's settings where they
+ *  are listed and approved. Rendered in the box network toast stack. */
 export function ProjectFilePrompt({
   status,
   onDismiss,
@@ -64,7 +64,7 @@ export function ProjectFilePrompt({
   onDismiss: () => void;
 }) {
   const projects = useAppStore((s) => s.workspace?.projects);
-  const openProjectScreen = useAppStore((s) => s.openProjectScreen);
+  const openProjectSettings = useAppStore((s) => s.openProjectSettings);
   const project = projects?.find((p) => p.project_id === status.project_id);
   const name = project?.name ?? "A project";
   const path = status.repo_path ?? project?.path;
@@ -88,7 +88,7 @@ export function ProjectFilePrompt({
             <Button
               variant="primary"
               onClick={() => {
-                openProjectScreen(path, "settings", "network");
+                openProjectSettings(path, "network");
                 onDismiss();
               }}
             >

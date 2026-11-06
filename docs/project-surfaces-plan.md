@@ -61,30 +61,30 @@ at most.
 
 ## 3. Target structure
 
-### 3.1 The project page
+### 3.1 Three project views
 
-Tabs, in order: **Roadmap · Activity · Context · Settings**, with a thin divider
-before Settings so the three feature tabs and the configuration tab read as two
-things. Context stays gated. The page opens on Roadmap unless a caller asks for
-a tab; the last tab is remembered for the session.
+Every significant feature gets its own surface. A project has three, each a
+full-screen view in the takeover slot, sharing nothing but a thin header: an
+icon-only back chevron ("Back to app"; Escape still closes), the project's icon
+and name, and the view's name, muted.
 
-**Identity lives in the header's left zone.** Today that zone holds "‹ Back to
-app" and the page relies on the title bar's centre crumb, plain text with a
-status dot, to say which project it is. The crumb is easy to miss and looks the
-same as the Settings and Usage crumbs. Instead, the left zone becomes an
-icon-only back chevron (tooltip "Back to app", Escape still closes) followed by
-the project's icon and name. The header is fixed above every tab, so the
-identity is on screen whatever the user is doing on the page, and it costs no
-height and no new row: it reuses the zone the back button already had. The
-chevron keeps its own hover box and a gap before the name, so it does not read
-as "back to Goreme". The title bar's crumb follows the Settings and Usage
-pattern for consistency, `fletch / ▣ Goreme`, with the icon.
+- **Roadmap** (`RoadmapScreen/`): the board and the PM thread, with Activity as
+  a second sub-tab (Board · Activity pills in the header's centre, remembered
+  for the session) and the horizon counts at the right.
+- **Context** (`ProjectContext/`): the context layer's body, offered only while
+  its developer gate is open.
+- **Project settings** (`ProjectSettingsScreen/`): the five sub-tabs and their
+  panes (3.2). It owns the run-config load; the other two need none.
+
+The title bar's crumb names the view as a third segment, `fletch / ▣ Goreme /
+Roadmap`; "fletch" closes it. The store holds one `projectScreen: { repoPath,
+view }`.
 
 ```
-┌ ‹  ▣ Goreme        [ Roadmap ][ Activity ][ Context ] │ [ ⚙ Settings ]      now 3 · next 5 · later 12 · shipped 41 ┐
-│                                                                                                                      │
-│  (tab body)                                                                                                          │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ ‹  ▣ Goreme / Roadmap                  Board   Activity                 now 3 · next 5 · later 12 · shipped 41 ┐
+│                                                                                                                │
+│  (board, or Activity)                                                                                          │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 3.2 Settings: five panes, shared rows, a frame of its own
@@ -94,16 +94,15 @@ its *frame*. Rows, groups, toggles, segments, selects, scales and chips are the
 `set-*` primitives, so a control behaves the same wherever it is. Everything
 around them says "one project":
 
-- **Place.** Project configuration is a tab under the project's own header
-  (back, segmented tabs, board counts). It never takes the screen alone. Global
-  settings is the full-screen takeover with the left rail and the Fletch
-  footer; that layout is reserved for it.
+- **Place.** Project configuration is its own view under the shared project
+  header (3.1). The left rail and the Fletch footer stay reserved for global
+  settings.
 - **Navigation.** Five sub-tabs in a row under the header — General · Run ·
-  Sandbox · Network · Agents — as bare text pills, the same second-level
-  pattern the board already uses under the segmented tabs. No left rail, no
-  group headers. The pane below is one column at the global panes' width.
-- **Who it is about.** The project's icon and name sit in the page header
-  (3.1), above every tab. The pane eyebrow then says only the scope,
+  Sandbox · Network · Agents — as bare text pills, the pattern the roadmap's
+  Board · Activity switch uses. No left rail, no group headers. The pane below
+  is one column at the global panes' width.
+- **Who it is about.** The project's icon and name sit in the view header
+  (3.1). The pane eyebrow then says only the scope,
   "Project settings · Run", against the global "Settings · Git"; it does not
   repeat the name. The H1 is the pane name in both.
 - **Inherited rows.** Any row that overrides an app default shows the app's
@@ -120,7 +119,7 @@ A `nav.ts` like `SettingsScreen/nav.ts` feeds both the sub-tabs and the palette
 ("Project settings › Run").
 
 ```
-┌ ‹  ▣ Goreme        [ Roadmap ][ Activity ][ Context ] │ [ ⚙ Settings ]      now 3 · next 5 · later 12 · shipped 41 ┐
+┌ ‹  ▣ Goreme / Settings                                                                                               ┐
 │   General   Run   Sandbox   Network   Agents                                                                        │
 │  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
 │                                                                                                                      │
@@ -256,9 +255,10 @@ that links there. The pane is restyled on the `set-*` primitives.
 
 | Surface | Change |
 | --- | --- |
-| Sidebar project row | The icon becomes "Open project" and lands on the last-used tab (Roadmap by default). `⌘⇧,` and the palette's "Project settings" still deep-link to Settings › General. Keeping the gear is a one-line choice if settings should stay one click away. |
-| Title bar | The pill is unchanged (Roadmap). On the project page the centre crumb reads `fletch / ▣ Goreme`, the Settings and Usage pattern, with the icon. |
-| Palette | Adds "Project settings › General / Run / Sandbox / Network / Agents" from the nav data, and "Add to roadmap…". |
+| Sidebar project group | A permanent first row, **Roadmap**, then **Context** while the layer is on: agent-row height, hover and selection, stepped by the arrow keys. The header button is the settings gear ("Project settings", General). |
+| Title bar | The pill opens the roadmap. On a view the crumb reads `fletch / ▣ Goreme / Roadmap` (or Context, Settings). |
+| Palette | "Roadmap · <project>" per project, "Project settings" and "Roadmap" for the project in front, "Context · <project>" while the layer is on, and "Add to roadmap…". |
+| Shortcuts | `⌘⇧R` opens the roadmap, `⌘⇧,` the settings; pressed on their own view, either leaves it. |
 | Toasts and prompts | Egress toast and the project-file prompt land on the Network sub-tab. |
 | Phone | The project screen gains a Roadmap segment: the Inbox and Next up as read-only lists, a capture field with the existing dictation, and the "Plan with PM" button it already has. |
 | Home | Unchanged for now. A "next up" card is a later option once the inbox exists. |

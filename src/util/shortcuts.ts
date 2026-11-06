@@ -77,6 +77,18 @@ export function closeScreens(s: AppState) {
   s.closeUsageScreen();
 }
 
+/** Open the current project's roadmap or settings; pressed with that view in
+ *  front, leave it. The store refuses the roadmap on an environment without
+ *  one. */
+function toggleProjectView(view: "roadmap" | "settings") {
+  const s = useAppStore.getState();
+  const surface = activeSurface(s);
+  const repo = surfaceRepoPath(s);
+  if (surface.kind === "project" && surface.view === view) s.closeProjectScreen();
+  else if (repo && view === "roadmap") s.openRoadmap(repo);
+  else if (repo) s.openProjectSettings(repo);
+}
+
 const ACTIONS: Record<string, Action> = {
   palette: { whileTyping: true, run: () => useAppStore.getState().togglePalette() },
   search: {
@@ -114,22 +126,8 @@ const ACTIONS: Record<string, Action> = {
     },
   },
   quickSettings: { whileTyping: true, run: () => useAppStore.getState().toggleSettings() },
-  projectSettings: {
-    whileTyping: true,
-    run: () => {
-      const s = useAppStore.getState();
-      // On the project page already: bring its Settings tab forward, and
-      // only a second press, with Settings showing, leaves the page.
-      if (activeSurface(s).kind === "project") {
-        if (s.projectScreenTab === "settings") s.closeProjectScreen();
-        else s.setProjectScreenTab("settings");
-        return;
-      }
-      // The store refuses this on an environment without a project page.
-      const repo = surfaceRepoPath(s);
-      if (repo) s.openProjectScreen(repo, "settings");
-    },
-  },
+  roadmap: { whileTyping: true, run: () => toggleProjectView("roadmap") },
+  projectSettings: { whileTyping: true, run: () => toggleProjectView("settings") },
   shortcuts: {
     whileTyping: true,
     run: () => useAppStore.getState().openSettingsScreen("shortcuts"),

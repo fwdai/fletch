@@ -1,7 +1,7 @@
 // The roadmap board's rows, as a subscription — for every surface that needs to
 // know what is on a board without owning one.
 //
-// Lives here rather than under `components/ProjectScreen/Roadmap/` because it has
+// Lives here rather than under `components/RoadmapScreen/Roadmap/` because it has
 // consumers in different areas: the board itself (`useRoadmap`) and a run's
 // monitor (`RunView/RoadmapChip`). The same promotion `rowSync.ts` got when its
 // third caller appeared, and for the same reason — a shared hook whose home is
