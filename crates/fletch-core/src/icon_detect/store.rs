@@ -36,25 +36,37 @@ pub enum IconData {
     Image { mime: &'static str, data: String },
 }
 
-/// A candidate with its image, for the picker's thumbnails.
+/// A candidate with its image, for the picker's thumbnails. `data` is absent
+/// past [`THUMBNAIL_BUDGET`]: the picker still lists the file and draws the
+/// initial for it, and choosing it reads the bytes then.
 #[derive(Debug, Serialize)]
 pub struct CandidateImage {
     #[serde(flatten)]
     pub candidate: Candidate,
     pub mime: &'static str,
-    pub data: String,
+    pub data: Option<String>,
 }
+
+/// How many raw bytes of thumbnails one scan sends, best candidates first. The
+/// answer crosses the Tauri bridge or a relay on every open of the picker, so
+/// a repository with a dozen app-icon sizes does not ship them all.
+const THUMBNAIL_BUDGET: usize = 3 << 20;
 
 /// Every candidate in `repos` that holds a drawable image, best first.
 pub fn candidates(repos: &[PathBuf]) -> Vec<CandidateImage> {
+    let mut sent = 0usize;
     scan_project(repos)
         .into_iter()
         .filter_map(|candidate| {
             let (bytes, mime) = read_icon(&candidate.file)?;
+            let data = (sent + bytes.len() <= THUMBNAIL_BUDGET).then(|| {
+                sent += bytes.len();
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            });
             Some(CandidateImage {
                 candidate,
                 mime,
-                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                data,
             })
         })
         .collect()

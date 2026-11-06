@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::supervisor::Supervisor;
 use crate::workspace::{ProjectDeleteResult, Workspace};
@@ -125,44 +125,62 @@ pub fn project_has_running_agents(
 
 /// Repoint a pinned repo at a folder the user has moved on disk. Validates the
 /// destination is a git repo; existing agents' worktrees are not relinked.
+/// Async + `spawn_blocking`: the move re-scans the repository for its icon.
 #[tauri::command]
-pub fn relocate_repo(
+pub async fn relocate_repo(
     supervisor: State<'_, Arc<Supervisor>>,
     old_path: String,
     new_path: String,
 ) -> Result<Workspace> {
-    supervisor.relocate_repo(PathBuf::from(old_path), PathBuf::from(new_path))
+    let sup = supervisor.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        sup.relocate_repo(PathBuf::from(old_path), PathBuf::from(new_path))
+    })
+    .await
+    .map_err(|e| Error::Other(format!("relocate repo: {e}")))?
 }
 
 /// The icon candidates in a project's repositories, best first, with their
-/// images (a fresh scan: the picker's "Detect again").
+/// images (a fresh scan: the picker's "Detect again"). Async + `spawn_blocking`:
+/// the scan walks the repository, which the main thread must not wait on.
 #[tauri::command]
-pub fn project_icon_candidates(
+pub async fn project_icon_candidates(
     supervisor: State<'_, Arc<Supervisor>>,
     project_id: String,
-) -> Vec<fletch_core::icon_detect::CandidateImage> {
-    fletch_core::commands::project_icon_candidates_impl(&supervisor, &project_id)
+) -> Result<Vec<fletch_core::icon_detect::CandidateImage>> {
+    let sup = supervisor.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        fletch_core::commands::project_icon_candidates_impl(&sup, &project_id)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("icon candidates: {e}")))
 }
 
-/// Make `source` the project's icon; `bytes` (base64) for a chosen file.
+/// Make `source` the project's icon; `bytes` (base64) for a chosen file. Off
+/// the main thread like the scan: a `detected:` choice re-reads the candidates.
 #[tauri::command]
-pub fn project_icon_set(
+pub async fn project_icon_set(
     ctx: State<'_, Arc<EngineCtx>>,
     supervisor: State<'_, Arc<Supervisor>>,
     project_id: String,
     source: Option<String>,
     bytes: Option<String>,
 ) -> Result<Workspace> {
-    fletch_core::commands::announce_workspace(
-        ctx.sink.as_ref(),
-        fletch_core::commands::project_icon_set_impl(
-            &ctx,
-            &supervisor,
-            &project_id,
-            source.as_deref(),
-            bytes.as_deref(),
-        ),
-    )
+    let (ctx, sup) = (ctx.inner().clone(), supervisor.inner().clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        fletch_core::commands::announce_workspace(
+            ctx.sink.as_ref(),
+            fletch_core::commands::project_icon_set_impl(
+                &ctx,
+                &sup,
+                &project_id,
+                source.as_deref(),
+                bytes.as_deref(),
+            ),
+        )
+    })
+    .await
+    .map_err(|e| Error::Other(format!("set icon: {e}")))?
 }
 
 /// The project's stored icon: a glyph, an image, or null for the initial.

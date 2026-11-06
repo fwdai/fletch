@@ -197,12 +197,12 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
     return () => setAttendedChat(null);
   }, [selectedId, setAttendedChat]);
 
-  // The tab's default agent must exist before the picker can preselect it.
-  useEffect(() => {
-    void ensureProjectManager();
-  }, []);
-
   // ── the list ───────────────────────────────────────────────────────
+  // The list and the default agent land together: `loading` means both are
+  // ready, so the picker preselects the PM preset and a request taken on load
+  // (an inbox card's "Open in PM chat") starts with it rather than racing the
+  // seed. `ensureProjectManager` never rejects — a failed seed resolves to no
+  // default, and the picker falls back to the provider.
   useEffect(() => {
     if (!projectId) {
       setChats([]);
@@ -212,9 +212,8 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
     }
     let alive = true;
     setLoading(true);
-    api
-      .listProjectChats(projectId, ROADMAP_PM_PURPOSE)
-      .then((rows) => {
+    Promise.all([ensureProjectManager(), api.listProjectChats(projectId, ROADMAP_PM_PURPOSE)])
+      .then(([, rows]) => {
         if (!alive) return;
         // Register before rendering: ChatPane resolves its transcript adapter
         // synchronously on mount, ahead of this hook's mirror effect.

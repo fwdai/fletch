@@ -50,11 +50,6 @@
   flex-direction: column;
   border-right: 1px solid var(--bd-soft);
 }
-.rm-thread-scroll {
-  flex: 1;
-  overflow-y: auto;
-  padding: 22px 0 10px;
-}
 .rm-chat {
   flex: 1;
   min-height: 0;
@@ -1765,13 +1760,6 @@ button.rm-handoff:hover {
 }
 
 /* ── the item form ── */
-/* Two short fields share a line: size and area are both one glance wide, and
-   stacking them would push "Why" below the fold. */
-.rm-form-row {
-  display: grid;
-  grid-template-columns: 130px 1fr;
-  gap: 12px;
-}
 .rm-textarea {
   min-height: 62px;
   resize: vertical;

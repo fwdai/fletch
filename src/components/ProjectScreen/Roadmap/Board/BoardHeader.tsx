@@ -3,6 +3,7 @@ import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import type { useProjectSettings } from "@/util/useProjectSettings";
 import { AutonomyPopover } from "../AutonomyPopover";
 
@@ -23,6 +24,9 @@ export function BoardHeader({
 }) {
   const threadOpen = useAppStore((s) => s.roadmapThreadOpen);
   const toggleThread = useAppStore((s) => s.toggleRoadmapThread);
+  // A host from before the inbox drives the board but cannot land a capture:
+  // the field hides rather than failing on Enter, as the phone's does.
+  const captureGate = useGate("roadmapCapture");
 
   return (
     <>
@@ -48,7 +52,7 @@ export function BoardHeader({
           </>
         )}
       </div>
-      {!readOnly && <CaptureField onCapture={onCapture} />}
+      {!readOnly && !captureGate && <CaptureField onCapture={onCapture} />}
     </>
   );
 }

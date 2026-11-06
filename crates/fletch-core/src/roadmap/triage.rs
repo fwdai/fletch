@@ -7,9 +7,9 @@
 //! live planning chat, or a durable note on each row when there is none. The
 //! PM answers with `roadmap_triage`, which only ever proposes.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use rusqlite::Connection;
@@ -24,6 +24,16 @@ use crate::host::EngineCtx;
 
 /// How long after a capture the turn waits for the next one.
 const DEBOUNCE: Duration = Duration::from_secs(3);
+
+/// How long a row handed to a chat is left alone before the next capture may
+/// offer it again: long enough for the PM to get to it, short enough that a
+/// chat deleted mid-triage does not strand it for the session.
+const REOFFER: Duration = Duration::from_secs(10 * 60);
+
+/// Rows handed to a PM, by when: the next turn names only what is new or has
+/// waited past [`REOFFER`]. In memory on purpose — after a restart whatever is
+/// still untriaged is offered once more, by the nudge at boot.
+type Asked = HashMap<String, Instant>;
 
 /// The note a row gets when its triage turn reaches no chat.
 pub(crate) const NO_CHAT: &str =
@@ -55,9 +65,9 @@ pub(crate) struct Turn {
     pub plan: Plan,
 }
 
-/// Every project with untriaged rows not already handed out this session,
-/// and where its turn would go. Projects with the dial off are skipped.
-pub(crate) fn collect(conn: &Connection, asked: &HashSet<String>) -> Vec<Turn> {
+/// Every project with untriaged rows not handed out lately, and where its turn
+/// would go. Projects with the dial off are skipped.
+pub(crate) fn collect(conn: &Connection, asked: &Asked) -> Vec<Turn> {
     let projects: Vec<String> = conn
         .prepare(
             "SELECT DISTINCT project_id FROM roadmap_items \
@@ -78,7 +88,7 @@ pub(crate) fn collect(conn: &Connection, asked: &HashSet<String>) -> Vec<Turn> {
             let board = store::list(conn, &project_id).ok()?;
             let items: Vec<RoadmapItem> = untriaged(&board)
                 .into_iter()
-                .filter(|i| !asked.contains(&i.id))
+                .filter(|i| asked.get(&i.id).map_or(true, |at| at.elapsed() >= REOFFER))
                 .cloned()
                 .collect();
             (!items.is_empty()).then_some(Turn {
@@ -138,10 +148,10 @@ pub(crate) fn render(items: &[RoadmapItem]) -> String {
 
 pub fn spawn(ctx: Arc<EngineCtx>, db: Db) {
     crate::host::spawn(async move {
-        // Rows handed to a PM this session, so the next turn names only what is
-        // new. In memory on purpose: after a restart whatever is still
-        // untriaged is offered once more.
-        let asked: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let asked: Arc<Mutex<Asked>> = Arc::new(Mutex::new(HashMap::new()));
+        // The backlog from before this boot gets its turn without waiting for
+        // a new capture.
+        nudge();
         loop {
             signal().notified().await;
             tokio::time::sleep(DEBOUNCE).await;
@@ -150,7 +160,10 @@ pub fn spawn(ctx: Arc<EngineCtx>, db: Db) {
                 collect(&conn, &asked.lock())
             };
             for turn in turns {
-                asked.lock().extend(turn.items.iter().map(|i| i.id.clone()));
+                let now = Instant::now();
+                asked
+                    .lock()
+                    .extend(turn.items.iter().map(|i| (i.id.clone(), now)));
                 let (ctx, db, asked) = (ctx.clone(), db.clone(), asked.clone());
                 crate::host::spawn(async move { send(&ctx, &db, &asked, turn).await });
             }
@@ -158,7 +171,7 @@ pub fn spawn(ctx: Arc<EngineCtx>, db: Db) {
     });
 }
 
-async fn send(ctx: &Arc<EngineCtx>, db: &Db, asked: &Mutex<HashSet<String>>, turn: Turn) {
+async fn send(ctx: &Arc<EngineCtx>, db: &Db, asked: &Mutex<Asked>, turn: Turn) {
     let delivered = match &turn.plan {
         Plan::Deliver { agent_id } => review::deliver(ctx, agent_id, &render(&turn.items)).await,
         Plan::Off | Plan::NoChat => false,

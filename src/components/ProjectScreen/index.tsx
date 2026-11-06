@@ -18,10 +18,11 @@ interface Loaded {
 }
 
 /** Full-screen project page. Rendered in place of the workspace panes while
- *  `projectScreenRepoPath` is set (mirrors SettingsScreen). Three tabs under a
- *  shared header, one per question you can ask about a project: the Roadmap
- *  (what gets built next), Activity (what has been built), and Settings (the
- *  per-project config every agent in the project inherits).
+ *  `projectScreenRepoPath` is set (mirrors SettingsScreen). Four tabs under a
+ *  header that names the project: the Roadmap (what gets built next), Activity
+ *  (what has been built), Context (what the host knows about the project, while
+ *  the layer's developer gate is open) and Settings (the per-project config
+ *  every agent in the project inherits).
  *
  *  Keyed by the project's primary repo path; resolves the project_id and
  *  detected run config on open. Both non-roadmap tabs need the resolved

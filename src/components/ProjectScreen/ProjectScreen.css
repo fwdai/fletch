@@ -76,10 +76,10 @@
   }
 }
 
-/* tabs — Roadmap ⇄ Settings, as a segmented control.
+/* tabs — Roadmap · Activity · Context | Settings, as a segmented control.
  * The page's primary nav is a *control* (a raised pill inside a track); the
- * board's own tabs below stay bare text pills, so the two levels never read as
- * the same thing. */
+ * second level below it — the settings sub-tabs, the board's own tabs — stays
+ * bare text pills, so the two levels never read as the same thing. */
 .ps-tabs {
   justify-self: center;
   display: flex;
@@ -226,10 +226,6 @@
   margin-bottom: 7px;
   color: var(--fg-1);
   font-weight: 500;
-}
-.ps-name-row {
-  display: flex;
-  gap: 8px;
 }
 .ps-input {
   flex: 1;

@@ -105,6 +105,13 @@ pub fn set_project_setting_impl(
             "`{key}` is not a project setting a client may write"
         )));
     }
+    // Answered like any key, but the stored image and its hash move with the
+    // choice, so only `project_icon_set` writes it.
+    if key == crate::icon_detect::SOURCE_KEY {
+        return Err(Error::Other(format!(
+            "`{key}` is written through project_icon_set"
+        )));
+    }
     // The posture is validated and spelled the one way before it is stored,
     // and the project's running boxes take it at once.
     use crate::sandbox::boxes::settings::{self as box_settings, EgressMode};
@@ -244,6 +251,20 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM project_settings", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+        assert!(sink.events().is_empty());
+    }
+
+    /// The icon choice is answered like any key but written only through
+    /// `project_icon_set`, which stores the image and moves the hash with it.
+    #[test]
+    fn the_icon_choice_is_not_written_here() {
+        let (ctx, sink, _dir) = test_ctx();
+        with_project(&ctx);
+        let err =
+            set_project_setting_impl(&ctx, "p1", crate::icon_detect::SOURCE_KEY, Some("initial"))
+                .unwrap_err();
+        assert!(err.to_string().contains("project_icon_set"));
+        assert!(get_project_settings_impl(&ctx, "p1").unwrap().is_empty());
         assert!(sink.events().is_empty());
     }
 

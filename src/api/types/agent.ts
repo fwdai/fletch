@@ -199,7 +199,7 @@ export interface ProjectIconCandidate {
   source: string;
   width: number | null;
   mime: string;
-  data: string;
+  data: string | null;
 }
 
 export interface Workspace {

@@ -57,7 +57,7 @@ fn a_turn_goes_to_the_newest_pm_chat_and_skips_what_was_already_asked() {
     let one = row(&conn, "one", "", ItemStatus::Captured);
     let two = row(&conn, "two", "", ItemStatus::Captured);
 
-    let turns = collect(&conn, &HashSet::new());
+    let turns = collect(&conn, &HashMap::new());
     assert_eq!(turns.len(), 1);
     assert_eq!(
         turns[0].plan,
@@ -66,7 +66,7 @@ fn a_turn_goes_to_the_newest_pm_chat_and_skips_what_was_already_asked() {
     );
 
     pm_chat(&conn, "pm");
-    let turns = collect(&conn, &HashSet::from([one.id.clone()]));
+    let turns = collect(&conn, &HashMap::from([(one.id.clone(), Instant::now())]));
     assert_eq!(turns.len(), 1);
     assert_eq!(
         turns[0].plan,
@@ -77,7 +77,8 @@ fn a_turn_goes_to_the_newest_pm_chat_and_skips_what_was_already_asked() {
     let named: Vec<&str> = turns[0].items.iter().map(|i| i.code.as_str()).collect();
     assert_eq!(named, vec![two.code.as_str()], "one was already handed out");
 
-    let all = HashSet::from([one.id.clone(), two.id.clone()]);
+    let now = Instant::now();
+    let all = HashMap::from([(one.id.clone(), now), (two.id.clone(), now)]);
     assert!(collect(&conn, &all).is_empty(), "nothing new, no turn");
 }
 
@@ -92,7 +93,7 @@ fn the_dial_off_runs_nothing() {
             rusqlite::params![TRIAGE_KEY, off],
         )
         .unwrap();
-        assert!(collect(&conn, &HashSet::new()).is_empty(), "{off}");
+        assert!(collect(&conn, &HashMap::new()).is_empty(), "{off}");
     }
 }
 

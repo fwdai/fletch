@@ -33,6 +33,9 @@ export function NetworkPane({ projectId }: { projectId: string }) {
   const fileGate = useGate("projectFile");
   const editGate = useGate("projectFileEdit");
   const policyGate = useGate("egressPolicy");
+  // A host from before the egress log keeps no record; what this window saw
+  // stands in for it below.
+  const activityGate = useGate("egressActivity");
   const { status, approve } = useProjectFile(fileGate ? null : projectId);
   const { overview } = useEgressOverview(projectId, !!policyGate);
   const clearBlocked = useAppStore((s) => s.clearBoxEgress);
@@ -162,8 +165,63 @@ export function NetworkPane({ projectId }: { projectId: string }) {
         {error && <SetRow title="Couldn't save" sub={problem(error)} />}
       </YourHosts>
 
-      <RecentHosts project={own} />
+      {activityGate ? (
+        <BlockedWithoutLog projectId={projectId} except={allowedNow} allow={own.allow} />
+      ) : (
+        <RecentHosts project={own} />
+      )}
       {overview && <FletchAllows overview={overview} host={inherited} />}
     </div>
+  );
+}
+
+/** The project's refused hosts on a host from before the egress log, from what
+ *  this window saw (`boxEgressBlocked`), so the egress toast's Review still
+ *  lands on the host it names. Quiet rows — telemetry — stay out, as they never
+ *  prompt; allowing one clears it from the toast's list too. */
+function BlockedWithoutLog({
+  projectId,
+  except,
+  allow,
+}: {
+  projectId: string;
+  /** Hosts already on the project's list. */
+  except: Set<string>;
+  allow?: (host: string) => Promise<unknown>;
+}) {
+  const blocked = useAppStore((s) => s.boxEgressBlocked);
+  const agents = useAppStore((s) => s.workspace?.agents);
+  const projects = useAppStore((s) => s.workspace?.projects);
+  const paths = new Set(
+    (projects ?? []).filter((p) => p.project_id === projectId).map((p) => p.path),
+  );
+  const mine = new Set(
+    (agents ?? []).filter((a) => a.repos[0] && paths.has(a.repos[0].repo_path)).map((a) => a.id),
+  );
+  const counts = new Map<string, number>();
+  for (const b of blocked) {
+    if (b.quiet || !mine.has(b.agent_id) || except.has(b.host)) continue;
+    counts.set(b.host, (counts.get(b.host) ?? 0) + b.count);
+  }
+  if (counts.size === 0) return null;
+  return (
+    <SetGroup label="Blocked recently">
+      {[...counts]
+        .sort((a, b) => b[1] - a[1])
+        .map(([host, count]) => (
+          <SetRow
+            key={host}
+            compact
+            title={<span className="mono">{host}</span>}
+            sub={count === 1 ? "refused once" : `refused ${count} times`}
+          >
+            {allow && (
+              <Button variant="ghost" onClick={() => void allow(host).catch(() => {})}>
+                Allow
+              </Button>
+            )}
+          </SetRow>
+        ))}
+    </SetGroup>
   );
 }

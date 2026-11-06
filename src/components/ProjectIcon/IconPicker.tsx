@@ -111,7 +111,13 @@ export function IconPicker({ project }: { project: ProjectRef }) {
                     title={`${c.path}\n${c.source}`}
                     onClick={() => void choose(`detected:${c.path}`)}
                   >
-                    <ProjectMark name={project.name} icon={c} size={32} />
+                    {/* Past the scan's thumbnail budget a candidate comes without
+                        its bytes and draws the initial; choosing it still works. */}
+                    <ProjectMark
+                      name={project.name}
+                      icon={c.data ? { mime: c.mime, data: c.data } : null}
+                      size={32}
+                    />
                     <span className="proj-icon-cap">{c.path}</span>
                   </button>
                 ))}

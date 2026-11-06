@@ -76,8 +76,6 @@ export const providerShort = (id: string) =>
 
 export const providerHue = (id: string) => PROVIDERS.find((p) => p.id === id)?.hue ?? 0;
 
-export const hueColor = (hue: number) => `oklch(0.72 0.12 ${hue})`;
-
 /** Compact model name for chips: drop a provider prefix and prettify dashes. */
 export function modelLabel(model: string | null | undefined): string {
   if (!model) return "default";

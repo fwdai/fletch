@@ -389,7 +389,7 @@ export function pageItems(ctx: PaletteContext): PaletteItem[] {
       leading: { kind: "icon", name: "inbox" },
       section: SEC.create,
       keywords: "capture  idea  ticket  inbox  note  todo  backlog",
-      disabled: gateReason(activeEntry(s), "roadmap"),
+      disabled: gateReason(activeEntry(s), "roadmapCapture"),
       run: () => go(s, () => s.captureToRoadmap(captureRepo)),
       remember: true,
     });

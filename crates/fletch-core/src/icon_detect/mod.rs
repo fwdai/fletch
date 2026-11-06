@@ -354,14 +354,17 @@ impl Tree {
                     .collect(),
                 _ => continue,
             };
-            // Largest first; stable, so the manifest's order breaks a tie.
+            // Largest first; stable, so the manifest's order breaks a tie. A
+            // `src` resolves beside the manifest or, root-absolute, in
+            // `public/` — where a manifest under `src/` points when `/` is
+            // served from there.
             listed.sort_by_key(|(size, _)| std::cmp::Reverse(*size));
             let base = parent_of(file);
-            out.extend(
-                listed
+            out.extend(listed.iter().find_map(|(_, src)| {
+                [join(base, src), join("public", src)]
                     .iter()
-                    .find_map(|(_, src)| self.candidate(&join(base, src), "Web manifest icon")),
-            );
+                    .find_map(|p| self.candidate(p, "Web manifest icon"))
+            }));
         }
     }
 

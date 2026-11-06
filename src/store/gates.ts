@@ -201,6 +201,13 @@ export const GATES = {
     label: "The roadmap",
     reason: "This host is too old to drive a roadmap board.",
   },
+  /** Capturing a line into the roadmap's inbox. Its own gate: a host from
+   *  before the inbox drives a board but has no `captured` row to land it in. */
+  roadmapCapture: {
+    op: "roadmap_capture",
+    label: "Capturing to the roadmap",
+    reason: "This host is too old to capture into the roadmap inbox — update it.",
+  },
   /** Autopilot's switches — the project's and the per-agent pause. The loop
    *  runs on the host, so a host from before `autopilot_set` has none to flip,
    *  and a device paired without `publish` may not (an enrolled checkout's
