@@ -5,10 +5,10 @@ import { ProjectIcon } from "@/components/ProjectIcon";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
+import { useShortcutKeys } from "@/util/shortcuts";
 import { RunRow } from "@/workflows/run/RunRow";
 import { AgentRow } from "./AgentRow";
 import { foldAgents } from "./foldAgents";
-import { ProjectAddButton } from "./ProjectAddButton";
 
 interface Props {
   /** Project display name. */
@@ -68,6 +68,8 @@ export function ProjectGroup({
   const selectRun = useAppStore((s) => s.selectRun);
   const openRoadmap = useAppStore((s) => s.openRoadmap);
   const openProjectSettings = useAppStore((s) => s.openProjectSettings);
+  const createDraft = useAppStore((s) => s.createDraft);
+  const newAgentKeys = useShortcutKeys("newAgent");
   const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
   const roadmapGate = useGate("roadmap");
 
@@ -119,7 +121,7 @@ export function ProjectGroup({
           // Left button only, and never from the action buttons at the right
           // (the name is a grab point like the rest of the row).
           if (!onReorderPointerDown || e.button !== 0) return;
-          if ((e.target as HTMLElement).closest(".padd, .dd")) return;
+          if ((e.target as HTMLElement).closest(".padd")) return;
           draggedRef.current = false;
           onReorderPointerDown(e, () => {
             draggedRef.current = true;
@@ -158,7 +160,15 @@ export function ProjectGroup({
         >
           <Icon name="settings" size={14} />
         </button>
-        <ProjectAddButton repoPath={repoPath} />
+        <button
+          type="button"
+          className="padd padd-add tip"
+          data-tip={`New agent  ${newAgentKeys}`}
+          onClick={action(() => void createDraft(repoPath))}
+          aria-label="New agent"
+        >
+          <Icon name="plus" size={11} />
+        </button>
       </div>
 
       <div className={`agents ${open ? "" : "closed"}`}>
