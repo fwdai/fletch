@@ -50,16 +50,31 @@ export function SetHead({
 
 export function SetGroup({
   label,
+  aside,
+  sub,
   last,
   children,
 }: {
   label?: string;
+  /** Sits at the right end of the label line: a status, not a control. */
+  aside?: ReactNode;
+  /** One line under the label about the whole group. */
+  sub?: ReactNode;
   last?: boolean;
   children: ReactNode;
 }) {
+  const head = label && <div className="set-group-h mono text-xs">{label}</div>;
   return (
     <section className={`set-group ${last ? "last" : ""}`}>
-      {label && <div className="set-group-h mono text-xs">{label}</div>}
+      {aside ? (
+        <div className="set-group-top flex-center">
+          {head}
+          {aside}
+        </div>
+      ) : (
+        head
+      )}
+      {sub && <div className="set-row-s text-sm">{sub}</div>}
       <div className="set-rows">{children}</div>
     </section>
   );

@@ -88,7 +88,7 @@ export function ProjectFilePrompt({
             <Button
               variant="primary"
               onClick={() => {
-                openProjectScreen(path, "settings");
+                openProjectScreen(path, "settings", "network");
                 onDismiss();
               }}
             >

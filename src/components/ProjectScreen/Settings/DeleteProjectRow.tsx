@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "@/api";
+import { SetRow } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 
-export function DeleteSection({
+/** Delete the project, behind an inline confirm in the same row. */
+export function DeleteProjectRow({
   projectId,
   projectName,
 }: {
@@ -71,74 +73,55 @@ export function DeleteSection({
     }
   };
 
+  const note =
+    error ?? gate ?? (hasRunningAgent ? "Stop running agents before deleting this project." : null);
+
   return (
-    <section className="ps-section ps-delete-section">
+    <SetRow
+      title={confirming ? `Delete ${projectName}?` : "Delete project"}
+      sub={
+        note ??
+        (confirming
+          ? "Its agents, workspaces and history go with it. This can't be undone."
+          : `Permanently deletes ${projectName} and all of its agents, workspaces and history.`)
+      }
+    >
       {confirming ? (
-        <div className="ps-delete-confirm" role="group" aria-label="Confirm project deletion">
-          <div className="ps-delete-confirm-copy">
-            <h3 className="ps-delete-confirm-title text-base">Delete {projectName}?</h3>
-            <div className="ps-delete-confirm-text text-sm">
-              This permanently deletes the project and all of its agents, workspaces, and history.
-              This action can&rsquo;t be undone.
-            </div>
-            {hasRunningAgent && (
-              <div className="ps-delete-note text-xs">
-                Stop running agents before deleting this project.
-              </div>
-            )}
-            {error && <div className="ps-delete-error text-xs">{error}</div>}
-          </div>
-          <div className="ps-delete-actions">
-            <Button
-              variant="ghost"
-              disabled={deleting}
-              onClick={() => {
-                setConfirming(false);
-                setError(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="outline"
-              danger
-              disabled={blocked || deleting}
-              tip={blockedTip}
-              onClick={() => void remove()}
-            >
-              {deleting ? "Deleting…" : "Confirm delete"}
-            </Button>
-          </div>
-        </div>
-      ) : (
         <>
-          <header className="ps-section-h ps-delete-copy">
-            <h2 className="ps-section-t text-lg">Delete project</h2>
-            <p className="ps-section-lead text-sm">
-              Permanently delete {projectName} and all of its agents, workspaces, and history.
-            </p>
-            {gate && <div className="ps-delete-note text-xs">{gate}</div>}
-            {hasRunningAgent && (
-              <div className="ps-delete-note text-xs">
-                Stop running agents before deleting this project.
-              </div>
-            )}
-            {error && <div className="ps-delete-error text-xs">{error}</div>}
-          </header>
+          <Button
+            variant="ghost"
+            disabled={deleting}
+            onClick={() => {
+              setConfirming(false);
+              setError(null);
+            }}
+          >
+            Cancel
+          </Button>
           <Button
             variant="outline"
             danger
-            disabled={blocked}
-            onClick={() => {
-              setConfirming(true);
-              setError(null);
-            }}
+            disabled={blocked || deleting}
             tip={blockedTip}
+            onClick={() => void remove()}
           >
-            Delete project
+            {deleting ? "Deleting…" : "Confirm delete"}
           </Button>
         </>
+      ) : (
+        <Button
+          variant="outline"
+          danger
+          disabled={blocked}
+          tip={blockedTip}
+          onClick={() => {
+            setConfirming(true);
+            setError(null);
+          }}
+        >
+          Delete project
+        </Button>
       )}
-    </section>
+    </SetRow>
   );
 }

@@ -7,7 +7,9 @@ import {
   type ProjectFileReport,
   type ProjectFileWhich,
 } from "@/api";
+import { SetHead } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import type { BlockedHost } from "@/store/sandbox";
@@ -40,7 +42,7 @@ const FILE_LABEL: Record<ProjectFileWhich, string> = {
  *  Edits made here are written into one of those files, picked by the user,
  *  and apply at once. Hosts a file adds by any other hand wait for approval:
  *  the one decision a file in a repository cannot make for the user. */
-export function NetworkSection({ projectId }: { projectId: string }) {
+export function NetworkPane({ projectId }: { projectId: string }) {
   const fileGate = useGate("projectFile");
   const editGate = useGate("projectFileEdit");
   const policyGate = useGate("egressPolicy");
@@ -121,44 +123,32 @@ export function NetworkSection({ projectId }: { projectId: string }) {
   const inherited = overview?.base ?? [];
 
   return (
-    <section className="ps-section ps-pf">
-      <header className="ps-section-h">
-        <h2 className="ps-section-t text-lg">Network</h2>
-        <p className="ps-section-lead text-sm">
-          What this project&rsquo;s box agents may reach: Fletch&rsquo;s list and your changes in
-          Settings › Sandbox › Network, then this project&rsquo;s <code>.fletch/settings.json</code>{" "}
-          (commit it to share with your team) and <code>.fletch/settings.local.json</code> (just
-          you).
-        </p>
-      </header>
+    // A block, not `.set-pane`'s column: the body below keeps the flow it had
+    // under the old section header until PR 2 rebuilds it on the shared rows.
+    <div className="ps-pf">
+      <SetHead
+        eyebrow="Project settings · Network"
+        title="Network"
+        desc="What this project's VM agents may reach."
+      />
 
       {!postureGate && (
         <>
           <div className="ps-field ps-name-row">
-            <label className="ps-label text-sm" htmlFor="ps-egress-mode">
-              New hosts
-            </label>
-            <select
-              id="ps-egress-mode"
-              className="ps-input ps-pf-which text-sm"
+            <span className="ps-label text-sm">New hosts</span>
+            <Select<string>
               value={posture.overridden ? posture.mode : "default"}
+              ariaLabel="New hosts"
               disabled={!!settingsGate || settings === null}
-              title={settingsGate ?? undefined}
-              onChange={(e) => {
-                const next = e.target.value;
-                save(EGRESS_MODE_KEY, next === "default" ? null : next);
-              }}
-            >
-              <option value="default">
-                Same as every project ·{" "}
-                {EGRESS_MODE_LABELS[effectiveEgressMode(undefined, globalMode).mode]}
-              </option>
-              {EGRESS_MODES.map((m) => (
-                <option key={m} value={m}>
-                  {EGRESS_MODE_LABELS[m]}
-                </option>
-              ))}
-            </select>
+              options={[
+                {
+                  value: "default",
+                  label: `Same as every project · ${EGRESS_MODE_LABELS[effectiveEgressMode(undefined, globalMode).mode]}`,
+                },
+                ...EGRESS_MODES.map((m) => ({ value: m, label: EGRESS_MODE_LABELS[m] })),
+              ]}
+              onChange={(next) => save(EGRESS_MODE_KEY, next === "default" ? null : next)}
+            />
           </div>
           <p className="ps-hint text-xs">
             What a VM does when an agent reaches a host that isn&rsquo;t on its list.{" "}
@@ -372,7 +362,7 @@ export function NetworkSection({ projectId }: { projectId: string }) {
           )}
         </>
       )}
-    </section>
+    </div>
   );
 }
 

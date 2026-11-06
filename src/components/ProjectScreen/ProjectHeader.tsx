@@ -1,5 +1,7 @@
 import { Icon, type IconName } from "@/components/Icon";
+import { ProjectIcon } from "@/components/ProjectIcon";
 import { CountUp, Stat } from "@/components/Stats";
+import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import type { ProjectScreenTab } from "@/store/ui";
 import type { RoadmapState } from "./Roadmap";
@@ -11,18 +13,18 @@ const TABS: { id: ProjectScreenTab; label: string; icon: IconName }[] = [
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
-/** The project page header: one thin chrome bar — back on the left, the tab
- *  segment centered, the board counts on the right.
- *
- *  No project name or path here: the title bar already names the project the
- *  page belongs to, and repeating it cost a whole second row of height above
- *  two panels that each have a header of their own. */
+/** The project page header: one thin chrome bar — back and the project's
+ *  identity on the left, the tab segment centered, the board counts on the
+ *  right. The identity sits in the back button's old zone, so every tab says
+ *  which project it is without a second row. */
 export function ProjectHeader({
+  name,
   roadmap,
   tab,
   onTab,
   onClose,
 }: {
+  name: string;
   roadmap: RoadmapState;
   tab: ProjectScreenTab;
   onTab: (tab: ProjectScreenTab) => void;
@@ -35,10 +37,13 @@ export function ProjectHeader({
 
   return (
     <div className="ps-head">
-      <button type="button" className="ps-back flex-center text-sm" onClick={onClose}>
-        <Icon name="chevL" size={13} />
-        <span>Back to app</span>
-      </button>
+      <div className="ps-ident flex-center">
+        <IconButton tip="Back to app" onClick={onClose}>
+          <Icon name="chevL" size={13} />
+        </IconButton>
+        <ProjectIcon name={name} />
+        <span className="ps-name text-base truncate">{name}</span>
+      </div>
 
       <nav className="ps-tabs">
         {tabs.map((t) => (

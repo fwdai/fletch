@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type EnvEntry, type EnvFileKeys } from "@/api";
+import { SetGroup } from "@/components/SettingsScreen/primitives";
 import {
   loadRunEnvDoc,
   type RunEnvDoc,
@@ -21,8 +22,8 @@ interface Props {
 /** The opt-in environment membrane: lists the project's `.env` variables and
  *  lets the user choose, per variable, whether it's shared into the sandboxed
  *  Run process and whether its value mirrors `.env` or is overridden. Nothing
- *  is shared by default. Autosaves per edit, like the run-config section. */
-export function EnvVarsSection({ projectId, repoPath }: Props) {
+ *  is shared by default. Autosaves per edit, like the run-config rows. */
+export function EnvVars({ projectId, repoPath }: Props) {
   const [entries, setEntries] = useState<EnvEntry[] | null>(null);
   // Keys declared by `.env.example`/`.env.sample` but absent from `.env` —
   // the project wants them, no value is set (and example placeholders are
@@ -207,42 +208,39 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
   };
 
   return (
-    <section className="ps-section">
-      <header className="ps-section-h">
-        <h2 className="ps-section-t text-lg">Environment variables</h2>
-        <p className="ps-section-lead text-sm">
-          Variables from this project’s <code>.env</code> — nothing reaches the sandbox unless you
-          switch it on. Edit a shared value to override it (use <code>{"{{agent_id}}"}</code> per
-          agent), or add one below.
-        </p>
-      </header>
+    <SetGroup
+      label="Environment variables"
+      sub="Nothing from .env reaches the sandbox unless you switch it on."
+    >
+      {/* A block, so the add button keeps its own width in the group's column. */}
+      <div>
+        {entries === null ? (
+          <div className="ps-state text-sm">Loading…</div>
+        ) : rows.length === 0 ? (
+          <div className="ev-empty-state text-sm">
+            No <code>.env</code> found in <span className="mono">{basename(repoPath)}</span>.
+          </div>
+        ) : (
+          <div className="ev-list">
+            {rows.map(({ key, envValue, declaredOnly }) => (
+              <EnvVarRow
+                key={key}
+                varKey={key}
+                envValue={envValue}
+                declaredOnly={declaredOnly}
+                overrideValue={overrides[key]}
+                cfg={varConfig(doc, key)}
+                onToggleShare={(shared) => onToggleShare(key, shared)}
+                onCommit={(value) => onCommit(key, value)}
+                onRevert={() => revertToMirror(key)}
+                onRemove={() => removeVar(key)}
+              />
+            ))}
+          </div>
+        )}
 
-      {entries === null ? (
-        <div className="ps-state text-sm">Loading…</div>
-      ) : rows.length === 0 ? (
-        <div className="ev-empty-state text-sm">
-          No <code>.env</code> found in <span className="mono">{basename(repoPath)}</span>.
-        </div>
-      ) : (
-        <div className="ev-list">
-          {rows.map(({ key, envValue, declaredOnly }) => (
-            <EnvVarRow
-              key={key}
-              varKey={key}
-              envValue={envValue}
-              declaredOnly={declaredOnly}
-              overrideValue={overrides[key]}
-              cfg={varConfig(doc, key)}
-              onToggleShare={(shared) => onToggleShare(key, shared)}
-              onCommit={(value) => onCommit(key, value)}
-              onRevert={() => revertToMirror(key)}
-              onRemove={() => removeVar(key)}
-            />
-          ))}
-        </div>
-      )}
-
-      {entries !== null && <AddVarForm existingKeys={existingKeys} onAdd={addVar} />}
-    </section>
+        {entries !== null && <AddVarForm existingKeys={existingKeys} onAdd={addVar} />}
+      </div>
+    </SetGroup>
   );
 }

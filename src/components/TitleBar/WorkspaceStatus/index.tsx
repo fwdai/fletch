@@ -1,7 +1,8 @@
+import type { ReactNode } from "react";
+import { ProjectIcon } from "@/components/ProjectIcon";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
 import { Capsule } from "./Capsule";
-import { agentDotStatus } from "./derive";
 import { ProjectPill } from "./ProjectPill";
 import { StatusDot } from "./StatusDot";
 
@@ -15,11 +16,11 @@ export function WorkspaceStatus() {
   const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
   const closeUsageScreen = useAppStore((s) => s.closeUsageScreen);
   const projectScreenRepoPath = useAppStore((s) => s.projectScreenRepoPath);
+  const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
   const workspace = useAppStore((s) => s.workspace);
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const drafts = useAppStore((s) => s.drafts);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
-  const pending = useAppStore((s) => s.pendingToolUse);
 
   // Project display name for a repo path: the user-editable project name
   // (as in the sidebar), falling back to the folder basename.
@@ -28,24 +29,21 @@ export function WorkspaceStatus() {
 
   if (settingsScreenOpen) return <ScreenCrumb label="Settings" onHome={closeSettingsScreen} />;
   if (usageScreenOpen) return <ScreenCrumb label="Usage" onHome={closeUsageScreen} />;
+  // The project page sits a level above any workspace: the same crumb, with
+  // the project's mark.
+  if (projectScreenRepoPath) {
+    const name = projectName(projectScreenRepoPath);
+    return (
+      <ScreenCrumb
+        label={name}
+        icon={<ProjectIcon name={name} size={12} />}
+        onHome={closeProjectScreen}
+      />
+    );
+  }
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
   const agent = !draft && selectedId ? workspace?.agents.find((a) => a.id === selectedId) : null;
-
-  // On the project page the user sits a level above any workspace, so no
-  // workspace pill — just marker + project name, plain. The marker keeps the
-  // capsule's display logic: the selected agent's live status when it belongs
-  // to this project; a draft (or no relevant selection) reads idle.
-  if (projectScreenRepoPath) {
-    const onProject = agent?.repos[0]?.repo_path === projectScreenRepoPath;
-    const status = agent && onProject ? agentDotStatus(agent.status, pending[agent.id]) : "idle";
-    return (
-      <div className="ws-plain">
-        <StatusDot status={status} />
-        <span className="ws-plain-active">{projectName(projectScreenRepoPath)}</span>
-      </div>
-    );
-  }
 
   if (draft) {
     return (
@@ -127,14 +125,23 @@ function DraftCapsule({
   );
 }
 
-/** A full-screen surface (settings, usage) — a plain crumb back to Home. */
-function ScreenCrumb({ label, onHome }: { label: string; onHome: () => void }) {
+/** A full-screen surface (settings, usage, a project) — a plain crumb back to Home. */
+function ScreenCrumb({
+  label,
+  icon,
+  onHome,
+}: {
+  label: string;
+  icon?: ReactNode;
+  onHome: () => void;
+}) {
   return (
     <div className="ws-plain">
       <button type="button" className="ws-plain-btn" onClick={onHome}>
         fletch
       </button>
       <span className="ws-plain-sep">/</span>
+      {icon}
       <span className="ws-plain-active">{label}</span>
     </div>
   );

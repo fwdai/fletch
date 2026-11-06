@@ -71,7 +71,7 @@ export function BoxEgressToast() {
                   <Button
                     variant="primary"
                     onClick={() => {
-                      openProjectScreen(repoPath, "settings");
+                      openProjectScreen(repoPath, "settings", "network");
                       dismiss(agentId);
                     }}
                   >

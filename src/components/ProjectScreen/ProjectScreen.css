@@ -11,7 +11,7 @@
   background: var(--bg-1);
 }
 
-/* header — one bar, three zones: back / tabs / counts.
+/* header — one bar, three zones: back + identity / tabs / counts.
  *
  * A grid rather than a flex row with spacers, because the tabs are centered on
  * the *window*, not on whatever is left between two clusters of unequal width —
@@ -30,29 +30,31 @@
   padding: 0 14px;
   border-bottom: 1px solid var(--bd-soft);
 }
-/* Pulled left by its own inset so the chevron lands on the 16px gutter the
-   panels below use, while the hover box still clears the window edge. */
-.ps-back {
+/* Back, then the project's mark and name. Pulled left by the back button's
+   inset so the chevron lands on the 16px gutter the panels below use; the
+   wider gap after it keeps it from reading as "back to <project>". */
+.ps-ident {
   justify-self: start;
-  gap: 6px;
-  height: 26px;
-  padding: 0 10px 0 8px;
+  min-width: 0;
+  gap: 8px;
   margin-left: -6px;
-  white-space: nowrap;
-  border-radius: var(--r-sm);
-  color: var(--fg-2);
-  font-weight: 500;
-  transition: var(--transition-ui);
 }
-.ps-back:hover {
-  background: var(--hover);
+.ps-ident .btn-i {
+  margin-right: 4px;
+}
+.ps-name {
+  min-width: 0;
+  font-weight: 600;
   color: var(--fg-0);
 }
-.ps-back svg {
-  transition: transform 0.15s var(--ease);
-}
-.ps-back:hover svg {
-  transform: translateX(-2px);
+/* `ProjectIcon`: the initial mark. Its size comes inline. */
+.proj-icon {
+  flex-shrink: 0;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--fg-1);
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px var(--bd);
 }
 /* Board counts. The strip must never wrap — the bar has a fixed height, so a
  * second line would be clipped rather than shown. `.stat-row` (Stats.css, which
@@ -145,55 +147,26 @@
   padding: 24px 2px;
 }
 
-.ps-delete-section {
-  border-top: 1px solid var(--bd-soft);
-  padding-top: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-}
-.ps-delete-copy {
-  min-width: 0;
-}
-.ps-delete-copy.ps-section-h {
-  margin-bottom: 0;
-}
-.ps-delete-note,
-.ps-delete-error {
-  margin-top: 8px;
-  color: var(--danger);
-}
-.ps-delete-confirm {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 8px 16px;
-  background: var(--bg-2);
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-sm);
-}
-.ps-delete-confirm-copy {
-  min-width: 0;
-}
-.ps-delete-confirm-title {
-  margin-top: 0;
-  color: var(--fg-0);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-.ps-delete-confirm-text {
-  margin-top: 6px;
-  color: var(--fg-2);
-  line-height: 1.5;
-}
-.ps-delete-actions {
+/* settings tab — its own frame: a row of bare pills (`.ps-tab`, no track)
+ * under the header, then one pane of the shared `set-*` rows in the body
+ * column above. Never `.set-screen` / `.set-nav`: that frame is the global
+ * screen's. */
+.proj-set-tabs {
   flex-shrink: 0;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  gap: 4px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+/* `SetGroup`'s label line when it carries an aside (the run commands'
+ * ecosystem badge). */
+.set-group-top {
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 6px;
+}
+.set-group-top .set-group-h {
+  margin-bottom: 0;
 }
 
 /* sections */
@@ -242,7 +215,7 @@
   border: 1px solid var(--bd-soft);
   border-radius: 3px;
 }
-/* general section — name + location */
+/* form fields — the Context tab's forms and the network pane's body */
 .ps-field {
   margin-top: 18px;
 }
@@ -276,38 +249,6 @@
   outline: none;
   border-color: var(--accent);
   background: var(--bg-1);
-}
-.ps-path-row {
-  width: 100%;
-  gap: 9px;
-  height: 34px;
-  padding: 0 11px;
-  text-align: left;
-  color: var(--fg-1);
-  background: var(--bg-2);
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-sm);
-  transition:
-    background 0.1s,
-    border-color 0.1s;
-}
-.ps-path-row:hover:not(:disabled) {
-  background: var(--hover);
-  border-color: var(--bd-strong);
-}
-.ps-path-row:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.ps-path-val {
-  flex: 1;
-  min-width: 0;
-  color: var(--fg-2);
-}
-.ps-path-change {
-  flex-shrink: 0;
-  color: var(--accent);
-  font-weight: 500;
 }
 .ps-hint {
   margin-top: 7px;

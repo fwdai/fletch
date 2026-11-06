@@ -6,18 +6,9 @@ import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
 import { Activity } from "./Activity";
-import { AutopilotSection } from "./AutopilotSection";
-import { DeleteSection } from "./DeleteSection";
-import { EnvVarsSection } from "./EnvVarsSection";
-import { GeneralSection } from "./GeneralSection";
-import { LinearSection } from "./LinearSection";
-import { NetworkSection } from "./NetworkSection";
 import { ProjectHeader } from "./ProjectHeader";
 import { Roadmap, useRoadmap } from "./Roadmap";
-import { RoadmapSection } from "./RoadmapSection";
-import { RunEnvSection } from "./RunEnvSection";
-import { SandboxSection } from "./SandboxSection";
-import { VerifySection } from "./VerifySection";
+import { ProjectSettings } from "./Settings";
 
 interface Loaded {
   projectId: string;
@@ -52,9 +43,9 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
   const roadmap = useRoadmap(repoPath);
 
   // Custom display name for this repo, falling back to the folder basename.
-  // Not shown in the page header (the title bar already names the project) —
-  // the settings sections below still need it.
   const name = projects?.find((p) => p.path === repoPath)?.name ?? basename(repoPath);
+  // A Context tab whose developer gate closed falls back to Settings.
+  const onSettings = tab === "settings" || (tab === "context" && !contextLayerEnabled);
 
   // Resolve project_id + detected run config for the repo, then load the
   // persisted overrides. Both must be ready before the editor mounts so the
@@ -101,10 +92,12 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
 
   return (
     <div className="proj-screen">
-      <ProjectHeader roadmap={roadmap} tab={tab} onTab={setTab} onClose={close} />
+      <ProjectHeader name={name} roadmap={roadmap} tab={tab} onTab={setTab} onClose={close} />
 
       {tab === "roadmap" ? (
         <Roadmap roadmap={roadmap} repoPath={repoPath} />
+      ) : loaded && onSettings ? (
+        <ProjectSettings {...loaded} repoPath={repoPath} name={name} />
       ) : (
         <div className="ps-content">
           <div className="ps-sections">
@@ -116,26 +109,8 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
               </div>
             ) : tab === "activity" ? (
               <Activity projectId={loaded.projectId} />
-            ) : tab === "context" && contextLayerEnabled ? (
-              <ProjectContext projectId={loaded.projectId} />
             ) : (
-              <>
-                <GeneralSection projectId={loaded.projectId} currentName={name} />
-                <RunEnvSection
-                  projectId={loaded.projectId}
-                  rows={loaded.rows}
-                  ecosystem={loaded.ecosystem}
-                  initialOverrides={loaded.overrides}
-                />
-                <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
-                <SandboxSection projectId={loaded.projectId} repoPath={repoPath} />
-                <NetworkSection projectId={loaded.projectId} />
-                <LinearSection projectId={loaded.projectId} />
-                <RoadmapSection projectId={loaded.projectId} />
-                <AutopilotSection projectId={loaded.projectId} />
-                <VerifySection projectId={loaded.projectId} />
-                <DeleteSection projectId={loaded.projectId} projectName={name} />
-              </>
+              <ProjectContext projectId={loaded.projectId} />
             )}
           </div>
         </div>

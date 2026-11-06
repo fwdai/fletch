@@ -22,6 +22,9 @@ export type RightPanelTab = "code" | "git" | "run" | "term";
  *  a component. */
 export type ProjectScreenTab = "roadmap" | "activity" | "context" | "settings";
 
+/** The panes of the project page's Settings tab (`ProjectScreen/Settings/nav.ts`). */
+export type ProjectSettingsSection = "general" | "run" | "sandbox" | "network" | "agents";
+
 export interface UiSlice {
   /** The command palette (⌘K): one search over every action and every agent,
    *  project and run. Opens over any surface; the dialog owns its own query
@@ -73,6 +76,9 @@ export interface UiSlice {
   /** Which tab of the project page is showing. Set by whoever opened the
    *  screen, so a control labelled "Project settings" lands on Settings. */
   projectScreenTab: ProjectScreenTab;
+  /** Which pane the Settings tab shows; set the same way, so the egress toast
+   *  lands on Network. */
+  projectSettingsSection: ProjectSettingsSection;
   /** A roadmap item code the board should reveal as soon as it can — the
    *  cross-screen half of "every altitude links back to the one above it" (a
    *  run's roadmap chip). The board next to the PM chat needs none of this and
@@ -154,10 +160,15 @@ export interface UiSlice {
   closeOnboarding: () => void;
   toggleHistory: (open?: boolean) => void;
   /** Open the full-screen project page for a sidebar repo group, on `tab`
-   *  (default: the roadmap). */
-  openProjectScreen: (repoPath: string, tab?: ProjectScreenTab) => void;
+   *  (default: the roadmap) and, for Settings, `section` (default: General). */
+  openProjectScreen: (
+    repoPath: string,
+    tab?: ProjectScreenTab,
+    section?: ProjectSettingsSection,
+  ) => void;
   closeProjectScreen: () => void;
   setProjectScreenTab: (tab: ProjectScreenTab) => void;
+  setProjectSettingsSection: (section: ProjectSettingsSection) => void;
   /** Open a project's board with one item focused — expanded, scrolled to and
    *  ringed. `repoPath` is the project's primary repo (how the screen is keyed);
    *  the code is picked up by that board on its next render. */
@@ -209,6 +220,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   historyOpen: false,
   projectScreenRepoPath: null,
   projectScreenTab: "roadmap",
+  projectSettingsSection: "general",
   roadmapFocusCode: null,
   chatFocus: null,
   openThread: null,
@@ -287,7 +299,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     if (firstCompletion) void api.boxImageInstall().catch(() => {});
   },
   toggleHistory: (open) => set((s) => ({ historyOpen: open ?? !s.historyOpen })),
-  openProjectScreen: (repoPath, tab = "roadmap") => {
+  openProjectScreen: (repoPath, tab = "roadmap", section = "general") => {
     // The project page opens on the roadmap, so it needs a host that drives
     // one; its settings sections gate themselves (`projectSettings`). The
     // sidebar hides its button behind this gate; every other way in (⌘⇧,,
@@ -296,6 +308,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     set({
       projectScreenRepoPath: repoPath,
       projectScreenTab: tab,
+      projectSettingsSection: section,
       // Same takeover rules as the settings screen: one full-screen surface
       // at a time, and a hidden run view shouldn't stay selected.
       settingsScreenOpen: false,
@@ -307,6 +320,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   },
   closeProjectScreen: () => set({ projectScreenRepoPath: null, roadmapFocusCode: null }),
   setProjectScreenTab: (tab) => set({ projectScreenTab: tab }),
+  setProjectSettingsSection: (section) => set({ projectSettingsSection: section }),
   focusRoadmapItem: (repoPath, code) => {
     // Reuses the open path so the takeover rules stay in one place; the code is
     // set after, because opening clears any stale request.

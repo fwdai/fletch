@@ -2,13 +2,14 @@ import { useState } from "react";
 import type { ProjectRef } from "@/api";
 import { pickFolder } from "@/components/FolderPicker";
 import { Icon } from "@/components/Icon";
+import { SetGroup } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { basename } from "@/util/format";
 
-/** The repositories field of the General section: where the project lives on
+/** The repositories group of the General pane: where the project lives on
  *  disk. Each repo row carries its own path, relocate action, and an optional
  *  label ("Frontend", "Gateway") that names it inside the project. One repo is
  *  the common case; attaching more turns the project multi-repo, grouped under
@@ -19,7 +20,7 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
   const attachRepoToProject = useAppStore((s) => s.attachRepoToProject);
   const detachRepoFromProject = useAppStore((s) => s.detachRepoFromProject);
   const relocateProject = useAppStore((s) => s.relocateProject);
-  // Closed on a host from before the project-settings ops; the section header
+  // Closed on a host from before the project-settings ops; the Name row above
   // carries the reason, each dead control repeats it.
   const gate = useGate("projectAdmin");
   const [busy, setBusy] = useState(false);
@@ -60,43 +61,43 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div className="ps-field">
-      <span className="ps-label text-sm">Repositories</span>
+    <SetGroup label="Repositories">
+      {/* A block, so the attach button keeps its own width in the group's column. */}
+      <div>
+        <div className="ps-repo-list">
+          {repos.map((r, i) => (
+            <RepoRow
+              key={r.path}
+              repo={r}
+              primary={i === 0 && multi}
+              detachable={multi}
+              busy={busy}
+              gate={gate}
+              onRelocate={() => void onRelocate(r.path)}
+              onDetach={() => void run(() => detachRepoFromProject(projectId, r.path))}
+              onError={setError}
+            />
+          ))}
+        </div>
 
-      <div className="ps-repo-list">
-        {repos.map((r, i) => (
-          <RepoRow
-            key={r.path}
-            repo={r}
-            primary={i === 0 && multi}
-            detachable={multi}
-            busy={busy}
-            gate={gate}
-            onRelocate={() => void onRelocate(r.path)}
-            onDetach={() => void run(() => detachRepoFromProject(projectId, r.path))}
-            onError={setError}
-          />
-        ))}
+        <Button
+          variant="outline"
+          size="lg"
+          className="ps-repo-add"
+          disabled={busy || gate !== null}
+          tip={gate ?? undefined}
+          onClick={onAttach}
+        >
+          Attach repository…
+        </Button>
+        <p className="ps-hint text-xs">
+          Group a frontend, a backend and more under one project, wherever they live. New agents
+          start in the primary one; detaching or relocating never touches the folder.
+        </p>
+
+        {error && <div className="ps-error text-sm">{error}</div>}
       </div>
-
-      <Button
-        variant="outline"
-        size="lg"
-        className="ps-repo-add"
-        disabled={busy || gate !== null}
-        tip={gate ?? undefined}
-        onClick={onAttach}
-      >
-        Attach repository…
-      </Button>
-      <p className="ps-hint text-xs">
-        Attach more repositories to group a frontend, a backend, and more under one project — they
-        can live anywhere on disk. Labels name each repository inside the project; new agents
-        currently start in the primary one. Detaching and relocating never touch the folder on disk.
-      </p>
-
-      {error && <div className="ps-error text-sm">{error}</div>}
-    </div>
+    </SetGroup>
   );
 }
 
