@@ -9,7 +9,6 @@ import { RunRow } from "@/workflows/run/RunRow";
 import { AgentRow } from "./AgentRow";
 import { foldAgents } from "./foldAgents";
 import { ProjectAddButton } from "./ProjectAddButton";
-import { ProjectViewRow } from "./ProjectViewRow";
 
 interface Props {
   /** Project display name. */
@@ -68,9 +67,7 @@ export function ProjectGroup({
   const selectDraft = useAppStore((s) => s.selectDraft);
   const selectRun = useAppStore((s) => s.selectRun);
   const openRoadmap = useAppStore((s) => s.openRoadmap);
-  const openProjectContext = useAppStore((s) => s.openProjectContext);
   const openProjectSettings = useAppStore((s) => s.openProjectSettings);
-  const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
   const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
   const roadmapGate = useGate("roadmap");
 
@@ -91,50 +88,72 @@ export function ProjectGroup({
   );
   const foldable = hidden.length > 0;
 
-  function onOpenSettings(e: React.MouseEvent) {
-    e.stopPropagation();
-    openProjectSettings(repoPath);
-  }
-
   const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";
 
   // A pointer drag that ends on the header still dispatches a trailing `click`,
   // which would toggle the group open/closed after a reorder. Track whether the
   // current interaction turned into a drag and swallow that phantom click.
   const draggedRef = useRef(false);
+  const dragged = () => {
+    if (!draggedRef.current) return false;
+    draggedRef.current = false;
+    return true;
+  };
+
+  /** One of the header's actions: stops the header's own click (the fold),
+   *  and does nothing after a drag. */
+  const action = (open: () => void) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!dragged()) open();
+  };
 
   return (
     <div className={`proj ${dragging ? "dragging" : ""} ${dropClass}`} data-repo-path={repoPath}>
+      {/* The header is the project's own row. Its name opens the Roadmap — the
+          project's home — and the rest of the row folds the agents, the way a
+          file tree's arrow expands while its name opens. The hover action at
+          the right is the project's other door, its settings. */}
       <div
         className={`proj-h flex-center ${open ? "open" : ""} ${reorderable ? "reorderable" : ""}`}
         onPointerDown={(e) => {
-          // Left button only, and never from an action button.
+          // Left button only, and never from the action buttons at the right
+          // (the name is a grab point like the rest of the row).
           if (!onReorderPointerDown || e.button !== 0) return;
-          if ((e.target as HTMLElement).closest("button")) return;
+          if ((e.target as HTMLElement).closest(".padd, .dd")) return;
           draggedRef.current = false;
           onReorderPointerDown(e, () => {
             draggedRef.current = true;
           });
         }}
         onClick={() => {
-          if (draggedRef.current) {
-            draggedRef.current = false;
-            return;
-          }
-          onToggle();
+          if (!dragged()) onToggle();
         }}
         title={repoPaths.join("\n")}
       >
         <Icon name="chevR" size={10} className="chev" />
         <ProjectIcon project={project ?? { name: label }} size={14} />
-        <span className="pname">{label}</span>
+        {roadmapGate ? (
+          <span className="pname" title={roadmapGate}>
+            {label}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="pname tip"
+            data-tip="Open roadmap"
+            onClick={action(() => openRoadmap(repoPath))}
+          >
+            {label}
+          </button>
+        )}
         <span className="pcount">{count}</span>
         {/* The settings panes gate themselves on the host's project-settings
             ops (docs/remote-protocol.md, "Settings"). */}
         <button
-          className="padd padd-settings tip"
+          type="button"
+          className="padd padd-quiet tip"
           data-tip="Project settings"
-          onClick={onOpenSettings}
+          onClick={action(() => openProjectSettings(repoPath))}
           aria-label="Project settings"
         >
           <Icon name="settings" size={14} />
@@ -143,19 +162,6 @@ export function ProjectGroup({
       </div>
 
       <div className={`agents ${open ? "" : "closed"}`}>
-        {/* The project's own views lead the group: the roadmap wherever a
-            board is driven, the context layer while its developer gate is
-            open. */}
-        {!roadmapGate && (
-          <ProjectViewRow icon="map" label="Roadmap" onClick={() => openRoadmap(repoPath)} />
-        )}
-        {contextLayerEnabled && (
-          <ProjectViewRow
-            icon="graph"
-            label="Context"
-            onClick={() => openProjectContext(repoPath)}
-          />
-        )}
         {drafts.map((d) => (
           <AgentRow
             key={d.id}

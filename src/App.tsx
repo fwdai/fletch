@@ -11,7 +11,6 @@ import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
 import { Onboarding } from "./components/Onboarding";
 import { PairRequestPrompt } from "./components/PairRequest";
-import { ProjectContextScreen } from "./components/ProjectContext";
 import { ProjectSettingsScreen } from "./components/ProjectSettingsScreen";
 import { PublishApproval } from "./components/PublishApproval";
 import { RightPanel } from "./components/RightPanel";
@@ -122,8 +121,6 @@ function AppShell() {
           <UsageScreen />
         ) : projectRepoPath && view === "settings" ? (
           <ProjectSettingsScreen repoPath={projectRepoPath} />
-        ) : projectRepoPath && view === "context" ? (
-          <ProjectContextScreen repoPath={projectRepoPath} />
         ) : projectRepoPath && view === "roadmap" ? (
           <RoadmapScreen repoPath={projectRepoPath} />
         ) : (

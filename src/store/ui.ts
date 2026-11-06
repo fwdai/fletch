@@ -20,10 +20,11 @@ export type RightPanelTab = "code" | "git" | "run" | "term";
  *  roadmap), what the host knows (context), and how the project is run
  *  (settings). Kept here (like `RightPanelTab`) so the store need not import a
  *  component. */
-export type ProjectView = "roadmap" | "context" | "settings";
+export type ProjectView = "roadmap" | "settings";
 
-/** The roadmap view's sub-tabs: the board, and what has been built. */
-export type RoadmapTab = "board" | "activity";
+/** The roadmap view's tabs: the board, what has been built, and — while the
+ *  layer's developer gate is open — what the host knows about the project. */
+export type RoadmapTab = "board" | "activity" | "context";
 
 /** The panes of the project settings view (`ProjectSettingsScreen/nav.ts`). */
 export type ProjectSettingsSection = "general" | "run" | "sandbox" | "network" | "agents";
@@ -170,7 +171,6 @@ export interface UiSlice {
   toggleHistory: (open?: boolean) => void;
   /** Open a project's roadmap on `tab`, or on the one it was last left on. */
   openRoadmap: (repoPath: string, tab?: RoadmapTab) => void;
-  openProjectContext: (repoPath: string) => void;
   /** Open a project's settings on `section` (default: General). */
   openProjectSettings: (repoPath: string, section?: ProjectSettingsSection) => void;
   closeProjectScreen: () => void;
@@ -319,8 +319,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     if (gateReason(activeEnvironment(), "roadmap")) return;
     set((s) => ({ ...projectTakeover(repoPath, "roadmap"), roadmapTab: tab ?? s.roadmapTab }));
   },
-  // Context and settings gate their own panes (`projectSettings`).
-  openProjectContext: (repoPath) => set(projectTakeover(repoPath, "context")),
+  // Settings gates its own panes (`projectSettings`).
   openProjectSettings: (repoPath, section) =>
     set({ ...projectTakeover(repoPath, "settings"), projectSettingsSection: section ?? "general" }),
   closeProjectScreen: () => set({ projectScreen: null, roadmapFocusCode: null }),

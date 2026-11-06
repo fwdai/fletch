@@ -61,29 +61,32 @@ at most.
 
 ## 3. Target structure
 
-### 3.1 Three project views
+### 3.1 Two project views, tabs in the header
 
-Every significant feature gets its own surface. A project has three, each a
-full-screen view in the takeover slot, sharing nothing but a thin header: an
-icon-only back chevron ("Back to app"; Escape still closes), the project's icon
-and name, and the view's name, muted.
+A project has two full-screen views in the takeover slot: what the project
+*is* (the Roadmap) and how it is *configured* (Settings). They share one thin
+header — an icon-only back chevron ("Back to app"; Escape still closes), the
+project's icon and name, the view's name muted — and, in its centre, the
+view's tabs as one segmented control: a raised pill in a sunken track, each
+tab with its icon. The same control everywhere, so the two views read as one
+family while the tabs say which one is open.
 
-- **Roadmap** (`RoadmapScreen/`): the board and the PM thread, with Activity as
-  a second sub-tab (Board · Activity pills in the header's centre, remembered
-  for the session) and the horizon counts at the right.
-- **Context** (`ProjectContext/`): the context layer's body, offered only while
-  its developer gate is open; with the gate closed it falls back to the Roadmap.
-- **Project settings** (`ProjectSettingsScreen/`): the five sub-tabs and their
-  panes (3.2). It owns the run-config load; the other two need none.
+- **Roadmap** (`RoadmapScreen/`): Board · Activity · Context. The board and
+  the PM thread; what has been built; and, while the layer's developer gate is
+  open, what the host knows about the project (`ProjectContext/` is the tab's
+  body). The horizon counts sit at the right. The tab is remembered for the
+  session; with the gate closed a Context tab shows the board.
+- **Project settings** (`ProjectSettingsScreen/`): General · Run · Sandbox ·
+  Network · Agents and their panes (3.2). It owns the run-config load.
 
 The title bar's crumb names the view as a third segment, `fletch / ▣ Goreme /
 Roadmap`; "fletch" closes it. The store holds one `projectScreen: { repoPath,
-view }`.
+view }` plus the remembered tab of each view.
 
 ```
-┌ ‹  ▣ Goreme / Roadmap                  Board   Activity                 now 3 · next 5 · later 12 · shipped 41 ┐
+┌ ‹  ▣ Goreme / Roadmap           [▣ Board] Activity  Context           now 3 · next 5 · later 12 · shipped 41 ┐
 │                                                                                                                │
-│  (board, or Activity)                                                                                          │
+│  (board, Activity, or Context)                                                                                 │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -97,10 +100,10 @@ around them says "one project":
 - **Place.** Project configuration is its own view under the shared project
   header (3.1). The left rail and the Fletch footer stay reserved for global
   settings.
-- **Navigation.** Five sub-tabs in a row under the header — General · Run ·
-  Sandbox · Network · Agents — as bare text pills, the pattern the roadmap's
-  Board · Activity switch uses. No left rail, no group headers. The pane below
-  is one column at the global panes' width.
+- **Navigation.** Five tabs in the header's centre — General · Run · Sandbox ·
+  Network · Agents — as the same segmented control the roadmap's Board ·
+  Activity · Context uses (3.1). No left rail, no group headers. The pane
+  below is one column at the global panes' width.
 - **Who it is about.** The project's icon and name sit in the view header
   (3.1). The pane eyebrow then says only the scope,
   "Project settings · Run", against the global "Settings · Git"; it does not
@@ -246,7 +249,7 @@ The data change is small: a `captured` status, a nullable `kind`
 
 ### 3.4 Context: content first
 
-The tab leads with the entities, review queue and preview. The two switches
+The Roadmap's Context tab leads with the entities, review queue and preview. The two switches
 move to Settings › Agents › Project context (shown only while the layer is
 enabled); the tab header shows a status chip ("Serving to agents · extracting")
 that links there. The pane is restyled on the `set-*` primitives.
@@ -255,9 +258,9 @@ that links there. The pane is restyled on the `set-*` primitives.
 
 | Surface | Change |
 | --- | --- |
-| Sidebar project group | A permanent first row, **Roadmap**, then **Context** while the layer is on, on the agent row's frame. They launch a view rather than select: Tab reaches them and Enter, Space or a click opens, while arrow stepping passes them by. The header button is the settings gear ("Project settings", General). |
-| Title bar | The pill opens the roadmap. On a view the crumb reads `fletch / ▣ Goreme / Roadmap` (or Context, Settings). |
-| Palette | "Roadmap · <project>" per project, "Project settings" and "Roadmap" for the project in front, "Context · <project>" while the layer is on, and "Add to roadmap…". |
+| Sidebar project group | The header is the project's own row: its **name opens the Roadmap**, the project's home, and the rest of the row (chevron, count, empty space) folds the agents, the way a file tree's arrow expands while its name opens. Nothing that launches a view sits among the agent rows. The hover actions at the right are the gear ("Project settings", General) and the always-visible "+". |
+| Title bar | The pill opens the roadmap. On a view the crumb reads `fletch / ▣ Goreme / Roadmap` (or Settings). |
+| Palette | "Roadmap · <project>" per project, "Project settings" and "Roadmap" for the project in front, "Context · <project>" (the roadmap's Context tab) while the layer is on, and "Add to roadmap…". |
 | Shortcuts | `⌘⇧R` opens the roadmap, `⌘⇧,` the settings; pressed on their own view, either leaves it. |
 | Toasts and prompts | Egress toast and the project-file prompt land on the Network sub-tab. |
 | Phone | The project screen gains a Roadmap segment: the Inbox and Next up as read-only lists, a capture field with the existing dictation, and the "Plan with PM" button it already has. |

@@ -1,19 +1,28 @@
-import { ProjectHeader } from "@/components/ProjectScreen/Header";
+import type { IconName } from "@/components/Icon";
+import { ProjectContext } from "@/components/ProjectContext";
+import { ProjectHeader, ViewTabs } from "@/components/ProjectScreen/Header";
 import { useAppStore } from "@/store";
 import type { RoadmapTab } from "@/store/ui";
 import { Activity } from "./Activity";
 import { Counts } from "./Counts";
 import { Roadmap, useRoadmap } from "./Roadmap";
 
-const TABS: { id: RoadmapTab; label: string }[] = [
-  { id: "board", label: "Board" },
-  { id: "activity", label: "Activity" },
+const TABS: { id: RoadmapTab; label: string; icon: IconName }[] = [
+  { id: "board", label: "Board", icon: "map" },
+  { id: "activity", label: "Activity", icon: "activity" },
+  { id: "context", label: "Context", icon: "graph" },
 ];
 
 /** A project's roadmap, full screen: the board with the PM thread beside it,
- *  and Activity — what has been built — as its second sub-tab. */
+ *  Activity — what has been built — and, while the layer's developer gate is
+ *  open, Context — what the host knows about the project — as its tabs. */
 export function RoadmapScreen({ repoPath }: { repoPath: string }) {
-  const tab = useAppStore((s) => s.roadmapTab);
+  const contextLayer = useAppStore((s) => s.contextLayerEnabled);
+  // The one place the Context tab's gate is applied: with the layer off, a
+  // tab left on Context shows the board.
+  const tab = useAppStore((s) =>
+    s.roadmapTab === "context" && !s.contextLayerEnabled ? "board" : s.roadmapTab,
+  );
   const setTab = useAppStore((s) => s.setRoadmapTab);
   const projectId = useAppStore(
     (s) => s.workspace?.projects.find((p) => p.path === repoPath)?.project_id,
@@ -22,22 +31,12 @@ export function RoadmapScreen({ repoPath }: { repoPath: string }) {
   // and they move when the user accepts a proposal. Keyed by the repo, which
   // the hook resolves to the owning project (one roadmap per project).
   const roadmap = useRoadmap(repoPath);
+  const tabs = contextLayer ? TABS : TABS.filter((t) => t.id !== "context");
 
   return (
     <div className="proj-screen">
       <ProjectHeader repoPath={repoPath} view="roadmap">
-        <nav className="ps-nav">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={`ps-tab iflex-center text-sm ${tab === t.id ? "active" : ""}`}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
+        <ViewTabs tabs={tabs} value={tab} onChange={setTab} />
         <Counts roadmap={roadmap} />
       </ProjectHeader>
 
@@ -45,7 +44,14 @@ export function RoadmapScreen({ repoPath }: { repoPath: string }) {
         <Roadmap roadmap={roadmap} repoPath={repoPath} />
       ) : (
         <div className="ps-content">
-          <div className="ps-sections">{projectId && <Activity projectId={projectId} />}</div>
+          <div className="ps-sections">
+            {projectId &&
+              (tab === "activity" ? (
+                <Activity projectId={projectId} />
+              ) : (
+                <ProjectContext projectId={projectId} />
+              ))}
+          </div>
         </div>
       )}
     </div>

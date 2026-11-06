@@ -49,7 +49,6 @@ function state(over: Partial<AppState> = {}): AppState {
     selectRun: vi.fn(),
     createDraft: vi.fn(),
     openRoadmap: vi.fn(),
-    openProjectContext: vi.fn(),
     openProjectSettings: vi.fn(),
     captureToRoadmap: vi.fn(),
     openSettingsScreen: vi.fn(),
@@ -287,7 +286,7 @@ describe("rootItems", () => {
     const context = find(on, "project-context");
     expect(context.label).toBe("Context · relay");
     context.run?.();
-    expect(on.s.openProjectContext).toHaveBeenCalledWith("/w/relay");
+    expect(on.s.openRoadmap).toHaveBeenCalledWith("/w/relay", "context");
   });
 
   it("opens the current project's board to capture into its inbox", () => {

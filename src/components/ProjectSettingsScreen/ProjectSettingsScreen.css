@@ -1,15 +1,8 @@
 /* ─── project settings ───────────────────────────────────────────────
- * The settings view's own frame: a row of bare pills (`.ps-tab`, no track)
- * under the header, then one pane of the shared `set-*` rows in the body
- * column (`.ps-content`, ProjectScreen.css). Never `.set-screen` / `.set-nav`:
- * that frame is the global screen's. */
-.proj-set-tabs {
-  flex-shrink: 0;
-  display: flex;
-  gap: 4px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--bd-soft);
-}
+ * The settings view's own frame: the shared project header with its tabs
+ * (`.ps-tabs`, ProjectScreen.css), then one pane of the shared `set-*` rows in
+ * the body column (`.ps-content`). Never `.set-screen` / `.set-nav`: that
+ * frame is the global screen's. */
 /* `SetGroup`'s label line when it carries an aside (the run commands'
  * ecosystem badge). */
 .set-group-top {

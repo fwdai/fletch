@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { ProjectHeader } from "@/components/ProjectScreen/Header";
+import { ProjectHeader, ViewTabs } from "@/components/ProjectScreen/Header";
 import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
+import type { ProjectSettingsSection } from "@/store/ui";
 import { basename } from "@/util/format";
 import { AgentsPane } from "./AgentsPane";
 import { GeneralPane } from "./GeneralPane";
@@ -19,12 +20,16 @@ export function ProjectSettingsScreen({ repoPath }: { repoPath: string }) {
   const name = useAppStore(
     (s) => s.workspace?.projects.find((p) => p.path === repoPath)?.name ?? basename(repoPath),
   );
+  const section = useAppStore((s) => s.projectSettingsSection);
+  const setSection = useAppStore((s) => s.setProjectSettingsSection);
 
   return (
     <div className="proj-screen">
-      <ProjectHeader repoPath={repoPath} view="settings" />
+      <ProjectHeader repoPath={repoPath} view="settings">
+        <ViewTabs tabs={PROJECT_SETTINGS_NAV} value={section} onChange={setSection} />
+      </ProjectHeader>
       {loaded ? (
-        <ProjectSettings {...loaded} repoPath={repoPath} name={name} />
+        <ProjectSettings {...loaded} repoPath={repoPath} name={name} section={section} />
       ) : (
         <div className="ps-content">
           <div className="ps-sections">
@@ -45,51 +50,42 @@ export function ProjectSettingsScreen({ repoPath }: { repoPath: string }) {
 interface Props extends RunConfig {
   repoPath: string;
   name: string;
+  section: ProjectSettingsSection;
 }
 
-/** A row of sub-tabs under the header, then one pane built from the global
- *  screen's rows. The frame is the project's own (`proj-set-*`), never the
- *  global screen's rail. */
-function ProjectSettings({ projectId, repoPath, name, rows, ecosystem, overrides }: Props) {
-  const section = useAppStore((s) => s.projectSettingsSection);
-  const setSection = useAppStore((s) => s.setProjectSettingsSection);
+/** One pane built from the global screen's rows, under the header's tabs. The
+ *  frame is the project's own (`ps-*`), never the global screen's rail. */
+function ProjectSettings({
+  projectId,
+  repoPath,
+  name,
+  section,
+  rows,
+  ecosystem,
+  overrides,
+}: Props) {
   // Held here, not in the Run pane, so its edits survive a trip to another pane.
   const [runOverrides, setRunOverrides] = useState(overrides);
 
   return (
-    <>
-      <nav className="proj-set-tabs">
-        {PROJECT_SETTINGS_NAV.map((n) => (
-          <button
-            key={n.id}
-            type="button"
-            className={`ps-tab iflex-center text-sm ${section === n.id ? "active" : ""}`}
-            onClick={() => setSection(n.id)}
-          >
-            {n.label}
-          </button>
-        ))}
-      </nav>
-
-      {/* Keyed so each pane opens at its top. */}
-      <div key={section} className="ps-content">
-        <div className="ps-sections">
-          {section === "general" && <GeneralPane projectId={projectId} name={name} />}
-          {section === "run" && (
-            <RunPane
-              projectId={projectId}
-              repoPath={repoPath}
-              rows={rows}
-              ecosystem={ecosystem}
-              overrides={runOverrides}
-              onOverrides={setRunOverrides}
-            />
-          )}
-          {section === "sandbox" && <SandboxPane projectId={projectId} repoPath={repoPath} />}
-          {section === "network" && <NetworkPane projectId={projectId} />}
-          {section === "agents" && <AgentsPane projectId={projectId} />}
-        </div>
+    // Keyed so each pane opens at its top.
+    <div key={section} className="ps-content">
+      <div className="ps-sections">
+        {section === "general" && <GeneralPane projectId={projectId} name={name} />}
+        {section === "run" && (
+          <RunPane
+            projectId={projectId}
+            repoPath={repoPath}
+            rows={rows}
+            ecosystem={ecosystem}
+            overrides={runOverrides}
+            onOverrides={setRunOverrides}
+          />
+        )}
+        {section === "sandbox" && <SandboxPane projectId={projectId} repoPath={repoPath} />}
+        {section === "network" && <NetworkPane projectId={projectId} />}
+        {section === "agents" && <AgentsPane projectId={projectId} />}
       </div>
-    </>
+    </div>
   );
 }

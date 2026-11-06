@@ -272,6 +272,29 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The name is the door to the project's Roadmap: a button in the row's own
+ * type, brightening on hover so it reads as one, and still a grab point for
+ * reordering. */
+button.pname {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+}
+button.pname:hover {
+  color: var(--fg-0);
+}
+button.pname:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 /* count sits next to the name (middot-separated) and its auto margin pushes
  * the action buttons to the far right. */
 .proj-h .pcount {
@@ -304,20 +327,21 @@
   background: var(--accent-soft);
   color: var(--accent);
 }
-/* The settings gear is revealed only when the row is engaged, so it doesn't
- * compete with the label or shift the always-visible "add agent" button. */
-.proj-h .padd-settings {
+/* The quiet action (the settings gear) is revealed only when the row is
+ * engaged, so it doesn't compete with the label or shift the always-visible
+ * "add agent" button. */
+.proj-h .padd-quiet {
   opacity: 0;
   pointer-events: none;
 }
-.proj-h:hover .padd-settings {
+.proj-h:hover .padd-quiet {
   opacity: 1;
   pointer-events: auto;
 }
 /* Keyboard focus reveals it too — a focused button at opacity:0 would make
  * the focus ring vanish and hide the action from keyboard users. */
-.proj-h:hover .padd-settings:hover,
-.proj-h .padd-settings:focus-visible {
+.proj-h:hover .padd-quiet:hover,
+.proj-h .padd-quiet:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
@@ -327,8 +351,8 @@
   flex-shrink: 0;
 }
 /* Icon size is driven by CSS here (like the + above), so it doesn't depend on
- * the size prop. Gear reads a touch larger than the +. */
-.proj-h .padd-settings svg {
+ * the size prop. The gear reads a touch larger than the +. */
+.proj-h .padd-quiet svg {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
@@ -480,16 +504,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-/* a project view row (ProjectViewRow): a `<button>` on the agent row's frame,
- * led by the view's glyph where an agent has its status */
-button.agent {
-  width: 100%;
-  text-align: left;
-}
-.agent-row .ag-view {
-  flex-shrink: 0;
-  color: var(--fg-2);
 }
 .ag-name.ag-name-draft {
   color: var(--fg-1);

@@ -1,5 +1,5 @@
 /* ─── project views ──────────────────────────────────────────────────
- * The shell of a project's full-screen views — roadmap, context, settings —
+ * The shell of a project's full-screen views — roadmap and settings —
  * (mirrors `.set-screen`): replaces the workspace panes while `projectScreen`
  * is set. One thin chrome bar above the view's own body. */
 .proj-screen {
@@ -11,8 +11,8 @@
   background: var(--bg-1);
 }
 
-/* header — one bar, three zones: back + identity / the roadmap's sub-tabs /
- * its counts.
+/* header — one bar, three zones: back + identity / the view's tabs / the
+ * roadmap's counts.
  *
  * A grid rather than a flex row with spacers, because the tabs are centered on
  * the *window*, not on whatever is left between two clusters of unequal width —
@@ -86,12 +86,17 @@
   }
 }
 
-/* tabs — bare text pills: the roadmap's Board · Activity in the header's
- * centre, the settings sub-tabs and the Context nav under it. */
-.ps-nav {
+/* tabs — a segmented control in the header's centre: the roadmap's Board ·
+ * Activity · Context, the settings' five panes. One raised pill in a sunken
+ * track. */
+.ps-tabs {
   justify-self: center;
   display: flex;
-  gap: 4px;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-0);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
 }
 .ps-tab {
   gap: 6px;
@@ -109,10 +114,17 @@
   color: var(--fg-0);
   background: var(--hover);
 }
+.ps-tab svg {
+  color: var(--fg-3);
+  transition: color 0.14s var(--ease);
+}
 .ps-tab.active {
   color: var(--fg-0);
   background: var(--bg-2);
   box-shadow: var(--shadow-1);
+}
+.ps-tab.active svg {
+  color: var(--accent);
 }
 
 /* body — one scrollable page; sections stack in a centered column */
@@ -169,7 +181,7 @@
   color: var(--fg-2);
   line-height: 1.5;
 }
-/* form fields — the Context view's forms and the settings' add-a-variable */
+/* form fields — the Context tab's forms and the settings' add-a-variable */
 .ps-field {
   margin-top: 18px;
 }

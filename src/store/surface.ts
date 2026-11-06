@@ -26,14 +26,10 @@ export type Surface =
   | { kind: "agent"; agent: AgentRecord }
   | { kind: "home" };
 
-/** The project view in front, or null. The one place the Context view's
- *  developer gate is applied: with the layer off, a stored Context view shows
- *  as the Roadmap — to `App`, the title bar's crumb and the shortcuts alike,
- *  so none of them can disagree about what is on screen. A primitive, so it
- *  is safe to select from the store directly. */
+/** The project view in front, or null. A primitive, so `App` and the title
+ *  bar's crumb can select it from the store directly. */
 export function projectView(s: AppState): ProjectView | null {
-  const view = s.projectScreen?.view ?? null;
-  return view === "context" && !s.contextLayerEnabled ? "roadmap" : view;
+  return s.projectScreen?.view ?? null;
 }
 
 export function activeSurface(s: AppState): Surface {

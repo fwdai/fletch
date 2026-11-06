@@ -394,7 +394,8 @@ export function pageItems(ctx: PaletteContext): PaletteItem[] {
       remember: true,
     });
   }
-  // The current project's Context view, while the layer's developer gate is open.
+  // The roadmap's Context tab for the current project, while the layer's
+  // developer gate is open.
   if (repo && s.contextLayerEnabled) {
     items.push({
       id: "project-context",
@@ -403,7 +404,8 @@ export function pageItems(ctx: PaletteContext): PaletteItem[] {
       leading: { kind: "icon", name: "graph" },
       section: SEC.goto,
       keywords: "entities  decisions  knowledge  review",
-      run: () => go(s, () => s.openProjectContext(repo)),
+      disabled: gateReason(activeEntry(s), "roadmap"),
+      run: () => go(s, () => s.openRoadmap(repo, "context")),
       remember: true,
     });
   }

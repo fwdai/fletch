@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type { ContextOverview } from "@/api";
 import { Icon } from "@/components/Icon";
-import { ProjectHeader } from "@/components/ProjectScreen/Header";
 import { SetHead } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { Chip } from "@/components/ui/Chip";
@@ -23,23 +22,8 @@ import { useContextOverview } from "./useContextOverview";
 type Area = "entities" | "review" | "preview";
 type Editor = { kind: "entity"; entityId?: string } | { kind: "decision"; about: string[] } | null;
 
-/** A project's Context view, full screen: the shared header over the body. */
-export function ProjectContextScreen({ repoPath }: { repoPath: string }) {
-  const projectId = useAppStore(
-    (s) => s.workspace?.projects.find((p) => p.path === repoPath)?.project_id,
-  );
-  return (
-    <div className="proj-screen">
-      <ProjectHeader repoPath={repoPath} view="context" />
-      <div className="ps-content">
-        <div className="ps-sections">{projectId && <ProjectContext projectId={projectId} />}</div>
-      </div>
-    </div>
-  );
-}
-
-/** The Context view's body: what the host knows about the project and serves
- *  its agents, for the user to inspect and curate. Loads the overview,
+/** The roadmap view's Context tab: what the host knows about the project and
+ *  serves its agents, for the user to inspect and curate. Loads the overview,
  *  follows `context:changed`, and hands the rest to `ContextTab`. */
 export function ProjectContext({ projectId }: { projectId: string }) {
   const { overview, error } = useContextOverview(projectId);
