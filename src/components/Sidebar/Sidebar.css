@@ -481,7 +481,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* a project view row's glyph (ProjectViewRow), where an agent has its status */
+/* a project view row (ProjectViewRow): a `<button>` on the agent row's frame,
+ * led by the view's glyph where an agent has its status */
+button.agent {
+  width: 100%;
+  text-align: left;
+}
 .agent-row .ag-view {
   flex-shrink: 0;
   color: var(--fg-2);

@@ -71,10 +71,6 @@ export function ProjectGroup({
   const openProjectContext = useAppStore((s) => s.openProjectContext);
   const openProjectSettings = useAppStore((s) => s.openProjectSettings);
   const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
-  // The project view open for this group, if any — its row shows selected.
-  const view = useAppStore((s) =>
-    s.projectScreen?.repoPath === repoPath ? s.projectScreen.view : null,
-  );
   const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
   const roadmapGate = useGate("roadmap");
 
@@ -151,18 +147,12 @@ export function ProjectGroup({
             board is driven, the context layer while its developer gate is
             open. */}
         {!roadmapGate && (
-          <ProjectViewRow
-            icon="map"
-            label="Roadmap"
-            active={view === "roadmap"}
-            onClick={() => openRoadmap(repoPath)}
-          />
+          <ProjectViewRow icon="map" label="Roadmap" onClick={() => openRoadmap(repoPath)} />
         )}
         {contextLayerEnabled && (
           <ProjectViewRow
             icon="graph"
             label="Context"
-            active={view === "context"}
             onClick={() => openProjectContext(repoPath)}
           />
         )}

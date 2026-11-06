@@ -69,6 +69,7 @@ function AppShell() {
   const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
   const onboardingOpen = useAppStore((s) => s.onboardingOpen);
   const projectScreen = useAppStore((s) => s.projectScreen);
+  const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
   // Count of agents that finished a turn while the user wasn't looking at them
   // (set on completion, cleared when the agent is opened). This is the same
   // signal behind the sidebar "new" dots — mirror it onto the app icon badge.
@@ -117,12 +118,14 @@ function AppShell() {
           <SettingsScreen />
         ) : usageScreenOpen ? (
           <UsageScreen />
-        ) : projectScreen?.view === "roadmap" ? (
-          <RoadmapScreen repoPath={projectScreen.repoPath} />
-        ) : projectScreen?.view === "context" ? (
+        ) : projectScreen?.view === "settings" ? (
+          <ProjectSettingsScreen repoPath={projectScreen.repoPath} />
+        ) : projectScreen?.view === "context" && contextLayerEnabled ? (
           <ProjectContextScreen repoPath={projectScreen.repoPath} />
         ) : projectScreen ? (
-          <ProjectSettingsScreen repoPath={projectScreen.repoPath} />
+          // The roadmap, and the fallback for a Context view whose developer
+          // gate is closed.
+          <RoadmapScreen repoPath={projectScreen.repoPath} />
         ) : (
           <>
             <div

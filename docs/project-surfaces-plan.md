@@ -72,7 +72,7 @@ and name, and the view's name, muted.
   a second sub-tab (Board · Activity pills in the header's centre, remembered
   for the session) and the horizon counts at the right.
 - **Context** (`ProjectContext/`): the context layer's body, offered only while
-  its developer gate is open.
+  its developer gate is open; with the gate closed it falls back to the Roadmap.
 - **Project settings** (`ProjectSettingsScreen/`): the five sub-tabs and their
   panes (3.2). It owns the run-config load; the other two need none.
 
@@ -255,7 +255,7 @@ that links there. The pane is restyled on the `set-*` primitives.
 
 | Surface | Change |
 | --- | --- |
-| Sidebar project group | A permanent first row, **Roadmap**, then **Context** while the layer is on: agent-row height, hover and selection, stepped by the arrow keys. The header button is the settings gear ("Project settings", General). |
+| Sidebar project group | A permanent first row, **Roadmap**, then **Context** while the layer is on, on the agent row's frame. They launch a view rather than select: Tab reaches them and Enter, Space or a click opens, while arrow stepping passes them by. The header button is the settings gear ("Project settings", General). |
 | Title bar | The pill opens the roadmap. On a view the crumb reads `fletch / ▣ Goreme / Roadmap` (or Context, Settings). |
 | Palette | "Roadmap · <project>" per project, "Project settings" and "Roadmap" for the project in front, "Context · <project>" while the layer is on, and "Add to roadmap…". |
 | Shortcuts | `⌘⇧R` opens the roadmap, `⌘⇧,` the settings; pressed on their own view, either leaves it. |

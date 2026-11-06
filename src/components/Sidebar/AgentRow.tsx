@@ -23,7 +23,7 @@ import { deriveSubagentChildren, failedTip, runningTip } from "./subagentChildre
 /** The agent rows carry nested buttons (stop/archive/discard), so they can't be
  *  a `<button>`; they use `role="button"` + this handler to stay keyboard
  *  operable (Enter/Space activates the row like a click). */
-export function activateOnKey(e: KeyboardEvent, fn: () => void) {
+function activateOnKey(e: KeyboardEvent, fn: () => void) {
   // Ignore key events that bubbled up from a nested control (stop/archive/
   // discard) — otherwise pressing Space/Enter on those buttons would also
   // select the row (and Discard would select a draft as it's removed).
