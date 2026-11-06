@@ -357,15 +357,6 @@ button.pname:focus-visible {
   height: 14px;
   flex-shrink: 0;
 }
-/* The + menu renders inside the header: shed its uppercase label type and grab
- * cursor, and stay narrow enough to fit the sidebar at its minimum width. */
-.proj-h .dd {
-  min-width: 180px;
-  font-weight: 400;
-  letter-spacing: normal;
-  text-transform: none;
-  cursor: default;
-}
 
 .agents {
   display: flex;
