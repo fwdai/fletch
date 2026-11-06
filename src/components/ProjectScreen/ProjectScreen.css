@@ -47,15 +47,6 @@
   font-weight: 600;
   color: var(--fg-0);
 }
-/* `ProjectIcon`: the initial mark. Its size comes inline. */
-.proj-icon {
-  flex-shrink: 0;
-  font-weight: 600;
-  line-height: 1;
-  color: var(--fg-1);
-  background: var(--bg-3);
-  box-shadow: inset 0 0 0 1px var(--bd);
-}
 /* Board counts. The strip must never wrap — the bar has a fixed height, so a
  * second line would be clipped rather than shown. `.stat-row` (Stats.css, which
  * loads after this file) sets `flex-wrap: wrap`, so this needs the extra

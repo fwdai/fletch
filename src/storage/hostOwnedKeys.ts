@@ -50,6 +50,7 @@ export const HOST_PROJECT_SETTING_KEYS = [
   "context.extract",
   "sandbox.placement",
   "sandbox.egress_mode",
+  "icon.source",
 ] as const;
 
 /** `run.<row>` and `run.agent.<agentId>.<row>`. */

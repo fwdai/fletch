@@ -1,4 +1,5 @@
 import type { IconName } from "@/components/Icon";
+import type { IconSubject } from "@/components/ProjectIcon";
 import type { DotStatus } from "@/components/TitleBar/WorkspaceStatus/derive";
 
 /** The drill-in pages a row can open. `root` is the search over everything;
@@ -14,11 +15,12 @@ export type PageId =
   | "accent";
 
 /** What stands at the front of a row: a glyph on a tile, an agent's status
- *  dot, or a colour swatch. */
+ *  dot, a colour swatch, or a project's own icon. */
 export type Leading =
   | { kind: "icon"; name: IconName }
   | { kind: "status"; status: DotStatus }
-  | { kind: "swatch"; color: string };
+  | { kind: "swatch"; color: string }
+  | { kind: "image"; project: IconSubject };
 
 export interface PaletteItem {
   /** Stable across renders: the recents list and the active row key on it. */

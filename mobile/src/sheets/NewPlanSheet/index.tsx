@@ -2,7 +2,7 @@ import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { useAttachments } from "../../attachments";
 import { PromptField } from "../../components/PromptField";
-import { PickerSheet, Sheet, Swatch } from "../../components/ui";
+import { PickerSheet, ProjectIcon, Sheet } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { ignore } from "../../lib/ignore";
 import { primaryPath, projectsOf } from "../../lib/projects";
@@ -112,7 +112,7 @@ export function NewPlanSheet({
           NEW PLAN
           <span className="in">· in</span>
           <button type="button" className="pj" onClick={() => setPicking(true)}>
-            <Swatch project={project} size={14} />
+            <ProjectIcon project={project} size={14} />
             {project.name}
             <Icon name="chevD" size={11} />
           </button>
@@ -136,7 +136,7 @@ export function NewPlanSheet({
         )}
         <div className="na-ctx">
           <button type="button" className="chip" onClick={() => setPicking(true)}>
-            <Swatch project={project} size={14} />
+            <ProjectIcon project={project} size={14} />
             {project.name}
           </button>
         </div>
@@ -149,7 +149,7 @@ export function NewPlanSheet({
           id: p.id,
           label: p.name,
           sub: primaryPath(p),
-          icon: <Swatch project={p} />,
+          icon: <ProjectIcon project={p} />,
         }))}
         value={pid}
         onChange={setPid}

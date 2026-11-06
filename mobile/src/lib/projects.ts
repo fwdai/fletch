@@ -36,10 +36,3 @@ export const primaryPath = (project: Project) => project.repos[0].path;
 /** The project's repos by folder name, "assistant · eve" for a multi-repo one. */
 export const repoLabel = (project: Project) =>
   project.repos.map((r) => r.label ?? (r.path.split("/").pop() || project.name)).join(" · ");
-
-/** A stable hue per project so its swatch keeps its colour across launches. */
-export function projectHue(project: Project): number {
-  let h = 0;
-  for (const ch of project.id) h = (h * 31 + ch.charCodeAt(0)) % 360;
-  return h;
-}

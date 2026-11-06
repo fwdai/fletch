@@ -327,6 +327,11 @@ pub const OPS: &[&str] = &[
     "context_resolve_contradiction",
     "context_bootstrap",
     "context_tidy",
+    // A project's icon: what its repositories offer, the stored image, and
+    // the choice.
+    "project_icon_candidates",
+    "project_icon_set",
+    "project_icon_get",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -652,6 +657,10 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("context_resolve_contradiction", Scope::Projects),
     ("context_bootstrap", Scope::Projects),
     ("context_tidy", Scope::Projects),
+    // Two reads; the choice is a project setting, like `set_project_setting`.
+    ("project_icon_candidates", Scope::Observe),
+    ("project_icon_set", Scope::Projects),
+    ("project_icon_get", Scope::Observe),
 ];
 
 /// The one scope that reaches `op`. `None` for a name outside [`OPS`] —
@@ -1836,6 +1845,33 @@ impl Dispatch for SupervisorDispatch {
                     res(crate::commands::context_bootstrap_impl(ctx, &a.project_id).await)
                 }
 
+                "project_icon_candidates" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(crate::commands::project_icon_candidates_impl(
+                        sup,
+                        &a.project_id,
+                    ))
+                }
+                "project_icon_get" => {
+                    let a: ProjectArgs = parse(args)?;
+                    res(crate::commands::project_icon_get_impl(ctx, &a.project_id))
+                }
+                // Changes the project list's `icon_hash`, so it tells the other
+                // views, as a rename does.
+                "project_icon_set" => {
+                    let a: ProjectIconSetArgs = parse(args)?;
+                    crate::commands::announce_workspace(
+                        ctx.sink.as_ref(),
+                        res(crate::commands::project_icon_set_impl(
+                            ctx,
+                            sup,
+                            &a.project_id,
+                            a.source.as_deref(),
+                            a.bytes.as_deref(),
+                        )),
+                    )
+                }
+
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.
                 _ => Err(UNKNOWN_OP.to_string()),
@@ -2827,6 +2863,17 @@ struct ProjectChatsArgs {
 #[serde(rename_all = "camelCase")]
 struct ProjectArgs {
     project_id: String,
+}
+
+/// `source: null` is the initial; `bytes` (base64) only with `file`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectIconSetArgs {
+    project_id: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    bytes: Option<String>,
 }
 
 #[derive(Deserialize)]

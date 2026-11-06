@@ -332,6 +332,13 @@ export const GATES = {
     label: "Deleting a branch",
     reason: "Delete the branch on the host — it lives in the project repo, not the session.",
   },
+  /** Choosing a project's icon: the scan's candidates and the choice. Drawing
+   *  one needs no gate — a host sends an `icon_hash` only if it can answer. */
+  projectIcon: {
+    op: ["project_icon_candidates", "project_icon_set"],
+    label: "Project icon",
+    reason: "This host is too old to change the project's icon — update it.",
+  },
 } as const satisfies Record<string, Gate>;
 
 export type GateName = keyof typeof GATES;

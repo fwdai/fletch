@@ -304,20 +304,20 @@
   background: var(--accent-soft);
   color: var(--accent);
 }
-/* The settings gear is revealed only when the row is engaged, so it doesn't
+/* "Open project" is revealed only when the row is engaged, so it doesn't
  * compete with the label or shift the always-visible "add agent" button. */
-.proj-h .padd-settings {
+.proj-h .padd-open {
   opacity: 0;
   pointer-events: none;
 }
-.proj-h:hover .padd-settings {
+.proj-h:hover .padd-open {
   opacity: 1;
   pointer-events: auto;
 }
 /* Keyboard focus reveals it too — a focused button at opacity:0 would make
  * the focus ring vanish and hide the action from keyboard users. */
-.proj-h:hover .padd-settings:hover,
-.proj-h .padd-settings:focus-visible {
+.proj-h:hover .padd-open:hover,
+.proj-h .padd-open:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
@@ -327,8 +327,8 @@
   flex-shrink: 0;
 }
 /* Icon size is driven by CSS here (like the + above), so it doesn't depend on
- * the size prop. Gear reads a touch larger than the +. */
-.proj-h .padd-settings svg {
+ * the size prop. It reads a touch larger than the +. */
+.proj-h .padd-open svg {
   width: 14px;
   height: 14px;
   flex-shrink: 0;

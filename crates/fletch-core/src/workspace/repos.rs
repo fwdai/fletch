@@ -27,7 +27,7 @@ impl WorkspaceManager {
             .map(|c| c > 0)
             .unwrap_or(false);
 
-        if !exists {
+        let added = if !exists {
             // Look up or create a project named after the repo dir basename.
             let project_name = repo_path
                 .file_name()
@@ -41,10 +41,23 @@ impl WorkspaceManager {
                 "INSERT INTO repos (id, project_id, path, created_at) VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![repo_id, project_id, path_str, now_millis()],
             )?;
-        }
+            Some(project_id)
+        } else {
+            None
+        };
 
         drop(conn);
+        if let Some(project_id) = added {
+            self.detect_icon(&project_id);
+        }
         Ok(self.current().expect("workspace initialized"))
+    }
+
+    /// Give a project the icon its repositories already have, unless it has a
+    /// choice on record (`icon_detect`): on add and on relocate.
+    fn detect_icon(&self, project_id: &str) {
+        let repos = self.project_repo_paths(project_id);
+        crate::icon_detect::detect_if_unset(&self.db, project_id, &repos);
     }
 
     /// Remove a repo from the sidebar's pinned list. Does NOT touch
@@ -356,6 +369,7 @@ impl WorkspaceManager {
         }
         tx.commit()?;
         cleanup.apply(&conn);
+        crate::icon_detect::forget(&conn, project_id);
         Ok(())
     }
 
@@ -427,6 +441,7 @@ impl WorkspaceManager {
         )?;
         tx.commit()?;
         drop(conn);
+        self.detect_icon(&project_id);
         Ok(self.current().expect("workspace initialized"))
     }
 

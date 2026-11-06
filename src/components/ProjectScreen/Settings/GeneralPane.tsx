@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { IconPicker } from "@/components/ProjectIcon/IconPicker";
 import { SetGroup, SetHead, SetRow } from "@/components/SettingsScreen/primitives";
 import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
@@ -33,9 +34,11 @@ export function GeneralPane({ projectId, name }: { projectId: string; name: stri
   );
 }
 
-/** Free-text name, committed on blur / Enter; Escape puts the saved one back. */
+/** Free-text name, committed on blur / Enter; Escape puts the saved one back.
+ *  The project's icon sits beside it, a button onto its choices. */
 function NameRow({ projectId, name }: { projectId: string; name: string }) {
   const renameProject = useAppStore((s) => s.renameProject);
+  const project = useAppStore((s) => s.workspace?.projects.find((p) => p.project_id === projectId));
   // Null on this Mac and on any host that answers the project-settings ops.
   const gate = useGate("projectAdmin");
   const [draft, setDraft] = useState(name);
@@ -65,6 +68,7 @@ function NameRow({ projectId, name }: { projectId: string; name: string }) {
       title="Name"
       sub={error ?? gate ?? "Shown in the sidebar. Independent of the folder name."}
     >
+      {project && <IconPicker project={project} />}
       <TextInput
         value={draft}
         disabled={!!gate}

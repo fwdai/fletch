@@ -29,9 +29,8 @@ interface Loaded {
 export function ProjectScreen({ repoPath }: { repoPath: string }) {
   const close = useAppStore((s) => s.closeProjectScreen);
   const projects = useAppStore((s) => s.workspace?.projects);
-  // The tab lives in the store so whoever opened the screen picks it — the
-  // sidebar's "Project settings" gear lands on Settings, the title-bar pill
-  // on the roadmap.
+  // The tab lives in the store so whoever opened the screen picks it — ⌘⇧,
+  // lands on Settings, the sidebar's "Open project" on the tab last left.
   const tab = useAppStore((s) => s.projectScreenTab);
   const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
   const setTab = useAppStore((s) => s.setProjectScreenTab);
@@ -43,7 +42,8 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
   const roadmap = useRoadmap(repoPath);
 
   // Custom display name for this repo, falling back to the folder basename.
-  const name = projects?.find((p) => p.path === repoPath)?.name ?? basename(repoPath);
+  const project = projects?.find((p) => p.path === repoPath);
+  const name = project?.name ?? basename(repoPath);
   // A Context tab whose developer gate closed falls back to Settings.
   const onSettings = tab === "settings" || (tab === "context" && !contextLayerEnabled);
 
@@ -92,7 +92,13 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
 
   return (
     <div className="proj-screen">
-      <ProjectHeader name={name} roadmap={roadmap} tab={tab} onTab={setTab} onClose={close} />
+      <ProjectHeader
+        project={project ?? { name }}
+        roadmap={roadmap}
+        tab={tab}
+        onTab={setTab}
+        onClose={close}
+      />
 
       {tab === "roadmap" ? (
         <Roadmap roadmap={roadmap} repoPath={repoPath} />

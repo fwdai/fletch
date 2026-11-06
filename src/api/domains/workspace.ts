@@ -1,5 +1,10 @@
 import { invoke } from "../invoke";
-import type { ProjectDeleteResult, Workspace } from "../types/agent";
+import type {
+  ProjectDeleteResult,
+  ProjectIconCandidate,
+  ProjectIconData,
+  Workspace,
+} from "../types/agent";
 
 export const workspaceApi = {
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
@@ -29,4 +34,13 @@ export const workspaceApi = {
    *  already-pinned destination. */
   relocateRepo: (oldPath: string, newPath: string) =>
     invoke<Workspace>("relocate_repo", { oldPath, newPath }),
+  /** A fresh scan of the project's repositories for its icon, best first. */
+  projectIconCandidates: (projectId: string) =>
+    invoke<ProjectIconCandidate[]>("project_icon_candidates", { projectId }),
+  /** `detected:<path>`, `file` (with base64 `bytes`), `builtin:<glyph>`, or
+   *  null for the initial. Resolves to the workspace with the new `icon_hash`. */
+  projectIconSet: (projectId: string, source: string | null, bytes?: string) =>
+    invoke<Workspace>("project_icon_set", { projectId, source, bytes: bytes ?? null }),
+  projectIconGet: (projectId: string) =>
+    invoke<ProjectIconData | null>("project_icon_get", { projectId }),
 };

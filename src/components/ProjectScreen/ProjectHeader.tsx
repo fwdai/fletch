@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import { Icon, type IconName } from "@/components/Icon";
-import { ProjectIcon } from "@/components/ProjectIcon";
+import { type IconSubject, ProjectIcon } from "@/components/ProjectIcon";
 import { CountUp, Stat } from "@/components/Stats";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
@@ -19,13 +19,13 @@ const TABS: { id: ProjectScreenTab; label: string; icon: IconName }[] = [
  *  right. The identity sits in the back button's old zone, so every tab says
  *  which project it is without a second row. */
 export function ProjectHeader({
-  name,
+  project,
   roadmap,
   tab,
   onTab,
   onClose,
 }: {
-  name: string;
+  project: IconSubject;
   roadmap: RoadmapState;
   tab: ProjectScreenTab;
   onTab: (tab: ProjectScreenTab) => void;
@@ -42,8 +42,8 @@ export function ProjectHeader({
         <IconButton tip="Back to app" onClick={onClose}>
           <Icon name="chevL" size={13} />
         </IconButton>
-        <ProjectIcon name={name} />
-        <span className="ps-name text-base truncate">{name}</span>
+        <ProjectIcon project={project} />
+        <span className="ps-name text-base truncate">{project.name}</span>
       </div>
 
       <nav className="ps-tabs">

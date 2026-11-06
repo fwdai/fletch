@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import type { AgentRecord, WfRun } from "@/api";
 import { Icon } from "@/components/Icon";
+import { ProjectIcon } from "@/components/ProjectIcon";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
@@ -66,6 +67,7 @@ export function ProjectGroup({
   const selectDraft = useAppStore((s) => s.selectDraft);
   const selectRun = useAppStore((s) => s.selectRun);
   const openProjectScreen = useAppStore((s) => s.openProjectScreen);
+  const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
   const roadmapGate = useGate("roadmap");
 
   const count = agents.length + drafts.length + runs.length;
@@ -85,11 +87,11 @@ export function ProjectGroup({
   );
   const foldable = hidden.length > 0;
 
-  function onOpenSettings(e: React.MouseEvent) {
+  function onOpenProject(e: React.MouseEvent) {
     e.stopPropagation();
-    // This button says "Project settings", so it opens that tab — the project
-    // page's default (the roadmap) is what the title-bar pill gets.
-    openProjectScreen(repoPath, "settings");
+    // On the tab it was last left on; ⌘⇧, and the palette's "Project
+    // settings" are the ways straight to Settings.
+    openProjectScreen(repoPath);
   }
 
   const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";
@@ -122,6 +124,7 @@ export function ProjectGroup({
         title={repoPaths.join("\n")}
       >
         <Icon name="chevR" size={10} className="chev" />
+        <ProjectIcon project={project ?? { name: label }} size={14} />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
         {/* The project page opens on the roadmap, so it is offered wherever
@@ -129,12 +132,12 @@ export function ProjectGroup({
             project-settings ops (docs/remote-protocol.md, "Settings"). */}
         {!roadmapGate && (
           <button
-            className="padd padd-settings tip"
-            data-tip="Project settings"
-            onClick={onOpenSettings}
-            aria-label="Project settings"
+            className="padd padd-open tip"
+            data-tip="Open project"
+            onClick={onOpenProject}
+            aria-label="Open project"
           >
-            <Icon name="settings" size={14} />
+            <Icon name="map" size={14} />
           </button>
         )}
         <ProjectAddButton repoPath={repoPath} />

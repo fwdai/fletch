@@ -3,7 +3,7 @@
 // thin `call(op, args)` with the desktop's own argument keys — no arg is
 // renamed or reshaped anywhere in mobile.
 
-import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
+import type { AgentRecord, ProjectIconData, Workspace } from "@desktop/api/types/agent";
 import type {
   CheckoutFile,
   CheckoutFileContents,
@@ -269,6 +269,10 @@ export function createApi(client: RemoteClient) {
       call<Workspace>("clone_repo", { spec, destParent }),
     ghStatus: () => read<GhStatus>("gh_status"),
     ghRepoList: () => read<GhRepoSummary[]>("gh_repo_list"),
+    /** A project's stored icon, fetched when its `icon_hash` changes. A host
+     *  that sends a hash answers this op. */
+    projectIconGet: (projectId: string) =>
+      read<ProjectIconData | null>("project_icon_get", { projectId }),
 
     /** A project's whole roadmap. The phone reads it for one thing — the PM's
      *  `proposed` ghosts, which a planning chat draws as decision cards — so the

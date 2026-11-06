@@ -38,6 +38,7 @@ pub mod git_state;
 pub mod github;
 pub mod handoff;
 pub mod host;
+pub mod icon_detect;
 pub mod instructions;
 pub mod issues;
 pub mod keychain;

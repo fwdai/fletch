@@ -133,3 +133,43 @@ pub fn relocate_repo(
 ) -> Result<Workspace> {
     supervisor.relocate_repo(PathBuf::from(old_path), PathBuf::from(new_path))
 }
+
+/// The icon candidates in a project's repositories, best first, with their
+/// images (a fresh scan: the picker's "Detect again").
+#[tauri::command]
+pub fn project_icon_candidates(
+    supervisor: State<'_, Arc<Supervisor>>,
+    project_id: String,
+) -> Vec<fletch_core::icon_detect::CandidateImage> {
+    fletch_core::commands::project_icon_candidates_impl(&supervisor, &project_id)
+}
+
+/// Make `source` the project's icon; `bytes` (base64) for a chosen file.
+#[tauri::command]
+pub fn project_icon_set(
+    ctx: State<'_, Arc<EngineCtx>>,
+    supervisor: State<'_, Arc<Supervisor>>,
+    project_id: String,
+    source: Option<String>,
+    bytes: Option<String>,
+) -> Result<Workspace> {
+    fletch_core::commands::announce_workspace(
+        ctx.sink.as_ref(),
+        fletch_core::commands::project_icon_set_impl(
+            &ctx,
+            &supervisor,
+            &project_id,
+            source.as_deref(),
+            bytes.as_deref(),
+        ),
+    )
+}
+
+/// The project's stored icon: a glyph, an image, or null for the initial.
+#[tauri::command]
+pub fn project_icon_get(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: String,
+) -> Result<Option<fletch_core::icon_detect::IconData>> {
+    fletch_core::commands::project_icon_get_impl(&ctx, &project_id)
+}

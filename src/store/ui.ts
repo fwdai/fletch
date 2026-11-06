@@ -74,7 +74,8 @@ export interface UiSlice {
    *  primary repo path — the screen resolves the project_id on open. */
   projectScreenRepoPath: string | null;
   /** Which tab of the project page is showing. Set by whoever opened the
-   *  screen, so a control labelled "Project settings" lands on Settings. */
+   *  screen, so a control labelled "Project settings" lands on Settings, and
+   *  kept for the session by an open that names no tab. */
   projectScreenTab: ProjectScreenTab;
   /** Which pane the Settings tab shows; set the same way, so the egress toast
    *  lands on Network. */
@@ -162,8 +163,9 @@ export interface UiSlice {
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
   closeOnboarding: () => void;
   toggleHistory: (open?: boolean) => void;
-  /** Open the full-screen project page for a sidebar repo group, on `tab`
-   *  (default: the roadmap) and, for Settings, `section` (default: General). */
+  /** Open the full-screen project page for a sidebar repo group, on `tab` and,
+   *  for Settings, `section` (default: General). No `tab` opens the page on the
+   *  tab and pane it was last left on (the roadmap at first). */
   openProjectScreen: (
     repoPath: string,
     tab?: ProjectScreenTab,
@@ -304,16 +306,17 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     if (firstCompletion) void api.boxImageInstall().catch(() => {});
   },
   toggleHistory: (open) => set((s) => ({ historyOpen: open ?? !s.historyOpen })),
-  openProjectScreen: (repoPath, tab = "roadmap", section = "general") => {
+  openProjectScreen: (repoPath, tab, section) => {
     // The project page opens on the roadmap, so it needs a host that drives
     // one; its settings sections gate themselves (`projectSettings`). The
     // sidebar hides its button behind this gate; every other way in (⌘⇧,,
     // a roadmap chip) is refused here so none can slip past it.
     if (gateReason(activeEnvironment(), "roadmap")) return;
-    set({
+    set((s) => ({
       projectScreenRepoPath: repoPath,
-      projectScreenTab: tab,
-      projectSettingsSection: section,
+      // No tab asked for: the page and pane it was last left on.
+      projectScreenTab: tab ?? s.projectScreenTab,
+      projectSettingsSection: section ?? (tab ? "general" : s.projectSettingsSection),
       // Same takeover rules as the settings screen: one full-screen surface
       // at a time, and a hidden run view shouldn't stay selected.
       settingsScreenOpen: false,
@@ -321,7 +324,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       selectedRunId: null,
       // A plain open must not inherit someone else's jump request.
       roadmapFocusCode: null,
-    });
+    }));
   },
   closeProjectScreen: () => set({ projectScreenRepoPath: null, roadmapFocusCode: null }),
   setProjectScreenTab: (tab) => set({ projectScreenTab: tab }),

@@ -7,6 +7,7 @@ import { WorkspaceTypePicker } from "@/components/Composer/WorkspaceTypePicker";
 import { declaredWorkspaceType } from "@/components/Composer/workspaceType";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
+import { ProjectIcon } from "@/components/ProjectIcon";
 import { IconButton } from "@/components/ui/IconButton";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
@@ -54,10 +55,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
 
   // The project this draft targets — keys its Linear team and default workflow
   // (per-project `project_settings`).
-  const projectId = useMemo(
-    () => projectRefs.find((r) => r.path === draft.repoPath)?.project_id ?? "",
-    [projectRefs, draft.repoPath],
-  );
+  const project = projectRefs.find((r) => r.path === draft.repoPath);
+  const projectId = project?.project_id ?? "";
 
   // The project's configured Linear team (Project Settings), scoping the
   // composer's issue picker. Undefined while loading or when none is set —
@@ -101,6 +100,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
       <div className="center-h flex-center">
         <PanelToggle side="left" />
         <div className="task" style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          {project && <ProjectIcon project={project} />}
           <span
             style={{
               fontSize: "var(--fs-xs)",

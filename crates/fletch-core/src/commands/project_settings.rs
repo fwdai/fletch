@@ -40,6 +40,10 @@ const PROJECT_SETTING_KEYS: &[&str] = &[
     // global `box_egress_mode`: `open`, `ask` or `allowlist`; absent is the
     // global (`sandbox::boxes::settings::EgressMode`).
     crate::sandbox::boxes::settings::EGRESS_MODE_KEY,
+    // The project's icon choice (`icon_detect::store`); written through
+    // `project_icon_set`, which also stores the image, but readable like any
+    // project key.
+    crate::icon_detect::SOURCE_KEY,
 ];
 
 /// The key family a client may write in full: `run.<row>` (the project's run

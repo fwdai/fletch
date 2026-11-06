@@ -42,6 +42,8 @@ export interface ReposSlice {
   // Settings modal can show the error inline rather than in the global banner.
   /** Set a project's custom display name (independent of its folder). */
   renameProject: (projectId: string, name: string) => Promise<void>;
+  /** Choose the project's icon (`api.projectIconSet`); throws for inline display. */
+  setProjectIcon: (projectId: string, source: string | null, bytes?: string) => Promise<void>;
   /** Delete a project and all agents/workspaces belonging to it. */
   deleteProject: (projectId: string) => Promise<void>;
   /** Repoint a pinned repo at a moved folder, migrating its sidebar order and
@@ -126,6 +128,12 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     // Errors propagate to the modal for inline display.
     refuseWhenGated();
     const ws = await api.renameProject(projectId, name);
+    set({ workspace: ws });
+  },
+
+  setProjectIcon: async (projectId, source, bytes) => {
+    refuseWhenGated("projectIcon");
+    const ws = await api.projectIconSet(projectId, source, bytes);
     set({ workspace: ws });
   },
 

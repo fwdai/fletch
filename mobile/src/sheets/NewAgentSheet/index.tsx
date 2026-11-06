@@ -2,7 +2,7 @@ import { Icon } from "@desktop/components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { useAttachments } from "../../attachments";
 import { PromptField } from "../../components/PromptField";
-import { PickerSheet, ProviderMark, Sheet, Swatch } from "../../components/ui";
+import { PickerSheet, ProjectIcon, ProviderMark, Sheet } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { modelLabel, providerLabel } from "../../lib/agents";
 import { hostProviderBlock, useHostProviders } from "../../lib/hostProviders";
@@ -161,7 +161,7 @@ export function NewAgentSheet({
           NEW WORKSPACE
           <span className="in">· in</span>
           <button type="button" className="pj" onClick={() => setPicker("project")}>
-            <Swatch project={project} size={14} />
+            <ProjectIcon project={project} size={14} />
             {project.name}
             <Icon name="chevD" size={11} />
           </button>
@@ -214,7 +214,7 @@ export function NewAgentSheet({
         )}
         <div className="na-ctx">
           <button type="button" className="chip" onClick={() => setPicker("project")}>
-            <Swatch project={project} size={14} />
+            <ProjectIcon project={project} size={14} />
             {project.name}
           </button>
           <button type="button" className="chip" onClick={() => setPicker("branch")}>
@@ -231,7 +231,7 @@ export function NewAgentSheet({
           id: p.id,
           label: p.name,
           sub: primaryPath(p),
-          icon: <Swatch project={p} />,
+          icon: <ProjectIcon project={p} />,
         }))}
         value={pid}
         onChange={(id) => {

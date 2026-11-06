@@ -2,7 +2,7 @@ import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { AgentRow } from "../../components/AgentRow";
-import { Nav, Segmented, Swatch } from "../../components/ui";
+import { Nav, ProjectIcon, Segmented } from "../../components/ui";
 import { type AgentStage, agentsOfProject, baseOf, stageOf } from "../../lib/agents";
 import { projectById, repoLabel } from "../../lib/projects";
 import { useStore } from "../../store";
@@ -64,7 +64,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
         backLabel="Projects"
         title={
           <>
-            <Swatch project={project} size={18} />
+            <ProjectIcon project={project} size={18} />
             {project.name}
           </>
         }

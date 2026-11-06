@@ -24,8 +24,8 @@ export function WorkspaceStatus() {
 
   // Project display name for a repo path: the user-editable project name
   // (as in the sidebar), falling back to the folder basename.
-  const projectName = (repoPath: string) =>
-    workspace?.projects.find((p) => p.path === repoPath)?.name ?? basename(repoPath);
+  const projectRef = (repoPath: string) => workspace?.projects.find((p) => p.path === repoPath);
+  const projectName = (repoPath: string) => projectRef(repoPath)?.name ?? basename(repoPath);
 
   if (settingsScreenOpen) return <ScreenCrumb label="Settings" onHome={closeSettingsScreen} />;
   if (usageScreenOpen) return <ScreenCrumb label="Usage" onHome={closeUsageScreen} />;
@@ -36,7 +36,7 @@ export function WorkspaceStatus() {
     return (
       <ScreenCrumb
         label={name}
-        icon={<ProjectIcon name={name} size={12} />}
+        icon={<ProjectIcon project={projectRef(projectScreenRepoPath) ?? { name }} size={12} />}
         onHome={closeProjectScreen}
       />
     );

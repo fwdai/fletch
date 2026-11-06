@@ -712,6 +712,9 @@ fn allowlist_matches_the_protocol_table() {
         "context_resolve_contradiction",
         "context_bootstrap",
         "context_tidy",
+        "project_icon_candidates",
+        "project_icon_set",
+        "project_icon_get",
         "register_push",
     ];
     assert_eq!(
