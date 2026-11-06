@@ -140,11 +140,12 @@ export function IconPicker({ project }: { project: ProjectRef }) {
                   Choose file…
                 </Button>
               )}
+              {/* Recorded, not cleared: a relocate must not detect over it. */}
               <Button
                 variant="outline"
                 size="sm"
-                disabled={current === null && !project.icon_hash}
-                onClick={() => void choose(null)}
+                disabled={current === "initial"}
+                onClick={() => void choose("initial")}
               >
                 Use initial
               </Button>

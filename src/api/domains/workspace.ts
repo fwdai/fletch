@@ -38,7 +38,8 @@ export const workspaceApi = {
   projectIconCandidates: (projectId: string) =>
     invoke<ProjectIconCandidate[]>("project_icon_candidates", { projectId }),
   /** `detected:<path>`, `file` (with base64 `bytes`), `builtin:<glyph>`, or
-   *  null for the initial. Resolves to the workspace with the new `icon_hash`. */
+   *  `initial`; null clears the choice. Resolves to the workspace with the new
+   *  `icon_hash`. */
   projectIconSet: (projectId: string, source: string | null, bytes?: string) =>
     invoke<Workspace>("project_icon_set", { projectId, source, bytes: bytes ?? null }),
   projectIconGet: (projectId: string) =>

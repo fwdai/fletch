@@ -55,9 +55,22 @@ impl WorkspaceManager {
 
     /// Give a project the icon its repositories already have, unless it has a
     /// choice on record (`icon_detect`): on add and on relocate.
-    fn detect_icon(&self, project_id: &str) {
+    fn detect_icon(&self, project_id: &str) -> bool {
         let repos = self.project_repo_paths(project_id);
-        crate::icon_detect::detect_if_unset(&self.db, project_id, &repos);
+        crate::icon_detect::detect_if_unset(&self.db, project_id, &repos)
+    }
+
+    /// The same for every project with nothing decided: the startup pass that
+    /// gives projects from before icons theirs. Blocking file reads; whether
+    /// any project got an icon.
+    pub fn detect_missing_icons(&self) -> bool {
+        match self.project_ids() {
+            Ok(ids) => ids.iter().filter(|id| self.detect_icon(id)).count() > 0,
+            Err(e) => {
+                tracing::warn!(error = %e, "skipping the project icon pass");
+                false
+            }
+        }
     }
 
     /// Remove a repo from the sidebar's pinned list. Does NOT touch

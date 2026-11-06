@@ -2865,7 +2865,7 @@ struct ProjectArgs {
     project_id: String,
 }
 
-/// `source: null` is the initial; `bytes` (base64) only with `file`.
+/// `source: null` clears the choice; `bytes` (base64) only with `file`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectIconSetArgs {

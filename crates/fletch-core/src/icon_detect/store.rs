@@ -1,6 +1,7 @@
 //! The project's chosen icon. `icon.source` in `project_settings` records the
-//! choice — `detected:<path>`, `file`, `builtin:<glyph>`, or no row for the
-//! initial — and the image itself is copied once to
+//! choice — `detected:<path>`, `file`, `builtin:<glyph>` or `initial` — and no
+//! row means nothing was decided yet, which detection fills in (on add,
+//! relocate and the startup pass). The image itself is copied once to
 //! `<data dir>/project-icons/<project id>`, so drawing it never reads the
 //! repository and a relocated repo keeps its icon. `icon.hash`, the host's own
 //! row, is what `ProjectRef.icon_hash` carries: a client refetches the image
@@ -22,6 +23,9 @@ pub const SOURCE_KEY: &str = "icon.source";
 pub const HASH_KEY: &str = "icon.hash";
 /// The built-in glyphs the picker offers; the client maps each to its own icon.
 pub const GLYPHS: &[&str] = &["web", "desktop", "mobile", "cli", "library", "docs"];
+/// The initial, chosen — by the user, or by a scan that found nothing — so
+/// detection leaves it alone.
+pub const INITIAL: &str = "initial";
 const DIR: &str = "project-icons";
 
 /// What `project_icon_get` answers: a built-in glyph, or an image's bytes.
@@ -58,7 +62,7 @@ pub fn candidates(repos: &[PathBuf]) -> Vec<CandidateImage> {
 
 /// Make `source` the project's icon. `detected:<path>` must be one of the
 /// scan's candidates in `repos` now — a client names a candidate, never a
-/// file — and `file` takes the uploaded `bytes`. `None` is the initial.
+/// file — and `file` takes the uploaded `bytes`. `None` clears the choice.
 pub fn set(
     db: &crate::DbState,
     project_id: &str,
@@ -67,7 +71,7 @@ pub fn set(
     repos: &[PathBuf],
 ) -> Result<()> {
     let image = match source {
-        None => None,
+        None | Some(INITIAL) => None,
         Some(s)
             if s.strip_prefix("builtin:")
                 .is_some_and(|g| GLYPHS.contains(&g)) =>
@@ -121,7 +125,7 @@ pub fn get(db: &crate::DbState, project_id: &str) -> Result<Option<IconData>> {
             icon_file(&conn, project_id),
         )
     };
-    let Some(source) = source else {
+    let Some(source) = source.filter(|s| s != INITIAL) else {
         return Ok(None);
     };
     if let Some(glyph) = source.strip_prefix("builtin:") {
@@ -139,23 +143,31 @@ pub fn get(db: &crate::DbState, project_id: &str) -> Result<Option<IconData>> {
 }
 
 /// Pick the scan's top candidate when the project has no icon choice yet: on
-/// add and relocate. Best-effort — a failure leaves the initial, logged.
-pub fn detect_if_unset(db: &crate::DbState, project_id: &str, repos: &[PathBuf]) {
+/// add, relocate and the startup pass. A scan that finds nothing records the
+/// initial, so it is not repeated. Best-effort — a failure is logged. Whether
+/// the project got an icon.
+pub fn detect_if_unset(db: &crate::DbState, project_id: &str, repos: &[PathBuf]) -> bool {
     let unset = |conn: &Connection| matches!(setting(conn, project_id, SOURCE_KEY), Ok(None));
     if !unset(&db.lock()) {
-        return;
+        return false;
     }
-    let Some((path, bytes)) = scan_project(repos)
+    let found = scan_project(repos)
         .into_iter()
-        .find_map(|c| Some((c.path, read_icon(&c.file)?.0)))
-    else {
-        return;
-    };
+        .find_map(|c| Some((format!("detected:{}", c.path), read_icon(&c.file)?.0)));
     let conn = db.lock();
-    if unset(&conn) {
-        let source = format!("detected:{path}");
-        if let Err(e) = write(&conn, project_id, Some(&source), Some(bytes)) {
+    if !unset(&conn) {
+        return false;
+    }
+    let got_icon = found.is_some();
+    let (source, image) = match found {
+        Some((source, bytes)) => (source, Some(bytes)),
+        None => (INITIAL.to_string(), None),
+    };
+    match write(&conn, project_id, Some(&source), image) {
+        Ok(()) => got_icon,
+        Err(e) => {
             tracing::warn!(error = %e, project_id, "couldn't store the detected project icon");
+            false
         }
     }
 }
@@ -182,9 +194,12 @@ fn write(
             std::fs::write(&file, bytes)?;
             Some(short_hash(bytes))
         }
+        // A glyph is fetched like an image; the initial needs no fetch.
         (None, source) => {
             let _ = std::fs::remove_file(&file);
-            source.map(|s| short_hash(s.as_bytes()))
+            source
+                .filter(|s| *s != INITIAL)
+                .map(|s| short_hash(s.as_bytes()))
         }
     };
     for (key, value) in [(HASH_KEY, hash.as_deref()), (SOURCE_KEY, source)] {
@@ -309,18 +324,32 @@ mod tests {
             Some(IconData::Image { .. })
         ));
 
-        // "Use initial" — and detection then leaves a choice alone only while
-        // one is recorded.
-        set(&ctx.db, "p1", None, None, &repos).unwrap();
+        // "Use initial" is a choice detection leaves alone (a relocate, the
+        // startup pass); only a cleared choice is detected again.
+        set(&ctx.db, "p1", Some(INITIAL), None, &repos).unwrap();
         assert_eq!((get(&ctx.db, "p1").unwrap(), hash(&ctx)), (None, None));
-        set(&ctx.db, "p1", Some("builtin:web"), None, &repos).unwrap();
         detect_if_unset(&ctx.db, "p1", &repos);
+        assert_eq!(get(&ctx.db, "p1").unwrap(), None);
+        set(&ctx.db, "p1", None, None, &repos).unwrap();
+        detect_if_unset(&ctx.db, "p1", &repos);
+        assert!(get(&ctx.db, "p1").unwrap().is_some());
+    }
+
+    /// A scan that finds nothing records the initial, so the next boot's pass
+    /// does not scan the project again.
+    #[test]
+    fn a_scan_that_finds_nothing_is_not_repeated() {
+        let (ctx, _sink, _dir) = test_ctx();
+        project(&ctx);
+        let repo = fixture(&[("README.md", "# no icon")]);
+        detect_if_unset(&ctx.db, "p1", &[repo.path().to_path_buf()]);
         assert_eq!(
-            get(&ctx.db, "p1").unwrap(),
-            Some(IconData::Glyph {
-                glyph: "web".into()
-            })
+            setting(&ctx.db.lock(), "p1", SOURCE_KEY)
+                .unwrap()
+                .as_deref(),
+            Some(INITIAL)
         );
+        assert_eq!((get(&ctx.db, "p1").unwrap(), hash(&ctx)), (None, None));
     }
 
     #[test]
