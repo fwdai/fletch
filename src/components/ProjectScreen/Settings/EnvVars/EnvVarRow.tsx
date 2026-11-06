@@ -26,6 +26,9 @@ interface Props {
   onRemove: () => void;
 }
 
+/** The tokens the host fills in a shared value (Rust `run_env::interpolate`). */
+const TOKENS_TIP = "Use {{agent_id}} or {{worktree}} for a value per agent";
+
 /** One environment-variable row. Same value-editing UX as the run-config rows
  *  (shared [`ValueChip`]). The revert control lives with the "Overridden"
  *  caption on the left — grouped with the state it undoes — so the right-hand
@@ -125,13 +128,15 @@ export function EnvVarRow({
         <div className="ev-cap iflex-center text-xs">{caption}</div>
       </div>
       <div className="ev-r iflex-center">
-        <ValueChip
-          value={display}
-          placeholder={envValue ?? "not set"}
-          ariaLabel={varKey}
-          onCommit={handleCommit}
-          onEditingChange={setEditing}
-        />
+        <span className="tip iflex-center" data-tip={TOKENS_TIP}>
+          <ValueChip
+            value={display}
+            placeholder={envValue ?? "not set"}
+            ariaLabel={varKey}
+            onCommit={handleCommit}
+            onEditingChange={setEditing}
+          />
+        </span>
         <SandboxToggle value={cfg.shared} onChange={onToggleShare} />
       </div>
     </div>

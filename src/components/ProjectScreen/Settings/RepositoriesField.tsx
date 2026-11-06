@@ -61,7 +61,10 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
   }
 
   return (
-    <SetGroup label="Repositories">
+    <SetGroup
+      label="Repositories"
+      sub="Group a frontend, a backend and more under one project. New agents start in the primary one."
+    >
       {/* A block, so the attach button keeps its own width in the group's column. */}
       <div>
         <div className="ps-repo-list">
@@ -90,10 +93,6 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
         >
           Attach repository…
         </Button>
-        <p className="ps-hint text-xs">
-          Group a frontend, a backend and more under one project, wherever they live. New agents
-          start in the primary one; detaching or relocating never touches the folder.
-        </p>
 
         {error && <div className="ps-error text-sm">{error}</div>}
       </div>
@@ -180,7 +179,7 @@ function RepoRow({
         variant="link"
         size="sm"
         disabled={busy || gate !== null}
-        tip={gate ?? undefined}
+        tip={gate ?? "Point to where the repository moved. The folder isn't touched."}
         onClick={onRelocate}
       >
         Change…
@@ -189,7 +188,7 @@ function RepoRow({
         <IconButton
           size="sm"
           danger
-          tip={gate ?? "Detach from project"}
+          tip={gate ?? "Detach from project. The folder stays where it is."}
           aria-label={`Detach ${repo.path}`}
           disabled={busy || gate !== null}
           onClick={onDetach}

@@ -11,11 +11,11 @@ export const EGRESS_MODE_LABELS: Record<EgressMode, string> = {
   allowlist: "Allow list",
 };
 
-/** One line on what each posture does, for the picker's description. */
+/** A few words on what each posture does, for the picker's description. */
 export const EGRESS_MODE_HINTS: Record<EgressMode, string> = {
   open: "Any host passes and is recorded below.",
-  ask: "The agent waits up to a minute while you decide. Nobody answering blocks it.",
-  allowlist: "Only the hosts on the list. Everything else is refused at once.",
+  ask: "The agent waits up to a minute for your answer.",
+  allowlist: "Anything off the list is refused at once.",
 };
 
 /** The posture a project's VMs run under: its own override when set, else the
