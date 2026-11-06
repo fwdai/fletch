@@ -163,7 +163,7 @@ fn an_undeliverable_turn_notes_each_row_once() {
 #[test]
 fn the_dial_is_declared_on_both_sides_of_the_wire() {
     const TS: &str =
-        include_str!("../../../../../src/components/ProjectScreen/Roadmap/autonomy.ts");
+        include_str!("../../../../../src/components/RoadmapScreen/Roadmap/autonomy.ts");
     let expected = format!("export const TRIAGE_KEY = {TRIAGE_KEY:?};");
     assert!(
         TS.contains(&expected),
