@@ -27,6 +27,7 @@ import type {
 import type {
   ItemStatus,
   RoadmapItem,
+  RoadmapItemEvent,
   RoadmapItemPatch,
   RoadmapItemUpdate,
 } from "@desktop/api/types/roadmap";
@@ -274,11 +275,24 @@ export function createApi(client: RemoteClient) {
     projectIconGet: (projectId: string) =>
       read<ProjectIconData | null>("project_icon_get", { projectId }),
 
-    /** A project's whole roadmap. The phone reads it for one thing — the PM's
-     *  `proposed` ghosts, which a planning chat draws as decision cards — so the
-     *  filtering is the caller's, not a second op. */
+    /** A project's whole roadmap. The phone reads it for the PM's `proposed`
+     *  ghosts, which a planning chat draws as decision cards, and for the
+     *  project screen's Inbox and Next up — so the filtering is the caller's,
+     *  not a second op. */
     roadmapListItems: (projectId: string) =>
       read<RoadmapItem[]>("roadmap_list_items", { projectId }),
+    /** Drop a note in the board's inbox: a `captured` row (the first line its
+     *  title, the rest its why) for the PM to triage. Gated on
+     *  `hostSupports("roadmap_capture")`. */
+    roadmapCapture: (projectId: string, text: string) =>
+      call<RoadmapItem>("roadmap_capture", { projectId, text }),
+    /** The newest history event of every row on the board — what tells an
+     *  untriaged capture waiting on a PM chat from one being triaged. */
+    roadmapLatestEvents: (projectId: string) =>
+      read<RoadmapItemEvent[]>("roadmap_latest_events", { projectId }),
+    /** A project's client-readable settings; absent keys are their default. */
+    getProjectSettings: (projectId: string) =>
+      read<Record<string, string>>("get_project_settings", { projectId }),
     /** Patch an item and get the stored row back. `expectStatus` makes it a
      *  *conditional* transition: the patch lands only while the row still says
      *  that status, and a miss comes back as `applied: false` with the row as it

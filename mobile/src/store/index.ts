@@ -52,6 +52,7 @@ import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings }
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
 import { createProviderAccountsSlice, type ProviderAccountsSlice } from "./providerAccounts";
 import { forgetPush, pushTab, startPush, syncPush } from "./push";
+import { createRoadmapSlice, type RoadmapSlice } from "./roadmap";
 import {
   appendActivity,
   askedText,
@@ -103,7 +104,11 @@ export interface SheetState {
   open: boolean;
 }
 
-export interface MobileState extends ChatsSlice, ProposalsSlice, ProviderAccountsSlice {
+export interface MobileState
+  extends ChatsSlice,
+    ProposalsSlice,
+    ProviderAccountsSlice,
+    RoadmapSlice {
   ready: boolean;
   connection: ConnectionState;
   connectionError: string | null;
@@ -965,9 +970,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       autopilot: {},
       autopilotSwitches: null,
       // The chats belong to the host that holds their checkouts, and the ghosts
-      // to the boards those chats propose onto.
+      // to the boards those chats propose onto — as do the boards themselves.
       chats: {},
       proposals: {},
+      boards: {},
       // …and the accounts and their meters are that host's logins.
       providerAccounts: {},
       providerLimits: {},
@@ -1646,6 +1652,8 @@ export const useStore = create<MobileState>()((set, get) => ({
   }),
 
   ...createProposalsSlice(set, get, { api, guard: (fn) => guard(set, fn) }),
+
+  ...createRoadmapSlice(set, get, api),
 
   ...createProviderAccountsSlice(set, get, { api }),
 }));

@@ -6,10 +6,14 @@ import { Nav, ProjectIcon, Segmented } from "../../components/ui";
 import { type AgentStage, agentsOfProject, baseOf, stageOf } from "../../lib/agents";
 import { projectById, repoLabel } from "../../lib/projects";
 import { useStore } from "../../store";
+import { RoadmapPane } from "./Roadmap";
 
 /** Tab order, which is also the order the screen falls through when picking
  *  the tab to open on. */
 const STAGES: AgentStage[] = ["running", "yours", "prs"];
+
+/** The agent stages, then the project's roadmap — never the tab it opens on. */
+type Tab = AgentStage | "roadmap";
 
 export function ProjectScreen({ projectId }: { projectId: string }) {
   // Derived outside the selector: a selector that builds a new array on every
@@ -27,6 +31,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
   const loadChats = useStore((s) => s.loadChats);
   const connected = useStore((s) => s.connection === "connected");
   const canPlan = useStore((s) => s.hostSupports("list_project_chats"));
+  const hasRoadmap = useStore((s) => s.hostSupports("roadmap_list_items"));
 
   // The live PR state wins over the record's persisted snapshot when it is
   // known; most rows only have the snapshot.
@@ -37,9 +42,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
   // Opens on what is running; when nothing is, on the first tab with something
   // to act on, rather than an empty list. Picked once, so a turn finishing
   // never moves the user off the tab they are reading.
-  const [filter, setFilter] = useState<AgentStage>(
-    () => STAGES.find((s) => count(s) > 0) ?? "running",
-  );
+  const [filter, setFilter] = useState<Tab>(() => STAGES.find((s) => count(s) > 0) ?? "running");
 
   // Planning chats are absent from the workspace snapshot, so they are read on
   // their own — on arrival, and again on every reconnect, since nothing pushes
@@ -95,27 +98,32 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
             { id: "running", label: "Running", count: count("running") },
             { id: "yours", label: "Your turn", count: count("yours") },
             { id: "prs", label: "PRs", count: count("prs") },
+            ...(hasRoadmap ? [{ id: "roadmap", label: "Roadmap" }] : []),
           ]}
           value={filter}
-          onChange={(id) => setFilter(id as AgentStage)}
+          onChange={(id) => setFilter(id as Tab)}
         />
       </div>
       <div className="scroll proj-body">
-        <div className="card pane" key={filter}>
-          {list.map((a) => (
-            <AgentRow key={a.id} agent={a} project={project} onClick={() => openAgent(a.id)} />
-          ))}
-          {list.length === 0 && (
-            <div className="empty">
-              <b>Nothing here</b>
-              {filter === "running"
-                ? "No agents are working right now."
-                : filter === "yours"
-                  ? "No agent is waiting on you."
-                  : "No PRs to land."}
-            </div>
-          )}
-        </div>
+        {filter === "roadmap" ? (
+          <RoadmapPane projectId={projectId} />
+        ) : (
+          <div className="card pane" key={filter}>
+            {list.map((a) => (
+              <AgentRow key={a.id} agent={a} project={project} onClick={() => openAgent(a.id)} />
+            ))}
+            {list.length === 0 && (
+              <div className="empty">
+                <b>Nothing here</b>
+                {filter === "running"
+                  ? "No agents are working right now."
+                  : filter === "yours"
+                    ? "No agent is waiting on you."
+                    : "No PRs to land."}
+              </div>
+            )}
+          </div>
+        )}
         {/* Below the filtered agents, and outside them: a planning chat is not
             a filter of the fleet, it is a conversation about what the fleet
             should build next. */}
