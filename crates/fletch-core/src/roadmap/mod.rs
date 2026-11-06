@@ -25,6 +25,7 @@ pub mod proposals;
 pub mod review;
 pub mod rulings;
 pub mod store;
+pub mod triage;
 pub mod types;
 
 use std::sync::Arc;

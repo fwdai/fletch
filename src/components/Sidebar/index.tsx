@@ -20,7 +20,7 @@ import { NewProjectPopover } from "./NewProjectPopover";
 import { PaletteHint } from "./PaletteHint";
 import { ProjectGroup } from "./ProjectGroup";
 import { bubbleActive } from "./recentProjects";
-import { focusRow, rowOf, SIDEBAR_LIST_ID, visibleRows } from "./rowNav";
+import { focusRow, SIDEBAR_LIST_ID, stepOrigin, visibleRows } from "./rowNav";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarHeader } from "./SidebarHeader";
 import { useProjectReorder } from "./useProjectReorder";
@@ -323,8 +323,7 @@ export function Sidebar() {
   function onListKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if (e.altKey || e.metaKey || e.ctrlKey) return;
     const rows = visibleRows(listRef.current);
-    const row = rowOf(e.target);
-    const target = arrowTarget(rows, row ? rows.indexOf(row) : -1, e.key);
+    const target = arrowTarget(rows, stepOrigin(rows, e.target, e.key), e.key);
     if (!target) return;
     e.preventDefault();
     focusRow(target);

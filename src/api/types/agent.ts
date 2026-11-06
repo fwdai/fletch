@@ -182,6 +182,24 @@ export interface ProjectRef {
    *  keeps its agents on this Mac (Rust `sandbox::placement::looks_native`,
    *  decided by the host per snapshot). Absent from a host that predates it. */
   native_app?: boolean;
+  /** The project's icon, by hash: fetch it with `projectIconGet` when this
+   *  changes. Null (or absent, from an older host) draws the initial. */
+  icon_hash?: string | null;
+}
+
+/** A project's stored icon (`project_icon_get`): a built-in glyph or an image's
+ *  base64 bytes. Null from the op draws the initial. */
+export type ProjectIconData = { glyph: string } | { mime: string; data: string };
+
+/** One image a project's repositories offer as its icon
+ *  (`project_icon_candidates`), best first. `path` is what `detected:` names. */
+export interface ProjectIconCandidate {
+  path: string;
+  /** What found it ("Tauri app icon", "Favicon"). */
+  source: string;
+  width: number | null;
+  mime: string;
+  data: string | null;
 }
 
 export interface Workspace {

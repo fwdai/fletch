@@ -3,6 +3,7 @@
 // state: the rendered rows already reflect search filtering, project order,
 // and collapsed groups, so there is nothing to keep in sync.
 
+/** A stop: a draft, agent or run row. */
 const ROW = ".agent[role='button']";
 
 /** Every selectable row the user can currently see, in visual order. Rows in a
@@ -13,10 +14,19 @@ export function visibleRows(container: HTMLElement | null): HTMLElement[] {
   );
 }
 
-/** The row that owns `el`, if it sits inside one (a nested Stop/Archive button
- *  counts as being on its row). */
-export function rowOf(el: EventTarget | null): HTMLElement | null {
-  return el instanceof HTMLElement ? el.closest<HTMLElement>(ROW) : null;
+/** Where an arrow key pressed on `el` steps from, as an index into `rows`: the
+ *  row that owns `el` (a nested Stop/Archive button counts as being on its
+ *  row), or, from a control between rows that is no stop itself (the "N older"
+ *  fold), its place among them, so ↓ lands on the row below and ↑ on the row
+ *  above. */
+export function stepOrigin(rows: HTMLElement[], el: EventTarget | null, key: string): number {
+  if (!(el instanceof HTMLElement)) return -1;
+  const row = el.closest<HTMLElement>(ROW);
+  if (row) return rows.indexOf(row);
+  const above = rows.filter(
+    (r) => r.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).length;
+  return key === "ArrowUp" ? above : above - 1;
 }
 
 /** Move keyboard focus to a row and select it, so the transcript follows the

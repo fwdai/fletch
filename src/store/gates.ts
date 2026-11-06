@@ -201,6 +201,13 @@ export const GATES = {
     label: "The roadmap",
     reason: "This host is too old to drive a roadmap board.",
   },
+  /** Capturing a line into the roadmap's inbox. Its own gate: a host from
+   *  before the inbox drives a board but has no `captured` row to land it in. */
+  roadmapCapture: {
+    op: "roadmap_capture",
+    label: "Capturing to the roadmap",
+    reason: "This host is too old to capture into the roadmap inbox — update it.",
+  },
   /** Autopilot's switches — the project's and the per-agent pause. The loop
    *  runs on the host, so a host from before `autopilot_set` has none to flip,
    *  and a device paired without `publish` may not (an enrolled checkout's
@@ -331,6 +338,13 @@ export const GATES = {
     op: "delete_branch_agent",
     label: "Deleting a branch",
     reason: "Delete the branch on the host — it lives in the project repo, not the session.",
+  },
+  /** Choosing a project's icon: the scan's candidates and the choice. Drawing
+   *  one needs no gate — a host sends an `icon_hash` only if it can answer. */
+  projectIcon: {
+    op: ["project_icon_candidates", "project_icon_set"],
+    label: "Project icon",
+    reason: "This host is too old to change the project's icon — update it.",
   },
 } as const satisfies Record<string, Gate>;
 

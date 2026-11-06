@@ -768,19 +768,6 @@ a {
   border-color: color-mix(in oklch, var(--merged), transparent 60%);
   background: color-mix(in oklch, var(--merged), transparent 90%);
 }
-.swatch {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  color: oklch(0.16 0.02 60);
-  flex-shrink: 0;
-}
 .pm {
   width: 16px;
   height: 16px;

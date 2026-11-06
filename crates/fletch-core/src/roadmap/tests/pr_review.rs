@@ -26,6 +26,9 @@ fn item(status: ItemStatus, pr_number: Option<i64>) -> RoadmapItem {
         held_at: None,
         close_reason: None,
         issue_url: None,
+        kind: None,
+        triage: None,
+        from_item: None,
         updated_at: 1,
     }
 }

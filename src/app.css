@@ -43,15 +43,17 @@
 @import "./styles/foundation/scrollbar.css";
 @import "./styles/shared/terminal.css";
 @import "./components/History/History.css";
+@import "./components/ProjectIcon/ProjectIcon.css";
 @import "./components/ProjectScreen/ProjectScreen.css";
+@import "./components/ProjectSettingsScreen/ProjectSettingsScreen.css";
 /* After ProjectScreen.css (it composes on the page shell) and after
    Chat.css/Composer.css, whose message + composer skins it reuses. */
-@import "./components/ProjectScreen/Roadmap/Roadmap.css";
+@import "./components/RoadmapScreen/Roadmap/Roadmap.css";
 @import "./components/Stats/Stats.css";
 /* After Stats.css: the Activity sections compose on its chart + stat
    primitives (`.act-key` matches the `.mb-bar` ramp, the shipped skeleton
    reuses its `stat-shimmer` keyframes). */
-@import "./components/ProjectScreen/Activity/Activity.css";
+@import "./components/RoadmapScreen/Activity/Activity.css";
 @import "./components/ProjectContext/ProjectContext.css";
 @import "./components/RightPanel/FilePanel/FilePanel.css";
 /* Ahead of SettingsScreen.css (its former home) and of CustomAgents.css /

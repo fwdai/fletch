@@ -42,6 +42,8 @@ export interface ReposSlice {
   // Settings modal can show the error inline rather than in the global banner.
   /** Set a project's custom display name (independent of its folder). */
   renameProject: (projectId: string, name: string) => Promise<void>;
+  /** Choose the project's icon (`api.projectIconSet`); throws for inline display. */
+  setProjectIcon: (projectId: string, source: string | null, bytes?: string) => Promise<void>;
   /** Delete a project and all agents/workspaces belonging to it. */
   deleteProject: (projectId: string) => Promise<void>;
   /** Repoint a pinned repo at a moved folder, migrating its sidebar order and
@@ -129,6 +131,12 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     set({ workspace: ws });
   },
 
+  setProjectIcon: async (projectId, source, bytes) => {
+    refuseWhenGated("projectIcon");
+    const ws = await api.projectIconSet(projectId, source, bytes);
+    set({ workspace: ws });
+  },
+
   deleteProject: async (projectId) => {
     refuseWhenGated();
     const result = await api.deleteProject(projectId);
@@ -147,7 +155,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
         selectedRunId: result.deleted_run_ids.includes(state.selectedRunId ?? "")
           ? null
           : state.selectedRunId,
-        projectScreenRepoPath: null,
+        projectScreen: null,
       };
     });
   },
@@ -156,15 +164,18 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     refuseWhenGated();
     const ws = await api.relocateRepo(oldPath, newPath);
     // Keep the project's manual sidebar position, and repoint the open project
-    // screen (keyed by repo path) at the new location so it doesn't go stale.
+    // view (keyed by repo path) at the new location so it doesn't go stale.
     remapProjectOrder(oldPath, newPath);
     // Drafts are keyed by repo path; carry any in-progress composer over to the
     // new location so it follows the move instead of being dropped from the view.
     set((state) => ({
       workspace: ws,
       drafts: state.drafts.map((d) => (d.repoPath === oldPath ? { ...d, repoPath: newPath } : d)),
+      projectScreen:
+        state.projectScreen?.repoPath === oldPath
+          ? { ...state.projectScreen, repoPath: newPath }
+          : state.projectScreen,
     }));
-    if (get().projectScreenRepoPath === oldPath) get().openProjectScreen(newPath);
   },
 
   revealLogs: async () => {

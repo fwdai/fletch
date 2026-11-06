@@ -129,7 +129,7 @@ function suggestedFor(s: AppState): string[] {
     case "run":
       return ["home", "newAgent", "togglePanel", "history"];
     case "project":
-      return ["projectSettings", "newAgent", "workflow-in", "home"];
+      return ["projectSettings", "roadmap", "newAgent", "workflow-in", "home"];
     case "home":
       return ["newAgent", "addProject", "workflow-in", hasArchived ? "history" : "usage", "usage"];
     default:

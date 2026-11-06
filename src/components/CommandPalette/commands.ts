@@ -47,6 +47,11 @@ const onAgentOrDraft = (ctx: PaletteContext) => {
 };
 const hasRepos = (ctx: PaletteContext) => (ctx.s.workspace?.repos.length ?? 0) > 0;
 const hasAgents = (ctx: PaletteContext) => sidebarAgents(ctx.s).length > 0;
+const hasSurfacedProject = (ctx: PaletteContext) => surfaceRepoPath(ctx.s) !== undefined;
+const forSurfacedProject = (ctx: PaletteContext) => {
+  const repo = surfaceRepoPath(ctx.s);
+  return repo ? `for ${projectName(ctx.s, repo)}` : undefined;
+};
 
 const SHORTCUT_ROWS: ShortcutRow[] = [
   {
@@ -159,22 +164,31 @@ const SHORTCUT_ROWS: ShortcutRow[] = [
     hint: "Tokens and spend",
     keywords: "tokens  cost  spend  report  limits",
   },
+  // The project views. Their chords toggle the view; from the palette a row
+  // only ever opens it, for the project in front.
+  {
+    id: "roadmap",
+    icon: "map",
+    section: SEC.goto,
+    hint: forSurfacedProject,
+    when: hasSurfacedProject,
+    disabled: (ctx) => gateReason(activeEntry(ctx.s), "roadmap"),
+    keywords: "board  plan  activity  shipped",
+    run: (ctx) => {
+      const repo = surfaceRepoPath(ctx.s);
+      if (repo) go(ctx.s, () => ctx.s.openRoadmap(repo));
+    },
+  },
   {
     id: "projectSettings",
     icon: "settings",
     section: SEC.goto,
-    hint: (ctx) => {
-      const repo = surfaceRepoPath(ctx.s);
-      return repo ? `for ${projectName(ctx.s, repo)}` : undefined;
-    },
-    when: (ctx) => surfaceRepoPath(ctx.s) !== undefined,
-    disabled: (ctx) => gateReason(activeEntry(ctx.s), "roadmap"),
+    hint: forSurfacedProject,
+    when: hasSurfacedProject,
     keywords: "run command  setup  env  repo",
-    // The chord toggles the page; from the palette this only ever opens it,
-    // on the Settings tab, wherever the project page currently is.
     run: (ctx) => {
       const repo = surfaceRepoPath(ctx.s);
-      if (repo) go(ctx.s, () => ctx.s.openProjectScreen(repo, "settings"));
+      if (repo) go(ctx.s, () => ctx.s.openProjectSettings(repo));
     },
   },
   {
@@ -263,7 +277,8 @@ export function shortcutItems(ctx: PaletteContext): PaletteItem[] {
   return items;
 }
 
-/** The current agent's context actions: its PR, its branch, its project. */
+/** The current agent's context actions: its PR and its branch. (Its project's
+ *  roadmap is the `roadmap` shortcut row, which targets the same project.) */
 export function agentItems(ctx: PaletteContext): PaletteItem[] {
   const { s } = ctx;
   const agent = surfaceAgent(s);
@@ -316,21 +331,6 @@ export function agentItems(ctx: PaletteContext): PaletteItem[] {
     });
   }
 
-  if (primary?.repo_path) {
-    const repo = primary.repo_path;
-    items.push({
-      id: "open-project",
-      label: "Open project",
-      hint: `${projectName(s, repo)} · roadmap and activity`,
-      leading: { kind: "icon", name: "map" },
-      section: SEC.goto,
-      keywords: "roadmap  board  activity  context",
-      disabled: gateReason(activeEntry(s), "roadmap"),
-      run: () => go(s, () => s.openProjectScreen(repo)),
-      remember: true,
-    });
-  }
-
   const editors = editorsFor(agent, ctx.editors);
   if (editors.length > 1) {
     items.push({
@@ -376,6 +376,37 @@ export function pageItems(ctx: PaletteContext): PaletteItem[] {
       ...(one
         ? { run: () => startDraft(s, one, "workflow"), remember: true }
         : { page: "workflow" as const }),
+    });
+  }
+  const repo = surfaceRepoPath(s);
+  // Capture into the current project's inbox: the palette opens the board with
+  // its capture field focused (typing the text here is a later step).
+  if (repo && projects.find((p) => p.path === repo)?.project_id) {
+    items.push({
+      id: "roadmap-capture",
+      label: "Add to roadmap…",
+      hint: `Capture into ${projectName(s, repo)}'s inbox`,
+      leading: { kind: "icon", name: "inbox" },
+      section: SEC.create,
+      keywords: "capture  idea  ticket  inbox  note  todo  backlog",
+      disabled: gateReason(activeEntry(s), "roadmapCapture"),
+      run: () => go(s, () => s.captureToRoadmap(repo)),
+      remember: true,
+    });
+  }
+  // The roadmap's Context tab for the current project, while the layer's
+  // developer gate is open.
+  if (repo && s.contextLayerEnabled) {
+    items.push({
+      id: "project-context",
+      label: `Context · ${projectName(s, repo)}`,
+      hint: "What the host knows about the project",
+      leading: { kind: "icon", name: "graph" },
+      section: SEC.goto,
+      keywords: "entities  decisions  knowledge  review",
+      disabled: gateReason(activeEntry(s), "roadmap"),
+      run: () => go(s, () => s.openRoadmap(repo, "context")),
+      remember: true,
     });
   }
   if (Object.keys(s.environments).length > 1) {

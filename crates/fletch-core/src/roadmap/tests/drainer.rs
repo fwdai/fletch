@@ -25,6 +25,9 @@ fn item(code: &str, rank: f64) -> RoadmapItem {
         held_at: None,
         close_reason: None,
         issue_url: None,
+        kind: None,
+        triage: None,
+        from_item: None,
         created_at: 0,
         updated_at: 0,
     }
@@ -421,7 +424,7 @@ fn the_boolean_dials_read_both_answers_and_fall_back() {
 #[test]
 fn every_dial_is_declared_on_both_sides_of_the_wire() {
     const TS: &str =
-        include_str!("../../../../../src/components/ProjectScreen/Roadmap/autonomy.ts");
+        include_str!("../../../../../src/components/RoadmapScreen/Roadmap/autonomy.ts");
     for expected in [
         format!("export const AUTOQUEUE_KEY = {AUTOQUEUE_KEY:?};"),
         format!("export const MAX_CONCURRENT_KEY = {MAX_CONCURRENT_KEY:?};"),
@@ -1233,4 +1236,26 @@ fn a_bare_item_still_produces_a_usable_brief() {
     assert!(!brief.contains("Done when:"));
     assert!(!brief.contains("Builds on"));
     assert!(brief.contains("[FLT-100]"));
+}
+
+/// The inbox is not the queue: a captured row is never claimable, alone or in
+/// front of a queued one, and the drainer's project sweep never wakes for it.
+#[test]
+fn a_captured_row_is_never_dispatched() {
+    let mut captured = item("FLT-100", 1.0);
+    captured.status = ItemStatus::Captured;
+    assert!(dispatchable(std::slice::from_ref(&captured)).is_empty());
+
+    let conn = test_conn();
+    let inbox = db_item(&conn, ItemStatus::Captured);
+    assert_eq!(reached(&conn, "p1"), "nothing", "only a captured row");
+    assert_eq!(
+        store::get(&conn, &inbox.id).unwrap().unwrap().status,
+        ItemStatus::Captured
+    );
+    let queued = db_item(&conn, ItemStatus::Queued);
+    let Claim::Note { item, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected the queued row to be picked");
+    };
+    assert_eq!(item.id, queued.id, "the captured row is skipped");
 }

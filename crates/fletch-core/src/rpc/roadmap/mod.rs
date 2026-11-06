@@ -2,7 +2,8 @@
 //! and delegates everything else, so the PM keeps the ordinary git surface.
 //!
 //! The project id is stamped at construction, never taken from `args`. Every
-//! `propose_*` op parks an ask the user rules on; only `roadmap_note` and
+//! `propose_*` op parks an ask the user rules on, and `roadmap_triage` turns a
+//! captured row into ghosts the same way; only `roadmap_note` and
 //! `roadmap_hold` write directly, and neither advances an item. There is no
 //! release op, so an agent can never lift its own brake.
 
@@ -14,6 +15,7 @@ mod intake;
 mod listing;
 mod notes;
 mod ordering;
+mod triage;
 
 #[cfg(test)]
 #[path = "tests/support.rs"]
@@ -38,9 +40,10 @@ use intake::propose_op;
 use listing::list_op;
 use notes::note_op;
 use ordering::propose_order_op;
+use triage::triage_op;
 
 /// Pinned by a test against the instruction block so the two can't drift.
-pub const OPS: [&str; 7] = [
+pub const OPS: [&str; 8] = [
     "roadmap_list",
     "roadmap_propose",
     "roadmap_propose_update",
@@ -48,6 +51,7 @@ pub const OPS: [&str; 7] = [
     "roadmap_propose_order",
     "roadmap_note",
     "roadmap_hold",
+    "roadmap_triage",
 ];
 
 /// The whole namespace, so a typo'd op gets an error naming the real ones.
@@ -142,6 +146,17 @@ impl RpcDispatcher for RoadmapDispatcher {
                             emit_item_event(sink, event);
                         }
                         Held::Project(hold) => emit_project_hold(sink, hold),
+                    },
+                ),
+                "roadmap_triage" => self.announce(
+                    |conn, project| triage_op(conn, project, id, args),
+                    |sink, (items, recorded)| {
+                        for item in items {
+                            emit_item(sink, item);
+                        }
+                        for event in recorded {
+                            emit_item_event(sink, event);
+                        }
                     },
                 ),
                 other => (

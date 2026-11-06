@@ -9,6 +9,11 @@ use super::drainer;
 use super::store;
 use super::types::{ItemPatch, ItemStatus};
 
+/// The PM triages captured rows on its own (`triage.rs`). Default on, read like
+/// `review::SETTLE_REVIEW_KEY`; off leaves the inbox to the user, who opens an
+/// item in a PM chat by hand.
+pub(crate) const TRIAGE_KEY: &str = "roadmap.triage";
+
 pub(super) fn is_accept(expect_status: Option<ItemStatus>, patch: &ItemPatch) -> bool {
     expect_status == Some(ItemStatus::Proposed) && patch.status == Some(ItemStatus::Open)
 }

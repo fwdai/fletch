@@ -56,18 +56,20 @@ impl WorkspaceManager {
     /// than the repo silently vanishing from the sidebar.
     pub(super) fn query_project_refs(conn: &Connection) -> Vec<ProjectRef> {
         let mut stmt = match conn.prepare(
-            "SELECT r.path, p.name, p.id, r.label
+            "SELECT r.path, p.name, p.id, r.label, s.value
              FROM repos r LEFT JOIN projects p ON p.id = r.project_id
+             LEFT JOIN project_settings s ON s.project_id = r.project_id AND s.key = ?1
              ORDER BY r.created_at",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        stmt.query_map([], |row| {
+        stmt.query_map([crate::icon_detect::HASH_KEY], |row| {
             let path: String = row.get(0)?;
             let name: Option<String> = row.get(1)?;
             let project_id: Option<String> = row.get(2)?;
             let label: Option<String> = row.get(3)?;
+            let icon_hash: Option<String> = row.get(4)?;
             let name = name.unwrap_or_else(|| {
                 Path::new(&path)
                     .file_name()
@@ -82,6 +84,7 @@ impl WorkspaceManager {
                 project_id: project_id.unwrap_or_default(),
                 label,
                 native_app,
+                icon_hash,
             })
         })
         .ok()

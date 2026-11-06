@@ -545,6 +545,17 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         Err(e) => tracing::warn!(error = %e, "skipping the checkout relink"),
     }
 
+    // Projects with no icon decided — those from before icons — get the one
+    // their repositories already have, once, in the background: a scan that
+    // finds nothing records the initial, so the next boot skips the project.
+    let (icons, icon_sink) = (workspace.clone(), ctx.sink.clone());
+    crate::host::spawn(async move {
+        let found = tokio::task::spawn_blocking(move || icons.detect_missing_icons()).await;
+        if matches!(found, Ok(true)) {
+            crate::supervisor::emit_workspace_changed(icon_sink.as_ref());
+        }
+    });
+
     let supervisor = Arc::new(Supervisor::new(workspace.clone()));
     ctx.set_supervisor(supervisor.clone());
 
@@ -582,6 +593,9 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // now (a PR may well have merged while the app was closed), then sleeps
     // until there is something to watch.
     crate::roadmap::merge_sweep::spawn(ctx.clone(), db.clone());
+    // The inbox's triage: hands the PM a turn for freshly captured rows, the
+    // way the drainer hands it a settle review. Sleeps until a capture.
+    crate::roadmap::triage::spawn(ctx.clone(), db.clone());
     // The ship loop's eyes while the window is shut: read every agent's bound
     // open PR once a minute (state and CI, review threads every other tick),
     // and closed PRs every five minutes so a reopen is discovered. Emit a

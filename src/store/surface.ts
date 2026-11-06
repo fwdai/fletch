@@ -1,6 +1,7 @@
 import type { AgentRecord } from "@/api";
 import type { DraftAgent } from "./drafts";
 import type { AppState } from "./types";
+import type { ProjectView } from "./ui";
 
 /** What is in front of the user, by precedence. The one answer for anything
  *  that acts on "the current thing" or has to stay out of a surface's way —
@@ -11,7 +12,7 @@ import type { AppState } from "./types";
  *  Mirrors what `App` and `Workspace` render, which is the order that has to
  *  agree with this one: the overlays first (onboarding sits over everything,
  *  History is a sheet over whatever is beneath), then the full-screen
- *  takeovers (settings, usage, the project page — mutually exclusive by the
+ *  takeovers (settings, usage, a project view — mutually exclusive by the
  *  store's own rules), then the center pane's precedence (a draft, a workflow
  *  run, an agent, Home). */
 export type Surface =
@@ -19,18 +20,25 @@ export type Surface =
   | { kind: "history" }
   | { kind: "settings" }
   | { kind: "usage" }
-  | { kind: "project"; repoPath: string }
+  | { kind: "project"; repoPath: string; view: ProjectView }
   | { kind: "draft"; draft: DraftAgent }
   | { kind: "run"; runId: string }
   | { kind: "agent"; agent: AgentRecord }
   | { kind: "home" };
+
+/** The project view in front, or null. A primitive, so `App` and the title
+ *  bar's crumb can select it from the store directly. */
+export function projectView(s: AppState): ProjectView | null {
+  return s.projectScreen?.view ?? null;
+}
 
 export function activeSurface(s: AppState): Surface {
   if (s.onboardingOpen) return { kind: "onboarding" };
   if (s.historyOpen) return { kind: "history" };
   if (s.settingsScreenOpen) return { kind: "settings" };
   if (s.usageScreenOpen) return { kind: "usage" };
-  if (s.projectScreenRepoPath) return { kind: "project", repoPath: s.projectScreenRepoPath };
+  const view = projectView(s);
+  if (s.projectScreen && view) return { kind: "project", repoPath: s.projectScreen.repoPath, view };
   // A draft only shows while its project is still pinned (see Workspace); one
   // stranded on a removed project falls through to whatever is selected.
   const draft = s.activeDraftId ? s.drafts.find((d) => d.id === s.activeDraftId) : undefined;
@@ -51,7 +59,7 @@ export function surfaceAgent(s: AppState): AgentRecord | null {
 }
 
 /** The project a project-level action targets: the one in front (a draft's,
- *  an agent's, the project page's own), else the one an agent was last
+ *  an agent's, a project view's own), else the one an agent was last
  *  started in, else the first pinned. */
 export function surfaceRepoPath(s: AppState): string | undefined {
   const surface = activeSurface(s);

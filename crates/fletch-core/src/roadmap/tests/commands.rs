@@ -1155,3 +1155,70 @@ async fn discarding_an_unknown_id_reports_nothing_to_discard() {
     assert!(!out.applied);
     assert!(out.item.is_none());
 }
+
+#[tokio::test]
+async fn a_capture_lands_in_the_inbox_and_is_announced() {
+    let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+    let db = test_db(test_conn());
+
+    let item = roadmap_capture_impl(
+        "p1".into(),
+        "  the run panel should remember the port\n\nit forgets it on every relaunch \n".into(),
+        &ctx,
+        &db,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(item.status, ItemStatus::Captured);
+    assert_eq!(item.horizon, types::Horizon::Later);
+    assert_eq!(item.source, types::ItemSource::User);
+    assert_eq!(item.title, "the run panel should remember the port");
+    assert_eq!(item.why, "it forgets it on every relaunch");
+    assert_eq!(
+        (item.kind, &item.triage, &item.from_item),
+        (None, &None, &None)
+    );
+    let trail = events::list_for_item(&db.lock(), &item.id).unwrap();
+    assert_eq!(trail.len(), 1);
+    assert_eq!(trail[0].kind, EventKind::Created);
+    assert_eq!(trail[0].detail.as_deref(), Some("captured"));
+    let emitted: Vec<String> = sink.events().into_iter().map(|(name, _)| name).collect();
+    assert_eq!(emitted, vec!["roadmap:item", "roadmap:item-event"]);
+    assert!(
+        order_proposals::orderable(std::slice::from_ref(&item)).is_empty(),
+        "the inbox is not orderable"
+    );
+
+    let blank = roadmap_capture_impl("p1".into(), "  \n ".into(), &ctx, &db).await;
+    assert!(blank.unwrap_err().contains("needs some text"));
+}
+
+#[test]
+fn a_long_single_line_capture_keeps_every_word() {
+    let line = "word ".repeat(60);
+    let new = super::mutations::captured_item(&line).unwrap();
+    assert!(new.title.ends_with('…'), "{}", new.title);
+    assert!(new.title.chars().count() <= super::mutations::CAPTURE_TITLE_MAX);
+    assert_eq!(new.why, line.trim(), "the whole line survives in why");
+
+    for blank in ["", "   ", "\n \n"] {
+        assert!(
+            super::mutations::captured_item(blank).is_err(),
+            "{blank:?} has nothing to title it"
+        );
+    }
+    let leading = super::mutations::captured_item("\n\n  first real line\nmore").unwrap();
+    assert_eq!(
+        (leading.title.as_str(), leading.why.as_str()),
+        ("first real line", "more")
+    );
+}
+
+#[test]
+fn a_captured_row_is_discarded_not_rejected() {
+    let conn = test_conn();
+    let it = with_status(&conn, ItemStatus::Captured);
+    let refused = rulings::reject_item(&conn, &it.id, "not now").unwrap_err();
+    assert!(refused.contains("inbox"), "{refused}");
+}

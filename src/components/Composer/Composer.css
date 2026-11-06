@@ -486,8 +486,9 @@ button.run-piece:hover,
   font-variant-numeric: tabular-nums;
 }
 
-/* composer · the effort popover around its `Scale` */
-.effort-pop {
+/* A small popover anchored to its trigger: the composer's effort `Scale`, the
+   roadmap's autonomy dial. The caller positions it. */
+.pop {
   position: absolute;
   z-index: var(--z-dropdown);
   padding: 10px 10px 9px;
@@ -524,7 +525,7 @@ button.run-piece:hover,
   white-space: normal;
 }
 @media (prefers-reduced-motion: reduce) {
-  .effort-pop {
+  .pop {
     animation: none;
   }
 }

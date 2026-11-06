@@ -72,6 +72,23 @@ pub(super) struct NoteArgs {
     pub(super) note: String,
 }
 
+/// Each kind takes its own fields; the op refuses the others by name, so the
+/// optional ones stay `Option` to tell "absent" from "empty".
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TriageArgs {
+    pub(super) code: String,
+    pub(super) kind: String,
+    #[serde(default)]
+    pub(super) ticket: Option<ProposedItem>,
+    #[serde(default)]
+    pub(super) brief: Option<String>,
+    #[serde(default)]
+    pub(super) questions: Option<Vec<String>>,
+    #[serde(default)]
+    pub(super) candidates: Option<Vec<ProposedItem>>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HoldArgs {

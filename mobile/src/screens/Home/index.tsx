@@ -1,6 +1,6 @@
 import { Icon } from "@desktop/components/Icon";
 import { AgentRow } from "../../components/AgentRow";
-import { Swatch } from "../../components/ui";
+import { ProjectIcon } from "../../components/ui";
 import { useOrderedProjects } from "../../lib/activeProjects";
 import { agentsOfProject, baseOf, isActive, isBusy } from "../../lib/agents";
 import { type Project, repoLabel } from "../../lib/projects";
@@ -33,7 +33,7 @@ function ProjectCard({ project }: { project: Project }) {
       }}
     >
       <div className="pc-h">
-        <Swatch project={project} size={32} />
+        <ProjectIcon project={project} size={32} />
         <div>
           <div className="nm">{project.name}</div>
           <div className="rp">

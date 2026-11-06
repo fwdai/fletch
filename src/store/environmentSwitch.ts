@@ -51,7 +51,7 @@ const STASH_KEYS = [
   "focusedStepAgentId",
   "activeDraftId",
   "historyOpen",
-  "projectScreenRepoPath",
+  "projectScreen",
   "attendedChatId",
   // The add-project popover: a way into the environment's own repos, so it
   // is parked with the view it was raised over, and an environment entered
@@ -148,7 +148,7 @@ const BLANK: Pick<AppState, StashKey> = {
   focusedStepAgentId: null,
   activeDraftId: null,
   historyOpen: false,
-  projectScreenRepoPath: null,
+  projectScreen: null,
   attendedChatId: null,
   addProjectOpen: false,
   offSidebarAgents: {},

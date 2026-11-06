@@ -24,7 +24,7 @@ export function BoxEgressToast() {
   const blocked = useAppStore((s) => s.boxEgressBlocked);
   const dismiss = useAppStore((s) => s.dismissBoxEgress);
   const agents = useAppStore((s) => s.workspace?.agents);
-  const openProjectScreen = useAppStore((s) => s.openProjectScreen);
+  const openProjectSettings = useAppStore((s) => s.openProjectSettings);
   const pendingPrompts = useAppStore((s) => s.pendingEgressPrompts);
   const { prompts, dismiss: dismissPrompt } = useProjectFilePrompts();
 
@@ -71,7 +71,7 @@ export function BoxEgressToast() {
                   <Button
                     variant="primary"
                     onClick={() => {
-                      openProjectScreen(repoPath, "settings");
+                      openProjectSettings(repoPath, "network");
                       dismiss(agentId);
                     }}
                   >

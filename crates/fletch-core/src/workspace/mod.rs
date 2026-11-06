@@ -421,6 +421,11 @@ pub struct ProjectRef {
     /// snapshot, so every surface that explains where a workspace runs reads
     /// the same answer the spawn path acts on.
     pub native_app: bool,
+    /// The project's icon, by hash (`icon_detect::store`): a client fetches it
+    /// with `project_icon_get` only when this changes. `None` draws the
+    /// initial.
+    #[serde(default)]
+    pub icon_hash: Option<String>,
 }
 
 /// What the DB phase of an attach changed, so the command layer can undo it

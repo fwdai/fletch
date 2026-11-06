@@ -5,11 +5,14 @@
 import type { AgentStatus } from "@desktop/api/types/agent";
 import type { PrState } from "@desktop/api/types/pr";
 import { Icon, type IconName } from "@desktop/components/Icon";
+import { useProjectIconData } from "@desktop/components/ProjectIcon/iconCache";
+import { ProjectMark } from "@desktop/components/ProjectIcon/ProjectMark";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { hueColor, providerHue, providerShort } from "../../lib/agents";
-import { type Project, projectHue } from "../../lib/projects";
+import { providerHue, providerShort } from "../../lib/agents";
+import type { Project } from "../../lib/projects";
 import { useSwipe } from "../../lib/swipe";
 import { useProviderIcon } from "../../lib/useProviderIcon";
+import { api } from "../../store";
 
 export function Nav({
   onBack,
@@ -334,20 +337,11 @@ export function StatusDot({ status }: { status: AgentStatus }) {
   return <span className={`dot ${status}`} />;
 }
 
-export function Swatch({ project, size }: { project: Project; size?: number }) {
-  const style = size
-    ? {
-        width: size,
-        height: size,
-        borderRadius: Math.round(size * 0.3),
-        fontSize: Math.round(size * 0.38),
-      }
-    : undefined;
-  return (
-    <span className="swatch" style={{ background: hueColor(projectHue(project)), ...style }}>
-      {project.name.slice(0, 1).toUpperCase()}
-    </span>
-  );
+/** The project's icon, the desktop's mark: its image or glyph fetched from the
+ *  host by hash, else its initial. */
+export function ProjectIcon({ project, size = 26 }: { project: Project; size?: number }) {
+  const icon = useProjectIconData(project.id, project.repos[0]?.icon_hash, api.projectIconGet);
+  return <ProjectMark name={project.name} icon={icon} size={size} />;
 }
 
 /** A provider's brand icon in a hue-tinted square. The SVG comes from the same

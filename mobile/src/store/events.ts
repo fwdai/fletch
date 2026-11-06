@@ -29,14 +29,17 @@ import type {
   PrStateChangedEvent,
   PrThreadsChangedEvent,
 } from "@desktop/api/types/pr";
-import type { RoadmapItem } from "@desktop/api/types/roadmap";
+import type { RoadmapItem, RoadmapItemEvent } from "@desktop/api/types/roadmap";
 import type { PublishApproval, PublishApprovalResolved } from "@desktop/api/types/sandbox";
 import type {
   SessionRecordsAppendedEvent,
   TurnSentEvent,
   TurnStartedEvent,
 } from "@desktop/api/types/session";
-import type { SettingsChangedEvent } from "@desktop/api/types/settings";
+import type {
+  ProjectSettingsChangedEvent,
+  SettingsChangedEvent,
+} from "@desktop/api/types/settings";
 import type { VerificationReportEvent } from "@desktop/api/types/verify";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import { dischargeSending } from "@desktop/helpers/sending";
@@ -389,17 +392,28 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     set((s) => ({ autoArchived: [...(s.autoArchived ?? []), ...e.names] }));
   });
 
-  // A roadmap row that was written, wherever it was written from. The phone
-  // only draws one kind — the PM's `proposed` ghosts, as decision cards in the
-  // planning chat that raised them — and which rows those are is the slice's
-  // call, so the whole row goes to it and a ruled-on one drops out there.
+  // A roadmap row that was written, wherever it was written from. Two slices
+  // draw them — the PM's `proposed` ghosts, as decision cards in the planning
+  // chat that raised them, and the project screen's board — and which rows
+  // each keeps is its own call, so the whole row goes to both.
   on<RoadmapItem>("roadmap:item", (item) => {
     get().applyRoadmapItem(item);
+    get().applyBoardRow(item);
   });
 
-  // The payload is the bare item id: a ghost discarded here or on the Mac.
+  // The payload is the bare item id: a row deleted here or on the Mac.
   on<string>("roadmap:item-deleted", (id) => {
     get().removeRoadmapItem(id);
+    get().removeBoardRow(id);
+  });
+
+  // A row's newest word, and the project's triage dial: what the board's
+  // Inbox says about a capture the PM has not settled yet.
+  on<RoadmapItemEvent>("roadmap:item-event", (event) => {
+    get().applyBoardEvent(event);
+  });
+  on<ProjectSettingsChangedEvent>("project_settings:changed", (change) => {
+    get().applyProjectSetting(change);
   });
 
   // A gated publish the host is blocked on. Control plane, not transcript: it

@@ -1,51 +1,53 @@
+import type { ReactNode } from "react";
+import { ProjectIcon } from "@/components/ProjectIcon";
+import { VIEW_LABEL } from "@/components/ProjectScreen/Header";
 import { useAppStore } from "@/store";
+import { projectView } from "@/store/surface";
 import { basename } from "@/util/format";
 import { Capsule } from "./Capsule";
-import { agentDotStatus } from "./derive";
 import { ProjectPill } from "./ProjectPill";
 import { StatusDot } from "./StatusDot";
 
 /** The center of the title bar. Adapts to context: the active agent's live
  *  status capsule, a draft's pending name, a quiet fleet summary at Home, or a
- *  plain crumb in the settings / usage / project screens. Replaces the old repo/agent
+ *  plain crumb in the settings / usage / project views. Replaces the old repo/agent
  *  breadcrumb. */
 export function WorkspaceStatus() {
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
   const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
   const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
   const closeUsageScreen = useAppStore((s) => s.closeUsageScreen);
-  const projectScreenRepoPath = useAppStore((s) => s.projectScreenRepoPath);
+  const projectRepoPath = useAppStore((s) => s.projectScreen?.repoPath ?? null);
+  const view = useAppStore(projectView);
+  const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
   const workspace = useAppStore((s) => s.workspace);
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const drafts = useAppStore((s) => s.drafts);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
-  const pending = useAppStore((s) => s.pendingToolUse);
 
   // Project display name for a repo path: the user-editable project name
   // (as in the sidebar), falling back to the folder basename.
-  const projectName = (repoPath: string) =>
-    workspace?.projects.find((p) => p.path === repoPath)?.name ?? basename(repoPath);
+  const projectRef = (repoPath: string) => workspace?.projects.find((p) => p.path === repoPath);
+  const projectName = (repoPath: string) => projectRef(repoPath)?.name ?? basename(repoPath);
 
   if (settingsScreenOpen) return <ScreenCrumb label="Settings" onHome={closeSettingsScreen} />;
   if (usageScreenOpen) return <ScreenCrumb label="Usage" onHome={closeUsageScreen} />;
+  // A project view sits a level above any workspace: the same crumb, with
+  // the project's mark and the view's name.
+  if (projectRepoPath && view) {
+    const name = projectName(projectRepoPath);
+    return (
+      <ScreenCrumb
+        label={name}
+        icon={<ProjectIcon project={projectRef(projectRepoPath) ?? { name }} size={12} />}
+        view={VIEW_LABEL[view]}
+        onHome={closeProjectScreen}
+      />
+    );
+  }
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
   const agent = !draft && selectedId ? workspace?.agents.find((a) => a.id === selectedId) : null;
-
-  // On the project page the user sits a level above any workspace, so no
-  // workspace pill — just marker + project name, plain. The marker keeps the
-  // capsule's display logic: the selected agent's live status when it belongs
-  // to this project; a draft (or no relevant selection) reads idle.
-  if (projectScreenRepoPath) {
-    const onProject = agent?.repos[0]?.repo_path === projectScreenRepoPath;
-    const status = agent && onProject ? agentDotStatus(agent.status, pending[agent.id]) : "idle";
-    return (
-      <div className="ws-plain">
-        <StatusDot status={status} />
-        <span className="ws-plain-active">{projectName(projectScreenRepoPath)}</span>
-      </div>
-    );
-  }
 
   if (draft) {
     return (
@@ -127,15 +129,33 @@ function DraftCapsule({
   );
 }
 
-/** A full-screen surface (settings, usage) — a plain crumb back to Home. */
-function ScreenCrumb({ label, onHome }: { label: string; onHome: () => void }) {
+/** A full-screen surface (settings, usage, a project view) — a plain crumb
+ *  back to Home, ending on the view's name when there is one. */
+function ScreenCrumb({
+  label,
+  icon,
+  view,
+  onHome,
+}: {
+  label: string;
+  icon?: ReactNode;
+  view?: string;
+  onHome: () => void;
+}) {
   return (
     <div className="ws-plain">
       <button type="button" className="ws-plain-btn" onClick={onHome}>
         fletch
       </button>
       <span className="ws-plain-sep">/</span>
-      <span className="ws-plain-active">{label}</span>
+      {icon}
+      <span className={view ? undefined : "ws-plain-active"}>{label}</span>
+      {view && (
+        <>
+          <span className="ws-plain-sep">/</span>
+          <span className="ws-plain-active">{view}</span>
+        </>
+      )}
     </div>
   );
 }

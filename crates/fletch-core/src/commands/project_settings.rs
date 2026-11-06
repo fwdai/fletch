@@ -40,6 +40,12 @@ const PROJECT_SETTING_KEYS: &[&str] = &[
     // global `box_egress_mode`: `open`, `ask` or `allowlist`; absent is the
     // global (`sandbox::boxes::settings::EgressMode`).
     crate::sandbox::boxes::settings::EGRESS_MODE_KEY,
+    // The project's icon choice (`icon_detect::store`); written through
+    // `project_icon_set`, which also stores the image, but readable like any
+    // project key.
+    crate::icon_detect::SOURCE_KEY,
+    // Opt-out like `roadmap.settle_review`: the PM triages captured rows.
+    crate::roadmap::autonomy::TRIAGE_KEY,
 ];
 
 /// The key family a client may write in full: `run.<row>` (the project's run
@@ -97,6 +103,13 @@ pub fn set_project_setting_impl(
     if !is_client_project_key(key) {
         return Err(Error::Other(format!(
             "`{key}` is not a project setting a client may write"
+        )));
+    }
+    // Answered like any key, but the stored image and its hash move with the
+    // choice, so only `project_icon_set` writes it.
+    if key == crate::icon_detect::SOURCE_KEY {
+        return Err(Error::Other(format!(
+            "`{key}` is written through project_icon_set"
         )));
     }
     // The posture is validated and spelled the one way before it is stored,
@@ -175,6 +188,7 @@ mod tests {
             "context.enabled",
             "context.extract",
             "sandbox.placement",
+            "roadmap.triage",
         ] {
             assert!(is_client_project_key(key), "{key} must be client-writable");
         }
@@ -237,6 +251,20 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM project_settings", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+        assert!(sink.events().is_empty());
+    }
+
+    /// The icon choice is answered like any key but written only through
+    /// `project_icon_set`, which stores the image and moves the hash with it.
+    #[test]
+    fn the_icon_choice_is_not_written_here() {
+        let (ctx, sink, _dir) = test_ctx();
+        with_project(&ctx);
+        let err =
+            set_project_setting_impl(&ctx, "p1", crate::icon_detect::SOURCE_KEY, Some("initial"))
+                .unwrap_err();
+        assert!(err.to_string().contains("project_icon_set"));
+        assert!(get_project_settings_impl(&ctx, "p1").unwrap().is_empty());
         assert!(sink.events().is_empty());
     }
 

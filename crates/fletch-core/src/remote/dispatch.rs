@@ -220,6 +220,7 @@ pub const OPS: &[&str] = &[
     "roadmap_list_items",
     "roadmap_get_item",
     "roadmap_create_item",
+    "roadmap_capture",
     "roadmap_update_item",
     "roadmap_set_rank",
     "roadmap_hand_off_item",
@@ -327,6 +328,11 @@ pub const OPS: &[&str] = &[
     "context_resolve_contradiction",
     "context_bootstrap",
     "context_tidy",
+    // A project's icon: what its repositories offer, the stored image, and
+    // the choice.
+    "project_icon_candidates",
+    "project_icon_set",
+    "project_icon_get",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -551,6 +557,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("roadmap_list_items", Scope::Observe),
     ("roadmap_get_item", Scope::Observe),
     ("roadmap_create_item", Scope::Roadmap),
+    ("roadmap_capture", Scope::Roadmap),
     ("roadmap_update_item", Scope::Roadmap),
     ("roadmap_set_rank", Scope::Roadmap),
     ("roadmap_hand_off_item", Scope::Roadmap),
@@ -652,6 +659,10 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("context_resolve_contradiction", Scope::Projects),
     ("context_bootstrap", Scope::Projects),
     ("context_tidy", Scope::Projects),
+    // Two reads; the choice is a project setting, like `set_project_setting`.
+    ("project_icon_candidates", Scope::Observe),
+    ("project_icon_set", Scope::Projects),
+    ("project_icon_get", Scope::Observe),
 ];
 
 /// The one scope that reaches `op`. `None` for a name outside [`OPS`] —
@@ -1484,6 +1495,19 @@ impl Dispatch for SupervisorDispatch {
                     .await?)
                 }
 
+                // The inbox's one write: a `captured` row the PM triages and
+                // the drainer never claims.
+                "roadmap_capture" => {
+                    let a: CaptureArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_capture_impl(
+                        a.project_id,
+                        a.text,
+                        ctx,
+                        &ctx.db,
+                    )
+                    .await?)
+                }
+
                 // Accepting a proposal is an `open` patch guarded by
                 // `expectStatus: "proposed"`, so two clients racing on the same
                 // ghost row can't both accept it.
@@ -1834,6 +1858,33 @@ impl Dispatch for SupervisorDispatch {
                 "context_bootstrap" => {
                     let a: ProjectArgs = parse(args)?;
                     res(crate::commands::context_bootstrap_impl(ctx, &a.project_id).await)
+                }
+
+                "project_icon_candidates" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(crate::commands::project_icon_candidates_impl(
+                        sup,
+                        &a.project_id,
+                    ))
+                }
+                "project_icon_get" => {
+                    let a: ProjectArgs = parse(args)?;
+                    res(crate::commands::project_icon_get_impl(ctx, &a.project_id))
+                }
+                // Changes the project list's `icon_hash`, so it tells the other
+                // views, as a rename does.
+                "project_icon_set" => {
+                    let a: ProjectIconSetArgs = parse(args)?;
+                    crate::commands::announce_workspace(
+                        ctx.sink.as_ref(),
+                        res(crate::commands::project_icon_set_impl(
+                            ctx,
+                            sup,
+                            &a.project_id,
+                            a.source.as_deref(),
+                            a.bytes.as_deref(),
+                        )),
+                    )
                 }
 
                 // Unreachable while `OPS` and the arms above agree; kept so a
@@ -2829,6 +2880,17 @@ struct ProjectArgs {
     project_id: String,
 }
 
+/// `source: null` clears the choice; `bytes` (base64) only with `file`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectIconSetArgs {
+    project_id: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    bytes: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspaceTypesArgs {
@@ -3047,6 +3109,13 @@ struct ProposalArgs {
 struct NewItemArgs {
     project_id: String,
     item: crate::roadmap::types::NewItem,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureArgs {
+    project_id: String,
+    text: String,
 }
 
 #[derive(Deserialize)]

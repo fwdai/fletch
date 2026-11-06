@@ -1,0 +1,534 @@
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Horizon, RoadmapItem } from "@/api";
+import { Icon } from "@/components/Icon";
+import { useAppStore } from "@/store";
+import { useProjectSettings } from "@/util/useProjectSettings";
+import { AUTOQUEUE_KEY, acceptActions, flagOn, TRIAGE_KEY } from "../autonomy";
+import { InFlightRail } from "../InFlightRail";
+import { buildInFlight } from "../InFlightRail/select";
+import { NeedsYou } from "../NeedsYou";
+import { cardRuling, pendingDeltas, pendingElsewhere } from "../ruling";
+import { HORIZONS } from "../types";
+import { reviewGate } from "../useItemReviews";
+import type { RoadmapState } from "../useRoadmap";
+import { BoardHeader } from "./BoardHeader";
+import { BoardRulingActions } from "./DecisionBar";
+import { EmptyBoard } from "./EmptyBoard";
+import { HorizonGroup } from "./HorizonGroup";
+import { InboxLane } from "./InboxLane";
+import { ItemCard } from "./ItemCard";
+import { ItemDialog } from "./ItemDialog";
+import { NotDoing } from "./NotDoing";
+import { OrderProposalBar } from "./OrderProposalBar";
+import { ProjectHoldBanner } from "./ProjectHoldBanner";
+import { useBoardDnd } from "./useBoardDnd";
+
+/** What the form is open on: an existing row, or a new one destined for
+ *  `horizon` — the group whose "+" was pressed. */
+type Editing = { item: RoadmapItem | null; horizon: Horizon };
+
+/** The board the PM agent maintains: horizon groups of expandable items, with
+ *  the PM's outstanding proposals rendered inline as ghost rows in the horizon
+ *  they'd land in. */
+export function Board({
+  roadmap,
+  repoPath,
+  width,
+  asideRef,
+  onOpenInChat,
+}: {
+  roadmap: RoadmapState;
+  repoPath: string;
+  /** Column width set by the splitter, or null for the default even split —
+   *  which is a CSS percentage, so it stays even as the window resizes. */
+  width?: number | null;
+  /** Lets the splitter measure this column at drag start. */
+  asideRef?: RefObject<HTMLElement>;
+  /** Start a planning chat on an inbox row (the thread opens beside the board). */
+  onOpenInChat?: (item: RoadmapItem) => void;
+}) {
+  const {
+    projectId,
+    items,
+    ghosts,
+    rejected,
+    proposals,
+    orderProposal,
+    orderable,
+    openCodes,
+    toggleItem,
+    focusCode,
+    revealItem,
+    needsYou,
+    landed,
+    loading,
+    readOnly,
+    makeProject,
+    error,
+    clearError,
+    notes,
+    events,
+    reviews,
+    runsById,
+    codes,
+    inbox,
+    addItem,
+    captureItem,
+    editItem,
+    removeItems,
+    acceptDeltas,
+    rejectProposals,
+    acceptOrder,
+    rejectOrder,
+    moveItem,
+    setRanks,
+    queueItems,
+    unqueueItems,
+    reclaimItem,
+    markDone,
+    mergeItemPr,
+    sendReviewFeedback,
+    projectHold,
+    holdItem,
+    releaseItem,
+    rejectItem,
+    reopenItem,
+    releaseProject,
+    workflows,
+  } = roadmap;
+  const selectRun = useAppStore((s) => s.selectRun);
+  const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
+
+  // The run lives in the workspace, which this full-screen page covers — select
+  // it, then get out of the way. Shared by the card's "View run" and the strip's.
+  const openRun = useCallback(
+    (runId: string) => {
+      selectRun(runId);
+      closeProjectScreen();
+    },
+    [selectRun, closeProjectScreen],
+  );
+
+  // Every row the board draws, in priority order — ghosts included, since a
+  // proposed row has a rank like any other and sits where it would land. One
+  // list, so the drag's arithmetic sees exactly the order the user sees.
+  const drawn = useMemo(
+    () => [...items, ...ghosts].sort((a, b) => a.item.rank - b.item.rank),
+    [items, ghosts],
+  );
+  // Drag-to-reorder; the ranks it computes live in rank.ts.
+  const dnd = useBoardDnd({ rows: drawn.map((i) => i.item), moveItem, setRanks });
+
+  /** What is in motion right now — the rail above the groups. Derived here rather
+   *  than in `useRoadmap` because it is pure composition of three things this
+   *  component already has in hand, and nothing outside the board reads it. The
+   *  rules live in InFlightRail/select.ts. */
+  const inFlight = useMemo(
+    () => buildInFlight({ items: items.map((i) => i.item), runsById, reviews }),
+    [items, runsById, reviews],
+  );
+
+  const [editing, setEditing] = useState<Editing | null>(null);
+  /** The row the form is editing, if it isn't creating one. */
+  const editRow = editing?.item ?? null;
+  const scroll = useRef<HTMLDivElement>(null);
+  // HTMLElement, not HTMLDivElement: the Not-doing rows register here too (a
+  // reveal can land on a rejected item), and those are list items.
+  const rows = useRef<Record<string, HTMLElement | null>>({});
+
+  // Bring a jumped-to row into the upper third of the viewport.
+  useEffect(() => {
+    if (!focusCode) return;
+    const el = rows.current[focusCode];
+    const box = scroll.current;
+    if (!el || !box) return;
+    const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+    box.scrollTop = Math.max(0, top - box.clientHeight / 3);
+  }, [focusCode]);
+
+  /** Nothing on the board at all — not even a pending proposal. */
+  const blank = !loading && items.length === 0 && ghosts.length === 0;
+
+  /** The project's autoqueue dial — what an accept *does*, so the accept buttons
+   *  can say it (`acceptActions`). Read from the host, and kept live by
+   *  `project_settings:changed`, so a dial changed on another tab or another
+   *  client is never stale on screen; the header's autonomy popover writes
+   *  through it. Where an accept actually lands is decided host-side either
+   *  way — this only labels the button. */
+  const projectSettings = useProjectSettings(projectId);
+  const autoqueue = flagOn(projectSettings.settings?.[AUTOQUEUE_KEY], false);
+  /** Whether the PM triages captures on its own — the inbox chips' wording. */
+  const triageOn = flagOn(projectSettings.settings?.[TRIAGE_KEY], true);
+  const cardAccept = acceptActions(autoqueue, "Accept");
+  const batchAccept = acceptActions(autoqueue, "Accept all");
+
+  /** Everything this board owes the user a ruling on, by kind — the batch bar's
+   *  count and copy. Pure, and tested, because the bar used to add up ghosts and
+   *  asks-on-admitted-rows (two of the three pending kinds, dropping an ask
+   *  against a ghost entirely). See ruling.ts. */
+  const deltas = useMemo(
+    () =>
+      pendingDeltas({
+        ghostIds: ghosts.map((g) => g.item.id),
+        asks: [...proposals.values()],
+        orderProposal,
+      }),
+    [ghosts, proposals, orderProposal],
+  );
+  const ghostIds = useMemo(() => ghosts.map((g) => g.item.id), [ghosts]);
+  const openNew = (horizon: Horizon) => setEditing({ item: null, horizon });
+
+  // Only the width is set inline. The stylesheet's min/max stay in force, so a
+  // width persisted on a wide window can't crush the chat on a narrow one — the
+  // column is clamped back on render, not silently overflowed.
+  return (
+    <aside className="rm-board" ref={asideRef} style={width == null ? undefined : { width }}>
+      <BoardHeader
+        readOnly={readOnly}
+        projectSettings={projectSettings}
+        onNew={() => openNew("next")}
+        onCapture={captureItem}
+      />
+
+      {/* A repo with no project row of its own: the board renders, nothing on it
+          can be written, and until now nothing said what was missing or how to
+          fix it. The CTA is the sidebar's "Open a folder" path minus the picker
+          (see `useRoadmap.makeProject`) — one click, because the folder in
+          question is the one this screen is already open on. */}
+      {readOnly && (
+        <div className="rm-board-ro flex-center text-xs">
+          <Icon name="folder" size={11} />
+          <span className="rm-board-ro-t">Make this repo a project to use the roadmap</span>
+          <span className="grow" />
+          <button type="button" className="rm-board-ro-ok" onClick={makeProject}>
+            Make it a project
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <div className="rm-board-err flex-center text-xs">
+          <span className="rm-board-err-t">{error}</span>
+          <button type="button" className="rm-board-err-x" onClick={clearError}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Captures waiting for (or done with) triage. Above the strip because it
+          is the top of the pipeline: what triage makes of a row lands below as
+          ghosts. Renders nothing when the inbox is empty. */}
+      <InboxLane
+        inbox={inbox}
+        triageOn={triageOn}
+        focusCode={focusCode}
+        onOpenInChat={readOnly ? undefined : onOpenInChat}
+        onDiscard={readOnly ? undefined : (id) => void removeItems([id])}
+      />
+
+      {/* The decisions the pipeline is waiting on the user for. Above the batch
+          bar because an item that has stopped moving outranks a suggestion that
+          hasn't started, and above the scroller for the same reason both bars
+          are: the items it names can be in three different horizons. Renders
+          nothing when nothing is waiting. */}
+      <NeedsYou
+        cards={needsYou}
+        onFocusItem={revealItem}
+        onReleaseItem={readOnly ? undefined : releaseItem}
+        onReleaseProject={readOnly ? undefined : releaseProject}
+      />
+
+      {/* The pipeline, right under the decisions. The pair is the board's status
+          line: the strip above is every decision you owe it, this is the state of
+          everything the pipeline is holding. They overlap on purpose — a held
+          row is a card up there *and* a line down here, because the two
+          answer different questions: what you have to do about it, and where it
+          sits. Decisions come first because an item that stopped moving outranks
+          one that hasn't, and the rail renders nothing when the pipeline is idle. */}
+      <InFlightRail entries={inFlight} onFocusItem={revealItem} />
+
+      {/* The whole board is stopped. Below the strip (which already carries a
+          card for it, with the same one-click release) because this band is the
+          standing explanation for cards that look queued and aren't moving —
+          the strip is the decision, this is the state. */}
+      {projectHold && (
+        <ProjectHoldBanner
+          hold={projectHold}
+          onRelease={readOnly ? undefined : () => void releaseProject()}
+        />
+      )}
+
+      {/* One proposal is ruled on from its own card; a batch gets a single bar,
+          so accepting six tickets isn't six trips down the board. It sits above
+          the scroller rather than inside it — the ghosts and pending changes it
+          acts on can be in three different horizons. Accept-all rules both, in
+          the order the backend needs: ghost rows join the roadmap, then pending
+          changes are applied (see `acceptDeltas`) — which is what makes an ask
+          against a still-ghost row bulk-rulable rather than something the bar has
+          to pretend isn't there. Discard-all is not symmetrical, and can't be: a
+          discarded ghost takes its ask with it (the row is deleted and the ask
+          cascades), so only asks on rows that survive are declined by name. */}
+      {deltas.batch > 1 && (
+        <div className="rm-props flex-center text-xs">
+          <span className="rm-props-n iflex-center mono">
+            <Icon name="sparkle" size={11} />
+            {deltas.batch} proposed
+          </span>
+          <span className="rm-props-hint truncate">
+            Nothing is on the roadmap until you say so.
+            {deltas.batch < deltas.total ? ` ${pendingElsewhere(deltas)}` : ""}
+          </span>
+          <span className="grow" />
+          <BoardRulingActions
+            declineLabel="Discard all"
+            acceptLabel={batchAccept.primary}
+            // The batch's one-click queue, on the same terms as a card's: offered
+            // only while the dial is off, and only when there is a ghost to queue
+            // — a bar counting nothing but pending *changes* has nothing to hand
+            // the drainer (an accepted patch doesn't move a status).
+            queueLabel={deltas.ghosts > 0 ? batchAccept.queue : null}
+            onDecline={() => {
+              if (deltas.ghosts) void removeItems(ghostIds);
+              if (deltas.declinableAskIds.length)
+                void rejectProposals([...deltas.declinableAskIds]);
+            }}
+            onAcceptQueue={() => void acceptDeltas(ghostIds, deltas.askIds, true)}
+            onAccept={() => void acceptDeltas(ghostIds, deltas.askIds)}
+          />
+        </div>
+      )}
+
+      {/* The order ask is board-level, like the batch bar above it, and for the
+          same reason: the sequence it proposes spans all three horizons, so no
+          single card can carry it. It goes below the batch bar because a
+          reordering of items the user hasn't accepted yet is the less urgent of
+          the two decisions. */}
+      {orderProposal && (
+        <OrderProposalBar
+          proposal={orderProposal}
+          orderable={orderable}
+          onAccept={readOnly ? undefined : () => void acceptOrder()}
+          onDecline={readOnly ? undefined : () => void rejectOrder()}
+        />
+      )}
+
+      <div className="rm-board-scroll" ref={scroll}>
+        {blank ? (
+          // Deliberately still shown over a non-empty decision log below: a
+          // board whose every item was rejected has nothing to *work*, which is
+          // what this state claims.
+          <EmptyBoard readOnly={readOnly} onAdd={() => openNew("next")} />
+        ) : (
+          HORIZONS.map((h) => {
+            // Proposed additions sit in their target group, so the user sees
+            // where a change would land before committing to it — but they
+            // don't move the count until they're accepted.
+            const rowsFor = drawn.filter((i) => i.horizon === h.id);
+            return (
+              <HorizonGroup
+                key={h.id}
+                label={h.label}
+                note={h.note}
+                count={rowsFor.filter((i) => i.status !== "proposed").length}
+                empty={rowsFor.length === 0}
+                onAdd={readOnly ? undefined : () => openNew(h.id)}
+                dnd={readOnly ? undefined : dnd.groupDnd(h.id)}
+              >
+                {rowsFor.map((it) => {
+                  const row = it.item;
+                  // A proposed row is on the board but not *of* it yet: it is
+                  // ruled on rather than edited or sent to an agent.
+                  const ghost = it.status === "proposed";
+                  /** The PM's pending ask against this row, if any. */
+                  const proposal = proposals.get(row.id);
+                  /** The single question this card asks. The card computes the
+                   *  same answer for its bar and its diff; this side of it is what
+                   *  binds the mutation each ruling means, so the words and the
+                   *  write can't disagree. */
+                  const ruling = cardRuling(ghost, proposal ?? null);
+                  // The queue owns everything from `queued` on: an `active`
+                  // row is the drainer's, and the user's lever on it is the
+                  // run, not the row. `in_review` keeps one manual lever —
+                  // "Mark done" — for merges the sweep can't see.
+                  const writable = !ghost && !readOnly;
+                  /** What GitHub says about this row's PR, when it's under
+                   *  review and the board's poll has an answer. */
+                  const review = it.status === "in_review" ? reviews.get(row.id) : undefined;
+                  // Both review actions are gated off the same derived verdict
+                  // the card's chip renders, so the card can never offer a merge
+                  // it has just called blocked. Read-only boards get neither: one
+                  // writes to GitHub, the other writes an event.
+                  const gate = review ? reviewGate(review) : null;
+                  const threads = gate?.threads ?? 0;
+                  return (
+                    <ItemCard
+                      key={it.code}
+                      item={it}
+                      repoPath={repoPath}
+                      ghost={ghost}
+                      open={openCodes.has(it.code)}
+                      landed={landed.has(it.code)}
+                      focused={focusCode === it.code}
+                      note={notes.get(row.id)}
+                      events={events.get(row.id)}
+                      run={row.run_id ? runsById.get(row.run_id) : undefined}
+                      workflowName={
+                        writable
+                          ? (workflows.resolve(row.workflow_def_id)?.name ?? null)
+                          : undefined
+                      }
+                      onToggle={() => toggleItem(it.code, row.id)}
+                      onEdit={
+                        ghost || readOnly
+                          ? undefined
+                          : () => setEditing({ item: row, horizon: row.horizon })
+                      }
+                      onAccept={
+                        // One accept per card, whatever is pending on it: admit the
+                        // ghost, apply the ask, or — a revised ghost — both, in that
+                        // order. `acceptDeltas` owns the sequencing.
+                        ruling.kind === "none" || readOnly
+                          ? undefined
+                          : () =>
+                              acceptDeltas(
+                                ruling.admits ? [row.id] : [],
+                                ruling.appliesPatch && ruling.proposal ? [ruling.proposal.id] : [],
+                              )
+                      }
+                      // The ghost accept's wording is the project's autoqueue dial's
+                      // business; a patch-only ruling just says "Accept".
+                      acceptLabel={ruling.admits ? cardAccept.primary : "Accept"}
+                      queueLabel={cardAccept.queue}
+                      onAcceptQueue={
+                        // Only where the ruling admits a row, and only while the
+                        // dial is off: with it on the primary Accept already queues
+                        // (and says so). A pending *patch* alone never gets this —
+                        // accepting it changes a row's shape, not what the queue
+                        // does with it.
+                        ruling.admits && !readOnly && cardAccept.queue
+                          ? () =>
+                              acceptDeltas(
+                                [row.id],
+                                ruling.appliesPatch && ruling.proposal ? [ruling.proposal.id] : [],
+                                true,
+                              )
+                          : undefined
+                      }
+                      onDiscard={
+                        // The mirror image: discarding a ghost deletes the row (and
+                        // cascades any ask on it), declining a patch leaves the row
+                        // exactly as it is.
+                        ruling.kind === "none" || readOnly
+                          ? undefined
+                          : ruling.declineRemovesRow
+                            ? () => removeItems([row.id])
+                            : () => rejectProposals(ruling.proposal ? [ruling.proposal.id] : [])
+                      }
+                      proposal={proposal}
+                      onQueue={
+                        // A handed-off row already has its builder; queueing it
+                        // would dispatch a second one. The drainer refuses such
+                        // rows too — this just keeps the button honest. A held
+                        // row hides it for the same reason: the queue will not
+                        // claim it, so offering the button would promise
+                        // something the brake overrides. Release, then queue.
+                        writable && it.status === "open" && !row.agent_id && !row.hold_reason
+                          ? () => queueItems([row.id])
+                          : undefined
+                      }
+                      onUnqueue={
+                        writable && it.status === "queued"
+                          ? () => unqueueItems([row.id])
+                          : undefined
+                      }
+                      onReclaim={
+                        // The undo of a hand-off, offered exactly where the
+                        // backend allows it: a stamped row the queue hasn't
+                        // taken over. From `queued` on, the run is the lever.
+                        writable && row.agent_id && it.status === "open"
+                          ? () => reclaimItem(row.id)
+                          : undefined
+                      }
+                      onMarkDone={
+                        writable && it.status === "in_review" ? () => markDone(row.id) : undefined
+                      }
+                      review={review}
+                      onMergePr={
+                        writable && gate?.mergeAllowed ? () => mergeItemPr(row.id) : undefined
+                      }
+                      onFixReview={
+                        writable && review && threads > 0
+                          ? () => sendReviewFeedback(row, review)
+                          : undefined
+                      }
+                      onHold={
+                        // `open` and `queued`: the two statuses where a hold
+                        // changes what this board would do next. A ghost is
+                        // excluded because nothing builds a row nobody has
+                        // accepted — rule on it first (`writable` already drops
+                        // them) — and everything from `active` on is the run's,
+                        // where the user's lever is the run itself. (The PM's op
+                        // has no such limit: mid-run is when *it* most needs the
+                        // brake, and it cannot reach the run.)
+                        writable &&
+                        !row.hold_reason &&
+                        (it.status === "open" || it.status === "queued")
+                          ? (reason: string) => holdItem(row.id, reason)
+                          : undefined
+                      }
+                      onReject={
+                        // The three statuses the backend allows — the ones the
+                        // queue hasn't dispatched. A ghost gets it too (rejecting
+                        // a suggestion with a reason is the decision log's whole
+                        // point; Discard remains the traceless alternative),
+                        // which is why this reads `!readOnly` rather than
+                        // `writable`.
+                        !readOnly &&
+                        (it.status === "proposed" || it.status === "open" || it.status === "queued")
+                          ? (reason: string) => rejectItem(row.id, reason)
+                          : undefined
+                      }
+                      onRelease={
+                        writable && row.hold_reason ? () => releaseItem(row.id) : undefined
+                      }
+                      onOpenRun={row.run_id ? () => openRun(row.run_id as string) : undefined}
+                      dnd={readOnly ? undefined : dnd.cardDnd(row)}
+                      cardRef={(el) => {
+                        rows.current[it.code] = el;
+                      }}
+                    />
+                  );
+                })}
+              </HorizonGroup>
+            );
+          })
+        )}
+        {/* The decision log, under the last group: rejected items keep their
+            row and their reason here instead of being deleted. Outside the
+            `blank` ternary on purpose — a board whose only rows are rejected
+            still owes the reader its record — and it renders nothing when the
+            log is empty. */}
+        <NotDoing
+          items={rejected}
+          focusCode={focusCode}
+          onReopen={readOnly ? undefined : (id) => void reopenItem(id)}
+          rowRef={(code, el) => {
+            rows.current[code] = el;
+          }}
+        />
+      </div>
+
+      {editing && (
+        <ItemDialog
+          item={editing.item}
+          horizon={editing.horizon}
+          workflows={workflows}
+          codes={codes}
+          onClose={() => setEditing(null)}
+          onSave={(draft) => (editRow ? editItem(editRow.id, draft) : addItem(draft))}
+          onDelete={editRow ? () => removeItems([editRow.id]) : undefined}
+        />
+      )}
+    </aside>
+  );
+}

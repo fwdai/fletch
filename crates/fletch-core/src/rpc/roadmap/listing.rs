@@ -19,6 +19,7 @@ fn compact(
     item: &RoadmapItem,
     pending: Option<&Proposal>,
     last: Option<&ItemEvent>,
+    from: Option<&str>,
     now: i64,
 ) -> Value {
     let mut o = Map::new();
@@ -28,6 +29,15 @@ fn compact(
     o.insert("status".into(), json!(item.status.as_str()));
     if !item.why.is_empty() {
         o.insert("why".into(), json!(item.why));
+    }
+    if let Some(kind) = item.kind {
+        o.insert("kind".into(), json!(kind.as_str()));
+    }
+    if let Some(triage) = &item.triage {
+        o.insert("triage".into(), json!(triage));
+    }
+    if let Some(from) = from {
+        o.insert("from".into(), json!(from));
     }
     if let Some(area) = &item.area {
         o.insert("area".into(), json!(area));
@@ -132,7 +142,15 @@ fn board(conn: &Connection, project_id: &str, args: &Value) -> Result<Value, Str
                     None => {
                         return Err(format!(
                             "unknown status {s:?} — expected {}",
-                            one_of(&["proposed", "open", "queued", "active", "in_review", "done"])
+                            one_of(&[
+                                "captured",
+                                "proposed",
+                                "open",
+                                "queued",
+                                "active",
+                                "in_review",
+                                "done"
+                            ])
                         ))
                     }
                 }
@@ -148,6 +166,10 @@ fn board(conn: &Connection, project_id: &str, args: &Value) -> Result<Value, Str
     // One query for the whole board, not one per row.
     let last = events::latest_by_item(conn, project_id).map_err(|e| e.to_string())?;
     let now = crate::database::now_millis();
+    let code_of: HashMap<&str, &str> = items
+        .iter()
+        .map(|i| (i.id.as_str(), i.code.as_str()))
+        .collect();
     let keep = |i: &RoadmapItem| match &filter {
         None => true,
         Some(f) => f.contains(i.status.as_str()),
@@ -156,7 +178,19 @@ fn board(conn: &Connection, project_id: &str, args: &Value) -> Result<Value, Str
         .iter()
         .filter(|i| i.status != ItemStatus::Rejected)
         .filter(|i| keep(i))
-        .map(|i| compact(i, by_item.get(i.id.as_str()).copied(), last.get(&i.id), now))
+        .map(|i| {
+            let from = i
+                .from_item
+                .as_deref()
+                .and_then(|id| code_of.get(id).copied());
+            compact(
+                i,
+                by_item.get(i.id.as_str()).copied(),
+                last.get(&i.id),
+                from,
+                now,
+            )
+        })
         .collect();
     let mut payload = Map::new();
     payload.insert("items".into(), json!(rows));

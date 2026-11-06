@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { IconButton } from "@/components/ui/IconButton";
 import type { FeatureFlags } from "@/storage/preferences";
 
 /** Shared building blocks for the full-screen settings panes. These use the
@@ -50,16 +51,31 @@ export function SetHead({
 
 export function SetGroup({
   label,
+  aside,
+  sub,
   last,
   children,
 }: {
   label?: string;
+  /** Sits at the right end of the label line: a status, not a control. */
+  aside?: ReactNode;
+  /** One line under the label about the whole group. */
+  sub?: ReactNode;
   last?: boolean;
   children: ReactNode;
 }) {
+  const head = label && <div className="set-group-h mono text-xs">{label}</div>;
   return (
     <section className={`set-group ${last ? "last" : ""}`}>
-      {label && <div className="set-group-h mono text-xs">{label}</div>}
+      {aside ? (
+        <div className="set-group-top flex-center">
+          {head}
+          {aside}
+        </div>
+      ) : (
+        head
+      )}
+      {sub && <div className="set-row-s text-sm">{sub}</div>}
       <div className="set-rows">{children}</div>
     </section>
   );
@@ -71,6 +87,7 @@ export function SetRow({
   sub,
   align,
   compact,
+  inherited,
   children,
 }: {
   /** Sits beside the title and description, spanning both. */
@@ -82,6 +99,9 @@ export function SetRow({
   /** Two lines at most. Leave it out when the title and control say enough. */
   sub?: ReactNode;
   align?: "start";
+  /** A row over an app default: while it overrides it, the run-config rows'
+   *  dot and a control that puts the default back sit before the control. */
+  inherited?: { overridden: boolean; onRevert: () => void };
   children?: ReactNode;
 }) {
   const label = (
@@ -104,7 +124,21 @@ export function SetRow({
       ) : (
         label
       )}
-      {children && <div className="set-row-c flex-center">{children}</div>}
+      {children && (
+        <div className="set-row-c flex-center">
+          {inherited?.overridden && (
+            <>
+              <span className="rs-source iflex-center">
+                <span className="dot" />
+              </span>
+              <IconButton size="sm" tip="Revert to the app default" onClick={inherited.onRevert}>
+                <Icon name="refresh" size={12} />
+              </IconButton>
+            </>
+          )}
+          {children}
+        </div>
+      )}
     </div>
   );
 }

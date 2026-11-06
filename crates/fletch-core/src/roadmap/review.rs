@@ -96,7 +96,7 @@ impl PmTurn<'_> {
 
 const BODY_MAX: usize = 4096;
 
-fn clip_body(body: &str) -> String {
+pub(super) fn clip_body(body: &str) -> String {
     if body.len() <= BODY_MAX {
         return body.to_string();
     }
@@ -110,7 +110,7 @@ fn clip_body(body: &str) -> String {
     format!("{}… [truncated — {dropped} more chars]", &body[..cut])
 }
 
-fn fence_for(body: &str) -> String {
+pub(super) fn fence_for(body: &str) -> String {
     let mut longest = 0usize;
     let mut run = 0usize;
     for c in body.chars() {
@@ -254,7 +254,7 @@ fn send(ctx: &Arc<EngineCtx>, db: &Db, turn: &PmTurn<'_>) {
     });
 }
 
-async fn deliver(ctx: &Arc<EngineCtx>, agent_id: &str, prompt: &str) -> bool {
+pub(super) async fn deliver(ctx: &Arc<EngineCtx>, agent_id: &str, prompt: &str) -> bool {
     let Some(sup) = ctx.supervisor() else {
         tracing::warn!("roadmap PM turn: no supervisor to deliver through");
         return false;

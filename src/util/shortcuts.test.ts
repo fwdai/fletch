@@ -14,8 +14,7 @@ describe("global shortcut actions", () => {
       lastRepoPath: project.path,
       settingsScreenOpen: false,
       usageScreenOpen: false,
-      projectScreenRepoPath: null,
-      projectScreenTab: "roadmap",
+      projectScreen: null,
       historyOpen: false,
       paletteOpen: false,
       createDraft: vi.fn(async () => "d1"),
@@ -31,12 +30,14 @@ describe("global shortcut actions", () => {
     expect(s.createDraft).toHaveBeenCalledWith(project.path);
   });
 
-  it("⌘⇧, brings the project page's Settings tab forward, and only then toggles the page away", () => {
-    useAppStore.setState({ projectScreenRepoPath: project.path, projectScreenTab: "roadmap" });
+  it("⌘⇧, and ⌘⇧R open their project view from the other, and leave it from its own", () => {
+    const open = () => useAppStore.getState().projectScreen;
+    useAppStore.setState({ projectScreen: { repoPath: project.path, view: "roadmap" } });
     runShortcutAction("projectSettings");
-    expect(useAppStore.getState().projectScreenRepoPath).toBe(project.path);
-    expect(useAppStore.getState().projectScreenTab).toBe("settings");
-    runShortcutAction("projectSettings");
-    expect(useAppStore.getState().projectScreenRepoPath).toBeNull();
+    expect(open()).toEqual({ repoPath: project.path, view: "settings" });
+    runShortcutAction("roadmap");
+    expect(open()).toEqual({ repoPath: project.path, view: "roadmap" });
+    runShortcutAction("roadmap");
+    expect(open()).toBeNull();
   });
 });

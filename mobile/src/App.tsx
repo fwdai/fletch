@@ -23,6 +23,7 @@ import { type NavItem, useStore } from "./store";
 import "./styles/base.css";
 import "./styles/screens.css";
 import "@desktop/components/ui/Loader.css";
+import "@desktop/components/ProjectIcon/ProjectIcon.css";
 import "@desktop/styles/shared/icon-button.css";
 import "@desktop/components/Workspace/messages/Steps.css";
 import "./styles/agent.css";

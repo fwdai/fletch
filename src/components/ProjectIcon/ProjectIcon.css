@@ -1,0 +1,104 @@
+/* `ProjectMark`: the project's image, glyph or initial in one rounded square.
+ * Its size comes inline. Shared with the phone, so it carries its own layout
+ * rather than leaning on the desktop's utility classes. */
+.proj-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--fg-1);
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px var(--bd);
+}
+.proj-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* `IconPicker`: the Identity row's icon button and its popover (a `.pop`). */
+.proj-icon-btn {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  cursor: pointer;
+}
+.proj-icon-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.proj-icon-btn:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+.proj-icon-pop {
+  top: calc(100% + 6px);
+  right: 0;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  white-space: normal;
+}
+.proj-icon-label {
+  font-size: var(--fs-xs);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.proj-icon-note {
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+}
+.proj-icon-note.error {
+  color: var(--danger);
+}
+.proj-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+.proj-icon-glyphs {
+  display: flex;
+  gap: 4px;
+}
+.proj-icon-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 4px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.proj-icon-choice:hover {
+  background: var(--hover);
+}
+.proj-icon-choice.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.proj-icon-cap {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.proj-icon-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bd-soft);
+}

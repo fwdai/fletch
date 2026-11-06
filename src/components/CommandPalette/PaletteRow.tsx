@@ -1,4 +1,5 @@
 import { Icon } from "@/components/Icon";
+import { ProjectIcon } from "@/components/ProjectIcon";
 import { StatusDot } from "@/components/TitleBar/WorkspaceStatus/StatusDot";
 import { useShortcutKeys } from "@/util/shortcuts";
 import { highlightRuns } from "./match";
@@ -12,6 +13,8 @@ function Lead({ leading }: { leading: Leading }) {
       return <StatusDot status={leading.status} />;
     case "swatch":
       return <span className="cp-swatch" style={{ background: leading.color }} />;
+    case "image":
+      return <ProjectIcon project={leading.project} size={16} />;
   }
 }
 

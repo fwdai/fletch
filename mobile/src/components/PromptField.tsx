@@ -13,7 +13,8 @@ const MIN_PX = 120;
 const MAX_PX = 260;
 
 /** The opening prompt of a new workspace — an agent's task, or the idea a
- *  planning chat starts from: the field, and the row of pickers along its foot.
+ *  planning chat starts from — or a note captured into a roadmap's inbox: the
+ *  field, and the row of pickers along its foot.
  *  The mic sits at the right of that row and, while it is open, the pickers give
  *  way to the waveform — the same dictation the chat composer offers, in the
  *  shape this box has room for. Files attach beside the mic, and their chips sit
@@ -31,8 +32,10 @@ export function PromptField({
   /** Fires as a session opens and closes, so the sheet can hold its Start
    *  button until the words have landed in the draft. */
   onDictating: (live: boolean) => void;
-  /** The sheet's staged files — owned there, since they go out with `spawn`. */
-  attachments: Attachments;
+  /** The sheet's staged files — owned there, since they go out with `spawn`.
+   *  Absent where nothing can ride along (a capture is text only), which
+   *  takes the attach button and the chips away. */
+  attachments?: Attachments;
   /** Overrides the default, which describes an agent's first message. Keep it
    *  free of mic wording: dictation is not offered by every host. */
   placeholder?: string;
@@ -68,7 +71,12 @@ export function PromptField({
     onDictating(dictation.phase !== "idle");
   }, [dictation.phase, onDictating]);
 
-  const error = dictation.error ?? attachments.error;
+  // A draft emptied by its owner (a capture that went out) shrinks the box back.
+  useEffect(() => {
+    if (value === "") autosize(ta.current, MIN_PX, MAX_PX);
+  }, [value]);
+
+  const error = dictation.error ?? attachments?.error;
 
   return (
     <>
@@ -101,9 +109,11 @@ export function PromptField({
             <>
               {children}
               <span className="grow" />
-              <AttachButton className="na-tool" onPick={attachments.add}>
-                <Icon name="attach" size={16} />
-              </AttachButton>
+              {attachments && (
+                <AttachButton className="na-tool" onPick={attachments.add}>
+                  <Icon name="attach" size={16} />
+                </AttachButton>
+              )}
             </>
           )}
           {dictation.supported && (
@@ -130,7 +140,9 @@ export function PromptField({
           )}
         </div>
       </div>
-      <StagedChips className="na-atts" items={attachments.items} onRemove={attachments.remove} />
+      {attachments && (
+        <StagedChips className="na-atts" items={attachments.items} onRemove={attachments.remove} />
+      )}
       {error && (
         <Notice tone="error" className="na-err">
           {error}

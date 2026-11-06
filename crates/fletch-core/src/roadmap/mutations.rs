@@ -8,7 +8,7 @@ use super::autonomy::{self, Landing};
 use super::deps;
 use super::events::{self, EventActor, EventKind, ItemEvent};
 use super::store;
-use super::types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
+use super::types::{Horizon, ItemPatch, ItemSource, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
 
 /// Dep-check then insert + open event under caller's lock.
 pub(super) fn create_checked(
@@ -26,17 +26,48 @@ pub(super) fn create_checked(
     }
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let created = store::create(&tx, project_id, item).map_err(|e| e.to_string())?;
+    let detail = (created.status == ItemStatus::Captured).then_some("captured");
     let event = events::record(
         &tx,
         &created.id,
         project_id,
         EventActor::User,
         EventKind::Created,
-        None,
+        detail,
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok((created, event))
+}
+
+/// Longest title a capture keeps; the whole text survives in `why` when the
+/// first line runs past it.
+pub(crate) const CAPTURE_TITLE_MAX: usize = 120;
+
+/// A capture as a new row: the first line is the title, the rest the why. A
+/// first line too long to be a title (a dictated note is often one line) is
+/// clipped, and the full text goes to `why` so nothing is lost.
+pub(crate) fn captured_item(text: &str) -> Result<NewItem, String> {
+    let text = text.trim();
+    let (first, rest) = text.split_once('\n').unwrap_or((text, ""));
+    let first = first.trim();
+    if first.is_empty() {
+        return Err("a capture needs some text".into());
+    }
+    let (title, why) = if first.chars().count() > CAPTURE_TITLE_MAX {
+        let clipped: String = first.chars().take(CAPTURE_TITLE_MAX - 1).collect();
+        (format!("{}…", clipped.trim_end()), text.to_string())
+    } else {
+        (first.to_string(), rest.trim().to_string())
+    };
+    Ok(NewItem {
+        title,
+        why,
+        horizon: Some(Horizon::Later),
+        status: Some(ItemStatus::Captured),
+        source: Some(ItemSource::User),
+        ..Default::default()
+    })
 }
 
 /// Apply patch + history under one lock; refuse writing `rejected` via generic edit.

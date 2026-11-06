@@ -16,11 +16,18 @@ import type { SliceCreator } from "./types";
  *  store can remember the last-open tab per agent without importing a component. */
 export type RightPanelTab = "code" | "git" | "run" | "term";
 
-/** Project page tabs, in display order: what gets built next, what has been
- *  built, and how the project is run. Kept here (like `RightPanelTab`) so
- *  callers of `openProjectScreen` can pick the tab without the store importing
- *  a component. */
-export type ProjectScreenTab = "roadmap" | "activity" | "context" | "settings";
+/** A project's full-screen views, each its own surface: what gets built (the
+ *  roadmap), what the host knows (context), and how the project is run
+ *  (settings). Kept here (like `RightPanelTab`) so the store need not import a
+ *  component. */
+export type ProjectView = "roadmap" | "settings";
+
+/** The roadmap view's tabs: the board, what has been built, and — while the
+ *  layer's developer gate is open — what the host knows about the project. */
+export type RoadmapTab = "board" | "activity" | "context";
+
+/** The panes of the project settings view (`ProjectSettingsScreen/nav.ts`). */
+export type ProjectSettingsSection = "general" | "run" | "sandbox" | "network" | "agents";
 
 export interface UiSlice {
   /** The command palette (⌘K): one search over every action and every agent,
@@ -66,13 +73,16 @@ export interface UiSlice {
    *  of the selected agent / draft. Treated as a separate "mode" that wins
    *  over `selectedAgentId` / `activeDraftId` for rendering. */
   historyOpen: boolean;
-  /** Full-screen project page (roadmap + settings). Replaces the workspace
-   *  panes while non-null, like the settings screen. Keyed by the project's
-   *  primary repo path — the screen resolves the project_id on open. */
-  projectScreenRepoPath: string | null;
-  /** Which tab of the project page is showing. Set by whoever opened the
-   *  screen, so a control labelled "Project settings" lands on Settings. */
-  projectScreenTab: ProjectScreenTab;
+  /** The project view on screen, if any. Replaces the workspace panes while
+   *  non-null, like the settings screen. Keyed by the project's primary repo
+   *  path. */
+  projectScreen: { repoPath: string; view: ProjectView } | null;
+  /** The roadmap view's sub-tab, kept for the session by an open that names
+   *  none. */
+  roadmapTab: RoadmapTab;
+  /** Which pane the settings view shows; set by whoever opened it, so the
+   *  egress toast lands on Network. */
+  projectSettingsSection: ProjectSettingsSection;
   /** A roadmap item code the board should reveal as soon as it can — the
    *  cross-screen half of "every altitude links back to the one above it" (a
    *  run's roadmap chip). The board next to the PM chat needs none of this and
@@ -85,6 +95,9 @@ export interface UiSlice {
    *  whichever board next happened to hold that code. A refusal is said out loud
    *  on that board's error bar instead — see `useRoadmap`. */
   roadmapFocusCode: string | null;
+  /** One-shot: the board's capture field should take focus when it mounts —
+   *  the palette's "Add to roadmap…". Cleared by the field that consumes it. */
+  roadmapCaptureRequested: boolean;
   /** A chat row to reveal — scrolled into view, opened or ringed — once the
    *  agent's transcript has rendered it: the card that launched a sub-agent
    *  thread the user just left (`closeSubagentThread`). Consumed and cleared by
@@ -110,6 +123,9 @@ export interface UiSlice {
    *  two columns split the page evenly and stay proportional as the window
    *  resizes; the first splitter drag pins it to a width. Persisted. */
   roadmapBoardWidth: number | null;
+  /** Show the PM thread beside the Roadmap board; closed, the board takes the
+   *  page. App-wide, like the transcript rail. Persisted. */
+  roadmapThreadOpen: boolean;
   /** Last-open right-rail tab per agent, keyed by agent id. Lets the panel
    *  restore the tab the user was on (e.g. Git) when they switch back to an
    *  agent, instead of always resetting to the first tab. In-memory only. */
@@ -153,17 +169,22 @@ export interface UiSlice {
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
   closeOnboarding: () => void;
   toggleHistory: (open?: boolean) => void;
-  /** Open the full-screen project page for a sidebar repo group, on `tab`
-   *  (default: the roadmap). */
-  openProjectScreen: (repoPath: string, tab?: ProjectScreenTab) => void;
+  /** Open a project's roadmap on `tab`, or on the one it was last left on. */
+  openRoadmap: (repoPath: string, tab?: RoadmapTab) => void;
+  /** Open a project's settings on `section` (default: General). */
+  openProjectSettings: (repoPath: string, section?: ProjectSettingsSection) => void;
   closeProjectScreen: () => void;
-  setProjectScreenTab: (tab: ProjectScreenTab) => void;
+  setRoadmapTab: (tab: RoadmapTab) => void;
+  setProjectSettingsSection: (section: ProjectSettingsSection) => void;
   /** Open a project's board with one item focused — expanded, scrolled to and
-   *  ringed. `repoPath` is the project's primary repo (how the screen is keyed);
+   *  ringed. `repoPath` is the project's primary repo (how the view is keyed);
    *  the code is picked up by that board on its next render. */
   focusRoadmapItem: (repoPath: string, code: string) => void;
   /** Drop a consumed (or abandoned) focus request. */
   clearRoadmapFocus: () => void;
+  /** Open a project's board with its capture field focused. */
+  captureToRoadmap: (repoPath: string) => void;
+  clearRoadmapCapture: () => void;
   clearChatFocus: () => void;
   /** Select `agentId` and show the sub-agent thread at `path` (launching
    *  tool_use ids, main log first) instead of its conversation. An empty path
@@ -184,6 +205,7 @@ export interface UiSlice {
   commitLeftWidth: (w: number) => void;
   commitRightWidth: (w: number) => void;
   commitRoadmapBoardWidth: (w: number) => void;
+  toggleRoadmapThread: () => void;
   /** Remember the right-rail tab an agent was last viewing. */
   setRightPanelTab: (agentId: string, tab: RightPanelTab) => void;
   /** Rebind a global shortcut; persists the whole override map. */
@@ -207,9 +229,11 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   onboardingOpen: false,
   onboardingComplete: false,
   historyOpen: false,
-  projectScreenRepoPath: null,
-  projectScreenTab: "roadmap",
+  projectScreen: null,
+  roadmapTab: "board",
+  projectSettingsSection: "general",
   roadmapFocusCode: null,
+  roadmapCaptureRequested: false,
   chatFocus: null,
   openThread: null,
   leftCollapsed: false,
@@ -218,6 +242,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   leftWidth: DEFAULT_LEFT_WIDTH,
   rightWidth: DEFAULT_RIGHT_WIDTH,
   roadmapBoardWidth: null,
+  roadmapThreadOpen: true,
   rightPanelTabs: {},
   shortcutOverrides: {},
   admin: false,
@@ -240,7 +265,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       // project and usage screens (only one full-screen surface at a time).
       settingsOpen: false,
       selectedRunId: null,
-      projectScreenRepoPath: null,
+      projectScreen: null,
       usageScreenOpen: false,
     })),
   closeSettingsScreen: () => set({ settingsScreenOpen: false }),
@@ -253,7 +278,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       settingsScreenOpen: false,
       settingsOpen: false,
       selectedRunId: null,
-      projectScreenRepoPath: null,
+      projectScreen: null,
     }),
   closeUsageScreen: () => set({ usageScreenOpen: false }),
   openGithubConnect: () => set({ githubConnectOpen: true }),
@@ -287,33 +312,32 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     if (firstCompletion) void api.boxImageInstall().catch(() => {});
   },
   toggleHistory: (open) => set((s) => ({ historyOpen: open ?? !s.historyOpen })),
-  openProjectScreen: (repoPath, tab = "roadmap") => {
-    // The project page opens on the roadmap, so it needs a host that drives
-    // one; its settings sections gate themselves (`projectSettings`). The
-    // sidebar hides its button behind this gate; every other way in (⌘⇧,,
-    // a roadmap chip) is refused here so none can slip past it.
+  openRoadmap: (repoPath, tab) => {
+    // The roadmap needs a host that drives one. The sidebar hides its row
+    // behind this gate; every other way in (the pill, ⌘⇧R, a roadmap chip) is
+    // refused here so none can slip past it.
     if (gateReason(activeEnvironment(), "roadmap")) return;
-    set({
-      projectScreenRepoPath: repoPath,
-      projectScreenTab: tab,
-      // Same takeover rules as the settings screen: one full-screen surface
-      // at a time, and a hidden run view shouldn't stay selected.
-      settingsScreenOpen: false,
-      usageScreenOpen: false,
-      selectedRunId: null,
-      // A plain open must not inherit someone else's jump request.
-      roadmapFocusCode: null,
-    });
+    set((s) => ({ ...projectTakeover(repoPath, "roadmap"), roadmapTab: tab ?? s.roadmapTab }));
   },
-  closeProjectScreen: () => set({ projectScreenRepoPath: null, roadmapFocusCode: null }),
-  setProjectScreenTab: (tab) => set({ projectScreenTab: tab }),
+  // Settings gates its own panes (`projectSettings`).
+  openProjectSettings: (repoPath, section) =>
+    set({ ...projectTakeover(repoPath, "settings"), projectSettingsSection: section ?? "general" }),
+  closeProjectScreen: () => set({ projectScreen: null, roadmapFocusCode: null }),
+  setRoadmapTab: (tab) => set({ roadmapTab: tab }),
+  setProjectSettingsSection: (section) => set({ projectSettingsSection: section }),
   focusRoadmapItem: (repoPath, code) => {
     // Reuses the open path so the takeover rules stay in one place; the code is
     // set after, because opening clears any stale request.
-    get().openProjectScreen(repoPath, "roadmap");
+    get().openRoadmap(repoPath, "board");
     set({ roadmapFocusCode: code });
   },
   clearRoadmapFocus: () => set({ roadmapFocusCode: null }),
+  captureToRoadmap: (repoPath) => {
+    get().openRoadmap(repoPath, "board");
+    // Only if the open went through: the gate can refuse it.
+    if (get().projectScreen?.view === "roadmap") set({ roadmapCaptureRequested: true });
+  },
+  clearRoadmapCapture: () => set({ roadmapCaptureRequested: false }),
   clearChatFocus: () => set({ chatFocus: null }),
   openSubagentThread: (agentId, path) => {
     if (path.length === 0) {
@@ -357,6 +381,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   commitLeftWidth: (w) => setSetting("leftWidth", String(w)),
   commitRightWidth: (w) => setSetting("rightWidth", String(w)),
   commitRoadmapBoardWidth: (w) => setSetting("roadmapBoardWidth", String(w)),
+  toggleRoadmapThread: () =>
+    set((s) => {
+      const roadmapThreadOpen = !s.roadmapThreadOpen;
+      setSetting("roadmapThreadOpen", String(roadmapThreadOpen));
+      return { roadmapThreadOpen };
+    }),
   setRightPanelTab: (agentId, tab) =>
     set((s) => ({ rightPanelTabs: { ...s.rightPanelTabs, [agentId]: tab } })),
   setShortcut: (id, combos) =>
@@ -379,6 +409,19 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     set({ shortcutOverrides: {} });
   },
 });
+
+/** One project view taking the screen: the same takeover rules as the settings
+ *  screen (one full-screen surface at a time, a hidden run view deselected),
+ *  and no jump request inherited from an earlier open. */
+function projectTakeover(repoPath: string, view: ProjectView) {
+  return {
+    projectScreen: { repoPath, view },
+    settingsScreenOpen: false,
+    usageScreenOpen: false,
+    selectedRunId: null,
+    roadmapFocusCode: null,
+  };
+}
 
 /** The override map is written whole, and a record-then-reset lands two writes
  *  in quick succession; the queue keeps them in issue order so the earlier one

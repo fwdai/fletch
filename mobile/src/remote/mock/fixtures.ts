@@ -160,7 +160,7 @@ export const customAgents: CustomAgentRow[] = [
   },
 ];
 
-const roadmapItem = (
+export const roadmapItem = (
   i: Partial<RoadmapItem> & Pick<RoadmapItem, "id" | "code" | "title" | "why" | "status">,
 ): RoadmapItem => ({
   project_id: "prj-fletch",
@@ -180,15 +180,19 @@ const roadmapItem = (
   held_at: null,
   close_reason: null,
   issue_url: null,
+  kind: null,
+  triage: null,
+  from_item: null,
   created_at: 1_757_300_000_000,
   updated_at: 1_757_300_000_000,
   ...i,
 });
 
 /** The fletch board: two `proposed` ghosts — what the seeded planning chat's PM
- *  suggested, and the rows that chat draws decision cards for — beside an item
- *  already on the board, so `roadmap_list_items` is a read the phone has to
- *  narrow rather than one that happens to be all ghosts. */
+ *  suggested, and the rows that chat draws decision cards for — beside items
+ *  already on the board and a capture still in the inbox, so
+ *  `roadmap_list_items` is a read the phone has to narrow rather than one that
+ *  happens to be all ghosts. */
 export const roadmapItems: RoadmapItem[] = [
   roadmapItem({
     id: "itm-offline-queue",
@@ -220,6 +224,25 @@ export const roadmapItems: RoadmapItem[] = [
     why: "The engine is picked in two places and they disagree.",
     status: "open",
     horizon: "now",
+    source: "user",
+  }),
+  roadmapItem({
+    id: "itm-held-sends",
+    code: "FLT-205",
+    title: "Hold sends while the socket reconnects",
+    why: "A send in the reconnect window fails where a moment later it would land.",
+    status: "queued",
+    rank: 500,
+    source: "user",
+  }),
+  roadmapItem({
+    id: "itm-run-port",
+    code: "FLT-211",
+    title: "The run panel should remember the port",
+    why: "",
+    status: "captured",
+    horizon: "later",
+    area: null,
     source: "user",
   }),
 ];
@@ -641,6 +664,9 @@ export const protocol: HostProtocol = {
     "roadmap_list_items",
     "roadmap_update_item",
     "roadmap_discard_proposal",
+    "roadmap_capture",
+    "roadmap_latest_events",
+    "get_project_settings",
     "read_live_turn",
     "read_session_page",
     "get_all_pr_status",
@@ -681,7 +707,9 @@ export const protocol: HostProtocol = {
     "autopilot:switches",
     "roadmap:item",
     "roadmap:item-deleted",
+    "roadmap:item-event",
     "settings:changed",
+    "project_settings:changed",
   ],
   features: [],
 };

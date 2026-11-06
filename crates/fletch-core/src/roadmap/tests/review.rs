@@ -61,6 +61,9 @@ fn item() -> RoadmapItem {
         held_at: None,
         close_reason: None,
         issue_url: None,
+        kind: None,
+        triage: None,
+        from_item: None,
         created_at: 0,
         updated_at: 0,
     }

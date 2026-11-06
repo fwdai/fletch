@@ -95,7 +95,7 @@ export function projectRows(s: AppState, run: (repoPath: string) => void): Palet
     label: p.name,
     hint: p.path,
     meta: p.path === s.lastRepoPath ? "Last used" : undefined,
-    leading: { kind: "icon", name: "folder" },
+    leading: { kind: "image", project: p },
     section: SEC.projects,
     keywords: basename(p.path),
     run: () => run(p.path),
@@ -140,13 +140,13 @@ export function entityItems(ctx: PaletteContext): PaletteItem[] {
   for (const p of s.workspace?.projects ?? []) {
     items.push({
       id: `project:${p.path}`,
-      label: p.name,
+      label: `Roadmap · ${p.name}`,
       hint: p.path,
-      leading: { kind: "icon", name: "folder" },
+      leading: { kind: "image", project: p },
       section: SEC.projects,
-      keywords: `project  repo  roadmap  ${basename(p.path)}`,
+      keywords: `project  repo  board  ${basename(p.path)}`,
       disabled: roadmapGate,
-      run: () => go(s, () => s.openProjectScreen(p.path)),
+      run: () => go(s, () => s.openRoadmap(p.path)),
     });
   }
 

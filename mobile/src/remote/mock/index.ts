@@ -748,6 +748,36 @@ export class MockHost {
         this.event("roadmap:item-deleted", itemId);
         return { applied: true, item: null };
       }
+      case "roadmap_capture": {
+        // The host's split: the first line is the title, the rest the why.
+        const text = String(args.text ?? "").trim();
+        if (!text) throw new Error("a capture needs some text");
+        const [title, ...why] = text.split("\n");
+        const seq = Math.max(0, ...this.state.roadmapItems.map((i) => Number(i.code.slice(4))));
+        const now = Date.now();
+        const item = fx.roadmapItem({
+          id: `itm-${now}`,
+          project_id: String(args.projectId),
+          code: `FLT-${seq + 1}`,
+          title: title.trim(),
+          why: why.join("\n").trim(),
+          status: "captured",
+          horizon: "later",
+          area: null,
+          source: "user",
+          created_at: now,
+          updated_at: now,
+        });
+        this.state.roadmapItems = [...this.state.roadmapItems, item];
+        this.event("roadmap:item", item);
+        return item;
+      }
+      // The mock keeps no history and no project settings: every capture reads
+      // as being triaged, under the host's defaults.
+      case "roadmap_latest_events":
+        return [];
+      case "get_project_settings":
+        return {};
       case "allocate_draft_name": {
         const used = new Set([
           ...this.state.workspace.agents.map((a) => a.name),

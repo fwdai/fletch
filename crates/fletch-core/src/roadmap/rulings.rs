@@ -36,6 +36,12 @@ pub(super) fn reject_item(
         ItemStatus::Rejected => {
             return Err(format!("{} is already rejected", current.code));
         }
+        ItemStatus::Captured => {
+            return Err(format!(
+                "{} is still in the inbox — discard it there; nothing was decided to rule off",
+                current.code
+            ))
+        }
     }
     let pending = proposals::for_item(conn, item_id).map_err(|e| e.to_string())?;
     if let Some(p) = &pending {

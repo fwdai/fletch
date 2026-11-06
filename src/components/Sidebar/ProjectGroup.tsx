@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import type { AgentRecord, WfRun } from "@/api";
 import { Icon } from "@/components/Icon";
+import { ProjectIcon } from "@/components/ProjectIcon";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
@@ -65,7 +66,9 @@ export function ProjectGroup({
   const selectAgent = useAppStore((s) => s.selectAgent);
   const selectDraft = useAppStore((s) => s.selectDraft);
   const selectRun = useAppStore((s) => s.selectRun);
-  const openProjectScreen = useAppStore((s) => s.openProjectScreen);
+  const openRoadmap = useAppStore((s) => s.openRoadmap);
+  const openProjectSettings = useAppStore((s) => s.openProjectSettings);
+  const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
   const roadmapGate = useGate("roadmap");
 
   const count = agents.length + drafts.length + runs.length;
@@ -85,58 +88,76 @@ export function ProjectGroup({
   );
   const foldable = hidden.length > 0;
 
-  function onOpenSettings(e: React.MouseEvent) {
-    e.stopPropagation();
-    // This button says "Project settings", so it opens that tab — the project
-    // page's default (the roadmap) is what the title-bar pill gets.
-    openProjectScreen(repoPath, "settings");
-  }
-
   const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";
 
   // A pointer drag that ends on the header still dispatches a trailing `click`,
   // which would toggle the group open/closed after a reorder. Track whether the
   // current interaction turned into a drag and swallow that phantom click.
   const draggedRef = useRef(false);
+  const dragged = () => {
+    if (!draggedRef.current) return false;
+    draggedRef.current = false;
+    return true;
+  };
+
+  /** One of the header's actions: stops the header's own click (the fold),
+   *  and does nothing after a drag. */
+  const action = (open: () => void) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!dragged()) open();
+  };
 
   return (
     <div className={`proj ${dragging ? "dragging" : ""} ${dropClass}`} data-repo-path={repoPath}>
+      {/* The header is the project's own row. Its name opens the Roadmap — the
+          project's home — and the rest of the row folds the agents, the way a
+          file tree's arrow expands while its name opens. The hover action at
+          the right is the project's other door, its settings. */}
       <div
         className={`proj-h flex-center ${open ? "open" : ""} ${reorderable ? "reorderable" : ""}`}
         onPointerDown={(e) => {
-          // Left button only, and never from an action button.
+          // Left button only, and never from the action buttons at the right
+          // (the name is a grab point like the rest of the row).
           if (!onReorderPointerDown || e.button !== 0) return;
-          if ((e.target as HTMLElement).closest("button")) return;
+          if ((e.target as HTMLElement).closest(".padd, .dd")) return;
           draggedRef.current = false;
           onReorderPointerDown(e, () => {
             draggedRef.current = true;
           });
         }}
         onClick={() => {
-          if (draggedRef.current) {
-            draggedRef.current = false;
-            return;
-          }
-          onToggle();
+          if (!dragged()) onToggle();
         }}
         title={repoPaths.join("\n")}
       >
         <Icon name="chevR" size={10} className="chev" />
-        <span className="pname">{label}</span>
-        <span className="pcount">{count}</span>
-        {/* The project page opens on the roadmap, so it is offered wherever
-            the board is; its settings sections gate themselves on the host's
-            project-settings ops (docs/remote-protocol.md, "Settings"). */}
-        {!roadmapGate && (
+        <ProjectIcon project={project ?? { name: label }} size={14} />
+        {roadmapGate ? (
+          <span className="pname" title={roadmapGate}>
+            {label}
+          </span>
+        ) : (
           <button
-            className="padd padd-settings tip"
-            data-tip="Project settings"
-            onClick={onOpenSettings}
-            aria-label="Project settings"
+            type="button"
+            className="pname tip"
+            data-tip="Open roadmap"
+            onClick={action(() => openRoadmap(repoPath))}
           >
-            <Icon name="settings" size={14} />
+            {label}
           </button>
         )}
+        <span className="pcount">{count}</span>
+        {/* The settings panes gate themselves on the host's project-settings
+            ops (docs/remote-protocol.md, "Settings"). */}
+        <button
+          type="button"
+          className="padd padd-quiet tip"
+          data-tip="Project settings"
+          onClick={action(() => openProjectSettings(repoPath))}
+          aria-label="Project settings"
+        >
+          <Icon name="settings" size={14} />
+        </button>
         <ProjectAddButton repoPath={repoPath} />
       </div>
 

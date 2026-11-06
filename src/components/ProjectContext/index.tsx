@@ -1,8 +1,11 @@
 import { useState } from "react";
 import type { ContextOverview } from "@/api";
-import { Toggle } from "@/components/Settings/Toggle";
+import { Icon } from "@/components/Icon";
+import { SetHead } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
+import { Chip } from "@/components/ui/Chip";
 import { Loader } from "@/components/ui/Loader";
+import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { useProjectSettings } from "@/util/useProjectSettings";
 import { AddDecisionForm } from "./AddDecisionForm";
@@ -19,12 +22,12 @@ import { useContextOverview } from "./useContextOverview";
 type Area = "entities" | "review" | "preview";
 type Editor = { kind: "entity"; entityId?: string } | { kind: "decision"; about: string[] } | null;
 
-/** The project page's Context tab: what the host knows about the project and
+/** The roadmap view's Context tab: what the host knows about the project and
  *  serves its agents, for the user to inspect and curate. Loads the overview,
  *  follows `context:changed`, and hands the rest to `ContextTab`. */
 export function ProjectContext({ projectId }: { projectId: string }) {
   const { overview, error } = useContextOverview(projectId);
-  const { settings, save } = useProjectSettings(projectId);
+  const { settings } = useProjectSettings(projectId);
   const gate = useGate("projectSettings");
 
   if (error) {
@@ -42,35 +45,34 @@ export function ProjectContext({ projectId }: { projectId: string }) {
       projectId={projectId}
       overview={overview}
       settings={settings}
-      onSave={save}
       locked={!!gate || settings === null}
     />
   );
 }
 
-/** The tab itself, over an overview already in hand: the two toggles, then
- *  Entities / Review queue / Preview. Pure over its props, so it renders in a
- *  test without a host. */
+/** The tab itself, over an overview already in hand: a head whose status chip
+ *  links to the switches in Settings › Agents, then Entities / Review queue /
+ *  Preview. Pure over its props, so it renders in a test without a host. */
 export function ContextTab({
   projectId,
   overview,
   settings,
-  onSave,
   locked,
 }: {
   projectId: string;
   overview: ContextOverview;
   settings: Record<string, string> | null;
-  onSave: (key: string, value: string | null) => void;
   locked: boolean;
 }) {
   const [area, setArea] = useState<Area>("entities");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editor, setEditor] = useState<Editor>(null);
+  const repoPath = useAppStore((s) => s.projectScreen?.repoPath);
+  const openSettings = useAppStore((s) => s.openProjectSettings);
 
   const { graph, proposals, stats } = overview;
-  // The settings hook is the live, writable read; the overview's flags cover
-  // the beat before it answers.
+  // The settings hook is the live read; the overview's flags cover the beat
+  // before it answers.
   const enabled = settings ? flagOn(settings[ENABLED_KEY]) : overview.enabled;
   const extract = settings ? flagOn(settings[EXTRACT_KEY]) : overview.extract;
   // The tab works over active entities only: archived and merged ones are
@@ -85,37 +87,23 @@ export function ContextTab({
   };
 
   return (
-    <section className="ps-section">
-      <header className="ps-section-h">
-        <h2 className="ps-section-t text-lg">Project context</h2>
-        <p className="ps-section-lead text-sm">
-          What this project is made of and what has been decided about it, served to every agent so
-          it doesn&rsquo;t re-explore the project to work that out. Agents and the background
-          extractor propose; you rule. Changing a decision records a new one over the old, with your
-          reasoning — nothing here is edited in place.
-        </p>
-      </header>
+    <div className="set-pane">
+      <SetHead
+        eyebrow="Project · Context"
+        title="Project context"
+        desc="What this project is made of and what has been decided about it."
+        actions={
+          <Chip
+            bordered
+            tip="Settings › Agents"
+            onClick={() => repoPath && openSettings(repoPath, "agents")}
+          >
+            {!enabled ? "Context off" : extract ? "Serving · extracting" : "Serving to agents"}
+            <Icon name="chevR" />
+          </Chip>
+        }
+      />
 
-      <div className="ps-field ps-name-row">
-        <label className="ps-label text-sm" htmlFor="ps-ctx-enabled">
-          Serve project context to agents
-        </label>
-        <Toggle
-          value={enabled}
-          onChange={(next) => onSave(ENABLED_KEY, next ? null : "false")}
-          disabled={locked}
-        />
-      </div>
-      <div className="ps-field ps-name-row">
-        <label className="ps-label text-sm" htmlFor="ps-ctx-extract">
-          Extract decisions in the background
-        </label>
-        <Toggle
-          value={extract}
-          onChange={(next) => onSave(EXTRACT_KEY, next ? null : "false")}
-          disabled={locked || !enabled}
-        />
-      </div>
       <p className="pc-meta text-xs">
         {stats.entities} entities · {stats.heads} current assertions · {stats.provisional}{" "}
         provisional · {stats.contradictions} contradictions · {stats.reads} reads by{" "}
@@ -203,6 +191,6 @@ export function ContextTab({
       )}
 
       {area === "preview" && <Preview projectId={projectId} entities={active} />}
-    </section>
+    </div>
   );
 }

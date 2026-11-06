@@ -10,12 +10,13 @@ use super::client_events::{self, emit_item, emit_item_event, emit_project_hold};
 use super::drainer;
 use super::events::{self, EventActor, EventKind, ItemEvent};
 use super::merge_sweep;
-use super::mutations::{create_checked, update_and_record};
+use super::mutations::{captured_item, create_checked, update_and_record};
 use super::order_proposals::{self, OrderProposal};
 use super::pr_review;
 use super::proposals::{self, Proposal};
 use super::rulings;
 use super::store;
+use super::triage;
 use super::types::{ItemDiscard, ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
 use super::Db;
 use crate::host::EngineCtx;
@@ -52,6 +53,25 @@ pub async fn roadmap_create_item_impl(
     emit_item(ctx.sink.as_ref(), &created);
     emit_item_event(ctx.sink.as_ref(), &event);
     drainer::nudge();
+    Ok(created)
+}
+
+/// Drop a line into the board's inbox: a `captured` row the drainer never
+/// claims, waiting for the PM's triage (see `triage.rs`).
+pub async fn roadmap_capture_impl(
+    project_id: String,
+    text: String,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
+) -> Result<RoadmapItem, String> {
+    let item = captured_item(&text)?;
+    let (created, event) = {
+        let conn = db.lock();
+        create_checked(&conn, &project_id, &item)?
+    };
+    emit_item(ctx.sink.as_ref(), &created);
+    emit_item_event(ctx.sink.as_ref(), &event);
+    triage::nudge();
     Ok(created)
 }
 

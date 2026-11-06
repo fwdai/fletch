@@ -137,20 +137,17 @@ const overview: ContextOverview = {
 };
 
 describe("ContextTab", () => {
-  it("renders the toggles, the entity list and the pending count without touching the API", () => {
-    const html = renderToStaticMarkup(
-      <ContextTab
-        projectId="p1"
-        overview={overview}
-        settings={{ "context.extract": "false" }}
-        onSave={() => {}}
-        locked={false}
-      />,
+  const render = (settings: Record<string, string> | null) =>
+    renderToStaticMarkup(
+      <ContextTab projectId="p1" overview={overview} settings={settings} locked={false} />,
     );
+
+  it("renders the status chip, the entity list and the pending count without touching the API", () => {
+    const html = render({ "context.extract": "false" });
     expect(html).toContain("Project context");
-    // The live settings decide the switches: enabled absent → on, extract "false" → off.
-    expect(html).toContain('data-on="1" aria-checked="true" role="switch"');
-    expect(html).toContain('data-on="0" aria-checked="false" role="switch"');
+    // The switches live in Settings › Agents; the tab only reports them.
+    expect(html).not.toContain('role="switch"');
+    expect(html).toContain("Serving to agents");
     // Active entities only, grouped under their kind.
     expect(html).toContain("Modules");
     expect(html).toContain("Roadmap queue");
@@ -158,6 +155,13 @@ describe("ContextTab", () => {
     // The review badge carries the pending count.
     expect(html).toContain('class="pc-count text-xs">1<');
     expect(html).toContain("1 entities · 0 current assertions");
+  });
+
+  it("reads the chip from the live settings, the overview's flags until they answer", () => {
+    expect(render({})).toContain("Serving · extracting");
+    expect(render({ "context.enabled": "false" })).toContain("Context off");
+    // The overview fixture has extract off.
+    expect(render(null)).toContain("Serving to agents");
   });
 });
 
