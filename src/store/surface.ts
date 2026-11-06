@@ -26,12 +26,23 @@ export type Surface =
   | { kind: "agent"; agent: AgentRecord }
   | { kind: "home" };
 
+/** The project view in front, or null. The one place the Context view's
+ *  developer gate is applied: with the layer off, a stored Context view shows
+ *  as the Roadmap — to `App`, the title bar's crumb and the shortcuts alike,
+ *  so none of them can disagree about what is on screen. A primitive, so it
+ *  is safe to select from the store directly. */
+export function projectView(s: AppState): ProjectView | null {
+  const view = s.projectScreen?.view ?? null;
+  return view === "context" && !s.contextLayerEnabled ? "roadmap" : view;
+}
+
 export function activeSurface(s: AppState): Surface {
   if (s.onboardingOpen) return { kind: "onboarding" };
   if (s.historyOpen) return { kind: "history" };
   if (s.settingsScreenOpen) return { kind: "settings" };
   if (s.usageScreenOpen) return { kind: "usage" };
-  if (s.projectScreen) return { kind: "project", ...s.projectScreen };
+  const view = projectView(s);
+  if (s.projectScreen && view) return { kind: "project", repoPath: s.projectScreen.repoPath, view };
   // A draft only shows while its project is still pinned (see Workspace); one
   // stranded on a removed project falls through to whatever is selected.
   const draft = s.activeDraftId ? s.drafts.find((d) => d.id === s.activeDraftId) : undefined;

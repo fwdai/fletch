@@ -27,6 +27,7 @@ import { Workspace } from "./components/Workspace";
 import { ACCENT_VALUES } from "./data/providers";
 import { useAppStore } from "./store";
 import { useGitSync } from "./store/gitSync";
+import { projectView } from "./store/surface";
 import { useGlobalShortcuts } from "./util/shortcuts";
 import { useSplitter } from "./util/splitter";
 import { setAppBadgeCount } from "./util/window";
@@ -68,8 +69,9 @@ function AppShell() {
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
   const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
   const onboardingOpen = useAppStore((s) => s.onboardingOpen);
-  const projectScreen = useAppStore((s) => s.projectScreen);
-  const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
+  const projectRepoPath = useAppStore((s) => s.projectScreen?.repoPath ?? null);
+  // The view as shown, the Context view's developer gate applied (surface.ts).
+  const view = useAppStore(projectView);
   // Count of agents that finished a turn while the user wasn't looking at them
   // (set on completion, cleared when the agent is opened). This is the same
   // signal behind the sidebar "new" dots — mirror it onto the app icon badge.
@@ -118,14 +120,12 @@ function AppShell() {
           <SettingsScreen />
         ) : usageScreenOpen ? (
           <UsageScreen />
-        ) : projectScreen?.view === "settings" ? (
-          <ProjectSettingsScreen repoPath={projectScreen.repoPath} />
-        ) : projectScreen?.view === "context" && contextLayerEnabled ? (
-          <ProjectContextScreen repoPath={projectScreen.repoPath} />
-        ) : projectScreen ? (
-          // The roadmap, and the fallback for a Context view whose developer
-          // gate is closed.
-          <RoadmapScreen repoPath={projectScreen.repoPath} />
+        ) : projectRepoPath && view === "settings" ? (
+          <ProjectSettingsScreen repoPath={projectRepoPath} />
+        ) : projectRepoPath && view === "context" ? (
+          <ProjectContextScreen repoPath={projectRepoPath} />
+        ) : projectRepoPath && view === "roadmap" ? (
+          <RoadmapScreen repoPath={projectRepoPath} />
         ) : (
           <>
             <div

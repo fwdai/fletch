@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { ProjectIcon } from "@/components/ProjectIcon";
 import { VIEW_LABEL } from "@/components/ProjectScreen/Header";
 import { useAppStore } from "@/store";
+import { projectView } from "@/store/surface";
 import { basename } from "@/util/format";
 import { Capsule } from "./Capsule";
 import { ProjectPill } from "./ProjectPill";
@@ -16,7 +17,8 @@ export function WorkspaceStatus() {
   const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
   const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
   const closeUsageScreen = useAppStore((s) => s.closeUsageScreen);
-  const projectScreen = useAppStore((s) => s.projectScreen);
+  const projectRepoPath = useAppStore((s) => s.projectScreen?.repoPath ?? null);
+  const view = useAppStore(projectView);
   const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
   const workspace = useAppStore((s) => s.workspace);
   const selectedId = useAppStore((s) => s.selectedAgentId);
@@ -32,13 +34,12 @@ export function WorkspaceStatus() {
   if (usageScreenOpen) return <ScreenCrumb label="Usage" onHome={closeUsageScreen} />;
   // A project view sits a level above any workspace: the same crumb, with
   // the project's mark and the view's name.
-  if (projectScreen) {
-    const { repoPath, view } = projectScreen;
-    const name = projectName(repoPath);
+  if (projectRepoPath && view) {
+    const name = projectName(projectRepoPath);
     return (
       <ScreenCrumb
         label={name}
-        icon={<ProjectIcon project={projectRef(repoPath) ?? { name }} size={12} />}
+        icon={<ProjectIcon project={projectRef(projectRepoPath) ?? { name }} size={12} />}
         view={VIEW_LABEL[view]}
         onHome={closeProjectScreen}
       />
