@@ -1,6 +1,6 @@
-/* The project page's Context tab. Composes on the page shell (.ps-section,
-   .ps-field, .ps-input) and the shared primitives; only the layout that is
-   its own lives here. */
+/* The project page's Context tab. Composes on the shared `set-*` head, the
+   page shell (.ps-tab, .ps-field, .ps-input) and the shared primitives; only
+   the layout that is its own lives here. */
 
 .pc-nav {
   display: flex;
