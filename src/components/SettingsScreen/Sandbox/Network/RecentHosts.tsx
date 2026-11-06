@@ -1,4 +1,3 @@
-import { Fragment } from "react";
 import type { EgressDelta, HostActivity } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
@@ -38,15 +37,17 @@ export function RecentHosts(props: { global: EgressDelta } | { project: HostList
   const now = Date.now();
   const mine = new Set(list.hosts.map((h) => h.pattern));
   const shown = hosts.filter((h) => !h.quiet && !mine.has(h.host));
-  const groups = [
-    {
-      label: projectId ? "Reached beyond the list" : "Reached recently",
-      hosts: shown.filter(
-        (h) => hostStanding(h) === "reached" && !(projectId && h.last_via === "listed"),
-      ),
-    },
-    { label: "Blocked recently", hosts: shown.filter((h) => hostStanding(h) === "blocked") },
-  ].filter((g) => g.hosts.length > 0);
+  const reached = {
+    label: projectId ? "Reached beyond the list" : "Reached recently",
+    hosts: shown.filter(
+      (h) => hostStanding(h) === "reached" && !(projectId && h.last_via === "listed"),
+    ),
+  };
+  const blocked = {
+    label: "Blocked recently",
+    hosts: shown.filter((h) => hostStanding(h) === "blocked"),
+  };
+  const groups = [reached, blocked].filter((g) => g.hosts.length > 0);
 
   const row = (h: HostActivity) => (
     <SetRow
@@ -76,18 +77,20 @@ export function RecentHosts(props: { global: EgressDelta } | { project: HostList
   );
 
   if (projectId) {
-    return groups.length > 0 ? (
-      <SetDisclosure
-        label={`Recent activity · ${groups.reduce((n, g) => n + g.hosts.length, 0)} hosts`}
-      >
-        {groups.map((g) => (
-          <Fragment key={g.label}>
-            <SetRow title={g.label} />
-            {g.hosts.map(row)}
-          </Fragment>
-        ))}
-      </SetDisclosure>
-    ) : null;
+    // The egress toast's "Review" lands on this pane: refused hosts stay in
+    // view with their Allow, and only what was merely reached folds away.
+    return (
+      <>
+        {blocked.hosts.length > 0 && (
+          <SetGroup label={blocked.label}>{blocked.hosts.map(row)}</SetGroup>
+        )}
+        {reached.hosts.length > 0 && (
+          <SetDisclosure label={`${reached.label} · ${reached.hosts.length} hosts`}>
+            {reached.hosts.map(row)}
+          </SetDisclosure>
+        )}
+      </>
+    );
   }
   return (
     <>
