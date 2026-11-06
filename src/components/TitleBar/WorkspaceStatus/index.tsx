@@ -14,12 +14,9 @@ import { StatusDot } from "./StatusDot";
  *  breadcrumb. */
 export function WorkspaceStatus() {
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
-  const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
   const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
-  const closeUsageScreen = useAppStore((s) => s.closeUsageScreen);
   const projectRepoPath = useAppStore((s) => s.projectScreen?.repoPath ?? null);
   const view = useAppStore(projectView);
-  const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
   const workspace = useAppStore((s) => s.workspace);
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const drafts = useAppStore((s) => s.drafts);
@@ -30,8 +27,8 @@ export function WorkspaceStatus() {
   const projectRef = (repoPath: string) => workspace?.projects.find((p) => p.path === repoPath);
   const projectName = (repoPath: string) => projectRef(repoPath)?.name ?? basename(repoPath);
 
-  if (settingsScreenOpen) return <ScreenCrumb label="Settings" onHome={closeSettingsScreen} />;
-  if (usageScreenOpen) return <ScreenCrumb label="Usage" onHome={closeUsageScreen} />;
+  if (settingsScreenOpen) return <ScreenCrumb label="Settings" />;
+  if (usageScreenOpen) return <ScreenCrumb label="Usage" />;
   // A project view sits a level above any workspace: the same crumb, with
   // the project's mark and the view's name.
   if (projectRepoPath && view) {
@@ -41,7 +38,6 @@ export function WorkspaceStatus() {
         label={name}
         icon={<ProjectIcon project={projectRef(projectRepoPath) ?? { name }} size={12} />}
         view={VIEW_LABEL[view]}
-        onHome={closeProjectScreen}
       />
     );
   }
@@ -83,7 +79,7 @@ function HomeSummary() {
 
   return (
     <div className="ws-plain home">
-      <span className="ws-home-title">fletch</span>
+      <span className="ws-home-title">Home</span>
       {(run > 0 || waiting > 0) && <span className="ws-plain-sep">·</span>}
       {run > 0 && (
         <span className="ws-home-stat">
@@ -97,7 +93,6 @@ function HomeSummary() {
           {waiting} waiting
         </span>
       )}
-      {run === 0 && waiting === 0 && <span className="ws-plain-active">All workspaces</span>}
     </div>
   );
 }
@@ -130,24 +125,11 @@ function DraftCapsule({
 }
 
 /** A full-screen surface (settings, usage, a project view) — a plain crumb
- *  back to Home, ending on the view's name when there is one. */
-function ScreenCrumb({
-  label,
-  icon,
-  view,
-  onHome,
-}: {
-  label: string;
-  icon?: ReactNode;
-  view?: string;
-  onHome: () => void;
-}) {
+ *  naming it, ending on the view's name when there is one. The way back is the
+ *  screen's own back button. */
+function ScreenCrumb({ label, icon, view }: { label: string; icon?: ReactNode; view?: string }) {
   return (
     <div className="ws-plain">
-      <button type="button" className="ws-plain-btn" onClick={onHome}>
-        fletch
-      </button>
-      <span className="ws-plain-sep">/</span>
       {icon}
       <span className={view ? undefined : "ws-plain-active"}>{label}</span>
       {view && (
