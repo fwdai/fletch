@@ -15,12 +15,13 @@ import {
   MAX_CONCURRENT_KEY,
   parseCap,
   SETTLE_REVIEW_KEY,
+  TRIAGE_KEY,
 } from "./autonomy";
 
 const CAP_STOPS = CONCURRENCY_CHOICES.map((n) => ({ value: String(n), label: String(n) }));
 
 /** The autonomy dial, beside the Accept buttons it relabels: how much of the
- *  roadmap runs without you. Three per-project settings read host-side under
+ *  roadmap runs without you. Four per-project settings read host-side under
  *  the keys in `autonomy.ts`. Back to the default deletes the row (`save(key,
  *  null)`), so a future change of default reaches old projects too. */
 export function AutonomyPopover({ settings, save }: ReturnType<typeof useProjectSettings>) {
@@ -31,14 +32,16 @@ export function AutonomyPopover({ settings, save }: ReturnType<typeof useProject
   const autoqueue = flagOn(all[AUTOQUEUE_KEY], false);
   const cap = parseCap(all[MAX_CONCURRENT_KEY]);
   const settleReview = flagOn(all[SETTLE_REVIEW_KEY], true);
+  const triage = flagOn(all[TRIAGE_KEY], true);
 
   const toggleAutoqueue = (next: boolean) => save(AUTOQUEUE_KEY, next ? "1" : null);
 
   const pickCap = (next: number) =>
     save(MAX_CONCURRENT_KEY, next === DEFAULT_MAX_CONCURRENT ? null : String(next));
 
-  // On is the default for the PM switch, so *off* is the row that has to exist.
+  // On is the default for both PM switches, so *off* is the row that has to exist.
   const toggleSettleReview = (next: boolean) => save(SETTLE_REVIEW_KEY, next ? null : "0");
+  const toggleTriage = (next: boolean) => save(TRIAGE_KEY, next ? null : "0");
 
   return (
     <span className="dd-anchor">
@@ -88,6 +91,17 @@ export function AutonomyPopover({ settings, save }: ReturnType<typeof useProject
                 <Toggle
                   value={settleReview}
                   onChange={toggleSettleReview}
+                  disabled={locked}
+                  title={gate ?? undefined}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Triage captured items automatically"
+                description="The PM turns each capture into proposals for you to rule on."
+              >
+                <Toggle
+                  value={triage}
+                  onChange={toggleTriage}
                   disabled={locked}
                   title={gate ?? undefined}
                 />

@@ -1,4 +1,4 @@
-import { Icon } from "@/components/Icon";
+import { Icon, type IconName } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 
 /** The always-visible bar a card carries while something on it is waiting to be
@@ -18,6 +18,7 @@ export function DecisionBar({
   note,
   variant = "ghost",
   acceptLabel = "Accept",
+  acceptIcon = "check",
   queueLabel,
   declineLabel,
   onAccept,
@@ -34,6 +35,9 @@ export function DecisionBar({
    *  decision surface stands out from a body that *is* the roadmap). */
   variant?: "ghost" | "prop";
   acceptLabel?: string;
+  /** The primary action's glyph — a check for a ruling; the inbox's "Open in
+   *  PM chat" is a step toward one. */
+  acceptIcon?: IconName;
   /** Label for the second accept, when the caller has one — see `onAcceptQueue`. */
   queueLabel?: string | null;
   declineLabel: string;
@@ -64,7 +68,7 @@ export function DecisionBar({
       )}
       {onAccept && (
         <Button variant="primary" size="sm" onClick={onAccept}>
-          <Icon name="check" size={11} /> {acceptLabel}
+          <Icon name={acceptIcon} size={11} /> {acceptLabel}
         </Button>
       )}
     </div>

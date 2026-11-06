@@ -46,6 +46,16 @@ pub async fn roadmap_create_item(
 }
 
 #[tauri::command]
+pub async fn roadmap_capture(
+    project_id: String,
+    text: String,
+    ctx: State<'_, Arc<EngineCtx>>,
+    db: State<'_, Db>,
+) -> Result<RoadmapItem, String> {
+    commands::roadmap_capture_impl(project_id, text, ctx.inner(), db.inner()).await
+}
+
+#[tauri::command]
 pub async fn roadmap_update_item(
     id: String,
     patch: ItemPatch,

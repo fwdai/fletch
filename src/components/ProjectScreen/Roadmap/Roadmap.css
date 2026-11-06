@@ -672,6 +672,30 @@
   color: var(--fg-3);
 }
 
+/* ── the Inbox lane ──
+   Captures waiting for triage, above the "Needs you" strip. The rail's neutral
+   band and header (nothing here is a demand yet), holding ghost cards — the rows
+   are not on the roadmap. Capped and scrolled on its own so a full inbox can't
+   push the board off the page. */
+.rm-inbox {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 40%;
+  overflow-y: auto;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--bd-soft);
+}
+.rm-inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 10px 8px var(--rm-gut);
+}
+.rm-inbox-mined {
+  padding: 0 10px 8px var(--rm-gut);
+}
+
 /* ── the "In flight" rail ──
    What the pipeline is doing, directly under what it needs. Same band grammar as
    the "Needs you" strip above it (a flat row per item, the header's mono label,
@@ -1092,6 +1116,7 @@
    state pill — the chips no longer set the row's height, the row does. */
 .rm-state,
 .rm-live,
+.rm-from,
 .rm-src,
 .rm-area,
 .rm-dep,
@@ -1228,6 +1253,12 @@
 .rm-state.st-x {
   color: var(--fg-3);
   background: var(--bg-3);
+}
+
+/* Which inbox capture a triage proposed this from — provenance, beside the
+   source glyph, in the same quiet tone. */
+.rm-from {
+  color: var(--fg-3);
 }
 
 /* Provenance glyph. A fixed square so the chevron after it sits on the same

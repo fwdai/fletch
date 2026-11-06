@@ -1222,6 +1222,7 @@ pub fn run() {
             commands::roadmap_list_items,
             commands::roadmap_get_item,
             commands::roadmap_create_item,
+            commands::roadmap_capture,
             commands::roadmap_update_item,
             commands::roadmap_set_rank,
             commands::roadmap_hand_off_item,

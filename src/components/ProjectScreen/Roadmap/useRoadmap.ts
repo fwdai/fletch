@@ -68,6 +68,7 @@ import { useRoadmapRows } from "@/roadmapRows";
 import { createRowSync, createSingleSync } from "@/rowSync";
 import { useAppStore } from "@/store";
 import { useRuns } from "@/workflows/run/useRuns";
+import { buildInbox } from "./inbox";
 import { insertEvent, mergeSnapshot } from "./itemHistory";
 import { buildNeedsYou, mergeLatest, upsertLatest } from "./NeedsYou/select";
 import { isOnBoard, isOrderable, isProposed, isShipped, rejectedRows } from "./partition";
@@ -461,7 +462,13 @@ export function useRoadmap(repoPath: string) {
    *  strip joins against these for the same reason the proposal lookup does: a
    *  card about a row nothing draws is a decision the user can't reach. */
   const onBoard = useMemo(() => rows.filter(isOnBoard), [rows]);
-  const items = useMemo(() => onBoard.filter((r) => !isProposed(r)).map(toBoardItem), [onBoard]);
+  /** A row as a card, with the code of the captured row it came from (the
+   *  card's "from" chip) resolved against the whole board. */
+  const toCard = useMemo(() => {
+    const codeById = new Map(rows.map((r) => [r.id, r.code]));
+    return (r: RoadmapItem) => toBoardItem(r, r.from_item ? codeById.get(r.from_item) : undefined);
+  }, [rows]);
+  const items = useMemo(() => onBoard.filter((r) => !isProposed(r)).map(toCard), [onBoard, toCard]);
   /** Shipped items aren't on the board; the header carries the count. */
   const shipped = useMemo(() => rows.filter(isShipped).length, [rows]);
   /** The decision log: items ruled off the board, newest ruling first — the
@@ -471,7 +478,12 @@ export function useRoadmap(repoPath: string) {
   /** The PM's outstanding proposals, drawn on the board as ghosts until the
    *  user accepts or discards them. Kept out of `items` so they don't move a
    *  single count before that. */
-  const ghosts = useMemo(() => rows.filter(isProposed).map(toBoardItem), [rows]);
+  const ghosts = useMemo(() => rows.filter(isProposed).map(toCard), [rows, toCard]);
+
+  /** The inbox: captured rows the PM hasn't turned into proposals, and the
+   *  mined brainstorms folded under them (see inbox.ts). Off the board — no
+   *  horizon, no count, never in the strips. */
+  const inbox = useMemo(() => buildInbox({ rows, latestEvents }), [rows, latestEvents]);
 
   /** The PM's pending asks against existing items, by the item they target —
    *  the shape the card lookup wants, and one-per-item by construction (the
@@ -557,6 +569,19 @@ export function useRoadmap(repoPath: string) {
     async (input: NewRoadmapItem) => {
       if (!projectId) throw new Error("This repo isn't part of a project yet.");
       const row = await api.roadmapCreateItem(projectId, input);
+      upsert(row);
+      markLanded([row.code]);
+      return row;
+    },
+    [projectId, upsert, markLanded],
+  );
+
+  /** Drop a line into the inbox: a `captured` row the PM triages. Throws, like
+   *  `addItem` — its caller is the capture field, which says so inline. */
+  const captureItem = useCallback(
+    async (text: string) => {
+      if (!projectId) throw new Error("This repo isn't part of a project yet.");
+      const row = await api.roadmapCapture(projectId, text);
       upsert(row);
       markLanded([row.code]);
       return row;
@@ -1082,7 +1107,10 @@ export function useRoadmap(repoPath: string) {
     /** Every code on this board, for the PM chat's code linkifier — exact
      *  matches only, because the prefix varies per project. */
     codes,
+    /** The inbox lane's rows: open captures and ideas, and mined brainstorms. */
+    inbox,
     addItem,
+    captureItem,
     editItem,
     moveItem,
     setRanks,

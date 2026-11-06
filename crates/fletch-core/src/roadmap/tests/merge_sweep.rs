@@ -25,6 +25,9 @@ fn in_review(code: &str, number: Option<i64>) -> RoadmapItem {
         held_at: None,
         close_reason: None,
         issue_url: None,
+        kind: None,
+        triage: None,
+        from_item: None,
         created_at: 10,
         updated_at: 10,
     }

@@ -378,6 +378,22 @@ export function pageItems(ctx: PaletteContext): PaletteItem[] {
         : { page: "workflow" as const }),
     });
   }
+  // Capture into the current project's inbox: the palette opens the board with
+  // its capture field focused (typing the text here is a later step).
+  const captureRepo = surfaceRepoPath(s);
+  if (captureRepo && projects.find((p) => p.path === captureRepo)?.project_id) {
+    items.push({
+      id: "roadmap-capture",
+      label: "Add to roadmap…",
+      hint: `Capture into ${projectName(s, captureRepo)}'s inbox`,
+      leading: { kind: "icon", name: "inbox" },
+      section: SEC.create,
+      keywords: "capture  idea  ticket  inbox  note  todo  backlog",
+      disabled: gateReason(activeEntry(s), "roadmap"),
+      run: () => go(s, () => s.captureToRoadmap(captureRepo)),
+      remember: true,
+    });
+  }
   if (Object.keys(s.environments).length > 1) {
     items.push({
       id: "environment",

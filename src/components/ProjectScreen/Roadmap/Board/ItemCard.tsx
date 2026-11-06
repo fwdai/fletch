@@ -287,6 +287,11 @@ export function ItemCard({
             {state.label}
           </span>
         )}
+        {item.from && (
+          <span className="rm-from mono text-xs" title={`Proposed from ${item.from} in the inbox`}>
+            from {item.from}
+          </span>
+        )}
         <span className={`rm-src iflex-center src-${item.source}`} title={source.tip}>
           <Icon name={source.icon} size={11} />
         </span>

@@ -1,8 +1,10 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import type { RoadmapItem } from "@/api";
 import { ROADMAP_MIN_BOARD, ROADMAP_MIN_THREAD } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { useSplitter } from "@/util/splitter";
 import { Board } from "./Board";
+import { inboxChatPrompt } from "./inbox";
 import { Thread } from "./Thread";
 import type { RoadmapState } from "./useRoadmap";
 
@@ -22,6 +24,14 @@ export { useRoadmap } from "./useRoadmap";
  *  nothing above it needs them. */
 export function Roadmap({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: string }) {
   const threadOpen = useAppStore((s) => s.roadmapThreadOpen);
+  const toggleThread = useAppStore((s) => s.toggleRoadmapThread);
+  // An inbox card's "Open in PM chat": the opening turn for a new planning
+  // chat, handed to the thread (opened if it was closed), which starts it.
+  const [chatRequest, setChatRequest] = useState<string | null>(null);
+  const openInChat = (item: RoadmapItem) => {
+    setChatRequest(inboxChatPrompt(item));
+    if (!threadOpen) toggleThread();
+  };
   const width = useAppStore((s) => s.roadmapBoardWidth);
   const setWidth = useAppStore((s) => s.setRoadmapBoardWidth);
   const commitWidth = useAppStore((s) => s.commitRoadmapBoardWidth);
@@ -47,7 +57,12 @@ export function Roadmap({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath
     <div className="rm">
       {threadOpen && (
         <>
-          <Thread roadmap={roadmap} repoPath={repoPath} />
+          <Thread
+            roadmap={roadmap}
+            repoPath={repoPath}
+            chatRequest={chatRequest}
+            onChatRequestTaken={() => setChatRequest(null)}
+          />
           <div className="splitter" onMouseDown={onDrag} />
         </>
       )}
@@ -56,6 +71,7 @@ export function Roadmap({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath
         repoPath={repoPath}
         width={threadOpen ? width : null}
         asideRef={board}
+        onOpenInChat={openInChat}
       />
     </div>
   );

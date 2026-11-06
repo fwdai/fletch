@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ItemStatus, RoadmapItem } from "@/api";
-import { isOnBoard, isOrderable, isRejected, isShipped, rejectedRows } from "./partition";
+import {
+  isCaptured,
+  isOnBoard,
+  isOrderable,
+  isRejected,
+  isShipped,
+  rejectedRows,
+} from "./partition";
 
 function item(over: Partial<RoadmapItem> & { id: string }): RoadmapItem {
   return {
@@ -25,6 +32,9 @@ function item(over: Partial<RoadmapItem> & { id: string }): RoadmapItem {
     held_at: null,
     close_reason: null,
     issue_url: null,
+    kind: null,
+    triage: null,
+    from_item: null,
     created_at: 0,
     updated_at: 0,
     ...over,
@@ -51,6 +61,14 @@ describe("the status partition", () => {
     }
     expect(isOnBoard(at("done"))).toBe(false);
     expect(isShipped(at("done"))).toBe(true);
+  });
+
+  it("keeps a captured row in the inbox: off the board, unordered, unshipped", () => {
+    const captured = at("captured");
+    expect(isCaptured(captured)).toBe(true);
+    expect(isOnBoard(captured)).toBe(false);
+    expect(isOrderable(captured)).toBe(false);
+    expect(isShipped(captured)).toBe(false);
   });
 
   it("never lets a rejected row into the orderable set", () => {

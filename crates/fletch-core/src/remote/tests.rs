@@ -635,6 +635,7 @@ fn allowlist_matches_the_protocol_table() {
         "roadmap_list_items",
         "roadmap_get_item",
         "roadmap_create_item",
+        "roadmap_capture",
         "roadmap_update_item",
         "roadmap_set_rank",
         "roadmap_hand_off_item",
@@ -949,9 +950,9 @@ fn the_whole_wf_and_roadmap_surface_is_exposed() {
         .iter()
         .filter(|op| op.starts_with("roadmap_"))
         .count();
-    // 11 `wf_*` commands + `wf_run_agents`; 26 `roadmap_*` commands +
+    // 11 `wf_*` commands + `wf_run_agents`; 27 `roadmap_*` commands +
     // `roadmap_discard_proposal`, which is remote-only.
-    assert_eq!((wf, roadmap), (12, 27));
+    assert_eq!((wf, roadmap), (12, 28));
     for op in dispatch::WITHHELD_WF_ROADMAP_OPS {
         assert!(
             !op.0.starts_with("wf_") && !op.0.starts_with("roadmap_"),
@@ -1102,6 +1103,22 @@ fn wf_roadmap_dispatch() -> (dispatch::SupervisorDispatch, tempfile::TempDir) {
 /// history, and the three read-only proposal lists. One test rather than ten
 /// because the point is that the arms are wired to the same `_impl` the command
 /// calls, not that the roadmap store works (that has its own tests).
+#[tokio::test]
+async fn a_capture_from_a_paired_device_lands_in_the_inbox() {
+    let (d, _dir) = wf_roadmap_dispatch();
+    let item = d
+        .dispatch(
+            "roadmap_capture",
+            json!({ "projectId": "p1", "text": "remember the port\nit forgets it" }),
+        )
+        .await
+        .expect("capture");
+    assert_eq!(item["status"], json!("captured"));
+    assert_eq!(item["title"], json!("remember the port"));
+    assert_eq!(item["why"], json!("it forgets it"));
+    assert_eq!(item["kind"], Value::Null);
+}
+
 #[tokio::test]
 async fn the_roadmap_board_is_drivable_through_the_dispatcher() {
     let (d, _dir) = wf_roadmap_dispatch();

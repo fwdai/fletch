@@ -29,6 +29,10 @@ export const roadmapApi = {
    *  connection lock), which is why it isn't part of the payload. */
   roadmapCreateItem: (projectId: string, item: NewRoadmapItem) =>
     invoke<RoadmapItem>("roadmap_create_item", { projectId, item }),
+  /** Drop a line into the board's inbox: a `captured` row (first line the
+   *  title, the rest the why) that the PM triages and the queue never claims. */
+  roadmapCapture: (projectId: string, text: string) =>
+    invoke<RoadmapItem>("roadmap_capture", { projectId, text }),
   /** Patch an item and get the stored row back. Omitted keys are left alone; an
    *  explicit `null` clears a nullable column.
    *

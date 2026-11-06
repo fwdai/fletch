@@ -17,6 +17,7 @@ crate::db_enum! {
 
 crate::db_enum! {
     ItemStatus {
+        Captured => "captured",
         Proposed => "proposed",
         Open     => "open",
         Queued   => "queued",
@@ -43,6 +44,27 @@ crate::db_enum! {
     }
 }
 
+crate::db_enum! {
+    /// What triage made of a captured row (migration 0058).
+    CaptureKind {
+        Ask        => "ask",
+        Idea       => "idea",
+        Brainstorm => "brainstorm",
+    }
+}
+
+/// What a triage carried for a captured row (`triage_json`): an idea's brief
+/// and questions, or that a brainstorm was mined.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Triage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mined: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoadmapItem {
     pub id: String,
@@ -67,6 +89,11 @@ pub struct RoadmapItem {
     pub held_at: Option<i64>,
     pub close_reason: Option<String>,
     pub issue_url: Option<String>,
+    /// Triage's classification of a captured row; `None` while untriaged.
+    pub kind: Option<CaptureKind>,
+    pub triage: Option<Triage>,
+    /// The captured row a triage proposed this row from.
+    pub from_item: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -74,7 +101,7 @@ pub struct RoadmapItem {
 pub(crate) const COLUMNS: &str = "id, project_id, code, title, why, horizon, status, \
      rank, area, source, accept_json, deps_json, agent_id, workflow_def_id, run_id, \
      pr_url, pr_number, hold_reason, held_by, held_at, close_reason, issue_url, \
-     created_at, updated_at";
+     kind, triage_json, from_item, created_at, updated_at";
 
 impl RoadmapItem {
     pub fn from_row(r: &Row) -> rusqlite::Result<Self> {
@@ -101,6 +128,9 @@ impl RoadmapItem {
             held_at: r.get("held_at")?,
             close_reason: r.get("close_reason")?,
             issue_url: r.get("issue_url")?,
+            kind: opt_enum_col(r, "kind", CaptureKind::from_db)?,
+            triage: json_col(r, "triage_json")?,
+            from_item: r.get("from_item")?,
             created_at: r.get("created_at")?,
             updated_at: r.get("updated_at")?,
         })
@@ -132,6 +162,9 @@ pub struct NewItem {
     pub workflow_def_id: Option<String>,
     #[serde(default)]
     pub issue_url: Option<String>,
+    /// Set by triage only; never from the wire.
+    #[serde(skip)]
+    pub from_item: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -195,10 +228,16 @@ fn conversion_err(col: &str, detail: String) -> rusqlite::Error {
 }
 
 fn strings_col(r: &Row, col: &str) -> rusqlite::Result<Vec<String>> {
+    Ok(json_col(r, col)?.unwrap_or_default())
+}
+
+fn json_col<T: serde::de::DeserializeOwned>(r: &Row, col: &str) -> rusqlite::Result<Option<T>> {
     let raw: Option<String> = r.get(col)?;
     match raw.as_deref() {
-        None | Some("") => Ok(Vec::new()),
-        Some(s) => serde_json::from_str(s).map_err(|e| conversion_err(col, e.to_string())),
+        None | Some("") => Ok(None),
+        Some(s) => serde_json::from_str(s)
+            .map(Some)
+            .map_err(|e| conversion_err(col, e.to_string())),
     }
 }
 

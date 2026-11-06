@@ -220,6 +220,7 @@ pub const OPS: &[&str] = &[
     "roadmap_list_items",
     "roadmap_get_item",
     "roadmap_create_item",
+    "roadmap_capture",
     "roadmap_update_item",
     "roadmap_set_rank",
     "roadmap_hand_off_item",
@@ -556,6 +557,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("roadmap_list_items", Scope::Observe),
     ("roadmap_get_item", Scope::Observe),
     ("roadmap_create_item", Scope::Roadmap),
+    ("roadmap_capture", Scope::Roadmap),
     ("roadmap_update_item", Scope::Roadmap),
     ("roadmap_set_rank", Scope::Roadmap),
     ("roadmap_hand_off_item", Scope::Roadmap),
@@ -1487,6 +1489,19 @@ impl Dispatch for SupervisorDispatch {
                     ok(crate::roadmap::commands::roadmap_create_item_impl(
                         a.project_id,
                         a.item,
+                        ctx,
+                        &ctx.db,
+                    )
+                    .await?)
+                }
+
+                // The inbox's one write: a `captured` row the PM triages and
+                // the drainer never claims.
+                "roadmap_capture" => {
+                    let a: CaptureArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_capture_impl(
+                        a.project_id,
+                        a.text,
                         ctx,
                         &ctx.db,
                     )
@@ -3094,6 +3109,13 @@ struct ProposalArgs {
 struct NewItemArgs {
     project_id: String,
     item: crate::roadmap::types::NewItem,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureArgs {
+    project_id: String,
+    text: String,
 }
 
 #[derive(Deserialize)]

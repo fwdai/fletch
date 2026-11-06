@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AgentIdentityChip } from "@/components/AgentIdentityChip";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { Loader } from "@/components/ui/Loader";
+import { DEFAULT_PROVIDER_ID } from "@/data/providers";
 import type { RoadmapState } from "../useRoadmap";
 import { ChatPane } from "./ChatPane";
 import { ChatPicker } from "./ChatPicker";
 import { NewChatScreen } from "./NewChatScreen";
+import { useAgentOptions } from "./NewChatScreen/options";
 import { type ChatAgentPick, usePmChats } from "./usePmChats";
 
 /** The left column: a real conversation with the project's PM agent.
@@ -17,10 +19,26 @@ import { type ChatAgentPick, usePmChats } from "./usePmChats";
  *  its context is worthless. The agent cannot edit or publish code (the backend
  *  denies it the publish ops); the only thing it can put on the board is a
  *  proposal the user accepts. */
-export function Thread({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: string }) {
+export function Thread({
+  roadmap,
+  repoPath,
+  chatRequest,
+  onChatRequestTaken,
+}: {
+  roadmap: RoadmapState;
+  repoPath: string;
+  /** An opening turn the board asked for ("Open in PM chat" on an inbox card):
+   *  start a new chat with it as soon as the list has loaded. */
+  chatRequest?: string | null;
+  onChatRequestTaken?: () => void;
+}) {
   const { projectId } = roadmap;
   const chats = usePmChats(projectId, repoPath);
   const { selected } = chats;
+  // The pick the new-chat screen would open on: the PM preset, else the default
+  // provider.
+  const { custom } = useAgentOptions(chats.defaultAgentId);
+  const defaultPick: ChatAgentPick = custom[0]?.pick ?? { provider: DEFAULT_PROVIDER_ID };
   /** The user asked for the new-chat screen. With no chats yet that screen is
    *  the column's only body anyway — see `newChat` below — so this flag is only
    *  what makes it *replace* a conversation. */
@@ -32,6 +50,19 @@ export function Thread({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath:
   const start = async (pick: ChatAgentPick, firstMessage?: string) => {
     if (await chats.startChat(pick, firstMessage)) setComposing(false);
   };
+
+  // Taken before the spawn, so a re-render mid-spawn can't start it twice. Read
+  // through a ref: the pick and the callbacks re-identify every render, and only
+  // the request itself (and the list being ready) means "start one now".
+  const takeRequest = useRef((_message: string) => {});
+  takeRequest.current = (message) => {
+    onChatRequestTaken?.();
+    void start(defaultPick, message);
+  };
+  useEffect(() => {
+    if (!chatRequest || chats.loading || !projectId) return;
+    takeRequest.current(chatRequest);
+  }, [chatRequest, chats.loading, projectId]);
 
   // The new-chat screen owns the body whenever the user asked for it, and
   // whenever there is no conversation to show instead.

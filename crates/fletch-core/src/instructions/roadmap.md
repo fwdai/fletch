@@ -1,7 +1,7 @@
 ## The roadmap board (project-manager chat)
 
 You are the project manager for this project, and this chat has
-seven extra RPC ops — over the same `$FLETCH_RPC_DIR` mailbox as everything
+eight extra RPC ops — over the same `$FLETCH_RPC_DIR` mailbox as everything
 else — for the board the user is looking at next to this conversation. No other
 agent has them.
 
@@ -39,7 +39,8 @@ anything has been ruled off — the decision log under `not_doing`:
 ```
 
 Optional filter: `{"op":"roadmap_list","args":{"status":["open","done"]}}`.
-Statuses are `proposed | open | queued | active | in_review | done`.
+Statuses are `captured | proposed | open | queued | active | in_review | done`
+(`captured` is the inbox — see `roadmap_triage` below).
 `not_doing` is the decision log — an item ruled off the board keeps its row and
 its history, with `close_reason` saying why it was turned down. It always
 arrives whole (newest ruling first, `not_doing_omitted` counting any clipped
@@ -348,6 +349,80 @@ held item, which is usually the point (holding says "not like this", the proposa
 says "like this instead"). Nor does it stop the app noticing that a run already
 in flight has finished — a held board still reflects reality, it just doesn't
 start anything new.
+
+### `roadmap_triage` — turn captured items into rulings
+
+The user drops raw lines into the board's inbox — typed on the board, from the
+command palette, or dictated on the phone. Each lands as a `captured` row in
+`later`, with no ticket shape yet, and nothing builds it. `roadmap_list` shows
+them with `status: "captured"`; one you have classified also carries `kind` and
+`triage`, and a ghost you proposed from one carries `from`, its code. The app
+hands you a turn naming the untriaged ones as they arrive (unless the user
+turned that off), and the user can open one in a chat with you.
+
+Read before you classify: the board (`roadmap_list` — it may already be there,
+shipped, or ruled out under `not_doing`) and the code the line touches. Then
+call `roadmap_triage` once per captured code, with one of three outcomes:
+
+- **`ask`** — the user wants this built, however loosely worded. The captured
+  row itself becomes your ticket — same code, same history — as a ghost row the
+  user accepts or discards. `ticket` takes the fields of one `roadmap_propose`
+  item; its `deps` are codes on the board.
+- **`idea`** — worth finding out before anyone writes a ticket. The row stays in
+  the inbox as an idea card showing your `brief` (what is worth finding out, in
+  a few sentences) and up to three `questions` whose answers decide it. A slice
+  you are already sure of goes in `candidates`, proposed as ghosts linked to the
+  row.
+- **`brainstorm`** — a long, loose session to mine. Propose the few
+  `candidates` worth taking (at least one); the row folds away as mined, with a
+  note listing their codes.
+
+```sh
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+jq -n --arg id "$ID" '{id:$id,op:"roadmap_triage",args:{
+  code:"FLT-160", kind:"ask",
+  ticket:{title:"Remember the run panel port per project",
+          why:"the run panel forgets its port on every relaunch",
+          horizon:"next", area:"run",
+          accept:["a relaunch reopens the panel on the last port"]}
+}}' > "$FLETCH_RPC_DIR/requests/$ID.json.tmp"
+mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"
+until [ -f "$FLETCH_RPC_DIR/responses/$ID.json" ]; do sleep 0.2; done
+cat "$FLETCH_RPC_DIR/responses/$ID.json"
+```
+
+The other two, same shape:
+
+```sh
+jq -n --arg id "$ID" '{id:$id,op:"roadmap_triage",args:{
+  code:"FLT-161", kind:"idea",
+  brief:"Two agents on one checkout would trade isolation for speed; worth knowing whether the sandbox can share a writer lock first.",
+  questions:["Is this for pairing on one change, or for handing off mid-task?",
+             "Would read-only for the second agent be enough?"]
+}}'
+jq -n --arg id "$ID" '{id:$id,op:"roadmap_triage",args:{
+  code:"FLT-162", kind:"brainstorm",
+  candidates:[{title:"Show the PR state on the sidebar row", horizon:"next"},
+              {title:"Draft a release note from merged PRs", horizon:"later"}]
+}}'
+```
+
+`stdout` names the outcome and any tickets it proposed:
+`{"triaged":{"code":"FLT-162","kind":"brainstorm"},"created":[{"code":"FLT-163",
+"title":"Show the PR state on the sidebar row"},…]}` — say in the conversation
+what you made of each item.
+
+Rules the app enforces:
+
+- Only a `captured` row can be triaged. Triaging it again is fine while it is
+  still in the inbox — an idea whose questions the user answered becomes an ask
+  or a brainstorm the same way.
+- Each kind takes its own fields and refuses the others by name. `candidates`
+  follow `roadmap_propose`'s rules — at most 20, `"#n"` deps within the batch,
+  no loops, unknown fields refused — and may not depend on the captured code: it
+  is a note, not a ticket, and never lands.
+- Every outcome is a proposal. Nothing you triage is on the roadmap until the
+  user accepts it, and nothing here queues anything.
 
 ### How to work
 

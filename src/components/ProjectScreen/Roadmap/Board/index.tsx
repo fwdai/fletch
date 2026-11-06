@@ -3,7 +3,7 @@ import type { Horizon, RoadmapItem } from "@/api";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { useProjectSettings } from "@/util/useProjectSettings";
-import { AUTOQUEUE_KEY, acceptActions, flagOn } from "../autonomy";
+import { AUTOQUEUE_KEY, acceptActions, flagOn, TRIAGE_KEY } from "../autonomy";
 import { InFlightRail } from "../InFlightRail";
 import { buildInFlight } from "../InFlightRail/select";
 import { NeedsYou } from "../NeedsYou";
@@ -15,6 +15,7 @@ import { BoardHeader } from "./BoardHeader";
 import { BoardRulingActions } from "./DecisionBar";
 import { EmptyBoard } from "./EmptyBoard";
 import { HorizonGroup } from "./HorizonGroup";
+import { InboxLane } from "./InboxLane";
 import { ItemCard } from "./ItemCard";
 import { ItemDialog } from "./ItemDialog";
 import { NotDoing } from "./NotDoing";
@@ -34,6 +35,7 @@ export function Board({
   repoPath,
   width,
   asideRef,
+  onOpenInChat,
 }: {
   roadmap: RoadmapState;
   repoPath: string;
@@ -42,6 +44,8 @@ export function Board({
   width?: number | null;
   /** Lets the splitter measure this column at drag start. */
   asideRef?: RefObject<HTMLElement>;
+  /** Start a planning chat on an inbox row (the thread opens beside the board). */
+  onOpenInChat?: (item: RoadmapItem) => void;
 }) {
   const {
     projectId,
@@ -67,7 +71,9 @@ export function Board({
     reviews,
     runsById,
     codes,
+    inbox,
     addItem,
+    captureItem,
     editItem,
     removeItems,
     acceptDeltas,
@@ -151,6 +157,8 @@ export function Board({
    *  way — this only labels the button. */
   const projectSettings = useProjectSettings(projectId);
   const autoqueue = flagOn(projectSettings.settings?.[AUTOQUEUE_KEY], false);
+  /** Whether the PM triages captures on its own — the inbox chips' wording. */
+  const triageOn = flagOn(projectSettings.settings?.[TRIAGE_KEY], true);
   const cardAccept = acceptActions(autoqueue, "Accept");
   const batchAccept = acceptActions(autoqueue, "Accept all");
 
@@ -179,7 +187,7 @@ export function Board({
         readOnly={readOnly}
         projectSettings={projectSettings}
         onNew={() => openNew("next")}
-        onCapture={(title) => addItem({ title, horizon: "later" })}
+        onCapture={captureItem}
       />
 
       {/* A repo with no project row of its own: the board renders, nothing on it
@@ -206,6 +214,17 @@ export function Board({
           </button>
         </div>
       )}
+
+      {/* Captures waiting for (or done with) triage. Above the strip because it
+          is the top of the pipeline: what triage makes of a row lands below as
+          ghosts. Renders nothing when the inbox is empty. */}
+      <InboxLane
+        inbox={inbox}
+        triageOn={triageOn}
+        focusCode={focusCode}
+        onOpenInChat={readOnly ? undefined : onOpenInChat}
+        onDiscard={readOnly ? undefined : (id) => void removeItems([id])}
+      />
 
       {/* The decisions the pipeline is waiting on the user for. Above the batch
           bar because an item that has stopped moving outranks a suggestion that

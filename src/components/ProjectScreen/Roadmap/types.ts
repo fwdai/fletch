@@ -33,14 +33,18 @@ export interface BoardItem {
   accept?: string[];
   /** Codes this item must land after. */
   deps?: string[];
+  /** The code of the captured row a triage proposed this from. */
+  from?: string;
   /** The stored row behind this card — what every mutation addresses. */
   item: RoadmapItem;
 }
 
 /** Adapt a persisted row for the board. The DTO's nulls become `undefined` so
- *  the display type stays uniform with a ghost's optional fields. */
-export function toBoardItem(item: RoadmapItem): BoardItem {
+ *  the display type stays uniform with a ghost's optional fields. `from` is the
+ *  code `item.from_item` resolves to, which only the whole board knows. */
+export function toBoardItem(item: RoadmapItem, from?: string): BoardItem {
   return {
+    from,
     code: item.code,
     title: item.title,
     horizon: item.horizon,

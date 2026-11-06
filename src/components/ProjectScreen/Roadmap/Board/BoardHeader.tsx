@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { TextInput } from "@/components/ui/TextInput";
@@ -8,7 +8,7 @@ import { AutonomyPopover } from "../AutonomyPopover";
 
 /** The board's header — the PM thread's switch, the autonomy dial and "+" —
  *  and, under it on a writable board, the capture field: type a line, press
- *  Enter, and it is on the board under Later. */
+ *  Enter, and it lands in the Inbox for the PM to triage. */
 export function BoardHeader({
   readOnly,
   projectSettings,
@@ -18,8 +18,8 @@ export function BoardHeader({
   readOnly: boolean;
   projectSettings: ReturnType<typeof useProjectSettings>;
   onNew: () => void;
-  /** Add an item titled `title`. Rejects on failure. */
-  onCapture: (title: string) => Promise<unknown>;
+  /** Capture `text` into the inbox. Rejects on failure. */
+  onCapture: (text: string) => Promise<unknown>;
 }) {
   const threadOpen = useAppStore((s) => s.roadmapThreadOpen);
   const toggleThread = useAppStore((s) => s.toggleRoadmapThread);
@@ -53,9 +53,19 @@ export function BoardHeader({
   );
 }
 
-function CaptureField({ onCapture }: { onCapture: (title: string) => Promise<unknown> }) {
+function CaptureField({ onCapture }: { onCapture: (text: string) => Promise<unknown> }) {
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const form = useRef<HTMLFormElement>(null);
+
+  // The palette's "Add to roadmap…" opened this page to type into this field.
+  const requested = useAppStore((s) => s.roadmapCaptureRequested);
+  const clearRequest = useAppStore((s) => s.clearRoadmapCapture);
+  useEffect(() => {
+    if (!requested) return;
+    form.current?.querySelector("input")?.focus();
+    clearRequest();
+  }, [requested, clearRequest]);
 
   // Cleared on Enter so a second Enter can't add the same line twice; a
   // failure puts the text back.
@@ -74,6 +84,7 @@ function CaptureField({ onCapture }: { onCapture: (title: string) => Promise<unk
 
   return (
     <form
+      ref={form}
       className="rm-capture flex-center"
       onSubmit={(e) => {
         e.preventDefault();

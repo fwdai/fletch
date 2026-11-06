@@ -250,6 +250,7 @@ fn create_defaults_and_round_trips_json_arrays() {
             deps: vec![bare.code.clone()],
             workflow_def_id: Some("wf-pipeline".into()),
             issue_url: None,
+            from_item: Some(bare.id.clone()),
         },
     )
     .unwrap();
@@ -262,6 +263,7 @@ fn create_defaults_and_round_trips_json_arrays() {
     assert_eq!(stored.deps, vec![bare.code]);
     assert_eq!(stored.status, ItemStatus::Proposed);
     assert_eq!(stored.workflow_def_id.as_deref(), Some("wf-pipeline"));
+    assert_eq!(stored.from_item.as_deref(), Some(bare.id.as_str()));
     assert_eq!(bare.workflow_def_id, None);
 }
 

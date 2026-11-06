@@ -17,7 +17,10 @@ const MAX_BATCH: usize = 20;
 /// `deps` may name a board code or another batch item as `"#n"` (1-based); the
 /// merged graph must stay acyclic. `"#n"` survives untouched — only the insert
 /// transaction knows the codes.
-fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewItem>, String> {
+pub(super) fn validate(
+    items: &[ProposedItem],
+    existing: &[RoadmapItem],
+) -> Result<Vec<NewItem>, String> {
     if items.is_empty() {
         return Err("`items` must be a non-empty array of tickets".into());
     }
@@ -63,6 +66,7 @@ fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewI
             // `issue_url` is provenance for a row routed from a tracker issue; a
             // PM-supplied one would fake it.
             issue_url: None,
+            from_item: None,
         });
     }
     // Whole batch at once: an intra-batch loop is only visible at that scope.
@@ -116,55 +120,68 @@ fn insert_batch(
     // transaction: a ghost never exists without its record, a plan never half-applies.
     let (created, recorded) = (|| -> rusqlite::Result<Proposed> {
         let tx = conn.unchecked_transaction()?;
-        let mut created = Vec::with_capacity(news.len());
-        let mut recorded = Vec::with_capacity(news.len());
-        for new in &news {
-            let item = store::create(&tx, project_id, new)?;
-            recorded.push(events::record(
-                &tx,
-                &item.id,
-                project_id,
-                EventActor::Pm,
-                EventKind::Proposed,
-                None,
-            )?);
-            created.push(item);
-        }
-        // Second pass: every ticket has a code now, so `"#n"` can resolve.
-        for (n, new) in news.iter().enumerate() {
-            if !new.deps.iter().any(|d| d.starts_with(deps::BATCH_PREFIX)) {
-                continue;
-            }
-            let resolved = resolve_batch_deps(&new.deps, &created);
-            if let Some(row) = store::update(
-                &tx,
-                &created[n].id,
-                &ItemPatch {
-                    deps: Some(resolved),
-                    ..Default::default()
-                },
-            )? {
-                created[n] = row;
-            }
-        }
+        let proposed = create_proposed(&tx, project_id, &news, None)?;
         tx.commit()?;
-        Ok((created, recorded))
+        Ok(proposed)
     })()
     .map_err(|e| e.to_string())?;
 
     let mut payload = Map::new();
-    payload.insert(
-        "created".into(),
-        json!(created
-            .iter()
-            .map(|i| json!({ "code": i.code, "title": i.title }))
-            .collect::<Vec<_>>()),
-    );
+    payload.insert("created".into(), created_codes(&created));
     // Absent rather than empty, so it can't read as a partial failure.
     if !warnings.is_empty() {
         payload.insert("warnings".into(), json!(warnings));
     }
     Ok((Value::Object(payload), (created, recorded)))
+}
+
+/// Insert validated tickets as ghosts, each with its `proposed` event, then
+/// resolve `"#n"` deps. Inside the caller's transaction; commits nothing.
+pub(super) fn create_proposed(
+    tx: &Connection,
+    project_id: &str,
+    news: &[NewItem],
+    detail: Option<&str>,
+) -> rusqlite::Result<Proposed> {
+    let mut created = Vec::with_capacity(news.len());
+    let mut recorded = Vec::with_capacity(news.len());
+    for new in news {
+        let item = store::create(tx, project_id, new)?;
+        recorded.push(events::record(
+            tx,
+            &item.id,
+            project_id,
+            EventActor::Pm,
+            EventKind::Proposed,
+            detail,
+        )?);
+        created.push(item);
+    }
+    // Second pass: every ticket has a code now, so `"#n"` can resolve.
+    for (n, new) in news.iter().enumerate() {
+        if !new.deps.iter().any(|d| d.starts_with(deps::BATCH_PREFIX)) {
+            continue;
+        }
+        let resolved = resolve_batch_deps(&new.deps, &created);
+        if let Some(row) = store::update(
+            tx,
+            &created[n].id,
+            &ItemPatch {
+                deps: Some(resolved),
+                ..Default::default()
+            },
+        )? {
+            created[n] = row;
+        }
+    }
+    Ok((created, recorded))
+}
+
+pub(super) fn created_codes(created: &[RoadmapItem]) -> Value {
+    json!(created
+        .iter()
+        .map(|i| json!({ "code": i.code, "title": i.title }))
+        .collect::<Vec<_>>())
 }
 
 #[cfg(test)]

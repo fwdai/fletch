@@ -864,6 +864,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `roadmap_list_items` | `{ projectId }` | `RoadmapItem[]` |
 | `roadmap_get_item` | `{ itemId }` | `RoadmapItem \| null` |
 | `roadmap_create_item` | `{ projectId, item }` — `code` is allocated host-side under the connection lock, so it is not part of the payload | `RoadmapItem` |
+| `roadmap_capture` | `{ projectId, text }` — a `captured` row in the board's inbox: the first line is the title, the rest the why; the PM triages it, the queue never claims it | `RoadmapItem` |
 | `roadmap_update_item` | `{ id, patch, expectStatus?, queue? }` | `{ applied: boolean, item: RoadmapItem }` |
 | `roadmap_set_rank` | `{ itemId, rank }` — bookkeeping, writes no history line | `RoadmapItem` |
 | `roadmap_hand_off_item` | `{ itemId, agentId }` | `RoadmapItem` |
@@ -1181,6 +1182,7 @@ it:
 | `roadmap.autoqueue` | the roadmap queue | `"1"` on; absent off |
 | `roadmap.max_concurrent` | the roadmap queue | an integer; absent is one |
 | `roadmap.settle_review` | the PM's review | `"0"` off; absent on |
+| `roadmap.triage` | the PM's inbox triage | `"0"` off; absent on |
 | `linear.team_id`, `linear.team_name` | the composer's issue picker | a Linear team id; its display name |
 | `context.enabled`, `context.extract` | the context layer (its ops, instruction block, ingesters) and its background extractor | `"false"` off; absent on |
 | `sandbox.placement` | the spawn path, under the `auto` engine | `"host"` (this Mac), `"box"` (always a box, waiting for the image); absent is automatic, which runs a repository that builds a macOS or iOS app on this Mac |

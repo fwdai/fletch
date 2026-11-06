@@ -19,10 +19,14 @@ export const isShipped = (i: RoadmapItem) => i.status === "done";
  *  a rejected item is not open work. */
 export const isRejected = (i: RoadmapItem) => i.status === "rejected";
 
+/** In the inbox: a raw capture the PM hasn't turned into proposals yet. Drawn
+ *  in the Inbox lane only — no horizon, no count, never queued. */
+export const isCaptured = (i: RoadmapItem) => i.status === "captured";
+
 /** On the board proper — in a horizon group, counted, joinable by the strips.
- *  Everything but the two departures above: `done` left forward, `rejected`
- *  left sideways. */
-export const isOnBoard = (i: RoadmapItem) => !isShipped(i) && !isRejected(i);
+ *  Everything but the two departures above (`done` left forward, `rejected`
+ *  left sideways) and the inbox, which hasn't arrived yet. */
+export const isOnBoard = (i: RoadmapItem) => !isShipped(i) && !isRejected(i) && !isCaptured(i);
 
 /** A row the PM has suggested and the user hasn't ruled on. Drawn as a ghost:
  *  in its target horizon, but counted for nothing. */

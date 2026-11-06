@@ -6,7 +6,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::types::{strings_to_col, ItemPatch, ItemSource, ItemStatus, NewItem};
-use super::types::{Horizon, RoadmapItem, COLUMNS};
+use super::types::{CaptureKind, Horizon, RoadmapItem, Triage, COLUMNS};
 use crate::database::now_millis;
 
 const PREFIX_KEY: &str = "roadmap.code_prefix";
@@ -53,8 +53,9 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
     conn.execute(
         "INSERT INTO roadmap_items
            (id, project_id, code, title, why, horizon, status, rank, area, source,
-            accept_json, deps_json, workflow_def_id, issue_url, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
+            accept_json, deps_json, workflow_def_id, issue_url, from_item,
+            created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?16, ?15, ?15)",
         params![
             id,
             project_id,
@@ -71,9 +72,26 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
             new.workflow_def_id,
             new.issue_url,
             now,
+            new.from_item,
         ],
     )?;
     get(conn, &id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+/// Record triage's classification; off [`ItemPatch`] so no generic edit can
+/// fake one.
+pub fn set_triage(
+    conn: &Connection,
+    id: &str,
+    kind: CaptureKind,
+    triage: Option<&Triage>,
+) -> rusqlite::Result<Option<RoadmapItem>> {
+    let triage_json = triage.and_then(|t| serde_json::to_string(t).ok());
+    conn.execute(
+        "UPDATE roadmap_items SET kind = ?1, triage_json = ?2, updated_at = ?3 WHERE id = ?4",
+        params![kind.as_str(), triage_json, now_millis(), id],
+    )?;
+    get(conn, id)
 }
 
 pub fn update(

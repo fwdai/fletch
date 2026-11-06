@@ -92,6 +92,9 @@ export interface UiSlice {
    *  whichever board next happened to hold that code. A refusal is said out loud
    *  on that board's error bar instead — see `useRoadmap`. */
   roadmapFocusCode: string | null;
+  /** One-shot: the board's capture field should take focus when it mounts —
+   *  the palette's "Add to roadmap…". Cleared by the field that consumes it. */
+  roadmapCaptureRequested: boolean;
   /** A chat row to reveal — scrolled into view, opened or ringed — once the
    *  agent's transcript has rendered it: the card that launched a sub-agent
    *  thread the user just left (`closeSubagentThread`). Consumed and cleared by
@@ -180,6 +183,9 @@ export interface UiSlice {
   focusRoadmapItem: (repoPath: string, code: string) => void;
   /** Drop a consumed (or abandoned) focus request. */
   clearRoadmapFocus: () => void;
+  /** Open a project's board with its capture field focused. */
+  captureToRoadmap: (repoPath: string) => void;
+  clearRoadmapCapture: () => void;
   clearChatFocus: () => void;
   /** Select `agentId` and show the sub-agent thread at `path` (launching
    *  tool_use ids, main log first) instead of its conversation. An empty path
@@ -228,6 +234,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   projectScreenTab: "roadmap",
   projectSettingsSection: "general",
   roadmapFocusCode: null,
+  roadmapCaptureRequested: false,
   chatFocus: null,
   openThread: null,
   leftCollapsed: false,
@@ -336,6 +343,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     set({ roadmapFocusCode: code });
   },
   clearRoadmapFocus: () => set({ roadmapFocusCode: null }),
+  captureToRoadmap: (repoPath) => {
+    get().openProjectScreen(repoPath, "roadmap");
+    // Only if the open went through: the gate can refuse it.
+    if (get().projectScreenRepoPath === repoPath) set({ roadmapCaptureRequested: true });
+  },
+  clearRoadmapCapture: () => set({ roadmapCaptureRequested: false }),
   clearChatFocus: () => set({ chatFocus: null }),
   openSubagentThread: (agentId, path) => {
     if (path.length === 0) {

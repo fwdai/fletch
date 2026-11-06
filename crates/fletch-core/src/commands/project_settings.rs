@@ -44,6 +44,8 @@ const PROJECT_SETTING_KEYS: &[&str] = &[
     // `project_icon_set`, which also stores the image, but readable like any
     // project key.
     crate::icon_detect::SOURCE_KEY,
+    // Opt-out like `roadmap.settle_review`: the PM triages captured rows.
+    crate::roadmap::autonomy::TRIAGE_KEY,
 ];
 
 /// The key family a client may write in full: `run.<row>` (the project's run
@@ -179,6 +181,7 @@ mod tests {
             "context.enabled",
             "context.extract",
             "sandbox.placement",
+            "roadmap.triage",
         ] {
             assert!(is_client_project_key(key), "{key} must be client-writable");
         }

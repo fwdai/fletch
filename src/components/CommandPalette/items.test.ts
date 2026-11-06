@@ -49,6 +49,7 @@ function state(over: Partial<AppState> = {}): AppState {
     selectRun: vi.fn(),
     createDraft: vi.fn(),
     openProjectScreen: vi.fn(),
+    captureToRoadmap: vi.fn(),
     openSettingsScreen: vi.fn(),
     openFeedback: vi.fn(),
     runUpdateCheck: vi.fn(),
@@ -267,6 +268,16 @@ describe("rootItems", () => {
     expect(c.s.openProjectScreen).toHaveBeenCalledWith("/w/fletch", "settings");
     // Any takeover closes first, then the page opens on Settings: it ends open.
     expect(ranBefore(c.s.closeProjectScreen, c.s.openProjectScreen)).toBe(true);
+  });
+
+  it("opens the current project's board to capture into its inbox", () => {
+    const c = ctx({ projectScreenRepoPath: "/w/relay", projectScreenTab: "settings" });
+    const row = find(c, "roadmap-capture");
+    expect(row.label).toBe("Add to roadmap…");
+    expect(row.hint).toContain("relay");
+    row.run?.();
+    expect(c.s.captureToRoadmap).toHaveBeenCalledWith("/w/relay");
+    expect(ranBefore(c.s.closeProjectScreen, c.s.captureToRoadmap)).toBe(true);
   });
 
   it("offers every settings section, sub-tabs included, and the environments only once there are two", () => {

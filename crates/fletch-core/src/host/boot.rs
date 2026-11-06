@@ -593,6 +593,9 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // now (a PR may well have merged while the app was closed), then sleeps
     // until there is something to watch.
     crate::roadmap::merge_sweep::spawn(ctx.clone(), db.clone());
+    // The inbox's triage: hands the PM a turn for freshly captured rows, the
+    // way the drainer hands it a settle review. Sleeps until a capture.
+    crate::roadmap::triage::spawn(ctx.clone(), db.clone());
     // The ship loop's eyes while the window is shut: read every agent's bound
     // open PR once a minute (state and CI, review threads every other tick),
     // and closed PRs every five minutes so a reopen is discovered. Emit a

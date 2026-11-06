@@ -19,6 +19,9 @@ export const MAX_CONCURRENT_KEY = "roadmap.max_concurrent";
 /** The PM reviews every settled run — `review::SETTLE_REVIEW_KEY`. Default on. */
 export const SETTLE_REVIEW_KEY = "roadmap.settle_review";
 
+/** The PM triages captured items on its own — `autonomy::TRIAGE_KEY`. Default on. */
+export const TRIAGE_KEY = "roadmap.triage";
+
 /** What an unset concurrency dial means — `drainer::MAX_CONCURRENT_ROADMAP_RUNS`. */
 export const DEFAULT_MAX_CONCURRENT = 1;
 

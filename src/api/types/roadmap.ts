@@ -21,8 +21,10 @@ export type ItemSource = "user" | "pm" | "linear" | "github";
  *  the board and become the header's "shipped" count. `rejected` items leave the
  *  horizons and live in the board's collapsed "Not doing" section — ruled off
  *  rather than deleted, so the decision and its reason survive, and the item can
- *  be reopened. */
+ *  be reopened. `captured` is the inbox: a raw line the user dropped in, outside
+ *  the horizons and the queue until the PM's triage turns it into proposals. */
 export type ItemStatus =
+  | "captured"
   | "proposed"
   | "open"
   | "queued"
@@ -83,8 +85,28 @@ export interface RoadmapItem {
    *  which the user and the PM both edit. No desktop surface routes issues onto
    *  a board today, so new rows carry null. */
   issue_url: string | null;
+  /** What triage made of a `captured` row; null while it is untriaged (and on
+   *  every row that never was captured). Migration 0058. */
+  kind: CaptureKind | null;
+  /** What that triage carried: an idea's brief and questions, or `mined` for
+   *  a brainstorm the PM has taken its tickets from. */
+  triage: RoadmapTriage | null;
+  /** The captured row a triage proposed this row from, by id; cleared if that
+   *  row is discarded. */
+  from_item: string | null;
   created_at: number;
   updated_at: number;
+}
+
+/** Triage's classification of a captured row (`roadmap_triage`): `ask` turns
+ *  the row itself into a proposal, `idea` keeps it in the inbox with a brief,
+ *  `brainstorm` mines it into linked proposals. */
+export type CaptureKind = "ask" | "idea" | "brainstorm";
+
+export interface RoadmapTriage {
+  brief?: string;
+  questions?: string[];
+  mined?: true;
 }
 
 /** The whole board stopped (`roadmap_project_holds`, mirroring
