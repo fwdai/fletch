@@ -53,6 +53,7 @@ fn file(kind: StatusKind) -> FileStatus {
         staged: false,
         additions: 1,
         deletions: 0,
+        rev: None,
     }
 }
 
