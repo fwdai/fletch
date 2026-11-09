@@ -64,6 +64,13 @@ pub struct PrState {
     /// when the source didn't report it (an older snapshot row).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// The PR's base branch (`worktree_prs.base`). In a stack each PR of a
+    /// checkout has its own, so the branch the checkout was forked from doesn't
+    /// name it; the checkout's review base follows the focused PR's
+    /// (`TrackedRepo::recorded_base`). `None` when the source didn't report
+    /// it (an older snapshot row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 /// Everything an agent asks about a pull request, flat, from one REST read of

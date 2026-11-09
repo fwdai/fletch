@@ -953,7 +953,7 @@ pub struct PrOpened<'a> {
 }
 
 /// The `worktree_prs` columns [`pr_row`] reads, in its order.
-const PR_ROW_COLUMNS: &str = "number, url, title, state, opened_at, merged_at, branch";
+const PR_ROW_COLUMNS: &str = "number, url, title, state, opened_at, merged_at, branch, base";
 
 /// One `worktree_prs` row (selected as [`PR_ROW_COLUMNS`] from column `at`) as
 /// a `PrState`. `None` for an unparseable state: a row we can't render
@@ -973,6 +973,7 @@ fn pr_row(row: &rusqlite::Row, at: usize) -> rusqlite::Result<Option<crate::gith
         opened_at: row.get(at + 4)?,
         merged_at: row.get(at + 5)?,
         branch: row.get(at + 6)?,
+        base: row.get(at + 7)?,
     }))
 }
 
@@ -1008,18 +1009,21 @@ fn upsert_pr_row(
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO worktree_prs
-                (workspace_id, subdir, number, url, title, state, opened_at, merged_at, branch)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                (workspace_id, subdir, number, url, title, state, opened_at, merged_at, branch, base)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(workspace_id, subdir, number) DO UPDATE SET
                 url       = excluded.url,
                 title     = excluded.title,
                 state     = excluded.state,
-                -- Times and branch COALESCE: a payload that omits one must not
-                -- erase an earlier-observed value. Identity is the PK here, so
-                -- there's no cross-PR bleed to guard against.
+                -- Times, branch and base COALESCE: a payload that omits one
+                -- must not erase an earlier-observed value. Identity is the PK
+                -- here, so there's no cross-PR bleed to guard against. A base
+                -- the source does report replaces the old one, so a retarget
+                -- made on GitHub reaches the record on the next fetch.
                 opened_at = COALESCE(excluded.opened_at, opened_at),
                 merged_at = COALESCE(excluded.merged_at, merged_at),
-                branch    = COALESCE(excluded.branch, branch)",
+                branch    = COALESCE(excluded.branch, branch),
+                base      = COALESCE(excluded.base, base)",
         rusqlite::params![
             agent_id,
             subdir,
@@ -1030,6 +1034,7 @@ fn upsert_pr_row(
             pr.opened_at,
             pr.merged_at,
             pr.branch,
+            pr.base,
         ],
     )?;
     Ok(())

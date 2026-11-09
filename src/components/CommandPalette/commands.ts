@@ -300,7 +300,10 @@ export function agentItems(ctx: PaletteContext): PaletteItem[] {
       remember: true,
     });
   } else if (primary?.pr_base || primary?.parent_branch) {
-    const base = (primary.pr_base || primary.parent_branch) as string;
+    // The focused PR's base when it is live in the store; the record otherwise.
+    const base = (s.prStates?.[agent.id]?.base ||
+      primary.pr_base ||
+      primary.parent_branch) as string;
     const delegated = s.delegations[agent.id] != null;
     items.push({
       id: "commit-pr",

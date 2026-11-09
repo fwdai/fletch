@@ -267,6 +267,7 @@ pub(crate) fn pr_snapshot(repo: &TrackedRepo) -> Option<PrState> {
         opened_at: None,
         merged_at: None,
         branch: None,
+        base: repo.pr_base.clone(),
     })
 }
 
@@ -1954,6 +1955,7 @@ pub(super) mod tests {
             opened_at: None,
             merged_at: None,
             branch: None,
+            base: None,
         };
         let held = [pr(42, PrStatus::Merged)];
         assert!(
@@ -2011,6 +2013,7 @@ pub(super) mod tests {
             opened_at: None,
             merged_at: None,
             branch: None,
+            base: None,
         };
         bind_pr_snapshot(&wm, &id, &subdir, &pr(42, PrStatus::Merged));
         bind_pr_snapshot(&wm, &id, &subdir, &pr(43, PrStatus::Closed));
@@ -2087,6 +2090,7 @@ pub(super) mod tests {
                 opened_at: None,
                 merged_at: None,
                 branch: Some("feat/own".into()),
+                base: None,
             },
         )
         .unwrap();

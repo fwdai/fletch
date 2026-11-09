@@ -1607,10 +1607,29 @@ fn recorded_base_follows_the_focused_prs_base() {
     assert_eq!(stacked.parent_branch.as_deref(), Some("main"));
     assert_eq!(stacked.base_sha.as_deref(), Some("cafebabe"));
 
+    // A fetch that doesn't report the base keeps the known one; one that does
+    // (a retarget made on GitHub, a row from before the column) replaces it.
+    let fetched = |base: Option<&str>| crate::github::PrState {
+        number: 43,
+        url: "u43".into(),
+        title: "feat: b".into(),
+        state: crate::github::PrStatus::Open,
+        mergeable: crate::github::MergeableState::Unknown,
+        opened_at: None,
+        merged_at: None,
+        branch: None,
+        base: base.map(str::to_string),
+    };
+    wm.record_repo_pr(&id, &subdir, &fetched(None)).unwrap();
+    assert_eq!(repo(&wm).recorded_base(), Some("feat/a"));
+    wm.record_repo_pr(&id, &subdir, &fetched(Some("staging")))
+        .unwrap();
+    assert_eq!(repo(&wm).recorded_base(), Some("staging"));
+
     // A `pr_edit` retarget is keyed by number: of a PR other than the focused
     // one it steers nothing; of the focused one it moves the base.
     wm.set_pr_base(&id, &subdir, 42, "release/1").unwrap();
-    assert_eq!(repo(&wm).recorded_base(), Some("feat/a"));
+    assert_eq!(repo(&wm).recorded_base(), Some("staging"));
     wm.set_pr_base(&id, &subdir, 43, "develop").unwrap();
     assert_eq!(repo(&wm).recorded_base(), Some("develop"));
 
@@ -1708,6 +1727,7 @@ fn pr_history_accumulates_across_rebinds() {
         opened_at: Some(1_000),
         merged_at: None,
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &first_open);
 
@@ -1739,6 +1759,7 @@ fn pr_history_accumulates_across_rebinds() {
         opened_at: Some(3_000),
         merged_at: None,
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &second);
 
@@ -1789,6 +1810,7 @@ fn pr_history_is_scoped_to_its_checkout() {
         opened_at: Some(1_000),
         merged_at: Some(2_000),
         branch: None,
+        base: None,
     };
     wm.record_repo_pr(&id, &subdir, &pr).unwrap();
 
@@ -1833,6 +1855,7 @@ fn pr_set_members_refresh_without_stealing_focus() {
         opened_at: Some(1_000),
         merged_at: None,
         branch: Some("feat/first".into()),
+        base: None,
     };
     bind(&wm, &id, &subdir, &first);
     // A sub-agent opens a second PR from the same checkout; it takes the focus.
@@ -1898,6 +1921,7 @@ fn pr_set_members_refresh_without_stealing_focus() {
         opened_at: None,
         merged_at: None,
         branch: None,
+        base: None,
     };
     wm.record_repo_pr(&id, &subdir, &late).unwrap();
     let repo = wm.agent(&id).unwrap().repos[0].clone();
@@ -1952,6 +1976,7 @@ fn pr_snapshot_persists_and_loads() {
         opened_at: Some(1_000),
         merged_at: None,
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &open);
     let repo = wm.agent(&id).unwrap().repos[0].clone();
@@ -2024,6 +2049,7 @@ fn binding_a_follow_up_pr_takes_its_own_snapshot() {
         opened_at: Some(1_000),
         merged_at: Some(2_000),
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &merged);
 
@@ -2116,6 +2142,7 @@ fn a_follow_up_snapshot_does_not_inherit_the_previous_merge_stamp() {
         opened_at: Some(1_000),
         merged_at: Some(2_000),
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &merged);
 
@@ -2128,6 +2155,7 @@ fn a_follow_up_snapshot_does_not_inherit_the_previous_merge_stamp() {
         opened_at: Some(3_000),
         merged_at: None,
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &follow_up);
 
