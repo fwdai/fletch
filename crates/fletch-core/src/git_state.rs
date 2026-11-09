@@ -123,6 +123,15 @@ pub struct FileStatus {
     pub staged: bool,
     pub additions: u32,
     pub deletions: u32,
+    /// Changes whenever the file's content on disk may have: its mtime and
+    /// size as `"<mtime ns>:<bytes>"`. The line counts alone miss an edit that
+    /// replaces a line with another of the same shape, which is most edits to
+    /// a file already in the list; a client re-reads a diff, and lets a
+    /// "viewed" mark lapse, when this moves. `None` for a file that is gone
+    /// from the tree (deleted) or that can't be stat'ed from the host (a
+    /// checkout a box keeps in its guest).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -202,6 +211,7 @@ pub async fn query(checkout_path: &Path, base: &crate::git::ResolvedBase) -> Res
             files[i].additions = adds;
         }
     }
+    stamp_revisions(checkout_path, &mut files).await;
 
     let additions: u32 = files.iter().map(|f| f.additions).sum();
     let deletions: u32 = files.iter().map(|f| f.deletions).sum();
@@ -255,6 +265,7 @@ pub async fn changed_since(checkout_path: &Path, fork: &str) -> Result<Vec<FileS
         staged: false,
         additions,
         deletions,
+        rev: None,
     };
     let mut files: BTreeMap<String, FileStatus> = parse_name_status_z(&names?)
         .into_iter()
@@ -283,7 +294,40 @@ pub async fn changed_since(checkout_path: &Path, fork: &str) -> Result<Vec<FileS
             files.insert(path.clone(), file(path, StatusKind::Untracked, (adds, 0)));
         }
     }
-    Ok(files.into_values().collect())
+    let mut files: Vec<FileStatus> = files.into_values().collect();
+    stamp_revisions(checkout_path, &mut files).await;
+    Ok(files)
+}
+
+/// Give each file its [`FileStatus::rev`]: one `stat` per file, off the async
+/// threads. A checkout a box keeps in its guest isn't on this filesystem, so
+/// its files stay unstamped, as does any file the stat fails on.
+async fn stamp_revisions(checkout_path: &Path, files: &mut [FileStatus]) {
+    if let crate::exec::Executor::Remote(_) = crate::exec::for_path(checkout_path) {
+        return;
+    }
+    let paths: Vec<std::path::PathBuf> =
+        files.iter().map(|f| checkout_path.join(&f.path)).collect();
+    let revs = tokio::task::spawn_blocking(move || {
+        paths
+            .iter()
+            .map(|p| std::fs::metadata(p).ok().map(revision_of))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+    for (f, rev) in files.iter_mut().zip(revs) {
+        f.rev = rev;
+    }
+}
+
+fn revision_of(meta: std::fs::Metadata) -> String {
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    format!("{mtime}:{}", meta.len())
 }
 
 /// Budget for how much untracked file *content* one git-state pass will read to
@@ -1148,6 +1192,7 @@ fn parse_porcelain(output: &str) -> Vec<FileStatus> {
             staged,
             additions: 0,
             deletions: 0,
+            rev: None,
         });
     }
     files
@@ -1917,6 +1962,33 @@ mod tests {
             ]
         );
         assert!(files.iter().all(|f| !f.staged));
+
+        // Every file still in the tree carries a revision; the deleted one has
+        // nothing to stamp.
+        let rev_of = |files: &[FileStatus], path: &str| {
+            files.iter().find(|f| f.path == path).unwrap().rev.clone()
+        };
+        assert!(rev_of(&files, "gone.txt").is_none());
+        assert!(files
+            .iter()
+            .filter(|f| f.path != "gone.txt")
+            .all(|f| f.rev.is_some()));
+
+        // An edit that keeps the line counts (one line swapped for another of
+        // the same length) still moves the revision: the only signal a client
+        // has that the diff it shows is stale.
+        let before = rev_of(&files, "dirty.txt");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write("dirty.txt", "x\nz\n");
+        let files = changed_since(&repo, &fork).await.unwrap();
+        assert_ne!(rev_of(&files, "dirty.txt"), before);
+        assert_eq!(
+            files
+                .iter()
+                .find(|f| f.path == "dirty.txt")
+                .map(|f| (f.additions, f.deletions)),
+            Some((1, 0))
+        );
     }
 
     fn kind_name(kind: &StatusKind) -> &'static str {
