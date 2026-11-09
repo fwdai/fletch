@@ -18,6 +18,8 @@ pub(super) struct Target {
     /// The force-push anchor. `None` until the host has recorded the branch and the
     /// dispatcher was rebuilt, which fails a force closed.
     pub(super) own_branch: Option<String>,
+    /// See `RepoTarget::open_pr_heads`.
+    pub(super) open_pr_heads: Vec<String>,
 }
 
 impl GitDispatcher {
@@ -34,6 +36,7 @@ impl GitDispatcher {
                 source_repo: self.source_repo.clone(),
                 base_branch: self.base_branch.clone(),
                 own_branch: self.own_branch.clone(),
+                open_pr_heads: self.open_pr_heads.clone(),
             }),
             Some(name) => match self.repos.get(name) {
                 Some(repo) => Ok(Target {
@@ -42,6 +45,7 @@ impl GitDispatcher {
                     source_repo: repo.source_repo.clone(),
                     base_branch: repo.base_branch.clone(),
                     own_branch: repo.own_branch.clone(),
+                    open_pr_heads: repo.open_pr_heads.clone(),
                 }),
                 None => {
                     let mut known: Vec<&str> = self.repos.keys().map(String::as_str).collect();

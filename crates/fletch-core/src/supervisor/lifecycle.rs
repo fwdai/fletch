@@ -1142,12 +1142,28 @@ impl Supervisor {
             // when the host materialized it. Threaded here so a force push is
             // fenced to it; `None` until the branch exists and this dispatcher is
             // rebuilt on the next resume/turn (see `rpc::caps::refuses_force`).
+            //
+            // The heads of the checkout's open PRs are read from the same
+            // record as `base`, so a base rewritten by stacking a PR on one of
+            // them always arrives with that PR. They keep the lower PR of a
+            // stack pushable (`rpc::caps::refuses_branch`); a failed read
+            // leaves none, which only keeps the base refused.
+            let open_pr_heads = self
+                .workspace
+                .repo_pr_history(agent_id, &r.subdir)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|pr| pr.state == crate::github::PrStatus::Open)
+                .filter_map(|pr| pr.branch)
+                .filter(|b| !b.trim().is_empty())
+                .collect();
             repo_targets.push(rpc::git::RepoTarget {
                 subdir: r.subdir.clone(),
                 cwd: checkout,
                 source_repo: r.repo_path.clone(),
                 base_branch: base,
                 own_branch: r.branch.clone(),
+                open_pr_heads,
             });
         }
         // A workspace started from an issue carries its ref here ("123" for

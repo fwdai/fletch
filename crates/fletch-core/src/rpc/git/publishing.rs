@@ -106,7 +106,10 @@ impl GitDispatcher {
         }
         // Deliberately the *recorded* base, never `base`: reading it from the request
         // would let an agent name a decoy base and publish over the real one.
-        if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
+        if let Some(why) = self
+            .caps
+            .refuses_branch(&branch, &t.base_branch, &t.open_pr_heads)
+        {
             return (Response::err(id, why), effects);
         }
         // Before the prompt, so nobody approves a push the host then refuses…
@@ -209,7 +212,10 @@ impl GitDispatcher {
         // Earliest point `branch` is known. Every refusal the host can make on
         // its own comes before the prompt, so nobody approves a push the host
         // then refuses.
-        if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
+        if let Some(why) = self
+            .caps
+            .refuses_branch(&branch, &t.base_branch, &t.open_pr_heads)
+        {
             return (Response::err(id, why), effects);
         }
         if let Err(resp) = checked_tip(id, &t.cwd, &branch).await {

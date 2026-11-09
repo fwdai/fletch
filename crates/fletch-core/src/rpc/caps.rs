@@ -78,11 +78,19 @@ impl AgentCaps {
         }
     }
 
-    pub fn refuses_branch(self, branch: &str, base: &str) -> Option<String> {
+    /// `open_pr_heads` are the head branches of this checkout's own open PRs.
+    /// Stacking a PR on one of them makes it the recorded base, and it must
+    /// stay pushable: it is under review itself, as its own PR.
+    pub fn refuses_branch(
+        self,
+        branch: &str,
+        base: &str,
+        open_pr_heads: &[String],
+    ) -> Option<String> {
         if let Publish::Denied(why) = self.publish {
             return Some(why.to_string());
         }
-        is_review_target(branch, base).then(|| {
+        is_review_target(branch, base, open_pr_heads).then(|| {
             format!(
                 "refusing to publish to '{branch}': it is the branch this work is reviewed \
                  against. Push your own branch (e.g. fix/…) and open a pull request instead"
@@ -119,9 +127,12 @@ impl AgentCaps {
     }
 }
 
-fn is_review_target(branch: &str, base: &str) -> bool {
+fn is_review_target(branch: &str, base: &str, open_pr_heads: &[String]) -> bool {
     let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
-    same(branch, base) || PROTECTED_TRUNKS.iter().any(|trunk| same(branch, trunk))
+    if PROTECTED_TRUNKS.iter().any(|trunk| same(branch, trunk)) {
+        return true;
+    }
+    same(branch, base) && !open_pr_heads.iter().any(|head| same(head, branch))
 }
 
 #[cfg(test)]
@@ -172,17 +183,49 @@ mod tests {
             caps.refuses("git_push").is_none(),
             "the op itself is allowed"
         );
-        assert!(caps.refuses_branch("fix/login", "main").is_none());
+        assert!(caps.refuses_branch("fix/login", "main", &[]).is_none());
 
         for blocked in ["main", "master", "Main", " main "] {
             assert!(
-                caps.refuses_branch(blocked, "main").is_some(),
+                caps.refuses_branch(blocked, "main", &[]).is_some(),
                 "{blocked:?} must be refused"
             );
         }
-        assert!(caps.refuses_branch("release/24", "release/24").is_some());
-        assert!(caps.refuses_branch("main", "release/24").is_some());
-        assert!(caps.refuses_branch("fix/x", "release/24").is_none());
+        assert!(caps
+            .refuses_branch("release/24", "release/24", &[])
+            .is_some());
+        assert!(caps.refuses_branch("main", "release/24", &[]).is_some());
+        assert!(caps.refuses_branch("fix/x", "release/24", &[]).is_none());
+    }
+
+    /// A PR stacked on the checkout's own open PR makes that PR's branch the
+    /// recorded base; the lower PR must still take follow-up pushes.
+    #[test]
+    fn the_base_stays_pushable_while_it_heads_one_of_the_checkouts_open_prs() {
+        let caps = AgentCaps::interactive();
+        let heads = vec!["feat/backend".to_string(), "feat/ui".to_string()];
+        assert!(caps
+            .refuses_branch("feat/backend", "feat/backend", &heads)
+            .is_none());
+        assert!(caps
+            .refuses_branch(" Feat/Backend ", "feat/backend", &heads)
+            .is_none());
+        assert!(
+            caps.refuses_branch("release/24", "release/24", &heads)
+                .is_some(),
+            "a base that heads none of the checkout's open PRs stays refused"
+        );
+        let trunk_heads = vec!["main".to_string()];
+        assert!(
+            caps.refuses_branch("main", "main", &trunk_heads).is_some(),
+            "a trunk is refused whatever PR it heads"
+        );
+        assert!(
+            AgentCaps::run_owned()
+                .refuses_branch("feat/backend", "feat/backend", &heads)
+                .is_some(),
+            "a denied grant stays denied"
+        );
     }
 
     #[test]
@@ -196,7 +239,7 @@ mod tests {
             );
         }
         assert!(caps.refuses("git_fetch").is_none());
-        assert!(caps.refuses_branch("wf/anything", "main").is_some());
+        assert!(caps.refuses_branch("wf/anything", "main", &[]).is_some());
         assert!(caps
             .refuses_force("wf/anything", Some("wf/anything"))
             .is_some());
@@ -231,6 +274,6 @@ mod tests {
         }
         assert!(caps.refuses("git_fetch").is_none());
         assert!(caps.refuses("git_status").is_none());
-        assert!(caps.refuses_branch("pm/notes", "main").is_some());
+        assert!(caps.refuses_branch("pm/notes", "main", &[]).is_some());
     }
 }

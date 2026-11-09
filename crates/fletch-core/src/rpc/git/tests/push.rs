@@ -127,6 +127,54 @@ async fn git_push_refuses_the_review_base() {
     );
 }
 
+/// A PR stacked on the checkout's own open PR records that PR's branch as the
+/// base. Follow-up commits for the lower PR still go onto its branch.
+#[tokio::test]
+async fn git_push_updates_the_base_while_it_heads_one_of_the_checkouts_open_prs() {
+    let td = tempfile::tempdir().unwrap();
+    let crate::git::testing::Repos {
+        origin,
+        source,
+        checkout,
+        ..
+    } = crate::git::testing::repos(td.path());
+    run_git(&checkout, &["checkout", "-q", "-b", "feat/backend"]);
+    crate::git::testing::commit_file(&checkout, "backend.txt");
+
+    let stacked = |heads: Vec<String>| {
+        crate::rpc::git::GitDispatcher::new(
+            checkout.clone(),
+            source.clone(),
+            "feat/backend".to_string(),
+            crate::rpc::caps::AgentCaps::interactive(),
+        )
+        .with_open_pr_heads(heads)
+    };
+
+    let (resp, _fx) = stacked(Vec::new())
+        .dispatch_inner("p1", "git_push", &Value::Null)
+        .await;
+    assert!(
+        resp.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("refusing to publish"),
+        "a base no open PR of the checkout heads stays refused: {resp:?}"
+    );
+
+    let (resp, _fx) = stacked(vec!["feat/backend".to_string()])
+        .dispatch_inner("p2", "git_push", &Value::Null)
+        .await;
+    assert!(
+        resp.ok,
+        "the lower PR's branch must take the push: {resp:?}"
+    );
+    assert_eq!(
+        crate::git::testing::git(&origin, &["rev-parse", "refs/heads/feat/backend"]),
+        crate::git::testing::git(&checkout, &["rev-parse", "HEAD"])
+    );
+}
+
 #[tokio::test]
 async fn git_push_refuses_commits_made_as_someone_else() {
     let td = tempfile::tempdir().unwrap();
