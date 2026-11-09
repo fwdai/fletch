@@ -31,11 +31,13 @@ export function prSnapshot(repo: TrackedRepo | undefined): PrState | null {
 }
 
 /** Whether a live PR state is the checkout's own PR, as the host binds it: the
- *  one its record binds (`pr_number`), or an open one — the host adopts an open
- *  PR it finds on the branch, so it is bound even before the record refreshes.
- *  A merged or closed PR found on a recycled branch name is display-only. */
+ *  one its record binds (`pr_number`, which a `pr:state_changed` event mirrors
+ *  onto the record the moment the focus moves — `applyPrStateChanged`), or an
+ *  open one, which the host adopts on discovery. A merged or closed PR a
+ *  one-shot read found on a recycled branch name is display-only: the record
+ *  does not bind it, and no event announces it. */
 function isBoundPr(pr: PrState, repo: TrackedRepo | undefined): boolean {
-  return pr.state === "open" || repo?.pr_number === pr.number;
+  return repo?.pr_number === pr.number || pr.state === "open";
 }
 
 /** The base branch a checkout is reviewed against, resolved as the host does:

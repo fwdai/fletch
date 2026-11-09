@@ -41,6 +41,8 @@ describe("checkoutBase", () => {
   });
 
   it("uses a merged PR's base when it is the bound one", () => {
+    // The record binds it: `applyPrStateChanged` mirrors a focus event onto
+    // the record, so this holds the moment a merged PR is focused.
     expect(checkoutBase(pr({ state: "merged", base: "develop" }), repo(), "main")).toBe("develop");
   });
 
