@@ -710,6 +710,18 @@ async fn read_loop<S: WsTransport>(
                             continue;
                         }
 
+                        // Scoped like any op, so it came through the gate above,
+                        // but answered here for the same reason: the offer names
+                        // the device that made it (see `dispatch::OFFER_INVITE`).
+                        if frame.op == super::dispatch::OFFER_INVITE {
+                            let answer = offer_invite(state, device, &frame.args);
+                            out.send(json_frame(match answer {
+                                Ok(()) => ok_frame(&frame.id, json!({})),
+                                Err(error) => err_frame(&frame.id, error),
+                            }));
+                            continue;
+                        }
+
                         // Reap finished dispatches before counting, so the cap
                         // is on work actually outstanding.
                         while in_flight.try_join_next().is_some() {}
@@ -1077,6 +1089,29 @@ fn register_push(
         return Err("this device is no longer paired".to_string());
     }
     Ok(Value::Null)
+}
+
+/// `offer_invite` ("Pairing back"): a paired desktop hands over its own pairing
+/// link, and this host's screen is told, with the name of the device it came
+/// from. The scope gate has already run; a host with no screen refuses.
+fn offer_invite(
+    state: &Arc<RemoteState>,
+    device_id: &str,
+    args: &Value,
+) -> std::result::Result<(), &'static str> {
+    let url = super::confirm::checked_invite(args.get("url")).ok_or(super::confirm::BAD_INVITE)?;
+    let device_name = state
+        .devices()
+        .list()
+        .into_iter()
+        .find(|d| d.device_id == device_id)
+        .map(|d| d.name)
+        .ok_or("this device is no longer paired")?;
+    state.prompts().offer_invite(&super::confirm::InviteOffer {
+        device_id: device_id.to_string(),
+        device_name,
+        url,
+    })
 }
 
 /// Queue one JSON protocol frame. Plaintext here; `pump` encrypts it and puts

@@ -530,7 +530,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 183 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 184 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -718,6 +718,7 @@ fn allowlist_matches_the_protocol_table() {
         "project_icon_candidates",
         "project_icon_set",
         "project_icon_get",
+        "offer_invite",
         "register_push",
     ];
     assert_eq!(
@@ -766,7 +767,9 @@ fn every_op_has_exactly_one_scope() {
 /// PRs skip the approval prompt, and `autopilot_set` because an enrolled
 /// checkout's pushes do), and the five settings that decide how they do it —
 /// the approval gate above all, which a device that may not publish must not
-/// be able to switch off. Named here so narrowing or widening `publish` is a
+/// be able to switch off. `offer_invite` is on it because the link it carries
+/// hands this host full control of the sender's machine, which only a Full
+/// device may decide to do. Named here so narrowing or widening `publish` is a
 /// deliberate edit of this list, not a side effect of moving a row.
 #[test]
 fn the_publish_scope_is_what_leaves_the_machine_and_how() {
@@ -786,6 +789,7 @@ fn the_publish_scope_is_what_leaves_the_machine_and_how() {
             "set_publish_confirmation",
             "set_publish_approval_wait",
             "set_agent_attribution_removed",
+            "offer_invite",
         ],
         "publish is the set a Control device cannot reach"
     );
@@ -831,6 +835,26 @@ fn register_push_is_on_the_wire_but_not_on_the_dispatcher() {
     assert!(
         !dispatch::OPS.contains(&dispatch::REGISTER_PUSH),
         "the generic dispatcher must not be able to answer it"
+    );
+}
+
+/// `offer_invite` needs both a scope and the calling device, so it is in `OPS`
+/// (for the scope, and the per-device descriptor) and answered by the session
+/// layer. The dispatcher has no arm for it, so a route that skipped the session
+/// layer answers `unknown op` instead of an offer with no sender.
+#[tokio::test]
+async fn offer_invite_is_scoped_and_the_dispatcher_cannot_answer_it() {
+    assert_eq!(
+        dispatch::scope_of(dispatch::OFFER_INVITE),
+        Some(Scope::Publish)
+    );
+    assert!(dispatch::allows(&Scope::ALL, dispatch::OFFER_INVITE));
+    let (d, _dir) = wf_roadmap_dispatch();
+    assert_eq!(
+        d.dispatch(dispatch::OFFER_INVITE, json!({ "url": INVITE }))
+            .await
+            .unwrap_err(),
+        UNKNOWN_OP
     );
 }
 
@@ -4285,6 +4309,138 @@ async fn a_declined_confirmation_registers_nothing() {
     assert!(host.state.devices().find_by_key(&phone.public).is_none());
     // The window stays open for another try.
     assert!(host.state.pairing().window().is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Pairing back (docs/remote-protocol.md, "Pairing back")
+// ---------------------------------------------------------------------------
+
+const INVITE: &str =
+    "fletch://pair?host=Zm9vYmFy&addr=192.168.1.7:47285&token=K7PQ2M9X&name=Mac%20A";
+
+/// A desktop called "Mac A", paired with `scopes` on a connection of its own.
+/// Returns the connection and the device id it was given.
+async fn paired_mac(host: &Host, scopes: &[Scope]) -> (SecureWs, String) {
+    let minted = host.state.pairing().mint(scopes);
+    let mut ws = secure_connect(host.port, &device()).await;
+    ws.request(
+        "1",
+        "pair",
+        json!({ "token": minted.token, "device": { "name": "Mac A", "platform": "macos" } }),
+    )
+    .await;
+    let paired = ws.next_json().await;
+    assert_eq!(paired["ok"], true, "{paired}");
+    let device_id = paired["result"]["deviceId"].as_str().unwrap().to_string();
+    (ws, device_id)
+}
+
+/// The offers the screen has been shown, in order.
+fn offers_shown(sink: &crate::host::sink::RecordingSink) -> Vec<Value> {
+    sink.events()
+        .into_iter()
+        .filter(|(name, _)| name == super::confirm::INVITE_OFFERED_EVENT)
+        .map(|(_, payload)| payload)
+        .collect()
+}
+
+/// A Full device's link reaches this host's screen, named for the device that
+/// sent it. A second offer on the same connection is fine: it is how a
+/// pair-back that failed on this side is tried again.
+#[tokio::test]
+async fn a_full_devices_offer_reaches_the_screen_and_may_be_repeated() {
+    let (host, sink) = boot_confirming();
+    let (mut ws, device_id) = paired_mac(&host, &Scope::ALL).await;
+
+    ws.request("2", "offer_invite", json!({ "url": INVITE }))
+        .await;
+    let answer = ws.next_json().await;
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["result"], json!({}));
+    let expected = json!({ "deviceId": device_id, "deviceName": "Mac A", "url": INVITE });
+    assert_eq!(offers_shown(&sink), [expected.clone()]);
+
+    ws.request("3", "offer_invite", json!({ "url": INVITE }))
+        .await;
+    assert_eq!(ws.next_json().await["ok"], true);
+    assert_eq!(offers_shown(&sink), [expected.clone(), expected]);
+}
+
+/// A link to the sender's own machine is a full-access grant, so only a device
+/// paired with Full may hand one over: a Control device is refused, and the
+/// descriptor it was given never listed the op.
+#[tokio::test]
+async fn a_control_device_may_not_offer_its_link() {
+    let (host, sink) = boot_confirming();
+    let control = dispatch::preset_scopes("control").expect("control");
+    let (mut ws, _) = paired_mac(&host, &control).await;
+
+    ws.request("2", "offer_invite", json!({ "url": INVITE }))
+        .await;
+    let answer = ws.next_json().await;
+    assert_eq!(answer["ok"], false);
+    assert_eq!(answer["error"], FORBIDDEN);
+    assert!(offers_shown(&sink).is_empty());
+    assert!(!dispatch::ops_for(&control).contains(&dispatch::OFFER_INVITE));
+}
+
+/// Anything but a sane `fletch://pair` link is an error, and nothing reaches
+/// the screen; the connection carries on.
+#[tokio::test]
+async fn a_bad_link_is_refused_and_shows_nothing() {
+    let (host, sink) = boot_confirming();
+    let (mut ws, _) = paired_mac(&host, &Scope::ALL).await;
+    let long = format!("{INVITE}&x={}", "a".repeat(super::confirm::MAX_INVITE_LEN));
+
+    for (i, args) in [
+        json!({ "url": "https://example.com/pair?token=K7PQ2M9X" }),
+        json!({ "url": "fletch://pair?host=a&name=two words" }),
+        json!({ "url": long }),
+        json!({ "url": 42 }),
+        json!({}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("b{i}");
+        ws.request(&id, "offer_invite", args.clone()).await;
+        let answer = ws.next_json().await;
+        assert_eq!(answer["id"], id.as_str());
+        assert_eq!(answer["ok"], false, "{args}");
+        assert_eq!(answer["error"], super::confirm::BAD_INVITE, "{args}");
+    }
+    assert!(offers_shown(&sink).is_empty());
+    ws.request("2", "get_workspace", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+}
+
+/// The headless host has no app to pair with anything, so it says so.
+#[tokio::test]
+async fn a_host_with_no_screen_cannot_take_an_offer() {
+    let host = boot();
+    let (mut ws, _) = paired_mac(&host, &Scope::ALL).await;
+    ws.request("2", "offer_invite", json!({ "url": INVITE }))
+        .await;
+    let answer = ws.next_json().await;
+    assert_eq!(answer["ok"], false);
+    assert_eq!(answer["error"], super::confirm::NO_CLIENT);
+}
+
+#[test]
+fn an_invite_at_the_cap_is_kept_and_one_past_it_is_not() {
+    let prefix = "fletch://pair?token=K7PQ2M9X&name=";
+    let at_cap = format!(
+        "{prefix}{}",
+        "a".repeat(super::confirm::MAX_INVITE_LEN - prefix.len())
+    );
+    let past = format!("{at_cap}a");
+    assert_eq!(
+        super::confirm::checked_invite(Some(&json!(at_cap))),
+        Some(at_cap)
+    );
+    assert_eq!(super::confirm::checked_invite(Some(&json!(past))), None);
+    assert_eq!(super::confirm::checked_invite(None), None);
+    assert_eq!(super::confirm::checked_invite(Some(&Value::Null)), None);
 }
 
 #[tokio::test]
