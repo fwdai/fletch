@@ -230,13 +230,25 @@ impl RunSession {
         inner.generation
     }
 
+    /// The current generation: what a start observes before `begin_phase`
+    /// renews it, so a failure on the way there (the checkout unreadable, no
+    /// free port) can tell whether a newer start has begun meanwhile.
+    pub fn generation(&self) -> u64 {
+        self.inner.lock().generation
+    }
+
     /// Like begin_phase but keeps the same generation. Used when one
     /// phase ends successfully and we chain into the next (setup→run).
-    pub fn transition_phase(&self, phase: RunPhase) -> u64 {
+    /// Refused, as `false`, when `gen` is no longer current: the user
+    /// stopped or restarted the run while the first phase was ending.
+    pub fn transition_phase(&self, gen: u64, phase: RunPhase) -> bool {
         let mut inner = self.inner.lock();
+        if inner.generation != gen {
+            return false;
+        }
         inner.phase = phase;
         inner.last_error = None;
-        inner.generation
+        true
     }
 
     /// Attach a freshly spawned PTY, if `gen` is still the current generation
@@ -271,14 +283,21 @@ impl RunSession {
     }
 
     /// Mark the current phase as Stopped with an error message. Drops
-    /// the PTY handle. Called on natural exits.
-    pub fn mark_stopped(&self, error: Option<String>) {
+    /// the PTY handle. Called on natural exits and start failures. Refused,
+    /// as `false`, when `gen` is no longer current: the run this outcome
+    /// belongs to was stopped, and a newer one may be under way — its state,
+    /// port and PTY are not the old run's to take down.
+    pub fn mark_stopped(&self, gen: u64, error: Option<String>) -> bool {
         let mut inner = self.inner.lock();
+        if inner.generation != gen {
+            return false;
+        }
         inner.pty = None;
         inner.phase = RunPhase::Stopped;
         inner.last_error = error;
         inner.port = None;
         inner.guest_port = None;
+        true
     }
 }
 
@@ -452,7 +471,7 @@ mod tests {
         assert_eq!(s.snapshot().port, None, "a stale start sets no port");
         let gen = s.begin_phase(RunPhase::Setup);
         assert!(s.set_ports(gen, Some(3001), None));
-        s.mark_stopped(Some("crashed".into()));
+        assert!(s.mark_stopped(gen, Some("crashed".into())));
         assert_eq!(s.snapshot().port, None);
         assert_eq!(s.snapshot().guest_port, None);
         s.begin_phase(RunPhase::Running);
@@ -515,8 +534,35 @@ mod tests {
     fn transition_phase_keeps_generation() {
         let s = RunSession::new();
         let g1 = s.begin_phase(RunPhase::Setup);
-        let g2 = s.transition_phase(RunPhase::Running);
-        assert_eq!(g1, g2);
+        assert!(s.transition_phase(g1, RunPhase::Running));
+        assert_eq!(s.phase(), RunPhase::Running);
         assert!(s.is_current_generation(g1));
+        s.stop();
+        assert!(
+            !s.transition_phase(g1, RunPhase::Running),
+            "a chain from a stopped run goes nowhere"
+        );
+        assert_eq!(s.phase(), RunPhase::Stopped);
+    }
+
+    /// Stop, then Start again at once: the first start is still under way
+    /// off the UI thread, and when it fails later its outcome belongs to the
+    /// run that was stopped, not to the one now running.
+    #[test]
+    fn a_stale_starts_failure_does_not_stop_the_newer_run() {
+        let s = RunSession::new();
+        let old = s.begin_phase(RunPhase::Running);
+        s.stop();
+        let new = s.begin_phase(RunPhase::Running);
+        assert!(s.set_ports(new, Some(3000), None));
+        assert!(!s.mark_stopped(old, Some("Failed to start command: box gone".into())));
+        let snap = s.snapshot();
+        assert_eq!(snap.phase, RunPhase::Running);
+        assert_eq!(snap.last_error, None);
+        assert_eq!(snap.port, Some(3000));
+        // A failure observed before `begin_phase` is refused the same way.
+        assert!(!s.mark_stopped(s.generation().wrapping_sub(1), None));
+        assert!(s.mark_stopped(new, Some("Run exited: 1".into())));
+        assert_eq!(s.snapshot().phase, RunPhase::Stopped);
     }
 }

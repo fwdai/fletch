@@ -53,6 +53,11 @@ impl Supervisor {
         if session.is_active() {
             return Ok(()); // already running, idempotent
         }
+        // This runs off the UI thread, so a Stop and a fresh Start can come
+        // while it works: the generation names the run each outcome below
+        // belongs to, and a stale one changes nothing (`settle_stopped`). Until
+        // `begin_phase` renews it, that is the generation observed here.
+        let gen = session.generation();
 
         // The checkout, where it lives: a box keeps it in its guest, and a
         // stopped box boots here, under a note, since the boot is the longest
@@ -64,8 +69,7 @@ impl Supervisor {
             Ok(tree) => tree,
             Err(e) => {
                 let msg = format!("Failed to start: could not read the checkout: {e}");
-                session.mark_stopped(Some(msg));
-                emit_run_state(ctx.sink.as_ref(), agent_id, &session);
+                settle_stopped(&ctx, agent_id, &session, gen, Some(msg));
                 return Err(Error::Other(e.to_string()));
             }
         };
@@ -93,8 +97,8 @@ impl Supervisor {
             match prepare_run(&plan.first_cmd, intended_port) {
                 Ok(p) => p,
                 Err(e) => {
-                    session.mark_stopped(Some(format!("Failed to start command: {e}")));
-                    emit_run_state(ctx.sink.as_ref(), agent_id, &session);
+                    let msg = format!("Failed to start command: {e}");
+                    settle_stopped(&ctx, agent_id, &session, gen, Some(msg));
                     return Err(e);
                 }
             }
@@ -133,8 +137,8 @@ impl Supervisor {
             prepared.extra_env,
             plan.chained_run_cmd,
         ) {
-            session.mark_stopped(Some(format!("Failed to start command: {e}")));
-            emit_run_state(ctx.sink.as_ref(), agent_id, &session);
+            let msg = format!("Failed to start command: {e}");
+            settle_stopped(&ctx, agent_id, &session, gen, Some(msg));
             return Err(e);
         }
         Ok(())
@@ -326,6 +330,25 @@ fn write_header(ctx: &Arc<EngineCtx>, agent_id: &str, session: &Arc<RunSession>,
     let bytes = line.into_bytes();
     let seq = session.append_log(&bytes);
     emit_run_output(ctx.sink.as_ref(), agent_id, bytes, seq);
+}
+
+/// End run `gen` as Stopped with `error` and tell the panel — unless the run
+/// is no longer the current one, in which case nothing is touched or said:
+/// the user stopped it (and `run_stop` announced that), and may have started
+/// a newer run this outcome must not take down. Every terminal outcome of a
+/// start or a phase goes through here.
+fn settle_stopped(
+    ctx: &Arc<EngineCtx>,
+    agent_id: &str,
+    session: &Arc<RunSession>,
+    gen: u64,
+    error: Option<String>,
+) {
+    if session.mark_stopped(gen, error) {
+        emit_run_state(ctx.sink.as_ref(), agent_id, session);
+    } else {
+        tracing::debug!(agent_id, "ignoring a stale run's outcome");
+    }
 }
 
 /// Inject a port-safety note (e.g. "Port 3000 in use — using 3001") into the
@@ -855,13 +878,17 @@ fn handle_run_phase_exit(
                 match prepare_run(&run_cmd, intended_port) {
                     Ok(p) => p,
                     Err(e) => {
-                        session.mark_stopped(Some(format!("Failed to start run command: {e}")));
-                        emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
+                        let msg = format!("Failed to start run command: {e}");
+                        settle_stopped(&ctx, &agent_id, &session, gen, Some(msg));
                         return;
                     }
                 }
             };
-            session.transition_phase(RunPhase::Running);
+            // The port probe above took time; a Stop since then owns the
+            // session, and the chain ends here.
+            if !session.transition_phase(gen, RunPhase::Running) {
+                return;
+            }
             // Emit the resolved port before the running state so the store holds
             // it before the UI reacts (see run_start for the same ordering).
             session.set_ports(gen, prepared.port, None);
@@ -886,21 +913,20 @@ fn handle_run_phase_exit(
                 prepared.extra_env,
                 None,
             ) {
-                session.mark_stopped(Some(format!("Failed to start run command: {e}")));
-                emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
+                let msg = format!("Failed to start run command: {e}");
+                settle_stopped(&ctx, &agent_id, &session, gen, Some(msg));
             }
             return;
         }
         // No run command to chain into — treat as clean stop.
-        session.mark_stopped(None);
-        emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
+        settle_stopped(&ctx, &agent_id, &session, gen, None);
         return;
     }
 
     // Setup failed → do NOT proceed to run. Surface the error.
     if matches!(phase, RunPhase::Setup) && !exit.success {
-        session.mark_stopped(Some(format!("Setup failed: {}", exit.message)));
-        emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
+        let msg = format!("Setup failed: {}", exit.message);
+        settle_stopped(&ctx, &agent_id, &session, gen, Some(msg));
         return;
     }
 
@@ -910,8 +936,7 @@ fn handle_run_phase_exit(
     } else {
         Some(format!("Run exited: {}", exit.message))
     };
-    session.mark_stopped(err);
-    emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
+    settle_stopped(&ctx, &agent_id, &session, gen, err);
 }
 
 #[cfg(test)]

@@ -794,9 +794,9 @@ mod tests {
         let gen = session.begin_phase(RunPhase::Running);
         session.set_ports(gen, Some(3001), None);
         emit_run_state(&sink, "fuji", &session);
-        session.begin_phase(RunPhase::Running);
+        let gen = session.begin_phase(RunPhase::Running);
         emit_run_state(&sink, "fuji", &session);
-        session.mark_stopped(Some("Run exited: 1".to_string()));
+        session.mark_stopped(gen, Some("Run exited: 1".to_string()));
         emit_run_state(&sink, "fuji", &session);
         let state = |phase: &str, last_error: Value, port: Value| {
             (
