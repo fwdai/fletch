@@ -10,7 +10,7 @@ import { EnvironmentMenu } from "./EnvironmentMenu";
  *  Renders NOTHING when there are no paired hosts, which is the overwhelmingly
  *  common case and the one the plan's hard constraint is about: with no hosts
  *  saved, the sidebar header is exactly what it was. The switcher appears the
- *  moment a host is paired in Settings › Remote control and disappears again
+ *  moment a host is paired in Settings › Devices › Hosts and disappears again
  *  when the last one is forgotten. */
 export function EnvironmentSwitcher() {
   const [open, setOpen] = useState(false);

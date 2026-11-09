@@ -25,35 +25,35 @@ function useCountdown(iso: string): number {
   return left;
 }
 
-/** A live pairing invitation — the window during which this Mac will pair a
- *  device — QR first: the iPhone's own camera opens the `fletch://pair` link
- *  it encodes, which brings everything the phone needs and authenticates this
- *  Mac outright. Picking this Mac from the phone's "Macs nearby" list is the
- *  fallback, one click away rather than the headline; the phone asks, and this
- *  Mac's prompt (`PairRequestPrompt`) is where it is accepted. The code and
- *  address are the last resort, for networks where the phone cannot see the
- *  list. Single use and five
- *  minutes, so the countdown is part of the affordance rather than decoration.
- *  The copied link is how another Mac pairs (Paired hosts › Add a host). */
+/** The live pairing invitation — the window during which this Mac will pair a
+ *  device, kept open while Settings › Devices is — QR first: the iPhone's own
+ *  camera opens the `fletch://pair` link it encodes, which brings everything
+ *  the phone needs and authenticates this Mac outright. Another Mac on this
+ *  network needs none of it: it picks this Mac in its Devices › Hosts tab and
+ *  asks, and the app-wide prompt (`PairRequest`) is where it is accepted. The
+ *  phone's "Macs nearby" list works the same way, and the code and address are
+ *  the last resort, for networks where the phone cannot see the list. Single
+ *  use and five minutes; the pane mints the next one on its own, so the
+ *  countdown says how long this code is good for rather than asking for a
+ *  click. The copied link is how a Mac on another network pairs. */
 export function PairingCard({
   invite,
   hostName,
   closed,
   lanOnly,
   onRegenerate,
-  onDismiss,
 }: {
   invite: PairingInvite;
-  /** What this Mac is called in the phone's nearby list. */
+  /** What this Mac is called in nearby lists. */
   hostName?: string;
   /** The host closed this window early (too many pairing requests from the
-   *  network): the code is spent, whatever the countdown says. */
+   *  network): the code is spent, whatever the countdown says, and only a
+   *  click here opens the next one. */
   closed?: boolean;
-  /** No relay link is up, so the link carries no relay and the phone can
-   *  only reach this Mac from the same network. */
+  /** No relay link is up, so the phone can only reach this Mac from the same
+   *  network. */
   lanOnly?: boolean;
   onRegenerate: () => void;
-  onDismiss: () => void;
 }) {
   const left = useCountdown(invite.expiresAt);
   // Over either way: lapsed, or closed by the host. Same card, different words.
@@ -69,15 +69,21 @@ export function PairingCard({
           {closed
             ? "Pairing closed after too many attempts from this network. Generate a new code."
             : expired
-              ? "This code has expired. Generate a new one."
-              : `Scan this with your iPhone's camera to pair it. It grants ${presetLabel(
+              ? "This code has expired. A new one is on its way."
+              : `Scan this with your phone's camera to pair it. It grants ${presetLabel(
                   invite.preset,
                 )} access.`}
         </div>
+        {!expired && (
+          <div className="set-pair-copy text-sm">
+            A Mac pairs by picking {hostName ? `“${hostName}”` : "this Mac"} in its Settings ›
+            Devices › Hosts. Accept here when it asks.
+          </div>
+        )}
         {!expired && lanOnly && (
           <div className="set-inline-warn text-sm">
             This Mac can't be reached from other networks right now, so keep your phone on the same
-            network while it pairs. Turn on “Reach this Mac from anywhere” to pair from anywhere.
+            network while it pairs.
           </div>
         )}
         {!expired && (
@@ -116,14 +122,11 @@ export function PairingCard({
           <span className={`set-pair-clock mono ${left <= 30 ? "urgent" : ""}`}>
             {closed ? "closed" : expired ? "expired" : `expires in ${mmss}`}
           </span>
-          <CopyButton text={invite.url} tip="Copy pairing link, to pair another Mac" />
+          <CopyButton text={invite.url} tip="Copy pairing link, for a Mac on another network" />
         </div>
         <div className="set-pair-actions flex-center">
           <Button variant="outline" size="sm" onClick={onRegenerate}>
             New code
-          </Button>
-          <Button variant="ghost" size="sm" onClick={onDismiss}>
-            Done
           </Button>
         </div>
       </div>

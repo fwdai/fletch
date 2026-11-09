@@ -37,7 +37,7 @@ pub use fletch_core::{
     sandbox, secrets, slash_commands, supervisor, telemetry, transcripts, usage_scan, verify,
     workflow, workspace,
 };
-// Paired-device remote access (Settings → Remote control). Desktop-only: the
+// Paired-device remote access (Settings → Devices). Desktop-only: the
 // host is the machine agents run on, never the phone.
 #[cfg(desktop)]
 pub use fletch_core::remote;
@@ -1408,6 +1408,7 @@ pub fn run() {
             commands::remote_begin_pairing,
             commands::remote_answer_pair_request,
             commands::remote_revoke_device,
+            commands::remote_browse_nearby,
             // This Mac as a client of other hosts (`client/`), the same four
             // commands the phone registers over the same dialer.
             client::remote_connect,

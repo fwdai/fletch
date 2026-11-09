@@ -15,9 +15,9 @@ const STATE_LABELS: Record<ConnectionStatus, string> = {
 };
 
 /** One paired host: whether this Mac is talking to it right now, and the last
- *  reason it isn't. "Forget" drops the connection and the record;
- *  the host keeps its own device entry until it is revoked there, so pairing
- *  again needs a fresh link either way. */
+ *  reason it isn't. "Forget" drops the connection and the record; the host
+ *  keeps its own device entry until it is revoked there, and pairing again
+ *  goes through Add a host like the first time. */
 export function HostRow({
   host,
   disabled,
