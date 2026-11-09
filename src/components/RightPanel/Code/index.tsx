@@ -16,6 +16,7 @@ import { isAgentBusy } from "@/helpers";
 import { useAppStore } from "@/store";
 import { Changes } from "./Changes";
 import { type CodeMode, loadBase, loadMode, saveBase, saveMode } from "./prefs";
+import { useAgentGit } from "./useAgentGit";
 
 export function CodePanel({ agent }: { agent: AgentRecord }) {
   const [mode, setMode] = useState<CodeMode>(loadMode);
@@ -118,12 +119,13 @@ function ModeSwitch({
   mode: CodeMode;
   onChange: (m: CodeMode) => void;
 }) {
-  // Uncommitted files, or commits ahead of the base: work the Changes list shows.
-  const hasChanges = useAppStore((s) => {
-    const git = s.gitStates[agent.id];
-    const dirty = git?.files.length ?? s.gitShortstats[agent.id]?.file_count ?? 0;
-    return dirty > 0 || (git?.ahead ?? 0) > 0;
-  });
+  // Uncommitted files, or commits ahead of the base, in any of the agent's
+  // checkouts: work the Changes list shows. The fleet shortstats stand in
+  // until the agent's own poll has answered.
+  const git = useAgentGit(agent);
+  const shortDirty = useAppStore((s) => s.gitShortstats[agent.id]?.file_count ?? 0);
+  const dirty = git.files?.length ?? shortDirty;
+  const hasChanges = dirty > 0 || git.ahead > 0;
   // Whether the agent is mid-turn — the dot is green & pulsing only then, and
   // goes grey when work stops so it never implies activity that isn't there.
   const busy = useAppStore((s) => isAgentBusy(s, agent.id, agent.status));

@@ -71,3 +71,17 @@ export function DegradedHint() {
     </div>
   );
 }
+
+/** Git is paused in a checkout whose config tells git to run a program
+ *  (`git::hardening`): the host can't read it, so no list here speaks for it.
+ *  `checkouts` names them for a multi-repo agent; null for the only checkout.
+ *  The Git panel is where the keys are shown and removed. */
+export function BlockedHint({ checkouts }: { checkouts: string[] | null }) {
+  const where = checkouts ? `in ${checkouts.join(", ")}` : "in this checkout";
+  return (
+    <div className="code-degraded text-xs">
+      Git is paused {where}: its config tells git to run a program, so its changes can't be read.
+      The Git panel shows the settings and removes them.
+    </div>
+  );
+}

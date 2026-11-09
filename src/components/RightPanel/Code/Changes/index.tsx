@@ -6,9 +6,10 @@ import { useEffect, useRef, useState } from "react";
 import type { AgentRecord, DiffBaseMode } from "@/api";
 import { isAgentBusy } from "@/helpers";
 import { useAppStore } from "@/store";
+import { useAgentGit } from "../useAgentGit";
 import { ChangedFileDiff } from "./ChangedFileDiff";
 import { ChangedFileList } from "./ChangedFileList";
-import { ChangesHeader, DegradedHint } from "./ChangesHeader";
+import { BlockedHint, ChangesHeader, DegradedHint } from "./ChangesHeader";
 import { EmptyChanges } from "./EmptyChanges";
 import { useChangedFiles } from "./useChangedFiles";
 import { useLiveFile } from "./useLiveFile";
@@ -41,9 +42,15 @@ export function Changes({
   // Same signal the chat's "thinking" spinner uses, so live state appears and
   // clears in lockstep with the rest of the UI.
   const busy = useAppStore((s) => isAgentBusy(s, agent.id, agent.status));
-  // Commits ahead of the base: what an empty Uncommitted list means depends on it.
-  const ahead = useAppStore((s) => s.gitStates[agent.id]?.ahead ?? 0);
-  const { files, additions, deletions, degraded, loaded } = useChangedFiles(agent, diffBase, busy);
+  // Every checkout of the agent: the Uncommitted list, what an empty one
+  // means (commits ahead), and the checkouts the host can't read.
+  const git = useAgentGit(agent);
+  const { files, additions, deletions, degraded, loaded, blocked } = useChangedFiles(
+    agent.id,
+    git,
+    diffBase,
+    busy,
+  );
   const liveFile = useLiveFile(`${agent.id}:${diffBase}`, files, busy);
   const viewed = useViewed(agent.id, diffBase, files);
 
@@ -131,6 +138,12 @@ export function Changes({
     );
   }
 
+  // A checkout the host can't read is named, not passed off as clean: with
+  // nothing else to show, the notice is the whole view.
+  const blockedHint = blocked.length > 0 && (
+    <BlockedHint checkouts={agent.repos.length > 1 ? blocked : null} />
+  );
+
   return (
     <div className="code-wrap">
       {walkthrough}
@@ -141,11 +154,13 @@ export function Changes({
       ) : files.length === 0 ? (
         <>
           {partial && <DegradedHint />}
-          <EmptyChanges
-            base={diffBase}
-            committed={ahead > 0}
-            onShowAll={() => onDiffBaseChange("fork")}
-          />
+          {blockedHint || (
+            <EmptyChanges
+              base={diffBase}
+              committed={git.ahead > 0}
+              onShowAll={() => onDiffBaseChange("fork")}
+            />
+          )}
         </>
       ) : (
         <>
@@ -158,6 +173,7 @@ export function Changes({
             onToggleFollow={toggleFollow}
             degraded={partial}
           />
+          {blockedHint}
           <div className="code-list">
             <ChangedFileList
               files={files}
