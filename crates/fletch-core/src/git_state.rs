@@ -699,16 +699,16 @@ async fn untracked_additions(checkout_path: &Path, rels: Vec<String>) -> (Vec<u3
 
 /// [`untracked_additions`] for a checkout a box keeps in its guest: one
 /// command there counts every file by the same rules as the local pass —
-/// regular files only, each read capped at the lesser of `max_file_bytes`
+/// regular files only, a file over `max_file_bytes` skipped on its stat and
+/// never read or charged, each read capped at the lesser of `max_file_bytes`
 /// and what is left of `budget` (plus one byte, to tell "at the ceiling"
 /// from "over it"), every byte read charged whatever the file turns out to
-/// be, a file over its ceiling or holding a NUL byte counts 0, a final line
-/// without a newline counts, and the pass ends when the budget runs out —
-/// instead of a round trip over the channel per file. The paths travel on
-/// stdin, one per line (a name with a newline in it counts 0), and the counts
-/// come back one per line in order, `over` where the budget cut the pass
-/// short. The read is capped by `head`, not by trusting a size `stat`
-/// reported a moment earlier.
+/// be, a file that outgrew its stat or holds a NUL byte counts 0, a final
+/// line without a newline counts, and the pass ends when the budget runs
+/// out — instead of a round trip over the channel per file. The paths travel
+/// on stdin, one per line (a name with a newline in it counts 0), and the
+/// counts come back one per line in order, `over` where the budget cut the
+/// pass short.
 async fn untracked_additions_in_guest(
     exec: &crate::exec::Executor,
     checkout_path: &Path,
@@ -722,6 +722,8 @@ tmp=$(mktemp) || exit 1
 trap 'rm -f -- "$tmp"' EXIT
 while IFS= read -r f; do
   if [ -z "$f" ] || [ ! -f "$f" ]; then echo 0; continue; fi
+  size=$(stat -L -c %s -- "$f" 2>/dev/null || stat -L -f %z -- "$f" 2>/dev/null) || { echo 0; continue; }
+  if [ "$size" -eq 0 ] || [ "$size" -gt "$max_file" ]; then echo 0; continue; fi
   remaining=$((budget - spent))
   ceiling=$max_file
   if [ "$remaining" -lt "$ceiling" ]; then ceiling=$remaining; fi
@@ -2120,12 +2122,11 @@ mod tests {
         .await;
         assert_eq!((counts, over), (vec![0, 2, 0], true));
 
-        // Oversized: read only to its ceiling (+1), charged that much, the
-        // pass goes on. 50 bytes against a 10-byte file cap costs 11, so a
-        // 25-byte budget still has room for the 4-byte text after it.
+        // Oversized: skipped on its stat, never read, never charged — a
+        // 4-byte budget still has room for the 4-byte text after it.
         w("big.txt", &[b'z'; 50]);
         let (counts, over) =
-            untracked_additions_in_guest(&exec, td.path(), rels(&["big.txt", "text.txt"]), 10, 25)
+            untracked_additions_in_guest(&exec, td.path(), rels(&["big.txt", "text.txt"]), 10, 4)
                 .await;
         assert_eq!((counts, over), (vec![0, 2], false));
 
