@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/api";
 import { SetRow } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
-import { useAppStore } from "@/store";
+import { EMPTY_AGENTS, useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 
 /** Delete the project, behind an inline confirm in the same row. */
@@ -13,7 +13,7 @@ export function DeleteProjectRow({
   projectId: string;
   projectName: string;
 }) {
-  const agents = useAppStore((state) => state.workspace?.agents ?? []);
+  const agents = useAppStore((state) => state.workspace?.agents ?? EMPTY_AGENTS);
   const deleteProject = useAppStore((state) => state.deleteProject);
   // A host from before the project-settings ops answers neither the delete nor
   // the running-agents probe, so the gate speaks for both.
