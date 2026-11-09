@@ -24,7 +24,7 @@ pub(super) struct Target {
 }
 
 impl Target {
-    /// Whether this checkout's pushes created `branch` on origin.
+    /// Whether the host already records `branch` as one this checkout created.
     pub(super) fn owns(&self, branch: &str) -> bool {
         crate::rpc::caps::owns(&self.owned, branch)
     }

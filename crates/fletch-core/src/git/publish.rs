@@ -60,6 +60,10 @@ pub struct Published {
     /// The commit now at `refs/heads/<branch>` on origin — the signed copy
     /// when signing rewrote the tip.
     pub tip: String,
+    /// The push created the branch: no push URL had it before. What makes a
+    /// branch the workspace's own (`rpc::caps`), read from the remotes the
+    /// push went to.
+    pub created: bool,
 }
 
 pub async fn publish(p: &Publication<'_>, tip: Tip<'_>) -> Result<Published> {
@@ -78,8 +82,12 @@ pub async fn publish(p: &Publication<'_>, tip: Tip<'_>) -> Result<Published> {
     } else {
         tip
     };
-    let summary = push_commit(p.checkout, p.source_repo, &tip, p.branch, p.force).await?;
-    Ok(Published { summary, tip })
+    let pushed = push_commit(p.checkout, p.source_repo, &tip, p.branch, p.force).await?;
+    Ok(Published {
+        summary: pushed.summary,
+        tip,
+        created: pushed.created,
+    })
 }
 
 /// `tip` with its unpublished commits signed, and the local branch moved onto

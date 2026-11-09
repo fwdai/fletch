@@ -357,6 +357,72 @@ async fn git_push_detached_materializes_named_branch() {
     );
 }
 
+/// Whether a push created the branch is read from the remotes the push goes
+/// to. With a fork setup — fetch from upstream, push to the fork — a branch
+/// that exists only on the fork is absent from the fetch remote, and a push
+/// that lands on it must not claim it.
+#[tokio::test]
+async fn a_branch_already_on_the_push_remote_is_not_claimed() {
+    let td = tempfile::tempdir().unwrap();
+    let crate::git::testing::Repos {
+        source, checkout, ..
+    } = crate::git::testing::repos(td.path());
+    let fork = td.path().join("fork.git");
+    run_git(
+        td.path(),
+        &["init", "-q", "--bare", "-b", "main", fork.to_str().unwrap()],
+    );
+    for repo in [&source, &checkout] {
+        run_git(
+            repo,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                fork.to_str().unwrap(),
+            ],
+        );
+    }
+    // `fix/forked` exists on the fork only, at the commit the checkout is on.
+    run_git(
+        &checkout,
+        &[
+            "push",
+            "-q",
+            fork.to_str().unwrap(),
+            "HEAD:refs/heads/fix/forked",
+        ],
+    );
+    let born = |fx: &[RpcEvent]| {
+        fx.iter()
+            .any(|e| matches!(e, RpcEvent::Named { name, .. } if name == EVENT_BRANCH_CREATED))
+    };
+    let disp = crate::rpc::git::GitDispatcher::new(
+        checkout.clone(),
+        source.clone(),
+        "main".to_string(),
+        crate::rpc::caps::AgentCaps::interactive(),
+    );
+
+    run_git(&checkout, &["checkout", "-q", "-b", "fix/forked"]);
+    crate::git::testing::commit_file(&checkout, "mine.txt");
+    let (resp, fx) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
+    assert!(resp.ok, "{resp:?}");
+    assert!(
+        !born(&fx),
+        "the fork already had the branch; the push did not create it: {fx:?}"
+    );
+
+    run_git(&checkout, &["checkout", "-q", "-b", "fix/fresh"]);
+    let (resp, fx) = disp.dispatch_inner("p2", "git_push", &Value::Null).await;
+    assert!(resp.ok, "{resp:?}");
+    assert!(
+        born(&fx),
+        "a branch new to the fork is created there: {fx:?}"
+    );
+}
+
 /// The host records a branch as the workspace's own only when its push
 /// created it on origin: a name origin already had is not claimed even when
 /// the push lands on it, and a rejected push claims nothing. Without that, a
