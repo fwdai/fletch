@@ -127,9 +127,9 @@ pub struct FileStatus {
     /// size as `"<mtime ns>:<bytes>"`. The line counts alone miss an edit that
     /// replaces a line with another of the same shape, which is most edits to
     /// a file already in the list; a client re-reads a diff, and lets a
-    /// "viewed" mark lapse, when this moves. `None` for a file that is gone
-    /// from the tree (deleted) or that can't be stat'ed from the host (a
-    /// checkout a box keeps in its guest).
+    /// "viewed" mark lapse, when this moves. Stamped where the checkout
+    /// lives, a box's guest included. `None` for a file that is gone from the
+    /// tree (deleted) or whose stat failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
 }
@@ -299,26 +299,103 @@ pub async fn changed_since(checkout_path: &Path, fork: &str) -> Result<Vec<FileS
     Ok(files)
 }
 
-/// Give each file its [`FileStatus::rev`]: one `stat` per file, off the async
-/// threads. A checkout a box keeps in its guest isn't on this filesystem, so
-/// its files stay unstamped, as does any file the stat fails on.
+/// Give each file its [`FileStatus::rev`]: one `stat` per file, where the
+/// checkout lives — this filesystem, off the async threads, or the guest of
+/// the box that keeps it ([`revisions_in_guest`]). A file the stat fails on
+/// (deleted) stays unstamped.
 async fn stamp_revisions(checkout_path: &Path, files: &mut [FileStatus]) {
-    if let crate::exec::Executor::Remote(_) = crate::exec::for_path(checkout_path) {
-        return;
-    }
-    let paths: Vec<std::path::PathBuf> =
-        files.iter().map(|f| checkout_path.join(&f.path)).collect();
-    let revs = tokio::task::spawn_blocking(move || {
-        paths
-            .iter()
-            .map(|p| std::fs::metadata(p).ok().map(revision_of))
-            .collect::<Vec<_>>()
-    })
-    .await
-    .unwrap_or_default();
+    let revs = match crate::exec::for_path(checkout_path) {
+        crate::exec::Executor::Local => {
+            let paths: Vec<std::path::PathBuf> =
+                files.iter().map(|f| checkout_path.join(&f.path)).collect();
+            tokio::task::spawn_blocking(move || {
+                paths
+                    .iter()
+                    .map(|p| std::fs::metadata(p).ok().map(revision_of))
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default()
+        }
+        exec @ crate::exec::Executor::Remote(_) => {
+            let rels = files.iter().map(|f| f.path.clone()).collect();
+            revisions_in_guest(&exec, checkout_path, rels).await
+        }
+    };
     for (f, rev) in files.iter_mut().zip(revs) {
         f.rev = rev;
     }
+}
+
+/// [`stamp_revisions`] for a checkout a box keeps in its guest: one command
+/// there stats every file — the paths travel on stdin, one per line, and the
+/// revisions come back one per line in order, blank where the stat failed —
+/// instead of a round trip over the channel per file. GNU `stat` gives the
+/// mtime to the nanosecond; a BSD one (the test's Mac) to the second. Any
+/// failure to run leaves every file unstamped, as a missing file is.
+async fn revisions_in_guest(
+    exec: &crate::exec::Executor,
+    checkout_path: &Path,
+    rels: Vec<String>,
+) -> Vec<Option<String>> {
+    const SCRIPT: &str = r#"
+while IFS= read -r f; do
+  if [ -z "$f" ]; then echo; continue; fi
+  stat -L -c '%.9Y:%s' -- "$f" 2>/dev/null || stat -L -f '%m:%z' -- "$f" 2>/dev/null || echo
+done
+"#;
+    use tokio::io::AsyncWriteExt;
+
+    let none = vec![None; rels.len()];
+    let mut input = String::new();
+    for rel in &rels {
+        // A newline cannot travel in a line; the file goes unstamped like an
+        // unreadable one.
+        input.push_str(if rel.contains('\n') { "" } else { rel });
+        input.push('\n');
+    }
+    let mut cmd = tokio::process::Command::from(exec.command("bash", checkout_path, &[]));
+    cmd.args(["-c", SCRIPT])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            tracing::info!(error = %e, "file revisions in the box not read");
+            return none;
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.as_bytes()).await;
+        drop(stdin);
+    }
+    let result = match child.wait_with_output().await {
+        Ok(result) if result.status.success() => result,
+        Ok(result) => {
+            tracing::info!(
+                stderr = %String::from_utf8_lossy(&result.stderr).trim(),
+                "file revisions in the box failed"
+            );
+            return none;
+        }
+        Err(e) => {
+            tracing::info!(error = %e, "file revisions in the box not read");
+            return none;
+        }
+    };
+    let text = String::from_utf8_lossy(&result.stdout);
+    let mut revs: Vec<Option<String>> = text
+        .lines()
+        .map(|line| {
+            Some(line.trim())
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+        })
+        .collect();
+    revs.resize(rels.len(), None);
+    revs
 }
 
 fn revision_of(meta: std::fs::Metadata) -> String {
@@ -1989,6 +2066,31 @@ mod tests {
                 .map(|f| (f.additions, f.deletions)),
             Some((1, 0))
         );
+    }
+
+    /// The guest-side stamp, run through the local executor: the script is
+    /// what a box runs, bash and `stat` are what it has.
+    #[tokio::test]
+    async fn revisions_in_guest_stamps_each_file_in_order_and_skips_what_it_cannot_stat() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(td.path().join("lib")).unwrap();
+        std::fs::write(td.path().join("a.txt"), "hello\n").unwrap();
+        std::fs::write(td.path().join("lib/b.txt"), "1\n2\n3\n").unwrap();
+        let rels = vec![
+            "a.txt".to_string(),
+            "missing.txt".to_string(),
+            "lib/b.txt".to_string(),
+            "new\nline.txt".to_string(),
+        ];
+        let revs = revisions_in_guest(&crate::exec::Executor::Local, td.path(), rels).await;
+        assert_eq!(revs.len(), 4);
+        assert!(revs[1].is_none(), "{revs:?}");
+        assert!(revs[3].is_none(), "{revs:?}");
+        // "<mtime>:<size>", the size exact.
+        assert!(revs[0].as_deref().unwrap().ends_with(":6"), "{revs:?}");
+        assert!(revs[2].as_deref().unwrap().ends_with(":6"), "{revs:?}");
+        let (mtime, _) = revs[0].as_deref().unwrap().split_once(':').unwrap();
+        assert!(mtime.parse::<f64>().is_ok_and(|t| t > 0.0), "{revs:?}");
     }
 
     fn kind_name(kind: &StatusKind) -> &'static str {
