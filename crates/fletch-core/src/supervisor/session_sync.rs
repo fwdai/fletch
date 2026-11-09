@@ -267,6 +267,7 @@ pub(crate) fn pr_snapshot(repo: &TrackedRepo) -> Option<PrState> {
         opened_at: None,
         merged_at: None,
         branch: None,
+        base: None,
     })
 }
 
@@ -1871,6 +1872,7 @@ pub(super) mod tests {
             subdir: "repo".into(),
             branch: Some("feat/x".into()),
             parent_branch: Some("main".into()),
+            pr_base: None,
             base_sha: None,
             pr_number: Some(42),
             pr_url: Some("https://github.com/o/r/pull/42".into()),
@@ -1953,6 +1955,7 @@ pub(super) mod tests {
             opened_at: None,
             merged_at: None,
             branch: None,
+            base: None,
         };
         let held = [pr(42, PrStatus::Merged)];
         assert!(
@@ -2010,6 +2013,7 @@ pub(super) mod tests {
             opened_at: None,
             merged_at: None,
             branch: None,
+            base: None,
         };
         bind_pr_snapshot(&wm, &id, &subdir, &pr(42, PrStatus::Merged));
         bind_pr_snapshot(&wm, &id, &subdir, &pr(43, PrStatus::Closed));
@@ -2064,7 +2068,7 @@ pub(super) mod tests {
         let db = crate::workspace::tests::test_db();
         let wm = WorkspaceManager::new(db.clone());
         let (id, subdir) = branchless_agent(&wm, &db, None);
-        wm.set_repo_pr_number(&id, &subdir, 7, "", "", Some("feat/own"))
+        wm.set_repo_pr_number(&id, &subdir, 7, "", "", Some("feat/own"), None)
             .unwrap();
         wm.record_repo_pr(
             &id,
@@ -2078,6 +2082,7 @@ pub(super) mod tests {
                 opened_at: None,
                 merged_at: None,
                 branch: Some("feat/own".into()),
+                base: None,
             },
         )
         .unwrap();

@@ -68,7 +68,12 @@ export interface TrackedRepo {
   repo_path: string;
   subdir: string;
   branch?: string | null;
+  /** The branch the checkout was forked from; never rewritten. */
   parent_branch?: string | null;
+  /** The focused PR's base when known — in a stack, the branch below rather
+   *  than `parent_branch`. The base the checkout is reviewed against is
+   *  `pr_base ?? parent_branch`; `GitState.parent_branch` already resolves it. */
+  pr_base?: string | null;
   /** Bound PR identity + last persisted snapshot (see prSnapshot in
    *  util/prState.ts). Written by the backend on every successful PR fetch;
    *  what the UI renders when GitHub or the checkout is unavailable. */

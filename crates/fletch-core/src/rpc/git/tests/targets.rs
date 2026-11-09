@@ -14,7 +14,8 @@ fn repo_target(subdir: &str, cwd: &std::path::Path) -> RepoTarget {
         cwd: cwd.to_path_buf(),
         source_repo: cwd.to_path_buf(),
         base_branch: "main".into(),
-        own_branch: None,
+        spawn_base: "main".into(),
+        owned: Vec::new(),
     }
 }
 

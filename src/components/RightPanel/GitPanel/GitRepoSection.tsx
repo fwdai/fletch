@@ -122,7 +122,7 @@ export function GitRepoSection({
     customAgents.find((a) => a.id === agent.custom_agent_id)?.name ?? providerLabel(agent.provider);
 
   const branch = gitState?.branch || repo?.branch || "";
-  const base = gitState?.parent_branch || repo?.parent_branch || "main";
+  const base = gitState?.parent_branch || repo?.pr_base || repo?.parent_branch || "main";
   // The checkout is detached until its first push; a branch is only born from
   // an agent that names it. So a direct (agent-bypassed) action that needs a
   // branch — push, open PR — can't run yet: it routes through the agent

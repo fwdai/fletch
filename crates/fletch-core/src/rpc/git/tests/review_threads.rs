@@ -22,6 +22,7 @@ fn tracked_repo(path: &std::path::Path, subdir: &str) -> TrackedRepo {
         subdir: subdir.to_string(),
         branch: None,
         parent_branch: None,
+        pr_base: None,
         base_sha: None,
         pr_number: None,
         pr_url: None,

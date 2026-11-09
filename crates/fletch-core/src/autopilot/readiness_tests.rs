@@ -46,6 +46,7 @@ pub(crate) fn pr() -> PrState {
         opened_at: None,
         merged_at: None,
         branch: None,
+        base: None,
     }
 }
 

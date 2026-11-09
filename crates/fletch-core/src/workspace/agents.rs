@@ -347,22 +347,39 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// Record the base branch a tracked repo's work is reviewed against,
-    /// identified by subdir. Seeded at spawn from the project's default and
-    /// rewritten when `open_pr` targets a different base (`args.base`) — the user
-    /// can point the agent at a feature branch mid-session, and everything keyed
-    /// on the base (ahead/behind, "rebase onto", the `update-branch` fetch) has to
-    /// follow the PR that actually exists rather than the spawn-time guess.
-    /// Overwrites unconditionally; re-recording the same base is a no-op write.
-    ///
-    /// Deliberately leaves `base_sha` alone: that is the immutable fork point the
-    /// checkout was cut from, which the diff base reads in preference to this
-    /// name, and it stays true whatever the PR targets.
-    pub fn set_repo_parent_branch(&self, agent_id: &str, subdir: &str, base: &str) -> Result<()> {
+    /// Record that this checkout's push created `branch` on origin: from now on
+    /// it is one of the workspace's own branches (`worktree_branches`), which
+    /// the push guard may force and which is never "the base" to it. Idempotent.
+    pub fn record_owned_branch(&self, agent_id: &str, subdir: &str, branch: &str) -> Result<()> {
         let conn = self.db.lock();
         conn.execute(
-            "UPDATE worktrees SET parent_branch = ?1 WHERE workspace_id = ?2 AND subdir = ?3",
-            rusqlite::params![base, agent_id, subdir],
+            "INSERT OR IGNORE INTO worktree_branches (workspace_id, subdir, branch)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![agent_id, subdir, branch],
+        )?;
+        Ok(())
+    }
+
+    /// Every branch this checkout has created on origin, oldest first.
+    pub fn owned_branches(&self, agent_id: &str, subdir: &str) -> Result<Vec<String>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT branch FROM worktree_branches
+              WHERE workspace_id = ?1 AND subdir = ?2
+              ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![agent_id, subdir], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+    }
+
+    /// Record the base a PR of this checkout targets, by number — a `pr_edit`
+    /// retarget. A number not in the checkout's set writes nothing.
+    pub fn set_pr_base(&self, agent_id: &str, subdir: &str, number: i64, base: &str) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "UPDATE worktree_prs SET base = ?1
+              WHERE workspace_id = ?2 AND subdir = ?3 AND number = ?4",
+            rusqlite::params![base, agent_id, subdir, number],
         )?;
         Ok(())
     }
@@ -387,14 +404,14 @@ impl WorkspaceManager {
     /// than from its first successful fetch. Overwrites unconditionally — the
     /// latest PR opened is the one we focus.
     ///
-    /// `url`/`title` may be empty and `branch` absent when the caller doesn't
-    /// know them; an existing row keeps what it had for those, and a new row
-    /// starts `open` (a PR just opened is open; an existing row keeps its state,
-    /// which only a fetch may move). The binding's snapshot columns are copied
-    /// from that row, never kept from the PR being replaced — so a follow-up
-    /// bound after a merge can't inherit "merged" (which `resolve_pr_state`
-    /// serves with no network, forever), and `pr_snapshot` is never `None` for
-    /// a bound PR.
+    /// `url`/`title` may be empty and `branch`/`base` absent when the caller
+    /// doesn't know them; an existing row keeps what it had for those, and a
+    /// new row starts `open` (a PR just opened is open; an existing row keeps
+    /// its state, which only a fetch may move). The binding's snapshot columns
+    /// are copied from that row, never kept from the PR being replaced — so a
+    /// follow-up bound after a merge can't inherit "merged" (which
+    /// `resolve_pr_state` serves with no network, forever), and `pr_snapshot`
+    /// is never `None` for a bound PR.
     pub fn set_repo_pr_number(
         &self,
         agent_id: &str,
@@ -403,17 +420,19 @@ impl WorkspaceManager {
         url: &str,
         title: &str,
         branch: Option<&str>,
+        base: Option<&str>,
     ) -> Result<()> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO worktree_prs (workspace_id, subdir, number, url, title, state, branch)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'open', NULLIF(?6, ''))
+            "INSERT INTO worktree_prs (workspace_id, subdir, number, url, title, state, branch, base)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'open', NULLIF(?6, ''), NULLIF(?7, ''))
              ON CONFLICT(workspace_id, subdir, number) DO UPDATE SET
                     url    = CASE WHEN excluded.url   <> '' THEN excluded.url   ELSE url   END,
                     title  = CASE WHEN excluded.title <> '' THEN excluded.title ELSE title END,
-                    branch = COALESCE(excluded.branch, branch)",
-            rusqlite::params![agent_id, subdir, pr_number, url, title, branch],
+                    branch = COALESCE(excluded.branch, branch),
+                    base   = COALESCE(excluded.base, base)",
+            rusqlite::params![agent_id, subdir, pr_number, url, title, branch, base],
         )?;
         bind_pr(&tx, agent_id, subdir, pr_number)?;
         tx.commit()?;
@@ -915,7 +934,7 @@ impl WorkspaceManager {
 }
 
 /// The `worktree_prs` columns [`pr_row`] reads, in its order.
-const PR_ROW_COLUMNS: &str = "number, url, title, state, opened_at, merged_at, branch";
+const PR_ROW_COLUMNS: &str = "number, url, title, state, opened_at, merged_at, branch, base";
 
 /// One `worktree_prs` row (selected as [`PR_ROW_COLUMNS`] from column `at`) as
 /// a `PrState`. `None` for an unparseable state: a row we can't render
@@ -935,6 +954,7 @@ fn pr_row(row: &rusqlite::Row, at: usize) -> rusqlite::Result<Option<crate::gith
         opened_at: row.get(at + 4)?,
         merged_at: row.get(at + 5)?,
         branch: row.get(at + 6)?,
+        base: row.get(at + 7)?,
     }))
 }
 
@@ -970,18 +990,21 @@ fn upsert_pr_row(
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO worktree_prs
-                (workspace_id, subdir, number, url, title, state, opened_at, merged_at, branch)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                (workspace_id, subdir, number, url, title, state, opened_at, merged_at, branch, base)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(workspace_id, subdir, number) DO UPDATE SET
                 url       = excluded.url,
                 title     = excluded.title,
                 state     = excluded.state,
-                -- Times and branch COALESCE: a payload that omits one must not
-                -- erase an earlier-observed value. Identity is the PK here, so
-                -- there's no cross-PR bleed to guard against.
+                -- Times, branch and base COALESCE: a payload that omits one
+                -- must not erase an earlier-observed value. Identity is the PK
+                -- here, so there's no cross-PR bleed to guard against. A base
+                -- the source does report replaces the old one: a retarget on
+                -- GitHub reaches the record on the next fetch.
                 opened_at = COALESCE(excluded.opened_at, opened_at),
                 merged_at = COALESCE(excluded.merged_at, merged_at),
-                branch    = COALESCE(excluded.branch, branch)",
+                branch    = COALESCE(excluded.branch, branch),
+                base      = COALESCE(excluded.base, base)",
         rusqlite::params![
             agent_id,
             subdir,
@@ -992,6 +1015,7 @@ fn upsert_pr_row(
             pr.opened_at,
             pr.merged_at,
             pr.branch,
+            pr.base,
         ],
     )?;
     Ok(())

@@ -337,6 +337,67 @@ fn pr_history_migration_backfills_existing_bindings() {
     assert_eq!(count, 0, "no persisted state means no renderable snapshot");
 }
 
+/// Schema version just before `worktree_branches` (0060). Pinned for the same
+/// reason as `V_WORKTREE_PRS`.
+const V_BEFORE_OWNED_BRANCHES: usize = 59;
+
+/// The owned-branch set seeds itself from the one branch each checkout had
+/// recorded, so a workspace mid-flight keeps the force-push it had on that
+/// branch; a checkout with no branch yet owns nothing. The PR set then gains
+/// its `base` column, empty until the next fetch.
+#[test]
+fn owned_branches_migration_seeds_each_recorded_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_BEFORE_OWNED_BRANCHES)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO repos (id, project_id, path, created_at) VALUES ('r', 'p', '/r', 0);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w', 'p', 'ws', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, created_at, branch)
+              VALUES ('wt1', 'w', 'r', 'repo', 0, 'feat/a');
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w2', 'p', 'ws2', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, created_at, branch)
+              VALUES ('wt2', 'w2', 'r', 'repo', 0, NULL);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w3', 'p', 'ws3', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, created_at, branch)
+              VALUES ('wt3', 'w3', 'r', 'repo', 0, '');
+         INSERT INTO worktree_prs (workspace_id, subdir, number, url, title, state)
+              VALUES ('w', 'repo', 42, 'https://x/42', 'logged', 'open');",
+    )
+    .unwrap();
+    drop(conn);
+
+    init(dir.path()).unwrap();
+
+    let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
+    let owned: Vec<(String, String, String)> = conn
+        .prepare("SELECT workspace_id, subdir, branch FROM worktree_branches ORDER BY workspace_id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        owned,
+        [("w".into(), "repo".into(), "feat/a".into())],
+        "only a recorded, non-empty branch is seeded"
+    );
+    let base: Option<String> = conn
+        .query_row(
+            "SELECT base FROM worktree_prs WHERE workspace_id = 'w' AND number = 42",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        base, None,
+        "an existing PR row learns its base on its next fetch"
+    );
+}
+
 /// Schema version just before `worktree_prs.branch` and the bindings backfill
 /// (0048). Pinned for the same reason as `V_WORKTREE_PRS`.
 const V_BEFORE_PR_SETS: usize = 47;

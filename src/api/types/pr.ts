@@ -16,6 +16,9 @@ export interface PrState {
   /** The PR's head branch. A checkout can hold several PRs, each from its own
    *  branch. Absent when the host didn't know it (an older snapshot / host). */
   branch?: string | null;
+  /** The PR's base branch; in a stack each PR has its own. Absent when the
+   *  host didn't know it (an older snapshot / host). */
+  base?: string | null;
 }
 
 /** The checkout's focused PR as found now. Only ever the focused PR — the rest

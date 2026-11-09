@@ -2,7 +2,8 @@ use crate::rpc::git::test_support::*;
 
 use serde_json::{json, Value};
 
-use crate::rpc::git::EVENT_BRANCH_CREATED;
+use crate::rpc::caps::AgentCaps;
+use crate::rpc::git::{GitDispatcher, EVENT_BRANCH_CREATED};
 use crate::rpc::{ensure_mailbox, process_pending, RpcEvent};
 
 #[tokio::test]
@@ -433,7 +434,7 @@ async fn git_push_of_the_recorded_own_branch_emits_no_branch_event() {
     run_git(&repo, &["commit", "-q", "-m", "init"]);
     run_git(&repo, &["checkout", "-q", "-b", "fix/known"]);
 
-    let disp = dispatcher(&repo).with_own_branch(Some("fix/known".to_string()));
+    let disp = dispatcher(&repo).with_owned(&["fix/known"]);
     let (resp, fx) = disp.dispatch_inner("p", "git_push", &Value::Null).await;
     assert!(resp.ok, "{resp:?}");
     assert!(
@@ -470,7 +471,7 @@ async fn git_push_force_rewrites_diverged_remote() {
     let rpc_dir = td.path().join("rpc");
     ensure_mailbox(&rpc_dir).unwrap();
     let requests = rpc_dir.join("requests");
-    let dispatcher = dispatcher(&repo).with_own_branch(Some("fix/diverged".to_string()));
+    let dispatcher = dispatcher(&repo).with_owned(&["fix/diverged"]);
 
     write_request(&requests, "p1.json", r#"{"id":"p1","op":"git_push"}"#);
     process_pending(&rpc_dir, &dispatcher).await;
@@ -516,6 +517,139 @@ async fn git_push_force_rewrites_diverged_remote() {
     );
 }
 
+/// A bare origin with `main` pushed, and the checkout on `branch`, pushed too.
+/// The stack scenario's starting point: the branch exists on origin and is
+/// recorded as the workspace's own.
+fn stacked_fixture(td: &std::path::Path, branch: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let remote = td.join("origin.git");
+    run_git(td, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+    let repo = td.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["push", "-q", "origin", "main"]);
+    run_git(&repo, &["checkout", "-q", "-b", branch]);
+    std::fs::write(repo.join("b.txt"), b"y").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "work"]);
+    run_git(&repo, &["push", "-q", "origin", branch]);
+    (repo, remote)
+}
+
+fn remote_tip(remote: &std::path::Path, branch: &str) -> String {
+    let out = std::process::Command::new("git")
+        .args([
+            "--git-dir",
+            remote.to_str().unwrap(),
+            "rev-parse",
+            &format!("refs/heads/{branch}"),
+        ])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn local_head(repo: &std::path::Path) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The workspace opened PR A→main from `feat/a`, then PR B→A from `feat/b`:
+/// the record's base is now `feat/a`, a branch the workspace created. A
+/// follow-up to PR A goes to `feat/a` with a plain push, and a rewrite of it
+/// with a force — the branch is the workspace's own whatever is stacked on it.
+#[tokio::test]
+async fn git_push_to_the_lower_branch_of_the_workspaces_own_stack_is_allowed() {
+    let td = tempfile::tempdir().unwrap();
+    let (repo, remote) = stacked_fixture(td.path(), "feat/a");
+    let disp = dispatcher(&repo)
+        .with_base("feat/a")
+        .with_owned(&["feat/a", "feat/b"]);
+
+    std::fs::write(repo.join("c.txt"), b"z").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "follow-up"]);
+    let (resp, _) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
+    assert!(resp.ok, "a follow-up to the lower PR must land: {resp:?}");
+    assert_eq!(remote_tip(&remote, "feat/a"), local_head(&repo));
+
+    run_git(
+        &repo,
+        &["commit", "-q", "--amend", "-m", "follow-up, rewritten"],
+    );
+    let (resp, _) = disp
+        .dispatch_inner("p2", "git_push", &json!({ "force": true }))
+        .await;
+    assert!(
+        resp.ok,
+        "the workspace may rewrite a branch it created: {resp:?}"
+    );
+    assert_eq!(remote_tip(&remote, "feat/a"), local_head(&repo));
+}
+
+/// The same stack, in a workspace spawned from a branch it did not create: the
+/// spawn base stays off limits even though the record's base has moved onto
+/// the stack, and so does a stacked base the workspace did not create.
+#[tokio::test]
+async fn git_push_refuses_the_bases_the_workspace_did_not_create() {
+    let td = tempfile::tempdir().unwrap();
+    let (repo, remote) = stacked_fixture(td.path(), "release/24");
+    let before = remote_tip(&remote, "release/24");
+    std::fs::write(repo.join("c.txt"), b"z").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "sneaky"]);
+
+    // Spawned from release/24; its own PR A→release/24 from feat/a, PR B→A.
+    let disp = GitDispatcher::new(
+        repo.clone(),
+        repo.clone(),
+        "release/24".to_string(),
+        AgentCaps::interactive(),
+    )
+    .with_base("feat/a")
+    .with_owned(&["feat/a", "feat/b"]);
+    let (resp, fx) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
+    assert!(!resp.ok, "the spawn base is still protected: {resp:?}");
+    assert!(resp
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("reviewed against"));
+    assert!(fx.is_empty());
+    assert_eq!(remote_tip(&remote, "release/24"), before);
+
+    // A stacked base the workspace did not create (the user pointed its PR at
+    // a teammate's branch) is protected too.
+    run_git(&repo, &["checkout", "-q", "-b", "teammate/wip"]);
+    let disp = GitDispatcher::new(
+        repo.clone(),
+        repo.clone(),
+        "main".to_string(),
+        AgentCaps::interactive(),
+    )
+    .with_base("teammate/wip")
+    .with_owned(&["feat/a"]);
+    let (resp, _) = disp.dispatch_inner("p2", "git_push", &Value::Null).await;
+    assert!(!resp.ok, "{resp:?}");
+    assert!(resp
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("reviewed against"));
+}
+
 #[tokio::test]
 async fn git_push_force_refuses_a_branch_the_agent_does_not_own() {
     let td = tempfile::tempdir().unwrap();
@@ -529,7 +663,7 @@ async fn git_push_force_refuses_a_branch_the_agent_does_not_own() {
     run_git(&repo, &["commit", "-q", "-m", "init"]);
     run_git(&repo, &["checkout", "-q", "-b", "develop"]);
 
-    let disp = dispatcher(&repo).with_own_branch(Some("fix/mine".to_string()));
+    let disp = dispatcher(&repo).with_owned(&["fix/mine"]);
     let (resp, fx) = disp
         .dispatch_inner("p", "git_push", &json!({ "force": true }))
         .await;
@@ -703,7 +837,7 @@ async fn an_agent_made_branch_becomes_its_own_across_a_real_checkout_split() {
     // The host recorded the branch; the next dispatcher carries it, and a
     // rewritten branch can be forced.
     run_git(&checkout, &["commit", "-q", "--amend", "-m", "rewritten"]);
-    let disp = disp.with_own_branch(Some("fix/mine".to_string()));
+    let disp = disp.with_owned(&["fix/mine"]);
     let (resp, _fx) = disp
         .dispatch_inner("p2", "git_push", &json!({ "force": true }))
         .await;

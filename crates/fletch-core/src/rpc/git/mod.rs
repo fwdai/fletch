@@ -26,9 +26,9 @@ pub const EVENT_BRANCH_CREATED: &str = "git.branch_created";
 pub const EVENT_PR_OPENED: &str = "git.pr_opened";
 
 /// Emitted by `pr_edit` when it retargets a PR: payload `{ "number", "base" }`
-/// (plus `repo` for a sibling checkout). The watcher moves the checkout's
-/// recorded base so every base-keyed reader follows the PR, as it does for
-/// `EVENT_PR_OPENED`.
+/// (plus `repo` for a sibling checkout). The watcher records the base on that
+/// PR, so every base-keyed reader follows it while it is the focused PR, as it
+/// does for `EVENT_PR_OPENED`.
 pub const EVENT_PR_EDITED: &str = "git.pr_edited";
 
 /// Emitted when a mutating op succeeds, so the UI attributes the git/PR state
@@ -79,9 +79,16 @@ pub struct RepoTarget {
     pub cwd: PathBuf,
     /// The user's own repository `cwd` was cloned from (`Target::source_repo`).
     pub source_repo: PathBuf,
+    /// The base the checkout's work is reviewed against now: the focused PR's
+    /// base, else the spawn base. The default base of `open_pr`.
     pub base_branch: String,
-    /// The agent's own branch on this checkout, once the host recorded it.
-    pub own_branch: Option<String>,
+    /// The branch the checkout was forked from. Protected like `base_branch`,
+    /// whatever the work is stacked on now.
+    pub spawn_base: String,
+    /// The branches this checkout's pushes created on origin
+    /// (`WorkspaceManager::owned_branches`): the ones a force may rewrite, and
+    /// never a review base to the guard.
+    pub owned: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -92,9 +99,12 @@ pub struct GitDispatcher {
     /// is the agent's to write.
     source_repo: PathBuf,
     base_branch: String,
+    /// See `RepoTarget::spawn_base`; `base_branch` until `with_repos`.
+    spawn_base: String,
     default_subdir: Option<String>,
-    /// Force-push anchor for the default checkout; `None` fails a force closed.
-    own_branch: Option<String>,
+    /// See `RepoTarget::owned`, for the default checkout. Empty fails a force
+    /// closed.
+    owned: Vec<String>,
     /// Primary included. Empty without `with_repos`, so `args.repo` is then rejected.
     repos: std::collections::HashMap<String, RepoTarget>,
     /// Resolved at open_pr time, not construction, so a mid-session issue pick
@@ -118,9 +128,10 @@ impl GitDispatcher {
         Self {
             cwd,
             source_repo,
+            spawn_base: base_branch.clone(),
             base_branch,
             default_subdir: None,
-            own_branch: None,
+            owned: Vec::new(),
             repos: std::collections::HashMap::new(),
             issue_agent: None,
             caps,
@@ -139,9 +150,17 @@ impl GitDispatcher {
         self
     }
 
+    /// The branches the host recorded as this workspace's own.
     #[cfg(test)]
-    pub fn with_own_branch(mut self, branch: Option<String>) -> Self {
-        self.own_branch = branch;
+    pub fn with_owned(mut self, branches: &[&str]) -> Self {
+        self.owned = branches.iter().map(|b| b.to_string()).collect();
+        self
+    }
+
+    /// A review base other than the spawn base: the focused PR is stacked.
+    #[cfg(test)]
+    pub fn with_base(mut self, base: &str) -> Self {
+        self.base_branch = base.to_string();
         self
     }
 
@@ -163,7 +182,10 @@ impl GitDispatcher {
             .collect();
         let primary = self.repos.values().find(|repo| repo.cwd == self.cwd);
         self.default_subdir = primary.map(|repo| repo.subdir.clone());
-        self.own_branch = primary.and_then(|repo| repo.own_branch.clone());
+        if let Some(primary) = primary {
+            self.spawn_base = primary.spawn_base.clone();
+            self.owned = primary.owned.clone();
+        }
         self
     }
 

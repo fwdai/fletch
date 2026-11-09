@@ -364,6 +364,50 @@ async fn open_pr_base_override_does_not_unlock_the_recorded_base() {
     assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
 }
 
+/// The checked-out branch is the lower PR of the agent's own stack, so the
+/// record's base is that very branch. A bare `open_pr` would push and then
+/// have GitHub refuse a PR into itself; it is refused here, before the push,
+/// and told what to do instead.
+#[tokio::test]
+async fn open_pr_refuses_a_head_that_is_its_own_base() {
+    let td = tempfile::tempdir().unwrap();
+    let repo = td.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["checkout", "-q", "-b", "feat/a"]);
+
+    let disp = dispatcher(&repo)
+        .with_base("feat/a")
+        .with_owned(&["feat/a", "feat/b"]);
+    let (resp, fx) = disp
+        .dispatch_inner("s1", "open_pr", &json!({"title": "t"}))
+        .await;
+    assert!(!resp.ok, "{resp:?}");
+    let err = resp.error.as_deref().unwrap_or_default();
+    assert!(
+        err.contains("cannot target its own branch") && err.contains("git_push"),
+        "the refusal must say how a follow-up reaches the PR, got: {err:?}"
+    );
+    assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
+
+    // Naming the branch below it is a legitimate PR from the same branch: it
+    // passes the guard and reaches the push (which this fixture has no
+    // remote for).
+    let (resp, _) = disp
+        .dispatch_inner("s2", "open_pr", &json!({"title": "t", "base": "main"}))
+        .await;
+    let err = resp.error.as_deref().unwrap_or_default();
+    assert!(
+        !err.contains("cannot target") && !err.contains("reviewed against"),
+        "an owned branch is publishable from: {err:?}"
+    );
+}
+
 #[test]
 fn fallback_branch_slugifies_title() {
     assert_eq!(
