@@ -344,58 +344,61 @@ while IFS= read -r f; do
   stat -L -c '%.9Y:%s' -- "$f" 2>/dev/null || stat -L -f '%m:%z' -- "$f" 2>/dev/null || echo
 done
 "#;
-    use tokio::io::AsyncWriteExt;
+    let n = rels.len();
+    let Some(lines) = guest_lines(exec, checkout_path, SCRIPT, &[], rels, "file revisions").await
+    else {
+        return vec![None; n];
+    };
+    let mut revs: Vec<Option<String>> = lines
+        .into_iter()
+        .map(|line| Some(line).filter(|l| !l.is_empty()))
+        .collect();
+    revs.resize(n, None);
+    revs
+}
 
-    let none = vec![None; rels.len()];
+/// Run a `bash` script in the guest of the box that keeps `checkout_path`,
+/// one line of stdin per entry of `rels` (blank for a name a line can't
+/// carry), and answer its stdout as trimmed lines — the shape every per-file
+/// batch read takes there, so a poll never costs a round trip per file. The
+/// input is fed while the output drains (`output_with_stdin`): a script that
+/// answers as it reads would otherwise fill its stdout pipe and block on us
+/// while we block on it, once the list is long enough. `None`, logged, when
+/// the script can't run or fails; the caller's zero-state stands in.
+async fn guest_lines(
+    exec: &crate::exec::Executor,
+    checkout_path: &Path,
+    script: &str,
+    args: &[&str],
+    rels: Vec<String>,
+    what: &str,
+) -> Option<Vec<String>> {
     let mut input = String::new();
     for rel in &rels {
-        // A newline cannot travel in a line; the file goes unstamped like an
-        // unreadable one.
         input.push_str(if rel.contains('\n') { "" } else { rel });
         input.push('\n');
     }
     let mut cmd = tokio::process::Command::from(exec.command("bash", checkout_path, &[]));
-    cmd.args(["-c", SCRIPT])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            tracing::info!(error = %e, "file revisions in the box not read");
-            return none;
+    cmd.args(["-c", script, "bash"]).args(args);
+    let label = format!("{what} in the box");
+    match crate::git::output_with_stdin(cmd, input.as_bytes(), crate::git::LOCAL_TIMEOUT, &label)
+        .await
+    {
+        Ok(out) if out.status.success() => Some(
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .collect(),
+        ),
+        Ok(out) => {
+            tracing::info!(stderr = %String::from_utf8_lossy(&out.stderr).trim(), "{label} failed");
+            None
         }
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(input.as_bytes()).await;
-        drop(stdin);
+        Err(e) => {
+            tracing::info!(error = %e, "{label} not read");
+            None
+        }
     }
-    let result = match child.wait_with_output().await {
-        Ok(result) if result.status.success() => result,
-        Ok(result) => {
-            tracing::info!(
-                stderr = %String::from_utf8_lossy(&result.stderr).trim(),
-                "file revisions in the box failed"
-            );
-            return none;
-        }
-        Err(e) => {
-            tracing::info!(error = %e, "file revisions in the box not read");
-            return none;
-        }
-    };
-    let text = String::from_utf8_lossy(&result.stdout);
-    let mut revs: Vec<Option<String>> = text
-        .lines()
-        .map(|line| {
-            Some(line.trim())
-                .filter(|l| !l.is_empty())
-                .map(str::to_string)
-        })
-        .collect();
-    revs.resize(rels.len(), None);
-    revs
 }
 
 fn revision_of(meta: std::fs::Metadata) -> String {
@@ -715,56 +718,25 @@ while IFS= read -r f; do
   echo "$n"
 done
 "#;
-    use tokio::io::AsyncWriteExt;
-
     let mut out = vec![0u32; rels.len()];
-    let mut input = String::new();
-    for rel in &rels {
-        // A newline cannot travel in a line; the file counts 0 like an
-        // unreadable one.
-        input.push_str(if rel.contains('\n') { "" } else { rel });
-        input.push('\n');
-    }
-    let mut cmd = tokio::process::Command::from(exec.command("bash", checkout_path, &[]));
-    cmd.args([
-        "-c",
+    let args = [
+        max_file_bytes.to_string(),
+        MAX_UNTRACKED_READ_BYTES.to_string(),
+    ];
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let Some(lines) = guest_lines(
+        exec,
+        checkout_path,
         SCRIPT,
-        "bash",
-        &max_file_bytes.to_string(),
-        &MAX_UNTRACKED_READ_BYTES.to_string(),
-    ])
-    .stdin(std::process::Stdio::piped())
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
-    .kill_on_drop(true);
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            tracing::info!(error = %e, "untracked line counts in the box not read");
-            return (out, false);
-        }
+        &args,
+        rels,
+        "untracked line counts",
+    )
+    .await
+    else {
+        return (out, false);
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(input.as_bytes()).await;
-        drop(stdin);
-    }
-    let result = match child.wait_with_output().await {
-        Ok(result) if result.status.success() => result,
-        Ok(result) => {
-            tracing::info!(
-                stderr = %String::from_utf8_lossy(&result.stderr).trim(),
-                "untracked line counts in the box failed"
-            );
-            return (out, false);
-        }
-        Err(e) => {
-            tracing::info!(error = %e, "untracked line counts in the box not read");
-            return (out, false);
-        }
-    };
-    let text = String::from_utf8_lossy(&result.stdout);
-    for (slot, line) in out.iter_mut().zip(text.lines()) {
-        let line = line.trim();
+    for (slot, line) in out.iter_mut().zip(lines) {
         if line == "over" {
             return (out, true);
         }
@@ -2091,6 +2063,19 @@ mod tests {
         assert!(revs[2].as_deref().unwrap().ends_with(":6"), "{revs:?}");
         let (mtime, _) = revs[0].as_deref().unwrap().split_once(':').unwrap();
         assert!(mtime.parse::<f64>().is_ok_and(|t| t > 0.0), "{revs:?}");
+    }
+
+    /// More input and output than a pipe buffers (64 KiB each way): the
+    /// script answers each line as it reads it, so feeding all of stdin
+    /// before draining stdout would deadlock. Blank names keep it to bash
+    /// builtins, so the test is about the pipes, not `stat`.
+    #[tokio::test]
+    async fn guest_lines_survives_a_list_longer_than_the_pipes() {
+        let td = tempfile::tempdir().unwrap();
+        let rels = vec!["a\nb".to_string(); 70_000];
+        let revs = revisions_in_guest(&crate::exec::Executor::Local, td.path(), rels).await;
+        assert_eq!(revs.len(), 70_000);
+        assert!(revs.iter().all(Option::is_none));
     }
 
     fn kind_name(kind: &StatusKind) -> &'static str {
