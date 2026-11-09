@@ -11,7 +11,7 @@ use crate::host::EventSink;
 // Shared with the other PTY-carrying events (see `provider_login` commands),
 // so the base64 wire format is defined once next to the sessions producing it.
 use crate::pty_session::serialize_bytes_b64;
-use crate::run_session::RunPhase;
+use crate::run_session::{RunPhase, RunSession, RunState};
 use crate::workspace::{AgentStatus, AgentView, TrackedRepo};
 
 /// Emit one event, logging (not propagating) failure — the shared tail of
@@ -628,14 +628,26 @@ struct RunStatePayload {
     agent_id: String,
     phase: RunPhase,
     last_error: Option<String>,
+    /// As on `RunStateSnapshot`. `None` until the port is settled: a box's
+    /// run is `running` before its forward is up, and the `run:state` that
+    /// follows the forward carries it.
+    port: Option<u16>,
+    guest_port: Option<u16>,
+    /// As on `RunStateSnapshot`: which state this is, so a client drops an
+    /// event or a snapshot that describes an older state than one it has.
+    revision: u64,
 }
 
-pub(super) fn emit_run_state(
-    sink: &dyn EventSink,
-    agent_id: &str,
-    phase: RunPhase,
-    last_error: Option<String>,
-) {
+/// The Run panel's state, read from `session` rather than passed in, so the
+/// event says what `run_state` would. Callers apply the change first.
+pub(super) fn emit_run_state(sink: &dyn EventSink, agent_id: &str, session: &RunSession) {
+    let RunState {
+        phase,
+        last_error,
+        port,
+        guest_port,
+        revision,
+    } = session.state();
     emit(
         sink,
         "run:state",
@@ -643,6 +655,9 @@ pub(super) fn emit_run_state(
             agent_id: agent_id.to_string(),
             phase,
             last_error,
+            port,
+            guest_port,
+            revision,
         },
     );
 }
@@ -772,6 +787,67 @@ mod tests {
                 "agent:output".to_string(),
                 json!({ "agent_id": "fuji", "bytes": "aGk=" })
             )]
+        );
+    }
+
+    /// `run:state` carries the session's ports as they stand: the host's run
+    /// has its port before it goes `running`, a box's does not until its
+    /// forward is up, and a stop clears them.
+    #[test]
+    fn a_run_state_event_carries_the_sessions_ports() {
+        let sink = RecordingSink::new();
+        let session = RunSession::new();
+        let gen = session
+            .begin_phase(session.generation(), RunPhase::Running)
+            .unwrap();
+        session.set_ports(gen, Some(3001), None);
+        emit_run_state(&sink, "fuji", &session);
+        session.stop();
+        let gen = session
+            .begin_phase(session.generation(), RunPhase::Running)
+            .unwrap();
+        emit_run_state(&sink, "fuji", &session);
+        session.mark_stopped(gen, Some("Run exited: 1".to_string()));
+        emit_run_state(&sink, "fuji", &session);
+        let state = |phase: &str, last_error: Value, port: Value| {
+            (
+                "run:state".to_string(),
+                json!({
+                    "agent_id": "fuji",
+                    "phase": phase,
+                    "last_error": last_error,
+                    "port": port,
+                    "guest_port": null,
+                }),
+            )
+        };
+        // The revision rides every event and moves on with each change, so a
+        // client orders them whatever order they arrive in.
+        let mut revisions = Vec::new();
+        let events: Vec<(String, Value)> = sink
+            .events()
+            .into_iter()
+            .map(|(name, mut payload)| {
+                let revision = payload
+                    .as_object_mut()
+                    .and_then(|o| o.remove("revision"))
+                    .and_then(|r| r.as_u64())
+                    .expect("every run:state carries a revision");
+                revisions.push(revision);
+                (name, payload)
+            })
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                state("running", Value::Null, json!(3001)),
+                state("running", Value::Null, Value::Null),
+                state("stopped", json!("Run exited: 1"), Value::Null),
+            ]
+        );
+        assert!(
+            revisions.windows(2).all(|w| w[0] < w[1]),
+            "revisions must strictly increase: {revisions:?}"
         );
     }
 }

@@ -8,7 +8,10 @@ import {
   type FolderGrant,
   type ForkCode,
   type ForkContext,
-  type RunPhase,
+  type RunPortEvent,
+  type RunStateEvent,
+  type RunStateSnapshot,
+  type RunStatus,
   type SessionRecord,
   type SpawnStage,
   type UserTurn,
@@ -162,17 +165,13 @@ export interface WorkspaceSlice {
    *  absent until the agent's first turn lands, and absent forever for agents
    *  that report no usage at all (antigravity). See adapters/usage/. */
   usage: Record<string, UsageSnapshot>;
-  /** Live run phase per agent, keyed by agent_id, from the `run:state` event
-   *  stream. Absent = never started (read as "idle"). Fed by an app-wide
-   *  subscription (not the RunPanel, which unmounts on tab switch) so the Run
-   *  tab's "app is running" green dot stays lit from any tab. Single source of
-   *  truth for phase — the RunPanel reads it rather than holding its own copy. */
-  runPhases: Record<string, RunPhase>;
-  /** Dev-server port per agent, keyed by agent_id. Written by the RunPanel when
-   *  it resolves the run config (detected value + overrides), so the sidebar's
-   *  running indicator can show `:port`. Absent until that agent's Run panel has
-   *  been opened this session (the port isn't on the `run:state` event yet). */
-  runPorts: Record<string, string>;
+  /** Each agent's run — phase, ports, last error — keyed by agent_id, as the
+   *  backend last reported it through `applyRunState`. Absent = never seen
+   *  (read as "idle", no port). Fed by an app-wide `run:state` subscription
+   *  (not the RunPanel, which unmounts on tab switch) so the Run tab's dot and
+   *  the sidebar's chip stay right from any tab. Backend truth only: the
+   *  configured port is the panel's fallback while idle, never stored here. */
+  runs: Record<string, RunStatus>;
 
   selectAgent: (id: string | null) => void;
   /** Select a workflow run for the main pane (clears agent/draft/settings selection). */
@@ -256,12 +255,18 @@ export interface WorkspaceSlice {
     message?: string,
   ) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
-  /** Record an agent's run phase (from a `run:state` event or a RunPanel
-   *  snapshot rehydrate). Drives the Run tab's running indicator. */
-  setRunPhase: (id: string, phase: RunPhase) => void;
-  /** Record an agent's resolved dev-server port (from the RunPanel), for the
-   *  sidebar's `:port` running indicator. */
-  setRunPort: (id: string, port: string) => void;
+  /** Record an agent's run from a `run:state` event or a RunPanel snapshot.
+   *  Ignored when both carry a revision and the new one is no newer: the two
+   *  paths arrive unordered, and a late one must not undo a newer state. A
+   *  host from before revisions sends none: its states apply in arrival order,
+   *  and one without a `port` field leaves the port `run:port` brought. */
+  applyRunState: (id: string, next: RunStateEvent | RunStateSnapshot) => void;
+  /** Record a port from `run:port`, which only a host from before `port` rode
+   *  `run:state` needs: a status with a revision came from a host whose
+   *  `run:state` carries the port, so the unordered event is ignored. With no
+   *  status yet the run is taken as running — the event is emitted as the run
+   *  phase spawns — until its `run:state` lands. */
+  applyRunPort: (id: string, e: RunPortEvent) => void;
   resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;
@@ -336,8 +341,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   unseenResults: {},
   syncHealth: {},
   usage: {},
-  runPhases: {},
-  runPorts: {},
+  runs: {},
 
   registerOffSidebarAgents: (agents) =>
     set((state) => ({
@@ -753,12 +757,45 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  setRunPhase: (id, phase) => set((state) => ({ runPhases: { ...state.runPhases, [id]: phase } })),
+  applyRunState: (id, s) =>
+    set((state) => {
+      const current = state.runs[id];
+      const revision = s.revision ?? null;
+      if (current?.revision != null && revision != null && revision <= current.revision) {
+        return state;
+      }
+      // A current host says the ports on every state (null when none); a host
+      // from before the field says nothing, and the port it told on
+      // `run:port` stands.
+      const legacy = revision === null;
+      const next: RunStatus = {
+        phase: s.phase,
+        last_error: s.last_error,
+        port: s.port === undefined ? (legacy ? (current?.port ?? null) : null) : s.port,
+        guest_port:
+          s.guest_port === undefined
+            ? legacy
+              ? (current?.guest_port ?? null)
+              : null
+            : s.guest_port,
+        revision,
+      };
+      return { runs: { ...state.runs, [id]: next } };
+    }),
 
-  setRunPort: (id, port) =>
-    set((state) =>
-      state.runPorts[id] === port ? state : { runPorts: { ...state.runPorts, [id]: port } },
-    ),
+  applyRunPort: (id, e) =>
+    set((state) => {
+      const current = state.runs[id];
+      if (current && current.revision !== null) return state;
+      const next: RunStatus = {
+        phase: current?.phase ?? "running",
+        last_error: current?.last_error ?? null,
+        port: e.port,
+        guest_port: e.guest_port ?? null,
+        revision: null,
+      };
+      return { runs: { ...state.runs, [id]: next } };
+    }),
 
   resume: async (id) => {
     clearOutputBuffer(id);

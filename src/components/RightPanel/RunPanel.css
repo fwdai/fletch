@@ -102,7 +102,7 @@
     border-color 0.12s,
     color 0.12s;
 }
-.run-bar.v2 .run-link:hover {
+.run-bar.v2 .run-link:not(.disabled):hover {
   color: var(--accent);
   border-color: color-mix(in oklch, var(--accent), transparent 65%);
   background: color-mix(in oklch, var(--accent), transparent 92%);
@@ -121,6 +121,12 @@
 .run-bar.v2 .run-link.disabled {
   opacity: 0.4;
   pointer-events: none;
+}
+/* Waiting for the backend's port: as inert as disabled (the click is
+   prevented), but it takes the pointer so its title can say what for. */
+.run-bar.v2 .run-link.disabled.pending {
+  pointer-events: auto;
+  cursor: default;
 }
 
 .run-bar.v2 .run-gear {
@@ -154,6 +160,14 @@
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 1.5px var(--bg-1);
+}
+
+/* One muted line under the bar, e.g. why detection came back empty. */
+.run-hint {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  color: var(--fg-2);
+  border-bottom: 1px solid var(--bd-soft);
 }
 
 /* xterm output owns its own scrolling; force the viewport to scroll within

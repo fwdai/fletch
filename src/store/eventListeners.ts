@@ -741,26 +741,15 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // whichever environment is active.
   await bind(onLocalSettingsChanged((e) => get().applyProviderLimitsChange(e.key, e.value)));
 
-  // App-wide run-phase tracking. The RunPanel unmounts when its tab isn't
-  // active, so its own subscription can't keep the Run tab's "app is running"
-  // dot lit from another tab — this always-on listener owns `runPhases`.
-  await bind(
-    onRunState((e) => {
-      set((s) => ({ runPhases: { ...s.runPhases, [e.agent_id]: e.phase } }));
-    }),
-  );
-
-  // The port on this Mac that reaches the dev server: the (possibly
-  // port-safety-bumped) port it bound on the host, or the host end of the
-  // forward to a VM workspace's guest — `port` either way, so a host of any
-  // age is read the same. Owns `runPorts` so the sidebar indicator and Run
-  // pane link reflect the real port even after a bump, and survive the
-  // RunPanel unmounting on a tab switch.
-  await bind(
-    onRunPort((e) => {
-      set((s) => ({ runPorts: { ...s.runPorts, [e.agent_id]: String(e.port) } }));
-    }),
-  );
+  // App-wide run tracking. The RunPanel unmounts when its tab isn't active, so
+  // its own subscription can't keep the Run tab's dot or the sidebar's chip
+  // right from another tab — this always-on listener feeds `runs`. Phase and
+  // port land in one update, so no render sees `running` beside a port the run
+  // never got. `run:port` is read only for a host from before `port` rode
+  // `run:state` (the store tells by the missing revision): nothing orders it
+  // against this stream, which carries the same port on a current host.
+  await bind(onRunState((e) => get().applyRunState(e.agent_id, e)));
+  await bind(onRunPort((e) => get().applyRunPort(e.agent_id, e)));
 
   // The box sandbox: the image install and the tools builds for the Developer
   // pane's setup line, each box's phase for the workspace capsule, and the

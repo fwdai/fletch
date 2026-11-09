@@ -49,6 +49,17 @@ pub struct RunStateSnapshot {
     /// `app_status` names. `None` for a server on the host, where `port` is
     /// that port. Set and cleared with `port`.
     pub guest_port: Option<u16>,
+    /// Which state this is: moved on by every change to the phase, the error
+    /// or the ports, never back. `run:state` carries it too, so a client takes
+    /// a snapshot and the events in one order — whichever of them arrives
+    /// later but describes an older state is dropped — rather than let a
+    /// snapshot taken while a box's forward was pending erase the port an
+    /// event brought meanwhile. Every revision is at least the clock's
+    /// milliseconds when the state was made — a session begins at the clock
+    /// and each step is at least the clock ([`clock_revision`]) — so a host
+    /// that restarts, its sessions begun anew or not there at all, still
+    /// outranks what a client that stayed connected holds from before.
+    pub revision: u64,
     /// Cumulative PTY output bytes (latest first dropped on overflow).
     /// Encoded as a byte array so the frontend can render or strip
     /// ANSI without re-decoding.
@@ -60,6 +71,17 @@ pub struct RunStateSnapshot {
     /// can dedupe the overlap exactly at this boundary: any live chunk whose
     /// `seq <= log_seq` is already contained here.
     pub log_seq: u64,
+}
+
+/// [`RunStateSnapshot`] without the log: what `run:state` announces, read
+/// under one lock so its fields agree with each other and with the snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunState {
+    pub phase: RunPhase,
+    pub last_error: Option<String>,
+    pub port: Option<u16>,
+    pub guest_port: Option<u16>,
+    pub revision: u64,
 }
 
 /// State for one agent's run process. Reused across start/stop cycles
@@ -85,6 +107,31 @@ struct RunSessionInner {
     /// generation no longer matches, the exit is from a process the
     /// user already stopped or replaced and is ignored.
     generation: u64,
+    /// Moved on by every change to the phase, the error or the ports
+    /// ([`touched`](Self::touched), see [`RunStateSnapshot::revision`]); a
+    /// refused mutation leaves it alone.
+    revision: u64,
+}
+
+impl RunSessionInner {
+    /// The state changed: move the revision on, past the clock, so a session
+    /// begun after a host restart cannot hand out a revision a client already
+    /// holds from the session before it.
+    fn touched(&mut self) {
+        self.revision = (self.revision + 1).max(clock_revision());
+    }
+}
+
+/// The clock's milliseconds since the epoch: the revision of a state made
+/// now by a host with nothing older to go on — a new session, or the Idle
+/// state of an agent with no session, as after a restart — which outranks
+/// every state an earlier incarnation of the host handed out, since those
+/// were at least the clock of their own time.
+pub fn clock_revision() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 impl Default for RunSession {
@@ -99,6 +146,7 @@ impl Default for RunSession {
                 pty: None,
                 detected: None,
                 generation: 0,
+                revision: clock_revision(),
             }),
         }
     }
@@ -116,8 +164,22 @@ impl RunSession {
             last_error: inner.last_error.clone(),
             port: inner.port,
             guest_port: inner.guest_port,
+            revision: inner.revision,
             log: inner.log.bytes().to_vec(),
             log_seq: inner.log.total(),
+        }
+    }
+
+    /// The session's state, as [`snapshot`](Self::snapshot) has it, without
+    /// copying the log.
+    pub fn state(&self) -> RunState {
+        let inner = self.inner.lock();
+        RunState {
+            phase: inner.phase,
+            last_error: inner.last_error.clone(),
+            port: inner.port,
+            guest_port: inner.guest_port,
+            revision: inner.revision,
         }
     }
 
@@ -142,11 +204,20 @@ impl RunSession {
     /// The port on this host that reaches the run phase's server, and the one
     /// it binds in a box's guest (see [`RunStateSnapshot`]), recorded as the
     /// phase spawns so the agent's `app_status` can name them; the panel
-    /// hears the host port on `run:port`. Cleared by every start and stop.
-    pub fn set_ports(&self, port: Option<u16>, guest_port: Option<u16>) {
+    /// hears them on `run:port` and in each `run:state` that follows.
+    /// Cleared by every start and stop. Refused, as `false`, when `gen` is no
+    /// longer the current generation: a stop came while the start was still
+    /// settling the port (a box boots and forwards before its command runs),
+    /// and a stopped session must not advertise one.
+    pub fn set_ports(&self, gen: u64, port: Option<u16>, guest_port: Option<u16>) -> bool {
         let mut inner = self.inner.lock();
+        if inner.generation != gen {
+            return false;
+        }
         inner.port = port;
         inner.guest_port = guest_port;
+        inner.touched();
+        true
     }
 
     /// Append PTY output to the rolling buffer. Called from the per-spawn
@@ -177,6 +248,7 @@ impl RunSession {
             inner.last_error = None;
             inner.port = None;
             inner.guest_port = None;
+            inner.touched();
             (prior, pty)
         };
         if let Some(pty) = pty {
@@ -185,37 +257,90 @@ impl RunSession {
         prior
     }
 
-    /// Begin a fresh start sequence. Bumps the generation token (so
-    /// any in-flight callbacks from a previous start are now stale),
-    /// sets the initial phase, and clears `last_error`. Use
-    /// `transition_phase` for chained transitions inside the same
-    /// sequence (setup → run) — those keep the generation stable.
-    pub fn begin_phase(&self, phase: RunPhase) -> u64 {
+    /// Begin a fresh start sequence: claim the session for the start that
+    /// observed generation `expected` ([`generation`](Self::generation)).
+    /// Under one lock, the claim is refused — `None`, and nothing changes —
+    /// when another start claimed it since (the generation moved on, or a
+    /// phase is active) or a stop came in between: two ▶ clicks while a
+    /// stopped box boots both reach here, and only the first may spawn, or
+    /// the second's PTY would replace and kill the first's command. Granted,
+    /// it bumps the generation (so any in-flight callbacks from a previous
+    /// start are now stale), sets the initial phase, clears `last_error` and
+    /// the ports, and returns the new generation. Use `transition_phase` for
+    /// chained transitions inside the same sequence (setup → run) — those
+    /// keep the generation stable.
+    pub fn begin_phase(&self, expected: u64, phase: RunPhase) -> Option<u64> {
         let mut inner = self.inner.lock();
+        if inner.generation != expected
+            || matches!(inner.phase, RunPhase::Setup | RunPhase::Running)
+        {
+            return None;
+        }
         inner.generation = inner.generation.wrapping_add(1);
         inner.phase = phase;
         inner.last_error = None;
         inner.port = None;
         inner.guest_port = None;
-        inner.generation
+        inner.touched();
+        Some(inner.generation)
+    }
+
+    /// The current generation, whatever the phase.
+    pub fn generation(&self) -> u64 {
+        self.inner.lock().generation
+    }
+
+    /// The generation of an idle session — `None` while a phase is active —
+    /// as one reading under one lock: what a start observes before
+    /// [`begin_phase`](Self::begin_phase) renews it. Read apart, "idle" and
+    /// the generation could straddle another run: one that began and ended
+    /// on its own in between leaves the session idle at a newer generation,
+    /// which a claim made with it would take, running the command twice.
+    /// The same token lets a failure on the way to the claim (the checkout
+    /// unreadable, no free port) tell whether a newer start has begun.
+    pub fn idle_generation(&self) -> Option<u64> {
+        let inner = self.inner.lock();
+        (!matches!(inner.phase, RunPhase::Setup | RunPhase::Running)).then_some(inner.generation)
     }
 
     /// Like begin_phase but keeps the same generation. Used when one
     /// phase ends successfully and we chain into the next (setup→run).
-    pub fn transition_phase(&self, phase: RunPhase) -> u64 {
+    /// Refused, as `false`, when `gen` is no longer current: the user
+    /// stopped or restarted the run while the first phase was ending.
+    pub fn transition_phase(&self, gen: u64, phase: RunPhase) -> bool {
         let mut inner = self.inner.lock();
+        if inner.generation != gen {
+            return false;
+        }
         inner.phase = phase;
         inner.last_error = None;
-        inner.generation
+        inner.touched();
+        true
     }
 
-    /// Attach a freshly spawned PTY. The `sandbox-exec` profile it was launched
-    /// under travels in argv, so there is no profile resource to park here.
-    pub fn attach_pty(&self, pty: PtySession) {
-        let mut inner = self.inner.lock();
-        // Replace and drop any stale handle. (Shouldn't happen — the
-        // supervisor's stop() drops it first — but defensive.)
-        inner.pty = Some(pty);
+    /// Attach a freshly spawned PTY, if `gen` is still the current generation
+    /// and the phase still active; else kill it and answer `false`. The start
+    /// that spawned it runs off the UI thread, so a stop can land while a box
+    /// boots, forwards its port and launches the command: `stop` has then
+    /// bumped the generation and found no PTY to kill, so the one arriving
+    /// here is ended in its place — its exit hook sees the stale generation
+    /// and changes nothing. One lock covers the check and the attach, so a
+    /// stop either finds the PTY or is seen by this. The `sandbox-exec`
+    /// profile it was launched under travels in argv, so there is no profile
+    /// resource to park here.
+    pub fn attach_pty(&self, pty: PtySession, gen: u64) -> bool {
+        {
+            let mut inner = self.inner.lock();
+            if inner.generation == gen && matches!(inner.phase, RunPhase::Setup | RunPhase::Running)
+            {
+                inner.pty = Some(pty);
+                return true;
+            }
+        }
+        // Killed outside the lock, as `stop` does: a box's kill ends the
+        // command in the guest, which is slow.
+        let _ = pty.kill();
+        false
     }
 
     /// Returns true if the given generation is still the current one,
@@ -225,14 +350,22 @@ impl RunSession {
     }
 
     /// Mark the current phase as Stopped with an error message. Drops
-    /// the PTY handle. Called on natural exits.
-    pub fn mark_stopped(&self, error: Option<String>) {
+    /// the PTY handle. Called on natural exits and start failures. Refused,
+    /// as `false`, when `gen` is no longer current: the run this outcome
+    /// belongs to was stopped, and a newer one may be under way — its state,
+    /// port and PTY are not the old run's to take down.
+    pub fn mark_stopped(&self, gen: u64, error: Option<String>) -> bool {
         let mut inner = self.inner.lock();
+        if inner.generation != gen {
+            return false;
+        }
         inner.pty = None;
         inner.phase = RunPhase::Stopped;
         inner.last_error = error;
         inner.port = None;
         inner.guest_port = None;
+        inner.touched();
+        true
     }
 }
 
@@ -384,7 +517,7 @@ mod tests {
     #[test]
     fn stop_bumps_generation_and_marks_stopped() {
         let s = RunSession::new();
-        let g1 = s.begin_phase(RunPhase::Running);
+        let g1 = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
         s.stop();
         assert_eq!(s.phase(), RunPhase::Stopped);
         assert!(!s.is_current_generation(g1));
@@ -394,19 +527,22 @@ mod tests {
     fn the_port_lives_with_the_running_phase() {
         let s = RunSession::new();
         assert_eq!(s.snapshot().port, None);
-        s.begin_phase(RunPhase::Running);
-        s.set_ports(Some(3001), Some(3000));
+        let gen = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
+        assert!(s.set_ports(gen, Some(3001), Some(3000)));
         assert_eq!(s.snapshot().port, Some(3001));
         assert_eq!(s.snapshot().guest_port, Some(3000));
         s.stop();
         assert_eq!(s.snapshot().port, None, "a stopped run binds no port");
         assert_eq!(s.snapshot().guest_port, None);
-        s.begin_phase(RunPhase::Setup);
-        s.set_ports(Some(3001), None);
-        s.mark_stopped(Some("crashed".into()));
+        // A start still settling its port when the stop came is refused.
+        assert!(!s.set_ports(gen, Some(3001), Some(3000)));
+        assert_eq!(s.snapshot().port, None, "a stale start sets no port");
+        let gen = s.begin_phase(s.generation(), RunPhase::Setup).unwrap();
+        assert!(s.set_ports(gen, Some(3001), None));
+        assert!(s.mark_stopped(gen, Some("crashed".into())));
         assert_eq!(s.snapshot().port, None);
         assert_eq!(s.snapshot().guest_port, None);
-        s.begin_phase(RunPhase::Running);
+        s.begin_phase(s.generation(), RunPhase::Running).unwrap();
         assert_eq!(
             s.snapshot().port,
             None,
@@ -415,12 +551,197 @@ mod tests {
         assert_eq!(s.snapshot().guest_port, None);
     }
 
+    /// A stop that lands while a start is still launching its command finds
+    /// no PTY to kill; the PTY arriving afterwards is killed on attach, and
+    /// its exit hook sees the stale generation.
+    #[test]
+    fn a_pty_attached_after_a_stop_is_killed() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let td = tempfile::tempdir().unwrap();
+        let s = RunSession::new();
+        let gen = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
+        let (exit_tx, exit_rx) = mpsc::channel();
+        let pty = spawn_command(
+            Path::new("/bin/sh"),
+            &["-c".to_string(), "sleep 30".to_string()],
+            td.path(),
+            &[],
+            crate::sandbox::KillHandle::ProcessGroup,
+            |_| {},
+            move |exit| {
+                let _ = exit_tx.send(exit);
+            },
+        )
+        .unwrap();
+        assert_eq!(s.stop(), RunPhase::Running, "nothing was attached yet");
+        assert!(!s.attach_pty(pty, gen), "the stop came first");
+        assert!(!s.is_current_generation(gen));
+        exit_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the late PTY is killed on attach");
+        assert_eq!(s.snapshot().phase, RunPhase::Stopped);
+
+        // The ordinary case: current generation, the PTY is kept.
+        let gen = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
+        let pty = spawn_command(
+            Path::new("/bin/sh"),
+            &["-c".to_string(), "sleep 30".to_string()],
+            td.path(),
+            &[],
+            crate::sandbox::KillHandle::ProcessGroup,
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        assert!(s.attach_pty(pty, gen));
+        s.stop();
+    }
+
     #[test]
     fn transition_phase_keeps_generation() {
         let s = RunSession::new();
-        let g1 = s.begin_phase(RunPhase::Setup);
-        let g2 = s.transition_phase(RunPhase::Running);
-        assert_eq!(g1, g2);
+        let g1 = s.begin_phase(s.generation(), RunPhase::Setup).unwrap();
+        assert!(s.transition_phase(g1, RunPhase::Running));
+        assert_eq!(s.phase(), RunPhase::Running);
         assert!(s.is_current_generation(g1));
+        s.stop();
+        assert!(
+            !s.transition_phase(g1, RunPhase::Running),
+            "a chain from a stopped run goes nowhere"
+        );
+        assert_eq!(s.phase(), RunPhase::Stopped);
+    }
+
+    /// Two ▶ clicks while a stopped box boots: both starts read the session
+    /// idle and the same generation, both reach the claim, and only the
+    /// first gets it. A Stop between the read and the claim refuses the
+    /// start too, and a fresh read claims again.
+    #[test]
+    fn only_one_of_two_concurrent_starts_claims_the_run() {
+        let s = RunSession::new();
+        let observed = s.generation();
+        let first = s.begin_phase(observed, RunPhase::Setup).unwrap();
+        assert_eq!(
+            s.begin_phase(observed, RunPhase::Setup),
+            None,
+            "the second start saw the same idle session"
+        );
+        assert!(
+            s.is_current_generation(first),
+            "the first start keeps the run"
+        );
+        assert_eq!(s.phase(), RunPhase::Setup);
+        // Even a start that read the session after the claim is refused
+        // while a phase is active.
+        assert_eq!(s.begin_phase(s.generation(), RunPhase::Running), None);
+
+        s.stop();
+        let observed = s.generation();
+        s.stop();
+        assert_eq!(
+            s.begin_phase(observed, RunPhase::Running),
+            None,
+            "a stop between the read and the claim wins"
+        );
+        assert!(s.begin_phase(s.generation(), RunPhase::Running).is_some());
+    }
+
+    /// Every change to what `run:state` announces moves the revision on, and
+    /// a refused change does not: a state read before a later change is the
+    /// older of the two by its revision, however late it is delivered.
+    #[test]
+    fn the_revision_orders_every_state_change() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let s = RunSession::new();
+        let fresh = s.snapshot().revision;
+        assert!(
+            fresh >= before,
+            "a new session begins at the clock: {fresh} < {before}"
+        );
+        let gen = s.begin_phase(0, RunPhase::Setup).unwrap();
+        let begun = s.state().revision;
+        assert!(begun > fresh);
+        assert!(s.transition_phase(gen, RunPhase::Running));
+        let transitioned = s.state().revision;
+        assert!(transitioned > begun);
+        assert!(s.set_ports(gen, Some(3001), Some(3000)));
+        let with_port = s.state().revision;
+        assert!(with_port > transitioned);
+        assert_eq!(
+            s.snapshot().revision,
+            with_port,
+            "the snapshot says the same"
+        );
+        // The stop that lands after a start read its state: the start's
+        // reading is older by its revision, so a client that already saw the
+        // stop drops it, port and all.
+        s.stop();
+        let stopped = s.state().revision;
+        assert!(stopped > with_port);
+        assert!(!s.set_ports(gen, Some(3001), None), "stale, refused");
+        assert!(!s.mark_stopped(gen, None), "stale, refused");
+        assert_eq!(
+            s.state().revision,
+            stopped,
+            "a refused change moves nothing"
+        );
+        let gen = s
+            .begin_phase(s.idle_generation().unwrap(), RunPhase::Running)
+            .unwrap();
+        assert!(s.mark_stopped(gen, Some("Run exited: 1".into())));
+        assert!(s.state().revision > stopped);
+        // A session begun anew (a host restart) starts past what the old one
+        // handed out, since each step is at least the clock.
+        let fresh = RunSession::new();
+        fresh.begin_phase(0, RunPhase::Running).unwrap();
+        assert!(fresh.state().revision >= s.state().revision - 6);
+    }
+
+    /// A start that observed the session idle, then lost its turn while
+    /// another run began and ended on its own, finds the session idle again
+    /// at a newer generation: its claim is refused all the same, or two
+    /// clicks would run a short command twice.
+    #[test]
+    fn a_run_that_came_and_went_in_between_refuses_the_older_observation() {
+        let s = RunSession::new();
+        let second = s.idle_generation().unwrap();
+        let first = s.begin_phase(second, RunPhase::Setup).unwrap();
+        assert_eq!(s.idle_generation(), None, "an active session is not idle");
+        assert!(s.mark_stopped(first, None), "the first run ends on its own");
+        assert_eq!(s.idle_generation(), Some(first), "idle again, newer");
+        assert_eq!(
+            s.begin_phase(second, RunPhase::Setup),
+            None,
+            "the observation predates the run that came and went"
+        );
+        assert_eq!(s.phase(), RunPhase::Stopped);
+        assert!(s
+            .begin_phase(s.idle_generation().unwrap(), RunPhase::Setup)
+            .is_some());
+    }
+
+    /// Stop, then Start again at once: the first start is still under way
+    /// off the UI thread, and when it fails later its outcome belongs to the
+    /// run that was stopped, not to the one now running.
+    #[test]
+    fn a_stale_starts_failure_does_not_stop_the_newer_run() {
+        let s = RunSession::new();
+        let old = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
+        s.stop();
+        let new = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
+        assert!(s.set_ports(new, Some(3000), None));
+        assert!(!s.mark_stopped(old, Some("Failed to start command: box gone".into())));
+        let snap = s.snapshot();
+        assert_eq!(snap.phase, RunPhase::Running);
+        assert_eq!(snap.last_error, None);
+        assert_eq!(snap.port, Some(3000));
+        // A failure observed before `begin_phase` is refused the same way.
+        assert!(!s.mark_stopped(s.generation().wrapping_sub(1), None));
+        assert!(s.mark_stopped(new, Some("Run exited: 1".into())));
+        assert_eq!(s.snapshot().phase, RunPhase::Stopped);
     }
 }
