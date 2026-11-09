@@ -1537,7 +1537,7 @@ fn pr_number_persists_and_resets_on_name_reuse() {
 
     // No PR until one is recorded.
     assert_eq!(wm.agent(&id).unwrap().repos[0].pr_number, None);
-    wm.set_repo_pr_number(&id, &subdir, 42, "", "", None, None)
+    wm.set_repo_pr_number(&id, &subdir, 42, PrOpened::default())
         .unwrap();
     assert_eq!(wm.agent(&id).unwrap().repos[0].pr_number, Some(42));
 
@@ -1600,10 +1600,12 @@ fn recorded_base_follows_the_focused_prs_base() {
         &id,
         &subdir,
         42,
-        "u42",
-        "feat: a",
-        Some("feat/a"),
-        spawn_base.as_deref(),
+        PrOpened {
+            url: "u42",
+            title: "feat: a",
+            branch: Some("feat/a"),
+            base: spawn_base.as_deref(),
+        },
     )
     .unwrap();
     assert_eq!(repo(&wm).recorded_base(), spawn_base.as_deref());
@@ -1611,10 +1613,12 @@ fn recorded_base_follows_the_focused_prs_base() {
         &id,
         &subdir,
         43,
-        "u43",
-        "feat: b",
-        Some("feat/b"),
-        Some("feat/a"),
+        PrOpened {
+            url: "u43",
+            title: "feat: b",
+            branch: Some("feat/b"),
+            base: Some("feat/a"),
+        },
     )
     .unwrap();
     let stacked = repo(&wm);
@@ -1882,10 +1886,12 @@ fn pr_set_members_refresh_without_stealing_focus() {
         &id,
         &subdir,
         43,
-        "u43",
-        "feat: second",
-        Some("feat/second"),
-        None,
+        PrOpened {
+            url: "u43",
+            title: "feat: second",
+            branch: Some("feat/second"),
+            base: None,
+        },
     )
     .unwrap();
     assert_eq!(
@@ -2072,7 +2078,7 @@ fn binding_a_follow_up_pr_takes_its_own_snapshot() {
 
     // Re-binding the SAME number is the ordinary path — it must keep the
     // snapshot, so a poll never blanks a badge it just confirmed.
-    wm.set_repo_pr_number(&id, &subdir, 42, "", "", None, None)
+    wm.set_repo_pr_number(&id, &subdir, 42, PrOpened::default())
         .unwrap();
     let repo = wm.agent(&id).unwrap().repos[0].clone();
     assert_eq!(repo.pr_state.as_deref(), Some("merged"));
@@ -2084,10 +2090,12 @@ fn binding_a_follow_up_pr_takes_its_own_snapshot() {
         &id,
         &subdir,
         43,
-        "https://github.com/o/r/pull/43",
-        "feat: second",
-        Some("feat/second"),
-        None,
+        PrOpened {
+            url: "https://github.com/o/r/pull/43",
+            title: "feat: second",
+            branch: Some("feat/second"),
+            base: None,
+        },
     )
     .unwrap();
     let repo = wm.agent(&id).unwrap().repos[0].clone();

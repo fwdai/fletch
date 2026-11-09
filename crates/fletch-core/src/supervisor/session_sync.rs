@@ -2068,8 +2068,16 @@ pub(super) mod tests {
         let db = crate::workspace::tests::test_db();
         let wm = WorkspaceManager::new(db.clone());
         let (id, subdir) = branchless_agent(&wm, &db, None);
-        wm.set_repo_pr_number(&id, &subdir, 7, "", "", Some("feat/own"), None)
-            .unwrap();
+        wm.set_repo_pr_number(
+            &id,
+            &subdir,
+            7,
+            crate::workspace::PrOpened {
+                branch: Some("feat/own"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         wm.record_repo_pr(
             &id,
             &subdir,

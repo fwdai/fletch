@@ -21,6 +21,12 @@ use serde_json::Value;
 use super::caps::AgentCaps;
 use super::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
+/// Emitted once a push has created a branch on origin that was not there
+/// before: payload `{ "branch", "current" }` (plus `repo` for a sibling
+/// checkout). The watcher records the branch as the workspace's own
+/// (`worktree_branches`), and as the checkout's current branch when `current`
+/// — false for a stack's other head published through `open_pr`'s `args.head`.
+/// Never emitted for a push that failed or for a name origin already had.
 pub const EVENT_BRANCH_CREATED: &str = "git.branch_created";
 
 pub const EVENT_PR_OPENED: &str = "git.pr_opened";

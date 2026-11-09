@@ -88,13 +88,13 @@ impl GitDispatcher {
             (Some(head), _, _) => head,
             (None, Some(cur), None) => cur,
             (None, Some(cur), Some(req)) if req == cur => cur,
-            (None, Some(_), Some(req)) => match create_branch(&t, &req, &mut effects).await {
+            (None, Some(_), Some(req)) => match materialize_branch(&t.cwd, &req).await {
                 Ok(name) => name,
                 Err(e) => return (Response::err(id, format!("open_pr: {e}")), effects),
             },
             (None, None, req) => {
                 let desired = req.unwrap_or_else(|| fallback_branch(title));
-                match create_branch(&t, &desired, &mut effects).await {
+                match materialize_branch(&t.cwd, &desired).await {
                     Ok(name) => name,
                     Err(e) => return (Response::err(id, format!("open_pr: {e}")), effects),
                 }
@@ -146,20 +146,19 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-        // Ownership follows the checked-out branch only. A stack's other head
-        // published through `args.head` is not where the agent works, and
-        // recording it would replace the branch the force anchor names; the
-        // checked-out branch named explicitly is still the agent's own.
-        let born_on_origin =
-            !publishes_other_head && born_on_origin_by_this_push(&t, &branch, &effects).await;
+        // Every head this push creates on origin becomes the workspace's own,
+        // a stack's other head published through `args.head` included: the
+        // record is a set, so recording it displaces nothing. Only the
+        // checked-out branch is the checkout's current branch, though.
+        let born = born_on_origin(&t, &branch).await;
         if let Err(e) = t.publish(&branch, &tip, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
                 effects,
             );
         }
-        if born_on_origin {
-            note_branch_born(&t, &branch, &mut effects);
+        if born {
+            note_branch_born(&t, &branch, !publishes_other_head, &mut effects);
         }
         // By the branch just published, not the checkout's HEAD: with
         // `args.head` the two differ. In the user's repository, like every
@@ -204,7 +203,7 @@ impl GitDispatcher {
         let branch = match current {
             Some(cur) => cur,
             None => match arg_branch(args) {
-                Some(req) => match create_branch(&t, &req, &mut effects).await {
+                Some(req) => match materialize_branch(&t.cwd, &req).await {
                     Ok(name) => name,
                     Err(e) => return (Response::err(id, format!("git_push: {e}")), effects),
                 },
@@ -254,11 +253,11 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-        let born_on_origin = born_on_origin_by_this_push(&t, &branch, &effects).await;
+        let born = born_on_origin(&t, &branch).await;
         match t.publish(&branch, &tip, force).await {
             Ok(summary) => {
-                if born_on_origin {
-                    note_branch_born(&t, &branch, &mut effects);
+                if born {
+                    note_branch_born(&t, &branch, true, &mut effects);
                 }
                 (Response::ok(id, 0, summary, String::new()), effects)
             }
@@ -267,30 +266,29 @@ impl GitDispatcher {
     }
 }
 
-/// Whether the push about to happen is what puts `branch` on origin — the
-/// moment it becomes one of this workspace's own branches
-/// (`caps::refuses_publish`). The host already knows when it materialized the
-/// branch itself (`EVENT_BRANCH_CREATED` is in `effects`); a branch the agent
-/// made with plain `git checkout -b` is only known by asking origin. Without
-/// that, an agent that named its own branch could never force-push it:
-/// "no recorded work branch" was refused in 23 sessions. Skipped when the
-/// branch is already recorded, and a probe that can't answer records
-/// nothing, so a flaky network never widens force.
-async fn born_on_origin_by_this_push(t: &Target, branch: &str, effects: &[RpcEvent]) -> bool {
-    let already_noted = effects.iter().any(|e| {
-        let RpcEvent::Named { name, .. } = e;
-        name == EVENT_BRANCH_CREATED
-    });
-    if already_noted || t.owns(branch) {
+/// Whether the push about to happen is what would put `branch` on origin —
+/// the moment it becomes one of this workspace's own branches
+/// (`caps::refuses_publish`). Asked of origin for every branch, the ones the
+/// host just materialized included: a local branch says nothing about the
+/// remote, which may already hold that name (a stale tracking ref, a
+/// teammate's branch), and a push the remote then accepts would otherwise
+/// claim a branch this workspace did not create. A probe that can't answer
+/// records nothing, so a flaky network never widens force. Read before the
+/// push, recorded (`note_branch_born`) only once the push has succeeded.
+async fn born_on_origin(t: &Target, branch: &str) -> bool {
+    if t.owns(branch) {
         return false;
     }
     crate::git::remote_branch_exists(&t.cwd, &t.source_repo, branch).await == Some(false)
 }
 
-fn note_branch_born(t: &Target, branch: &str, effects: &mut Vec<RpcEvent>) {
+/// The push that created `branch` on origin succeeded: the host records it as
+/// the workspace's own, and — when `current` — as the branch the checkout is
+/// on (a stack's other head published through `args.head` is not).
+fn note_branch_born(t: &Target, branch: &str, current: bool, effects: &mut Vec<RpcEvent>) {
     effects.push(RpcEvent::named(
         EVENT_BRANCH_CREATED,
-        with_repo(json!({ "branch": branch }), &t.subdir),
+        with_repo(json!({ "branch": branch, "current": current }), &t.subdir),
     ));
 }
 
@@ -327,21 +325,10 @@ async fn checked_tip(id: &str, cwd: &Path, branch: &str) -> std::result::Result<
     }
 }
 
-async fn create_branch(
-    t: &Target,
-    desired: &str,
-    effects: &mut Vec<RpcEvent>,
-) -> std::result::Result<String, String> {
-    let name = materialize_branch(&t.cwd, desired).await?;
-    effects.push(RpcEvent::named(
-        EVENT_BRANCH_CREATED,
-        with_repo(json!({ "branch": name }), &t.subdir),
-    ));
-    Ok(name)
-}
-
-/// The one place an agent's branch is born, so the user's branch prefix is
-/// applied here and nowhere else.
+/// The one place an agent's branch is born locally, so the user's branch
+/// prefix is applied here and nowhere else. Nothing is recorded for it: the
+/// host learns the branch when the push that puts it on origin succeeds
+/// (`note_branch_born`), not when a name is chosen.
 async fn materialize_branch(checkout: &Path, desired: &str) -> std::result::Result<String, String> {
     let desired = crate::publish_prefs::apply_branch_prefix(desired);
     crate::git::checkout_new_unique_branch(checkout, &desired)

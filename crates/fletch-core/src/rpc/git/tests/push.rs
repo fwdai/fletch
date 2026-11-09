@@ -348,13 +348,115 @@ async fn git_push_detached_materializes_named_branch() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "fix/thing");
+    // No remote, so the push failed: the branch exists locally but origin
+    // never got it, and a branch origin doesn't have is nobody's to force.
     assert!(
-        effects.iter().any(|e| matches!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, RpcEvent::Named { name, .. } if name == EVENT_BRANCH_CREATED)),
+        "a failed push must not record the branch as the workspace's own: {effects:?}"
+    );
+}
+
+/// The host records a branch as the workspace's own only when its push
+/// created it on origin: a name origin already had is not claimed even when
+/// the push lands on it, and a rejected push claims nothing. Without that, a
+/// failed first push would authorize force against whatever later appears
+/// under the name.
+#[tokio::test]
+async fn git_push_records_a_branch_only_when_its_push_created_it_on_origin() {
+    let td = tempfile::tempdir().unwrap();
+    let remote = td.path().join("origin.git");
+    // `-b main`, so the clone below checks `main` out rather than an unborn
+    // default branch.
+    run_git(
+        td.path(),
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    // Someone else's clone seeds origin: `main`, a branch `fix/taken` at the
+    // same commit (which the agent's push below fast-forwards), and a branch
+    // `fix/diverged` with its own history (which the agent's push cannot).
+    let other = td.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    run_git(&other, &["init", "-q", "-b", "main"]);
+    run_git(&other, &["config", "user.email", "o@example.com"]);
+    run_git(&other, &["config", "user.name", "Other"]);
+    run_git(
+        &other,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    std::fs::write(other.join("a.txt"), b"x").unwrap();
+    run_git(&other, &["add", "-A"]);
+    run_git(&other, &["commit", "-q", "-m", "init"]);
+    run_git(&other, &["push", "-q", "origin", "main", "main:fix/taken"]);
+    run_git(&other, &["checkout", "-q", "-b", "fix/diverged"]);
+    std::fs::write(other.join("theirs.txt"), b"t").unwrap();
+    run_git(&other, &["add", "-A"]);
+    run_git(&other, &["commit", "-q", "-m", "theirs"]);
+    run_git(&other, &["push", "-q", "origin", "fix/diverged"]);
+
+    let repo = td.path().join("repo");
+    run_git(
+        td.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            repo.to_str().unwrap(),
+        ],
+    );
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    std::fs::write(repo.join("b.txt"), b"y").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "mine"]);
+    // The agent names its branches itself, with plain `git checkout -b`
+    // (`args.branch` would pick a collision-free name instead of colliding).
+    let disp = dispatcher(&repo);
+    let born = |fx: &[RpcEvent]| {
+        fx.iter()
+            .any(|e| matches!(e, RpcEvent::Named { name, .. } if name == EVENT_BRANCH_CREATED))
+    };
+
+    // Rejected: origin's fix/diverged is not an ancestor of the agent's tip.
+    run_git(&repo, &["checkout", "-q", "-b", "fix/diverged"]);
+    let (resp, fx) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
+    assert!(!resp.ok, "a non-fast-forward push is rejected: {resp:?}");
+    assert!(!born(&fx), "a rejected push records nothing: {fx:?}");
+
+    // Accepted, but onto a name origin already had: not this workspace's.
+    run_git(&repo, &["checkout", "-q", "-b", "fix/taken"]);
+    let (resp, fx) = disp.dispatch_inner("p2", "git_push", &Value::Null).await;
+    assert!(
+        resp.ok,
+        "a fast-forward onto an existing branch lands: {resp:?}"
+    );
+    assert!(
+        !born(&fx),
+        "a branch origin already had is not claimed: {fx:?}"
+    );
+
+    // A name origin did not have, created by this push: the workspace's own,
+    // and the branch the checkout is on.
+    run_git(&repo, &["checkout", "-q", "-b", "fix/fresh"]);
+    let (resp, fx) = disp.dispatch_inner("p3", "git_push", &Value::Null).await;
+    assert!(resp.ok, "{resp:?}");
+    assert!(
+        fx.iter().any(|e| matches!(
             e,
             RpcEvent::Named { name, payload }
-                if name == EVENT_BRANCH_CREATED && payload["branch"] == "fix/thing"
+                if name == EVENT_BRANCH_CREATED
+                    && payload["branch"] == "fix/fresh"
+                    && payload["current"] == true
         )),
-        "expected a branch-created event, got: {effects:?}"
+        "the push that created the branch records it as own and current: {fx:?}"
     );
 }
 
