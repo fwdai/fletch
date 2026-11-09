@@ -106,7 +106,14 @@ impl Supervisor {
             PreparedRun::passthrough(plan.first_cmd.clone())
         };
 
-        let gen = session.begin_phase(plan.first_phase);
+        // Claim the session for this start, as of the generation observed above:
+        // the detection took time, in which a second ▶ (both saw the session
+        // idle) or a Stop can have come. Refused, this start spawns nothing;
+        // the winner's own events said what the panel needs to know.
+        let Some(gen) = session.begin_phase(gen, plan.first_phase) else {
+            tracing::debug!(agent_id, "run start superseded before it began");
+            return Ok(());
+        };
         // Emit the resolved port *before* the state flips to running, so the
         // store already holds the correct port when the UI reacts to
         // `run:state` — otherwise the link/label briefly shows the old port.

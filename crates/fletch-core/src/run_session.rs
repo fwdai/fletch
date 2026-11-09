@@ -215,19 +215,31 @@ impl RunSession {
         prior
     }
 
-    /// Begin a fresh start sequence. Bumps the generation token (so
-    /// any in-flight callbacks from a previous start are now stale),
-    /// sets the initial phase, and clears `last_error`. Use
-    /// `transition_phase` for chained transitions inside the same
-    /// sequence (setup → run) — those keep the generation stable.
-    pub fn begin_phase(&self, phase: RunPhase) -> u64 {
+    /// Begin a fresh start sequence: claim the session for the start that
+    /// observed generation `expected` ([`generation`](Self::generation)).
+    /// Under one lock, the claim is refused — `None`, and nothing changes —
+    /// when another start claimed it since (the generation moved on, or a
+    /// phase is active) or a stop came in between: two ▶ clicks while a
+    /// stopped box boots both reach here, and only the first may spawn, or
+    /// the second's PTY would replace and kill the first's command. Granted,
+    /// it bumps the generation (so any in-flight callbacks from a previous
+    /// start are now stale), sets the initial phase, clears `last_error` and
+    /// the ports, and returns the new generation. Use `transition_phase` for
+    /// chained transitions inside the same sequence (setup → run) — those
+    /// keep the generation stable.
+    pub fn begin_phase(&self, expected: u64, phase: RunPhase) -> Option<u64> {
         let mut inner = self.inner.lock();
+        if inner.generation != expected
+            || matches!(inner.phase, RunPhase::Setup | RunPhase::Running)
+        {
+            return None;
+        }
         inner.generation = inner.generation.wrapping_add(1);
         inner.phase = phase;
         inner.last_error = None;
         inner.port = None;
         inner.guest_port = None;
-        inner.generation
+        Some(inner.generation)
     }
 
     /// The current generation: what a start observes before `begin_phase`
@@ -449,7 +461,7 @@ mod tests {
     #[test]
     fn stop_bumps_generation_and_marks_stopped() {
         let s = RunSession::new();
-        let g1 = s.begin_phase(RunPhase::Running);
+        let g1 = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
         s.stop();
         assert_eq!(s.phase(), RunPhase::Stopped);
         assert!(!s.is_current_generation(g1));
@@ -459,7 +471,7 @@ mod tests {
     fn the_port_lives_with_the_running_phase() {
         let s = RunSession::new();
         assert_eq!(s.snapshot().port, None);
-        let gen = s.begin_phase(RunPhase::Running);
+        let gen = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
         assert!(s.set_ports(gen, Some(3001), Some(3000)));
         assert_eq!(s.snapshot().port, Some(3001));
         assert_eq!(s.snapshot().guest_port, Some(3000));
@@ -469,12 +481,12 @@ mod tests {
         // A start still settling its port when the stop came is refused.
         assert!(!s.set_ports(gen, Some(3001), Some(3000)));
         assert_eq!(s.snapshot().port, None, "a stale start sets no port");
-        let gen = s.begin_phase(RunPhase::Setup);
+        let gen = s.begin_phase(s.generation(), RunPhase::Setup).unwrap();
         assert!(s.set_ports(gen, Some(3001), None));
         assert!(s.mark_stopped(gen, Some("crashed".into())));
         assert_eq!(s.snapshot().port, None);
         assert_eq!(s.snapshot().guest_port, None);
-        s.begin_phase(RunPhase::Running);
+        s.begin_phase(s.generation(), RunPhase::Running).unwrap();
         assert_eq!(
             s.snapshot().port,
             None,
@@ -492,7 +504,7 @@ mod tests {
         use std::time::Duration;
         let td = tempfile::tempdir().unwrap();
         let s = RunSession::new();
-        let gen = s.begin_phase(RunPhase::Running);
+        let gen = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
         let (exit_tx, exit_rx) = mpsc::channel();
         let pty = spawn_command(
             Path::new("/bin/sh"),
@@ -515,7 +527,7 @@ mod tests {
         assert_eq!(s.snapshot().phase, RunPhase::Stopped);
 
         // The ordinary case: current generation, the PTY is kept.
-        let gen = s.begin_phase(RunPhase::Running);
+        let gen = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
         let pty = spawn_command(
             Path::new("/bin/sh"),
             &["-c".to_string(), "sleep 30".to_string()],
@@ -533,7 +545,7 @@ mod tests {
     #[test]
     fn transition_phase_keeps_generation() {
         let s = RunSession::new();
-        let g1 = s.begin_phase(RunPhase::Setup);
+        let g1 = s.begin_phase(s.generation(), RunPhase::Setup).unwrap();
         assert!(s.transition_phase(g1, RunPhase::Running));
         assert_eq!(s.phase(), RunPhase::Running);
         assert!(s.is_current_generation(g1));
@@ -545,15 +557,49 @@ mod tests {
         assert_eq!(s.phase(), RunPhase::Stopped);
     }
 
+    /// Two ▶ clicks while a stopped box boots: both starts read the session
+    /// idle and the same generation, both reach the claim, and only the
+    /// first gets it. A Stop between the read and the claim refuses the
+    /// start too, and a fresh read claims again.
+    #[test]
+    fn only_one_of_two_concurrent_starts_claims_the_run() {
+        let s = RunSession::new();
+        let observed = s.generation();
+        let first = s.begin_phase(observed, RunPhase::Setup).unwrap();
+        assert_eq!(
+            s.begin_phase(observed, RunPhase::Setup),
+            None,
+            "the second start saw the same idle session"
+        );
+        assert!(
+            s.is_current_generation(first),
+            "the first start keeps the run"
+        );
+        assert_eq!(s.phase(), RunPhase::Setup);
+        // Even a start that read the session after the claim is refused
+        // while a phase is active.
+        assert_eq!(s.begin_phase(s.generation(), RunPhase::Running), None);
+
+        s.stop();
+        let observed = s.generation();
+        s.stop();
+        assert_eq!(
+            s.begin_phase(observed, RunPhase::Running),
+            None,
+            "a stop between the read and the claim wins"
+        );
+        assert!(s.begin_phase(s.generation(), RunPhase::Running).is_some());
+    }
+
     /// Stop, then Start again at once: the first start is still under way
     /// off the UI thread, and when it fails later its outcome belongs to the
     /// run that was stopped, not to the one now running.
     #[test]
     fn a_stale_starts_failure_does_not_stop_the_newer_run() {
         let s = RunSession::new();
-        let old = s.begin_phase(RunPhase::Running);
+        let old = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
         s.stop();
-        let new = s.begin_phase(RunPhase::Running);
+        let new = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
         assert!(s.set_ports(new, Some(3000), None));
         assert!(!s.mark_stopped(old, Some("Failed to start command: box gone".into())));
         let snap = s.snapshot();

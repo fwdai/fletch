@@ -791,10 +791,15 @@ mod tests {
     fn a_run_state_event_carries_the_sessions_ports() {
         let sink = RecordingSink::new();
         let session = RunSession::new();
-        let gen = session.begin_phase(RunPhase::Running);
+        let gen = session
+            .begin_phase(session.generation(), RunPhase::Running)
+            .unwrap();
         session.set_ports(gen, Some(3001), None);
         emit_run_state(&sink, "fuji", &session);
-        let gen = session.begin_phase(RunPhase::Running);
+        session.stop();
+        let gen = session
+            .begin_phase(session.generation(), RunPhase::Running)
+            .unwrap();
         emit_run_state(&sink, "fuji", &session);
         session.mark_stopped(gen, Some("Run exited: 1".to_string()));
         emit_run_state(&sink, "fuji", &session);
