@@ -32,6 +32,7 @@ pub(crate) fn file(kind: StatusKind, path: &str) -> FileStatus {
         staged: false,
         additions: 1,
         deletions: 0,
+        rev: None,
     }
 }
 

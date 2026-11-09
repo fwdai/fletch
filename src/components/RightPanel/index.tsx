@@ -19,8 +19,8 @@ interface Tab {
 }
 
 /** Right rail: tabs for Code / Git / Run / Terminal (each feature-flagged in
- *  settings). The Code tab unifies the file explorer/editor with a Live diff
- *  feed of the agent's edits. */
+ *  settings). The Code tab unifies the list of the agent's changes, each with
+ *  its diff, with the file explorer/editor. */
 export function RightPanel({ agent }: { agent: AgentRecord }) {
   const features = useAppStore((s) => s.features);
   // Tab badge: prefer the live file list from `gitStates` (refreshed at 1s

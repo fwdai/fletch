@@ -17,6 +17,7 @@ import { sandboxApi } from "./domains/sandbox";
 import { sessionApi } from "./domains/session";
 import { settingsApi } from "./domains/settings";
 import { shellApi } from "./domains/shell";
+import { tourApi } from "./domains/tour";
 import { usageApi } from "./domains/usage";
 import { workflowsApi } from "./domains/workflows";
 import { workspaceApi } from "./domains/workspace";
@@ -40,6 +41,7 @@ export * from "./types/run";
 export * from "./types/sandbox";
 export * from "./types/session";
 export * from "./types/settings";
+export * from "./types/tour";
 export * from "./types/usage";
 export * from "./types/verify";
 export * from "./types/workflow";
@@ -70,4 +72,5 @@ export const api = {
   ...usageApi,
   ...contextApi,
   ...reviewApi,
+  ...tourApi,
 };

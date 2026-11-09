@@ -66,6 +66,9 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     // The local review loop runs on the host (`review::engine`): every client
     // renders the same per-checkout review state.
     "review:changed",
+    // An agent wrote its walkthrough (`tour_set`): a remote Code panel reloads
+    // it with `get_tour`, as the local one does.
+    "tour:changed",
     // The whole workflow and roadmap stream (multi-host plan §5.3, item 2): the
     // run monitor, the board and the PM's three proposal kinds all update live
     // on a remote host, as they do locally. `wf:event` carries addressing only

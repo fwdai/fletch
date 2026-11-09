@@ -149,8 +149,10 @@ pub const OPS: &[&str] = &[
     "get_all_git_meta",
     "get_all_pr_status",
     "list_checkout_tree",
+    "list_changed_files",
     "read_checkout_file",
     "get_file_diff",
+    "get_tour",
     "commit_agent",
     "push_agent",
     "pull_agent",
@@ -472,8 +474,10 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("get_all_git_meta", Scope::Observe),
     ("get_all_pr_status", Scope::Observe),
     ("list_checkout_tree", Scope::Observe),
+    ("list_changed_files", Scope::Observe),
     ("read_checkout_file", Scope::Observe),
     ("get_file_diff", Scope::Observe),
+    ("get_tour", Scope::Observe),
     // Commits and the rest of the Git panel's working-tree moves stay with the
     // agents that own the checkout: nothing they do leaves this machine.
     ("commit_agent", Scope::Agents),
@@ -991,6 +995,14 @@ impl Dispatch for SupervisorDispatch {
                     res(crate::commands::list_checkout_tree_impl(sup, &a.agent_id).await)
                 }
 
+                "list_changed_files" => {
+                    let a: AgentBaseModeArgs = parse(args)?;
+                    res(
+                        crate::commands::list_changed_files_impl(sup, &a.agent_id, a.base_mode)
+                            .await,
+                    )
+                }
+
                 "read_checkout_file" => {
                     let a: FileArgs = parse(args)?;
                     res(crate::commands::read_checkout_file_impl(
@@ -1008,6 +1020,11 @@ impl Dispatch for SupervisorDispatch {
                         crate::commands::get_file_diff_impl(sup, &a.agent_id, &a.path, a.base_mode)
                             .await,
                     )
+                }
+
+                "get_tour" => {
+                    let a: AgentArgs = parse(args)?;
+                    res(sup.workspace.get_tour(&a.agent_id))
                 }
 
                 "commit_agent" => {
@@ -3293,6 +3310,14 @@ struct ProviderAccountArgs {
 struct FileArgs {
     agent_id: String,
     path: String,
+    #[serde(default)]
+    base_mode: Option<DiffBaseMode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentBaseModeArgs {
+    agent_id: String,
     #[serde(default)]
     base_mode: Option<DiffBaseMode>,
 }

@@ -2,9 +2,9 @@ import { open } from "@tauri-apps/plugin-shell";
 import { type ReactNode, useState } from "react";
 import type { FileStatus, PrChecks, PrComment, PrComments, PrState, ReviewState } from "@/api";
 import { Icon } from "@/components/Icon";
+import { ChangedFileList } from "@/components/RightPanel/Code/Changes/ChangedFileList";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
-import { ChangesList } from "./ChangesList";
 import { ChecksSection, CommentsSection } from "./cards";
 import { type FooterAction, reviewInFlight } from "./footerModel";
 import type { PrOrigin } from "./hooks/usePrOrigin";
@@ -57,6 +57,9 @@ export interface LadderBodies {
   /** The local reviewer on this lane; null on a lane the footer doesn't act
    *  on, or on a host without one. */
   review: ReviewBodies | null;
+  /** Open the Code panel on every change since the fork; null where that
+   *  isn't this lane's to offer (another PR's lane, or no Code tab). */
+  onReviewInCode: (() => void) | null;
 }
 
 /** Mount one per lane (`key={lane.id}`): the open/closed choices are the
@@ -143,6 +146,15 @@ function rowTrailing(row: LadderRow, b: LadderBodies): ReactNode {
       </IconButton>
     );
   }
+  // Nothing uncommitted, but the branch carries work: the uncommitted list
+  // can't show it, the Code panel's fork-point list can.
+  if (row.key === "changes" && b.onReviewInCode && (b.commitsAhead > 0 || b.pr)) {
+    return (
+      <Button variant="link" size="sm" className="rg-code-link" onClick={b.onReviewInCode}>
+        Review all changes in Code
+      </Button>
+    );
+  }
   if (row.key === "review" && b.review?.action) {
     // The reviewer's one control, on the row itself: set one up, start, re-run,
     // or stop (which also cancels a queued start).
@@ -167,7 +179,7 @@ function rowTrailing(row: LadderRow, b: LadderBodies): ReactNode {
 function rowBody(row: LadderRow, b: LadderBodies): ReactNode {
   switch (row.key) {
     case "changes":
-      return b.files.length > 0 ? <ChangesList files={b.files} onOpen={b.onOpenFile} /> : null;
+      return b.files.length > 0 ? <ChangedFileList files={b.files} onOpen={b.onOpenFile} /> : null;
     case "commits":
       return b.commitsLink ? (
         <div className="rg-line text-sm">

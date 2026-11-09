@@ -2,7 +2,7 @@
 //!
 //! Companion to `git.rs` which handles mutations. This module only reads.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use crate::error::{Error, Result};
@@ -123,6 +123,15 @@ pub struct FileStatus {
     pub staged: bool,
     pub additions: u32,
     pub deletions: u32,
+    /// Changes whenever the file's content on disk may have: its mtime and
+    /// size as `"<mtime ns>:<bytes>"`. The line counts alone miss an edit that
+    /// replaces a line with another of the same shape, which is most edits to
+    /// a file already in the list; a client re-reads a diff, and lets a
+    /// "viewed" mark lapse, when this moves. Stamped where the checkout
+    /// lives, a box's guest included. `None` for a file that is gone from the
+    /// tree (deleted) or whose stat failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -202,6 +211,7 @@ pub async fn query(checkout_path: &Path, base: &crate::git::ResolvedBase) -> Res
             files[i].additions = adds;
         }
     }
+    stamp_revisions(checkout_path, &mut files).await;
 
     let additions: u32 = files.iter().map(|f| f.additions).sum();
     let deletions: u32 = files.iter().map(|f| f.deletions).sum();
@@ -228,6 +238,176 @@ pub async fn query(checkout_path: &Path, base: &crate::git::ResolvedBase) -> Res
         blocked_config: vec![],
         worktrees,
     })
+}
+
+/// Every file the checkout's working tree differs in from `fork`, committed or
+/// not, plus the untracked files beside them — the Code panel's "since the fork"
+/// list, which [`query`] cannot give: its status and numstat read against HEAD,
+/// so committed work drops out of it.
+///
+/// Kinds and paths come from `git diff --name-status -M <fork>` (a rename under
+/// its new path), line counts from `--numstat` over the same range, and the
+/// untracked and conflicted entries from `git status`, untracked additions
+/// counted as `query` counts them, under the same read budget. `staged` is
+/// always false: across commits the index draws no line. Sorted by path.
+pub async fn changed_since(checkout_path: &Path, fork: &str) -> Result<Vec<FileStatus>> {
+    // Plain commands like `query`'s, so guarded here for the same reason.
+    crate::git::hardening::refuse_steerable_config(checkout_path).await?;
+    let (names, numstat, status) = tokio::join!(
+        run_diff_since(checkout_path, "--name-status", fork),
+        run_diff_since(checkout_path, "--numstat", fork),
+        run_status(checkout_path),
+    );
+    let numstat = parse_numstat_z(&numstat?);
+    let file = |path: String, kind: StatusKind, (additions, deletions): (u32, u32)| FileStatus {
+        path,
+        kind,
+        staged: false,
+        additions,
+        deletions,
+        rev: None,
+    };
+    let mut files: BTreeMap<String, FileStatus> = parse_name_status_z(&names?)
+        .into_iter()
+        .map(|(kind, path)| {
+            let counts = numstat.get(&path).copied().unwrap_or((0, 0));
+            (path.clone(), file(path, kind, counts))
+        })
+        .collect();
+
+    let mut untracked: Vec<String> = Vec::new();
+    for f in parse_porcelain(&status?) {
+        match f.kind {
+            StatusKind::Untracked => untracked.push(f.path),
+            StatusKind::Conflicted => {
+                files
+                    .entry(f.path.clone())
+                    .or_insert_with(|| file(f.path, StatusKind::Conflicted, (0, 0)))
+                    .kind = StatusKind::Conflicted;
+            }
+            _ => {}
+        }
+    }
+    if !untracked.is_empty() {
+        let (counts, _truncated) = untracked_additions(checkout_path, untracked.clone()).await;
+        for (path, adds) in untracked.into_iter().zip(counts) {
+            files.insert(path.clone(), file(path, StatusKind::Untracked, (adds, 0)));
+        }
+    }
+    let mut files: Vec<FileStatus> = files.into_values().collect();
+    stamp_revisions(checkout_path, &mut files).await;
+    Ok(files)
+}
+
+/// Give each file its [`FileStatus::rev`]: one `stat` per file, where the
+/// checkout lives — this filesystem, off the async threads, or the guest of
+/// the box that keeps it ([`revisions_in_guest`]). A file the stat fails on
+/// (deleted) stays unstamped.
+async fn stamp_revisions(checkout_path: &Path, files: &mut [FileStatus]) {
+    let revs = match crate::exec::for_path(checkout_path) {
+        crate::exec::Executor::Local => {
+            let paths: Vec<std::path::PathBuf> =
+                files.iter().map(|f| checkout_path.join(&f.path)).collect();
+            tokio::task::spawn_blocking(move || {
+                paths
+                    .iter()
+                    .map(|p| std::fs::metadata(p).ok().map(revision_of))
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default()
+        }
+        exec @ crate::exec::Executor::Remote(_) => {
+            let rels = files.iter().map(|f| f.path.clone()).collect();
+            revisions_in_guest(&exec, checkout_path, rels).await
+        }
+    };
+    for (f, rev) in files.iter_mut().zip(revs) {
+        f.rev = rev;
+    }
+}
+
+/// [`stamp_revisions`] for a checkout a box keeps in its guest: one command
+/// there stats every file — the paths travel on stdin, one per line, and the
+/// revisions come back one per line in order, blank where the stat failed —
+/// instead of a round trip over the channel per file. GNU `stat` gives the
+/// mtime to the nanosecond; a BSD one (the test's Mac) to the second. Any
+/// failure to run leaves every file unstamped, as a missing file is.
+async fn revisions_in_guest(
+    exec: &crate::exec::Executor,
+    checkout_path: &Path,
+    rels: Vec<String>,
+) -> Vec<Option<String>> {
+    const SCRIPT: &str = r#"
+while IFS= read -r f; do
+  if [ -z "$f" ]; then echo; continue; fi
+  stat -L -c '%.9Y:%s' -- "$f" 2>/dev/null || stat -L -f '%m:%z' -- "$f" 2>/dev/null || echo
+done
+"#;
+    let n = rels.len();
+    let Some(lines) = guest_lines(exec, checkout_path, SCRIPT, &[], rels, "file revisions").await
+    else {
+        return vec![None; n];
+    };
+    let mut revs: Vec<Option<String>> = lines
+        .into_iter()
+        .map(|line| Some(line).filter(|l| !l.is_empty()))
+        .collect();
+    revs.resize(n, None);
+    revs
+}
+
+/// Run a `bash` script in the guest of the box that keeps `checkout_path`,
+/// one line of stdin per entry of `rels` (blank for a name a line can't
+/// carry), and answer its stdout as trimmed lines — the shape every per-file
+/// batch read takes there, so a poll never costs a round trip per file. The
+/// input is fed while the output drains (`output_with_stdin`): a script that
+/// answers as it reads would otherwise fill its stdout pipe and block on us
+/// while we block on it, once the list is long enough. `None`, logged, when
+/// the script can't run or fails; the caller's zero-state stands in.
+async fn guest_lines(
+    exec: &crate::exec::Executor,
+    checkout_path: &Path,
+    script: &str,
+    args: &[&str],
+    rels: Vec<String>,
+    what: &str,
+) -> Option<Vec<String>> {
+    let mut input = String::new();
+    for rel in &rels {
+        input.push_str(if rel.contains('\n') { "" } else { rel });
+        input.push('\n');
+    }
+    let mut cmd = tokio::process::Command::from(exec.command("bash", checkout_path, &[]));
+    cmd.args(["-c", script, "bash"]).args(args);
+    let label = format!("{what} in the box");
+    match crate::git::output_with_stdin(cmd, input.as_bytes(), crate::git::LOCAL_TIMEOUT, &label)
+        .await
+    {
+        Ok(out) if out.status.success() => Some(
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .collect(),
+        ),
+        Ok(out) => {
+            tracing::info!(stderr = %String::from_utf8_lossy(&out.stderr).trim(), "{label} failed");
+            None
+        }
+        Err(e) => {
+            tracing::info!(error = %e, "{label} not read");
+            None
+        }
+    }
+}
+
+fn revision_of(meta: std::fs::Metadata) -> String {
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    format!("{mtime}:{}", meta.len())
 }
 
 /// Budget for how much untracked file *content* one git-state pass will read to
@@ -437,7 +617,14 @@ async fn untracked_additions(checkout_path: &Path, rels: Vec<String>) -> (Vec<u3
 
     // A checkout a box keeps in its guest is counted there.
     if let exec @ crate::exec::Executor::Remote(_) = crate::exec::for_path(checkout_path) {
-        return untracked_additions_in_guest(&exec, checkout_path, rels, MAX_FILE_BYTES).await;
+        return untracked_additions_in_guest(
+            &exec,
+            checkout_path,
+            rels,
+            MAX_FILE_BYTES,
+            MAX_UNTRACKED_READ_BYTES,
+        )
+        .await;
     }
 
     let root = checkout_path.to_path_buf();
@@ -511,83 +698,65 @@ async fn untracked_additions(checkout_path: &Path, rels: Vec<String>) -> (Vec<u3
 }
 
 /// [`untracked_additions`] for a checkout a box keeps in its guest: one
-/// command there counts every file by the same rules — regular files only,
-/// nothing with a NUL byte, nothing over `max_file_bytes`, a final line
-/// without a newline counts, the pass ends when the byte budget would be
-/// exceeded — instead of a round trip over the channel per file. The paths
-/// travel on stdin, one per line (a name with a newline in it counts 0), and
-/// the counts come back one per line in order, `over` where the budget cut
-/// the pass short.
+/// command there counts every file by the same rules as the local pass —
+/// regular files only, a file over `max_file_bytes` skipped on its stat and
+/// never read or charged, each read capped at the lesser of `max_file_bytes`
+/// and what is left of `budget` (plus one byte, to tell "at the ceiling"
+/// from "over it"), every byte read charged whatever the file turns out to
+/// be, a file that outgrew its stat or holds a NUL byte counts 0, a final
+/// line without a newline counts, and the pass ends when the budget runs
+/// out — instead of a round trip over the channel per file. The paths travel
+/// on stdin, one per line (a name with a newline in it counts 0), and the
+/// counts come back one per line in order, `over` where the budget cut the
+/// pass short.
 async fn untracked_additions_in_guest(
     exec: &crate::exec::Executor,
     checkout_path: &Path,
     rels: Vec<String>,
     max_file_bytes: u64,
+    budget: u64,
 ) -> (Vec<u32>, bool) {
     const SCRIPT: &str = r#"
 max_file=$1; budget=$2; spent=0
+tmp=$(mktemp) || exit 1
+trap 'rm -f -- "$tmp"' EXIT
 while IFS= read -r f; do
   if [ -z "$f" ] || [ ! -f "$f" ]; then echo 0; continue; fi
-  size=$(stat -L -c %s -- "$f" 2>/dev/null) || { echo 0; continue; }
+  size=$(stat -L -c %s -- "$f" 2>/dev/null || stat -L -f %z -- "$f" 2>/dev/null) || { echo 0; continue; }
   if [ "$size" -eq 0 ] || [ "$size" -gt "$max_file" ]; then echo 0; continue; fi
-  if [ $((spent + size)) -gt "$budget" ]; then echo over; exit 0; fi
-  if [ "$(tr -d '\000' < "$f" | wc -c)" -ne "$size" ]; then echo 0; continue; fi
+  remaining=$((budget - spent))
+  ceiling=$max_file
+  if [ "$remaining" -lt "$ceiling" ]; then ceiling=$remaining; fi
+  head -c $((ceiling + 1)) -- "$f" > "$tmp" 2>/dev/null || { echo 0; continue; }
+  size=$(wc -c < "$tmp")
   spent=$((spent + size))
-  n=$(wc -l < "$f")
-  if [ -n "$(tail -c1 -- "$f")" ]; then n=$((n + 1)); fi
+  if [ "$size" -gt "$ceiling" ]; then
+    if [ "$ceiling" -eq "$remaining" ]; then echo over; exit 0; fi
+    echo 0; continue
+  fi
+  if [ "$size" -eq 0 ]; then echo 0; continue; fi
+  if [ "$(tr -d '\000' < "$tmp" | wc -c)" -ne "$size" ]; then echo 0; continue; fi
+  n=$(wc -l < "$tmp")
+  if [ -n "$(tail -c1 -- "$tmp")" ]; then n=$((n + 1)); fi
   echo "$n"
 done
 "#;
-    use tokio::io::AsyncWriteExt;
-
     let mut out = vec![0u32; rels.len()];
-    let mut input = String::new();
-    for rel in &rels {
-        // A newline cannot travel in a line; the file counts 0 like an
-        // unreadable one.
-        input.push_str(if rel.contains('\n') { "" } else { rel });
-        input.push('\n');
-    }
-    let mut cmd = tokio::process::Command::from(exec.command("bash", checkout_path, &[]));
-    cmd.args([
-        "-c",
+    let args = [max_file_bytes.to_string(), budget.to_string()];
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let Some(lines) = guest_lines(
+        exec,
+        checkout_path,
         SCRIPT,
-        "bash",
-        &max_file_bytes.to_string(),
-        &MAX_UNTRACKED_READ_BYTES.to_string(),
-    ])
-    .stdin(std::process::Stdio::piped())
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
-    .kill_on_drop(true);
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            tracing::info!(error = %e, "untracked line counts in the box not read");
-            return (out, false);
-        }
+        &args,
+        rels,
+        "untracked line counts",
+    )
+    .await
+    else {
+        return (out, false);
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(input.as_bytes()).await;
-        drop(stdin);
-    }
-    let result = match child.wait_with_output().await {
-        Ok(result) if result.status.success() => result,
-        Ok(result) => {
-            tracing::info!(
-                stderr = %String::from_utf8_lossy(&result.stderr).trim(),
-                "untracked line counts in the box failed"
-            );
-            return (out, false);
-        }
-        Err(e) => {
-            tracing::info!(error = %e, "untracked line counts in the box not read");
-            return (out, false);
-        }
-    };
-    let text = String::from_utf8_lossy(&result.stdout);
-    for (slot, line) in out.iter_mut().zip(text.lines()) {
-        let line = line.trim();
+    for (slot, line) in out.iter_mut().zip(lines) {
         if line == "over" {
             return (out, true);
         }
@@ -960,6 +1129,18 @@ async fn run_numstat(checkout_path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// `git diff <format> -z -M <fork>`: the working tree against `fork`, renames
+/// detected whatever `diff.renames` says. `-z` because the plain format quotes
+/// unusual paths and folds a rename into one `dir/{old => new}` field.
+async fn run_diff_since(checkout_path: &Path, format: &str, fork: &str) -> Result<String> {
+    let out = read_command(checkout_path)
+        .args(["diff", format, "-z", "-M", fork, "--"])
+        .output()
+        .await?;
+    require_success("git diff", &out)?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// The panel reads' failures, each logged once rather than on every poll: the
 /// focused Git panel asks at 1 Hz, and a checkout git cannot read fails the
 /// same way every time. A read warns again when it fails differently, or after
@@ -1080,6 +1261,7 @@ fn parse_porcelain(output: &str) -> Vec<FileStatus> {
             staged,
             additions: 0,
             deletions: 0,
+            rev: None,
         });
     }
     files
@@ -1207,6 +1389,62 @@ fn parse_numstat(output: &str) -> HashMap<String, (u32, u32)> {
         let adds: u32 = adds_str.parse().unwrap_or(0);
         let dels: u32 = dels_str.parse().unwrap_or(0);
         map.insert(path, (adds, dels));
+    }
+    map
+}
+
+/// `git diff --name-status -z`: a status field, then the path — or, for a
+/// rename or copy (`R087`, `C100`), the old path and the new one.
+fn parse_name_status_z(output: &str) -> Vec<(StatusKind, String)> {
+    let mut entries = Vec::new();
+    let mut fields = output.split('\0');
+    while let Some(status) = fields.next() {
+        let Some(code) = status.chars().next() else {
+            continue;
+        };
+        if matches!(code, 'R' | 'C') {
+            fields.next();
+        }
+        let Some(path) = fields.next() else {
+            break;
+        };
+        let kind = match code {
+            'A' | 'C' => StatusKind::Added,
+            'D' => StatusKind::Deleted,
+            'R' => StatusKind::Renamed,
+            'U' => StatusKind::Conflicted,
+            _ => StatusKind::Modified,
+        };
+        entries.push((kind, path.to_string()));
+    }
+    entries
+}
+
+/// `git diff --numstat -z`: `adds\tdels\tpath`, or for a rename `adds\tdels\t`
+/// with the old and new paths as the next two fields. Keyed by the path the
+/// file has now; a binary file's `-` counts 0, as in [`parse_numstat`].
+fn parse_numstat_z(output: &str) -> HashMap<String, (u32, u32)> {
+    let mut map = HashMap::new();
+    let mut fields = output.split('\0');
+    while let Some(field) = fields.next() {
+        let mut parts = field.splitn(3, '\t');
+        let (Some(adds), Some(dels), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let path = if path.is_empty() {
+            fields.next();
+            match fields.next() {
+                Some(new) => new,
+                None => break,
+            }
+        } else {
+            path
+        };
+        map.insert(
+            path.to_string(),
+            (adds.parse().unwrap_or(0), dels.parse().unwrap_or(0)),
+        );
     }
     map
 }
@@ -1727,6 +1965,235 @@ mod tests {
         let meta_none = git_meta(&clone, &unknown).await;
         assert_eq!(meta_none.behind, None);
         assert!(meta_none.files.iter().any(|p| p == "dirty.txt"));
+    }
+
+    // --- changed_since ---
+
+    /// The list `query` loses once work is committed: everything since the
+    /// fork, committed or not, with renames under their new path — and nothing
+    /// that is back to its fork content or ignored.
+    #[tokio::test]
+    async fn changed_since_lists_committed_and_uncommitted_work_since_the_fork() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(repo.join("lib")).unwrap();
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        git_run(&repo, &["config", "user.email", "t@example.com"]);
+        git_run(&repo, &["config", "user.name", "Tester"]);
+        let write = |rel: &str, body: &str| std::fs::write(repo.join(rel), body).unwrap();
+        write(".gitignore", "*.log\n");
+        write("committed.txt", "a\nb\n");
+        write("dirty.txt", "x\n");
+        write("gone.txt", "bye\n");
+        write("reverted.txt", "same\n");
+        write("lib/before.txt", "1\n2\n3\n4\n5\n");
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "fork"]);
+        let fork = String::from_utf8_lossy(
+            &crate::git::testing::git_output(&repo, &["rev-parse", "HEAD"]).stdout,
+        )
+        .trim()
+        .to_string();
+
+        write("committed.txt", "a\nB\nc\n");
+        write("reverted.txt", "changed\n");
+        git_run(&repo, &["mv", "lib/before.txt", "lib/after.txt"]);
+        write("lib/after.txt", "1\n2\n3\n4\n5\n6\n");
+        git_run(&repo, &["rm", "-q", "gone.txt"]);
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "work"]);
+        // Back to its fork content in the tree; HEAD still has the change.
+        write("reverted.txt", "same\n");
+        write("dirty.txt", "x\ny\n");
+        write("new.txt", "one\ntwo\n");
+        write("debug.log", "noise\n");
+
+        let files = changed_since(&repo, &fork).await.unwrap();
+        let got: Vec<(&str, &str, u32, u32)> = files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.as_str(),
+                    kind_name(&f.kind),
+                    f.additions,
+                    f.deletions,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("committed.txt", "modified", 2, 1),
+                ("dirty.txt", "modified", 1, 0),
+                ("gone.txt", "deleted", 0, 1),
+                ("lib/after.txt", "renamed", 1, 0),
+                ("new.txt", "untracked", 2, 0),
+            ]
+        );
+        assert!(files.iter().all(|f| !f.staged));
+
+        // Every file still in the tree carries a revision; the deleted one has
+        // nothing to stamp.
+        let rev_of = |files: &[FileStatus], path: &str| {
+            files.iter().find(|f| f.path == path).unwrap().rev.clone()
+        };
+        assert!(rev_of(&files, "gone.txt").is_none());
+        assert!(files
+            .iter()
+            .filter(|f| f.path != "gone.txt")
+            .all(|f| f.rev.is_some()));
+
+        // An edit that keeps the line counts (one line swapped for another of
+        // the same length) still moves the revision: the only signal a client
+        // has that the diff it shows is stale.
+        let before = rev_of(&files, "dirty.txt");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write("dirty.txt", "x\nz\n");
+        let files = changed_since(&repo, &fork).await.unwrap();
+        assert_ne!(rev_of(&files, "dirty.txt"), before);
+        assert_eq!(
+            files
+                .iter()
+                .find(|f| f.path == "dirty.txt")
+                .map(|f| (f.additions, f.deletions)),
+            Some((1, 0))
+        );
+    }
+
+    /// The guest-side stamp, run through the local executor: the script is
+    /// what a box runs, bash and `stat` are what it has.
+    #[tokio::test]
+    async fn revisions_in_guest_stamps_each_file_in_order_and_skips_what_it_cannot_stat() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(td.path().join("lib")).unwrap();
+        std::fs::write(td.path().join("a.txt"), "hello\n").unwrap();
+        std::fs::write(td.path().join("lib/b.txt"), "1\n2\n3\n").unwrap();
+        let rels = vec![
+            "a.txt".to_string(),
+            "missing.txt".to_string(),
+            "lib/b.txt".to_string(),
+            "new\nline.txt".to_string(),
+        ];
+        let revs = revisions_in_guest(&crate::exec::Executor::Local, td.path(), rels).await;
+        assert_eq!(revs.len(), 4);
+        assert!(revs[1].is_none(), "{revs:?}");
+        assert!(revs[3].is_none(), "{revs:?}");
+        // "<mtime>:<size>", the size exact.
+        assert!(revs[0].as_deref().unwrap().ends_with(":6"), "{revs:?}");
+        assert!(revs[2].as_deref().unwrap().ends_with(":6"), "{revs:?}");
+        let (mtime, _) = revs[0].as_deref().unwrap().split_once(':').unwrap();
+        assert!(mtime.parse::<f64>().is_ok_and(|t| t > 0.0), "{revs:?}");
+    }
+
+    /// More input and output than a pipe buffers (64 KiB each way): the
+    /// script answers each line as it reads it, so feeding all of stdin
+    /// before draining stdout would deadlock. Blank names keep it to bash
+    /// builtins, so the test is about the pipes, not `stat`.
+    #[tokio::test]
+    async fn guest_lines_survives_a_list_longer_than_the_pipes() {
+        let td = tempfile::tempdir().unwrap();
+        let rels = vec!["a\nb".to_string(); 70_000];
+        let revs = revisions_in_guest(&crate::exec::Executor::Local, td.path(), rels).await;
+        assert_eq!(revs.len(), 70_000);
+        assert!(revs.iter().all(Option::is_none));
+    }
+
+    /// The guest counter, run through the local executor, keeps the local
+    /// pass's rules: every byte read is charged, binary or not; a file over
+    /// its ceiling is read no further than that ceiling; the budget ends the
+    /// pass.
+    #[tokio::test]
+    async fn guest_untracked_counts_charge_every_byte_and_cap_each_read() {
+        let td = tempfile::tempdir().unwrap();
+        let w = |rel: &str, body: &[u8]| std::fs::write(td.path().join(rel), body).unwrap();
+        w("bin.dat", b"ab\0cd\0"); // 6 bytes, binary: counts 0, costs 6
+        w("text.txt", b"a\nb\n"); // 4 bytes: 2 lines, costs 4 → 10 spent
+        w("more.txt", b"x\n"); // budget gone: over
+        let exec = crate::exec::Executor::Local;
+        let rels = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        let (counts, over) = untracked_additions_in_guest(
+            &exec,
+            td.path(),
+            rels(&["bin.dat", "text.txt", "more.txt"]),
+            1024,
+            10,
+        )
+        .await;
+        assert_eq!((counts, over), (vec![0, 2, 0], true));
+
+        // Oversized: skipped on its stat, never read, never charged — a
+        // 4-byte budget still has room for the 4-byte text after it.
+        w("big.txt", &[b'z'; 50]);
+        let (counts, over) =
+            untracked_additions_in_guest(&exec, td.path(), rels(&["big.txt", "text.txt"]), 10, 4)
+                .await;
+        assert_eq!((counts, over), (vec![0, 2], false));
+
+        // No trailing newline still counts the last line.
+        w("tail.txt", b"one\ntwo");
+        let (counts, over) =
+            untracked_additions_in_guest(&exec, td.path(), rels(&["tail.txt"]), 1024, 1024).await;
+        assert_eq!((counts, over), (vec![2], false));
+    }
+
+    fn kind_name(kind: &StatusKind) -> &'static str {
+        match kind {
+            StatusKind::Modified => "modified",
+            StatusKind::Added => "added",
+            StatusKind::Deleted => "deleted",
+            StatusKind::Renamed => "renamed",
+            StatusKind::Untracked => "untracked",
+            StatusKind::Conflicted => "conflicted",
+        }
+    }
+
+    #[test]
+    fn name_status_z_reads_a_rename_as_its_new_path() {
+        let out = [
+            "M",
+            "src/a.rs",
+            "R087",
+            "src/old name.rs",
+            "src/new name.rs",
+            "A",
+            "b.rs",
+            "D",
+            "c.rs",
+            "",
+        ]
+        .join("\0");
+        let entries: Vec<(&str, String)> = parse_name_status_z(&out)
+            .into_iter()
+            .map(|(kind, path)| (kind_name(&kind), path))
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                ("modified", "src/a.rs".to_string()),
+                ("renamed", "src/new name.rs".to_string()),
+                ("added", "b.rs".to_string()),
+                ("deleted", "c.rs".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn numstat_z_keys_a_rename_by_its_new_path() {
+        let out = [
+            "3\t1\tsrc/a.rs",
+            "2\t0\t",
+            "src/old.rs",
+            "src/new.rs",
+            "-\t-\timg.png",
+            "",
+        ]
+        .join("\0");
+        let map = parse_numstat_z(&out);
+        assert_eq!(map.get("src/a.rs"), Some(&(3, 1)));
+        assert_eq!(map.get("src/new.rs"), Some(&(2, 0)));
+        assert_eq!(map.get("img.png"), Some(&(0, 0)));
+        assert_eq!(map.len(), 3);
     }
 
     // --- parse_porcelain ---

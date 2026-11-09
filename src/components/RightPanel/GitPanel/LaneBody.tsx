@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FileStatus } from "@/api";
-import { FileDiffView } from "./FileDiffView";
+import { ChangedFileDiff } from "@/components/RightPanel/Code/Changes/ChangedFileDiff";
 import { Ladder, type LadderBodies } from "./Ladder";
 import type { LadderRow } from "./ladderModel";
 
@@ -30,11 +30,14 @@ export function LaneBody({
   }, [files]);
 
   if (viewing) {
+    // The list is the uncommitted files with counts vs the latest commit, so
+    // the diff is measured there too.
     return (
-      <FileDiffView
+      <ChangedFileDiff
         agentId={agentId}
         files={files}
         path={viewing}
+        base="head"
         repoDir={repoDir}
         onSelect={setViewing}
         onBack={() => setViewing(null)}

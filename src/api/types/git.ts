@@ -21,6 +21,11 @@ export interface FileStatus {
   staged: boolean;
   additions: number;
   deletions: number;
+  /** The host's revision of the file's content on disk (its mtime and size):
+   *  moves on every edit, where the counts may not. Absent for a deleted file,
+   *  a checkout inside a box's guest, and hosts that predate it. Compare files
+   *  through `fileRevision` (`util/diff.ts`), never this field alone. */
+  rev?: string;
 }
 
 /** Compact projection of GitState used by the app-wide bulk poll —

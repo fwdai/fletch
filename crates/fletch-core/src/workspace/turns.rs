@@ -1,5 +1,7 @@
 //! `impl WorkspaceManager` — Fletch-origin user turns and their timing.
 
+use rusqlite::OptionalExtension;
+
 use super::sessions::current_session_id;
 use super::*;
 use crate::agent::PromptTexts;
@@ -207,6 +209,26 @@ impl WorkspaceManager {
             duration_ms: now - started_at,
             record_count,
         }))
+    }
+
+    /// The newest turn of the workspace's current session to have started
+    /// running — the one in flight, or the last to run. A follow-up queued
+    /// behind it has not, and a native PTY turn writes no row, so `None` also
+    /// means the host does not know which turn this is.
+    pub fn latest_user_turn_id(&self, workspace_id: &str) -> Result<Option<String>> {
+        let conn = self.db.lock();
+        let Some(sid) = current_session_id(&conn, workspace_id) else {
+            return Ok(None);
+        };
+        Ok(conn
+            .query_row(
+                "SELECT turn_id FROM session_user_turns
+                 WHERE session_id = ?1 AND started_at IS NOT NULL
+                 ORDER BY seq DESC LIMIT 1",
+                [&sid],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     /// Count a turn the provider opened on its own, from `started_at` to now,
