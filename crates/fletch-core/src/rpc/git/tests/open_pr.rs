@@ -364,6 +364,54 @@ async fn open_pr_base_override_does_not_unlock_the_recorded_base() {
     assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
 }
 
+/// `git_push` may update a base that heads one of the checkout's open PRs;
+/// `open_pr` may not publish it, because it pushes before it creates the PR.
+#[tokio::test]
+async fn open_pr_stays_refused_on_a_base_that_heads_an_open_pr() {
+    let td = tempfile::tempdir().unwrap();
+    let crate::git::testing::Repos {
+        origin,
+        source,
+        checkout,
+        ..
+    } = crate::git::testing::repos(td.path());
+    run_git(&checkout, &["checkout", "-q", "-b", "feat/backend"]);
+    crate::git::testing::commit_file(&checkout, "backend.txt");
+
+    let disp = GitDispatcher::new(
+        checkout.clone(),
+        source.clone(),
+        "feat/backend".to_string(),
+        AgentCaps::interactive(),
+    )
+    .with_open_pr_heads(vec!["feat/backend".to_string()]);
+    for args in [json!({"title": "t"}), json!({"title": "t", "base": "main"})] {
+        let (resp, fx) = disp.dispatch_inner("b5", "open_pr", &args).await;
+        assert!(!resp.ok, "{args}: {resp:?}");
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("git_push"),
+            "{args}: the refusal must point at git_push, got: {:?}",
+            resp.error
+        );
+        assert!(
+            fx.is_empty(),
+            "{args}: a refused PR must emit nothing: {fx:?}"
+        );
+    }
+    assert!(
+        !crate::git::testing::git_output(
+            &origin,
+            &["rev-parse", "--verify", "refs/heads/feat/backend"]
+        )
+        .status
+        .success(),
+        "nothing may reach origin"
+    );
+}
+
 #[test]
 fn fallback_branch_slugifies_title() {
     assert_eq!(

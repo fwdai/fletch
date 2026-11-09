@@ -106,10 +106,23 @@ impl GitDispatcher {
         }
         // Deliberately the *recorded* base, never `base`: reading it from the request
         // would let an agent name a decoy base and publish over the real one.
-        if let Some(why) = self
-            .caps
-            .refuses_branch(&branch, &t.base_branch, &t.open_pr_heads)
-        {
+        //
+        // No open-PR exception here, unlike `git_push`: this op pushes before it
+        // creates the PR, so a base that already heads an open PR would be
+        // published and then fail as a duplicate, or gain a second PR. Follow-ups
+        // to that PR are `git_push`'s, and the refusal says so.
+        if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch, &[]) {
+            let why = match self
+                .caps
+                .refuses_branch(&branch, &t.base_branch, &t.open_pr_heads)
+            {
+                None => format!(
+                    "refusing to open a pull request from '{branch}': it already heads an \
+                     open pull request of this workspace. Push follow-up commits to it with \
+                     git_push instead"
+                ),
+                Some(_) => why,
+            };
             return (Response::err(id, why), effects);
         }
         // Before the prompt, so nobody approves a push the host then refuses…
