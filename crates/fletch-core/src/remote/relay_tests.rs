@@ -986,3 +986,37 @@ async fn the_relay_url_is_normalized_and_validated() {
     state.set_relay(None).unwrap();
     assert!(!state.begin_pairing(None).unwrap().url.contains("relay="));
 }
+
+/// The desktop's relay is not a choice: with nothing stored, Fletch's own is
+/// written in; a stored one (someone's own relay) is kept.
+#[test]
+fn the_desktop_fills_in_fletchs_relay_and_keeps_one_already_stored() {
+    use super::{ensure_relay_setting, RELAY_URL_SETTING};
+    use crate::database::{get_setting, set_setting};
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::database::init(dir.path()).unwrap();
+    let conn = db.lock();
+
+    assert_eq!(ensure_relay_setting(&conn), DEFAULT_RELAY_URL);
+    assert_eq!(
+        get_setting(&conn, RELAY_URL_SETTING).as_deref(),
+        Some(DEFAULT_RELAY_URL),
+        "absent: written in"
+    );
+
+    // Blank is what switching the relay off used to store.
+    set_setting(&conn, RELAY_URL_SETTING, "  ").unwrap();
+    assert_eq!(ensure_relay_setting(&conn), DEFAULT_RELAY_URL);
+    assert_eq!(
+        get_setting(&conn, RELAY_URL_SETTING).as_deref(),
+        Some(DEFAULT_RELAY_URL)
+    );
+
+    set_setting(&conn, RELAY_URL_SETTING, "wss://relay.example.org").unwrap();
+    assert_eq!(ensure_relay_setting(&conn), "wss://relay.example.org");
+    assert_eq!(
+        get_setting(&conn, RELAY_URL_SETTING).as_deref(),
+        Some("wss://relay.example.org")
+    );
+}

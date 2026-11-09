@@ -51,7 +51,7 @@ what authenticate.
 ### 3. Pairing is confirmed on the Mac, with a code both screens show
 
 1. On the Mac: Settings › Remote control › **Pair a device** opens a pairing
-   window. This already exists as the 5-minute invite, and it already picks
+   window (today Settings › Devices keeps one open while it is on screen). This already exists as the 5-minute invite, and it already picks
    the access preset. Outside a window the host refuses pair
    requests outright, so nobody on the LAN can spam prompts. This matches
    AirDrop's "Everyone for 10 minutes".
@@ -107,8 +107,12 @@ at the Mac, which today's code does too.
   host name, `fletch-<label>.local`, so it never contends for the machine's.
 - **Desktop UI:** an incoming-request prompt (sheet or notification) on the
   Mac, available while Settings is closed but only during a pairing window.
-- **Desktop as client:** Paired hosts › Add a host can use the same browse
-  later. Out of scope for the first cut.
+- **Desktop as client:** built after the first cut. Settings › Devices › Hosts
+  › Add a host lists the hosts nearby through `remote_browse_nearby`, which
+  browses in Rust with the same `mdns-sd` crate (a desktop app needs no
+  multicast entitlement), and pairs by confirmation like the phone. Settings ›
+  Devices keeps the pairing window open while it is on screen, so the Mac being
+  picked needs no click first.
 
 ## Suggested slicing
 

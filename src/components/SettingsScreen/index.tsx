@@ -8,6 +8,7 @@ import { WorkflowsPane } from "@/workflows/builder";
 import pkg from "../../../package.json";
 import { AccountPane } from "./AccountPane";
 import { CustomAgentsPane } from "./CustomAgents";
+import { DevicesPane } from "./Devices";
 import { DictationPane } from "./Dictation";
 import { ExperimentalPane } from "./ExperimentalPane";
 import { GeneralPane } from "./GeneralPane";
@@ -16,7 +17,6 @@ import { LayoutPane } from "./LayoutPane";
 import { McpServersPane } from "./McpServers";
 import { developerUnlocked, settingsNav } from "./nav";
 import { ProvidersPane } from "./ProvidersPane";
-import { RemoteControlPane } from "./RemoteControl";
 import { ReviewPane } from "./ReviewPane";
 import { SandboxPane } from "./Sandbox";
 import { NetworkPane } from "./Sandbox/NetworkPane";
@@ -121,7 +121,9 @@ export function SettingsScreen() {
           {visible && section === "review" && <ReviewPane />}
           {visible && section === "sandbox" && <SandboxPane />}
           {visible && section === "network" && <NetworkPane />}
-          {visible && section === "remote" && <RemoteControlPane />}
+          {/* One element for both tabs, so switching keeps the pane (and the
+              pairing window it holds open) mounted. */}
+          {visible && (section === "hosts" || section === "clients") && <DevicesPane />}
           {visible && section === "providers" && <ProvidersPane />}
           {visible && section === "agents" && <CustomAgentsPane />}
           {visible && section === "workflows" && <WorkflowsPane />}

@@ -233,9 +233,10 @@ pub enum RemoteBoot {
     /// A host with no window: the listener always starts, whatever
     /// `remote.enabled` says, because serving devices is the only reason the
     /// process exists. Each field overrides the stored setting *for this run
-    /// only* — nothing here is written back, exactly as the desktop's `boot`
-    /// writes none of the three (the settings pane's `remote_set_*` commands
-    /// are what persist a user's choice).
+    /// only* — nothing here is written back (the settings pane's
+    /// `remote_set_*` commands are what persist a user's choice). The one
+    /// write the desktop's `boot` makes, Fletch's relay into an empty
+    /// `remote.relay_url` while remote access is on, is not made here.
     Headless {
         /// `None` uses the stored `remote.port`, or [`crate::remote::DEFAULT_PORT`].
         port: Option<u16>,
@@ -682,6 +683,13 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
                     // remote taps. A headless host installs none and refuses
                     // such requests, which sends the phone to the code.
                     state.prompts().set_confirmer(host_sink.clone());
+                    // The desktop's relay is on whenever remote access is: with
+                    // nothing stored, Fletch's own is written in and used.
+                    let relay_url = if enabled {
+                        Some(crate::remote::ensure_relay_setting(&db.lock()))
+                    } else {
+                        relay_url
+                    };
                     // The URL is stored before the autostart, so `start` brings
                     // the host link up with the listener. Safe outside the async
                     // runtime: nothing is enabled yet, so this cannot spawn the

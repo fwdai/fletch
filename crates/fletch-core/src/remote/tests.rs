@@ -4296,7 +4296,10 @@ async fn a_request_needs_a_pairing_window() {
         .await;
     let answer = ws.next_json().await;
     assert_eq!(answer["ok"], false);
-    assert!(answer["error"].as_str().unwrap().contains("Pair a device"));
+    assert!(answer["error"]
+        .as_str()
+        .unwrap()
+        .contains("Settings → Devices"));
 }
 
 #[tokio::test]

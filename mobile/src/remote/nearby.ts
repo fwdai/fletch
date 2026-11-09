@@ -4,6 +4,7 @@
 // mock mode lists the mock host so the Pair screen's list can be worked on in
 // the browser dev loop, and anything else lists nobody.
 
+import type { NearbyHost } from "@desktop/remote/nearby";
 import { DEFAULT_PORT } from "@desktop/remote/types";
 import { inTauri } from "@desktop/remote/ws";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,13 +12,7 @@ import { mockEnabled } from "./index";
 import { MOCK_HOST_KEY } from "./mock";
 import { hostInfo } from "./mock/fixtures";
 
-/** One host as its announcement describes it. A claim, not a credential: the
- *  handshake is what proves `hostKey`. */
-export interface NearbyHost {
-  name: string;
-  hostKey: string;
-  port: number;
-}
+export type { NearbyHost };
 
 /** Browse for `durationMs` and answer with every host seen by the end. */
 export async function browseNearby(durationMs = 2000): Promise<NearbyHost[]> {

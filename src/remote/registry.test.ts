@@ -108,6 +108,15 @@ function fakeClient() {
       return () => states.delete(cb);
     },
     onStep: () => () => {},
+    codes: new Set<(code: string) => void>(),
+    onConfirmCode(cb: (code: string) => void) {
+      self.codes.add(cb);
+      return () => self.codes.delete(cb);
+    },
+    /** What the real client does once both nonces are in. */
+    showCode(code: string) {
+      for (const cb of self.codes) cb(code);
+    },
     onSnapshot(cb: (r: HelloResult) => void) {
       snapshots.add(cb);
       return () => snapshots.delete(cb);
@@ -383,6 +392,24 @@ describe("the paired-host lifecycle", () => {
     client.target = { host: "10.0.0.4", port: 47285, hostKey: HOST_KEY, relay: "wss://relay.test" };
     client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
     expect((await paired).relay).toBe("wss://relay.test");
+  });
+
+  it("hands a confirmed pairing's code to the pane, and stops listening once paired", async () => {
+    const { registry, client } = harness();
+    const onCode = vi.fn();
+
+    const paired = registry.pair(
+      { host: "10.0.0.4", port: 47285, hostKey: HOST_KEY, confirm: true },
+      onCode,
+    );
+    await settled();
+    expect(client.targets[0]).toMatchObject({ confirm: true });
+    client.showCode("482913");
+    expect(onCode).toHaveBeenCalledWith("482913");
+
+    client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    await paired;
+    expect(client.codes.size).toBe(0);
   });
 
   it("leaves nothing behind when a pairing is refused", async () => {

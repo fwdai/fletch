@@ -9,7 +9,7 @@ import type { SettingsSection } from "@/storage/preferences";
 // Built-in sections carry explicit order weights so extension panes can slot
 // *between* them via their own `order`, not just append. Each `group` owns a
 // contiguous band of weights (Interface 30s, Agents 40s, Guardrails 50s,
-// Devices 60s, Advanced 70s), so a conditional entry lands inside its group
+// Machines 60s, Advanced 70s), so a conditional entry lands inside its group
 // whenever it is shown. `group` is the display label of the nav header the
 // entry sits under; only the Account / General basics at the top go without
 // one. `subsections` groups several sections behind a single nav
@@ -33,6 +33,11 @@ const CUSTOMIZE_IDS: SettingsSection[] = ["agents", "tools", "skills"];
 // and neither the app nor the macOS sandbox limits what it can reach.
 const SANDBOX_IDS: SettingsSection[] = ["sandbox", "network"];
 
+// This Mac on both ends of remote control: the hosts it controls and the
+// clients (phones, other Macs) that control it. One entry, because pairing is
+// one act seen from two sides; one pane behind both tabs (DevicesPane).
+const DEVICES_IDS: SettingsSection[] = ["hosts", "clients"];
+
 // The agent view itself: what appears around an agent and how you talk to it.
 // Not "Workspace" — the title bar already calls agent sessions workspaces, and
 // a Workspace group would read as settings about those.
@@ -44,15 +49,14 @@ const AGENTS_GROUP = "Agents";
 // network or secrets settings belong here too. "Checkouts" or "Isolation" would
 // read as plain worktree-running, which is exactly the framing to avoid.
 const GUARDRAILS_GROUP = "Guardrails";
-// Devices on both ends: phones paired to this host and other hosts this machine
-// drives; cloud environments join here when they get settings of their own.
-// Says nothing about the platform, so a Linux or Windows build needs no rename.
-// One entry today — the header still earns its place by saying what Remote
-// control is about, and by marking where the next device-side section goes.
-const DEVICES_GROUP = "Devices";
+// The machines in play beyond this one: devices on both ends of remote control
+// today, cloud runners when they get settings of their own. Says nothing about
+// the platform, so a Linux or Windows build needs no rename. One entry today —
+// the header still earns its place by marking where the next one goes.
+const MACHINES_GROUP = "Machines";
 // The conventional tail: things most people never open. A regular user sees
 // "Advanced › Experimental" — a deliberate category, not a stray entry under
-// Devices — and an admin's Developer slots in under the same header.
+// Machines — and an admin's Developer slots in under the same header.
 const ADVANCED_GROUP = "Advanced";
 
 // General holds only what has no better home (appearance, alerts, privacy);
@@ -86,7 +90,15 @@ const NAV: NavItem[] = [
   { id: "git", label: "Git", icon: "branch", order: 53, group: GUARDRAILS_GROUP },
   // Beside Git: what leaves a workspace is reviewed before it does.
   { id: "review", label: "Review", icon: "search", order: 56, group: GUARDRAILS_GROUP },
-  { id: "remote", label: "Remote control", icon: "phone", order: 60, group: DEVICES_GROUP },
+  // Radio waves: things reaching each other, which both tabs are about.
+  {
+    id: "hosts",
+    label: "Devices",
+    icon: "radio",
+    order: 60,
+    group: MACHINES_GROUP,
+    subsections: DEVICES_IDS,
+  },
   { id: "experimental", label: "Experimental", icon: "flask", order: 70, group: ADVANCED_GROUP },
 ];
 // Stable sort by weight keeps contribution order on ties.
@@ -149,7 +161,8 @@ export function settingsNav(opts: {
 
 /** A section the palette can jump to: a nav entry, or one of the sub-tabs a
  *  grouped entry folds in (Tools and Skills under Customize, Network under
- *  Sandbox). The sub-tab labels mirror `CustomizeSwitch` / `SandboxSwitch`. */
+ *  Sandbox, Clients under Devices). The sub-tab labels mirror
+ *  `CustomizeSwitch` / `SandboxSwitch` / `DevicesSwitch`. */
 export interface SettingsDestination {
   id: SettingsSection;
   label: string;
@@ -162,6 +175,7 @@ const SUBSECTIONS: Partial<Record<SettingsSection, { label: string; icon: IconNa
   tools: { label: "Tools", icon: "webhook" },
   skills: { label: "Skills", icon: "notebookPen" },
   network: { label: "Network", icon: "globe" },
+  clients: { label: "Clients", icon: "phone" },
 };
 
 /** Every section reachable on this build, sub-tabs included, in nav order. */

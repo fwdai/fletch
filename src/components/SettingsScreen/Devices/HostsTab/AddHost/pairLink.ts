@@ -1,7 +1,5 @@
-// What the "Paired hosts" field accepts, and what it says when it doesn't.
-//
-// Its own module because it is the pane's only logic and the only part worth a
-// test: everything else in the section is rows and a button.
+// What the "Paste a pairing link" field accepts, and what it says when it
+// doesn't. Its own module so it can be tested without the field around it.
 
 import { parsePairUrl } from "@/remote/pairing";
 import type { PairTarget } from "@/remote/registry";
@@ -19,7 +17,7 @@ export function pairTargetFrom(input: string): { target: PairTarget } | { error:
   if (!target) {
     return {
       error:
-        "That isn't a Fletch pairing link. On the other machine, open Settings › Remote control › Pair a device and copy the link.",
+        "That isn't a Fletch pairing link. On the other machine, open Settings › Devices › Clients and copy the pairing link.",
     };
   }
   if (!target.hostKey) {

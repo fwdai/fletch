@@ -11,6 +11,7 @@ import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { ProtocolClient } from "./client";
 import { thisDevice } from "./device";
 import { createHostRegistry, type PairTarget } from "./registry";
+import type { CodeHandler } from "./types";
 import { openWebSocket } from "./ws";
 
 export const hosts = createHostRegistry({
@@ -46,9 +47,10 @@ export async function startSavedHosts(): Promise<void> {
 }
 
 /** Pair with the host a link points at, then remember it and keep it
- *  connected. Rejects with the host's own words when the handshake fails. */
-export async function addHost(target: PairTarget): Promise<void> {
-  const record = await hosts.pair(target);
+ *  connected. Rejects with the host's own words when the handshake fails.
+ *  `onCode` hears the six digits of a confirmed pairing. */
+export async function addHost(target: PairTarget, onCode?: CodeHandler): Promise<void> {
+  const record = await hosts.pair(target, onCode);
   await saveHost({ ...record, pairedAt: new Date().toISOString() });
 }
 

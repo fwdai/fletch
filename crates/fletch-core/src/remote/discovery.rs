@@ -14,10 +14,17 @@
 //! Nothing here is a credential. Anyone on the LAN can announce any name and
 //! any id; the Noise handshake is what authenticates, exactly as on a typed
 //! address.
+//!
+//! The other direction lives here too: [`browse_nearby`] lists the hosts
+//! announcing themselves, for a desktop pairing with another machine
+//! (Settings › Devices › Hosts). Only the desktop calls it; a headless host
+//! announces and never browses.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::{Duration, Instant};
 
-use mdns_sd::{ServiceDaemon, ServiceInfo};
+use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent, ServiceInfo};
+use serde::Serialize;
 
 /// The service type, as mDNS spells it.
 pub const SERVICE_TYPE: &str = "_fletch._tcp.local.";
@@ -124,6 +131,120 @@ impl Drop for Advertiser {
     }
 }
 
+/// One host announcing itself on the LAN, as a nearby list shows it. The same
+/// shape the phone's browse plugin answers with (`NearbyHost` in
+/// `src/remote/nearby.ts`), plus the addresses the announcement resolved to.
+/// A claim, not a credential: the handshake is what proves `host_key`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NearbyHost {
+    /// TXT `name`, or the instance label when the record carries none.
+    pub name: String,
+    /// TXT `id`: the host ID it claims, base64url.
+    pub host_key: String,
+    /// TXT `port`, or the SRV port when the TXT one is missing or garbled.
+    pub port: u16,
+    /// The IPv4 addresses the instance resolved to, sorted. IPv6 is left out:
+    /// a link-local address needs its interface to dial, and the `.local`
+    /// name a client derives from the key covers the rest.
+    pub addresses: Vec<String>,
+}
+
+/// Read one resolved announcement. `None` for an instance with no `id` (not a
+/// Fletch host, or a garbled record) and for `own_id`: a host hears its own
+/// announcement, and pairing with itself is never what was meant.
+fn nearby_host(service: &ResolvedService, own_id: &str) -> Option<NearbyHost> {
+    let txt = |key| {
+        service
+            .get_property_val_str(key)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    };
+    let host_key = txt(TXT_ID)?;
+    if host_key == own_id {
+        return None;
+    }
+    let port = txt(TXT_PORT)
+        .and_then(|p| p.parse::<u16>().ok())
+        .filter(|p| *p != 0)
+        .unwrap_or_else(|| service.get_port());
+    let name = txt(TXT_NAME).map_or_else(
+        || {
+            let full = service.get_fullname();
+            full.strip_suffix(SERVICE_TYPE)
+                .unwrap_or(full)
+                .trim_end_matches('.')
+                .to_string()
+        },
+        str::to_string,
+    );
+    let mut addresses: Vec<String> = service
+        .get_addresses_v4()
+        .into_iter()
+        .map(|a| a.to_string())
+        .collect();
+    addresses.sort();
+    Some(NearbyHost {
+        name,
+        host_key: host_key.to_string(),
+        port,
+        addresses,
+    })
+}
+
+/// The list a browse answers with: one entry per host key (two instances
+/// claiming one key are a spoof or a stale record, and a client keys its rows
+/// on it), in name order.
+fn listed(found: impl IntoIterator<Item = NearbyHost>) -> Vec<NearbyHost> {
+    let mut seen = HashSet::new();
+    let mut hosts: Vec<NearbyHost> = found
+        .into_iter()
+        .filter(|h| seen.insert(h.host_key.clone()))
+        .collect();
+    hosts.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.host_key.cmp(&b.host_key))
+    });
+    hosts
+}
+
+/// Browse `_fletch._tcp` for `duration` and answer with every host still
+/// announced at the end, minus this host (`own_id`). Blocking for the whole
+/// `duration`, so callers run it off the async runtime. Each call is its own
+/// daemon, started and stopped here, so nothing browses between calls.
+pub fn browse_nearby(duration: Duration, own_id: &str) -> Result<Vec<NearbyHost>, String> {
+    let daemon = ServiceDaemon::new().map_err(|e| e.to_string())?;
+    let events = daemon.browse(SERVICE_TYPE).map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + duration;
+    // Keyed by instance, so a goodbye removes exactly what it names.
+    let mut found: BTreeMap<String, NearbyHost> = BTreeMap::new();
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match events.recv_timeout(left) {
+            Ok(ServiceEvent::ServiceResolved(service)) => {
+                if let Some(host) = nearby_host(&service, own_id) {
+                    found.insert(service.get_fullname().to_string(), host);
+                }
+            }
+            Ok(ServiceEvent::ServiceRemoved(_, fullname)) => {
+                found.remove(&fullname);
+            }
+            Ok(_) => {}
+            // The deadline, or the daemon gone: either way, what was seen is
+            // the answer.
+            Err(_) => break,
+        }
+    }
+    // Fire-and-forget, as the advertiser's drop: nothing waits on how it went.
+    let _ = daemon.shutdown();
+    Ok(listed(found.into_values()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +273,118 @@ mod tests {
         assert!(TXT_NAME.len() + 1 + cut.len() <= TXT_STRING_MAX);
         assert!(long.starts_with(&cut));
         assert_eq!(fit(TXT_NAME, "Studio Mac"), "Studio Mac");
+    }
+
+    /// An announcement as a browser resolves it: `addrs` is what the daemon
+    /// would have collected from the A/AAAA records.
+    fn resolved(
+        instance: &str,
+        addrs: &str,
+        port: u16,
+        txt: &[(&str, &str)],
+    ) -> mdns_sd::ResolvedService {
+        let txt: HashMap<String, String> = txt
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        ServiceInfo::new(
+            SERVICE_TYPE,
+            instance,
+            &format!("{instance}.local."),
+            addrs,
+            port,
+            txt,
+        )
+        .unwrap()
+        .as_resolved_service()
+    }
+
+    #[test]
+    fn a_resolved_announcement_reads_as_a_nearby_host() {
+        let service = resolved(
+            "fletch-0123456789abcdef",
+            "192.168.1.24,10.0.0.7,fe80::1",
+            47285,
+            &[
+                (TXT_NAME, "Studio Mac"),
+                (TXT_ID, "HOSTKEY"),
+                (TXT_PORT, "47285"),
+            ],
+        );
+        assert_eq!(
+            nearby_host(&service, "MINE"),
+            Some(NearbyHost {
+                name: "Studio Mac".into(),
+                host_key: "HOSTKEY".into(),
+                port: 47285,
+                // IPv4 only, sorted.
+                addresses: vec!["10.0.0.7".into(), "192.168.1.24".into()],
+            })
+        );
+    }
+
+    #[test]
+    fn this_host_and_records_without_an_id_are_not_listed() {
+        let own = resolved(
+            "fletch-a",
+            "10.0.0.1",
+            1,
+            &[(TXT_NAME, "Me"), (TXT_ID, "MINE")],
+        );
+        assert_eq!(nearby_host(&own, "MINE"), None);
+        let anonymous = resolved("fletch-b", "10.0.0.2", 1, &[(TXT_NAME, "Who")]);
+        assert_eq!(nearby_host(&anonymous, "MINE"), None);
+        let blank = resolved("fletch-c", "10.0.0.3", 1, &[(TXT_ID, "  ")]);
+        assert_eq!(nearby_host(&blank, "MINE"), None);
+    }
+
+    #[test]
+    fn a_missing_txt_port_or_name_falls_back_to_the_srv_record() {
+        let service = resolved(
+            "fletch-0123456789abcdef",
+            "10.0.0.9",
+            47999,
+            &[(TXT_ID, "KEY"), (TXT_PORT, "not a port")],
+        );
+        let host = nearby_host(&service, "MINE").unwrap();
+        assert_eq!(host.port, 47999);
+        assert_eq!(host.name, "fletch-0123456789abcdef");
+    }
+
+    #[test]
+    fn the_list_has_one_row_per_key_in_name_order() {
+        let host = |name: &str, key: &str| NearbyHost {
+            name: name.into(),
+            host_key: key.into(),
+            port: 1,
+            addresses: vec![],
+        };
+        let list = listed([
+            host("studio", "B"),
+            host("Attic", "A"),
+            host("Impostor", "B"),
+        ]);
+        let names: Vec<&str> = list.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["Attic", "studio"]);
+    }
+
+    #[test]
+    fn a_nearby_host_serializes_as_the_webview_reads_it() {
+        let host = NearbyHost {
+            name: "Studio".into(),
+            host_key: "KEY".into(),
+            port: 47285,
+            addresses: vec!["10.0.0.7".into()],
+        };
+        assert_eq!(
+            serde_json::to_value(&host).unwrap(),
+            serde_json::json!({
+                "name": "Studio",
+                "hostKey": "KEY",
+                "port": 47285,
+                "addresses": ["10.0.0.7"],
+            })
+        );
     }
 
     /// The whole announcement, as a phone meets it: a browser finds the service

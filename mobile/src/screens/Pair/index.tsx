@@ -126,8 +126,8 @@ export function PairScreen() {
           </p>
         ) : (
           <p>
-            On your Mac open <b>Settings → Remote control → Pair a device</b>. Scan its QR code with
-            your camera, or pick your Mac below and accept on the Mac when it asks.
+            On your Mac open <b>Settings → Devices → Clients</b>. Scan its QR code with your camera,
+            or pick your Mac below and accept on the Mac when it asks.
           </p>
         )}
       </div>
@@ -188,9 +188,9 @@ export function PairScreen() {
         {busy ? "Pairing…" : error ? "Try again" : "Pair"}
       </button>
       <div className="hint">
-        Pairing works for five minutes after you click Pair a device on your Mac. The link is
-        end-to-end encrypted. The app talks to your Mac directly on your network, and reaches it
-        from anywhere else when “Reach this Mac from anywhere” is on in its settings.
+        Pairing works while Settings → Devices is open on your Mac. The link is end-to-end
+        encrypted. The app talks to your Mac directly on your network, and reaches it from anywhere
+        else through Fletch's relay.
       </div>
     </div>
   );

@@ -4,7 +4,7 @@ import { pairTargetFrom } from "./pairLink";
 const LINK =
   "fletch://pair?host=Zm9vYmFy&addr=10.0.0.4:47285&relay=wss%3A%2F%2Frelay.fletch.sh&token=K7PQ2M9X&name=Cloud%20box";
 
-describe("the Paired hosts field", () => {
+describe("the pairing link field", () => {
   it("accepts a pairing link and keeps the host key, address, relay and name", () => {
     expect(pairTargetFrom(` ${LINK} `)).toEqual({
       target: {

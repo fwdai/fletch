@@ -1256,9 +1256,10 @@
   color: var(--danger);
 }
 
-/* ── MOBILE DEVICES ──────────────────────────────────────────────────── */
-/* Relay URL, edited in place beside the link's state. */
-.set-relay-url {
+/* ── DEVICES ─────────────────────────────────────────────────────────── */
+/* A short text field edited in place on a row: the port, a pairing link, a
+   host's pairing code. */
+.set-text-field {
   width: 230px;
   height: 26px;
   padding: 0 8px;
@@ -1268,26 +1269,29 @@
   border-radius: var(--r-sm);
   outline: none;
 }
+.set-text-field:focus {
+  border-color: var(--accent);
+}
 .set-port {
   width: 90px;
   font-variant-numeric: tabular-nums;
 }
-/* A pairing link is long and pasted rather than typed, so it gets more room
-   than the relay URL it borrows its look from. */
+/* A pairing link is long and pasted rather than typed, so it gets more room. */
 .set-pair-link {
   width: 320px;
 }
-.set-relay-url:focus {
-  border-color: var(--accent);
+/* Eight characters, typed off another screen. */
+.set-pair-code-input {
+  width: 120px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
-.set-relay-pill {
-  color: var(--fg-3);
+/* The six digits a confirmed pairing shows on both screens. */
+.set-pair-digits {
+  color: var(--fg-0);
+  font-weight: 500;
+  letter-spacing: 0.08em;
   white-space: nowrap;
-}
-.set-relay-pill[data-state="error"] {
-  color: var(--danger);
-  white-space: normal;
-  max-width: 28ch;
 }
 
 /* Live pairing code. Its own block rather than a `set-row`: the code is the
