@@ -19,6 +19,8 @@ pub(super) struct Target {
     /// it once the host has recorded it and the dispatcher was rebuilt; until
     /// then a force on it fails closed.
     pub(super) owned_branches: Vec<String>,
+    /// See `RepoTarget::open_pr_heads`.
+    pub(super) open_pr_heads: Vec<String>,
 }
 
 impl Target {
@@ -27,6 +29,7 @@ impl Target {
         crate::rpc::caps::BranchRecords {
             base: &self.base_branch,
             owned: &self.owned_branches,
+            open_pr_heads: &self.open_pr_heads,
         }
     }
 
@@ -51,6 +54,7 @@ impl GitDispatcher {
                 source_repo: self.source_repo.clone(),
                 base_branch: self.base_branch.clone(),
                 owned_branches: self.owned_branches.clone(),
+                open_pr_heads: self.open_pr_heads.clone(),
             }),
             Some(name) => match self.repos.get(name) {
                 Some(repo) => Ok(Target {
@@ -59,6 +63,7 @@ impl GitDispatcher {
                     source_repo: repo.source_repo.clone(),
                     base_branch: repo.base_branch.clone(),
                     owned_branches: repo.owned_branches.clone(),
+                    open_pr_heads: repo.open_pr_heads.clone(),
                 }),
                 None => {
                     let mut known: Vec<&str> = self.repos.keys().map(String::as_str).collect();

@@ -93,6 +93,9 @@ pub struct RepoTarget {
     /// recorded when the dispatcher was built. The only branches it may
     /// force-push, and the only base it may push to (`caps::refuses_publish`).
     pub owned_branches: Vec<String>,
+    /// Head branches of the checkout's open PRs, read with `owned_branches`.
+    /// A base must be among them too, so a push to it lands in a PR.
+    pub open_pr_heads: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -107,6 +110,8 @@ pub struct GitDispatcher {
     /// The default checkout's `RepoTarget::owned_branches`; empty fails a force
     /// closed.
     owned_branches: Vec<String>,
+    /// The default checkout's `RepoTarget::open_pr_heads`.
+    open_pr_heads: Vec<String>,
     /// Primary included. Empty without `with_repos`, so `args.repo` is then rejected.
     repos: std::collections::HashMap<String, RepoTarget>,
     /// Resolved at open_pr time, not construction, so a mid-session issue pick
@@ -133,6 +138,7 @@ impl GitDispatcher {
             base_branch,
             default_subdir: None,
             owned_branches: Vec::new(),
+            open_pr_heads: Vec::new(),
             repos: std::collections::HashMap::new(),
             issue_agent: None,
             caps,
@@ -157,6 +163,12 @@ impl GitDispatcher {
         self
     }
 
+    #[cfg(test)]
+    pub fn with_open_pr_heads(mut self, heads: &[&str]) -> Self {
+        self.open_pr_heads = heads.iter().map(|b| b.to_string()).collect();
+        self
+    }
+
     pub fn with_approval(mut self, sink: crate::host::Sink, agent_id: &str) -> Self {
         self.approval = Some((sink, agent_id.to_string()));
         self
@@ -177,6 +189,9 @@ impl GitDispatcher {
         self.default_subdir = primary.map(|repo| repo.subdir.clone());
         self.owned_branches = primary
             .map(|repo| repo.owned_branches.clone())
+            .unwrap_or_default();
+        self.open_pr_heads = primary
+            .map(|repo| repo.open_pr_heads.clone())
             .unwrap_or_default();
         self
     }

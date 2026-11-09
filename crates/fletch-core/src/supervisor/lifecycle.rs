@@ -1144,10 +1144,15 @@ impl Supervisor {
             // rewritten by stacking on an owned branch arrives with it. A branch
             // created this session joins on the next resume/turn, when the
             // dispatcher is rebuilt; a failed read owns nothing, which only
-            // refuses more.
+            // refuses more. The open PR heads say whether an owned base still
+            // has a PR to review what is pushed to it; same failure rule.
             let owned_branches = self
                 .workspace
                 .owned_branches(agent_id, &r.subdir)
+                .unwrap_or_default();
+            let open_pr_heads = self
+                .workspace
+                .open_pr_branches(agent_id, &r.subdir)
                 .unwrap_or_default();
             repo_targets.push(rpc::git::RepoTarget {
                 subdir: r.subdir.clone(),
@@ -1155,6 +1160,7 @@ impl Supervisor {
                 source_repo: r.repo_path.clone(),
                 base_branch: base,
                 owned_branches,
+                open_pr_heads,
             });
         }
         // A workspace started from an issue carries its ref here ("123" for

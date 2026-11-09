@@ -128,12 +128,13 @@ async fn git_push_refuses_the_review_base() {
 }
 
 /// Stacking a PR on a branch this workspace created records that branch as the
-/// base. Follow-up commits for the lower PR still go onto it — as a plain push
-/// only, never a force, which would rewrite the stacked PR's base. A base the
-/// workspace did not create (a teammate's branch whose PR was adopted, say)
-/// stays refused.
+/// base. Follow-up commits for the lower PR still go onto it while that PR is
+/// open — as a plain push only, never a force, which would rewrite the stacked
+/// PR's base. A base the workspace did not create (a teammate's branch whose
+/// PR was adopted, say) stays refused, and so does an owned base with no open
+/// PR to review the push (never opened, merged or closed).
 #[tokio::test]
-async fn git_push_updates_an_owned_base_without_force_only() {
+async fn git_push_updates_an_owned_base_under_review_without_force_only() {
     let td = tempfile::tempdir().unwrap();
     let crate::git::testing::Repos {
         origin,
@@ -144,7 +145,7 @@ async fn git_push_updates_an_owned_base_without_force_only() {
     run_git(&checkout, &["checkout", "-q", "-b", "feat/backend"]);
     crate::git::testing::commit_file(&checkout, "backend.txt");
 
-    let stacked = |owned: &[&str]| {
+    let stacked = |owned: &[&str], open: &[&str]| {
         crate::rpc::git::GitDispatcher::new(
             checkout.clone(),
             source.clone(),
@@ -152,6 +153,7 @@ async fn git_push_updates_an_owned_base_without_force_only() {
             crate::rpc::caps::AgentCaps::interactive(),
         )
         .with_owned_branches(owned)
+        .with_open_pr_heads(open)
     };
     let on_origin = || {
         crate::git::testing::git_output(
@@ -160,20 +162,36 @@ async fn git_push_updates_an_owned_base_without_force_only() {
         )
     };
 
-    let (resp, fx) = stacked(&["feat/ui"])
-        .dispatch_inner("p1", "git_push", &Value::Null)
-        .await;
-    assert!(
-        resp.error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("refusing to publish"),
-        "a base this workspace did not create stays refused: {resp:?}"
-    );
-    assert!(fx.is_empty(), "{fx:?}");
-    assert!(!on_origin().status.success(), "nothing may reach origin");
+    for (owned, open, why) in [
+        (
+            &["feat/ui"][..],
+            &["feat/backend"][..],
+            "a base this workspace did not create stays refused",
+        ),
+        (
+            &["feat/backend"][..],
+            &[][..],
+            "an owned base with no open PR stays refused",
+        ),
+    ] {
+        let (resp, fx) = stacked(owned, open)
+            .dispatch_inner("p1", "git_push", &Value::Null)
+            .await;
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("refusing to publish"),
+            "{why}: {resp:?}"
+        );
+        assert!(fx.is_empty(), "{why}: {fx:?}");
+        assert!(
+            !on_origin().status.success(),
+            "{why}: nothing may reach origin"
+        );
+    }
 
-    let (resp, _fx) = stacked(&["feat/backend"])
+    let (resp, _fx) = stacked(&["feat/backend"], &["feat/backend"])
         .dispatch_inner("p2", "git_push", &Value::Null)
         .await;
     assert!(
@@ -185,7 +203,7 @@ async fn git_push_updates_an_owned_base_without_force_only() {
 
     // The owned base itself is the anchor a force used to pass on.
     run_git(&checkout, &["commit", "-q", "--amend", "-m", "rewritten"]);
-    let (resp, fx) = stacked(&["feat/backend"])
+    let (resp, fx) = stacked(&["feat/backend"], &["feat/backend"])
         .dispatch_inner("p3", "git_push", &json!({ "force": true }))
         .await;
     assert!(!resp.ok, "force on a stacked PR's base must be refused");

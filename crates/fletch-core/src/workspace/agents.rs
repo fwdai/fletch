@@ -362,6 +362,23 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Head branches of one checkout's PRs whose last recorded state is open.
+    /// Says review is pending on a branch, never who made it: adopted PRs are
+    /// in the set too (see `owned_branches` for that).
+    pub fn open_pr_branches(&self, agent_id: &str, subdir: &str) -> Result<Vec<String>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT branch FROM worktree_prs
+              WHERE workspace_id = ?1 AND subdir = ?2 AND state = 'open'
+                AND branch IS NOT NULL AND TRIM(branch) <> ''
+              ORDER BY number",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![agent_id, subdir], |row| {
+            row.get::<_, String>(0)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// The branches this workspace created on origin from one checkout, oldest
     /// first.
     pub fn owned_branches(&self, agent_id: &str, subdir: &str) -> Result<Vec<String>> {

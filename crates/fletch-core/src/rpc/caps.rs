@@ -50,6 +50,10 @@ pub struct BranchRecords<'a> {
     /// The branches this workspace created on origin: each one's push found
     /// no such branch there first (`workspace::owned_branches`).
     pub owned: &'a [String],
+    /// Head branches of the checkout's PRs that are open, as last recorded
+    /// (`workspace::open_pr_branches`). Includes adopted PRs, so it proves
+    /// review is pending, never ownership.
+    pub open_pr_heads: &'a [String],
 }
 
 /// Trimmed and case-insensitive: on the target filesystem `Fix/X` and `fix/x`
@@ -109,11 +113,14 @@ impl AgentCaps {
     ///
     /// 1. A denied grant publishes nothing.
     /// 2. A protected trunk is never published.
-    /// 3. The recorded base is refused, with one exception: a base this
-    ///    workspace created — the lower branch of its own stack — takes a plain
-    ///    `git_push`, so the lower PR can get follow-up commits. Never a force
-    ///    (it would rewrite the base of the PR stacked on it) and never
-    ///    `open_pr` (which pushes before it creates the PR).
+    /// 3. The recorded base is refused, with one exception: the lower branch of
+    ///    the workspace's own stack takes a plain `git_push`, so the lower PR
+    ///    can get follow-up commits. That needs both records: the workspace
+    ///    created the branch (who may push), and it heads an open PR of the
+    ///    checkout (where the commits get reviewed — without one they would land
+    ///    on the base unreviewed). Never a force (it would rewrite the base of
+    ///    the PR stacked on it) and never `open_pr` (which pushes before it
+    ///    creates the PR).
     /// 4. SECURITY: force only on a branch this workspace created. A
     ///    `--force-with-lease` lease passes for any branch the agent just
     ///    fetched, so the lease alone authorizes nothing.
@@ -141,9 +148,18 @@ impl AgentCaps {
             return Some(review_base());
         }
         if same_branch(branch, records.base) {
+            let under_review = records
+                .open_pr_heads
+                .iter()
+                .any(|head| same_branch(head, branch));
             return match (publication, owned) {
                 (_, false) => Some(review_base()),
-                (Publication::Push { force: false }, true) => None,
+                (Publication::Push { force: false }, true) if under_review => None,
+                (Publication::Push { force: false }, true) => Some(format!(
+                    "refusing to publish to '{branch}': it is the branch this work is reviewed \
+                     against, and no open pull request of this workspace would review what you \
+                     push to it. Push your own branch (e.g. fix/…) and open a pull request instead"
+                )),
                 (Publication::Push { force: true }, true) => Some(format!(
                     "refusing to force-push '{branch}': this workspace's stacked pull request \
                      targets it, and rewriting it would rewrite that pull request's base. \
@@ -224,8 +240,21 @@ mod tests {
         names.iter().map(|n| n.to_string()).collect()
     }
 
+    /// No open PRs: only the stacked-base rule reads them.
     fn records<'a>(base: &'a str, owned: &'a [String]) -> BranchRecords<'a> {
-        BranchRecords { base, owned }
+        with_open_prs(base, owned, &[])
+    }
+
+    fn with_open_prs<'a>(
+        base: &'a str,
+        owned: &'a [String],
+        open_pr_heads: &'a [String],
+    ) -> BranchRecords<'a> {
+        BranchRecords {
+            base,
+            owned,
+            open_pr_heads,
+        }
     }
 
     #[test]
@@ -268,7 +297,8 @@ mod tests {
     fn an_owned_base_takes_a_plain_push_and_nothing_else() {
         let caps = AgentCaps::interactive();
         let own = owned(&["feat/backend", "feat/ui"]);
-        let stacked = records("feat/backend", &own);
+        let open = owned(&["feat/backend", "feat/ui"]);
+        let stacked = with_open_prs("feat/backend", &own, &open);
         assert!(caps
             .refuses_publish(PUSH, "feat/backend", stacked)
             .is_none());
@@ -302,6 +332,36 @@ mod tests {
                 .is_some(),
             "a denied grant stays denied"
         );
+    }
+
+    /// The exception needs both records. Ownership alone would let commits
+    /// land on the base unreviewed when the lower branch never got a PR, or its
+    /// PR merged or closed (it then drops out of the open heads). An open PR
+    /// alone proves nothing about who made the branch: adopted PRs, a
+    /// teammate's included, are in the set.
+    #[test]
+    fn a_base_needs_both_ownership_and_an_open_pr() {
+        let caps = AgentCaps::interactive();
+        let own = owned(&["feat/backend"]);
+        let none = owned(&[]);
+        let why = caps
+            .refuses_publish(
+                PUSH,
+                "feat/backend",
+                with_open_prs("feat/backend", &own, &none),
+            )
+            .expect("an owned base with no open PR must be refused");
+        assert!(why.contains("no open pull request"), "{why}");
+
+        let teammate = owned(&["teammate/wip"]);
+        let why = caps
+            .refuses_publish(
+                PUSH,
+                "teammate/wip",
+                with_open_prs("teammate/wip", &own, &teammate),
+            )
+            .expect("an adopted PR's branch must be refused");
+        assert!(why.contains("reviewed against"), "{why}");
     }
 
     #[test]

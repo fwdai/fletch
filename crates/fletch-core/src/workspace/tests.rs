@@ -1651,6 +1651,62 @@ fn owned_branches_are_recorded_only_by_their_own_write() {
     assert!(wm.owned_branches("ag-other", &subdir).unwrap().is_empty());
 }
 
+/// Only PRs still open count as review pending on their branch: a merged or
+/// closed lower PR no longer reviews anything pushed to it, and a row whose
+/// branch was never learned names nothing.
+#[test]
+fn open_pr_branches_leave_out_settled_and_unnamed_prs() {
+    let db = test_db();
+    let wm = WorkspaceManager::new(db.clone());
+    seed_repo(&db, "/r");
+    let mut rec = new_agent_record(
+        "denali".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "task".into(),
+        AgentView::Custom,
+    );
+    let id = rec.id.clone();
+    wm.add_agent(&mut rec).unwrap();
+    let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+
+    let pr = |number: u32, state: crate::github::PrStatus, branch: Option<&str>| {
+        crate::github::PrState {
+            number,
+            url: format!("https://github.com/o/r/pull/{number}"),
+            title: String::new(),
+            state,
+            mergeable: crate::github::MergeableState::Unknown,
+            opened_at: None,
+            merged_at: None,
+            branch: branch.map(str::to_string),
+        }
+    };
+    use crate::github::PrStatus::{Closed, Merged, Open};
+    for p in [
+        pr(1, Open, Some("feat/backend")),
+        pr(2, Merged, Some("feat/merged")),
+        pr(3, Closed, Some("feat/closed")),
+        pr(4, Open, None),
+        pr(5, Open, Some("feat/ui")),
+    ] {
+        wm.record_repo_pr(&id, &subdir, &p).unwrap();
+    }
+    assert_eq!(
+        wm.open_pr_branches(&id, &subdir).unwrap(),
+        ["feat/backend", "feat/ui"]
+    );
+
+    wm.record_repo_pr(&id, &subdir, &pr(1, Merged, Some("feat/backend")))
+        .unwrap();
+    assert_eq!(
+        wm.open_pr_branches(&id, &subdir).unwrap(),
+        ["feat/ui"],
+        "a lower PR that merges stops counting"
+    );
+}
+
 /// A checkout accumulates every PR it has held, not just the current binding:
 /// a workspace that keeps working after a merge opens follow-ups, and the
 /// merged PR's identity is cleared off the `worktrees` row when the next one
