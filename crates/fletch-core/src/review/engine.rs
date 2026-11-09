@@ -1268,7 +1268,7 @@ async fn round_prompt(
     let base_name = base
         .as_ref()
         .map(|b| b.name.clone())
-        .unwrap_or_else(|| repo.parent_branch.clone().unwrap_or_default());
+        .unwrap_or_else(|| repo.recorded_base().unwrap_or_default().to_string());
     let base_sha = base
         .as_ref()
         .and_then(|b| b.fork_point.clone().or_else(|| b.tip.clone()))

@@ -54,11 +54,13 @@ impl GitDispatcher {
             }
         }
         // Which PR, and whether it is this workspace's own — the one bound to
-        // the checkout's branch. Only that PR carries the workspace's state:
-        // the closing trailer for its issue, and the recorded base that
-        // ahead/behind and `update-branch` follow. Editing another PR by
-        // number must leave both alone, or it would close the wrong issue and
-        // steer this checkout at that PR's base.
+        // the checkout's branch. Only that PR carries the closing trailer for
+        // the workspace's issue; editing another PR by number must leave it
+        // alone, or it would close the wrong issue. A retarget is recorded on
+        // the PR it names (the watcher keys it by number), so any PR of the
+        // checkout's set follows its new base — the focused one steers
+        // ahead/behind and `update-branch` — and a number outside the set
+        // records nothing.
         let (number, own) = match number {
             None => match branch_pr(id, "pr_edit", &t).await {
                 Ok(pr) => (pr.number, true),
@@ -93,7 +95,7 @@ impl GitDispatcher {
             Ok(url) => url,
             Err(e) => return (Response::err(id, format!("pr_edit: {e}")), effects),
         };
-        if let (Some(base), true) = (&edit.base, own) {
+        if let Some(base) = &edit.base {
             effects.push(RpcEvent::named(
                 EVENT_PR_EDITED,
                 with_repo(json!({ "number": number, "base": base }), &t.subdir),

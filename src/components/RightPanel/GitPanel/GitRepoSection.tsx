@@ -8,6 +8,7 @@ import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { checkoutKey } from "@/store/git";
 import { resolveReviewer } from "@/store/review";
+import { checkoutBase } from "@/util/prState";
 import { ActionBar } from "./ActionBar";
 import { AutopilotHistory } from "./Autopilot";
 import { CommitComposer, CommitStatus } from "./CommitComposer";
@@ -122,7 +123,7 @@ export function GitRepoSection({
     customAgents.find((a) => a.id === agent.custom_agent_id)?.name ?? providerLabel(agent.provider);
 
   const branch = gitState?.branch || repo?.branch || "";
-  const base = gitState?.parent_branch || repo?.parent_branch || "main";
+  const base = checkoutBase(prState, repo, gitState?.parent_branch) || "main";
   // The checkout is detached until its first push; a branch is only born from
   // an agent that names it. So a direct (agent-bypassed) action that needs a
   // branch — push, open PR — can't run yet: it routes through the agent

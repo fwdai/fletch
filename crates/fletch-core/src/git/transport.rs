@@ -38,7 +38,20 @@ pub(super) async fn push(
     force: bool,
 ) -> Result<String> {
     let source = format!("refs/heads/{branch}");
-    push_source(checkout, source_repo, &source, branch, force).await
+    Ok(push_source(checkout, source_repo, &source, branch, force)
+        .await?
+        .summary)
+}
+
+/// What a push did.
+pub(super) struct Pushed {
+    /// `pushed`, or `up-to-date` when every push URL already had everything.
+    pub summary: String,
+    /// No push URL had `refs/heads/<branch>` before this push: the push created
+    /// the branch, on every remote it went to. Read from the remotes the push
+    /// actually goes to, not the fetch remote, which in a fork setup is a
+    /// different repository.
+    pub created: bool,
 }
 
 /// [`push`] of one exact commit to `refs/heads/<branch>`: the commit a check
@@ -53,8 +66,8 @@ pub(super) async fn push_commit(
     commit: &str,
     branch: &str,
     force: bool,
-) -> Result<String> {
-    let summary = push_source(checkout, source_repo, commit, branch, force).await?;
+) -> Result<Pushed> {
+    let pushed = push_source(checkout, source_repo, commit, branch, force).await?;
     // Best effort, as `-u` would be: a local branch that no longer exists has
     // nothing to track, and the push already happened.
     let upstream = format!("origin/{branch}");
@@ -63,7 +76,7 @@ pub(super) async fn push_commit(
         &["branch", "--set-upstream-to", &upstream, branch],
     )
     .await;
-    Ok(summary)
+    Ok(pushed)
 }
 
 /// The push runs through [`Transport`]: the user's repository's remote and
@@ -77,6 +90,8 @@ pub(super) async fn push_commit(
 ///   check `--force-if-includes` would make — skipped by git once the
 ///   expected value is explicit — is [`require_integrated`];
 /// - a push that changes nothing is up to date, not forced;
+/// - each push URL's tip is read first, so the result says whether the push
+///   created the branch ([`Pushed::created`]);
 /// - `refs/remotes/origin/<branch>` is moved to the pushed commit afterwards,
 ///   as a named-remote push would move it.
 async fn push_source(
@@ -85,7 +100,7 @@ async fn push_source(
     source: &str,
     branch: &str,
     force: bool,
-) -> Result<String> {
+) -> Result<Pushed> {
     let t = Transport::open(checkout, source_repo).await?;
     let remotes = t.push_remotes();
     if force && remotes.len() > 1 {
@@ -96,9 +111,14 @@ async fn push_source(
         )));
     }
     let pushed = resolve(checkout, source).await?;
+    let mut tips = Vec::with_capacity(remotes.len());
+    for url in remotes {
+        tips.push(t.tip(url, branch).await?);
+    }
+    let created = tips.iter().all(Option::is_none);
     let mut lease = Vec::new();
     if force {
-        let expected = t.tip(&remotes[0], branch).await?;
+        let expected = &tips[0];
         // As git does, a push that changes nothing is up to date, not forced.
         if let Some(expected) = expected
             .as_deref()
@@ -110,6 +130,11 @@ async fn push_source(
             "--force-with-lease=refs/heads/{branch}:{}",
             expected.as_deref().unwrap_or_default()
         ));
+    } else if created {
+        // The push asserts what the tips said: the branch must still be absent
+        // when it lands. A branch someone creates between the read and the
+        // push fails the push instead of being claimed as this one's.
+        lease.push(format!("--force-with-lease=refs/heads/{branch}:"));
     }
     let refspec = format!("{source}:refs/heads/{branch}");
     let mut up_to_date = true;
@@ -132,7 +157,10 @@ async fn push_source(
     if let Some(pushed) = pushed {
         t.record_pushed(branch, &pushed).await?;
     }
-    Ok(if up_to_date { "up-to-date" } else { "pushed" }.to_string())
+    Ok(Pushed {
+        summary: if up_to_date { "up-to-date" } else { "pushed" }.to_string(),
+        created,
+    })
 }
 
 /// What `--force-if-includes` checks, for a lease with an explicit value

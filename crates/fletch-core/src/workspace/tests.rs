@@ -100,6 +100,7 @@ pub(crate) fn mk_repo(path: &str) -> TrackedRepo {
         subdir: "repo".into(),
         branch: None,
         parent_branch: None,
+        pr_base: None,
         base_sha: None,
         pr_number: None,
         pr_url: None,
@@ -1536,7 +1537,7 @@ fn pr_number_persists_and_resets_on_name_reuse() {
 
     // No PR until one is recorded.
     assert_eq!(wm.agent(&id).unwrap().repos[0].pr_number, None);
-    wm.set_repo_pr_number(&id, &subdir, 42, "", "", None)
+    wm.set_repo_pr_number(&id, &subdir, 42, PrOpened::default())
         .unwrap();
     assert_eq!(wm.agent(&id).unwrap().repos[0].pr_number, Some(42));
 
@@ -1558,13 +1559,90 @@ fn pr_number_persists_and_resets_on_name_reuse() {
     assert_eq!(wm.agent(&reused_id).unwrap().repos[0].pr_number, None);
 }
 
-/// Opening a PR against a base other than the spawn-time one rewrites the
-/// recorded base, so every base-keyed reader (ahead/behind, "rebase onto", the
-/// `update-branch` fetch) follows the PR that actually exists. The fork point
-/// (`base_sha`) is deliberately untouched — it records where the checkout was
-/// cut, which is still true whatever the PR targets.
+/// The base a checkout is reviewed against follows its focused PR: a PR opened
+/// against a branch other than the spawn base (a stack) moves every base-keyed
+/// reader (ahead/behind, "rebase onto", the `update-branch` fetch) to that
+/// branch, a retarget moves it again, and refocusing an earlier PR brings its
+/// base back. The spawn base (`parent_branch`) and the fork point (`base_sha`)
+/// are never rewritten — they record where the checkout was cut — so the push
+/// guard still knows the branch the workspace did not create.
 #[test]
-fn recorded_base_follows_a_redirected_pr_base() {
+fn recorded_base_follows_the_focused_prs_base() {
+    let db = test_db();
+    let wm = WorkspaceManager::new(db.clone());
+    seed_repo(&db, "/r");
+
+    let mut rec = new_agent_record(
+        "denali".into(),
+        "a".into(),
+        "claude".into(),
+        TrackedRepo {
+            parent_branch: Some("main".into()),
+            ..mk_repo("/r")
+        },
+        "task".into(),
+        AgentView::Custom,
+    );
+    let id = rec.id.clone();
+    wm.add_agent(&mut rec).unwrap();
+    let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+    wm.set_repo_base_sha(&id, &subdir, "cafebabe").unwrap();
+    let repo = |wm: &WorkspaceManager| wm.agent(&id).unwrap().repos.remove(0);
+    assert_eq!(repo(&wm).recorded_base(), Some("main"));
+
+    // PR 42 targets the spawn base; PR 43 is stacked on 42's branch.
+    let opened = |branch: &'static str, base: &'static str| PrOpened {
+        url: "",
+        title: "",
+        branch: Some(branch),
+        base: Some(base),
+    };
+    wm.set_repo_pr_number(&id, &subdir, 42, opened("feat/a", "main"))
+        .unwrap();
+    assert_eq!(repo(&wm).recorded_base(), Some("main"));
+    wm.set_repo_pr_number(&id, &subdir, 43, opened("feat/b", "feat/a"))
+        .unwrap();
+    let stacked = repo(&wm);
+    assert_eq!(stacked.recorded_base(), Some("feat/a"));
+    assert_eq!(stacked.parent_branch.as_deref(), Some("main"));
+    assert_eq!(stacked.base_sha.as_deref(), Some("cafebabe"));
+
+    // A fetch that doesn't report the base keeps the known one; one that does
+    // (a retarget made on GitHub, a row from before the column) replaces it.
+    let fetched = |base: Option<&str>| crate::github::PrState {
+        number: 43,
+        url: "u43".into(),
+        title: "feat: b".into(),
+        state: crate::github::PrStatus::Open,
+        mergeable: crate::github::MergeableState::Unknown,
+        opened_at: None,
+        merged_at: None,
+        branch: None,
+        base: base.map(str::to_string),
+    };
+    wm.record_repo_pr(&id, &subdir, &fetched(None)).unwrap();
+    assert_eq!(repo(&wm).recorded_base(), Some("feat/a"));
+    wm.record_repo_pr(&id, &subdir, &fetched(Some("staging")))
+        .unwrap();
+    assert_eq!(repo(&wm).recorded_base(), Some("staging"));
+
+    // A `pr_edit` retarget is keyed by number: of a PR other than the focused
+    // one it steers nothing; of the focused one it moves the base.
+    wm.set_pr_base(&id, &subdir, 42, "release/1").unwrap();
+    assert_eq!(repo(&wm).recorded_base(), Some("staging"));
+    wm.set_pr_base(&id, &subdir, 43, "develop").unwrap();
+    assert_eq!(repo(&wm).recorded_base(), Some("develop"));
+
+    // Refocusing the first PR brings its base back.
+    wm.set_focused_pr(&id, &subdir, 42).unwrap().unwrap();
+    assert_eq!(repo(&wm).recorded_base(), Some("release/1"));
+}
+
+/// The branches a checkout created on origin accumulate — a later branch does
+/// not replace an earlier one the way `worktrees.branch` does — and are
+/// recorded once each, per checkout.
+#[test]
+fn owned_branches_accumulate_per_checkout() {
     let db = test_db();
     let wm = WorkspaceManager::new(db.clone());
     seed_repo(&db, "/r");
@@ -1580,14 +1658,29 @@ fn recorded_base_follows_a_redirected_pr_base() {
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
     let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
-    wm.set_repo_base_sha(&id, &subdir, "cafebabe").unwrap();
+    assert!(wm.owned_branches(&id, &subdir).unwrap().is_empty());
 
-    wm.set_repo_parent_branch(&id, &subdir, "feat/stacked")
-        .unwrap();
+    for branch in ["feat/a", "feat/b", "feat/a"] {
+        wm.record_owned_branch(&id, &subdir, branch).unwrap();
+        wm.set_repo_branch(&id, &subdir, branch).unwrap();
+    }
+    assert_eq!(
+        wm.owned_branches(&id, &subdir).unwrap(),
+        ["feat/a", "feat/b"]
+    );
+    assert_eq!(
+        wm.agent(&id).unwrap().repos[0].branch.as_deref(),
+        Some("feat/a"),
+        "the current branch is still the last one materialized"
+    );
+    assert!(
+        wm.owned_branches(&id, "other").unwrap().is_empty(),
+        "another checkout of the workspace owns its own branches"
+    );
 
-    let repo = wm.agent(&id).unwrap().repos.remove(0);
-    assert_eq!(repo.parent_branch.as_deref(), Some("feat/stacked"));
-    assert_eq!(repo.base_sha.as_deref(), Some("cafebabe"));
+    // Removing the workspace drops its branches with it.
+    wm.remove_agent(&id).unwrap();
+    assert!(wm.owned_branches(&id, &subdir).unwrap().is_empty());
 }
 
 /// Log `pr` into the checkout's set and bind it — what `create_pr` and an
@@ -1634,6 +1727,7 @@ fn pr_history_accumulates_across_rebinds() {
         opened_at: Some(1_000),
         merged_at: None,
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &first_open);
 
@@ -1665,6 +1759,7 @@ fn pr_history_accumulates_across_rebinds() {
         opened_at: Some(3_000),
         merged_at: None,
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &second);
 
@@ -1715,6 +1810,7 @@ fn pr_history_is_scoped_to_its_checkout() {
         opened_at: Some(1_000),
         merged_at: Some(2_000),
         branch: None,
+        base: None,
     };
     wm.record_repo_pr(&id, &subdir, &pr).unwrap();
 
@@ -1759,11 +1855,22 @@ fn pr_set_members_refresh_without_stealing_focus() {
         opened_at: Some(1_000),
         merged_at: None,
         branch: Some("feat/first".into()),
+        base: None,
     };
     bind(&wm, &id, &subdir, &first);
     // A sub-agent opens a second PR from the same checkout; it takes the focus.
-    wm.set_repo_pr_number(&id, &subdir, 43, "u43", "feat: second", Some("feat/second"))
-        .unwrap();
+    wm.set_repo_pr_number(
+        &id,
+        &subdir,
+        43,
+        PrOpened {
+            url: "u43",
+            title: "feat: second",
+            branch: Some("feat/second"),
+            base: None,
+        },
+    )
+    .unwrap();
     assert_eq!(
         wm.focused_pr_branch(&id, &subdir).unwrap().as_deref(),
         Some("feat/second")
@@ -1814,6 +1921,7 @@ fn pr_set_members_refresh_without_stealing_focus() {
         opened_at: None,
         merged_at: None,
         branch: None,
+        base: None,
     };
     wm.record_repo_pr(&id, &subdir, &late).unwrap();
     let repo = wm.agent(&id).unwrap().repos[0].clone();
@@ -1868,6 +1976,7 @@ fn pr_snapshot_persists_and_loads() {
         opened_at: Some(1_000),
         merged_at: None,
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &open);
     let repo = wm.agent(&id).unwrap().repos[0].clone();
@@ -1940,12 +2049,13 @@ fn binding_a_follow_up_pr_takes_its_own_snapshot() {
         opened_at: Some(1_000),
         merged_at: Some(2_000),
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &merged);
 
     // Re-binding the SAME number is the ordinary path — it must keep the
     // snapshot, so a poll never blanks a badge it just confirmed.
-    wm.set_repo_pr_number(&id, &subdir, 42, "", "", None)
+    wm.set_repo_pr_number(&id, &subdir, 42, PrOpened::default())
         .unwrap();
     let repo = wm.agent(&id).unwrap().repos[0].clone();
     assert_eq!(repo.pr_state.as_deref(), Some("merged"));
@@ -1957,9 +2067,12 @@ fn binding_a_follow_up_pr_takes_its_own_snapshot() {
         &id,
         &subdir,
         43,
-        "https://github.com/o/r/pull/43",
-        "feat: second",
-        Some("feat/second"),
+        PrOpened {
+            url: "https://github.com/o/r/pull/43",
+            title: "feat: second",
+            branch: Some("feat/second"),
+            base: None,
+        },
     )
     .unwrap();
     let repo = wm.agent(&id).unwrap().repos[0].clone();
@@ -2029,6 +2142,7 @@ fn a_follow_up_snapshot_does_not_inherit_the_previous_merge_stamp() {
         opened_at: Some(1_000),
         merged_at: Some(2_000),
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &merged);
 
@@ -2041,6 +2155,7 @@ fn a_follow_up_snapshot_does_not_inherit_the_previous_merge_stamp() {
         opened_at: Some(3_000),
         merged_at: None,
         branch: None,
+        base: None,
     };
     bind(&wm, &id, &subdir, &follow_up);
 
@@ -2169,6 +2284,7 @@ fn archive_then_restore_roundtrip() {
         subdir: "repo".into(),
         branch: Some("feat/do-the-thing".into()),
         parent_branch: Some("main".into()),
+        pr_base: None,
         base_sha: None,
         pr_number: None,
         pr_url: None,
@@ -2302,6 +2418,7 @@ pub(crate) fn make_workspace_with_session_for(
             subdir: "repo".into(),
             branch: None,
             parent_branch: None,
+            pr_base: None,
             base_sha: None,
             pr_number: None,
             pr_url: None,

@@ -68,6 +68,7 @@ pub(crate) fn parse_pr_state_rest(pr: &Value) -> PrState {
         opened_at: gh_time_ms(pr, "created_at"),
         merged_at: gh_time_ms(pr, "merged_at"),
         branch: pr["head"]["ref"].as_str().map(str::to_string),
+        base: pr["base"]["ref"].as_str().map(str::to_string),
     }
 }
 

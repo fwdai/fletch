@@ -29,7 +29,7 @@ pub(crate) mod tests;
 mod tours;
 mod turns;
 
-pub use agents::{agent_accounts, live_agents_on_account, session_accounts};
+pub use agents::{agent_accounts, live_agents_on_account, session_accounts, PrOpened};
 pub use factory::{is_per_turn_provider, new_agent_record};
 pub use folder_grants::FolderGrant;
 pub use lineage::{Anchor, HistoryPage, SessionLineage, HISTORY_PAGE_DEFAULT, HISTORY_PAGE_MAX};
@@ -78,16 +78,29 @@ pub enum AgentView {
 pub struct TrackedRepo {
     pub repo_path: PathBuf,
     pub subdir: String,
+    /// The branch the checkout is on now: the last one the host materialized.
+    /// Every branch it has created is in `worktree_branches`
+    /// (`WorkspaceManager::owned_branches`).
     #[serde(default)]
     pub branch: Option<String>,
+    /// The branch the checkout was forked from, recorded at spawn and never
+    /// rewritten. What the push guard protects; the base the work is reviewed
+    /// against is [`Self::recorded_base`], which follows the focused PR.
     #[serde(default)]
     pub parent_branch: Option<String>,
+    /// The base branch of the focused PR (`worktree_prs.base`), when known. In
+    /// a stack this is the branch below, not `parent_branch`; every base-keyed
+    /// reader (ahead/behind, "rebase onto", `update-branch`) follows it through
+    /// [`Self::recorded_base`]. Derived from the PR set when the record is read
+    /// (constructors set `None`; `query_tracked_repos` fills it).
+    #[serde(default)]
+    pub pr_base: Option<String>,
     /// The immutable fork-point commit this checkout was created from,
     /// captured at spawn after a best-effort fetch. Used as the diff base so
     /// agent changes are measured against the exact starting commit rather
     /// than a branch name that may drift. `None` for pre-migration agents and
     /// when the fork SHA couldn't be resolved; readers fall back to
-    /// `parent_branch`. Distinct from `parent_branch`, which names the branch
+    /// the base's name. Distinct from `parent_branch`, which names the branch
     /// for PR/merge bases.
     #[serde(default)]
     pub base_sha: Option<String>,
@@ -148,15 +161,34 @@ impl TrackedRepo {
         self.adopted_checkout.is_some()
     }
 
+    /// The branch this checkout's work is reviewed against, as recorded: the
+    /// focused PR's base when one is known, else the branch the checkout was
+    /// forked from. `None` only for a row older than both.
+    pub fn recorded_base(&self) -> Option<&str> {
+        self.pr_base
+            .as_deref()
+            .or(self.parent_branch.as_deref())
+            .filter(|b| !b.is_empty())
+    }
+
     /// The name of the branch this checkout is based on — the only way to spell
-    /// it. `parent_branch` is recorded at spawn for every repo tracked since the
-    /// spawn path started resolving a default; the fallback covers older rows,
-    /// and asks the repo what its default actually is rather than assuming
+    /// it: [`Self::recorded_base`], or the repo's actual default for a row that
+    /// predates the record. The fallback asks the repo rather than assuming
     /// `"main"` (guessing wrong there reports a `master` repo as unmeasurably
     /// behind, and opens PRs against a branch that doesn't exist).
     pub async fn base_branch(&self) -> String {
-        match &self.parent_branch {
-            Some(base) => base.clone(),
+        match self.recorded_base() {
+            Some(base) => base.to_string(),
+            None => crate::git::default_branch(&self.repo_path).await,
+        }
+    }
+
+    /// The branch the checkout was forked from, by the same ladder as
+    /// [`Self::base_branch`] but never a PR's base. The push guard protects it
+    /// whatever the work is stacked on now.
+    pub async fn spawn_base(&self) -> String {
+        match self.parent_branch.as_deref().filter(|b| !b.is_empty()) {
+            Some(base) => base.to_string(),
             None => crate::git::default_branch(&self.repo_path).await,
         }
     }

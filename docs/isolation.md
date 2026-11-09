@@ -398,11 +398,14 @@ later policy change can't widen an agent already running (`rpc/caps.rs`):
   review base and the trunks, nothing else) an agent could fetch a shared branch
   (`develop`, a `release/*`, a teammate's), `checkout -B` its HEAD onto it, and
   force-overwrite it under your identity. Force is therefore confined to the
-  agent's own recorded work branch (`AgentRecord.repos[].branch`) — the
-  spawn-stable name it cannot repoint the way it can its live `HEAD`. Until that
-  branch has been recorded (a fresh checkout that hasn't materialized one yet),
-  force fails **closed**; a non-force push is unaffected and may still create a
-  branch (`rpc/caps.rs`, `refuses_force`).
+  branches the host's own pushes created for the workspace (`worktree_branches`)
+  — names recorded as each push landed, which the agent cannot repoint the way
+  it can its live `HEAD`. Those branches are also the one exception to "the
+  review base is off limits": a workspace that stacks a second PR on its first
+  branch keeps pushing follow-ups to the first. Until a branch has been recorded
+  (a fresh checkout that hasn't materialized one yet), force fails **closed**; a
+  non-force push is unaffected and may still create a branch (`rpc/caps.rs`,
+  `refuses_publish`).
 - **A workflow step agent cannot publish at all.** A run publishes through its
   own `wf/`-guarded finalize; a step publishing directly would bypass that guard.
 

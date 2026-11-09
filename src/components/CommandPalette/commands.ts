@@ -12,6 +12,7 @@ import { ADD_PROJECT_GATES, anyGateReason, gateReason } from "@/store/gates";
 import { activeSurface, surfaceAgent, surfaceRepoPath } from "@/store/surface";
 import type { AppState } from "@/store/types";
 import { SHORTCUT_BY_ID } from "@/util/keymap";
+import { checkoutBase } from "@/util/prState";
 import { newAgentRepoPath, runShortcutAction } from "@/util/shortcuts";
 import {
   go,
@@ -299,8 +300,8 @@ export function agentItems(ctx: PaletteContext): PaletteItem[] {
       run: () => ctx.openUrl(url),
       remember: true,
     });
-  } else if (primary?.parent_branch) {
-    const base = primary.parent_branch;
+  } else if (primary?.pr_base || primary?.parent_branch) {
+    const base = checkoutBase(s.prStates?.[agent.id], primary) as string;
     const delegated = s.delegations[agent.id] != null;
     items.push({
       id: "commit-pr",

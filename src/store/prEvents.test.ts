@@ -139,6 +139,51 @@ describe("applyPrStateChanged", () => {
   /** The host announces a focus change (a switch, or its own refocus on a PR
    *  just opened) with a `pr:state_changed` for the new PR — the event is the
    *  focused PR's by definition, so a number other than the held one is it. */
+  /** The event is the host's binding: the checkout's record follows it at
+   *  once, as the host's `bind_pr` copies the snapshot, so `checkoutBase` sees
+   *  a newly focused merged PR as the checkout's own without waiting for the
+   *  next workspace refresh. */
+  describe("mirrors the binding onto the checkout's record", () => {
+    const repo = (subdir: string, pr_number: number | null) => ({
+      repo_path: "/r",
+      subdir,
+      pr_number,
+      pr_url: pr_number ? `https://github.com/o/r/pull/${pr_number}` : null,
+      pr_title: pr_number ? "t" : null,
+      pr_state: pr_number ? "open" : null,
+    });
+    const workspace = {
+      repos: [],
+      projects: [],
+      agents: [{ id: "arabia", repos: [repo("app", 651), repo("api", 12)] }],
+    } as unknown as NonNullable<Parameters<typeof applyPrStateChanged>[0]["workspace"]>;
+    const s = { prStates: {}, ...none, prSets: {}, workspace };
+
+    it("binds a newly focused merged PR on the primary", () => {
+      const next = applyPrStateChanged(s, { agent_id: "arabia", state: pr("merged", 650) });
+      const [primary, secondary] = next.workspace?.agents[0].repos ?? [];
+      expect(primary).toMatchObject({ pr_number: 650, pr_state: "merged" });
+      expect(secondary).toMatchObject({ pr_number: 12 });
+    });
+
+    it("binds a secondary by subdir and unbinds on a confirmed no-PR", () => {
+      const next = applyPrStateChanged(s, { agent_id: "arabia", subdir: "api", state: null });
+      const [primary, secondary] = next.workspace?.agents[0].repos ?? [];
+      expect(primary).toMatchObject({ pr_number: 651 });
+      expect(secondary).toMatchObject({ pr_number: null, pr_state: null });
+    });
+
+    it("writes nothing when the record already says this, or isn't held", () => {
+      const same = applyPrStateChanged(s, { agent_id: "arabia", state: pr("open", 651) });
+      expect("workspace" in same).toBe(false);
+      const unheld = applyPrStateChanged(
+        { prStates: {}, ...none, prSets: {} },
+        { agent_id: "arabia", state: pr("open", 650) },
+      );
+      expect("workspace" in unheld).toBe(false);
+    });
+  });
+
   describe("when the focus moves", () => {
     const focusedOn651 = (c651: PrChecks | null) => ({
       prStates: { arabia: pr("open", 651) },

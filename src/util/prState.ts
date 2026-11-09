@@ -30,6 +30,31 @@ export function prSnapshot(repo: TrackedRepo | undefined): PrState | null {
   };
 }
 
+/** Whether a live PR state is the checkout's own PR, as the host binds it: the
+ *  one its record binds (`pr_number`, which a `pr:state_changed` event mirrors
+ *  onto the record the moment the focus moves — `applyPrStateChanged`), or an
+ *  open one, which the host adopts on discovery. A merged or closed PR a
+ *  one-shot read found on a recycled branch name is display-only: the record
+ *  does not bind it, and no event announces it. */
+function isBoundPr(pr: PrState, repo: TrackedRepo | undefined): boolean {
+  return repo?.pr_number === pr.number || pr.state === "open";
+}
+
+/** The base branch a checkout is reviewed against, resolved as the host does:
+ *  the focused PR's base, else the record's. The live PR's base is used only
+ *  when that PR is the checkout's own (`isBoundPr`) — it arrives with the focus
+ *  event, ahead of the polled Git state — and a display-only PR never steers
+ *  the base. `polled` is the Git state's resolution, when known. Null when
+ *  nothing knows a base. */
+export function checkoutBase(
+  pr: PrState | null | undefined,
+  repo: TrackedRepo | undefined,
+  polled?: string | null,
+): string | null {
+  const own = pr && isBoundPr(pr, repo) ? pr.base : null;
+  return own || polled || repo?.pr_base || repo?.parent_branch || null;
+}
+
 /** The PR state to render for an agent: live store value, else the database
  *  snapshot from the agent's primary repo. */
 export function usePrState(agentId: string): PrState | null {

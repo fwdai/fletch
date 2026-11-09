@@ -202,9 +202,11 @@ impl WorkspaceManager {
     fn query_tracked_repos(conn: &Connection, agent_id: &str) -> Vec<TrackedRepo> {
         let mut stmt = match conn.prepare(
             "SELECT r.path, w.subdir, w.branch, w.parent_branch, w.base_sha, w.pr_number,
-                    w.pr_url, w.pr_title, w.pr_state, r.label, w.adopted_checkout
+                    w.pr_url, w.pr_title, w.pr_state, r.label, w.adopted_checkout, p.base
              FROM worktrees w
              JOIN repos r ON r.id = w.repo_id
+             LEFT JOIN worktree_prs p ON p.workspace_id = w.workspace_id
+                                     AND p.subdir = w.subdir AND p.number = w.pr_number
              WHERE w.workspace_id = ?1
              ORDER BY w.created_at",
         ) {
@@ -224,11 +226,13 @@ impl WorkspaceManager {
             let pr_state: Option<String> = row.get(8)?;
             let label: Option<String> = row.get(9)?;
             let adopted: Option<String> = row.get(10)?;
+            let pr_base: Option<String> = row.get(11)?;
             Ok(TrackedRepo {
                 repo_path: PathBuf::from(path),
                 subdir,
                 branch,
                 parent_branch,
+                pr_base,
                 base_sha,
                 pr_number,
                 pr_url,

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 
 use super::GitDispatcher;
+use crate::rpc::caps::AgentCaps;
 use crate::rpc::Response;
 
 /// `subdir` is `None` for dispatchers built without `with_repos`; consumers then
@@ -14,10 +15,33 @@ pub(super) struct Target {
     /// its signing config and signs (`git::publish`). Never `cwd`, which the
     /// agent writes.
     pub(super) source_repo: PathBuf,
+    /// The default base of `open_pr`; see `RepoTarget::base_branch`.
     pub(super) base_branch: String,
-    /// The force-push anchor. `None` until the host has recorded the branch and the
-    /// dispatcher was rebuilt, which fails a force closed.
-    pub(super) own_branch: Option<String>,
+    /// See `RepoTarget::spawn_base`.
+    pub(super) spawn_base: String,
+    /// See `RepoTarget::owned`. Stamped when the dispatcher was built, so a
+    /// branch born this turn is owned from the next (the host's record is
+    /// written as the push's event is applied).
+    pub(super) owned: Vec<String>,
+}
+
+impl Target {
+    /// Whether the host already records `branch` as one this checkout created.
+    pub(super) fn owns(&self, branch: &str) -> bool {
+        crate::rpc::caps::owns(&self.owned, branch)
+    }
+
+    /// The publish policy (`caps::refuses_publish`) over this checkout's
+    /// record: both recorded bases are protected, the owned branches exempt.
+    pub(super) fn refuses_publish(
+        &self,
+        caps: AgentCaps,
+        branch: &str,
+        force: bool,
+    ) -> Option<String> {
+        let bases = [self.spawn_base.as_str(), self.base_branch.as_str()];
+        caps.refuses_publish(branch, force, &bases, &self.owned)
+    }
 }
 
 impl GitDispatcher {
@@ -33,7 +57,8 @@ impl GitDispatcher {
                 cwd: self.cwd.clone(),
                 source_repo: self.source_repo.clone(),
                 base_branch: self.base_branch.clone(),
-                own_branch: self.own_branch.clone(),
+                spawn_base: self.spawn_base.clone(),
+                owned: self.owned.clone(),
             }),
             Some(name) => match self.repos.get(name) {
                 Some(repo) => Ok(Target {
@@ -41,7 +66,8 @@ impl GitDispatcher {
                     cwd: repo.cwd.clone(),
                     source_repo: repo.source_repo.clone(),
                     base_branch: repo.base_branch.clone(),
-                    own_branch: repo.own_branch.clone(),
+                    spawn_base: repo.spawn_base.clone(),
+                    owned: repo.owned.clone(),
                 }),
                 None => {
                     let mut known: Vec<&str> = self.repos.keys().map(String::as_str).collect();

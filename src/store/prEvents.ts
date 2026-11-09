@@ -11,6 +11,7 @@
 // `pr:set_entry_changed` reports the rest of the set and writes the set alone.
 // Only the slices actually written are stamped.
 
+import type { Workspace } from "@/api/types/agent";
 import type {
   PrChecks,
   PrChecksChangedEvent,
@@ -41,7 +42,48 @@ export function upsertState(
   );
 }
 
-type StateSlices = Pick<GitSlice, "prStates" | "prSets" | "prChecks" | "prComments">;
+type StateSlices = Pick<GitSlice, "prStates" | "prSets" | "prChecks" | "prComments"> & {
+  /** The workspace record, when the caller holds it (the store does; the
+   *  reducer tests may not). */
+  workspace?: Workspace | null;
+};
+
+/** The binding a `pr:state_changed` event announces, mirrored onto the
+ *  checkout's record as the host's `bind_pr` copies the PR's snapshot onto the
+ *  worktree row — so a reader that keys on `repo.pr_number` (`checkoutBase`)
+ *  sees the focus the moment it moves, not at the next workspace refresh.
+ *  Undefined when the record isn't held, doesn't know the checkout, or already
+ *  says this. */
+function bindOnRecord(
+  workspace: Workspace | null | undefined,
+  e: PrStateChangedEvent,
+): Workspace | undefined {
+  if (!workspace) return undefined;
+  const agent = workspace.agents.find((a) => a.id === e.agent_id);
+  if (!agent) return undefined;
+  const i = e.subdir ? agent.repos.findIndex((r) => r.subdir === e.subdir) : 0;
+  const repo = agent.repos[i];
+  if (!repo) return undefined;
+  const bound = {
+    pr_number: e.state?.number ?? null,
+    pr_url: e.state?.url ?? null,
+    pr_title: e.state?.title ?? null,
+    pr_state: e.state?.state ?? null,
+  };
+  if (
+    repo.pr_number === bound.pr_number &&
+    repo.pr_url === bound.pr_url &&
+    repo.pr_title === bound.pr_title &&
+    repo.pr_state === bound.pr_state
+  ) {
+    return undefined;
+  }
+  const repos = agent.repos.map((r, j) => (j === i ? { ...r, ...bound } : r));
+  return {
+    ...workspace,
+    agents: workspace.agents.map((a) => (a === agent ? { ...a, repos } : a)),
+  };
+}
 
 /** The checkout's focused PR, as the host found it. `wholeSet` is a host from
  *  before PR sets, which binds one PR per checkout: its PR is the whole set,
@@ -55,6 +97,8 @@ export function applyPrStateChanged(
   const state = e.state;
   stampPrWrite("prStates", key);
   const out: Partial<StateSlices> = { prStates: { ...s.prStates, [key]: state } };
+  const workspace = bindOnRecord(s.workspace, e);
+  if (workspace) out.workspace = workspace;
   if (state) {
     stampPrWrite("prSets", key);
     const prev = s.prSets[key];
