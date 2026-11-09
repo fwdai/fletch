@@ -47,15 +47,19 @@ export interface ProjectRunConfig {
   configs: DetectedConfig[];
 }
 
-/** One `KEY=value` pair discovered in a project's `.env` (Rust
+/** One `KEY=value` pair discovered in a project's env files (Rust
  *  `run_env::EnvEntry`). Used by the Run & Environment settings list. */
 export interface EnvEntry {
   key: string;
   value: string;
+  /** The file the value came from (`.env`, `.env.local`, …): the
+   *  highest-precedence env file that sets this key. */
+  file: string;
 }
 
 /** A project's discovered env keys (Rust `run_env::EnvFileKeys`): the real
- *  `.env` entries plus keys only *declared* by `.env.example`/`.env.sample` —
+ *  entries from `.env`, `.env.local` and the other env files, merged by
+ *  precedence, plus keys only *declared* by `.env.example`/`.env.sample` —
  *  bare names, because example values are placeholders, never real values. */
 export interface EnvFileKeys {
   env: EnvEntry[];

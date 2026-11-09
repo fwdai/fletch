@@ -7,9 +7,11 @@ import { SandboxToggle } from "./SandboxToggle";
 
 interface Props {
   varKey: string;
-  /** The value in the repo's `.env`; `undefined` if the var isn't in `.env`. */
+  /** The value in the repo's env files; `undefined` if no env file sets it. */
   envValue: string | undefined;
-  /** Key declared by `.env.example`/`.env.sample` but absent from `.env` —
+  /** The env file `envValue` came from (`.env`, `.env.local`, …). */
+  envFile: string | undefined;
+  /** Key declared by `.env.example`/`.env.sample` but set by no env file —
    *  the project wants it, no value is set. */
   declaredOnly?: boolean;
   /** The override value (from the keychain) when `cfg.source === "override"`. */
@@ -20,9 +22,9 @@ interface Props {
    *  Async — the row awaits it so it can hold the revert/remove controls back
    *  until the keychain + document writes settle. */
   onCommit: (value: string) => void | Promise<void>;
-  /** Explicit revert-to-`.env` (the revert control by the caption). */
+  /** Explicit revert to the env-file value (the revert control by the caption). */
   onRevert: () => void;
-  /** Delete a variable that isn't in `.env` (a user-added or now-stale one). */
+  /** Delete a variable no env file sets (a user-added or now-stale one). */
   onRemove: () => void;
 }
 
@@ -36,6 +38,7 @@ const TOKENS_TIP = "Use {{agent_id}} or {{worktree}} for a value per agent";
 export function EnvVarRow({
   varKey,
   envValue,
+  envFile,
   declaredOnly,
   overrideValue,
   cfg,
@@ -64,14 +67,15 @@ export function EnvVarRow({
 
   const isOverride = cfg.source === "override";
   const inEnv = envValue !== undefined;
-  // The effective value: the override when set, otherwise the mirrored `.env`
-  // value. Editing to a value that differs from `.env` creates an override.
+  const sourceFile = envFile ?? ".env";
+  // The effective value: the override when set, otherwise the mirrored env-file
+  // value. Editing to a value that differs from it creates an override.
   const display = isOverride ? (overrideValue ?? "") : (envValue ?? "");
 
   const caption = isOverride ? (
     inEnv ? (
       <>
-        <span className="dot" /> Overridden · differs from <code>.env</code>
+        <span className="dot" /> Overridden · differs from <code>{sourceFile}</code>
       </>
     ) : declaredOnly ? (
       <>
@@ -79,12 +83,12 @@ export function EnvVarRow({
       </>
     ) : (
       <>
-        <span className="dot" /> Added · not in <code>.env</code>
+        <span className="dot" /> Added · not in <code>.env</code> files
       </>
     )
   ) : inEnv ? (
     <>
-      from <code>.env</code>
+      from <code>{sourceFile}</code>
     </>
   ) : declaredOnly ? (
     <>
@@ -92,7 +96,7 @@ export function EnvVarRow({
     </>
   ) : (
     <>
-      not in <code>.env</code>
+      not in <code>.env</code> files
     </>
   );
 
@@ -104,8 +108,8 @@ export function EnvVarRow({
           {isOverride && inEnv && !busy && (
             <IconButton
               size="sm"
-              tip="Revert to .env"
-              aria-label="Revert to .env"
+              tip={`Revert to ${sourceFile}`}
+              aria-label={`Revert to ${sourceFile}`}
               onClick={onRevert}
             >
               <Icon name="refresh" size={12} />
