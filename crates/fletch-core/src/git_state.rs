@@ -617,7 +617,14 @@ async fn untracked_additions(checkout_path: &Path, rels: Vec<String>) -> (Vec<u3
 
     // A checkout a box keeps in its guest is counted there.
     if let exec @ crate::exec::Executor::Remote(_) = crate::exec::for_path(checkout_path) {
-        return untracked_additions_in_guest(&exec, checkout_path, rels, MAX_FILE_BYTES).await;
+        return untracked_additions_in_guest(
+            &exec,
+            checkout_path,
+            rels,
+            MAX_FILE_BYTES,
+            MAX_UNTRACKED_READ_BYTES,
+        )
+        .await;
     }
 
     let root = checkout_path.to_path_buf();
@@ -691,38 +698,49 @@ async fn untracked_additions(checkout_path: &Path, rels: Vec<String>) -> (Vec<u3
 }
 
 /// [`untracked_additions`] for a checkout a box keeps in its guest: one
-/// command there counts every file by the same rules — regular files only,
-/// nothing with a NUL byte, nothing over `max_file_bytes`, a final line
-/// without a newline counts, the pass ends when the byte budget would be
-/// exceeded — instead of a round trip over the channel per file. The paths
-/// travel on stdin, one per line (a name with a newline in it counts 0), and
-/// the counts come back one per line in order, `over` where the budget cut
-/// the pass short.
+/// command there counts every file by the same rules as the local pass —
+/// regular files only, each read capped at the lesser of `max_file_bytes`
+/// and what is left of `budget` (plus one byte, to tell "at the ceiling"
+/// from "over it"), every byte read charged whatever the file turns out to
+/// be, a file over its ceiling or holding a NUL byte counts 0, a final line
+/// without a newline counts, and the pass ends when the budget runs out —
+/// instead of a round trip over the channel per file. The paths travel on
+/// stdin, one per line (a name with a newline in it counts 0), and the counts
+/// come back one per line in order, `over` where the budget cut the pass
+/// short. The read is capped by `head`, not by trusting a size `stat`
+/// reported a moment earlier.
 async fn untracked_additions_in_guest(
     exec: &crate::exec::Executor,
     checkout_path: &Path,
     rels: Vec<String>,
     max_file_bytes: u64,
+    budget: u64,
 ) -> (Vec<u32>, bool) {
     const SCRIPT: &str = r#"
 max_file=$1; budget=$2; spent=0
+tmp=$(mktemp) || exit 1
+trap 'rm -f -- "$tmp"' EXIT
 while IFS= read -r f; do
   if [ -z "$f" ] || [ ! -f "$f" ]; then echo 0; continue; fi
-  size=$(stat -L -c %s -- "$f" 2>/dev/null) || { echo 0; continue; }
-  if [ "$size" -eq 0 ] || [ "$size" -gt "$max_file" ]; then echo 0; continue; fi
-  if [ $((spent + size)) -gt "$budget" ]; then echo over; exit 0; fi
-  if [ "$(tr -d '\000' < "$f" | wc -c)" -ne "$size" ]; then echo 0; continue; fi
+  remaining=$((budget - spent))
+  ceiling=$max_file
+  if [ "$remaining" -lt "$ceiling" ]; then ceiling=$remaining; fi
+  head -c $((ceiling + 1)) -- "$f" > "$tmp" 2>/dev/null || { echo 0; continue; }
+  size=$(wc -c < "$tmp")
   spent=$((spent + size))
-  n=$(wc -l < "$f")
-  if [ -n "$(tail -c1 -- "$f")" ]; then n=$((n + 1)); fi
+  if [ "$size" -gt "$ceiling" ]; then
+    if [ "$ceiling" -eq "$remaining" ]; then echo over; exit 0; fi
+    echo 0; continue
+  fi
+  if [ "$size" -eq 0 ]; then echo 0; continue; fi
+  if [ "$(tr -d '\000' < "$tmp" | wc -c)" -ne "$size" ]; then echo 0; continue; fi
+  n=$(wc -l < "$tmp")
+  if [ -n "$(tail -c1 -- "$tmp")" ]; then n=$((n + 1)); fi
   echo "$n"
 done
 "#;
     let mut out = vec![0u32; rels.len()];
-    let args = [
-        max_file_bytes.to_string(),
-        MAX_UNTRACKED_READ_BYTES.to_string(),
-    ];
+    let args = [max_file_bytes.to_string(), budget.to_string()];
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let Some(lines) = guest_lines(
         exec,
@@ -2076,6 +2094,46 @@ mod tests {
         let revs = revisions_in_guest(&crate::exec::Executor::Local, td.path(), rels).await;
         assert_eq!(revs.len(), 70_000);
         assert!(revs.iter().all(Option::is_none));
+    }
+
+    /// The guest counter, run through the local executor, keeps the local
+    /// pass's rules: every byte read is charged, binary or not; a file over
+    /// its ceiling is read no further than that ceiling; the budget ends the
+    /// pass.
+    #[tokio::test]
+    async fn guest_untracked_counts_charge_every_byte_and_cap_each_read() {
+        let td = tempfile::tempdir().unwrap();
+        let w = |rel: &str, body: &[u8]| std::fs::write(td.path().join(rel), body).unwrap();
+        w("bin.dat", b"ab\0cd\0"); // 6 bytes, binary: counts 0, costs 6
+        w("text.txt", b"a\nb\n"); // 4 bytes: 2 lines, costs 4 → 10 spent
+        w("more.txt", b"x\n"); // budget gone: over
+        let exec = crate::exec::Executor::Local;
+        let rels = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        let (counts, over) = untracked_additions_in_guest(
+            &exec,
+            td.path(),
+            rels(&["bin.dat", "text.txt", "more.txt"]),
+            1024,
+            10,
+        )
+        .await;
+        assert_eq!((counts, over), (vec![0, 2, 0], true));
+
+        // Oversized: read only to its ceiling (+1), charged that much, the
+        // pass goes on. 50 bytes against a 10-byte file cap costs 11, so a
+        // 25-byte budget still has room for the 4-byte text after it.
+        w("big.txt", &[b'z'; 50]);
+        let (counts, over) =
+            untracked_additions_in_guest(&exec, td.path(), rels(&["big.txt", "text.txt"]), 10, 25)
+                .await;
+        assert_eq!((counts, over), (vec![0, 2], false));
+
+        // No trailing newline still counts the last line.
+        w("tail.txt", b"one\ntwo");
+        let (counts, over) =
+            untracked_additions_in_guest(&exec, td.path(), rels(&["tail.txt"]), 1024, 1024).await;
+        assert_eq!((counts, over), (vec![2], false));
     }
 
     fn kind_name(kind: &StatusKind) -> &'static str {
