@@ -485,8 +485,10 @@ pub async fn list_checkout_tree_impl(
 
 /// Every file changed in the agent's checkouts as `base_mode` measures it:
 /// since the fork point, committed or not (`Fork`), or only uncommitted work
-/// (`Head`, and `Fork` where no fork point resolves, as `DiffBaseMode::diff_ref`
-/// degrades). A multi-repo agent's paths carry their checkout's subdir, as
+/// (`Head`). `Fork` is an error where no fork point resolves, so the client
+/// can say it is showing less than asked rather than pass a HEAD list off as
+/// the whole; the client already has the uncommitted list from its git poll.
+/// A multi-repo agent's paths carry their checkout's subdir, as
 /// [`list_checkout_tree_impl`]'s do.
 ///
 /// Shared with the remote dispatcher.
@@ -512,9 +514,9 @@ pub async fn list_changed_files_impl(
             continue;
         };
         let base = repo.resolve_base(&checkout).await;
-        let Ok(files) = changed_files(&checkout, &base, mode).await else {
-            continue;
-        };
+        // A checkout that can't answer fails the whole list: a partial one
+        // would read as complete, where an error lets the client fall back.
+        let files = changed_files(&checkout, &base, mode).await?;
         out.extend(files.into_iter().map(|f| FileStatus {
             path: format!("{}/{}", repo.subdir, f.path),
             ..f
@@ -531,7 +533,10 @@ async fn changed_files(
 ) -> Result<Vec<FileStatus>> {
     match (mode, &base.fork_point) {
         (DiffBaseMode::Fork, Some(fork)) => git_state::changed_since(checkout, fork).await,
-        _ => Ok(git_state::query(checkout, base).await?.files),
+        (DiffBaseMode::Fork, None) => Err(Error::Other(
+            "the checkout's fork point can't be resolved".into(),
+        )),
+        (DiffBaseMode::Head, _) => Ok(git_state::query(checkout, base).await?.files),
     }
 }
 
