@@ -106,6 +106,16 @@ export interface RunStateEvent {
   revision?: number;
 }
 
+/** The port on this Mac that reaches the dev server, emitted as the run phase
+ *  spawns. A host from before `port` rode `run:state` tells the port only here,
+ *  so the store takes it for such a host; a current host's is ignored, since
+ *  nothing orders it against `run:state`, which carries the same port. */
+export interface RunPortEvent {
+  agent_id: string;
+  port: number;
+  guest_port?: number | null;
+}
+
 /** One agent's run as the store holds it: the `run:state` fields, with what a
  *  host from before them omits filled in as null. */
 export interface RunStatus {
@@ -113,18 +123,7 @@ export interface RunStatus {
   port: number | null;
   guest_port: number | null;
   last_error: string | null;
-  /** Null for a host that sends none, which the store reads as "always
-   *  apply". */
+  /** Null for a host that sends none, whose states the store applies in
+   *  arrival order and whose port comes on `run:port`. */
   revision: number | null;
-}
-
-/** The store's reading of either path a run's state arrives by. */
-export function toRunStatus(s: RunStateEvent | RunStateSnapshot): RunStatus {
-  return {
-    phase: s.phase,
-    port: s.port ?? null,
-    guest_port: s.guest_port ?? null,
-    last_error: s.last_error,
-    revision: s.revision ?? null,
-  };
 }

@@ -54,10 +54,11 @@ pub struct RunStateSnapshot {
     /// a snapshot and the events in one order — whichever of them arrives
     /// later but describes an older state is dropped — rather than let a
     /// snapshot taken while a box's forward was pending erase the port an
-    /// event brought meanwhile. Each step is at least the clock's
-    /// milliseconds, so a host that restarts (its sessions begin anew) still
-    /// outranks what a client that stayed connected holds from before. 0 for
-    /// an agent that never ran.
+    /// event brought meanwhile. Every revision is at least the clock's
+    /// milliseconds when the state was made — a session begins at the clock
+    /// and each step is at least the clock ([`clock_revision`]) — so a host
+    /// that restarts, its sessions begun anew or not there at all, still
+    /// outranks what a client that stayed connected holds from before.
     pub revision: u64,
     /// Cumulative PTY output bytes (latest first dropped on overflow).
     /// Encoded as a byte array so the frontend can render or strip
@@ -113,16 +114,24 @@ struct RunSessionInner {
 }
 
 impl RunSessionInner {
-    /// The state changed: move the revision on, past the clock's milliseconds
-    /// so a session begun after a host restart cannot hand out a revision a
-    /// client already holds from the session before it.
+    /// The state changed: move the revision on, past the clock, so a session
+    /// begun after a host restart cannot hand out a revision a client already
+    /// holds from the session before it.
     fn touched(&mut self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        self.revision = (self.revision + 1).max(now);
+        self.revision = (self.revision + 1).max(clock_revision());
     }
+}
+
+/// The clock's milliseconds since the epoch: the revision of a state made
+/// now by a host with nothing older to go on — a new session, or the Idle
+/// state of an agent with no session, as after a restart — which outranks
+/// every state an earlier incarnation of the host handed out, since those
+/// were at least the clock of their own time.
+pub fn clock_revision() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 impl Default for RunSession {
@@ -137,7 +146,7 @@ impl Default for RunSession {
                 pty: None,
                 detected: None,
                 generation: 0,
-                revision: 0,
+                revision: clock_revision(),
             }),
         }
     }
@@ -648,10 +657,14 @@ mod tests {
             .unwrap()
             .as_millis() as u64;
         let s = RunSession::new();
-        assert_eq!(s.snapshot().revision, 0);
+        let fresh = s.snapshot().revision;
+        assert!(
+            fresh >= before,
+            "a new session begins at the clock: {fresh} < {before}"
+        );
         let gen = s.begin_phase(0, RunPhase::Setup).unwrap();
         let begun = s.state().revision;
-        assert!(begun >= before, "seeded from the clock: {begun} < {before}");
+        assert!(begun > fresh);
         assert!(s.transition_phase(gen, RunPhase::Running));
         let transitioned = s.state().revision;
         assert!(transitioned > begun);

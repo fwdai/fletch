@@ -235,7 +235,10 @@ and the host port beside it to tell the user. `run:state` is the one stream
 a client follows: every change to the run — its phase, its error, its ports
 — is one event carrying the whole state and a `revision` the snapshot
 carries too, so a client keeps whichever of an event and a snapshot is
-newer and drops the other, whatever order they arrive in. A box's run goes
+newer and drops the other, whatever order they arrive in. Revisions are at
+least the clock, so a host that restarted under a connected client (its
+sessions gone, every agent Idle as of now) still outranks the run the
+client remembers, and Stop always answers with the state. A box's run goes
 `running` with no port before its forward is up, so the panel keeps the link
 pending until the event with the port follows. `run:port` is still emitted
 beside it for clients from before the field, who read nothing else and

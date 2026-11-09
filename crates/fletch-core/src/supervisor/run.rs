@@ -152,24 +152,21 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Stop the Run-panel process for an agent. Idempotent.
+    /// Stop the Run-panel process for an agent. Idempotent, and always
+    /// answered with the resulting state: a client showing a run this host
+    /// knows nothing of (it restarted under the client) hears Stopped, at a
+    /// revision that outranks what it shows, rather than nothing.
     pub fn run_stop(&self, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
-        let session = {
-            let runs = self.runs.lock();
-            runs.get(agent_id).cloned()
-        };
-        let Some(session) = session else {
-            return Ok(());
-        };
-        let prior = session.stop();
-        if matches!(prior, RunPhase::Setup | RunPhase::Running) {
-            emit_run_state(ctx.sink.as_ref(), agent_id, &session);
-        }
+        let session = self.run_session(agent_id);
+        session.stop();
+        emit_run_state(ctx.sink.as_ref(), agent_id, &session);
         Ok(())
     }
 
     /// Snapshot of the current state and accumulated log for the
-    /// panel to rehydrate on mount.
+    /// panel to rehydrate on mount. An agent with no session is Idle as of
+    /// now — at the clock's revision, so a client holding a run from before
+    /// this host restarted takes it over that run.
     pub fn run_state(&self, agent_id: &str) -> RunStateSnapshot {
         let session = {
             let runs = self.runs.lock();
@@ -182,7 +179,7 @@ impl Supervisor {
                 last_error: None,
                 port: None,
                 guest_port: None,
-                revision: 0,
+                revision: run_session::clock_revision(),
                 log: Vec::new(),
                 log_seq: 0,
             },

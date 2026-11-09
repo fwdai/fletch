@@ -8,6 +8,9 @@ import {
   type FolderGrant,
   type ForkCode,
   type ForkContext,
+  type RunPortEvent,
+  type RunStateEvent,
+  type RunStateSnapshot,
   type RunStatus,
   type SessionRecord,
   type SpawnStage,
@@ -253,9 +256,17 @@ export interface WorkspaceSlice {
   ) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
   /** Record an agent's run from a `run:state` event or a RunPanel snapshot.
-   *  Ignored when both carry a revision and `next` is no newer: the two paths
-   *  arrive unordered, and a late one must not undo a newer state. */
-  applyRunState: (id: string, next: RunStatus) => void;
+   *  Ignored when both carry a revision and the new one is no newer: the two
+   *  paths arrive unordered, and a late one must not undo a newer state. A
+   *  host from before revisions sends none: its states apply in arrival order,
+   *  and one without a `port` field leaves the port `run:port` brought. */
+  applyRunState: (id: string, next: RunStateEvent | RunStateSnapshot) => void;
+  /** Record a port from `run:port`, which only a host from before `port` rode
+   *  `run:state` needs: a status with a revision came from a host whose
+   *  `run:state` carries the port, so the unordered event is ignored. With no
+   *  status yet the run is taken as running — the event is emitted as the run
+   *  phase spawns — until its `run:state` lands. */
+  applyRunPort: (id: string, e: RunPortEvent) => void;
   resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;
@@ -746,10 +757,43 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  applyRunState: (id, next) =>
+  applyRunState: (id, s) =>
     set((state) => {
-      const current = state.runs[id]?.revision;
-      if (current != null && next.revision != null && next.revision <= current) return state;
+      const current = state.runs[id];
+      const revision = s.revision ?? null;
+      if (current?.revision != null && revision != null && revision <= current.revision) {
+        return state;
+      }
+      // A current host says the ports on every state (null when none); a host
+      // from before the field says nothing, and the port it told on
+      // `run:port` stands.
+      const legacy = revision === null;
+      const next: RunStatus = {
+        phase: s.phase,
+        last_error: s.last_error,
+        port: s.port === undefined ? (legacy ? (current?.port ?? null) : null) : s.port,
+        guest_port:
+          s.guest_port === undefined
+            ? legacy
+              ? (current?.guest_port ?? null)
+              : null
+            : s.guest_port,
+        revision,
+      };
+      return { runs: { ...state.runs, [id]: next } };
+    }),
+
+  applyRunPort: (id, e) =>
+    set((state) => {
+      const current = state.runs[id];
+      if (current && current.revision !== null) return state;
+      const next: RunStatus = {
+        phase: current?.phase ?? "running",
+        last_error: current?.last_error ?? null,
+        port: e.port,
+        guest_port: e.guest_port ?? null,
+        revision: null,
+      };
       return { runs: { ...state.runs, [id]: next } };
     }),
 

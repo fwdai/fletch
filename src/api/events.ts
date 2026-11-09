@@ -50,7 +50,7 @@ import type {
   RoadmapProposal,
   RoadmapQueueNote,
 } from "./types/roadmap";
-import type { RunOutputEvent, RunStateEvent } from "./types/run";
+import type { RunOutputEvent, RunPortEvent, RunStateEvent } from "./types/run";
 import type {
   BoxEgressEvent,
   BoxImageStatus,
@@ -386,6 +386,10 @@ export function onRunOutput(cb: (e: RunOutputEvent) => void): Promise<UnlistenFn
 
 export function onRunState(cb: (e: RunStateEvent) => void): Promise<UnlistenFn> {
   return on<RunStateEvent>("run:state", cb);
+}
+
+export function onRunPort(cb: (e: RunPortEvent) => void): Promise<UnlistenFn> {
+  return on<RunPortEvent>("run:port", cb);
 }
 
 /** An agent is waiting for the user to approve one publish. Only fires when the

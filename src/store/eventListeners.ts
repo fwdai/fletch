@@ -40,6 +40,7 @@ import {
   onPublishApprovalRequested,
   onPublishApprovalResolved,
   onReviewChanged,
+  onRunPort,
   onRunState,
   onSessionRecordsAppended,
   onSessionSyncHealth,
@@ -50,7 +51,6 @@ import {
   onTurnStarted,
   onWorkspaceAutoArchived,
   onWorkspaceChanged,
-  toRunStatus,
 } from "@/api";
 import type { UnlistenFn } from "@/api/transport";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
@@ -745,9 +745,11 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // its own subscription can't keep the Run tab's dot or the sidebar's chip
   // right from another tab — this always-on listener feeds `runs`. Phase and
   // port land in one update, so no render sees `running` beside a port the run
-  // never got. `run:port` is deliberately not read: nothing orders it against
-  // this stream, which carries the same port.
-  await bind(onRunState((e) => get().applyRunState(e.agent_id, toRunStatus(e))));
+  // never got. `run:port` is read only for a host from before `port` rode
+  // `run:state` (the store tells by the missing revision): nothing orders it
+  // against this stream, which carries the same port on a current host.
+  await bind(onRunState((e) => get().applyRunState(e.agent_id, e)));
+  await bind(onRunPort((e) => get().applyRunPort(e.agent_id, e)));
 
   // The box sandbox: the image install and the tools builds for the Developer
   // pane's setup line, each box's phase for the workspace capsule, and the

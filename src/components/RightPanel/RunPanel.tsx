@@ -1,6 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
-import { type AgentRecord, api, onRunOutput, toRunStatus } from "@/api";
+import { type AgentRecord, api, onRunOutput } from "@/api";
 import { Icon } from "@/components/Icon";
 import {
   loadRunOverrides,
@@ -159,7 +159,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           // app reload lights the tab dot and links its port before the next
           // live event. The snapshot can resolve after a newer `run:state`;
           // the store's revision check is what keeps it from undoing that.
-          applyRunState(agent.id, toRunStatus(snap));
+          applyRunState(agent.id, snap);
           if (snap.log.length > 0) snapLog = new Uint8Array(snap.log);
           snapEnd = snap.log_seq;
         } catch (err) {
