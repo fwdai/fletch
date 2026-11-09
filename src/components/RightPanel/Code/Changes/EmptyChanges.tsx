@@ -1,10 +1,18 @@
 import type { DiffBaseMode } from "@/api";
 import { Button } from "@/components/ui/Button";
 
-/** An empty list says which scope is empty. Under Uncommitted the agent's work
- *  may all be in commits, so it offers the way to it. */
-export function EmptyChanges({ base, onShowAll }: { base: DiffBaseMode; onShowAll: () => void }) {
-  if (base === "head") {
+interface EmptyChangesProps {
+  base: DiffBaseMode;
+  /** The agent's work is in commits (any ahead of the base), so an empty
+   *  Uncommitted list has somewhere to point. */
+  committed: boolean;
+  onShowAll: () => void;
+}
+
+/** An empty list says which scope is empty. Under Uncommitted with commits
+ *  ahead the work is all committed, so it offers the way to it. */
+export function EmptyChanges({ base, committed, onShowAll }: EmptyChangesProps) {
+  if (base === "head" && committed) {
     return (
       <div className="empty-msg" style={{ margin: "auto" }}>
         <div className="et">Everything is committed.</div>

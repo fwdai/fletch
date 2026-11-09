@@ -8,11 +8,11 @@
 import "./Walkthrough.css";
 import { useCallback, useState } from "react";
 import type { AgentRecord, FileStatus } from "@/api";
+import { useBareKeys } from "@/util/hooks";
 import { presentAnchor, presentPaths, type StepAnchor, stepIndexFor } from "./model";
 import { ResumeStrip } from "./ResumeStrip";
 import { StartCard } from "./StartCard";
 import { StepStrip } from "./StepStrip";
-import { useStepKeys } from "./useStepKeys";
 import { useWalkthrough } from "./useWalkthrough";
 
 /** A 1-indexed, inclusive line range on a file's new side. */
@@ -90,7 +90,9 @@ export function Walkthrough({ agent, files, currentPath, onGo, onViewed }: Walkt
     [current, setIndex, onGo],
   );
 
-  useStepKeys(currentPath !== null && steps.length > 0, next, prev);
+  // `j` / `k` step while the diff pane is up; a chord with a modifier is
+  // someone else's.
+  useBareKeys(currentPath !== null && steps.length > 0 ? { j: next, k: prev } : null);
 
   if (steps.length === 0) return null;
 

@@ -41,20 +41,20 @@ export function Changes({
   // Same signal the chat's "thinking" spinner uses, so live state appears and
   // clears in lockstep with the rest of the UI.
   const busy = useAppStore((s) => isAgentBusy(s, agent.id, agent.status));
-  const { files, additions, deletions, degraded, loaded } = useChangedFiles(
-    agent.id,
-    diffBase,
-    busy,
-  );
+  // Commits ahead of the base: what an empty Uncommitted list means depends on it.
+  const ahead = useAppStore((s) => s.gitStates[agent.id]?.ahead ?? 0);
+  const { files, additions, deletions, degraded, loaded } = useChangedFiles(agent, diffBase, busy);
   const liveFile = useLiveFile(`${agent.id}:${diffBase}`, files, busy);
   const viewed = useViewed(agent.id, diffBase, files);
 
   const [view, setView] = useState<"list" | "diff">("list");
-  const [follow, setFollow] = useState(true);
+  // Arriving with a file already chosen (opened in Explore, say) starts paused:
+  // Follow must not take a file the user picked out from under them.
+  const [follow, setFollow] = useState(() => selectedPath == null);
   const [focus, setFocus] = useState<{ path: string; range: WalkthroughRange } | null>(null);
   // Entered mid-turn with Follow armed: open the live file's diff as soon as
   // it is known, instead of the list. Any navigation first cancels it.
-  const enterLive = useRef(busy);
+  const enterLive = useRef(busy && selectedPath == null);
 
   useEffect(() => {
     if (!busy) {
@@ -141,7 +141,11 @@ export function Changes({
       ) : files.length === 0 ? (
         <>
           {partial && <DegradedHint />}
-          <EmptyChanges base={diffBase} onShowAll={() => onDiffBaseChange("fork")} />
+          <EmptyChanges
+            base={diffBase}
+            committed={ahead > 0}
+            onShowAll={() => onDiffBaseChange("fork")}
+          />
         </>
       ) : (
         <>

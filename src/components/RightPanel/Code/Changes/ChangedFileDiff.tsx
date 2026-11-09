@@ -2,7 +2,6 @@
 // Git panel's): the editor's header with a way back, the file's place in the
 // list with prev/next (also `[` / `]`), and the diff, refetched whenever the
 // file's counts move so it tracks the agent's edits.
-import { useEffect } from "react";
 import type { DiffBaseMode, FileStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ViewerHeader } from "@/components/RightPanel/FilePanel/ViewerHeader";
@@ -10,6 +9,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { useHljsTheme } from "@/util/codeTheme";
 import { statusLetter } from "@/util/diff";
 import { basename, parentDir } from "@/util/format";
+import { useBareKeys } from "@/util/hooks";
 import { DiffPane, extOf, useFileDiff } from "../DiffView";
 import { useFreshLines } from "./useFreshLines";
 import type { WalkthroughRange } from "./Walkthrough";
@@ -61,19 +61,10 @@ export function ChangedFileDiff({
   );
   const freshKeys = useFreshLines(`${base}:${fetchPath}`, diff);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const t = e.target as HTMLElement | null;
-      if (t?.tagName === "INPUT" || t?.tagName === "TEXTAREA" || t?.isContentEditable) return;
-      const to = e.key === "[" ? prev : e.key === "]" ? next : null;
-      if (!to) return;
-      e.preventDefault();
-      onSelect(to.path);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [prev, next, onSelect]);
+  useBareKeys({
+    ...(prev && { "[": () => onSelect(prev.path) }),
+    ...(next && { "]": () => onSelect(next.path) }),
+  });
 
   return (
     <>

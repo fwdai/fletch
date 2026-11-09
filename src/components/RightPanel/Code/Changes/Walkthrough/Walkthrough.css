@@ -86,7 +86,6 @@
   overflow-y: auto;
   color: var(--fg-1);
   line-height: var(--lh-snug);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

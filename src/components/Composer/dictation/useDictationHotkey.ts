@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { isTypingTarget } from "@/util/hooks";
 
 /** Is this ⌘⇧D (⌃⇧D on a PC keyboard)? Shared with the textarea's handler so
  *  the two can't drift. */
@@ -22,9 +23,7 @@ function onWindowKey(e: KeyboardEvent) {
   if (e.defaultPrevented) return;
   // Any other editable field keeps its keys: dictating into the chat while the
   // caret sits in a commit message would be a surprise.
-  const target = e.target as HTMLElement | null;
-  const tag = target?.tagName ?? "";
-  if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+  if (isTypingTarget(e.target)) return;
   const top = stack[stack.length - 1];
   if (!top) return;
   e.preventDefault();

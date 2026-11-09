@@ -33,9 +33,9 @@ export interface Step {
 /** Narration longer than this is cut: the strip is a caption, not the chat. */
 const NOTE_MAX = 280;
 
-/** The checkout-relative path `path` names among `files`: itself, or the
- *  longest file path it ends with — tools often report absolute paths, and a
- *  multi-repo checkout prefixes its files with the repo's subdir. */
+/** The checkout-relative path a tool's `path` names among `files`: itself, or
+ *  the longest file path it ends with — tools often report absolute paths, and
+ *  a multi-repo checkout prefixes its files with the repo's subdir. */
 export function matchFile(path: string, files: FileStatus[]): string | null {
   let best: string | null = null;
   for (const { path: rel } of files) {
@@ -60,15 +60,13 @@ export function presentPaths(step: Step, files: FileStatus[]): string[] {
 
 export function stepsFromTour(tour: Tour, files: FileStatus[]): Step[] {
   return tour.steps.map((s) => {
+    // Anchors already name files the way the list does (the host enforces
+    // relative paths), so an anchor is kept as given and simply absent from
+    // the list when its file is not in view.
     const step: Step = {
       title: s.title,
       note: s.note,
-      // An agent may name a file by its absolute path; the anchor is still the
-      // file it means.
-      anchors: s.anchors.map((a) => ({
-        path: matchFile(a.path, files) ?? a.path,
-        range: { start: a.start, end: a.end },
-      })),
+      anchors: s.anchors.map((a) => ({ path: a.path, range: { start: a.start, end: a.end } })),
       stale: false,
     };
     step.stale = presentAnchor(step, files) === undefined;

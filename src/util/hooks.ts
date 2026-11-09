@@ -1,4 +1,32 @@
-import { type DependencyList, type RefObject, useEffect, useState } from "react";
+import { type DependencyList, type RefObject, useEffect, useRef, useState } from "react";
+
+/** Whether a key event's target takes text, so the key is the user typing and
+ *  not a command for the window. */
+export function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return el?.tagName === "INPUT" || el?.tagName === "TEXTAREA" || !!el?.isContentEditable;
+}
+
+/** Bare keys as commands while `bindings` is non-null: a press of a bound key
+ *  with no modifier, outside a text field, runs its action. Pass null to stand
+ *  down. `bindings` may be a fresh object each render. */
+export function useBareKeys(bindings: Record<string, () => void> | null): void {
+  const latest = useRef(bindings);
+  latest.current = bindings;
+  const enabled = bindings !== null;
+  useEffect(() => {
+    if (!enabled) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
+      const run = latest.current?.[e.key];
+      if (!run) return;
+      e.preventDefault();
+      run();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [enabled]);
+}
 
 /** Dismiss a popover/menu on an outside pointer press or Escape, while `active`.
  *  Listens in the capture phase so it still fires when an inner handler stops

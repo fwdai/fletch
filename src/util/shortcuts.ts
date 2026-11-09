@@ -7,6 +7,7 @@ import { useAppStore } from "@/store";
 import { activeGateReason, type GateName } from "@/store/capabilities";
 import { activeSurface, surfaceAgent, surfaceRepoPath } from "@/store/surface";
 import type { RightPanelTab } from "@/store/types";
+import { isTypingTarget } from "@/util/hooks";
 import {
   effectiveCombos,
   formatCombo,
@@ -226,11 +227,7 @@ export function runShortcutAction(id: string): void {
 export function useGlobalShortcuts() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName ?? "";
-      const typing =
-        tag === "INPUT" ||
-        tag === "TEXTAREA" ||
-        !!(e.target as HTMLElement | null)?.isContentEditable;
+      const typing = isTypingTarget(e.target);
       const { shortcutOverrides: overrides, paletteOpen } = useAppStore.getState();
       for (const shortcut of GLOBAL_SHORTCUTS) {
         if (!effectiveCombos(shortcut, overrides).some((c) => matchesCombo(e, c))) continue;

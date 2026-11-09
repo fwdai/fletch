@@ -2,7 +2,9 @@
 // at least a step, else its transcript — and which step the reader is on.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type AgentRecord, api, type FileStatus, onTourChanged, type Tour } from "@/api";
-import { useTranscript } from "@/components/Workspace/messages/useTranscript";
+import type { ViewItem } from "@/components/Workspace/messages/pair";
+import { useHistoryLoad, useTranscriptFrom } from "@/components/Workspace/messages/useTranscript";
+import { useAppStore } from "@/store";
 import { deriveStepsFromTranscript, type Step, stepsFromTour } from "./model";
 
 export type WalkthroughSource = "tour" | "transcript" | "none";
@@ -16,19 +18,20 @@ export interface WalkthroughState {
 }
 
 export function useWalkthrough(agent: AgentRecord, files: FileStatus[]): WalkthroughState {
-  const tour = useTour(agent.id);
-  const { items } = useTranscript(agent);
+  const loaded = useTour(agent.id);
+  // A tour with at least one step; null for an agent that wrote none.
+  const tour = loaded != null && loaded.steps.length > 0 ? loaded : null;
+  // The transcript is read only once the tour has loaded and is absent: a
+  // transcript walkthrough must not flash up and give way to the tour, and
+  // with a tour nothing here should re-run on every streamed token.
+  const items = useTranscriptItems(agent, loaded !== undefined && tour === null);
 
-  const steps = useMemo(() => {
-    // Nothing until the tour has loaded, so a transcript walkthrough doesn't
-    // flash up and then give way to the tour.
-    if (tour === undefined) return [];
-    if (tour && tour.steps.length > 0) return stepsFromTour(tour, files);
-    return deriveStepsFromTranscript(items, files);
-  }, [tour, items, files]);
+  const steps = useMemo(
+    () => (tour ? stepsFromTour(tour, files) : deriveStepsFromTranscript(items, files)),
+    [tour, items, files],
+  );
 
-  const source: WalkthroughSource =
-    steps.length === 0 ? "none" : tour && tour.steps.length > 0 ? "tour" : "transcript";
+  const source: WalkthroughSource = steps.length === 0 ? "none" : tour ? "tour" : "transcript";
 
   // Tagged with the agent so switching agents starts over at the first step.
   const [position, setPosition] = useState({ agentId: agent.id, index: 0 });
@@ -40,6 +43,15 @@ export function useWalkthrough(agent: AgentRecord, files: FileStatus[]): Walkthr
   );
 
   return { steps, source, index, setIndex };
+}
+
+/** The agent's transcript as the chat shows it, while `enabled`; an empty
+ *  transcript otherwise — and no subscription to the log, so a streaming turn
+ *  doesn't re-render the caller. */
+function useTranscriptItems(agent: AgentRecord, enabled: boolean): ViewItem[] {
+  useHistoryLoad(agent);
+  const log = useAppStore((s) => (enabled ? s.managedLogs[agent.id] : undefined));
+  return useTranscriptFrom(agent, log, false).items;
 }
 
 /** The agent's tour, reloaded each time it writes one. Undefined until the

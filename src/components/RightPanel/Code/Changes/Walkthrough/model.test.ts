@@ -66,13 +66,14 @@ describe("stepsFromTour", () => {
         { title: null, note: "Reverted.", anchors: [{ path: "src/gone.ts", start: 1, end: 1 }] },
         {
           title: null,
-          note: "Absolute.",
-          anchors: [{ path: "/w/repo/src/view.tsx", start: 5, end: 7 }],
+          note: "Elsewhere.",
+          anchors: [{ path: "src/view.tsx", start: 5, end: 7 }],
         },
         { title: null, note: "Nothing.", anchors: [] },
       ],
     };
-    expect(stepsFromTour(tour, changed("src/store.ts", "src/view.tsx"))).toEqual([
+    // Anchors match exactly: `src/view.tsx` is not the root `view.tsx` in view.
+    expect(stepsFromTour(tour, changed("src/store.ts", "view.tsx"))).toEqual([
       {
         title: "The store",
         note: "Adds the slice.",
@@ -90,9 +91,9 @@ describe("stepsFromTour", () => {
       },
       {
         title: null,
-        note: "Absolute.",
+        note: "Elsewhere.",
         anchors: [{ path: "src/view.tsx", range: { start: 5, end: 7 } }],
-        stale: false,
+        stale: true,
       },
       { title: null, note: "Nothing.", anchors: [], stale: true },
     ]);

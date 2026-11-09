@@ -1,14 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { FileStatus } from "@/api";
-
-const { listChangedFiles, getState } = vi.hoisted(() => ({
-  listChangedFiles: vi.fn(),
-  getState: vi.fn(),
-}));
-vi.mock("@/api", () => ({ api: { listChangedFiles } }));
-vi.mock("@/store", () => ({ useAppStore: { getState } }));
-
-import { fetchChangedFiles } from "./useChangedFiles";
+import { describe, expect, it } from "vitest";
+import type { FileStatus, GitState, TrackedRepo } from "@/api";
+import { uncommittedFiles } from "./useChangedFiles";
 
 const file = (path: string): FileStatus => ({
   path,
@@ -18,37 +10,29 @@ const file = (path: string): FileStatus => ({
   deletions: 0,
 });
 
-const uncommitted = [file("dirty.ts")];
+const state = (...paths: string[]) => ({ files: paths.map(file) }) as GitState;
+const repo = (subdir: string) => ({ subdir }) as TrackedRepo;
 
-describe("fetchChangedFiles", () => {
-  beforeEach(() => {
-    listChangedFiles.mockReset();
-    getState.mockReturnValue({ gitStates: { a1: { files: uncommitted } } });
+describe("uncommittedFiles", () => {
+  it("is the primary checkout's list as is for a single-repo agent", () => {
+    const primary = state("src/a.ts", "README.md");
+    expect(uncommittedFiles([repo("app")], [primary])).toBe(primary.files);
   });
 
-  it("returns the scope's list when the backend answers", async () => {
-    const files = [file("committed.ts"), file("dirty.ts")];
-    listChangedFiles.mockResolvedValue(files);
-
-    await expect(fetchChangedFiles("a1", "fork")).resolves.toEqual({ files, degraded: false });
-    expect(listChangedFiles).toHaveBeenCalledWith("a1", "fork");
+  it("is empty until the poll has answered", () => {
+    expect(uncommittedFiles([repo("app")], [undefined])).toEqual([]);
   });
 
-  it("falls back to the git poll's uncommitted list when the command is missing", async () => {
-    listChangedFiles.mockRejectedValue(new Error("unknown command list_changed_files"));
-
-    await expect(fetchChangedFiles("a1", "fork")).resolves.toEqual({
-      files: uncommitted,
-      degraded: true,
-    });
+  it("prefixes every checkout's paths with its directory for a multi-repo agent", () => {
+    const files = uncommittedFiles(
+      [repo("web"), repo("backend")],
+      [state("src/a.ts"), state("src/b.rs")],
+    );
+    expect(files.map((f) => f.path)).toEqual(["web/src/a.ts", "backend/src/b.rs"]);
   });
 
-  it("degrades to an empty list when the git poll has nothing for the agent", async () => {
-    listChangedFiles.mockRejectedValue("checkout not ready");
-
-    await expect(fetchChangedFiles("other", "head")).resolves.toEqual({
-      files: [],
-      degraded: true,
-    });
+  it("skips a checkout whose state hasn't arrived without dropping the others", () => {
+    const files = uncommittedFiles([repo("web"), repo("backend")], [undefined, state("src/b.rs")]);
+    expect(files.map((f) => f.path)).toEqual(["backend/src/b.rs"]);
   });
 });
