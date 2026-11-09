@@ -49,4 +49,18 @@ describe("aggregateGit", () => {
     expect(git).toMatchObject({ answered: true, blocked: ["api"] });
     expect(git.files?.map((f) => f.path)).toEqual(["web/a.ts"]);
   });
+
+  it("drops the last good state of a checkout that has since been refused", () => {
+    // The store keeps the state it had when the refusal began.
+    const stale = state(4, "src/old.ts");
+    const multi = aggregateGit([
+      checkout("web", { state: state(1, "a.ts") }),
+      checkout("api", { state: stale, blocked: ["core.fsmonitor"] }),
+    ]);
+    expect(multi.files?.map((f) => f.path)).toEqual(["web/a.ts"]);
+    expect(multi).toMatchObject({ ahead: 1, blocked: ["api"] });
+
+    const single = aggregateGit([checkout("app", { state: stale, blocked: ["diff.external"] })]);
+    expect(single).toMatchObject({ answered: true, files: [], ahead: 0, blocked: ["app"] });
+  });
 });

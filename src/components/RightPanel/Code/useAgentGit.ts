@@ -36,18 +36,22 @@ export interface AgentGit {
 
 export function aggregateGit(checkouts: CheckoutGit[]): AgentGit {
   const answered = checkouts.every((c) => c.state !== undefined || c.blocked !== undefined);
+  // The store keeps a checkout's last good state when the host starts
+  // refusing it; that state is history, not the tree now, so a blocked
+  // checkout contributes nothing but its name.
+  const readable = (c: CheckoutGit) => (c.blocked === undefined ? c.state : undefined);
   const multi = checkouts.length > 1;
   const files = !answered
     ? null
     : multi
       ? checkouts.flatMap((c) =>
-          (c.state?.files ?? []).map((f) => ({ ...f, path: `${c.subdir}/${f.path}` })),
+          (readable(c)?.files ?? []).map((f) => ({ ...f, path: `${c.subdir}/${f.path}` })),
         )
-      : (checkouts[0]?.state?.files ?? []);
+      : (readable(checkouts[0])?.files ?? []);
   return {
     answered,
     files,
-    ahead: checkouts.reduce((n, c) => n + (c.state?.ahead ?? 0), 0),
+    ahead: checkouts.reduce((n, c) => n + (readable(c)?.ahead ?? 0), 0),
     blocked: checkouts.filter((c) => c.blocked !== undefined).map((c) => c.subdir),
   };
 }
