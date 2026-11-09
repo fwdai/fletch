@@ -2,7 +2,7 @@
 //!
 //! Companion to `git.rs` which handles mutations. This module only reads.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use crate::error::{Error, Result};
@@ -228,6 +228,62 @@ pub async fn query(checkout_path: &Path, base: &crate::git::ResolvedBase) -> Res
         blocked_config: vec![],
         worktrees,
     })
+}
+
+/// Every file the checkout's working tree differs in from `fork`, committed or
+/// not, plus the untracked files beside them — the Code panel's "since the fork"
+/// list, which [`query`] cannot give: its status and numstat read against HEAD,
+/// so committed work drops out of it.
+///
+/// Kinds and paths come from `git diff --name-status -M <fork>` (a rename under
+/// its new path), line counts from `--numstat` over the same range, and the
+/// untracked and conflicted entries from `git status`, untracked additions
+/// counted as `query` counts them, under the same read budget. `staged` is
+/// always false: across commits the index draws no line. Sorted by path.
+pub async fn changed_since(checkout_path: &Path, fork: &str) -> Result<Vec<FileStatus>> {
+    // Plain commands like `query`'s, so guarded here for the same reason.
+    crate::git::hardening::refuse_steerable_config(checkout_path).await?;
+    let (names, numstat, status) = tokio::join!(
+        run_diff_since(checkout_path, "--name-status", fork),
+        run_diff_since(checkout_path, "--numstat", fork),
+        run_status(checkout_path),
+    );
+    let numstat = parse_numstat_z(&numstat?);
+    let file = |path: String, kind: StatusKind, (additions, deletions): (u32, u32)| FileStatus {
+        path,
+        kind,
+        staged: false,
+        additions,
+        deletions,
+    };
+    let mut files: BTreeMap<String, FileStatus> = parse_name_status_z(&names?)
+        .into_iter()
+        .map(|(kind, path)| {
+            let counts = numstat.get(&path).copied().unwrap_or((0, 0));
+            (path.clone(), file(path, kind, counts))
+        })
+        .collect();
+
+    let mut untracked: Vec<String> = Vec::new();
+    for f in parse_porcelain(&status?) {
+        match f.kind {
+            StatusKind::Untracked => untracked.push(f.path),
+            StatusKind::Conflicted => {
+                files
+                    .entry(f.path.clone())
+                    .or_insert_with(|| file(f.path, StatusKind::Conflicted, (0, 0)))
+                    .kind = StatusKind::Conflicted;
+            }
+            _ => {}
+        }
+    }
+    if !untracked.is_empty() {
+        let (counts, _truncated) = untracked_additions(checkout_path, untracked.clone()).await;
+        for (path, adds) in untracked.into_iter().zip(counts) {
+            files.insert(path.clone(), file(path, StatusKind::Untracked, (adds, 0)));
+        }
+    }
+    Ok(files.into_values().collect())
 }
 
 /// Budget for how much untracked file *content* one git-state pass will read to
@@ -960,6 +1016,18 @@ async fn run_numstat(checkout_path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// `git diff <format> -z -M <fork>`: the working tree against `fork`, renames
+/// detected whatever `diff.renames` says. `-z` because the plain format quotes
+/// unusual paths and folds a rename into one `dir/{old => new}` field.
+async fn run_diff_since(checkout_path: &Path, format: &str, fork: &str) -> Result<String> {
+    let out = read_command(checkout_path)
+        .args(["diff", format, "-z", "-M", fork, "--"])
+        .output()
+        .await?;
+    require_success("git diff", &out)?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// The panel reads' failures, each logged once rather than on every poll: the
 /// focused Git panel asks at 1 Hz, and a checkout git cannot read fails the
 /// same way every time. A read warns again when it fails differently, or after
@@ -1207,6 +1275,62 @@ fn parse_numstat(output: &str) -> HashMap<String, (u32, u32)> {
         let adds: u32 = adds_str.parse().unwrap_or(0);
         let dels: u32 = dels_str.parse().unwrap_or(0);
         map.insert(path, (adds, dels));
+    }
+    map
+}
+
+/// `git diff --name-status -z`: a status field, then the path — or, for a
+/// rename or copy (`R087`, `C100`), the old path and the new one.
+fn parse_name_status_z(output: &str) -> Vec<(StatusKind, String)> {
+    let mut entries = Vec::new();
+    let mut fields = output.split('\0');
+    while let Some(status) = fields.next() {
+        let Some(code) = status.chars().next() else {
+            continue;
+        };
+        if matches!(code, 'R' | 'C') {
+            fields.next();
+        }
+        let Some(path) = fields.next() else {
+            break;
+        };
+        let kind = match code {
+            'A' | 'C' => StatusKind::Added,
+            'D' => StatusKind::Deleted,
+            'R' => StatusKind::Renamed,
+            'U' => StatusKind::Conflicted,
+            _ => StatusKind::Modified,
+        };
+        entries.push((kind, path.to_string()));
+    }
+    entries
+}
+
+/// `git diff --numstat -z`: `adds\tdels\tpath`, or for a rename `adds\tdels\t`
+/// with the old and new paths as the next two fields. Keyed by the path the
+/// file has now; a binary file's `-` counts 0, as in [`parse_numstat`].
+fn parse_numstat_z(output: &str) -> HashMap<String, (u32, u32)> {
+    let mut map = HashMap::new();
+    let mut fields = output.split('\0');
+    while let Some(field) = fields.next() {
+        let mut parts = field.splitn(3, '\t');
+        let (Some(adds), Some(dels), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let path = if path.is_empty() {
+            fields.next();
+            match fields.next() {
+                Some(new) => new,
+                None => break,
+            }
+        } else {
+            path
+        };
+        map.insert(
+            path.to_string(),
+            (adds.parse().unwrap_or(0), dels.parse().unwrap_or(0)),
+        );
     }
     map
 }
@@ -1727,6 +1851,131 @@ mod tests {
         let meta_none = git_meta(&clone, &unknown).await;
         assert_eq!(meta_none.behind, None);
         assert!(meta_none.files.iter().any(|p| p == "dirty.txt"));
+    }
+
+    // --- changed_since ---
+
+    /// The list `query` loses once work is committed: everything since the
+    /// fork, committed or not, with renames under their new path — and nothing
+    /// that is back to its fork content or ignored.
+    #[tokio::test]
+    async fn changed_since_lists_committed_and_uncommitted_work_since_the_fork() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(repo.join("lib")).unwrap();
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        git_run(&repo, &["config", "user.email", "t@example.com"]);
+        git_run(&repo, &["config", "user.name", "Tester"]);
+        let write = |rel: &str, body: &str| std::fs::write(repo.join(rel), body).unwrap();
+        write(".gitignore", "*.log\n");
+        write("committed.txt", "a\nb\n");
+        write("dirty.txt", "x\n");
+        write("gone.txt", "bye\n");
+        write("reverted.txt", "same\n");
+        write("lib/before.txt", "1\n2\n3\n4\n5\n");
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "fork"]);
+        let fork = String::from_utf8_lossy(
+            &crate::git::testing::git_output(&repo, &["rev-parse", "HEAD"]).stdout,
+        )
+        .trim()
+        .to_string();
+
+        write("committed.txt", "a\nB\nc\n");
+        write("reverted.txt", "changed\n");
+        git_run(&repo, &["mv", "lib/before.txt", "lib/after.txt"]);
+        write("lib/after.txt", "1\n2\n3\n4\n5\n6\n");
+        git_run(&repo, &["rm", "-q", "gone.txt"]);
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "work"]);
+        // Back to its fork content in the tree; HEAD still has the change.
+        write("reverted.txt", "same\n");
+        write("dirty.txt", "x\ny\n");
+        write("new.txt", "one\ntwo\n");
+        write("debug.log", "noise\n");
+
+        let files = changed_since(&repo, &fork).await.unwrap();
+        let got: Vec<(&str, &str, u32, u32)> = files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.as_str(),
+                    kind_name(&f.kind),
+                    f.additions,
+                    f.deletions,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("committed.txt", "modified", 2, 1),
+                ("dirty.txt", "modified", 1, 0),
+                ("gone.txt", "deleted", 0, 1),
+                ("lib/after.txt", "renamed", 1, 0),
+                ("new.txt", "untracked", 2, 0),
+            ]
+        );
+        assert!(files.iter().all(|f| !f.staged));
+    }
+
+    fn kind_name(kind: &StatusKind) -> &'static str {
+        match kind {
+            StatusKind::Modified => "modified",
+            StatusKind::Added => "added",
+            StatusKind::Deleted => "deleted",
+            StatusKind::Renamed => "renamed",
+            StatusKind::Untracked => "untracked",
+            StatusKind::Conflicted => "conflicted",
+        }
+    }
+
+    #[test]
+    fn name_status_z_reads_a_rename_as_its_new_path() {
+        let out = [
+            "M",
+            "src/a.rs",
+            "R087",
+            "src/old name.rs",
+            "src/new name.rs",
+            "A",
+            "b.rs",
+            "D",
+            "c.rs",
+            "",
+        ]
+        .join("\0");
+        let entries: Vec<(&str, String)> = parse_name_status_z(&out)
+            .into_iter()
+            .map(|(kind, path)| (kind_name(&kind), path))
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                ("modified", "src/a.rs".to_string()),
+                ("renamed", "src/new name.rs".to_string()),
+                ("added", "b.rs".to_string()),
+                ("deleted", "c.rs".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn numstat_z_keys_a_rename_by_its_new_path() {
+        let out = [
+            "3\t1\tsrc/a.rs",
+            "2\t0\t",
+            "src/old.rs",
+            "src/new.rs",
+            "-\t-\timg.png",
+            "",
+        ]
+        .join("\0");
+        let map = parse_numstat_z(&out);
+        assert_eq!(map.get("src/a.rs"), Some(&(3, 1)));
+        assert_eq!(map.get("src/new.rs"), Some(&(2, 0)));
+        assert_eq!(map.get("img.png"), Some(&(0, 0)));
+        assert_eq!(map.len(), 3);
     }
 
     // --- parse_porcelain ---

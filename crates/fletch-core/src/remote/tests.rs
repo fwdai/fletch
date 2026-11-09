@@ -564,6 +564,7 @@ fn allowlist_matches_the_protocol_table() {
         "get_all_git_meta",
         "get_all_pr_status",
         "list_checkout_tree",
+        "list_changed_files",
         "read_checkout_file",
         "get_file_diff",
         "commit_agent",
