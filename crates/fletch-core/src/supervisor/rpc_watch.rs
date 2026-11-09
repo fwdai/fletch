@@ -151,15 +151,34 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
             if let Ok(record) = sup.workspace.agent(agent_id) {
                 if let Some(subdir) = event_subdir(&record, &payload) {
                     // Older dispatchers sent only the number; the row then
-                    // fills in from the first fetch.
+                    // fills in from the first fetch. The base is the one the
+                    // PR was actually opened against, which `args.base` may
+                    // have redirected away from the spawn base; it lives on
+                    // the PR's row, and while this PR is the focused one every
+                    // base-keyed reader (ahead/behind, "rebase onto", the
+                    // `update-branch` fetch) follows it through
+                    // `TrackedRepo::recorded_base`. The checkout's own
+                    // `parent_branch` stays the spawn base.
+                    //
+                    // The record only. The live `GitDispatcher` stamps its base
+                    // at construction and is not rebuilt until the next
+                    // resume/turn, so a *second* bare `open_pr` in this same
+                    // session still defaults to the earlier base — the same
+                    // bounded staleness as the owned-branch set (see
+                    // `supervisor::lifecycle`). The app path self-corrects,
+                    // because the panel reads its trigger's `base` param from
+                    // the record; a bare op call does not.
                     let field = |k: &str| payload.get(k).and_then(|v| v.as_str());
                     if let Err(e) = sup.workspace.set_repo_pr_number(
                         agent_id,
                         subdir,
                         number as i64,
-                        field("url").unwrap_or_default(),
-                        field("title").unwrap_or_default(),
-                        field("branch"),
+                        crate::workspace::PrOpened {
+                            url: field("url").unwrap_or_default(),
+                            title: field("title").unwrap_or_default(),
+                            branch: field("branch"),
+                            base: field("base"),
+                        },
                     ) {
                         tracing::warn!(
                             error = %e,
@@ -167,37 +186,6 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
                             pr = number,
                             "open_pr: failed to persist PR number"
                         );
-                    }
-                    // The base the PR was actually opened against, which
-                    // `args.base` may have redirected away from the spawn-time
-                    // default. Rewriting the record keeps every base-keyed
-                    // reader (ahead/behind, "rebase onto", the `update-branch`
-                    // fetch) pointed at the branch this PR is stacked on — most
-                    // importantly `update-branch`, which would otherwise merge
-                    // the wrong branch into the PR. A no-op write when the base
-                    // wasn't redirected, so no need to compare first.
-                    //
-                    // The record only. The live `GitDispatcher` stamps its base
-                    // at construction and is not rebuilt until the next
-                    // resume/turn, so a *second* bare `open_pr` in this same
-                    // session still defaults to the spawn base — same bounded
-                    // staleness the dispatcher already documents for
-                    // `own_branch` (see `supervisor::lifecycle`). The app path
-                    // self-corrects, because the panel reads its trigger's
-                    // `base` param from this row; a bare op call does not.
-                    // Making the base live would mean interior mutability on a
-                    // struct deliberately stamped once at spawn, which is a
-                    // bigger change than it buys.
-                    if let Some(base) = payload.get("base").and_then(|v| v.as_str()) {
-                        if let Err(e) = sup.workspace.set_repo_parent_branch(agent_id, subdir, base)
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                agent_id = %agent_id,
-                                base = %base,
-                                "open_pr: failed to persist PR base"
-                            );
-                        }
                     }
                 }
             }
@@ -233,37 +221,21 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
         }
         rpc::RpcEvent::Named { name, payload } if name == rpc::git::EVENT_PR_EDITED => {
             // Only a retarget is relayed: the base the PR now sits on has to
-            // reach the record for the same reasons as on `EVENT_PR_OPENED`
-            // (ahead/behind, "rebase onto", the `update-branch` fetch). The
-            // dispatcher emits it for the checkout's own PR only; when the
-            // record already knows its PR, a mismatched number is dropped
-            // rather than steering the checkout at another PR's base.
-            if let (Ok(record), Some(base)) = (
+            // reach its row for the same reasons as on `EVENT_PR_OPENED`
+            // (ahead/behind, "rebase onto", the `update-branch` fetch). Keyed
+            // by the PR's number, so a retarget of a PR other than the focused
+            // one updates that PR and steers nothing.
+            if let (Ok(record), Some(base), Some(number)) = (
                 sup.workspace.agent(agent_id),
                 payload.get("base").and_then(|v| v.as_str()),
+                payload.get("number").and_then(|v| v.as_i64()),
             ) {
                 if let Some(subdir) = event_subdir(&record, &payload) {
-                    let edited = payload.get("number").and_then(|v| v.as_i64());
-                    let bound = record
-                        .repos
-                        .iter()
-                        .find(|r| r.subdir == subdir)
-                        .and_then(|r| r.pr_number);
-                    if let (Some(edited), Some(bound)) = (edited, bound) {
-                        if edited != bound {
-                            tracing::warn!(
-                                agent_id = %agent_id,
-                                edited,
-                                bound,
-                                "pr_edit: retarget of another PR; the checkout's base stays"
-                            );
-                            return;
-                        }
-                    }
-                    if let Err(e) = sup.workspace.set_repo_parent_branch(agent_id, subdir, base) {
+                    if let Err(e) = sup.workspace.set_pr_base(agent_id, subdir, number, base) {
                         tracing::warn!(
                             error = %e,
                             agent_id = %agent_id,
+                            pr = number,
                             base = %base,
                             "pr_edit: failed to persist PR base"
                         );

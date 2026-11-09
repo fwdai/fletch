@@ -1,0 +1,11 @@
+-- The base branch each logged PR targets.
+--
+-- A checkout holds a set of PRs, and in a stack each has its own base. Until
+-- now the base lived on the checkout (`worktrees.parent_branch`), rewritten
+-- whenever a PR was opened against a different branch — which made the spawn
+-- base unrecoverable and put the workspace's own branch where the push guard
+-- reads the branch it must not touch. The base now lives with the PR;
+-- `parent_branch` is the branch the checkout was forked from and is never
+-- rewritten again. Nullable: rows logged before this column learn their base
+-- on their next fetch.
+ALTER TABLE worktree_prs ADD COLUMN base TEXT;

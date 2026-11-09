@@ -618,6 +618,7 @@ impl Supervisor {
             subdir: subdir.clone(),
             branch: None, // materialized at first push, named by the agent
             parent_branch: Some(parent_branch),
+            pr_base: None,
             base_sha: None,  // captured by the fork task once HEAD is known
             pr_number: None, // set when a PR is opened for this branch
             pr_url: None,
@@ -1069,6 +1070,7 @@ impl Supervisor {
             subdir: subdir.clone(),
             branch: None,
             parent_branch: Some(parent_branch),
+            pr_base: None,
             base_sha,
             pr_number: None,
             pr_url: None,
@@ -1156,6 +1158,7 @@ impl Supervisor {
                 cwd: checkout,
                 source_repo: r.repo_path.clone(),
                 base_branch: r.base_branch().await,
+                spawn_base: r.spawn_base().await,
                 owned,
             });
         }
@@ -2807,6 +2810,7 @@ mod tests {
             subdir: "repo".into(),
             branch: None,
             parent_branch: None,
+            pr_base: None,
             base_sha: None,
             pr_number: None,
             pr_url: None,

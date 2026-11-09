@@ -372,22 +372,14 @@ impl WorkspaceManager {
         Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
     }
 
-    /// Record the base branch a tracked repo's work is reviewed against,
-    /// identified by subdir. Seeded at spawn from the project's default and
-    /// rewritten when `open_pr` targets a different base (`args.base`) — the user
-    /// can point the agent at a feature branch mid-session, and everything keyed
-    /// on the base (ahead/behind, "rebase onto", the `update-branch` fetch) has to
-    /// follow the PR that actually exists rather than the spawn-time guess.
-    /// Overwrites unconditionally; re-recording the same base is a no-op write.
-    ///
-    /// Deliberately leaves `base_sha` alone: that is the immutable fork point the
-    /// checkout was cut from, which the diff base reads in preference to this
-    /// name, and it stays true whatever the PR targets.
-    pub fn set_repo_parent_branch(&self, agent_id: &str, subdir: &str, base: &str) -> Result<()> {
+    /// Record the base a PR of this checkout targets, by number — a `pr_edit`
+    /// retarget. A number not in the checkout's set writes nothing.
+    pub fn set_pr_base(&self, agent_id: &str, subdir: &str, number: i64, base: &str) -> Result<()> {
         let conn = self.db.lock();
         conn.execute(
-            "UPDATE worktrees SET parent_branch = ?1 WHERE workspace_id = ?2 AND subdir = ?3",
-            rusqlite::params![base, agent_id, subdir],
+            "UPDATE worktree_prs SET base = ?1
+              WHERE workspace_id = ?2 AND subdir = ?3 AND number = ?4",
+            rusqlite::params![base, agent_id, subdir, number],
         )?;
         Ok(())
     }
@@ -412,33 +404,40 @@ impl WorkspaceManager {
     /// than from its first successful fetch. Overwrites unconditionally — the
     /// latest PR opened is the one we focus.
     ///
-    /// `url`/`title` may be empty and `branch` absent when the caller doesn't
-    /// know them; an existing row keeps what it had for those, and a new row
-    /// starts `open` (a PR just opened is open; an existing row keeps its state,
-    /// which only a fetch may move). The binding's snapshot columns are copied
-    /// from that row, never kept from the PR being replaced — so a follow-up
-    /// bound after a merge can't inherit "merged" (which `resolve_pr_state`
-    /// serves with no network, forever), and `pr_snapshot` is never `None` for
-    /// a bound PR.
+    /// What the caller knows of the PR (`PrOpened`) may be partial: an existing
+    /// row keeps what it had for anything empty or absent, and a new row starts
+    /// `open` (a PR just opened is open; an existing row keeps its state, which
+    /// only a fetch may move). The binding's snapshot columns are copied from
+    /// that row, never kept from the PR being replaced — so a follow-up bound
+    /// after a merge can't inherit "merged" (which `resolve_pr_state` serves
+    /// with no network, forever), and `pr_snapshot` is never `None` for a
+    /// bound PR.
     pub fn set_repo_pr_number(
         &self,
         agent_id: &str,
         subdir: &str,
         pr_number: i64,
-        url: &str,
-        title: &str,
-        branch: Option<&str>,
+        opened: PrOpened<'_>,
     ) -> Result<()> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO worktree_prs (workspace_id, subdir, number, url, title, state, branch)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'open', NULLIF(?6, ''))
+            "INSERT INTO worktree_prs (workspace_id, subdir, number, url, title, state, branch, base)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'open', NULLIF(?6, ''), NULLIF(?7, ''))
              ON CONFLICT(workspace_id, subdir, number) DO UPDATE SET
                     url    = CASE WHEN excluded.url   <> '' THEN excluded.url   ELSE url   END,
                     title  = CASE WHEN excluded.title <> '' THEN excluded.title ELSE title END,
-                    branch = COALESCE(excluded.branch, branch)",
-            rusqlite::params![agent_id, subdir, pr_number, url, title, branch],
+                    branch = COALESCE(excluded.branch, branch),
+                    base   = COALESCE(excluded.base, base)",
+            rusqlite::params![
+                agent_id,
+                subdir,
+                pr_number,
+                opened.url,
+                opened.title,
+                opened.branch,
+                opened.base
+            ],
         )?;
         bind_pr(&tx, agent_id, subdir, pr_number)?;
         tx.commit()?;
@@ -937,6 +936,20 @@ impl WorkspaceManager {
         cleanup.apply(&conn);
         Ok(())
     }
+}
+
+/// What is known of a PR the moment it binds to a checkout
+/// (`WorkspaceManager::set_repo_pr_number`): the `git.pr_opened` payload, or
+/// an adoption. Empty / `None` means "not known yet", which keeps whatever the
+/// PR's row already has.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PrOpened<'a> {
+    pub url: &'a str,
+    pub title: &'a str,
+    /// The head branch.
+    pub branch: Option<&'a str>,
+    /// The base branch the PR targets (`worktree_prs.base`).
+    pub base: Option<&'a str>,
 }
 
 /// The `worktree_prs` columns [`pr_row`] reads, in its order.

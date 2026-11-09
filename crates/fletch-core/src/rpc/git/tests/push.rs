@@ -2,7 +2,8 @@ use crate::rpc::git::test_support::*;
 
 use serde_json::{json, Value};
 
-use crate::rpc::git::EVENT_BRANCH_CREATED;
+use crate::rpc::caps::AgentCaps;
+use crate::rpc::git::{GitDispatcher, EVENT_BRANCH_CREATED};
 use crate::rpc::{ensure_mailbox, process_pending, RpcEvent};
 
 #[tokio::test]
@@ -724,6 +725,38 @@ async fn git_push_refuses_a_stacked_base_the_workspace_did_not_create() {
         .contains("reviewed against"));
     assert!(fx.is_empty());
     assert_eq!(remote_tip(&remote, "teammate/wip"), before);
+}
+
+/// The same stack, in a workspace spawned from a branch it did not create: the
+/// spawn base stays off limits even though the focused PR's base has moved
+/// onto the stack.
+#[tokio::test]
+async fn git_push_refuses_the_spawn_base_after_a_stack() {
+    let td = tempfile::tempdir().unwrap();
+    let (repo, remote) = stacked_fixture(td.path(), "release/24");
+    let before = remote_tip(&remote, "release/24");
+    std::fs::write(repo.join("c.txt"), b"z").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "sneaky"]);
+
+    // Spawned from release/24; its own PR A→release/24 from feat/a, PR B→A.
+    let disp = GitDispatcher::new(
+        repo.clone(),
+        repo.clone(),
+        "release/24".to_string(),
+        AgentCaps::interactive(),
+    )
+    .with_base("feat/a")
+    .with_owned(&["feat/a", "feat/b"]);
+    let (resp, fx) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
+    assert!(!resp.ok, "the spawn base is still protected: {resp:?}");
+    assert!(resp
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("reviewed against"));
+    assert!(fx.is_empty());
+    assert_eq!(remote_tip(&remote, "release/24"), before);
 }
 
 #[tokio::test]

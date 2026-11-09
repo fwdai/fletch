@@ -309,6 +309,7 @@ impl Supervisor {
                 subdir: snap.subdir.clone(),
                 branch,
                 parent_branch: snap.parent_branch.clone(),
+                pr_base: None,
                 // The fork point persists in the worktrees row across
                 // archive/restore (restore_agent doesn't clear base_sha), so
                 // this literal value is never written back — None is a
@@ -914,6 +915,7 @@ mod tests {
             subdir: "repo".into(),
             branch: None,
             parent_branch: None,
+            pr_base: None,
             base_sha: None,
             pr_number: None,
             pr_url: None,

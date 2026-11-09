@@ -97,13 +97,14 @@ impl AgentCaps {
         }
     }
 
-    /// Whether a push (forced or not) to `branch` is refused, and why. `base`
-    /// is the branch the checkout's work is reviewed against and `owned` the
-    /// branches its pushes created on origin — both the host's records, never
-    /// the request's. In order: a denied grant publishes nothing; the trunks
-    /// are never published; a branch the workspace created is its own, pushed
-    /// and forced freely; the base is off limits; any other branch takes a
-    /// plain push only.
+    /// Whether a push (forced or not) to `branch` is refused, and why. `bases`
+    /// are the branches the checkout's work is reviewed against — the one it
+    /// was forked from and its focused PR's base, the same branch when nothing
+    /// is stacked — and `owned` the branches its pushes created on origin; all
+    /// the host's records, never the request's. In order: a denied grant
+    /// publishes nothing; the trunks are never published; a branch the
+    /// workspace created is its own, pushed and forced freely; a base is off
+    /// limits; any other branch takes a plain push only.
     ///
     /// SECURITY: a `--force-with-lease` lease passes for any branch the agent
     /// just fetched, so force is confined to the names the host recorded when
@@ -116,7 +117,7 @@ impl AgentCaps {
         self,
         branch: &str,
         force: bool,
-        base: &str,
+        bases: &[&str],
         owned: &[String],
     ) -> Option<String> {
         if let Publish::Denied(why) = self.publish {
@@ -138,7 +139,7 @@ impl AgentCaps {
         if owns(owned, branch) {
             return None;
         }
-        if same_branch(branch, base) {
+        if bases.iter().any(|base| same_branch(branch, base)) {
             return Some(review_base());
         }
         if !force {
@@ -215,23 +216,23 @@ mod tests {
         );
         let none = owned(&[]);
         assert!(caps
-            .refuses_publish("fix/login", false, "main", &none)
+            .refuses_publish("fix/login", false, &["main"], &none)
             .is_none());
         for blocked in ["main", "master", "Main", " main "] {
             assert!(
-                caps.refuses_publish(blocked, false, "main", &none)
+                caps.refuses_publish(blocked, false, &["main"], &none)
                     .is_some(),
                 "{blocked:?} must be refused"
             );
         }
         assert!(caps
-            .refuses_publish("release/24", false, "release/24", &none)
+            .refuses_publish("release/24", false, &["release/24"], &none)
             .is_some());
         assert!(caps
-            .refuses_publish("main", false, "release/24", &none)
+            .refuses_publish("main", false, &["release/24"], &none)
             .is_some());
         assert!(caps
-            .refuses_publish("fix/x", false, "release/24", &none)
+            .refuses_publish("fix/x", false, &["release/24"], &none)
             .is_none());
     }
 
@@ -244,14 +245,33 @@ mod tests {
         let mine = owned(&["feat/a", "feat/b"]);
         for (branch, force) in [("feat/a", false), ("feat/a", true), (" Feat/A ", true)] {
             assert!(
-                caps.refuses_publish(branch, force, "feat/a", &mine)
+                caps.refuses_publish(branch, force, &["feat/a"], &mine)
                     .is_none(),
                 "{branch:?} force={force}"
             );
         }
         assert!(caps
-            .refuses_publish("main", false, "main", &owned(&["main"]))
+            .refuses_publish("main", false, &["main"], &owned(&["main"]))
             .is_some());
+    }
+
+    /// The branch the checkout was forked from and the focused PR's base are
+    /// both off limits: after a stack, a push to the spawn base must not slip
+    /// through because the focused PR's base now points at the stack.
+    #[test]
+    fn every_recorded_base_is_protected() {
+        let caps = AgentCaps::interactive();
+        let mine = owned(&["feat/a"]);
+        let bases = ["release/24", "feat/a"];
+        assert!(caps
+            .refuses_publish("release/24", false, &bases, &mine)
+            .is_some());
+        assert!(caps
+            .refuses_publish("feat/a", false, &bases, &mine)
+            .is_none());
+        assert!(caps
+            .refuses_publish("feat/b", false, &bases, &mine)
+            .is_none());
     }
 
     #[test]
@@ -259,20 +279,22 @@ mod tests {
         let caps = AgentCaps::interactive();
         let mine = owned(&["fix/login"]);
         assert!(caps
-            .refuses_publish("fix/login", true, "main", &mine)
+            .refuses_publish("fix/login", true, &["main"], &mine)
             .is_none());
         for other in ["develop", "release/24", "teammate/wip"] {
             assert!(
-                caps.refuses_publish(other, true, "main", &mine).is_some(),
+                caps.refuses_publish(other, true, &["main"], &mine)
+                    .is_some(),
                 "{other:?} is not the workspace's and must not be forced"
             );
             assert!(
-                caps.refuses_publish(other, false, "main", &mine).is_none(),
+                caps.refuses_publish(other, false, &["main"], &mine)
+                    .is_none(),
                 "{other:?} still takes a plain push"
             );
         }
         let why = caps
-            .refuses_publish("fix/login", true, "main", &owned(&[]))
+            .refuses_publish("fix/login", true, &["main"], &owned(&[]))
             .expect("nothing recorded fails closed");
         assert!(why.contains("no recorded work branch"));
     }
@@ -294,7 +316,7 @@ mod tests {
             let mine = owned(&["wf/anything"]);
             for force in [false, true] {
                 assert!(caps
-                    .refuses_publish("wf/anything", force, "main", &mine)
+                    .refuses_publish("wf/anything", force, &["main"], &mine)
                     .is_some());
             }
         }

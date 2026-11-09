@@ -1871,6 +1871,7 @@ pub(super) mod tests {
             subdir: "repo".into(),
             branch: Some("feat/x".into()),
             parent_branch: Some("main".into()),
+            pr_base: None,
             base_sha: None,
             pr_number: Some(42),
             pr_url: Some("https://github.com/o/r/pull/42".into()),
@@ -2064,8 +2065,16 @@ pub(super) mod tests {
         let db = crate::workspace::tests::test_db();
         let wm = WorkspaceManager::new(db.clone());
         let (id, subdir) = branchless_agent(&wm, &db, None);
-        wm.set_repo_pr_number(&id, &subdir, 7, "", "", Some("feat/own"))
-            .unwrap();
+        wm.set_repo_pr_number(
+            &id,
+            &subdir,
+            7,
+            crate::workspace::PrOpened {
+                branch: Some("feat/own"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         wm.record_repo_pr(
             &id,
             &subdir,

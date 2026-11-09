@@ -299,8 +299,8 @@ export function agentItems(ctx: PaletteContext): PaletteItem[] {
       run: () => ctx.openUrl(url),
       remember: true,
     });
-  } else if (primary?.parent_branch) {
-    const base = primary.parent_branch;
+  } else if (primary?.pr_base || primary?.parent_branch) {
+    const base = (primary.pr_base || primary.parent_branch) as string;
     const delegated = s.delegations[agent.id] != null;
     items.push({
       id: "commit-pr",

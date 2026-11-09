@@ -37,8 +37,8 @@ pub async fn get_git_state_impl(
     // Checked before resolving the base, which runs git there too.
     let blocked = crate::git::hardening::steerable_config(&checkout).await?;
     if !blocked.is_empty() {
-        let parent = repo.parent_branch.clone().unwrap_or_default();
-        return Ok(Some(GitState::blocked(parent, blocked)));
+        let base = repo.recorded_base().unwrap_or_default().to_string();
+        return Ok(Some(GitState::blocked(base, blocked)));
     }
     let base = repo.resolve_base(&checkout).await;
     let state = git_state::query(&checkout, &base).await?;

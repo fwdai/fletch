@@ -17,6 +17,8 @@ pub(super) struct Target {
     pub(super) source_repo: PathBuf,
     /// The default base of `open_pr`; see `RepoTarget::base_branch`.
     pub(super) base_branch: String,
+    /// See `RepoTarget::spawn_base`.
+    pub(super) spawn_base: String,
     /// See `RepoTarget::owned`. Stamped when the dispatcher was built, so a
     /// branch born this turn is owned from the next (the host's record is
     /// written as the push's event is applied).
@@ -30,14 +32,15 @@ impl Target {
     }
 
     /// The publish policy (`caps::refuses_publish`) over this checkout's
-    /// record: the recorded base is protected, the owned branches exempt.
+    /// record: both recorded bases are protected, the owned branches exempt.
     pub(super) fn refuses_publish(
         &self,
         caps: AgentCaps,
         branch: &str,
         force: bool,
     ) -> Option<String> {
-        caps.refuses_publish(branch, force, &self.base_branch, &self.owned)
+        let bases = [self.spawn_base.as_str(), self.base_branch.as_str()];
+        caps.refuses_publish(branch, force, &bases, &self.owned)
     }
 }
 
@@ -54,6 +57,7 @@ impl GitDispatcher {
                 cwd: self.cwd.clone(),
                 source_repo: self.source_repo.clone(),
                 base_branch: self.base_branch.clone(),
+                spawn_base: self.spawn_base.clone(),
                 owned: self.owned.clone(),
             }),
             Some(name) => match self.repos.get(name) {
@@ -62,6 +66,7 @@ impl GitDispatcher {
                     cwd: repo.cwd.clone(),
                     source_repo: repo.source_repo.clone(),
                     base_branch: repo.base_branch.clone(),
+                    spawn_base: repo.spawn_base.clone(),
                     owned: repo.owned.clone(),
                 }),
                 None => {
