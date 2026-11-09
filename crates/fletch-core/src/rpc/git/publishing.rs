@@ -133,15 +133,17 @@ impl GitDispatcher {
         // a stack's other head published through `args.head` included: the
         // record is a set, so recording it displaces nothing. Only the
         // checked-out branch is the checkout's current branch, though.
-        let born = born_on_origin(&t, &branch).await;
-        if let Err(e) = t.publish(&branch, &tip, false).await {
-            return (
-                Response::err(id, format!("open_pr push failed: {e}")),
-                effects,
-            );
-        }
-        if born {
-            note_branch_born(&t, &branch, !publishes_other_head, &mut effects);
+        match t.publish(&branch, &tip, false).await {
+            Ok(published) if published.created && !t.owns(&branch) => {
+                note_branch_born(&t, &branch, !publishes_other_head, &mut effects);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return (
+                    Response::err(id, format!("open_pr push failed: {e}")),
+                    effects,
+                )
+            }
         }
         // By the branch just published, not the checkout's HEAD: with
         // `args.head` the two differ. In the user's repository, like every
@@ -236,38 +238,27 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-        let born = born_on_origin(&t, &branch).await;
         match t.publish(&branch, &tip, force).await {
-            Ok(summary) => {
-                if born {
+            Ok(published) => {
+                if published.created && !t.owns(&branch) {
                     note_branch_born(&t, &branch, true, &mut effects);
                 }
-                (Response::ok(id, 0, summary, String::new()), effects)
+                (
+                    Response::ok(id, 0, published.summary, String::new()),
+                    effects,
+                )
             }
             Err(e) => (Response::err(id, e.to_string()), effects),
         }
     }
 }
 
-/// Whether the push about to happen is what would put `branch` on origin —
-/// the moment it becomes one of this workspace's own branches
-/// (`caps::refuses_publish`). Asked of origin for every branch, the ones the
-/// host just materialized included: a local branch says nothing about the
-/// remote, which may already hold that name (a stale tracking ref, a
-/// teammate's branch), and a push the remote then accepts would otherwise
-/// claim a branch this workspace did not create. A probe that can't answer
-/// records nothing, so a flaky network never widens force. Read before the
-/// push, recorded (`note_branch_born`) only once the push has succeeded.
-async fn born_on_origin(t: &Target, branch: &str) -> bool {
-    if t.owns(branch) {
-        return false;
-    }
-    crate::git::remote_branch_exists(&t.cwd, &t.source_repo, branch).await == Some(false)
-}
-
-/// The push that created `branch` on origin succeeded: the host records it as
-/// the workspace's own, and — when `current` — as the branch the checkout is
-/// on (a stack's other head published through `args.head` is not).
+/// The push that created `branch` on origin succeeded — no push URL had the
+/// name before it (`git::Published::created`), so a branch the host just
+/// materialized locally, a stale tracking ref or a teammate's branch under the
+/// same name claims nothing. The host records it as the workspace's own
+/// (`caps::refuses_publish`), and — when `current` — as the branch the
+/// checkout is on (a stack's other head published through `args.head` is not).
 fn note_branch_born(t: &Target, branch: &str, current: bool, effects: &mut Vec<RpcEvent>) {
     effects.push(RpcEvent::named(
         EVENT_BRANCH_CREATED,
@@ -278,8 +269,13 @@ fn note_branch_born(t: &Target, branch: &str, current: bool, effects: &mut Vec<R
 impl Target {
     /// Publish `tip` to `branch` through the host publication layer, which
     /// signs when the user's repository does (`git::publish`).
-    async fn publish(&self, branch: &str, tip: &str, force: bool) -> crate::error::Result<String> {
-        let published = crate::git::publish(
+    async fn publish(
+        &self,
+        branch: &str,
+        tip: &str,
+        force: bool,
+    ) -> crate::error::Result<crate::git::Published> {
+        crate::git::publish(
             &crate::git::Publication {
                 checkout: &self.cwd,
                 source_repo: &self.source_repo,
@@ -288,8 +284,7 @@ impl Target {
             },
             crate::git::Tip::Commit(tip),
         )
-        .await?;
-        Ok(published.summary)
+        .await
     }
 }
 
