@@ -37,10 +37,16 @@ use crate::error::Result;
 pub const RUN_ENV_SETTING: &str = "run_env";
 
 /// The env files read from the source repo for real values, lowest precedence
-/// first: a key set in a later file wins. This is the development-mode order
-/// shared by dotenv-flow, Next.js, CRA and Ruby dotenv. (Vite ranks
-/// `.env.development` above `.env.local`, which differs only when both set
-/// the same key.) A repo may have any subset of these files, or none.
+/// first: a key set in a later file wins. A repo may have any subset of these
+/// files, or none.
+///
+/// Tools disagree on precedence, so no one fixed order matches every project.
+/// This is the development-mode order of Next.js and Ruby dotenv, where
+/// `.env.local` beats `.env.development`. Vite and dotenv-flow rank
+/// `.env.development` above `.env.local`. The two orders give different values
+/// only for a key set in both of those files. In a Vite or dotenv-flow project
+/// that can hold a different value from the one the app loads. A per-variable
+/// override in Settings ([`Source::Override`]) sets the value the run gets.
 const ENV_FILENAMES: [&str; 4] = [
     ".env",
     ".env.development",
@@ -575,8 +581,11 @@ LEADING= # only a comment
         );
     }
 
+    /// Pins the chosen convention (see [`ENV_FILENAMES`]): Next.js / Ruby
+    /// dotenv, where `.env.local` beats `.env.development` (key `C`). Vite and
+    /// dotenv-flow would resolve `C` to `dev` instead.
     #[test]
-    fn higher_precedence_env_files_win_per_key() {
+    fn env_files_follow_nextjs_and_ruby_dotenv_precedence() {
         let dir = tempfile::tempdir().unwrap();
         let write = |name: &str, text: &str| std::fs::write(dir.path().join(name), text).unwrap();
         write(".env", "A=env\nB=env\nC=env\nD=env\n");
