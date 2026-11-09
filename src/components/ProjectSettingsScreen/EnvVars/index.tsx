@@ -15,7 +15,7 @@ import { EnvVarRow } from "./EnvVarRow";
 
 interface Props {
   projectId: string;
-  /** Source repo path — where the (gitignored) `.env` lives. */
+  /** Source repo path — where the (gitignored) `.env` / `.env.local` live. */
   repoPath: string;
 }
 
@@ -68,19 +68,20 @@ export function EnvVars({ projectId, repoPath }: Props) {
     };
   }, [projectId, repoPath]);
 
-  const envMap = useMemo(() => new Map((entries ?? []).map((e) => [e.key, e.value])), [entries]);
+  const envMap = useMemo(() => new Map((entries ?? []).map((e) => [e.key, e])), [entries]);
 
-  // Every `.env` key, then the project-declared keys (`.env.example` /
-  // `.env.sample`) not set in `.env`, plus any configured var missing from
-  // both (an override-only or stale entry) so nothing the user set silently
-  // vanishes.
+  // Every key from the env files, then the project-declared keys
+  // (`.env.example` / `.env.sample`) set in none of them, plus any configured
+  // var missing from both (an override-only or stale entry) so nothing the
+  // user set silently vanishes.
   const rows = useMemo(() => {
     const keys = new Set(envMap.keys());
     for (const k of declared) keys.add(k);
     for (const v of doc.vars) keys.add(v.key);
     return [...keys].map((key) => ({
       key,
-      envValue: envMap.get(key),
+      envValue: envMap.get(key)?.value,
+      envFile: envMap.get(key)?.file,
       declaredOnly: !envMap.has(key) && declared.includes(key),
     }));
   }, [envMap, declared, doc]);
@@ -139,7 +140,7 @@ export function EnvVars({ projectId, repoPath }: Props) {
   // redundant one. Only a value that genuinely differs from `.env` becomes an
   // override. Mirrors the run-config revert semantics.
   const onCommit = async (key: string, value: string) => {
-    if (value === "" || value === envMap.get(key)) {
+    if (value === "" || value === envMap.get(key)?.value) {
       await revertToMirror(key);
       return;
     }
@@ -210,7 +211,7 @@ export function EnvVars({ projectId, repoPath }: Props) {
   return (
     <SetGroup
       label="Environment variables"
-      sub="Nothing from .env reaches the sandbox unless you switch it on."
+      sub="Nothing from your .env files reaches the sandbox unless you switch it on."
     >
       {/* A block, so the add button keeps its own width in the group's column. */}
       <div>
@@ -218,15 +219,17 @@ export function EnvVars({ projectId, repoPath }: Props) {
           <div className="ps-state text-sm">Loading…</div>
         ) : rows.length === 0 ? (
           <div className="ev-empty-state text-sm">
-            No <code>.env</code> found in <span className="mono">{basename(repoPath)}</span>.
+            No <code>.env</code> or <code>.env.local</code> found in{" "}
+            <span className="mono">{basename(repoPath)}</span>.
           </div>
         ) : (
           <div className="ev-list">
-            {rows.map(({ key, envValue, declaredOnly }) => (
+            {rows.map(({ key, envValue, envFile, declaredOnly }) => (
               <EnvVarRow
                 key={key}
                 varKey={key}
                 envValue={envValue}
+                envFile={envFile}
                 declaredOnly={declaredOnly}
                 overrideValue={overrides[key]}
                 cfg={varConfig(doc, key)}

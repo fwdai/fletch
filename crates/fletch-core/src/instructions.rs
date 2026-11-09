@@ -268,7 +268,7 @@ pub fn multi_repo_workspace_note(repos: &[crate::workspace::TrackedRepo]) -> Opt
 
 /// Per-agent env-awareness note: which of the project's env keys reach the
 /// processes the app runs on the agent's behalf (the Run panel and the
-/// verifier/tests gate), and which exist — in `.env` or declared by
+/// verifier/tests gate), and which exist — in the env files or declared by
 /// `.env.example`/`.env.sample` — but were not shared. Composed ahead of any
 /// custom brief by the spawn path, like [`multi_repo_workspace_note`].
 ///

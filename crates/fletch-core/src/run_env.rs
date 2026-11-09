@@ -10,8 +10,9 @@
 //! default.
 //!
 //! ## Values never live in the database
-//! - **Mirror** vars read their value *live* from the source repo's `.env` at
-//!   spawn — so there is one source of truth and nothing to drift.
+//! - **Mirror** vars read their value *live* from the source repo's env files
+//!   (`.env`, `.env.local`, … — [`ENV_FILENAMES`]) at spawn — so there is one
+//!   source of truth and nothing to drift.
 //! - **Override** vars read their value from a dedicated store ([`override_get`]
 //!   / [`override_set`]) that **never writes to the database**: the OS keychain
 //!   on release macOS, an in-memory session store on dev and non-macOS builds
@@ -20,9 +21,9 @@
 //!   SQLite (and its backups). The trade-off is that on those non-keychain
 //!   builds an override does not survive an app restart.
 //!
-//! The `.env` lives in the **source repo** (it is gitignored, so it is absent
-//! from the agent's worktree checkout); resolution reads it host-side from the
-//! repo path, which Fletch — unsandboxed — can always reach.
+//! The env files live in the **source repo** (they are gitignored, so they are
+//! absent from the agent's worktree checkout); resolution reads them host-side
+//! from the repo path, which Fletch — unsandboxed — can always reach.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -35,13 +36,27 @@ use crate::error::Result;
 /// `project_settings` key holding the [`RunEnvDoc`] JSON for a project.
 pub const RUN_ENV_SETTING: &str = "run_env";
 
-/// The `.env` file basename read from the source repo. Only the canonical
-/// `.env` for now; `.env.local` and friends are a deliberate later addition.
-const ENV_FILENAME: &str = ".env";
+/// The env files read from the source repo for real values, lowest precedence
+/// first: a key set in a later file wins. A repo may have any subset of these
+/// files, or none.
+///
+/// Tools disagree on precedence, so no one fixed order matches every project.
+/// This is the development-mode order of Next.js and Ruby dotenv, where
+/// `.env.local` beats `.env.development`. Vite and dotenv-flow rank
+/// `.env.development` above `.env.local`. The two orders give different values
+/// only for a key set in both of those files. In a Vite or dotenv-flow project
+/// that can hold a different value from the one the app loads. A per-variable
+/// override in Settings ([`Source::Override`]) sets the value the run gets.
+const ENV_FILENAMES: [&str; 4] = [
+    ".env",
+    ".env.development",
+    ".env.local",
+    ".env.development.local",
+];
 
 /// Example/template files read for key *discovery* only — the industry
 /// convention for declaring the keys a project needs. Their values are
-/// placeholders and are never used as real values: only [`read_env_file`]
+/// placeholders and are never used as real values: only [`read_env_files`]
 /// feeds resolution.
 const EXAMPLE_ENV_FILENAMES: [&str; 2] = [".env.example", ".env.sample"];
 
@@ -93,12 +108,16 @@ impl Default for RunEnvDoc {
     }
 }
 
-/// A single `KEY=value` pair discovered in a `.env` file. Returned to the
-/// settings UI for discovery/display (masked there); `value` may be a secret.
+/// A single `KEY=value` pair discovered in the repo's env files. Returned to
+/// the settings UI for discovery/display (masked there); `value` may be a
+/// secret.
 #[derive(Debug, Clone, Serialize)]
 pub struct EnvEntry {
     pub key: String,
     pub value: String,
+    /// Basename of the file the value came from: the highest-precedence
+    /// [`ENV_FILENAMES`] file that sets this key.
+    pub file: String,
 }
 
 /// Interpolation context: tokens a shared value may reference so the same
@@ -115,12 +134,12 @@ pub fn override_secret_key(project_id: &str, key: &str) -> String {
     format!("env-override:{project_id}:{key}")
 }
 
-/// Parse `.env` text into ordered `KEY=value` entries. Skips blank lines and
+/// Parse `.env` text into ordered `(KEY, value)` pairs. Skips blank lines and
 /// `#` comments, tolerates a leading `export`, ignores lines without `=` or
 /// with a non-identifier key. Last assignment wins, matching dotenv semantics.
 /// See [`parse_value`] for quoting and inline-comment handling.
-pub fn parse_env(text: &str) -> Vec<EnvEntry> {
-    let mut out: Vec<EnvEntry> = Vec::new();
+pub fn parse_env(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
     for raw in text.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -135,12 +154,9 @@ pub fn parse_env(text: &str) -> Vec<EnvEntry> {
             continue;
         }
         let value = parse_value(v.trim());
-        match out.iter_mut().find(|e| e.key == key) {
-            Some(existing) => existing.value = value,
-            None => out.push(EnvEntry {
-                key: key.to_string(),
-                value,
-            }),
+        match out.iter_mut().find(|(k, _)| k == key) {
+            Some(existing) => existing.1 = value,
+            None => out.push((key.to_string(), value)),
         }
     }
     out
@@ -183,13 +199,32 @@ fn strip_inline_comment(v: &str) -> &str {
     v
 }
 
-/// Read and parse the source repo's `.env`. Missing or unreadable → empty
-/// (the common case — many repos have no `.env`), never an error.
-pub fn read_env_file(repo_path: &Path) -> Vec<EnvEntry> {
-    match std::fs::read_to_string(repo_path.join(ENV_FILENAME)) {
-        Ok(text) => parse_env(&text),
-        Err(_) => Vec::new(),
+/// Read the source repo's env files ([`ENV_FILENAMES`]) into one set of
+/// entries. A key set in more than one file takes its value from the
+/// highest-precedence one. Keys keep the order of their first appearance. A
+/// missing or unreadable file contributes nothing, so a repo with no env
+/// files (the common case) yields an empty list, never an error.
+pub fn read_env_files(repo_path: &Path) -> Vec<EnvEntry> {
+    let mut out: Vec<EnvEntry> = Vec::new();
+    for name in ENV_FILENAMES {
+        let Ok(text) = std::fs::read_to_string(repo_path.join(name)) else {
+            continue;
+        };
+        for (key, value) in parse_env(&text) {
+            match out.iter_mut().find(|e| e.key == key) {
+                Some(existing) => {
+                    existing.value = value;
+                    existing.file = name.to_string();
+                }
+                None => out.push(EnvEntry {
+                    key,
+                    value,
+                    file: name.to_string(),
+                }),
+            }
+        }
     }
+    out
 }
 
 /// Keys declared by the repo's example env files ([`EXAMPLE_ENV_FILENAMES`]).
@@ -202,19 +237,19 @@ pub fn read_example_env_keys(repo_path: &Path) -> Vec<String> {
         let Ok(text) = std::fs::read_to_string(repo_path.join(name)) else {
             continue;
         };
-        for e in parse_env(&text) {
-            if !out.contains(&e.key) {
-                out.push(e.key);
+        for (key, _) in parse_env(&text) {
+            if !out.contains(&key) {
+                out.push(key);
             }
         }
     }
     out
 }
 
-/// Key discovery for the settings UI and the agent env note: the real `.env`
-/// entries plus the keys only *declared* by an example file — "declared by the
-/// project, not set" — carried as bare names because a placeholder is not a
-/// value.
+/// Key discovery for the settings UI and the agent env note: the real entries
+/// from the env files plus the keys only *declared* by an example file —
+/// "declared by the project, not set" — carried as bare names because a
+/// placeholder is not a value.
 #[derive(Debug, Serialize)]
 pub struct EnvFileKeys {
     pub env: Vec<EnvEntry>,
@@ -222,7 +257,7 @@ pub struct EnvFileKeys {
 }
 
 pub fn discover_env_keys(repo_path: &Path) -> EnvFileKeys {
-    let env = read_env_file(repo_path);
+    let env = read_env_files(repo_path);
     let declared = read_example_env_keys(repo_path)
         .into_iter()
         .filter(|k| !env.iter().any(|e| &e.key == k))
@@ -266,7 +301,7 @@ pub fn resolve(
     if shared.is_empty() {
         return Vec::new();
     }
-    let env_map: HashMap<String, String> = read_env_file(repo_path)
+    let env_map: HashMap<String, String> = read_env_files(repo_path)
         .into_iter()
         .map(|e| (e.key, e.value))
         .collect();
@@ -408,10 +443,7 @@ BADKEY-DASH=nope
 FOO=override_wins
 EMPTY=
 ";
-        let got: Vec<(String, String)> = parse_env(text)
-            .into_iter()
-            .map(|e| (e.key, e.value))
-            .collect();
+        let got = parse_env(text);
         assert!(got.contains(&("DATABASE_URL".into(), "postgres://localhost/dev".into())));
         assert!(got.contains(&("QUOTED".into(), "single".into())));
         assert!(got.contains(&("SPACED".into(), "padded".into())));
@@ -432,10 +464,7 @@ HASH=a#b
 QUOTED_HASH=\"a # b\"
 LEADING= # only a comment
 ";
-        let got: std::collections::HashMap<String, String> = parse_env(text)
-            .into_iter()
-            .map(|e| (e.key, e.value))
-            .collect();
+        let got: std::collections::HashMap<String, String> = parse_env(text).into_iter().collect();
         // inline comment (space/tab before #) is stripped
         assert_eq!(got["API_KEY"], "secret");
         assert_eq!(got["TABBED"], "val");
@@ -534,6 +563,55 @@ LEADING= # only a comment
     }
 
     #[test]
+    fn local_and_development_files_are_read_without_a_dot_env() {
+        // The reported case: a project with only `.env.local` still has values.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env.local"), "API_KEY=from-local\n").unwrap();
+        std::fs::write(dir.path().join(".env.development"), "PORT=4000\n").unwrap();
+        let got: Vec<(String, String, String)> = read_env_files(dir.path())
+            .into_iter()
+            .map(|e| (e.key, e.value, e.file))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("PORT".into(), "4000".into(), ".env.development".into()),
+                ("API_KEY".into(), "from-local".into(), ".env.local".into()),
+            ]
+        );
+    }
+
+    /// Pins the chosen convention (see [`ENV_FILENAMES`]): Next.js / Ruby
+    /// dotenv, where `.env.local` beats `.env.development` (key `C`). Vite and
+    /// dotenv-flow would resolve `C` to `dev` instead.
+    #[test]
+    fn env_files_follow_nextjs_and_ruby_dotenv_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, text: &str| std::fs::write(dir.path().join(name), text).unwrap();
+        write(".env", "A=env\nB=env\nC=env\nD=env\n");
+        write(".env.development", "B=dev\nC=dev\nD=dev\n");
+        write(".env.local", "C=local\nD=local\n");
+        write(".env.development.local", "D=dev-local\n");
+        let got: Vec<(String, String, String)> = read_env_files(dir.path())
+            .into_iter()
+            .map(|e| (e.key, e.value, e.file))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("A".into(), "env".into(), ".env".into()),
+                ("B".into(), "dev".into(), ".env.development".into()),
+                ("C".into(), "local".into(), ".env.local".into()),
+                (
+                    "D".into(),
+                    "dev-local".into(),
+                    ".env.development.local".into()
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn example_files_declare_keys_but_never_values() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -581,6 +659,32 @@ LEADING= # only a comment
         );
         let wt = PathBuf::from("/tmp/wt");
         assert!(resolve(&conn, &project_id, dir.path(), &ctx("a", &wt)).is_empty());
+    }
+
+    #[test]
+    fn resolve_mirrors_a_value_from_env_local_when_there_is_no_dot_env() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env.local"), "API_KEY=real-local\n").unwrap();
+        let db = crate::database::init(dir.path()).unwrap();
+        let conn = db.lock();
+        let project_id = seed(&conn);
+        set_doc(
+            &conn,
+            &project_id,
+            &RunEnvDoc {
+                version: 1,
+                vars: vec![EnvVar {
+                    key: "API_KEY".into(),
+                    shared: true,
+                    source: Source::Mirror,
+                }],
+            },
+        );
+        let wt = PathBuf::from("/tmp/wt");
+        assert_eq!(
+            resolve(&conn, &project_id, dir.path(), &ctx("a", &wt)),
+            vec![("API_KEY".into(), "real-local".into())]
+        );
     }
 
     #[test]

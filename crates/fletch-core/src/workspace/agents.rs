@@ -813,12 +813,12 @@ impl WorkspaceManager {
         .ok()
     }
 
-    /// Resolve the project's shared `.env` variables into `(NAME, VALUE)`
-    /// pairs to inject into a sandboxed Run process — the opt-in env membrane
-    /// (see [`crate::run_env`]). Reads the `.env` from the *source* `repo_path`
-    /// (gitignored files are absent from the worktree). Never errors: an
-    /// unreadable `.env`, absent config, or an unavailable keychain simply
-    /// yields fewer (or no) injected vars.
+    /// Resolve the project's shared env variables into `(NAME, VALUE)` pairs
+    /// to inject into a sandboxed Run process — the opt-in env membrane (see
+    /// [`crate::run_env`]). Reads `.env`, `.env.local` and the other env files
+    /// from the *source* `repo_path` (gitignored files are absent from the
+    /// worktree). Never errors: unreadable env files, absent config, or an
+    /// unavailable keychain simply yields fewer (or no) injected vars.
     pub fn run_env(
         &self,
         project_id: &str,
@@ -838,10 +838,10 @@ impl WorkspaceManager {
     /// Key-name facts for the per-agent env note
     /// ([`crate::instructions::env_awareness_note`]): `(shared, unshared)`,
     /// where `shared` are the keys the user shares into app-run processes and
-    /// `unshared` are the keys discovered in the repo's env files (`.env` plus
-    /// `.env.example`/`.env.sample`) but not shared. Names only — values never
-    /// leave `run_env`'s resolution paths. Never errors: missing files or
-    /// config simply yield fewer (or no) names.
+    /// `unshared` are the keys discovered in the repo's env files (`.env`,
+    /// `.env.local` and the others, plus `.env.example`/`.env.sample`) but not
+    /// shared. Names only — values never leave `run_env`'s resolution paths.
+    /// Never errors: missing files or config simply yield fewer (or no) names.
     pub fn run_env_key_names(
         &self,
         project_id: &str,
