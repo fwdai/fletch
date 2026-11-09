@@ -1,6 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
-import { type AgentRecord, api, onRunOutput, onRunState } from "@/api";
+import { type AgentRecord, api, onRunOutput, toRunStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import {
   loadRunOverrides,
@@ -27,15 +27,13 @@ import { RunSettingsSheet } from "./RunSettingsSheet";
 // scrollback, and scrolling.
 
 export function RunPanel({ agent }: { agent: AgentRecord }) {
-  // Phase is owned by the store (fed by an app-wide `run:state` subscription) so
-  // the Run tab's running dot survives this panel unmounting on a tab switch.
-  const phase = useAppStore((s) => s.runPhases[agent.id] ?? "idle");
-  const setRunPhase = useAppStore((s) => s.setRunPhase);
-  const setRunPort = useAppStore((s) => s.setRunPort);
-  const clearRunPort = useAppStore((s) => s.clearRunPort);
+  // The run is owned by the store (fed by an app-wide `run:state` subscription)
+  // so the Run tab's running dot survives this panel unmounting on a tab switch.
+  const status = useAppStore((s) => s.runs[agent.id]);
+  const phase = status?.phase ?? "idle";
+  const applyRunState = useAppStore((s) => s.applyRunState);
   // Only a box agent has an entry (see Capsule).
   const boxPhase = useAppStore((s) => s.boxStates[agent.id]?.phase);
-  const [lastError, setLastError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectValues, setProjectValues] = useState<Record<string, string>>({});
   const [overrides, setOverrides] = useState<Record<string, string>>({});
@@ -117,7 +115,6 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       // listener leaks and every event is delivered twice.
       let cancelled = false;
       let unlistenOutput: (() => void) | null = null;
-      let unlistenState: (() => void) | null = null;
       termRef.current = term;
 
       // Subscribe to live output BEFORE fetching the snapshot, so no chunk
@@ -152,35 +149,17 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         }
         unlistenOutput = unOutput;
 
-        const unState = await onRunState((e) => {
-          if (e.agent_id !== agent.id) return;
-          // Phase flows through the store via the app-wide listener; this local
-          // subscription only mirrors last_error, which the store doesn't track.
-          setLastError(e.last_error);
-        });
-        if (cancelled) {
-          unState();
-          return;
-        }
-        unlistenState = unState;
-
-        // With the listeners live, fetch the rehydration snapshot.
+        // With the listener live, fetch the rehydration snapshot.
         let snapLog: Uint8Array | null = null;
         let snapEnd = 0; // absolute end offset of the snapshot (log_seq)
         try {
           const snap = await api.runState(agent.id);
           if (cancelled) return;
-          // Rehydrate the store phase too, so a running app opened after an app
-          // reload lights the tab dot even before the next live event arrives —
-          // and the port on this Mac that reaches it, which for a VM workspace
-          // is a forwarded one the configured port says nothing about. An
-          // active run with no port yet drops the configured one seeded while
-          // the store still read idle; a host from before the field omits it.
-          setRunPhase(agent.id, snap.phase);
-          if (snap.port != null) setRunPort(agent.id, String(snap.port));
-          else if (snap.port === null && (snap.phase === "setup" || snap.phase === "running"))
-            clearRunPort(agent.id);
-          setLastError(snap.last_error);
+          // Rehydrate the store's run too, so a running app opened after an
+          // app reload lights the tab dot and links its port before the next
+          // live event. The snapshot can resolve after a newer `run:state`;
+          // the store's revision check is what keeps it from undoing that.
+          applyRunState(agent.id, toRunStatus(snap));
           if (snap.log.length > 0) snapLog = new Uint8Array(snap.log);
           snapEnd = snap.log_seq;
         } catch (err) {
@@ -216,10 +195,9 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         cancelled = true;
         termRef.current = null;
         unlistenOutput?.();
-        unlistenState?.();
       };
     },
-    [agent.id, setRunPhase, setRunPort, clearRunPort],
+    [agent.id, applyRunState],
     { autoFocus: false },
   );
 
@@ -240,28 +218,19 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   };
 
   const devCmd = fieldValue("dev");
-  const port = fieldValue("port");
+  const configuredPort = fieldValue("port");
 
   // While a run is active the backend owns the port: it may have bumped the
   // configured one to the next free port, or forwarded a VM workspace's guest
   // port to another one here, and the store holds only what it reported. The
-  // configured port stands in only while idle; during a run, no store port
+  // configured port stands in only while idle; during a run, no backend port
   // means the real one isn't known yet, and the link waits rather than open
   // whatever answers on the configured port. A command with no configured port
   // (a CLI) has nothing to wait for, so its slot stays empty as before.
-  const storePort = useAppStore((s) => s.runPorts[agent.id]);
-  const displayPort = isActive ? storePort : (storePort ?? port);
-  const portPending = isActive && !storePort && !!port;
-  const linkLive = phase === "running" && !!storePort;
-
-  // Seed the store with the configured port so the sidebar indicator can show
-  // `:port` before a run starts — but only while idle, so we never clobber the
-  // backend's authoritative (possibly bumped) port during an active run. A stop
-  // clears the backend's port with the phase; re-running on `isActive` puts the
-  // configured one back.
-  useEffect(() => {
-    if (port && !isActive) setRunPort(agent.id, port);
-  }, [agent.id, port, isActive, setRunPort]);
+  const runPort = status?.port ?? null;
+  const displayPort = isActive ? runPort : (runPort ?? configuredPort);
+  const portPending = isActive && runPort == null && !!configuredPort;
+  const linkLive = phase === "running" && runPort != null;
 
   const onPlay = () => {
     if (isActive) {
@@ -348,7 +317,9 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           style={{ inset: "10px 6px 12px 14px" }}
         />
       </div>
-      {lastError && phase === "stopped" && <div className="run-error e text-sm">{lastError}</div>}
+      {status?.last_error && phase === "stopped" && (
+        <div className="run-error e text-sm">{status.last_error}</div>
+      )}
 
       {/* ── Settings sheet ── */}
       {settingsOpen && (

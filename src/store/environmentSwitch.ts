@@ -76,8 +76,7 @@ const STASH_KEYS = [
   "unseenResults",
   "syncHealth",
   "usage",
-  "runPhases",
-  "runPorts",
+  "runs",
   // Per-checkout git / PR / delegation state. All of it is polled or re-read
   // (`loadDelegations`), so a stale stash is corrected on switching back.
   "gitStates",
@@ -169,8 +168,7 @@ const BLANK: Pick<AppState, StashKey> = {
   unseenResults: {},
   syncHealth: {},
   usage: {},
-  runPhases: {},
-  runPorts: {},
+  runs: {},
   gitStates: {},
   gitBlocked: {},
   gitShortstats: {},

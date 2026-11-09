@@ -82,14 +82,14 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // Dev-server state for this checkout — orthogonal to the agent's turn status,
   // so it shows as its own play chip beside the identity chip, not among the
   // activity cues (rail / loader / shimmer). Fed by the app-wide `run:state`
-  // subscription (see store/app.ts), so it stays correct from any tab.
+  // subscription (see store/eventListeners.ts), so it stays correct from any tab.
   const runLive = useAppStore((s) => {
-    const phase = s.runPhases[agent.id];
+    const phase = s.runs[agent.id]?.phase;
     return phase === "setup" || phase === "running";
   });
-  // Dev-server port, if the RunPanel has resolved it this session — surfaced in
-  // the running chip's tooltip (":port"). Absent until then.
-  const runPort = useAppStore((s) => s.runPorts[agent.id]);
+  // The port on this Mac that reaches the dev server, once the backend has
+  // one — surfaced in the running chip's tooltip (":port").
+  const runPort = useAppStore((s) => s.runs[agent.id]?.port ?? null);
   const pending = useAppStore((s) => s.pendingToolUse[agent.id]);
   // Which step a fresh spawn is on, from `agent:spawn-progress` — the loader's
   // tooltip. Absent for anything but a spawn this client watched.
@@ -209,8 +209,12 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
           {runLive && (
             <span
               className="ag-run tip"
-              data-tip={runPort ? `Dev server running on :${runPort}` : "Dev server running"}
-              aria-label={runPort ? `Dev server running on port ${runPort}` : "Dev server running"}
+              data-tip={
+                runPort != null ? `Dev server running on :${runPort}` : "Dev server running"
+              }
+              aria-label={
+                runPort != null ? `Dev server running on port ${runPort}` : "Dev server running"
+              }
             >
               <Icon name="play" size={9} />
             </span>

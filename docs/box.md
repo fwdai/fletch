@@ -228,14 +228,18 @@ shared master would outlive the client that asked for it, while this one
 ends with the launch, and with the guest. sshd connects to `localhost` in
 the guest, so a server bound to `127.0.0.1`, `::1` or every address is
 reached. The panel's link and the sidebar show the host port: `port` on
-`run:port` and the run snapshot, the port this Mac reaches as the field has
-always meant (a client from before boxes reads nothing else), with the
-guest's beside it as `guest_port`; the agent's `app_status` reports the
-guest port as `port`, which is where the agent is, and the host port beside
-it to tell the user. `run:state` carries the snapshot's `port` and
-`guest_port` too, null until known: a box's run goes `running` before its
-forward is up, so a client keeps the link pending until the port arrives,
-which `run:port` still announces. A VM stopped or killed under a running
+`run:state` and the run snapshot, the port this Mac reaches as the field has
+always meant, with the guest's beside it as `guest_port`; the agent's
+`app_status` reports the guest port as `port`, which is where the agent is,
+and the host port beside it to tell the user. `run:state` is the one stream
+a client follows: every change to the run — its phase, its error, its ports
+— is one event carrying the whole state and a `revision` the snapshot
+carries too, so a client keeps whichever of an event and a snapshot is
+newer and drops the other, whatever order they arrive in. A box's run goes
+`running` with no port before its forward is up, so the panel keeps the link
+pending until the event with the port follows. `run:port` is still emitted
+beside it for clients from before the field, who read nothing else and
+cannot order it. A VM stopped or killed under a running
 command ends its ssh session, which the panel reports as the command's
 exit; a tools-disk reattach is refused while the command holds the box, as
 for any attached launch.

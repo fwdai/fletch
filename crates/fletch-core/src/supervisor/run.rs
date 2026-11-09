@@ -182,6 +182,7 @@ impl Supervisor {
                 last_error: None,
                 port: None,
                 guest_port: None,
+                revision: 0,
                 log: Vec::new(),
                 log_seq: 0,
             },
@@ -666,9 +667,13 @@ fn spawn_guest_run_phase(
     if !session.set_ports(gen, host_port, prepared.port) {
         return Ok(());
     }
+    // The port is a state change like any other, told on `run:state` with
+    // its revision; `run:port` stays beside it for clients from before the
+    // field, who read nothing else and cannot order it.
     if let (Some(port), Some(host_port)) = (prepared.port, host_port) {
         emit_run_port(ctx.sink.as_ref(), &agent_id, host_port, Some(port));
     }
+    emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
     if let Some(note) = &prepared.note {
         write_note(&ctx, &agent_id, &session, note);
     }

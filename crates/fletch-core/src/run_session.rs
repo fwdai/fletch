@@ -49,6 +49,16 @@ pub struct RunStateSnapshot {
     /// `app_status` names. `None` for a server on the host, where `port` is
     /// that port. Set and cleared with `port`.
     pub guest_port: Option<u16>,
+    /// Which state this is: moved on by every change to the phase, the error
+    /// or the ports, never back. `run:state` carries it too, so a client takes
+    /// a snapshot and the events in one order — whichever of them arrives
+    /// later but describes an older state is dropped — rather than let a
+    /// snapshot taken while a box's forward was pending erase the port an
+    /// event brought meanwhile. Each step is at least the clock's
+    /// milliseconds, so a host that restarts (its sessions begin anew) still
+    /// outranks what a client that stayed connected holds from before. 0 for
+    /// an agent that never ran.
+    pub revision: u64,
     /// Cumulative PTY output bytes (latest first dropped on overflow).
     /// Encoded as a byte array so the frontend can render or strip
     /// ANSI without re-decoding.
@@ -70,6 +80,7 @@ pub struct RunState {
     pub last_error: Option<String>,
     pub port: Option<u16>,
     pub guest_port: Option<u16>,
+    pub revision: u64,
 }
 
 /// State for one agent's run process. Reused across start/stop cycles
@@ -95,6 +106,23 @@ struct RunSessionInner {
     /// generation no longer matches, the exit is from a process the
     /// user already stopped or replaced and is ignored.
     generation: u64,
+    /// Moved on by every change to the phase, the error or the ports
+    /// ([`touched`](Self::touched), see [`RunStateSnapshot::revision`]); a
+    /// refused mutation leaves it alone.
+    revision: u64,
+}
+
+impl RunSessionInner {
+    /// The state changed: move the revision on, past the clock's milliseconds
+    /// so a session begun after a host restart cannot hand out a revision a
+    /// client already holds from the session before it.
+    fn touched(&mut self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.revision = (self.revision + 1).max(now);
+    }
 }
 
 impl Default for RunSession {
@@ -109,6 +137,7 @@ impl Default for RunSession {
                 pty: None,
                 detected: None,
                 generation: 0,
+                revision: 0,
             }),
         }
     }
@@ -126,6 +155,7 @@ impl RunSession {
             last_error: inner.last_error.clone(),
             port: inner.port,
             guest_port: inner.guest_port,
+            revision: inner.revision,
             log: inner.log.bytes().to_vec(),
             log_seq: inner.log.total(),
         }
@@ -140,6 +170,7 @@ impl RunSession {
             last_error: inner.last_error.clone(),
             port: inner.port,
             guest_port: inner.guest_port,
+            revision: inner.revision,
         }
     }
 
@@ -176,6 +207,7 @@ impl RunSession {
         }
         inner.port = port;
         inner.guest_port = guest_port;
+        inner.touched();
         true
     }
 
@@ -207,6 +239,7 @@ impl RunSession {
             inner.last_error = None;
             inner.port = None;
             inner.guest_port = None;
+            inner.touched();
             (prior, pty)
         };
         if let Some(pty) = pty {
@@ -239,6 +272,7 @@ impl RunSession {
         inner.last_error = None;
         inner.port = None;
         inner.guest_port = None;
+        inner.touched();
         Some(inner.generation)
     }
 
@@ -271,6 +305,7 @@ impl RunSession {
         }
         inner.phase = phase;
         inner.last_error = None;
+        inner.touched();
         true
     }
 
@@ -320,6 +355,7 @@ impl RunSession {
         inner.last_error = error;
         inner.port = None;
         inner.guest_port = None;
+        inner.touched();
         true
     }
 }
@@ -600,6 +636,56 @@ mod tests {
             "a stop between the read and the claim wins"
         );
         assert!(s.begin_phase(s.generation(), RunPhase::Running).is_some());
+    }
+
+    /// Every change to what `run:state` announces moves the revision on, and
+    /// a refused change does not: a state read before a later change is the
+    /// older of the two by its revision, however late it is delivered.
+    #[test]
+    fn the_revision_orders_every_state_change() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let s = RunSession::new();
+        assert_eq!(s.snapshot().revision, 0);
+        let gen = s.begin_phase(0, RunPhase::Setup).unwrap();
+        let begun = s.state().revision;
+        assert!(begun >= before, "seeded from the clock: {begun} < {before}");
+        assert!(s.transition_phase(gen, RunPhase::Running));
+        let transitioned = s.state().revision;
+        assert!(transitioned > begun);
+        assert!(s.set_ports(gen, Some(3001), Some(3000)));
+        let with_port = s.state().revision;
+        assert!(with_port > transitioned);
+        assert_eq!(
+            s.snapshot().revision,
+            with_port,
+            "the snapshot says the same"
+        );
+        // The stop that lands after a start read its state: the start's
+        // reading is older by its revision, so a client that already saw the
+        // stop drops it, port and all.
+        s.stop();
+        let stopped = s.state().revision;
+        assert!(stopped > with_port);
+        assert!(!s.set_ports(gen, Some(3001), None), "stale, refused");
+        assert!(!s.mark_stopped(gen, None), "stale, refused");
+        assert_eq!(
+            s.state().revision,
+            stopped,
+            "a refused change moves nothing"
+        );
+        let gen = s
+            .begin_phase(s.idle_generation().unwrap(), RunPhase::Running)
+            .unwrap();
+        assert!(s.mark_stopped(gen, Some("Run exited: 1".into())));
+        assert!(s.state().revision > stopped);
+        // A session begun anew (a host restart) starts past what the old one
+        // handed out, since each step is at least the clock.
+        let fresh = RunSession::new();
+        fresh.begin_phase(0, RunPhase::Running).unwrap();
+        assert!(fresh.state().revision >= s.state().revision - 6);
     }
 
     /// A start that observed the session idle, then lost its turn while

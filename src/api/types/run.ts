@@ -1,18 +1,24 @@
 export type RunPhase = "idle" | "setup" | "running" | "stopped";
 
+/** An agent's run as the backend holds it, fetched by a panel on mount. It
+ *  races the `run:state` stream, so it is applied only when its `revision` is
+ *  newer than what the store already holds. */
 export interface RunStateSnapshot {
   phase: RunPhase;
   last_error: string | null;
   /** The port on this Mac that reaches the dev server: the port it launched
    *  on (port-safe, may differ from the configured one), or for a VM workspace
    *  the host end of the forward to it. What the panel's link opens; null
-   *  before the run phase, after a stop, and for a command with no port. The
-   *  same value `run:port` carried. */
-  port: number | null;
+   *  before the run phase has one, after a stop, and for a command with no
+   *  port. Absent from a host from before the field. */
+  port?: number | null;
   /** The port the server binds inside a VM workspace's guest, which the
    *  forward from `port` reaches; null on the host, where `port` is that
    *  port. Set and cleared with `port`. */
-  guest_port: number | null;
+  guest_port?: number | null;
+  /** The run's revision when this was taken, as on `RunStateEvent.revision`;
+   *  0 for an agent that never ran. Absent from a host from before it. */
+  revision?: number;
   /** Raw PTY bytes accumulated since the panel was last cleared.
    *  Sent as a JSON array of u8 values; decode with TextDecoder. */
   log: number[];
@@ -75,30 +81,50 @@ export interface RunOutputEvent {
   seq: number;
 }
 
+/** The authoritative stream for an agent's run: every change to it — phase,
+ *  ports, error, a VM run's port settling after it went `running` — is
+ *  followed by one carrying the whole state. The backend also still emits
+ *  `run:port`, for remote clients from before `port` rode this event; the
+ *  frontend doesn't read it, because nothing orders it against this stream
+ *  and a late one would revive a stopped run's port. */
 export interface RunStateEvent {
   agent_id: string;
   phase: RunPhase;
   last_error: string | null;
   /** The port on this Mac that reaches the dev server, as on
-   *  `RunStateSnapshot.port`: null until the run phase has one, after a stop,
-   *  and for a command with no port. Riding the phase change keeps the link
-   *  from going live on a port the run never got. Absent from a host from
-   *  before it, which leaves the port to `run:port`. */
+   *  `RunStateSnapshot.port`. Riding the phase change keeps the link from
+   *  going live on a port the run never got. Absent from a host from before
+   *  it. */
   port?: number | null;
   /** The guest end of the forward, as on `RunStateSnapshot.guest_port`; set and
    *  cleared with `port`. */
   guest_port?: number | null;
+  /** Monotonic per agent, bumped on every change to the run. Events and the
+   *  snapshot reach the frontend in no guaranteed order, so whatever is no
+   *  newer than what the store holds is dropped. Absent from a host from
+   *  before it, whose states always apply, in arrival order. */
+  revision?: number;
 }
 
-/** The port on this Mac that reaches the dev server — emitted as the run
- *  phase spawns. `port` is what the link and sidebar show, as it has always
- *  been: it may differ from the configured port when port-safety bumped it to
- *  the next free one, or when the forward from a VM workspace's guest took
- *  another. `guest_port` is additive — the port the server binds inside the
- *  guest, which the forward reaches; null for a server on the host — and
- *  absent from a host from before VM workspaces. */
-export interface RunPortEvent {
-  agent_id: string;
-  port: number;
-  guest_port?: number | null;
+/** One agent's run as the store holds it: the `run:state` fields, with what a
+ *  host from before them omits filled in as null. */
+export interface RunStatus {
+  phase: RunPhase;
+  port: number | null;
+  guest_port: number | null;
+  last_error: string | null;
+  /** Null for a host that sends none, which the store reads as "always
+   *  apply". */
+  revision: number | null;
+}
+
+/** The store's reading of either path a run's state arrives by. */
+export function toRunStatus(s: RunStateEvent | RunStateSnapshot): RunStatus {
+  return {
+    phase: s.phase,
+    port: s.port ?? null,
+    guest_port: s.guest_port ?? null,
+    last_error: s.last_error,
+    revision: s.revision ?? null,
+  };
 }

@@ -629,9 +629,13 @@ struct RunStatePayload {
     phase: RunPhase,
     last_error: Option<String>,
     /// As on `RunStateSnapshot`. `None` until the port is settled: a box's
-    /// run is `running` before its forward is up, and `run:port` follows.
+    /// run is `running` before its forward is up, and the `run:state` that
+    /// follows the forward carries it.
     port: Option<u16>,
     guest_port: Option<u16>,
+    /// As on `RunStateSnapshot`: which state this is, so a client drops an
+    /// event or a snapshot that describes an older state than one it has.
+    revision: u64,
 }
 
 /// The Run panel's state, read from `session` rather than passed in, so the
@@ -642,6 +646,7 @@ pub(super) fn emit_run_state(sink: &dyn EventSink, agent_id: &str, session: &Run
         last_error,
         port,
         guest_port,
+        revision,
     } = session.state();
     emit(
         sink,
@@ -652,6 +657,7 @@ pub(super) fn emit_run_state(sink: &dyn EventSink, agent_id: &str, session: &Run
             last_error,
             port,
             guest_port,
+            revision,
         },
     );
 }
@@ -815,13 +821,33 @@ mod tests {
                 }),
             )
         };
+        // The revision rides every event and moves on with each change, so a
+        // client orders them whatever order they arrive in.
+        let mut revisions = Vec::new();
+        let events: Vec<(String, Value)> = sink
+            .events()
+            .into_iter()
+            .map(|(name, mut payload)| {
+                let revision = payload
+                    .as_object_mut()
+                    .and_then(|o| o.remove("revision"))
+                    .and_then(|r| r.as_u64())
+                    .expect("every run:state carries a revision");
+                revisions.push(revision);
+                (name, payload)
+            })
+            .collect();
         assert_eq!(
-            sink.events(),
+            events,
             vec![
                 state("running", Value::Null, json!(3001)),
                 state("running", Value::Null, Value::Null),
                 state("stopped", json!("Run exited: 1"), Value::Null),
             ]
+        );
+        assert!(
+            revisions.windows(2).all(|w| w[0] < w[1]),
+            "revisions must strictly increase: {revisions:?}"
         );
     }
 }

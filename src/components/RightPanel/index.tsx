@@ -33,7 +33,7 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
   // Live run state (setup or running) → the Run tab shows a green dot, matching
   // the Code panel's "Live" indicator, so a running app is visible from any tab.
   const runActive = useAppStore((s) => {
-    const phase = s.runPhases[agent.id];
+    const phase = s.runs[agent.id]?.phase;
     return phase === "setup" || phase === "running";
   });
 

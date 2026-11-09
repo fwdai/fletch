@@ -372,6 +372,7 @@ mod tests {
                     last_error: None,
                     port: None,
                     guest_port: None,
+                    revision: 0,
                     log: Vec::new(),
                     log_seq: 0,
                 }),

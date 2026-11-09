@@ -8,7 +8,7 @@ import {
   type FolderGrant,
   type ForkCode,
   type ForkContext,
-  type RunPhase,
+  type RunStatus,
   type SessionRecord,
   type SpawnStage,
   type UserTurn,
@@ -162,19 +162,13 @@ export interface WorkspaceSlice {
    *  absent until the agent's first turn lands, and absent forever for agents
    *  that report no usage at all (antigravity). See adapters/usage/. */
   usage: Record<string, UsageSnapshot>;
-  /** Live run phase per agent, keyed by agent_id, from the `run:state` event
-   *  stream. Absent = never started (read as "idle"). Fed by an app-wide
-   *  subscription (not the RunPanel, which unmounts on tab switch) so the Run
-   *  tab's "app is running" green dot stays lit from any tab. Single source of
-   *  truth for phase — the RunPanel reads it rather than holding its own copy. */
-  runPhases: Record<string, RunPhase>;
-  /** Dev-server port per agent, keyed by agent_id: the port on this Mac that
-   *  reaches it, which the sidebar's running indicator shows as `:port` and the
-   *  Run panel's link opens. During a run only the backend writes it (`run:state`
-   *  sets or clears it with the phase, `run:port` updates it), so it is absent
-   *  until the real port is known. While idle the RunPanel seeds it with the
-   *  configured port (detected value + overrides). */
-  runPorts: Record<string, string>;
+  /** Each agent's run — phase, ports, last error — keyed by agent_id, as the
+   *  backend last reported it through `applyRunState`. Absent = never seen
+   *  (read as "idle", no port). Fed by an app-wide `run:state` subscription
+   *  (not the RunPanel, which unmounts on tab switch) so the Run tab's dot and
+   *  the sidebar's chip stay right from any tab. Backend truth only: the
+   *  configured port is the panel's fallback while idle, never stored here. */
+  runs: Record<string, RunStatus>;
 
   selectAgent: (id: string | null) => void;
   /** Select a workflow run for the main pane (clears agent/draft/settings selection). */
@@ -258,15 +252,10 @@ export interface WorkspaceSlice {
     message?: string,
   ) => Promise<void>;
   switchView: (id: string, view: AgentView) => Promise<void>;
-  /** Record an agent's run phase (from a `run:state` event or a RunPanel
-   *  snapshot rehydrate). Drives the Run tab's running indicator. */
-  setRunPhase: (id: string, phase: RunPhase) => void;
-  /** Record an agent's resolved dev-server port (from the RunPanel), for the
-   *  sidebar's `:port` running indicator. */
-  setRunPort: (id: string, port: string) => void;
-  /** Forget an agent's dev-server port: a run is active but the backend has
-   *  no port for it yet, so no configured one may stand in. */
-  clearRunPort: (id: string) => void;
+  /** Record an agent's run from a `run:state` event or a RunPanel snapshot.
+   *  Ignored when both carry a revision and `next` is no newer: the two paths
+   *  arrive unordered, and a late one must not undo a newer state. */
+  applyRunState: (id: string, next: RunStatus) => void;
   resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;
@@ -341,8 +330,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   unseenResults: {},
   syncHealth: {},
   usage: {},
-  runPhases: {},
-  runPorts: {},
+  runs: {},
 
   registerOffSidebarAgents: (agents) =>
     set((state) => ({
@@ -758,19 +746,11 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  setRunPhase: (id, phase) => set((state) => ({ runPhases: { ...state.runPhases, [id]: phase } })),
-
-  setRunPort: (id, port) =>
-    set((state) =>
-      state.runPorts[id] === port ? state : { runPorts: { ...state.runPorts, [id]: port } },
-    ),
-
-  clearRunPort: (id) =>
+  applyRunState: (id, next) =>
     set((state) => {
-      if (!(id in state.runPorts)) return state;
-      const runPorts = { ...state.runPorts };
-      delete runPorts[id];
-      return { runPorts };
+      const current = state.runs[id]?.revision;
+      if (current != null && next.revision != null && next.revision <= current) return state;
+      return { runs: { ...state.runs, [id]: next } };
     }),
 
   resume: async (id) => {
