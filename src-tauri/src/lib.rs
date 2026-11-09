@@ -1359,6 +1359,7 @@ pub fn run() {
             commands::set_env_override,
             commands::clear_env_override,
             commands::list_checkout_tree,
+            commands::list_changed_files,
             commands::list_dir,
             commands::discover_slash_commands,
             commands::run_claude_command,

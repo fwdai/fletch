@@ -149,6 +149,7 @@ pub const OPS: &[&str] = &[
     "get_all_git_meta",
     "get_all_pr_status",
     "list_checkout_tree",
+    "list_changed_files",
     "read_checkout_file",
     "get_file_diff",
     "commit_agent",
@@ -472,6 +473,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("get_all_git_meta", Scope::Observe),
     ("get_all_pr_status", Scope::Observe),
     ("list_checkout_tree", Scope::Observe),
+    ("list_changed_files", Scope::Observe),
     ("read_checkout_file", Scope::Observe),
     ("get_file_diff", Scope::Observe),
     // Commits and the rest of the Git panel's working-tree moves stay with the
@@ -989,6 +991,14 @@ impl Dispatch for SupervisorDispatch {
                 "list_checkout_tree" => {
                     let a: AgentArgs = parse(args)?;
                     res(crate::commands::list_checkout_tree_impl(sup, &a.agent_id).await)
+                }
+
+                "list_changed_files" => {
+                    let a: AgentBaseModeArgs = parse(args)?;
+                    res(
+                        crate::commands::list_changed_files_impl(sup, &a.agent_id, a.base_mode)
+                            .await,
+                    )
                 }
 
                 "read_checkout_file" => {
@@ -3293,6 +3303,14 @@ struct ProviderAccountArgs {
 struct FileArgs {
     agent_id: String,
     path: String,
+    #[serde(default)]
+    base_mode: Option<DiffBaseMode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentBaseModeArgs {
+    agent_id: String,
     #[serde(default)]
     base_mode: Option<DiffBaseMode>,
 }

@@ -483,6 +483,58 @@ pub async fn list_checkout_tree_impl(
     Ok(out)
 }
 
+/// Every file changed in the agent's checkouts as `base_mode` measures it:
+/// since the fork point, committed or not (`Fork`), or only uncommitted work
+/// (`Head`, and `Fork` where no fork point resolves, as `DiffBaseMode::diff_ref`
+/// degrades). A multi-repo agent's paths carry their checkout's subdir, as
+/// [`list_checkout_tree_impl`]'s do.
+///
+/// Shared with the remote dispatcher.
+pub async fn list_changed_files_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    base_mode: Option<DiffBaseMode>,
+) -> Result<Vec<FileStatus>> {
+    let record = supervisor.workspace.agent(agent_id)?;
+    // Still cloning: every file not yet written would read as deleted.
+    if checkout_pending(supervisor, agent_id) {
+        return Err(Error::Other("workspace is still being provisioned".into()));
+    }
+    let mode = base_mode.unwrap_or_default();
+    if record.repos.len() <= 1 {
+        let (checkout, base) = primary_checkout(supervisor, agent_id).await?;
+        return changed_files(&checkout, &base, mode).await;
+    }
+    let mut out = Vec::new();
+    for repo in &record.repos {
+        // One unreadable checkout shouldn't blank the others' changes.
+        let Ok(checkout) = repo.checkout_path(agent_id) else {
+            continue;
+        };
+        let base = repo.resolve_base(&checkout).await;
+        let Ok(files) = changed_files(&checkout, &base, mode).await else {
+            continue;
+        };
+        out.extend(files.into_iter().map(|f| FileStatus {
+            path: format!("{}/{}", repo.subdir, f.path),
+            ..f
+        }));
+    }
+    Ok(out)
+}
+
+/// One checkout's changed files under `mode`.
+async fn changed_files(
+    checkout: &Path,
+    base: &git::ResolvedBase,
+    mode: DiffBaseMode,
+) -> Result<Vec<FileStatus>> {
+    match (mode, &base.fork_point) {
+        (DiffBaseMode::Fork, Some(fork)) => git_state::changed_since(checkout, fork).await,
+        _ => Ok(git_state::query(checkout, base).await?.files),
+    }
+}
+
 /// Expand a leading `~` (or `~/…`) to the user's home directory. Any other
 /// path is returned unchanged. Used to resolve filesystem paths the user
 /// types into the composer's `@` mention.
