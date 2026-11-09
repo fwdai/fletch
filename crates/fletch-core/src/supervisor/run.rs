@@ -50,14 +50,15 @@ impl Supervisor {
         }
 
         let session = self.run_session(agent_id);
-        if session.is_active() {
-            return Ok(()); // already running, idempotent
-        }
         // This runs off the UI thread, so a Stop and a fresh Start can come
         // while it works: the generation names the run each outcome below
         // belongs to, and a stale one changes nothing (`settle_stopped`). Until
-        // `begin_phase` renews it, that is the generation observed here.
-        let gen = session.generation();
+        // `begin_phase` renews it, that is the generation observed here — in
+        // one reading with the session being idle, so a run that comes and
+        // goes in between cannot leave this start a token that still claims.
+        let Some(gen) = session.idle_generation() else {
+            return Ok(()); // already running, idempotent
+        };
 
         // The checkout, where it lives: a box keeps it in its guest, and a
         // stopped box boots here, under a note, since the boot is the longest

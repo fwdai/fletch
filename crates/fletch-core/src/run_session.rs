@@ -242,11 +242,22 @@ impl RunSession {
         Some(inner.generation)
     }
 
-    /// The current generation: what a start observes before `begin_phase`
-    /// renews it, so a failure on the way there (the checkout unreadable, no
-    /// free port) can tell whether a newer start has begun meanwhile.
+    /// The current generation, whatever the phase.
     pub fn generation(&self) -> u64 {
         self.inner.lock().generation
+    }
+
+    /// The generation of an idle session — `None` while a phase is active —
+    /// as one reading under one lock: what a start observes before
+    /// [`begin_phase`](Self::begin_phase) renews it. Read apart, "idle" and
+    /// the generation could straddle another run: one that began and ended
+    /// on its own in between leaves the session idle at a newer generation,
+    /// which a claim made with it would take, running the command twice.
+    /// The same token lets a failure on the way to the claim (the checkout
+    /// unreadable, no free port) tell whether a newer start has begun.
+    pub fn idle_generation(&self) -> Option<u64> {
+        let inner = self.inner.lock();
+        (!matches!(inner.phase, RunPhase::Setup | RunPhase::Running)).then_some(inner.generation)
     }
 
     /// Like begin_phase but keeps the same generation. Used when one
@@ -589,6 +600,29 @@ mod tests {
             "a stop between the read and the claim wins"
         );
         assert!(s.begin_phase(s.generation(), RunPhase::Running).is_some());
+    }
+
+    /// A start that observed the session idle, then lost its turn while
+    /// another run began and ended on its own, finds the session idle again
+    /// at a newer generation: its claim is refused all the same, or two
+    /// clicks would run a short command twice.
+    #[test]
+    fn a_run_that_came_and_went_in_between_refuses_the_older_observation() {
+        let s = RunSession::new();
+        let second = s.idle_generation().unwrap();
+        let first = s.begin_phase(second, RunPhase::Setup).unwrap();
+        assert_eq!(s.idle_generation(), None, "an active session is not idle");
+        assert!(s.mark_stopped(first, None), "the first run ends on its own");
+        assert_eq!(s.idle_generation(), Some(first), "idle again, newer");
+        assert_eq!(
+            s.begin_phase(second, RunPhase::Setup),
+            None,
+            "the observation predates the run that came and went"
+        );
+        assert_eq!(s.phase(), RunPhase::Stopped);
+        assert!(s
+            .begin_phase(s.idle_generation().unwrap(), RunPhase::Setup)
+            .is_some());
     }
 
     /// Stop, then Start again at once: the first start is still under way
