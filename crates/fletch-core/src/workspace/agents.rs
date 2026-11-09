@@ -347,6 +347,31 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Record that this checkout's push created `branch` on origin: from now on
+    /// it is one of the workspace's own branches (`worktree_branches`), which
+    /// the push guard may force and which is never "the base" to it. Idempotent.
+    pub fn record_owned_branch(&self, agent_id: &str, subdir: &str, branch: &str) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "INSERT OR IGNORE INTO worktree_branches (workspace_id, subdir, branch)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![agent_id, subdir, branch],
+        )?;
+        Ok(())
+    }
+
+    /// Every branch this checkout has created on origin, oldest first.
+    pub fn owned_branches(&self, agent_id: &str, subdir: &str) -> Result<Vec<String>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT branch FROM worktree_branches
+              WHERE workspace_id = ?1 AND subdir = ?2
+              ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![agent_id, subdir], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+    }
+
     /// Record the base branch a tracked repo's work is reviewed against,
     /// identified by subdir. Seeded at spawn from the project's default and
     /// rewritten when `open_pr` targets a different base (`args.base`) — the user

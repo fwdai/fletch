@@ -21,6 +21,12 @@ use serde_json::Value;
 use super::caps::AgentCaps;
 use super::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
+/// Emitted once a push has created a branch on origin that was not there
+/// before: payload `{ "branch", "current" }` (plus `repo` for a sibling
+/// checkout). The watcher records the branch as the workspace's own
+/// (`worktree_branches`), and as the checkout's current branch when `current`
+/// — false for a stack's other head published through `open_pr`'s `args.head`.
+/// Never emitted for a push that failed or for a name origin already had.
 pub const EVENT_BRANCH_CREATED: &str = "git.branch_created";
 
 pub const EVENT_PR_OPENED: &str = "git.pr_opened";
@@ -79,9 +85,13 @@ pub struct RepoTarget {
     pub cwd: PathBuf,
     /// The user's own repository `cwd` was cloned from (`Target::source_repo`).
     pub source_repo: PathBuf,
+    /// The base the checkout's work is reviewed against, as recorded; the
+    /// default base of `open_pr`.
     pub base_branch: String,
-    /// The agent's own branch on this checkout, once the host recorded it.
-    pub own_branch: Option<String>,
+    /// The branches this checkout's pushes created on origin
+    /// (`WorkspaceManager::owned_branches`): the ones a force may rewrite, and
+    /// never a review base to the guard.
+    pub owned: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -93,8 +103,9 @@ pub struct GitDispatcher {
     source_repo: PathBuf,
     base_branch: String,
     default_subdir: Option<String>,
-    /// Force-push anchor for the default checkout; `None` fails a force closed.
-    own_branch: Option<String>,
+    /// See `RepoTarget::owned`, for the default checkout. Empty fails a force
+    /// closed.
+    owned: Vec<String>,
     /// Primary included. Empty without `with_repos`, so `args.repo` is then rejected.
     repos: std::collections::HashMap<String, RepoTarget>,
     /// Resolved at open_pr time, not construction, so a mid-session issue pick
@@ -120,7 +131,7 @@ impl GitDispatcher {
             source_repo,
             base_branch,
             default_subdir: None,
-            own_branch: None,
+            owned: Vec::new(),
             repos: std::collections::HashMap::new(),
             issue_agent: None,
             caps,
@@ -139,9 +150,18 @@ impl GitDispatcher {
         self
     }
 
+    /// The branches the host recorded as this workspace's own.
     #[cfg(test)]
-    pub fn with_own_branch(mut self, branch: Option<String>) -> Self {
-        self.own_branch = branch;
+    pub fn with_owned(mut self, branches: &[&str]) -> Self {
+        self.owned = branches.iter().map(|b| b.to_string()).collect();
+        self
+    }
+
+    /// The recorded base, as a stacked PR leaves it: one of the workspace's
+    /// own branches.
+    #[cfg(test)]
+    pub fn with_base(mut self, base: &str) -> Self {
+        self.base_branch = base.to_string();
         self
     }
 
@@ -163,7 +183,9 @@ impl GitDispatcher {
             .collect();
         let primary = self.repos.values().find(|repo| repo.cwd == self.cwd);
         self.default_subdir = primary.map(|repo| repo.subdir.clone());
-        self.own_branch = primary.and_then(|repo| repo.own_branch.clone());
+        if let Some(primary) = primary {
+            self.owned = primary.owned.clone();
+        }
         self
     }
 

@@ -347,13 +347,115 @@ async fn git_push_detached_materializes_named_branch() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "fix/thing");
+    // No remote, so the push failed: the branch exists locally but origin
+    // never got it, and a branch origin doesn't have is nobody's to force.
     assert!(
-        effects.iter().any(|e| matches!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, RpcEvent::Named { name, .. } if name == EVENT_BRANCH_CREATED)),
+        "a failed push must not record the branch as the workspace's own: {effects:?}"
+    );
+}
+
+/// The host records a branch as the workspace's own only when its push
+/// created it on origin: a name origin already had is not claimed even when
+/// the push lands on it, and a rejected push claims nothing. Without that, a
+/// failed first push would authorize force against whatever later appears
+/// under the name.
+#[tokio::test]
+async fn git_push_records_a_branch_only_when_its_push_created_it_on_origin() {
+    let td = tempfile::tempdir().unwrap();
+    let remote = td.path().join("origin.git");
+    // `-b main`, so the clone below checks `main` out rather than an unborn
+    // default branch.
+    run_git(
+        td.path(),
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    // Someone else's clone seeds origin: `main`, a branch `fix/taken` at the
+    // same commit (which the agent's push below fast-forwards), and a branch
+    // `fix/diverged` with its own history (which the agent's push cannot).
+    let other = td.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    run_git(&other, &["init", "-q", "-b", "main"]);
+    run_git(&other, &["config", "user.email", "o@example.com"]);
+    run_git(&other, &["config", "user.name", "Other"]);
+    run_git(
+        &other,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    std::fs::write(other.join("a.txt"), b"x").unwrap();
+    run_git(&other, &["add", "-A"]);
+    run_git(&other, &["commit", "-q", "-m", "init"]);
+    run_git(&other, &["push", "-q", "origin", "main", "main:fix/taken"]);
+    run_git(&other, &["checkout", "-q", "-b", "fix/diverged"]);
+    std::fs::write(other.join("theirs.txt"), b"t").unwrap();
+    run_git(&other, &["add", "-A"]);
+    run_git(&other, &["commit", "-q", "-m", "theirs"]);
+    run_git(&other, &["push", "-q", "origin", "fix/diverged"]);
+
+    let repo = td.path().join("repo");
+    run_git(
+        td.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            repo.to_str().unwrap(),
+        ],
+    );
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    std::fs::write(repo.join("b.txt"), b"y").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "mine"]);
+    // The agent names its branches itself, with plain `git checkout -b`
+    // (`args.branch` would pick a collision-free name instead of colliding).
+    let disp = dispatcher(&repo);
+    let born = |fx: &[RpcEvent]| {
+        fx.iter()
+            .any(|e| matches!(e, RpcEvent::Named { name, .. } if name == EVENT_BRANCH_CREATED))
+    };
+
+    // Rejected: origin's fix/diverged is not an ancestor of the agent's tip.
+    run_git(&repo, &["checkout", "-q", "-b", "fix/diverged"]);
+    let (resp, fx) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
+    assert!(!resp.ok, "a non-fast-forward push is rejected: {resp:?}");
+    assert!(!born(&fx), "a rejected push records nothing: {fx:?}");
+
+    // Accepted, but onto a name origin already had: not this workspace's.
+    run_git(&repo, &["checkout", "-q", "-b", "fix/taken"]);
+    let (resp, fx) = disp.dispatch_inner("p2", "git_push", &Value::Null).await;
+    assert!(
+        resp.ok,
+        "a fast-forward onto an existing branch lands: {resp:?}"
+    );
+    assert!(
+        !born(&fx),
+        "a branch origin already had is not claimed: {fx:?}"
+    );
+
+    // A name origin did not have, created by this push: the workspace's own,
+    // and the branch the checkout is on.
+    run_git(&repo, &["checkout", "-q", "-b", "fix/fresh"]);
+    let (resp, fx) = disp.dispatch_inner("p3", "git_push", &Value::Null).await;
+    assert!(resp.ok, "{resp:?}");
+    assert!(
+        fx.iter().any(|e| matches!(
             e,
             RpcEvent::Named { name, payload }
-                if name == EVENT_BRANCH_CREATED && payload["branch"] == "fix/thing"
+                if name == EVENT_BRANCH_CREATED
+                    && payload["branch"] == "fix/fresh"
+                    && payload["current"] == true
         )),
-        "expected a branch-created event, got: {effects:?}"
+        "the push that created the branch records it as own and current: {fx:?}"
     );
 }
 
@@ -433,7 +535,7 @@ async fn git_push_of_the_recorded_own_branch_emits_no_branch_event() {
     run_git(&repo, &["commit", "-q", "-m", "init"]);
     run_git(&repo, &["checkout", "-q", "-b", "fix/known"]);
 
-    let disp = dispatcher(&repo).with_own_branch(Some("fix/known".to_string()));
+    let disp = dispatcher(&repo).with_owned(&["fix/known"]);
     let (resp, fx) = disp.dispatch_inner("p", "git_push", &Value::Null).await;
     assert!(resp.ok, "{resp:?}");
     assert!(
@@ -470,7 +572,7 @@ async fn git_push_force_rewrites_diverged_remote() {
     let rpc_dir = td.path().join("rpc");
     ensure_mailbox(&rpc_dir).unwrap();
     let requests = rpc_dir.join("requests");
-    let dispatcher = dispatcher(&repo).with_own_branch(Some("fix/diverged".to_string()));
+    let dispatcher = dispatcher(&repo).with_owned(&["fix/diverged"]);
 
     write_request(&requests, "p1.json", r#"{"id":"p1","op":"git_push"}"#);
     process_pending(&rpc_dir, &dispatcher).await;
@@ -516,6 +618,114 @@ async fn git_push_force_rewrites_diverged_remote() {
     );
 }
 
+/// A bare origin with `main` pushed, and the checkout on `branch`, pushed too.
+/// The stack scenario's starting point: the branch exists on origin and is
+/// recorded as the workspace's own.
+fn stacked_fixture(td: &std::path::Path, branch: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let remote = td.join("origin.git");
+    run_git(td, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+    let repo = td.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["push", "-q", "origin", "main"]);
+    run_git(&repo, &["checkout", "-q", "-b", branch]);
+    std::fs::write(repo.join("b.txt"), b"y").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "work"]);
+    run_git(&repo, &["push", "-q", "origin", branch]);
+    (repo, remote)
+}
+
+fn remote_tip(remote: &std::path::Path, branch: &str) -> String {
+    let out = std::process::Command::new("git")
+        .args([
+            "--git-dir",
+            remote.to_str().unwrap(),
+            "rev-parse",
+            &format!("refs/heads/{branch}"),
+        ])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn local_head(repo: &std::path::Path) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The workspace opened PR A→main from `feat/a`, then PR B→A from `feat/b`:
+/// the record's base is now `feat/a`, a branch the workspace created. A
+/// follow-up to PR A goes to `feat/a` with a plain push, and a rewrite of it
+/// with a force — the branch is the workspace's own whatever is stacked on it.
+#[tokio::test]
+async fn git_push_to_the_lower_branch_of_the_workspaces_own_stack_is_allowed() {
+    let td = tempfile::tempdir().unwrap();
+    let (repo, remote) = stacked_fixture(td.path(), "feat/a");
+    let disp = dispatcher(&repo)
+        .with_base("feat/a")
+        .with_owned(&["feat/a", "feat/b"]);
+
+    std::fs::write(repo.join("c.txt"), b"z").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "follow-up"]);
+    let (resp, _) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
+    assert!(resp.ok, "a follow-up to the lower PR must land: {resp:?}");
+    assert_eq!(remote_tip(&remote, "feat/a"), local_head(&repo));
+
+    run_git(
+        &repo,
+        &["commit", "-q", "--amend", "-m", "follow-up, rewritten"],
+    );
+    let (resp, _) = disp
+        .dispatch_inner("p2", "git_push", &json!({ "force": true }))
+        .await;
+    assert!(
+        resp.ok,
+        "the workspace may rewrite a branch it created: {resp:?}"
+    );
+    assert_eq!(remote_tip(&remote, "feat/a"), local_head(&repo));
+}
+
+/// A recorded base the workspace did not create — a teammate's branch the
+/// user pointed its PR at — stays off limits; only the workspace's own
+/// branches are exempt.
+#[tokio::test]
+async fn git_push_refuses_a_stacked_base_the_workspace_did_not_create() {
+    let td = tempfile::tempdir().unwrap();
+    let (repo, remote) = stacked_fixture(td.path(), "teammate/wip");
+    let before = remote_tip(&remote, "teammate/wip");
+    std::fs::write(repo.join("c.txt"), b"z").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "sneaky"]);
+
+    let disp = dispatcher(&repo)
+        .with_base("teammate/wip")
+        .with_owned(&["feat/a"]);
+    let (resp, fx) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
+    assert!(!resp.ok, "{resp:?}");
+    assert!(resp
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("reviewed against"));
+    assert!(fx.is_empty());
+    assert_eq!(remote_tip(&remote, "teammate/wip"), before);
+}
+
 #[tokio::test]
 async fn git_push_force_refuses_a_branch_the_agent_does_not_own() {
     let td = tempfile::tempdir().unwrap();
@@ -529,7 +739,7 @@ async fn git_push_force_refuses_a_branch_the_agent_does_not_own() {
     run_git(&repo, &["commit", "-q", "-m", "init"]);
     run_git(&repo, &["checkout", "-q", "-b", "develop"]);
 
-    let disp = dispatcher(&repo).with_own_branch(Some("fix/mine".to_string()));
+    let disp = dispatcher(&repo).with_owned(&["fix/mine"]);
     let (resp, fx) = disp
         .dispatch_inner("p", "git_push", &json!({ "force": true }))
         .await;
@@ -703,7 +913,7 @@ async fn an_agent_made_branch_becomes_its_own_across_a_real_checkout_split() {
     // The host recorded the branch; the next dispatcher carries it, and a
     // rewritten branch can be forced.
     run_git(&checkout, &["commit", "-q", "--amend", "-m", "rewritten"]);
-    let disp = disp.with_own_branch(Some("fix/mine".to_string()));
+    let disp = disp.with_owned(&["fix/mine"]);
     let (resp, _fx) = disp
         .dispatch_inner("p2", "git_push", &json!({ "force": true }))
         .await;

@@ -14,7 +14,7 @@ fn repo_target(subdir: &str, cwd: &std::path::Path) -> RepoTarget {
         cwd: cwd.to_path_buf(),
         source_repo: cwd.to_path_buf(),
         base_branch: "main".into(),
-        own_branch: None,
+        owned: Vec::new(),
     }
 }
 
@@ -66,10 +66,21 @@ async fn branch_events_carry_the_targeted_repo() {
     let a = td.path().join("a");
     let b = td.path().join("b");
     for repo in [&a, &b] {
+        // Each checkout has its own origin: the event is emitted by the push
+        // that creates the branch there.
+        let remote = td.path().join(format!(
+            "{}.git",
+            repo.file_name().unwrap().to_str().unwrap()
+        ));
+        run_git(
+            td.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
         std::fs::create_dir_all(repo).unwrap();
         run_git(repo, &["init", "-q", "-b", "main"]);
         run_git(repo, &["config", "user.email", "t@example.com"]);
         run_git(repo, &["config", "user.name", "Tester"]);
+        run_git(repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
         std::fs::write(repo.join("f.txt"), b"x").unwrap();
         run_git(repo, &["add", "-A"]);
         run_git(repo, &["commit", "-q", "-m", "init"]);

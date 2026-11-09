@@ -1137,17 +1137,26 @@ impl Supervisor {
         let mut repo_targets = Vec::new();
         for r in &record.repos {
             let checkout = r.checkout_path(agent_id)?;
-            let base = r.base_branch().await;
-            // `r.branch` is the agent's own work branch on this checkout, recorded
-            // when the host materialized it. Threaded here so a force push is
-            // fenced to it; `None` until the branch exists and this dispatcher is
-            // rebuilt on the next resume/turn (see `rpc::caps::refuses_force`).
+            // The branches this checkout's pushes created, recorded as each
+            // push's event was applied. Threaded here so a force push is fenced
+            // to them and a push to one of them is never "the base"; a branch
+            // born this turn joins when this dispatcher is rebuilt on the next
+            // resume/turn (see `rpc::caps::refuses_publish`). A read that fails
+            // owns nothing, which only refuses more.
+            let owned = self
+                .workspace
+                .owned_branches(agent_id, &r.subdir)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, agent_id = %agent_id, subdir = %r.subdir,
+                        "reading the checkout's own branches failed; forcing is refused");
+                    Vec::new()
+                });
             repo_targets.push(rpc::git::RepoTarget {
                 subdir: r.subdir.clone(),
                 cwd: checkout,
                 source_repo: r.repo_path.clone(),
-                base_branch: base,
-                own_branch: r.branch.clone(),
+                base_branch: r.base_branch().await,
+                owned,
             });
         }
         // A workspace started from an issue carries its ref here ("123" for

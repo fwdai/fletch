@@ -1590,6 +1590,51 @@ fn recorded_base_follows_a_redirected_pr_base() {
     assert_eq!(repo.base_sha.as_deref(), Some("cafebabe"));
 }
 
+/// The branches a checkout created on origin accumulate — a later branch does
+/// not replace an earlier one the way `worktrees.branch` does — and are
+/// recorded once each, per checkout.
+#[test]
+fn owned_branches_accumulate_per_checkout() {
+    let db = test_db();
+    let wm = WorkspaceManager::new(db.clone());
+    seed_repo(&db, "/r");
+
+    let mut rec = new_agent_record(
+        "denali".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "task".into(),
+        AgentView::Custom,
+    );
+    let id = rec.id.clone();
+    wm.add_agent(&mut rec).unwrap();
+    let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+    assert!(wm.owned_branches(&id, &subdir).unwrap().is_empty());
+
+    for branch in ["feat/a", "feat/b", "feat/a"] {
+        wm.record_owned_branch(&id, &subdir, branch).unwrap();
+        wm.set_repo_branch(&id, &subdir, branch).unwrap();
+    }
+    assert_eq!(
+        wm.owned_branches(&id, &subdir).unwrap(),
+        ["feat/a", "feat/b"]
+    );
+    assert_eq!(
+        wm.agent(&id).unwrap().repos[0].branch.as_deref(),
+        Some("feat/a"),
+        "the current branch is still the last one materialized"
+    );
+    assert!(
+        wm.owned_branches(&id, "other").unwrap().is_empty(),
+        "another checkout of the workspace owns its own branches"
+    );
+
+    // Removing the workspace drops its branches with it.
+    wm.remove_agent(&id).unwrap();
+    assert!(wm.owned_branches(&id, &subdir).unwrap().is_empty());
+}
+
 /// Log `pr` into the checkout's set and bind it — what `create_pr` and an
 /// adoption do (`supervisor::bind_pr_snapshot`).
 fn bind(wm: &WorkspaceManager, id: &str, subdir: &str, pr: &crate::github::PrState) {

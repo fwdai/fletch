@@ -104,13 +104,18 @@ async fn open_pr_head_publishes_a_branch_that_is_not_checked_out() {
         "feat/third",
         "the checkout stays where it was"
     );
+    // The head this push created on origin is the workspace's own — it can
+    // be checked out and force-pushed later — but not the checkout's current
+    // branch, which stays feat/third.
     assert!(
-        !fx.iter().any(|e| matches!(
+        fx.iter().any(|e| matches!(
             e,
-            crate::rpc::RpcEvent::Named { name, .. }
+            crate::rpc::RpcEvent::Named { name, payload }
                 if name == crate::rpc::git::EVENT_BRANCH_CREATED
+                    && payload["branch"] == "feat/second"
+                    && payload["current"] == false
         )),
-        "publishing another head must not move branch ownership off feat/third: {fx:?}"
+        "a head born on origin is recorded as own, not as current: {fx:?}"
     );
 }
 

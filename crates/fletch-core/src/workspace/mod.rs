@@ -78,6 +78,9 @@ pub enum AgentView {
 pub struct TrackedRepo {
     pub repo_path: PathBuf,
     pub subdir: String,
+    /// The branch the checkout is on now: the last one the host materialized.
+    /// Every branch it has created is in `worktree_branches`
+    /// (`WorkspaceManager::owned_branches`).
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]

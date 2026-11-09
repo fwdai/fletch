@@ -101,8 +101,31 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
                 );
                 return;
             };
+            // A head published through `args.head` is the workspace's own but
+            // not the branch its checkout is on; dispatchers that predate the
+            // field only ever emitted for the checked-out branch.
+            let current = payload
+                .get("current")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
             if let Ok(record) = sup.workspace.agent(agent_id) {
                 if let Some(subdir) = event_subdir(&record, &payload) {
+                    // Two records: the set of branches the checkout has
+                    // created, which the push guard reads
+                    // (`rpc::caps::refuses_publish`) and which keeps an
+                    // earlier branch the workspace's own after a later one
+                    // replaces it as current; and the branch it is on now.
+                    if let Err(e) = sup.workspace.record_owned_branch(agent_id, subdir, branch) {
+                        tracing::warn!(
+                            error = %e,
+                            agent_id = %agent_id,
+                            branch = %branch,
+                            "git_push/open_pr: failed to record the branch as the workspace's own"
+                        );
+                    }
+                    if !current {
+                        return;
+                    }
                     if let Err(e) = sup.workspace.set_repo_branch(agent_id, subdir, branch) {
                         tracing::warn!(
                             error = %e,
