@@ -12,6 +12,7 @@ import { ADD_PROJECT_GATES, anyGateReason, gateReason } from "@/store/gates";
 import { activeSurface, surfaceAgent, surfaceRepoPath } from "@/store/surface";
 import type { AppState } from "@/store/types";
 import { SHORTCUT_BY_ID } from "@/util/keymap";
+import { checkoutBase } from "@/util/prState";
 import { newAgentRepoPath, runShortcutAction } from "@/util/shortcuts";
 import {
   go,
@@ -300,10 +301,7 @@ export function agentItems(ctx: PaletteContext): PaletteItem[] {
       remember: true,
     });
   } else if (primary?.pr_base || primary?.parent_branch) {
-    // The focused PR's base when it is live in the store; the record otherwise.
-    const base = (s.prStates?.[agent.id]?.base ||
-      primary.pr_base ||
-      primary.parent_branch) as string;
+    const base = checkoutBase(s.prStates?.[agent.id], primary) as string;
     const delegated = s.delegations[agent.id] != null;
     items.push({
       id: "commit-pr",
