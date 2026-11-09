@@ -79,6 +79,15 @@ export interface RunStateEvent {
   agent_id: string;
   phase: RunPhase;
   last_error: string | null;
+  /** The port on this Mac that reaches the dev server, as on
+   *  `RunStateSnapshot.port`: null until the run phase has one, after a stop,
+   *  and for a command with no port. Riding the phase change keeps the link
+   *  from going live on a port the run never got. Absent from a host from
+   *  before it, which leaves the port to `run:port`. */
+  port?: number | null;
+  /** The guest end of the forward, as on `RunStateSnapshot.guest_port`; set and
+   *  cleared with `port`. */
+  guest_port?: number | null;
 }
 
 /** The port on this Mac that reaches the dev server — emitted as the run

@@ -62,6 +62,16 @@ pub struct RunStateSnapshot {
     pub log_seq: u64,
 }
 
+/// [`RunStateSnapshot`] without the log: what `run:state` announces, read
+/// under one lock so its fields agree with each other and with the snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunState {
+    pub phase: RunPhase,
+    pub last_error: Option<String>,
+    pub port: Option<u16>,
+    pub guest_port: Option<u16>,
+}
+
 /// State for one agent's run process. Reused across start/stop cycles
 /// (the log buffer survives stops so the panel can show what happened
 /// the previous time you ran it).
@@ -121,6 +131,18 @@ impl RunSession {
         }
     }
 
+    /// The session's state, as [`snapshot`](Self::snapshot) has it, without
+    /// copying the log.
+    pub fn state(&self) -> RunState {
+        let inner = self.inner.lock();
+        RunState {
+            phase: inner.phase,
+            last_error: inner.last_error.clone(),
+            port: inner.port,
+            guest_port: inner.guest_port,
+        }
+    }
+
     pub fn phase(&self) -> RunPhase {
         self.inner.lock().phase
     }
@@ -142,7 +164,8 @@ impl RunSession {
     /// The port on this host that reaches the run phase's server, and the one
     /// it binds in a box's guest (see [`RunStateSnapshot`]), recorded as the
     /// phase spawns so the agent's `app_status` can name them; the panel
-    /// hears the host port on `run:port`. Cleared by every start and stop.
+    /// hears them on `run:port` and in each `run:state` that follows.
+    /// Cleared by every start and stop.
     pub fn set_ports(&self, port: Option<u16>, guest_port: Option<u16>) {
         let mut inner = self.inner.lock();
         inner.port = port;

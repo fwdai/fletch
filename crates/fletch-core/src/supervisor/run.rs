@@ -64,8 +64,8 @@ impl Supervisor {
             Ok(tree) => tree,
             Err(e) => {
                 let msg = format!("Failed to start: could not read the checkout: {e}");
-                session.mark_stopped(Some(msg.clone()));
-                emit_run_state(ctx.sink.as_ref(), agent_id, RunPhase::Stopped, Some(msg));
+                session.mark_stopped(Some(msg));
+                emit_run_state(ctx.sink.as_ref(), agent_id, &session);
                 return Err(Error::Other(e.to_string()));
             }
         };
@@ -93,8 +93,8 @@ impl Supervisor {
             match prepare_run(&plan.first_cmd, intended_port) {
                 Ok(p) => p,
                 Err(e) => {
-                    let msg = format!("Failed to start command: {e}");
-                    emit_run_state(ctx.sink.as_ref(), agent_id, RunPhase::Stopped, Some(msg));
+                    session.mark_stopped(Some(format!("Failed to start command: {e}")));
+                    emit_run_state(ctx.sink.as_ref(), agent_id, &session);
                     return Err(e);
                 }
             }
@@ -110,7 +110,7 @@ impl Supervisor {
         if let Some(port) = prepared.port {
             emit_run_port(ctx.sink.as_ref(), agent_id, port, None);
         }
-        emit_run_state(ctx.sink.as_ref(), agent_id, plan.first_phase, None);
+        emit_run_state(ctx.sink.as_ref(), agent_id, &session);
         write_header(&ctx, agent_id, &session, &prepared.cmd);
         if let Some(note) = &prepared.note {
             write_note(&ctx, agent_id, &session, note);
@@ -133,9 +133,8 @@ impl Supervisor {
             prepared.extra_env,
             plan.chained_run_cmd,
         ) {
-            let msg = format!("Failed to start command: {e}");
-            session.mark_stopped(Some(msg.clone()));
-            emit_run_state(ctx.sink.as_ref(), agent_id, RunPhase::Stopped, Some(msg));
+            session.mark_stopped(Some(format!("Failed to start command: {e}")));
+            emit_run_state(ctx.sink.as_ref(), agent_id, &session);
             return Err(e);
         }
         Ok(())
@@ -152,7 +151,7 @@ impl Supervisor {
         };
         let prior = session.stop();
         if matches!(prior, RunPhase::Setup | RunPhase::Running) {
-            emit_run_state(ctx.sink.as_ref(), agent_id, RunPhase::Stopped, None);
+            emit_run_state(ctx.sink.as_ref(), agent_id, &session);
         }
         Ok(())
     }
@@ -578,8 +577,9 @@ fn spawn_run_phase(
 /// panel's link opens. The port is settled here rather than before the phase
 /// began, as the host's is: finding a free port in the guest, and forwarding
 /// it, both need the box, which a stopped one must first boot — under a
-/// phase the panel already shows, so the wait is visible. `run:port` thus
-/// follows `run:state`, carrying the host port once the forward is up.
+/// phase the panel already shows, so the wait is visible. `run:state` thus
+/// goes `running` with no port, and `run:port` follows, carrying the host
+/// port once the forward is up.
 ///
 /// The env the command gets is the guest's own (`guest_env`, the project's
 /// toolchain cache in the guest) plus the project's shared Run env and the
@@ -844,9 +844,8 @@ fn handle_run_phase_exit(
                 match prepare_run(&run_cmd, intended_port) {
                     Ok(p) => p,
                     Err(e) => {
-                        let msg = format!("Failed to start run command: {e}");
-                        session.mark_stopped(Some(msg.clone()));
-                        emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, Some(msg));
+                        session.mark_stopped(Some(format!("Failed to start run command: {e}")));
+                        emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
                         return;
                     }
                 }
@@ -858,7 +857,7 @@ fn handle_run_phase_exit(
             if let Some(port) = prepared.port {
                 emit_run_port(ctx.sink.as_ref(), &agent_id, port, None);
             }
-            emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Running, None);
+            emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
             write_header(&ctx, &agent_id, &session, &prepared.cmd);
             if let Some(note) = &prepared.note {
                 write_note(&ctx, &agent_id, &session, note);
@@ -876,23 +875,21 @@ fn handle_run_phase_exit(
                 prepared.extra_env,
                 None,
             ) {
-                let msg = format!("Failed to start run command: {e}");
-                session.mark_stopped(Some(msg.clone()));
-                emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, Some(msg));
+                session.mark_stopped(Some(format!("Failed to start run command: {e}")));
+                emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
             }
             return;
         }
         // No run command to chain into — treat as clean stop.
         session.mark_stopped(None);
-        emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, None);
+        emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
         return;
     }
 
     // Setup failed → do NOT proceed to run. Surface the error.
     if matches!(phase, RunPhase::Setup) && !exit.success {
-        let msg = format!("Setup failed: {}", exit.message);
-        session.mark_stopped(Some(msg.clone()));
-        emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, Some(msg));
+        session.mark_stopped(Some(format!("Setup failed: {}", exit.message)));
+        emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
         return;
     }
 
@@ -902,8 +899,8 @@ fn handle_run_phase_exit(
     } else {
         Some(format!("Run exited: {}", exit.message))
     };
-    session.mark_stopped(err.clone());
-    emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, err);
+    session.mark_stopped(err);
+    emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
 }
 
 #[cfg(test)]

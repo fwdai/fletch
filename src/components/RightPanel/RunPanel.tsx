@@ -32,6 +32,9 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   const phase = useAppStore((s) => s.runPhases[agent.id] ?? "idle");
   const setRunPhase = useAppStore((s) => s.setRunPhase);
   const setRunPort = useAppStore((s) => s.setRunPort);
+  const clearRunPort = useAppStore((s) => s.clearRunPort);
+  // Only a box agent has an entry (see Capsule).
+  const boxPhase = useAppStore((s) => s.boxStates[agent.id]?.phase);
   const [lastError, setLastError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectValues, setProjectValues] = useState<Record<string, string>>({});
@@ -170,9 +173,13 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           // Rehydrate the store phase too, so a running app opened after an app
           // reload lights the tab dot even before the next live event arrives —
           // and the port on this Mac that reaches it, which for a VM workspace
-          // is a forwarded one the configured port says nothing about.
+          // is a forwarded one the configured port says nothing about. An
+          // active run with no port yet drops the configured one seeded while
+          // the store still read idle; a host from before the field omits it.
           setRunPhase(agent.id, snap.phase);
           if (snap.port != null) setRunPort(agent.id, String(snap.port));
+          else if (snap.port === null && (snap.phase === "setup" || snap.phase === "running"))
+            clearRunPort(agent.id);
           setLastError(snap.last_error);
           if (snap.log.length > 0) snapLog = new Uint8Array(snap.log);
           snapEnd = snap.log_seq;
@@ -212,7 +219,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         unlistenState?.();
       };
     },
-    [agent.id, setRunPhase, setRunPort],
+    [agent.id, setRunPhase, setRunPort, clearRunPort],
     { autoFocus: false },
   );
 
@@ -234,18 +241,24 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
 
   const devCmd = fieldValue("dev");
   const port = fieldValue("port");
-  const linkLive = phase === "running";
 
-  // While running, the backend owns the port (it may have bumped the configured
-  // one to the next free port and emits the real value via `run:port`). Prefer
-  // that store value for the link/label; fall back to the locally resolved
-  // (configured) port when idle.
+  // While a run is active the backend owns the port: it may have bumped the
+  // configured one to the next free port, or forwarded a VM workspace's guest
+  // port to another one here, and the store holds only what it reported. The
+  // configured port stands in only while idle; during a run, no store port
+  // means the real one isn't known yet, and the link waits rather than open
+  // whatever answers on the configured port. A command with no configured port
+  // (a CLI) has nothing to wait for, so its slot stays empty as before.
   const storePort = useAppStore((s) => s.runPorts[agent.id]);
-  const displayPort = storePort ?? port;
+  const displayPort = isActive ? storePort : (storePort ?? port);
+  const portPending = isActive && !storePort && !!port;
+  const linkLive = phase === "running" && !!storePort;
 
   // Seed the store with the configured port so the sidebar indicator can show
   // `:port` before a run starts — but only while idle, so we never clobber the
-  // backend's authoritative (possibly bumped) port during an active run.
+  // backend's authoritative (possibly bumped) port during an active run. A stop
+  // clears the backend's port with the phase; re-running on `isActive` puts the
+  // configured one back.
   useEffect(() => {
     if (port && !isActive) setRunPort(agent.id, port);
   }, [agent.id, port, isActive, setRunPort]);
@@ -275,6 +288,9 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
 
   const hasOverrides = Object.keys(overrides).length > 0;
   const buttonLabel = isActive ? "Stop" : "Start";
+  // A stopped VM's checkout can't be read, so an empty detection there says
+  // nothing about the repo — say what will fill it instead.
+  const vmAsleep = boxPhase === "stopped" && rows.length === 0 && !isActive;
 
   return (
     <div className="run-wrap">
@@ -295,16 +311,17 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
         </div>
 
         <a
-          href={`http://localhost:${displayPort}`}
+          href={`http://localhost:${displayPort ?? ""}`}
           target="_blank"
           rel="noreferrer"
-          className={`run-link text-xs${linkLive ? "" : " disabled"}`}
+          className={`run-link text-xs${linkLive ? "" : " disabled"}${portPending ? " pending" : ""}`}
+          title={portPending ? "Waiting for the port…" : undefined}
           onClick={(e) => {
             if (!linkLive) e.preventDefault();
           }}
         >
           <span className="colon">:</span>
-          <span className="port">{displayPort}</span>
+          <span className="port">{portPending ? "…" : displayPort}</span>
           <Icon name="external" size={10} />
         </a>
 
@@ -317,6 +334,11 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           {hasOverrides && <span className="dot" />}
         </button>
       </div>
+      {vmAsleep && (
+        <div className="run-hint text-sm">
+          The Linux VM is stopped — Start wakes it and detects the run command.
+        </div>
+      )}
 
       {/* ── Logs (read-only xterm) ── */}
       <div className="xterm-slot">

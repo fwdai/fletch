@@ -744,18 +744,32 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // App-wide run-phase tracking. The RunPanel unmounts when its tab isn't
   // active, so its own subscription can't keep the Run tab's "app is running"
   // dot lit from another tab — this always-on listener owns `runPhases`.
+  //
+  // The port rides the same event and lands in the same update, so no render
+  // sees `running` beside the configured port the RunPanel seeded while idle:
+  // a VM workspace's forward can take another port on this Mac, and the link
+  // would open whatever answers on the configured one. Null (no port yet, or
+  // stopped) clears it; a host from before the field omits it, and `runPorts`
+  // is left to `run:port`.
   await bind(
     onRunState((e) => {
-      set((s) => ({ runPhases: { ...s.runPhases, [e.agent_id]: e.phase } }));
+      set((s) => {
+        const runPhases = { ...s.runPhases, [e.agent_id]: e.phase };
+        if (e.port === undefined) return { runPhases };
+        const runPorts = { ...s.runPorts };
+        if (e.port === null) delete runPorts[e.agent_id];
+        else runPorts[e.agent_id] = String(e.port);
+        return { runPhases, runPorts };
+      });
     }),
   );
 
   // The port on this Mac that reaches the dev server: the (possibly
   // port-safety-bumped) port it bound on the host, or the host end of the
   // forward to a VM workspace's guest — `port` either way, so a host of any
-  // age is read the same. Owns `runPorts` so the sidebar indicator and Run
-  // pane link reflect the real port even after a bump, and survive the
-  // RunPanel unmounting on a tab switch.
+  // age is read the same. Writes `runPorts` (as `run:state` does) so the
+  // sidebar indicator and Run pane link reflect the real port even after a
+  // bump, and survive the RunPanel unmounting on a tab switch.
   await bind(
     onRunPort((e) => {
       set((s) => ({ runPorts: { ...s.runPorts, [e.agent_id]: String(e.port) } }));

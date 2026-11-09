@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use tauri::State;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::run_session::RunStateSnapshot;
 use crate::supervisor::Supervisor;
@@ -13,24 +13,33 @@ use super::files::expand_tilde;
 
 /// Start the Run-panel process for an agent.
 /// Runs setup-then-run on first start, then run only on subsequent.
+/// Async + `spawn_blocking` because a box workspace's start boots a stopped
+/// box and waits on the port forward.
 #[tauri::command]
-pub fn run_start(
+pub async fn run_start(
     supervisor: State<'_, Arc<Supervisor>>,
     ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
 ) -> Result<()> {
-    let sup = supervisor.inner().clone();
-    sup.run_start(ctx.inner().clone(), &agent_id)
+    let (sup, ctx) = (supervisor.inner().clone(), ctx.inner().clone());
+    tauri::async_runtime::spawn_blocking(move || sup.run_start(ctx, &agent_id))
+        .await
+        .map_err(|e| Error::Other(format!("run start: {e}")))?
 }
 
-/// Stop the Run-panel process for an agent. Idempotent.
+/// Stop the Run-panel process for an agent. Idempotent. Async +
+/// `spawn_blocking` because stopping a command in a box's guest waits out
+/// its TERM, then KILL.
 #[tauri::command]
-pub fn run_stop(
+pub async fn run_stop(
     supervisor: State<'_, Arc<Supervisor>>,
     ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
 ) -> Result<()> {
-    supervisor.run_stop(ctx.inner().clone(), &agent_id)
+    let (sup, ctx) = (supervisor.inner().clone(), ctx.inner().clone());
+    tauri::async_runtime::spawn_blocking(move || sup.run_stop(ctx, &agent_id))
+        .await
+        .map_err(|e| Error::Other(format!("run stop: {e}")))?
 }
 
 /// Snapshot of the Run-panel state and accumulated log buffer for
@@ -59,13 +68,17 @@ pub async fn run_verification(
 
 /// Detect the run configuration for an agent's primary repo, ranked by
 /// confidence. The panel renders the first entry and layers persisted
-/// overrides on top.
+/// overrides on top. Async + `spawn_blocking` because reading a box's
+/// checkout goes over ssh.
 #[tauri::command]
-pub fn detect_run_config(
+pub async fn detect_run_config(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Vec<crate::run_detect::DetectedConfig>> {
-    supervisor.detect_run_config(&agent_id)
+    let sup = supervisor.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || sup.detect_run_config(&agent_id))
+        .await
+        .map_err(|e| Error::Other(format!("detect run config: {e}")))?
 }
 
 /// Detect the run configuration for a project by repo path (as the sidebar

@@ -168,10 +168,12 @@ export interface WorkspaceSlice {
    *  tab's "app is running" green dot stays lit from any tab. Single source of
    *  truth for phase — the RunPanel reads it rather than holding its own copy. */
   runPhases: Record<string, RunPhase>;
-  /** Dev-server port per agent, keyed by agent_id. Written by the RunPanel when
-   *  it resolves the run config (detected value + overrides), so the sidebar's
-   *  running indicator can show `:port`. Absent until that agent's Run panel has
-   *  been opened this session (the port isn't on the `run:state` event yet). */
+  /** Dev-server port per agent, keyed by agent_id: the port on this Mac that
+   *  reaches it, which the sidebar's running indicator shows as `:port` and the
+   *  Run panel's link opens. During a run only the backend writes it (`run:state`
+   *  sets or clears it with the phase, `run:port` updates it), so it is absent
+   *  until the real port is known. While idle the RunPanel seeds it with the
+   *  configured port (detected value + overrides). */
   runPorts: Record<string, string>;
 
   selectAgent: (id: string | null) => void;
@@ -262,6 +264,9 @@ export interface WorkspaceSlice {
   /** Record an agent's resolved dev-server port (from the RunPanel), for the
    *  sidebar's `:port` running indicator. */
   setRunPort: (id: string, port: string) => void;
+  /** Forget an agent's dev-server port: a run is active but the backend has
+   *  no port for it yet, so no configured one may stand in. */
+  clearRunPort: (id: string) => void;
   resume: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
   discard: (id: string) => Promise<void>;
@@ -759,6 +764,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     set((state) =>
       state.runPorts[id] === port ? state : { runPorts: { ...state.runPorts, [id]: port } },
     ),
+
+  clearRunPort: (id) =>
+    set((state) => {
+      if (!(id in state.runPorts)) return state;
+      const runPorts = { ...state.runPorts };
+      delete runPorts[id];
+      return { runPorts };
+    }),
 
   resume: async (id) => {
     clearOutputBuffer(id);

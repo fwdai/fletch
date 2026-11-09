@@ -11,7 +11,7 @@ use crate::host::EventSink;
 // Shared with the other PTY-carrying events (see `provider_login` commands),
 // so the base64 wire format is defined once next to the sessions producing it.
 use crate::pty_session::serialize_bytes_b64;
-use crate::run_session::RunPhase;
+use crate::run_session::{RunPhase, RunSession, RunState};
 use crate::workspace::{AgentStatus, AgentView, TrackedRepo};
 
 /// Emit one event, logging (not propagating) failure — the shared tail of
@@ -628,14 +628,21 @@ struct RunStatePayload {
     agent_id: String,
     phase: RunPhase,
     last_error: Option<String>,
+    /// As on `RunStateSnapshot`. `None` until the port is settled: a box's
+    /// run is `running` before its forward is up, and `run:port` follows.
+    port: Option<u16>,
+    guest_port: Option<u16>,
 }
 
-pub(super) fn emit_run_state(
-    sink: &dyn EventSink,
-    agent_id: &str,
-    phase: RunPhase,
-    last_error: Option<String>,
-) {
+/// The Run panel's state, read from `session` rather than passed in, so the
+/// event says what `run_state` would. Callers apply the change first.
+pub(super) fn emit_run_state(sink: &dyn EventSink, agent_id: &str, session: &RunSession) {
+    let RunState {
+        phase,
+        last_error,
+        port,
+        guest_port,
+    } = session.state();
     emit(
         sink,
         "run:state",
@@ -643,6 +650,8 @@ pub(super) fn emit_run_state(
             agent_id: agent_id.to_string(),
             phase,
             last_error,
+            port,
+            guest_port,
         },
     );
 }
@@ -772,6 +781,42 @@ mod tests {
                 "agent:output".to_string(),
                 json!({ "agent_id": "fuji", "bytes": "aGk=" })
             )]
+        );
+    }
+
+    /// `run:state` carries the session's ports as they stand: the host's run
+    /// has its port before it goes `running`, a box's does not until its
+    /// forward is up, and a stop clears them.
+    #[test]
+    fn a_run_state_event_carries_the_sessions_ports() {
+        let sink = RecordingSink::new();
+        let session = RunSession::new();
+        session.begin_phase(RunPhase::Running);
+        session.set_ports(Some(3001), None);
+        emit_run_state(&sink, "fuji", &session);
+        session.begin_phase(RunPhase::Running);
+        emit_run_state(&sink, "fuji", &session);
+        session.mark_stopped(Some("Run exited: 1".to_string()));
+        emit_run_state(&sink, "fuji", &session);
+        let state = |phase: &str, last_error: Value, port: Value| {
+            (
+                "run:state".to_string(),
+                json!({
+                    "agent_id": "fuji",
+                    "phase": phase,
+                    "last_error": last_error,
+                    "port": port,
+                    "guest_port": null,
+                }),
+            )
+        };
+        assert_eq!(
+            sink.events(),
+            vec![
+                state("running", Value::Null, json!(3001)),
+                state("running", Value::Null, Value::Null),
+                state("stopped", json!("Run exited: 1"), Value::Null),
+            ]
         );
     }
 }

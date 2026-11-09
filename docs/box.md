@@ -232,7 +232,10 @@ reached. The panel's link and the sidebar show the host port: `port` on
 always meant (a client from before boxes reads nothing else), with the
 guest's beside it as `guest_port`; the agent's `app_status` reports the
 guest port as `port`, which is where the agent is, and the host port beside
-it to tell the user. A VM stopped or killed under a running
+it to tell the user. `run:state` carries the snapshot's `port` and
+`guest_port` too, null until known: a box's run goes `running` before its
+forward is up, so a client keeps the link pending until the port arrives,
+which `run:port` still announces. A VM stopped or killed under a running
 command ends its ssh session, which the panel reports as the command's
 exit; a tools-disk reattach is refused while the command holds the box, as
 for any attached launch.
