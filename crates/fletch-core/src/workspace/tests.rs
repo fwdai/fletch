@@ -1597,6 +1597,60 @@ fn bind(wm: &WorkspaceManager, id: &str, subdir: &str, pr: &crate::github::PrSta
     wm.set_focused_pr(id, subdir, pr.number).unwrap().unwrap();
 }
 
+/// Ownership is written by `record_owned_branch` alone: neither the checkout's
+/// recorded branch moving nor a PR joining the set — adopted from a teammate,
+/// say — makes a branch owned. Owned branches accumulate across new branches,
+/// so the lower branch of a stack stays owned, and are scoped to the checkout.
+#[test]
+fn owned_branches_are_recorded_only_by_their_own_write() {
+    let db = test_db();
+    let wm = WorkspaceManager::new(db.clone());
+    seed_repo(&db, "/r");
+    let mut rec = new_agent_record(
+        "denali".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "task".into(),
+        AgentView::Custom,
+    );
+    let id = rec.id.clone();
+    wm.add_agent(&mut rec).unwrap();
+    let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+
+    wm.set_repo_branch(&id, &subdir, "feat/checked-out")
+        .unwrap();
+    let adopted = crate::github::PrState {
+        number: 7,
+        url: "https://github.com/o/r/pull/7".into(),
+        title: "teammate".into(),
+        state: crate::github::PrStatus::Open,
+        mergeable: crate::github::MergeableState::Unknown,
+        opened_at: None,
+        merged_at: None,
+        branch: Some("teammate/wip".into()),
+    };
+    wm.record_repo_pr(&id, &subdir, &adopted).unwrap();
+    assert!(
+        wm.owned_branches(&id, &subdir).unwrap().is_empty(),
+        "a checkout's branch or an adopted PR is not ownership"
+    );
+
+    wm.record_owned_branch(&id, &subdir, "feat/backend")
+        .unwrap();
+    wm.record_owned_branch(&id, &subdir, "feat/ui").unwrap();
+    wm.record_owned_branch(&id, &subdir, "feat/backend")
+        .unwrap();
+    wm.set_repo_branch(&id, &subdir, "feat/ui").unwrap();
+    assert_eq!(
+        wm.owned_branches(&id, &subdir).unwrap(),
+        ["feat/backend", "feat/ui"],
+        "idempotent, and the lower branch of a stack stays owned"
+    );
+    assert!(wm.owned_branches(&id, "other-repo").unwrap().is_empty());
+    assert!(wm.owned_branches("ag-other", &subdir).unwrap().is_empty());
+}
+
 /// A checkout accumulates every PR it has held, not just the current binding:
 /// a workspace that keeps working after a merge opens follow-ups, and the
 /// merged PR's identity is cleared off the `worktrees` row when the next one

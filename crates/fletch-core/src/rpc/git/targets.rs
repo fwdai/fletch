@@ -15,11 +15,26 @@ pub(super) struct Target {
     /// agent writes.
     pub(super) source_repo: PathBuf,
     pub(super) base_branch: String,
-    /// The force-push anchor. `None` until the host has recorded the branch and the
-    /// dispatcher was rebuilt, which fails a force closed.
-    pub(super) own_branch: Option<String>,
-    /// See `RepoTarget::open_pr_heads`.
-    pub(super) open_pr_heads: Vec<String>,
+    /// See `RepoTarget::owned_branches`. A branch created this session joins
+    /// it once the host has recorded it and the dispatcher was rebuilt; until
+    /// then a force on it fails closed.
+    pub(super) owned_branches: Vec<String>,
+}
+
+impl Target {
+    /// What `caps::refuses_publish` judges a branch against.
+    pub(super) fn records(&self) -> crate::rpc::caps::BranchRecords<'_> {
+        crate::rpc::caps::BranchRecords {
+            base: &self.base_branch,
+            owned: &self.owned_branches,
+        }
+    }
+
+    pub(super) fn owns(&self, branch: &str) -> bool {
+        self.owned_branches
+            .iter()
+            .any(|own| crate::rpc::caps::same_branch(own, branch))
+    }
 }
 
 impl GitDispatcher {
@@ -35,8 +50,7 @@ impl GitDispatcher {
                 cwd: self.cwd.clone(),
                 source_repo: self.source_repo.clone(),
                 base_branch: self.base_branch.clone(),
-                own_branch: self.own_branch.clone(),
-                open_pr_heads: self.open_pr_heads.clone(),
+                owned_branches: self.owned_branches.clone(),
             }),
             Some(name) => match self.repos.get(name) {
                 Some(repo) => Ok(Target {
@@ -44,8 +58,7 @@ impl GitDispatcher {
                     cwd: repo.cwd.clone(),
                     source_repo: repo.source_repo.clone(),
                     base_branch: repo.base_branch.clone(),
-                    own_branch: repo.own_branch.clone(),
-                    open_pr_heads: repo.open_pr_heads.clone(),
+                    owned_branches: repo.owned_branches.clone(),
                 }),
                 None => {
                     let mut known: Vec<&str> = self.repos.keys().map(String::as_str).collect();

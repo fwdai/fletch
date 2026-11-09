@@ -397,6 +397,56 @@ fn pr_set_migration_backfills_every_binding() {
     );
 }
 
+/// Schema version just before `worktree_branches` (0059). Pinned for the same
+/// reason as `V_WORKTREE_PRS`.
+const V_BEFORE_OWNED_BRANCHES: usize = 58;
+
+/// Each checkout's recorded branch was its force-push anchor, so it is seeded
+/// as owned: a branch that could be force-pushed before the upgrade still can.
+/// A checkout with no branch, or a blank one, owns nothing, and the PR set's
+/// branches are not carried — a PR in the set may have been adopted.
+#[test]
+fn owned_branches_migration_seeds_each_recorded_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_BEFORE_OWNED_BRANCHES)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO repos (id, project_id, path, created_at) VALUES ('r', 'p', '/r', 0);
+         INSERT INTO repos (id, project_id, path, created_at) VALUES ('r2', 'p', '/r2', 0);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w', 'p', 'ws', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, branch, created_at)
+              VALUES ('wt1', 'w', 'r', 'app', 'feat/mine', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, branch, created_at)
+              VALUES ('wt2', 'w', 'r2', 'api', '  ', 0);
+         INSERT INTO worktree_prs (workspace_id, subdir, number, url, title, state, branch)
+              VALUES ('w', 'app', 7, '', '', 'open', 'teammate/wip');
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w2', 'p', 'ws2', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, created_at)
+              VALUES ('wt3', 'w2', 'r', 'app', 0);",
+    )
+    .unwrap();
+    drop(conn);
+
+    init(dir.path()).unwrap();
+
+    let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
+    let rows: Vec<(String, String, String)> = conn
+        .prepare("SELECT workspace_id, subdir, branch FROM worktree_branches ORDER BY workspace_id, subdir")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [("w".into(), "app".into(), "feat/mine".into())],
+        "only a recorded branch is seeded as owned"
+    );
+}
+
 /// Schema version at which session lineage and the one-current-session index
 /// (0041) exist. Pinned for the same reason as `V_WORKTREE_PRS`.
 const V_SESSION_LINEAGE: usize = 41;

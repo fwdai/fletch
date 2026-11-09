@@ -1138,32 +1138,23 @@ impl Supervisor {
         for r in &record.repos {
             let checkout = r.checkout_path(agent_id)?;
             let base = r.base_branch().await;
-            // `r.branch` is the agent's own work branch on this checkout, recorded
-            // when the host materialized it. Threaded here so a force push is
-            // fenced to it; `None` until the branch exists and this dispatcher is
-            // rebuilt on the next resume/turn (see `rpc::caps::refuses_force`).
-            //
-            // The heads of the checkout's open PRs are read from the same
-            // record as `base`, so a base rewritten by stacking a PR on one of
-            // them always arrives with that PR. They keep the lower PR of a
-            // stack pushable (`rpc::caps::refuses_branch`); a failed read
-            // leaves none, which only keeps the base refused.
-            let open_pr_heads = self
+            // The branches this workspace created on origin from this checkout,
+            // which fence force and the stacked-base push
+            // (`rpc::caps::refuses_publish`). Read with `base`, so a base
+            // rewritten by stacking on an owned branch arrives with it. A branch
+            // created this session joins on the next resume/turn, when the
+            // dispatcher is rebuilt; a failed read owns nothing, which only
+            // refuses more.
+            let owned_branches = self
                 .workspace
-                .repo_pr_history(agent_id, &r.subdir)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|pr| pr.state == crate::github::PrStatus::Open)
-                .filter_map(|pr| pr.branch)
-                .filter(|b| !b.trim().is_empty())
-                .collect();
+                .owned_branches(agent_id, &r.subdir)
+                .unwrap_or_default();
             repo_targets.push(rpc::git::RepoTarget {
                 subdir: r.subdir.clone(),
                 cwd: checkout,
                 source_repo: r.repo_path.clone(),
                 base_branch: base,
-                own_branch: r.branch.clone(),
-                open_pr_heads,
+                owned_branches,
             });
         }
         // A workspace started from an issue carries its ref here ("123" for

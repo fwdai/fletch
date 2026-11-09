@@ -364,10 +364,11 @@ async fn open_pr_base_override_does_not_unlock_the_recorded_base() {
     assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
 }
 
-/// `git_push` may update a base that heads one of the checkout's open PRs;
-/// `open_pr` may not publish it, because it pushes before it creates the PR.
+/// `git_push` may update a base this workspace created (the lower branch of its
+/// own stack); `open_pr` may not publish it, because it pushes before it
+/// creates the PR.
 #[tokio::test]
-async fn open_pr_stays_refused_on_a_base_that_heads_an_open_pr() {
+async fn open_pr_stays_refused_on_an_owned_base() {
     let td = tempfile::tempdir().unwrap();
     let crate::git::testing::Repos {
         origin,
@@ -384,7 +385,7 @@ async fn open_pr_stays_refused_on_a_base_that_heads_an_open_pr() {
         "feat/backend".to_string(),
         AgentCaps::interactive(),
     )
-    .with_open_pr_heads(vec!["feat/backend".to_string()]);
+    .with_owned_branches(&["feat/backend"]);
     for args in [json!({"title": "t"}), json!({"title": "t", "base": "main"})] {
         let (resp, fx) = disp.dispatch_inner("b5", "open_pr", &args).await;
         assert!(!resp.ok, "{args}: {resp:?}");

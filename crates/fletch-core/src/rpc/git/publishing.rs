@@ -4,7 +4,8 @@ use serde_json::{json, Value};
 
 use super::args::{arg_bool, arg_branch, arg_branch_named, refuse_option_like};
 use super::targets::{approval_repo, with_repo, Target};
-use super::{GitDispatcher, EVENT_BRANCH_CREATED, EVENT_PR_OPENED};
+use super::{GitDispatcher, EVENT_BRANCH_CREATED, EVENT_BRANCH_OWNED, EVENT_PR_OPENED};
+use crate::rpc::caps::Publication;
 use crate::rpc::{approval, Response, RpcEvent};
 
 impl GitDispatcher {
@@ -104,25 +105,13 @@ impl GitDispatcher {
         if let Some(resp) = refuse_option_like(id, "open_pr", "branch", &branch) {
             return (resp, effects);
         }
-        // Deliberately the *recorded* base, never `base`: reading it from the request
-        // would let an agent name a decoy base and publish over the real one.
-        //
-        // No open-PR exception here, unlike `git_push`: this op pushes before it
-        // creates the PR, so a base that already heads an open PR would be
-        // published and then fail as a duplicate, or gain a second PR. Follow-ups
-        // to that PR are `git_push`'s, and the refusal says so.
-        if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch, &[]) {
-            let why = match self
-                .caps
-                .refuses_branch(&branch, &t.base_branch, &t.open_pr_heads)
-            {
-                None => format!(
-                    "refusing to open a pull request from '{branch}': it already heads an \
-                     open pull request of this workspace. Push follow-up commits to it with \
-                     git_push instead"
-                ),
-                Some(_) => why,
-            };
+        // Deliberately the *recorded* base (`t.records()`), never `base`: reading it
+        // from the request would let an agent name a decoy base and publish over
+        // the real one.
+        if let Some(why) = self
+            .caps
+            .refuses_publish(Publication::OpenPr, &branch, t.records())
+        {
             return (Response::err(id, why), effects);
         }
         // Before the prompt, so nobody approves a push the host then refuses…
@@ -145,12 +134,7 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-        // Ownership follows the checked-out branch only. A stack's other head
-        // published through `args.head` is not where the agent works, and
-        // recording it would replace the branch the force anchor names; the
-        // checked-out branch named explicitly is still the agent's own.
-        let born_on_origin =
-            !publishes_other_head && born_on_origin_by_this_push(&t, &branch, &effects).await;
+        let born_on_origin = born_on_origin_by_this_push(&t, &branch).await;
         if let Err(e) = t.publish(&branch, &tip, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
@@ -158,7 +142,7 @@ impl GitDispatcher {
             );
         }
         if born_on_origin {
-            note_branch_born(&t, &branch, &mut effects);
+            note_branch_born(&t, &branch, !publishes_other_head, &mut effects);
         }
         // By the branch just published, not the checkout's HEAD: with
         // `args.head` the two differ. In the user's repository, like every
@@ -222,12 +206,16 @@ impl GitDispatcher {
         if let Some(resp) = refuse_option_like(id, "git_push", "branch", &branch) {
             return (resp, effects);
         }
-        // Earliest point `branch` is known. Every refusal the host can make on
-        // its own comes before the prompt, so nobody approves a push the host
-        // then refuses.
-        if let Some(why) = self
-            .caps
-            .refuses_branch(&branch, &t.base_branch, &t.open_pr_heads)
+        // Lease-based, so a stale local view can't clobber remote work it hasn't seen.
+        let force = arg_bool(args, "force");
+        // Earliest point `branch` is known. The whole branch policy, force
+        // included, runs here: every refusal the host can make on its own comes
+        // before the prompt, so nobody approves a push the host then refuses, and
+        // before anything below touches the checkout — publishing may rewrite the
+        // unpublished commits (signing), and a refused request must leave no trace.
+        if let Some(why) =
+            self.caps
+                .refuses_publish(Publication::Push { force }, &branch, t.records())
         {
             return (Response::err(id, why), effects);
         }
@@ -244,18 +232,6 @@ impl GitDispatcher {
         {
             return (Response::err(id, why), effects);
         }
-        // Lease-based, so a stale local view can't clobber remote work it hasn't seen.
-        let force = arg_bool(args, "force");
-        // SECURITY: the lease passes for any branch the agent just fetched, so a force
-        // is authorized against the spawn-stable own branch and fails closed when none
-        // is recorded. Non-force pushes are untouched. Refused before anything
-        // below touches the checkout: publishing may rewrite the unpublished
-        // commits (signing), and a refused request must leave no trace.
-        if force {
-            if let Some(why) = self.caps.refuses_force(&branch, t.own_branch.as_deref()) {
-                return (Response::err(id, why), effects);
-            }
-        }
         // Checked again after the prompt, and the push publishes the very commit
         // it read: the branch may move while the prompt is open, or between
         // here and the push.
@@ -263,11 +239,11 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-        let born_on_origin = born_on_origin_by_this_push(&t, &branch, &effects).await;
+        let born_on_origin = born_on_origin_by_this_push(&t, &branch).await;
         match t.publish(&branch, &tip, force).await {
             Ok(summary) => {
                 if born_on_origin {
-                    note_branch_born(&t, &branch, &mut effects);
+                    note_branch_born(&t, &branch, true, &mut effects);
                 }
                 (Response::ok(id, 0, summary, String::new()), effects)
             }
@@ -276,31 +252,40 @@ impl GitDispatcher {
     }
 }
 
-/// Whether the push about to happen is what puts `branch` on origin — the
-/// moment it becomes this agent's own branch (the force-push anchor,
-/// `caps::refuses_force`). The host already knows when it materialized the
-/// branch itself (`EVENT_BRANCH_CREATED` is in `effects`); a branch the agent
-/// made with plain `git checkout -b` is only known by asking origin. Without
-/// that, an agent that named its own branch could never force-push it:
-/// "no recorded work branch" was refused in 23 sessions. Skipped when the
-/// branch is already recorded, and a probe that can't answer records
-/// nothing, so a flaky network never widens force.
-async fn born_on_origin_by_this_push(t: &Target, branch: &str, effects: &[RpcEvent]) -> bool {
-    let already_noted = effects.iter().any(|e| {
-        let RpcEvent::Named { name, .. } = e;
-        name == EVENT_BRANCH_CREATED
-    });
-    if already_noted || t.own_branch.as_deref() == Some(branch) {
+/// Whether the push about to happen is what creates `branch` on origin — the
+/// one fact that makes a branch this workspace's own (`EVENT_BRANCH_OWNED`).
+/// Asked of origin itself, through the host's transport, never read from the
+/// checkout: a name the host materialized is only collision-free against the
+/// checkout's remote-tracking refs, which the agent can edit, so materializing
+/// proves nothing. Skipped for a branch already owned, and a probe that can't
+/// answer records nothing, so a flaky network never widens what is owned.
+async fn born_on_origin_by_this_push(t: &Target, branch: &str) -> bool {
+    if t.owns(branch) {
         return false;
     }
     crate::git::remote_branch_exists(&t.cwd, &t.source_repo, branch).await == Some(false)
 }
 
-fn note_branch_born(t: &Target, branch: &str, effects: &mut Vec<RpcEvent>) {
+/// After a push created `branch` on origin: it is this workspace's own. When it
+/// is also where the agent works (`checked_out`) and the host didn't
+/// materialize it — a branch made with plain `git checkout -b` — it becomes the
+/// checkout's recorded branch too. A stack's other head published through
+/// `args.head` is owned but not checked out.
+fn note_branch_born(t: &Target, branch: &str, checked_out: bool, effects: &mut Vec<RpcEvent>) {
     effects.push(RpcEvent::named(
-        EVENT_BRANCH_CREATED,
+        EVENT_BRANCH_OWNED,
         with_repo(json!({ "branch": branch }), &t.subdir),
     ));
+    let materialized = effects.iter().any(|e| {
+        let RpcEvent::Named { name, .. } = e;
+        name == EVENT_BRANCH_CREATED
+    });
+    if checked_out && !materialized {
+        effects.push(RpcEvent::named(
+            EVENT_BRANCH_CREATED,
+            with_repo(json!({ "branch": branch }), &t.subdir),
+        ));
+    }
 }
 
 impl Target {

@@ -2,7 +2,7 @@ use crate::rpc::git::test_support::*;
 
 use serde_json::{json, Value};
 
-use crate::rpc::git::EVENT_BRANCH_CREATED;
+use crate::rpc::git::{EVENT_BRANCH_CREATED, EVENT_BRANCH_OWNED};
 use crate::rpc::{ensure_mailbox, process_pending, RpcEvent};
 
 #[tokio::test]
@@ -127,10 +127,13 @@ async fn git_push_refuses_the_review_base() {
     );
 }
 
-/// A PR stacked on the checkout's own open PR records that PR's branch as the
-/// base. Follow-up commits for the lower PR still go onto its branch.
+/// Stacking a PR on a branch this workspace created records that branch as the
+/// base. Follow-up commits for the lower PR still go onto it — as a plain push
+/// only, never a force, which would rewrite the stacked PR's base. A base the
+/// workspace did not create (a teammate's branch whose PR was adopted, say)
+/// stays refused.
 #[tokio::test]
-async fn git_push_updates_the_base_while_it_heads_one_of_the_checkouts_open_prs() {
+async fn git_push_updates_an_owned_base_without_force_only() {
     let td = tempfile::tempdir().unwrap();
     let crate::git::testing::Repos {
         origin,
@@ -141,17 +144,23 @@ async fn git_push_updates_the_base_while_it_heads_one_of_the_checkouts_open_prs(
     run_git(&checkout, &["checkout", "-q", "-b", "feat/backend"]);
     crate::git::testing::commit_file(&checkout, "backend.txt");
 
-    let stacked = |heads: Vec<String>| {
+    let stacked = |owned: &[&str]| {
         crate::rpc::git::GitDispatcher::new(
             checkout.clone(),
             source.clone(),
             "feat/backend".to_string(),
             crate::rpc::caps::AgentCaps::interactive(),
         )
-        .with_open_pr_heads(heads)
+        .with_owned_branches(owned)
+    };
+    let on_origin = || {
+        crate::git::testing::git_output(
+            &origin,
+            &["rev-parse", "--verify", "-q", "refs/heads/feat/backend"],
+        )
     };
 
-    let (resp, _fx) = stacked(Vec::new())
+    let (resp, fx) = stacked(&["feat/ui"])
         .dispatch_inner("p1", "git_push", &Value::Null)
         .await;
     assert!(
@@ -159,19 +168,86 @@ async fn git_push_updates_the_base_while_it_heads_one_of_the_checkouts_open_prs(
             .as_deref()
             .unwrap_or_default()
             .contains("refusing to publish"),
-        "a base no open PR of the checkout heads stays refused: {resp:?}"
+        "a base this workspace did not create stays refused: {resp:?}"
     );
+    assert!(fx.is_empty(), "{fx:?}");
+    assert!(!on_origin().status.success(), "nothing may reach origin");
 
-    let (resp, _fx) = stacked(vec!["feat/backend".to_string()])
+    let (resp, _fx) = stacked(&["feat/backend"])
         .dispatch_inner("p2", "git_push", &Value::Null)
         .await;
     assert!(
         resp.ok,
         "the lower PR's branch must take the push: {resp:?}"
     );
+    let pushed = crate::git::testing::git(&checkout, &["rev-parse", "HEAD"]);
+    assert_eq!(String::from_utf8_lossy(&on_origin().stdout).trim(), pushed);
+
+    // The owned base itself is the anchor a force used to pass on.
+    run_git(&checkout, &["commit", "-q", "--amend", "-m", "rewritten"]);
+    let (resp, fx) = stacked(&["feat/backend"])
+        .dispatch_inner("p3", "git_push", &json!({ "force": true }))
+        .await;
+    assert!(!resp.ok, "force on a stacked PR's base must be refused");
+    assert!(
+        resp.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("without --force"),
+        "{resp:?}"
+    );
+    assert!(fx.is_empty(), "{fx:?}");
     assert_eq!(
-        crate::git::testing::git(&origin, &["rev-parse", "refs/heads/feat/backend"]),
+        String::from_utf8_lossy(&on_origin().stdout).trim(),
+        pushed,
+        "origin keeps the commit the stacked PR is based on"
+    );
+}
+
+/// A branch is owned only if this workspace's push created it on origin. A
+/// name the host materializes is checked against the checkout's
+/// remote-tracking refs, which the agent can delete; origin is asked anyway,
+/// and a branch it already held is pushed (here, fast-forwarded) but never
+/// claimed.
+#[tokio::test]
+async fn a_branch_that_already_existed_on_origin_is_never_claimed() {
+    let td = tempfile::tempdir().unwrap();
+    let crate::git::testing::Repos {
+        origin,
+        source,
+        checkout,
+        ..
+    } = crate::git::testing::repos(td.path());
+    run_git(&source, &["push", "-q", "origin", "main:teammate/wip"]);
+    run_git(&checkout, &["checkout", "-q", "--detach"]);
+    crate::git::testing::commit_file(&checkout, "mine.txt");
+
+    let disp = crate::rpc::git::GitDispatcher::new(
+        checkout.clone(),
+        source.clone(),
+        "main".to_string(),
+        crate::rpc::caps::AgentCaps::interactive(),
+    );
+    let (resp, fx) = disp
+        .dispatch_inner("p1", "git_push", &json!({ "branch": "teammate/wip" }))
+        .await;
+    assert!(resp.ok, "{resp:?}");
+    assert_eq!(
+        crate::git::testing::git(&origin, &["rev-parse", "refs/heads/teammate/wip"]),
         crate::git::testing::git(&checkout, &["rev-parse", "HEAD"])
+    );
+    assert!(
+        !fx.iter()
+            .any(|e| matches!(e, RpcEvent::Named { name, .. } if name == EVENT_BRANCH_OWNED)),
+        "a branch origin already held must not be claimed: {fx:?}"
+    );
+    assert!(
+        fx.iter().any(|e| matches!(
+            e,
+            RpcEvent::Named { name, payload }
+                if name == EVENT_BRANCH_CREATED && payload["branch"] == "teammate/wip"
+        )),
+        "the checkout is still on it: {fx:?}"
     );
 }
 
@@ -406,8 +482,8 @@ async fn git_push_detached_materializes_named_branch() {
 }
 
 /// A branch the agent made with plain `git checkout -b` becomes its own the
-/// moment its push puts it on origin: the event the host records the branch
-/// from is emitted then, and not again on the next push.
+/// moment its push puts it on origin: the events the host records the branch
+/// and its ownership from are emitted then, and not again on the next push.
 #[tokio::test]
 async fn git_push_of_a_locally_created_branch_records_it_as_own_once() {
     let td = tempfile::tempdir().unwrap();
@@ -433,18 +509,20 @@ async fn git_push_of_a_locally_created_branch_records_it_as_own_once() {
     let disp = dispatcher(&repo);
     let (resp, fx) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
     assert!(resp.ok, "{resp:?}");
-    let born = |fx: &[RpcEvent]| {
+    let emitted = |fx: &[RpcEvent], event: &str| {
         fx.iter().any(|e| {
             matches!(
                 e,
                 RpcEvent::Named { name, payload }
-                    if name == EVENT_BRANCH_CREATED && payload["branch"] == "fix/local"
+                    if name == event && payload["branch"] == "fix/local"
             )
         })
     };
+    let born =
+        |fx: &[RpcEvent]| emitted(fx, EVENT_BRANCH_CREATED) || emitted(fx, EVENT_BRANCH_OWNED);
     assert!(
-        born(&fx),
-        "the push that creates the branch on origin must record it: {fx:?}"
+        emitted(&fx, EVENT_BRANCH_CREATED) && emitted(&fx, EVENT_BRANCH_OWNED),
+        "the push that creates the branch on origin must record it and its ownership: {fx:?}"
     );
 
     std::fs::write(repo.join("b.txt"), b"y").unwrap();
@@ -458,9 +536,9 @@ async fn git_push_of_a_locally_created_branch_records_it_as_own_once() {
     );
 }
 
-/// A branch the host already recorded is not probed or re-recorded.
+/// A branch already owned is not probed or re-recorded.
 #[tokio::test]
-async fn git_push_of_the_recorded_own_branch_emits_no_branch_event() {
+async fn git_push_of_an_owned_branch_emits_no_branch_event() {
     let td = tempfile::tempdir().unwrap();
     let remote = td.path().join("origin.git");
     run_git(
@@ -481,12 +559,15 @@ async fn git_push_of_the_recorded_own_branch_emits_no_branch_event() {
     run_git(&repo, &["commit", "-q", "-m", "init"]);
     run_git(&repo, &["checkout", "-q", "-b", "fix/known"]);
 
-    let disp = dispatcher(&repo).with_own_branch(Some("fix/known".to_string()));
+    let disp = dispatcher(&repo).with_owned_branches(&["fix/known"]);
     let (resp, fx) = disp.dispatch_inner("p", "git_push", &Value::Null).await;
     assert!(resp.ok, "{resp:?}");
     assert!(
-        !fx.iter()
-            .any(|e| matches!(e, RpcEvent::Named { name, .. } if name == EVENT_BRANCH_CREATED)),
+        !fx.iter().any(|e| matches!(
+            e,
+            RpcEvent::Named { name, .. }
+                if name == EVENT_BRANCH_CREATED || name == EVENT_BRANCH_OWNED
+        )),
         "{fx:?}"
     );
 }
@@ -518,7 +599,7 @@ async fn git_push_force_rewrites_diverged_remote() {
     let rpc_dir = td.path().join("rpc");
     ensure_mailbox(&rpc_dir).unwrap();
     let requests = rpc_dir.join("requests");
-    let dispatcher = dispatcher(&repo).with_own_branch(Some("fix/diverged".to_string()));
+    let dispatcher = dispatcher(&repo).with_owned_branches(&["fix/diverged"]);
 
     write_request(&requests, "p1.json", r#"{"id":"p1","op":"git_push"}"#);
     process_pending(&rpc_dir, &dispatcher).await;
@@ -577,7 +658,7 @@ async fn git_push_force_refuses_a_branch_the_agent_does_not_own() {
     run_git(&repo, &["commit", "-q", "-m", "init"]);
     run_git(&repo, &["checkout", "-q", "-b", "develop"]);
 
-    let disp = dispatcher(&repo).with_own_branch(Some("fix/mine".to_string()));
+    let disp = dispatcher(&repo).with_owned_branches(&["fix/mine"]);
     let (resp, fx) = disp
         .dispatch_inner("p", "git_push", &json!({ "force": true }))
         .await;
@@ -735,23 +816,25 @@ async fn an_agent_made_branch_becomes_its_own_across_a_real_checkout_split() {
     );
     let (resp, fx) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
     assert!(resp.ok, "{resp:?}");
-    assert!(
-        fx.iter().any(|e| matches!(
-            e,
-            RpcEvent::Named { name, payload }
-                if name == EVENT_BRANCH_CREATED && payload["branch"] == "fix/mine"
-        )),
-        "{fx:?}"
-    );
+    for event in [EVENT_BRANCH_CREATED, EVENT_BRANCH_OWNED] {
+        assert!(
+            fx.iter().any(|e| matches!(
+                e,
+                RpcEvent::Named { name, payload }
+                    if name == event && payload["branch"] == "fix/mine"
+            )),
+            "{event}: {fx:?}"
+        );
+    }
     assert_eq!(
         crate::git::testing::git(&origin, &["rev-parse", "refs/heads/fix/mine"]),
         crate::git::testing::git(&checkout, &["rev-parse", "HEAD"])
     );
 
-    // The host recorded the branch; the next dispatcher carries it, and a
-    // rewritten branch can be forced.
+    // The host recorded the branch as owned; the next dispatcher carries it,
+    // and a rewritten branch can be forced.
     run_git(&checkout, &["commit", "-q", "--amend", "-m", "rewritten"]);
-    let disp = disp.with_own_branch(Some("fix/mine".to_string()));
+    let disp = disp.with_owned_branches(&["fix/mine"]);
     let (resp, _fx) = disp
         .dispatch_inner("p2", "git_push", &json!({ "force": true }))
         .await;

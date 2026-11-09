@@ -347,6 +347,36 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Record that this workspace's push created `branch` on origin from the
+    /// checkout at `subdir` — the `git.branch_owned` path, and nothing else:
+    /// ownership is what force and a stacked base are authorized against
+    /// (`rpc::caps::refuses_publish`). Idempotent; a branch stays owned for the
+    /// workspace's life.
+    pub fn record_owned_branch(&self, agent_id: &str, subdir: &str, branch: &str) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "INSERT OR IGNORE INTO worktree_branches (workspace_id, subdir, branch, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![agent_id, subdir, branch, now_millis()],
+        )?;
+        Ok(())
+    }
+
+    /// The branches this workspace created on origin from one checkout, oldest
+    /// first.
+    pub fn owned_branches(&self, agent_id: &str, subdir: &str) -> Result<Vec<String>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT branch FROM worktree_branches
+              WHERE workspace_id = ?1 AND subdir = ?2
+              ORDER BY created_at, branch",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![agent_id, subdir], |row| {
+            row.get::<_, String>(0)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Record the base branch a tracked repo's work is reviewed against,
     /// identified by subdir. Seeded at spawn from the project's default and
     /// rewritten when `open_pr` targets a different base (`args.base`) — the user

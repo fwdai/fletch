@@ -20,7 +20,16 @@ use serde_json::Value;
 use super::caps::AgentCaps;
 use super::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
+/// The checkout is now on `branch`: payload `{ "branch" }` (plus `repo`). The
+/// watcher records it as the checkout's branch, for display and PR discovery.
+/// It grants nothing; ownership is `EVENT_BRANCH_OWNED`.
 pub const EVENT_BRANCH_CREATED: &str = "git.branch_created";
+
+/// This workspace's push created `branch` on origin, which held no such branch
+/// a moment before: payload `{ "branch" }` (plus `repo`). The watcher adds it to
+/// the checkout's owned branches, the record force and a stacked base are
+/// authorized against (`caps::refuses_publish`).
+pub const EVENT_BRANCH_OWNED: &str = "git.branch_owned";
 
 pub const EVENT_PR_OPENED: &str = "git.pr_opened";
 
@@ -74,12 +83,10 @@ pub struct RepoTarget {
     /// The user's own repository `cwd` was cloned from (`Target::source_repo`).
     pub source_repo: PathBuf,
     pub base_branch: String,
-    /// The agent's own branch on this checkout, once the host recorded it.
-    pub own_branch: Option<String>,
-    /// Head branches of this checkout's open PRs, as recorded when the
-    /// dispatcher was built. A base among them stays pushable
-    /// (`caps::refuses_branch`).
-    pub open_pr_heads: Vec<String>,
+    /// The branches this workspace created on origin from this checkout, as
+    /// recorded when the dispatcher was built. The only branches it may
+    /// force-push, and the only base it may push to (`caps::refuses_publish`).
+    pub owned_branches: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -91,10 +98,9 @@ pub struct GitDispatcher {
     source_repo: PathBuf,
     base_branch: String,
     default_subdir: Option<String>,
-    /// Force-push anchor for the default checkout; `None` fails a force closed.
-    own_branch: Option<String>,
-    /// The default checkout's open PR heads (`RepoTarget::open_pr_heads`).
-    open_pr_heads: Vec<String>,
+    /// The default checkout's `RepoTarget::owned_branches`; empty fails a force
+    /// closed.
+    owned_branches: Vec<String>,
     /// Primary included. Empty without `with_repos`, so `args.repo` is then rejected.
     repos: std::collections::HashMap<String, RepoTarget>,
     /// Resolved at open_pr time, not construction, so a mid-session issue pick
@@ -120,8 +126,7 @@ impl GitDispatcher {
             source_repo,
             base_branch,
             default_subdir: None,
-            own_branch: None,
-            open_pr_heads: Vec::new(),
+            owned_branches: Vec::new(),
             repos: std::collections::HashMap::new(),
             issue_agent: None,
             caps,
@@ -141,14 +146,8 @@ impl GitDispatcher {
     }
 
     #[cfg(test)]
-    pub fn with_own_branch(mut self, branch: Option<String>) -> Self {
-        self.own_branch = branch;
-        self
-    }
-
-    #[cfg(test)]
-    pub fn with_open_pr_heads(mut self, heads: Vec<String>) -> Self {
-        self.open_pr_heads = heads;
+    pub fn with_owned_branches(mut self, branches: &[&str]) -> Self {
+        self.owned_branches = branches.iter().map(|b| b.to_string()).collect();
         self
     }
 
@@ -170,9 +169,8 @@ impl GitDispatcher {
             .collect();
         let primary = self.repos.values().find(|repo| repo.cwd == self.cwd);
         self.default_subdir = primary.map(|repo| repo.subdir.clone());
-        self.own_branch = primary.and_then(|repo| repo.own_branch.clone());
-        self.open_pr_heads = primary
-            .map(|repo| repo.open_pr_heads.clone())
+        self.owned_branches = primary
+            .map(|repo| repo.owned_branches.clone())
             .unwrap_or_default();
         self
     }
