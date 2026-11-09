@@ -61,13 +61,77 @@
   width: 7px;
   height: 7px;
 }
+.host-name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.host .chev {
+  margin: 0 -3px 0 -2px;
+}
 /* The host chip and the providers button as one control: the chip keeps its
    look on its own (`alone`, an older host), and gains a right-hand cog on a
-   host that lists its accounts. */
+   host that lists its accounts. Also the anchor for the switcher's menu. */
 .host-pair {
+  position: relative;
   display: inline-flex;
   align-items: stretch;
   flex-shrink: 0;
+}
+/* The host switcher's dropdown under the chip: every paired host, then adding
+   one and the Host sheet. The backdrop only catches the tap that closes it. */
+.host-menu-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+.host-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 21;
+  width: min(290px, calc(100vw - 28px));
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+}
+.host-menu .row {
+  min-height: 48px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.host-menu .hm-host {
+  padding: 0 8px 0 0;
+  gap: 4px;
+}
+.hm-pick {
+  flex: 1;
+  min-width: 0;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 6px 10px 14px;
+  text-align: left;
+}
+.hm-mark {
+  width: 16px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--fg-2);
+}
+.hm-forget {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 10px;
+  color: var(--fg-3);
+}
+.hm-forget:active {
+  background: var(--bg-3);
+  color: var(--danger);
 }
 .host-pair:not(.alone) .host {
   border-top-right-radius: 0;
@@ -882,6 +946,14 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+/* The wordmark, and Cancel when the screen is adding a host over a paired one. */
+.pair-top {
+  display: flex;
+  align-items: center;
+}
+.pair-top .tbtn {
+  margin: -8px -12px -8px 0;
 }
 .pair .hero {
   display: flex;

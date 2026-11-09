@@ -1,5 +1,5 @@
 import { Icon } from "@desktop/components/Icon";
-import { useStore } from "../../store";
+import { activeHostName, useStore } from "../../store";
 
 /** Home with a live host and nothing on it. The two ways a project gets here
  *  from the phone are the actions, each opening Add project on its own tab;
@@ -7,7 +7,7 @@ import { useStore } from "../../store";
  *  desktop user is not left wondering why this is empty. */
 export function EmptyProjects() {
   const openSheet = useStore((s) => s.openSheet);
-  const host = useStore((s) => s.hostInfo?.name) ?? "your Mac";
+  const host = useStore(activeHostName) ?? "your Mac";
   return (
     <div className="blank fade">
       <div className="glyph accent">

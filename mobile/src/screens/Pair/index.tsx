@@ -26,13 +26,18 @@ import { useNearby } from "./useNearby";
  *  goes: the connection can take the best part of half a minute from a phone
  *  off the Mac's network, so what is being paired and how far it has got are
  *  on screen throughout, and the details stay put for a one-tap retry if it
- *  fails. */
+ *  fails.
+ *
+ *  Over a paired host (`addingHost`) the same screen adds another, with a way
+ *  back: the hosts already paired stay paired whatever happens here. */
 export function PairScreen() {
   const connect = useStore((s) => s.connect);
   const step = useStore((s) => s.pairStep);
   const linked = useStore((s) => s.pairTarget);
   const error = useStore((s) => s.connectionError);
   const code = useStore((s) => s.pairCode);
+  const adding = useStore((s) => s.addingHost);
+  const cancel = useStore((s) => s.cancelAddHost);
   const [address, setAddress] = useState("");
   const [token, setToken] = useState("");
   const [hostKey, setHostKey] = useState<string | undefined>(undefined);
@@ -110,14 +115,23 @@ export function PairScreen() {
 
   return (
     <div className="pair">
-      <Wordmark />
+      <div className="pair-top">
+        <Wordmark />
+        {adding && (
+          <button type="button" className="tbtn" onClick={() => void cancel()}>
+            Cancel
+          </button>
+        )}
+      </div>
       <div className="hero">
         <h1>
           {linked?.name
             ? `Pair with ${linked.name}`
             : picked
               ? `Pair with ${picked.name}`
-              : "Pair with your Mac"}
+              : adding
+                ? "Add another Mac"
+                : "Pair with your Mac"}
         </h1>
         {linked ? (
           <p>

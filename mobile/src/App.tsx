@@ -62,8 +62,10 @@ export function App() {
   const setSystemTheme = useStore((s) => s.setSystemTheme);
   const sheet = useStore((s) => s.sheet);
   const closeSheet = useStore((s) => s.closeSheet);
-  // Paired means "we hold the host's key": there is no other credential.
+  // Paired means "we hold the host's key": there is no other credential. The
+  // Pair screen also comes up over a paired host, to add another.
   const hostKey = useStore((s) => s.hostKey);
+  const addingHost = useStore((s) => s.addingHost);
   const connected = useStore((s) => s.connection === "connected");
   const loadShortstats = useStore((s) => s.loadShortstats);
 
@@ -87,7 +89,7 @@ export function App() {
 
   return (
     <div className={`m-app theme-${resolved}`}>
-      {!ready ? null : hostKey ? (
+      {!ready ? null : hostKey && !addingHost ? (
         <>
           <Stack dimmed={dimmed} render={(item) => <Screen item={item} />} />
           <HostSheet open={isOpen("host")} onClose={closeSheet} />

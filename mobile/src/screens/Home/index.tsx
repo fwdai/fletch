@@ -9,6 +9,7 @@ import { AutoArchivedNotice } from "./AutoArchivedNotice";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { EmptyProjects } from "./EmptyProjects";
 import { HostState } from "./HostState";
+import { HostSwitcher } from "./HostSwitcher";
 import { Wordmark } from "./Wordmark";
 
 function ProjectCard({ project }: { project: Project }) {
@@ -97,7 +98,6 @@ export function HomeScreen() {
   );
   const openSheet = useStore((s) => s.openSheet);
   const push = useStore((s) => s.push);
-  const hostName = useStore((s) => s.hostInfo?.name);
   const connection = useStore((s) => s.connection);
   // The host's provider accounts, one tap from the host chip — on a Mac whose
   // Fletch can list them. An older one shows the chip alone, as before.
@@ -109,7 +109,6 @@ export function HomeScreen() {
   const running = agents.filter(isBusy).length;
   const attention = pendingTotal + errored;
   const connected = connection === "connected";
-  const settling = connection === "connecting" || connection === "pairing";
   // What the body is: the list when there is one to show, the host's
   // connection state when there is nothing behind it. A cached list survives a
   // dropped link (read-only, with the status line over it); an empty one does
@@ -128,10 +127,7 @@ export function HomeScreen() {
       <div className="home-head">
         <Wordmark />
         <div className={`host-pair${hasProviders ? "" : " alone"}`}>
-          <button type="button" className="host" onClick={() => openSheet("host")}>
-            <span className={`dot ${connected ? "running" : settling ? "waiting" : "error"}`} />
-            {hostName ?? "Host"}
-          </button>
+          <HostSwitcher />
           {hasProviders && (
             <button
               type="button"

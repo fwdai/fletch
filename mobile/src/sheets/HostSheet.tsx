@@ -1,22 +1,16 @@
 import { Icon } from "@desktop/components/Icon";
 import { Segmented, Sheet, Toggle } from "../components/ui";
+import { CONNECTION_TEXT } from "../lib/connection";
 import { ignore } from "../lib/ignore";
 import { projectsOf } from "../lib/projects";
-import { useStore } from "../store";
+import { activeHostName, useStore } from "../store";
 
-const CONNECTION_TEXT: Record<string, string> = {
-  connected: "Connected",
-  connecting: "Connecting…",
-  pairing: "Pairing…",
-  disconnected: "Not connected",
-  error: "Disconnected",
-};
-
-/** The paired Mac as the user knows it: its name, whether it is reachable, and
+/** The active Mac as the user knows it: its name, whether it is reachable, and
  *  what is on it. How the link is made — address, keys, relay, which path —
- *  is never shown: it connects on its own, and nothing here could change it. */
+ *  is never shown: it connects on its own, and nothing here could change it.
+ *  Unpair forgets this Mac only; the others stay in the host switcher. */
 export function HostSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const host = useStore((s) => s.hostInfo);
+  const hostName = useStore(activeHostName);
   const connection = useStore((s) => s.connection);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
@@ -43,7 +37,7 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
           <Icon name="laptop" size={22} />
         </span>
         <div>
-          <div style={{ fontWeight: 600, fontSize: 16 }}>{host?.name ?? "Unknown host"}</div>
+          <div style={{ fontWeight: 600, fontSize: 16 }}>{hostName ?? "Unknown host"}</div>
           <div
             style={{
               fontSize: 12.5,
