@@ -1,0 +1,123 @@
+/* ─── walkthrough: one quiet strip at the top of the Changes view ───
+   The start card over the file list, the step being read over the diff. It
+   wears the Code panel header's colours (.code-h in Code.css): bg-1 on a soft
+   rule, muted labels, pill controls — chrome, not content. */
+.wt {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+  color: var(--fg-2);
+}
+.wt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wt-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.wt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wt-icon {
+  flex-shrink: 0;
+  color: var(--fg-3);
+}
+.wt-label {
+  color: var(--fg-1);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.wt-hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-3);
+}
+.wt-count {
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+}
+
+.wt-nav {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+}
+.wt-btn {
+  flex-shrink: 0;
+  gap: 4px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 11px;
+  border: 1px solid var(--bd-soft);
+  background: transparent;
+  color: var(--fg-2);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    border-color 0.12s;
+}
+.wt-btn:hover:not(:disabled) {
+  color: var(--fg-0);
+  border-color: var(--bd);
+  background: var(--hover);
+}
+.wt-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.wt-title {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+/* A tour's note can run long; it scrolls rather than pushing the diff away. */
+.wt-note {
+  margin: 0;
+  max-height: 7.5em;
+  overflow-y: auto;
+  color: var(--fg-1);
+  line-height: var(--lh-snug);
+  overflow-wrap: anywhere;
+}
+
+.wt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.wt-chip {
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--bd-soft);
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    border-color 0.12s;
+}
+.wt-chip:hover:not(:disabled) {
+  color: var(--fg-0);
+  border-color: var(--bd);
+}
+.wt-chip.current {
+  color: var(--fg-0);
+  border-color: var(--accent-line);
+}
+.wt-chip:disabled {
+  color: var(--fg-3);
+  text-decoration: line-through;
+  cursor: default;
+}

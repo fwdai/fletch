@@ -793,8 +793,10 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `get_all_git_meta` | `{}` — advisory local-git metadata per checkout (base staleness, changed paths), keyed like the PR maps (`agentId` for the primary repo, `"{agentId}::{subdir}"` for secondaries); no network. Staleness is measured against the source repo's `origin/<base>`, which the host itself fetches every five minutes when it has a GitHub credential — no client asks for that fetch | `Record<gitKey, GitMeta>` |
 | `get_all_pr_status` | `{ reverifyClosed?: boolean }` — every live agent-repo's PRs, keyed like `get_all_git_meta`. `AgentPrStatus` is `{ state: PrState, checks: PrChecks \| null, prs: { state, checks }[] }`: `state`/`checks` are the checkout's *focused* PR (the one it is bound to, which is all a single-PR client reads) and `prs` is the checkout's whole PR set, the focused PR included, newest number first (absent from a host that predates PR sets — read it as `[{ state, checks }]`). `checks: null` means "nothing to say this round" so a client keeps its last value; merged PRs are served from the snapshot, closed ones re-verified live only when `reverifyClosed`. Every open PR of every checkout is read in the same batched query. A seed, not a poll: read it after a handshake (and on returning to the foreground), then follow `pr:state_changed` / `pr:checks_changed` (the focused PR) and `pr:set_entry_changed` (the rest of `prs`), which the host's PR watcher emits on every change it sees in its once-a-minute open-PR sweep and five-minute closed-PR recheck | `Record<gitKey, AgentPrStatus>` |
 | `list_checkout_tree` | as command | `CheckoutFile[]` |
+| `list_changed_files` | `{ agentId, baseMode? }` — the files changed in the agent's checkouts: `"fork"` (the default) since the fork point, committed or not, untracked files included; `"head"` only uncommitted work. `"fork"` is an error when a checkout's fork point can't be resolved; show the `git_state` files instead and say so. `staged` is always false under `"fork"`. Paths are prefixed with the checkout's subdir for a multi-repo agent, as in `list_checkout_tree`. Each file's `rev` (also on `git_state` files) is its on-disk mtime and size; it moves on every edit, where the line counts may not, so key a cached diff or a "viewed" mark on it. Stamped where the checkout lives, a box's guest included; absent for a deleted file | `FileStatus[]` |
 | `read_checkout_file` | `{ agentId, path, baseMode? }` | `CheckoutFileContents` |
 | `get_file_diff` | as command | `string` |
+| `get_tour` | `{ agentId }` — the walkthrough the agent wrote of its changes (`tour_set`), newest only; `tour:changed` says when to read it again | `Tour \| null` |
 | `commit_agent` | as command | `null` |
 | `push_agent` | as command | `string` |
 | `pull_agent` | as command — `git pull` in the checkout, with the same GitHub credential `push_agent` spends | `null` |
@@ -1352,7 +1354,7 @@ verify:report          publish:approval-requested
 publish:approval-resolved
 delegation:changed
 autopilot:state        autopilot:event        autopilot:switches
-review:changed
+review:changed         tour:changed
 wf:event               wf:run                 wf:run-deleted
 roadmap:item           roadmap:item-deleted   roadmap:item-event
 roadmap:proposal       roadmap:proposal-deleted
@@ -1553,6 +1555,10 @@ client replaces its row for `(agent_id, subdir)` with it and seeds the set with
 `get_reviews {}` after every handshake. The findings themselves are review
 threads, carried by `pr:threads_changed` beside GitHub's (each thread has a
 `source`).
+
+`tour:changed` `{ agent_id }` says the agent wrote a new walkthrough of its
+changes, replacing the last; it carries no steps, so a client showing that
+agent's changes reads `get_tour` again.
 
 The whole `wf:*` and `roadmap:*` stream is forwarded, so a remote run monitor
 and a remote board stay live instead of rendering once and going stale. Four

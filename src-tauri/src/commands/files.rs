@@ -13,11 +13,13 @@ use tauri::State;
 
 use crate::error::{Error, Result};
 use crate::git;
+use crate::git_state::FileStatus;
 use crate::supervisor::Supervisor;
 use fletch_core::commands::files::{
     copy_checkout_file_impl, create_checkout_dir_impl, create_checkout_file_impl,
-    delete_checkout_path_impl, get_file_diff_impl, list_checkout_tree_impl, list_dir_impl,
-    read_checkout_file_impl, rename_checkout_path_impl, write_checkout_file_impl,
+    delete_checkout_path_impl, get_file_diff_impl, list_changed_files_impl,
+    list_checkout_tree_impl, list_dir_impl, read_checkout_file_impl, rename_checkout_path_impl,
+    write_checkout_file_impl,
 };
 
 pub use fletch_core::commands::files::{
@@ -42,6 +44,19 @@ pub async fn list_checkout_tree(
     agent_id: String,
 ) -> Result<Vec<CheckoutFile>> {
     list_checkout_tree_impl(&supervisor, &agent_id).await
+}
+
+/// The Code panel's changed-file list, as its All/Uncommitted switch measures
+/// it: `base_mode` "fork" (the default) is everything since the workspace
+/// started, committed or not; "head" only uncommitted work. Multi-repo paths
+/// are prefixed like `list_checkout_tree`'s.
+#[tauri::command]
+pub async fn list_changed_files(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    base_mode: Option<DiffBaseMode>,
+) -> Result<Vec<FileStatus>> {
+    list_changed_files_impl(&supervisor, &agent_id, base_mode).await
 }
 
 /// List a repo's files by path (tracked + non-ignored untracked), for the

@@ -85,6 +85,113 @@ async fn set_title_rejects_empty_and_oversized_titles() {
     assert!(effects.is_empty(), "a refused title must not emit an event");
 }
 
+/// `tour_set` writes nothing itself either: it validates, collapses each
+/// step's whitespace, and hands the steps to the watcher as one event. Not a
+/// mutating op, so no action-done rides along.
+#[tokio::test]
+async fn tour_set_relays_normalized_steps() {
+    let td = tempfile::tempdir().unwrap();
+    let args = json!({ "steps": [
+        {
+            "title": "  The contract ",
+            "note": "The type  both\n halves share.",
+            "anchors": [{ "path": " src/api.ts ", "start": 3, "end": 9 }],
+        },
+        { "note": "Tests last.", "anchors": [] },
+    ]});
+
+    let (resp, effects) = dispatcher(td.path())
+        .dispatch_inner("t", "tour_set", &args)
+        .await;
+    assert!(resp.ok, "{:?}", resp.error);
+
+    let tours: Vec<&Value> = effects
+        .iter()
+        .filter_map(|e| {
+            let crate::rpc::RpcEvent::Named { name, payload } = e;
+            (name == crate::rpc::git::EVENT_TOUR_SET).then_some(payload)
+        })
+        .collect();
+    assert_eq!(tours.len(), 1, "{effects:?}");
+    assert_eq!(
+        tours[0]["steps"],
+        json!([
+            {
+                "title": "The contract",
+                "note": "The type both halves share.",
+                "anchors": [{ "path": "src/api.ts", "start": 3, "end": 9 }],
+            },
+            { "title": null, "note": "Tests last.", "anchors": [] },
+        ])
+    );
+    assert!(!has_action_done(&effects, "tour_set"));
+}
+
+#[tokio::test]
+async fn tour_set_refuses_bad_steps_naming_the_problem() {
+    let td = tempfile::tempdir().unwrap();
+    let disp = dispatcher(td.path());
+    let step = |anchors: Value| json!({ "note": "x", "anchors": anchors });
+    let anchor =
+        |path: &str, start: i64, end: i64| json!({ "path": path, "start": start, "end": end });
+    for (args, needle) in [
+        (json!({}), "`steps` must be an array"),
+        (
+            json!({ "steps": [] }),
+            "`steps` must hold 1 to 40 steps, got 0",
+        ),
+        (
+            json!({ "steps": vec![step(json!([])); 41] }),
+            "`steps` must hold 1 to 40 steps, got 41",
+        ),
+        (
+            json!({ "steps": [step(json!([])), step(json!([anchor("src/../../etc/passwd", 1, 2)]))] }),
+            "steps[1].anchors[0].path must be relative, with no `..` segment",
+        ),
+        (
+            json!({ "steps": [step(json!([anchor("/abs.rs", 1, 2)]))] }),
+            "steps[0].anchors[0].path must be relative",
+        ),
+        (
+            json!({ "steps": [step(json!([anchor("a.rs", 1, 1), anchor("a.rs", 9, 4)]))] }),
+            "steps[0].anchors[1]: end 4 is before start 9",
+        ),
+        (
+            json!({ "steps": [step(json!([anchor("a.rs", 0, 4)]))] }),
+            "steps[0].anchors[0].start must be a line number",
+        ),
+        (
+            json!({ "steps": [step(json!(vec![anchor("a.rs", 1, 1); 13]))] }),
+            "steps[0].anchors holds 13 anchors; at most 12",
+        ),
+        (
+            json!({ "steps": [{ "note": " \n ", "anchors": [] }] }),
+            "steps[0].note is required",
+        ),
+        (
+            json!({ "steps": [{ "note": "x".repeat(601), "anchors": [] }] }),
+            "steps[0].note exceeds 600 characters",
+        ),
+        (
+            json!({ "steps": [{ "title": "t".repeat(81), "note": "x", "anchors": [] }] }),
+            "steps[0].title exceeds 80 characters",
+        ),
+        (
+            json!({ "steps": [{ "note": "x" }] }),
+            "steps[0].anchors must be an array",
+        ),
+    ] {
+        let (resp, effects) = disp.dispatch_inner("t", "tour_set", &args).await;
+        assert!(!resp.ok, "{args}");
+        let err = resp.error.unwrap();
+        assert!(
+            err.starts_with("tour_set: ") && err.contains(needle),
+            "{args}: {err}"
+        );
+        assert!(effects.is_empty(), "a refused tour must not emit an event");
+    }
+}
+
 #[tokio::test]
 async fn signal_git_action_emits_action_done_for_known_actions() {
     let td = tempfile::tempdir().unwrap();

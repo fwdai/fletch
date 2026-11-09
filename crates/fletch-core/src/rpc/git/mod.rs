@@ -8,6 +8,7 @@ mod releases;
 mod review_threads;
 mod runs;
 mod targets;
+mod tour;
 
 #[cfg(test)]
 #[path = "tests/support.rs"]
@@ -49,6 +50,11 @@ pub const EVENT_TITLE_SET: &str = "workspace.title_set";
 
 /// Longest title `set_title` accepts. A sidebar subtitle, not a paragraph.
 const MAX_TITLE_CHARS: usize = 80;
+
+/// Emitted by `tour_set`: the agent wrote a walkthrough of its changes.
+/// Payload `{ "steps": [TourStep] }`, already validated and normalized; the
+/// watcher stores it as the workspace's tour, replacing any earlier one.
+pub const EVENT_TOUR_SET: &str = "workspace.tour_set";
 
 /// Host-brokered ops whose success means the agent did the delegated work. Local
 /// mutations signal out-of-band via the clone's hooks (`signal_git_action`).
@@ -208,6 +214,7 @@ impl GitDispatcher {
             "resolve_thread" => (self.resolve_thread(id, args).await, Vec::new()),
             "echo" => (self.echo(id, args).await, Vec::new()),
             "set_title" => self.set_title(id, args),
+            "tour_set" => self.tour_set(id, args),
             "ping" => (
                 Response::ok(id, 0, "pong".to_string(), String::new()),
                 Vec::new(),

@@ -63,6 +63,13 @@ export function parseUnifiedDiff(text: string): DiffHunk[] {
 
 /** git's status kind → the one-letter badge the file lists show (VS Code's
  *  letters; untracked reads as a new file). */
+/** What a changed file's content is, as far as a client can tell without
+ *  reading it: the host's `rev` (mtime and size) with the line counts. Moves
+ *  whenever the file does — the counts alone miss a same-shape edit, and `rev`
+ *  alone is absent on older hosts and deleted files. Key a cached diff, a
+ *  viewed mark or a "did it move" comparison on this. */
+export const fileRevision = (f: FileStatus) => `${f.rev ?? ""}|${f.additions}:${f.deletions}`;
+
 export function statusLetter(kind: FileStatus["kind"]): string {
   switch (kind) {
     case "modified":

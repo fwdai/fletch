@@ -801,6 +801,7 @@ fn the_cheap_signature_is_head_plus_the_dirty_paths_and_kinds_in_order() {
         staged: false,
         additions,
         deletions: 0,
+        rev: None,
     };
     let git = GitState {
         branch: "feat".into(),

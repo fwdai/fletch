@@ -12,6 +12,7 @@ import type {
   DiffBaseMode,
   DirListing,
 } from "../types/checkout";
+import type { FileStatus } from "../types/git";
 
 /** The four upload ops bound to ONE environment — remote-only, so this is never
  *  reached for the local one (see `savePastedAttachment`). Bound rather than
@@ -27,6 +28,12 @@ const attachmentApiOver = (transport: Transport): AttachmentApi => ({
 
 export const filesApi = {
   listCheckoutTree: (agentId: string) => invoke<CheckoutFile[]>("list_checkout_tree", { agentId }),
+  /** Every file changed in the agent's checkout, as `baseMode` measures it:
+   *  "fork" is everything since the workspace started, committed or not; "head"
+   *  only uncommitted work. Multi-repo agents get paths prefixed with the owning
+   *  checkout's subdir, like `listCheckoutTree`. */
+  listChangedFiles: (agentId: string, baseMode: DiffBaseMode) =>
+    invoke<FileStatus[]>("list_changed_files", { agentId, baseMode }),
   listDir: (path: string) => invoke<DirListing>("list_dir", { path }),
   // Draft (new-workspace) composer variants, keyed by repo path since a draft
   // has no agent/checkout yet.

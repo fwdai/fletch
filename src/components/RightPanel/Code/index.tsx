@@ -1,49 +1,42 @@
 // CodePanel — the unified "Code" right-rail tab. It hosts two modes behind a
 // secondary in-panel switch:
-//   • Files — browse & edit the checkout (the existing <FilePanel>).
-//   • Live  — an activity feed of the agent's edits as diffs (<CodeLivePanel>).
+//   • Changes — every file this workspace changed, each opening its diff
+//     (<Changes>), with Follow to track the agent during a turn.
+//   • Explore — browse & edit the checkout (<FilePanel>).
 //
 // The open/selected file is owned here so it survives a mode switch and so the
-// cross-links work: the editor's "Diff" button jumps to Live on that file, and
-// Live's "Edit" button opens the file back in Files mode.
+// cross-link works: a diff's "Edit" button opens the file in Explore. The scope
+// switch (All / Uncommitted) sits beside the modes because both use it — the
+// Changes list and diffs, and the editor's gutter and Diff toggle.
 import { useEffect, useState } from "react";
 import type { AgentRecord, DiffBaseMode } from "@/api";
 import { Icon } from "@/components/Icon";
 import { FilePanel } from "@/components/RightPanel/FilePanel";
 import { isAgentBusy } from "@/helpers";
 import { useAppStore } from "@/store";
-import { CodeLivePanel } from "./CodeLivePanel";
-
-type Mode = "files" | "live";
-const MODE_KEY = "q2:codeMode";
-const BASE_KEY = "q2:diffBase";
-
-function loadMode(): Mode {
-  return localStorage.getItem(MODE_KEY) === "live" ? "live" : "files";
-}
-
-function loadBase(): DiffBaseMode {
-  return localStorage.getItem(BASE_KEY) === "head" ? "head" : "fork";
-}
+import { Changes } from "./Changes";
+import { type CodeMode, loadBase, loadMode, saveBase, saveMode } from "./prefs";
+import { useAgentGit } from "./useAgentGit";
 
 export function CodePanel({ agent }: { agent: AgentRecord }) {
-  const [mode, setMode] = useState<Mode>(loadMode);
+  const [mode, setMode] = useState<CodeMode>(loadMode);
   const [diffBase, setDiffBase] = useState<DiffBaseMode>(loadBase);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
   // The selected file is per-agent; drop it when the agent changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: agent.id is the intended reset trigger
   useEffect(() => {
     setSelectedPath(null);
   }, [agent.id]);
 
-  const changeMode = (m: Mode) => {
+  const changeMode = (m: CodeMode) => {
     setMode(m);
-    localStorage.setItem(MODE_KEY, m);
+    saveMode(m);
   };
 
   const changeBase = (b: DiffBaseMode) => {
     setDiffBase(b);
-    localStorage.setItem(BASE_KEY, b);
+    saveBase(b);
   };
 
   return (
@@ -53,23 +46,25 @@ export function CodePanel({ agent }: { agent: AgentRecord }) {
         <BaseSwitch value={diffBase} onChange={changeBase} />
       </div>
       <div className="code-panel-body">
-        {mode === "files" ? (
+        {mode === "changes" ? (
+          <Changes
+            key={agent.id}
+            agent={agent}
+            selectedPath={selectedPath}
+            onSelect={setSelectedPath}
+            diffBase={diffBase}
+            onDiffBaseChange={changeBase}
+            onOpenInEditor={(p) => {
+              setSelectedPath(p);
+              changeMode("explore");
+            }}
+          />
+        ) : (
           <FilePanel
             agent={agent}
             openPath={selectedPath}
             onOpenPath={setSelectedPath}
             diffBase={diffBase}
-          />
-        ) : (
-          <CodeLivePanel
-            agent={agent}
-            selectedPath={selectedPath}
-            onSelect={setSelectedPath}
-            diffBase={diffBase}
-            onOpenInEditor={(p) => {
-              setSelectedPath(p);
-              changeMode("files");
-            }}
           />
         )}
       </div>
@@ -77,10 +72,9 @@ export function CodePanel({ agent }: { agent: AgentRecord }) {
   );
 }
 
-// What the diffs measure against: the workspace's starting commit (everything
-// the agent has done here) or the latest commit (only uncommitted work). The
-// file lists always count vs the latest commit, so "Uncommitted" is the mode
-// where the diff matches the +/− counts beside it.
+// What the Changes list and every diff measure against: the workspace's
+// starting commit (everything the agent has done here) or the latest commit
+// (only uncommitted work).
 function BaseSwitch({
   value,
   onChange,
@@ -94,7 +88,7 @@ function BaseSwitch({
         role="tab"
         aria-selected={value === "fork"}
         className={`cms-seg iflex-center text-xs ${value === "fork" ? "active" : ""} tip`}
-        data-tip="Diff everything changed in this workspace, since it started"
+        data-tip="Everything changed in this workspace, since it started"
         onClick={() => onChange("fork")}
       >
         <span>All</span>
@@ -103,7 +97,7 @@ function BaseSwitch({
         role="tab"
         aria-selected={value === "head"}
         className={`cms-seg iflex-center text-xs ${value === "head" ? "active" : ""} tip`}
-        data-tip="Diff only uncommitted work, since the last commit"
+        data-tip="Only uncommitted work, since the last commit"
         onClick={() => onChange("head")}
       >
         <span>Uncommitted</span>
@@ -115,19 +109,23 @@ function BaseSwitch({
 // A secondary segmented control — deliberately styled unlike the panel tabs
 // above it (filled "thumb" pill, not an underline tab) so it reads as a control
 // within the Code panel, not as panel switching. The two modes are the two
-// ways to look at code here: explore it yourself, or watch the agent change it.
+// ways to look at code here: review what changed, or explore it yourself.
 function ModeSwitch({
   agent,
   mode,
   onChange,
 }: {
   agent: AgentRecord;
-  mode: Mode;
-  onChange: (m: Mode) => void;
+  mode: CodeMode;
+  onChange: (m: CodeMode) => void;
 }) {
-  const hasChanges = useAppStore(
-    (s) => (s.gitStates[agent.id]?.files.length ?? s.gitShortstats[agent.id]?.file_count ?? 0) > 0,
-  );
+  // Uncommitted files, or commits ahead of the base, in any of the agent's
+  // checkouts: work the Changes list shows. The fleet shortstats stand in
+  // until the agent's own poll has answered.
+  const git = useAgentGit(agent);
+  const shortDirty = useAppStore((s) => s.gitShortstats[agent.id]?.file_count ?? 0);
+  const dirty = git.files?.length ?? shortDirty;
+  const hasChanges = dirty > 0 || git.ahead > 0;
   // Whether the agent is mid-turn — the dot is green & pulsing only then, and
   // goes grey when work stops so it never implies activity that isn't there.
   const busy = useAppStore((s) => isAgentBusy(s, agent.id, agent.status));
@@ -136,24 +134,24 @@ function ModeSwitch({
     <div className="code-modeswitch" role="tablist" aria-label="Code view mode">
       <button
         role="tab"
-        aria-selected={mode === "files"}
-        className={`cms-seg iflex-center text-xs ${mode === "files" ? "active" : ""} tip`}
-        data-tip="Browse and edit any file in the checkout"
-        onClick={() => onChange("files")}
+        aria-selected={mode === "changes"}
+        className={`cms-seg iflex-center text-xs ${mode === "changes" ? "active" : ""} tip`}
+        data-tip="Every file this workspace changed, with its diff"
+        onClick={() => onChange("changes")}
       >
-        <Icon name="folder" size={12} />
-        <span>Explore</span>
+        <Icon name="diff" size={12} />
+        <span>Changes</span>
+        {(hasChanges || busy) && <span className={`cms-live-dot ${busy ? "on" : ""}`}></span>}
       </button>
       <button
         role="tab"
-        aria-selected={mode === "live"}
-        className={`cms-seg iflex-center text-xs ${mode === "live" ? "active" : ""} tip`}
-        data-tip="Watch the agent's changes as they happen"
-        onClick={() => onChange("live")}
+        aria-selected={mode === "explore"}
+        className={`cms-seg iflex-center text-xs ${mode === "explore" ? "active" : ""} tip`}
+        data-tip="Browse and edit any file in the checkout"
+        onClick={() => onChange("explore")}
       >
-        <Icon name="radio" size={12} />
-        <span>Live</span>
-        {(hasChanges || busy) && <span className={`cms-live-dot ${busy ? "on" : ""}`}></span>}
+        <Icon name="folder" size={12} />
+        <span>Explore</span>
       </button>
     </div>
   );

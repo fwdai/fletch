@@ -73,6 +73,7 @@ import type {
   ProjectSettingsChangedEvent,
   SettingsChangedEvent,
 } from "./types/settings";
+import type { TourChangedEvent } from "./types/tour";
 import type { WfEventEnvelope, WfRun } from "./types/workflow";
 
 /** Subscribe to one engine event on the environment the UI is driving, with the
@@ -306,6 +307,12 @@ export function onAgentTask(cb: (e: AgentTaskEvent) => void): Promise<UnlistenFn
 /** The agent titled its work via `set_title`; the sidebar subtitle prefers it. */
 export function onAgentTitle(cb: (e: AgentTitleEvent) => void): Promise<UnlistenFn> {
   return on<AgentTitleEvent>("agent:title", cb);
+}
+
+/** The agent wrote a walkthrough of its changes via `tour_set`; reload it with
+ *  `api.getTour`. */
+export function onTourChanged(cb: (e: TourChangedEvent) => void): Promise<UnlistenFn> {
+  return on<TourChangedEvent>("tour:changed", cb);
 }
 
 /** The agent asked for the user's attention via its `notify` mailbox op. */

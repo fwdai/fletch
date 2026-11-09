@@ -397,9 +397,9 @@ fn pr_set_migration_backfills_every_binding() {
     );
 }
 
-/// Schema version just before `worktree_branches` (0059). Pinned for the same
+/// Schema version just before `worktree_branches` (0060). Pinned for the same
 /// reason as `V_WORKTREE_PRS`.
-const V_BEFORE_OWNED_BRANCHES: usize = 58;
+const V_BEFORE_OWNED_BRANCHES: usize = 59;
 
 /// Each checkout's recorded branch was its force-push anchor, so it is seeded
 /// as owned: a branch that could be force-pushed before the upgrade still can.
