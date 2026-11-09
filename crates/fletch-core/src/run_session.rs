@@ -165,11 +165,18 @@ impl RunSession {
     /// it binds in a box's guest (see [`RunStateSnapshot`]), recorded as the
     /// phase spawns so the agent's `app_status` can name them; the panel
     /// hears them on `run:port` and in each `run:state` that follows.
-    /// Cleared by every start and stop.
-    pub fn set_ports(&self, port: Option<u16>, guest_port: Option<u16>) {
+    /// Cleared by every start and stop. Refused, as `false`, when `gen` is no
+    /// longer the current generation: a stop came while the start was still
+    /// settling the port (a box boots and forwards before its command runs),
+    /// and a stopped session must not advertise one.
+    pub fn set_ports(&self, gen: u64, port: Option<u16>, guest_port: Option<u16>) -> bool {
         let mut inner = self.inner.lock();
+        if inner.generation != gen {
+            return false;
+        }
         inner.port = port;
         inner.guest_port = guest_port;
+        true
     }
 
     /// Append PTY output to the rolling buffer. Called from the per-spawn
@@ -232,13 +239,29 @@ impl RunSession {
         inner.generation
     }
 
-    /// Attach a freshly spawned PTY. The `sandbox-exec` profile it was launched
-    /// under travels in argv, so there is no profile resource to park here.
-    pub fn attach_pty(&self, pty: PtySession) {
-        let mut inner = self.inner.lock();
-        // Replace and drop any stale handle. (Shouldn't happen — the
-        // supervisor's stop() drops it first — but defensive.)
-        inner.pty = Some(pty);
+    /// Attach a freshly spawned PTY, if `gen` is still the current generation
+    /// and the phase still active; else kill it and answer `false`. The start
+    /// that spawned it runs off the UI thread, so a stop can land while a box
+    /// boots, forwards its port and launches the command: `stop` has then
+    /// bumped the generation and found no PTY to kill, so the one arriving
+    /// here is ended in its place — its exit hook sees the stale generation
+    /// and changes nothing. One lock covers the check and the attach, so a
+    /// stop either finds the PTY or is seen by this. The `sandbox-exec`
+    /// profile it was launched under travels in argv, so there is no profile
+    /// resource to park here.
+    pub fn attach_pty(&self, pty: PtySession, gen: u64) -> bool {
+        {
+            let mut inner = self.inner.lock();
+            if inner.generation == gen && matches!(inner.phase, RunPhase::Setup | RunPhase::Running)
+            {
+                inner.pty = Some(pty);
+                return true;
+            }
+        }
+        // Killed outside the lock, as `stop` does: a box's kill ends the
+        // command in the guest, which is slow.
+        let _ = pty.kill();
+        false
     }
 
     /// Returns true if the given generation is still the current one,
@@ -417,15 +440,18 @@ mod tests {
     fn the_port_lives_with_the_running_phase() {
         let s = RunSession::new();
         assert_eq!(s.snapshot().port, None);
-        s.begin_phase(RunPhase::Running);
-        s.set_ports(Some(3001), Some(3000));
+        let gen = s.begin_phase(RunPhase::Running);
+        assert!(s.set_ports(gen, Some(3001), Some(3000)));
         assert_eq!(s.snapshot().port, Some(3001));
         assert_eq!(s.snapshot().guest_port, Some(3000));
         s.stop();
         assert_eq!(s.snapshot().port, None, "a stopped run binds no port");
         assert_eq!(s.snapshot().guest_port, None);
-        s.begin_phase(RunPhase::Setup);
-        s.set_ports(Some(3001), None);
+        // A start still settling its port when the stop came is refused.
+        assert!(!s.set_ports(gen, Some(3001), Some(3000)));
+        assert_eq!(s.snapshot().port, None, "a stale start sets no port");
+        let gen = s.begin_phase(RunPhase::Setup);
+        assert!(s.set_ports(gen, Some(3001), None));
         s.mark_stopped(Some("crashed".into()));
         assert_eq!(s.snapshot().port, None);
         assert_eq!(s.snapshot().guest_port, None);
@@ -436,6 +462,53 @@ mod tests {
             "a fresh start forgets the old port"
         );
         assert_eq!(s.snapshot().guest_port, None);
+    }
+
+    /// A stop that lands while a start is still launching its command finds
+    /// no PTY to kill; the PTY arriving afterwards is killed on attach, and
+    /// its exit hook sees the stale generation.
+    #[test]
+    fn a_pty_attached_after_a_stop_is_killed() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let td = tempfile::tempdir().unwrap();
+        let s = RunSession::new();
+        let gen = s.begin_phase(RunPhase::Running);
+        let (exit_tx, exit_rx) = mpsc::channel();
+        let pty = spawn_command(
+            Path::new("/bin/sh"),
+            &["-c".to_string(), "sleep 30".to_string()],
+            td.path(),
+            &[],
+            crate::sandbox::KillHandle::ProcessGroup,
+            |_| {},
+            move |exit| {
+                let _ = exit_tx.send(exit);
+            },
+        )
+        .unwrap();
+        assert_eq!(s.stop(), RunPhase::Running, "nothing was attached yet");
+        assert!(!s.attach_pty(pty, gen), "the stop came first");
+        assert!(!s.is_current_generation(gen));
+        exit_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the late PTY is killed on attach");
+        assert_eq!(s.snapshot().phase, RunPhase::Stopped);
+
+        // The ordinary case: current generation, the PTY is kept.
+        let gen = s.begin_phase(RunPhase::Running);
+        let pty = spawn_command(
+            Path::new("/bin/sh"),
+            &["-c".to_string(), "sleep 30".to_string()],
+            td.path(),
+            &[],
+            crate::sandbox::KillHandle::ProcessGroup,
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        assert!(s.attach_pty(pty, gen));
+        s.stop();
     }
 
     #[test]

@@ -791,8 +791,8 @@ mod tests {
     fn a_run_state_event_carries_the_sessions_ports() {
         let sink = RecordingSink::new();
         let session = RunSession::new();
-        session.begin_phase(RunPhase::Running);
-        session.set_ports(Some(3001), None);
+        let gen = session.begin_phase(RunPhase::Running);
+        session.set_ports(gen, Some(3001), None);
         emit_run_state(&sink, "fuji", &session);
         session.begin_phase(RunPhase::Running);
         emit_run_state(&sink, "fuji", &session);

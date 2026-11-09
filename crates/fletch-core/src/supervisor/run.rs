@@ -106,7 +106,7 @@ impl Supervisor {
         // Emit the resolved port *before* the state flips to running, so the
         // store already holds the correct port when the UI reacts to
         // `run:state` — otherwise the link/label briefly shows the old port.
-        session.set_ports(prepared.port, None);
+        session.set_ports(gen, prepared.port, None);
         if let Some(port) = prepared.port {
             emit_run_port(ctx.sink.as_ref(), agent_id, port, None);
         }
@@ -566,7 +566,7 @@ fn spawn_run_phase(
         on_exit,
     )?;
 
-    session.attach_pty(pty);
+    session.attach_pty(pty, gen);
     Ok(())
 }
 
@@ -604,6 +604,14 @@ fn spawn_guest_run_phase(
             cwd.display()
         )));
     };
+    // This runs off the UI thread, so Stop can land at any point of it: after
+    // each step that takes long (the boot above, the forward below) the
+    // generation says whether the run is still wanted. A stopped run spawns
+    // nothing and reports nothing — `run_stop` already announced Stopped —
+    // and dropping `guest` releases the box and the forward.
+    if !session.is_current_generation(gen) {
+        return Ok(());
+    }
     let prepared = if phase == RunPhase::Running {
         prepare_run_with(&cmd, intended_port, |start, cap| {
             guest.free_port(start, cap)
@@ -624,7 +632,9 @@ fn spawn_guest_run_phase(
         Some(port) => Some(guest.forward(port, PORT_SCAN_CAP)?),
         None => None,
     };
-    session.set_ports(host_port, prepared.port);
+    if !session.set_ports(gen, host_port, prepared.port) {
+        return Ok(());
+    }
     if let (Some(port), Some(host_port)) = (prepared.port, host_port) {
         emit_run_port(ctx.sink.as_ref(), &agent_id, host_port, Some(port));
     }
@@ -655,11 +665,12 @@ fn spawn_guest_run_phase(
         chain_run_cmd,
     );
     // The guard runs the kill — the box released, the forward dropped — if
-    // the spawn fails; a spawned session owns it from then on.
+    // the spawn fails; a spawned session owns it from then on, and the attach
+    // kills it when a stop came while the command was launching.
     let pty = KillGuard::new(kill).start(|kill| {
         run_session::spawn_command(&program, &args, &cwd, &[], kill, on_output, on_exit)
     })?;
-    session.attach_pty(pty);
+    session.attach_pty(pty, gen);
     Ok(())
 }
 
@@ -853,7 +864,7 @@ fn handle_run_phase_exit(
             session.transition_phase(RunPhase::Running);
             // Emit the resolved port before the running state so the store holds
             // it before the UI reacts (see run_start for the same ordering).
-            session.set_ports(prepared.port, None);
+            session.set_ports(gen, prepared.port, None);
             if let Some(port) = prepared.port {
                 emit_run_port(ctx.sink.as_ref(), &agent_id, port, None);
             }
