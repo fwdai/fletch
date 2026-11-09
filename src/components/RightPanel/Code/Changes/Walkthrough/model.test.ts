@@ -49,7 +49,7 @@ const step = (note: string, paths: string[], turn?: number): Step => ({
 });
 
 describe("stepsFromTour", () => {
-  it("maps each step and anchor 1:1 and marks a step stale when none of its files is in view", () => {
+  it("maps each step and anchor 1:1 and marks a step stale when its files all left the view", () => {
     const tour: Tour = {
       agent_id: "a1",
       turn_id: null,
@@ -95,7 +95,8 @@ describe("stepsFromTour", () => {
         anchors: [{ path: "src/view.tsx", range: { start: 5, end: 7 } }],
         stale: true,
       },
-      { title: null, note: "Nothing.", anchors: [], stale: true },
+      // No files to point at is not the same as pointing at files that left.
+      { title: null, note: "Nothing.", anchors: [], stale: false },
     ]);
   });
 });

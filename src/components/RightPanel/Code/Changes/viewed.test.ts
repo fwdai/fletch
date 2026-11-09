@@ -1,33 +1,44 @@
 import { describe, expect, it } from "vitest";
 import type { FileStatus } from "@/api";
+import { fileRevision } from "@/util/diff";
 import { isViewedIn, withToggled, withViewed } from "./viewed";
 
-const file = (path: string, additions: number, deletions: number): FileStatus => ({
+const file = (path: string, additions: number, deletions: number, rev?: string): FileStatus => ({
   path,
   kind: "modified",
   staged: false,
   additions,
   deletions,
+  rev,
 });
 
 describe("viewed signatures", () => {
-  it("counts a file as viewed while its counts are the ones it was viewed at", () => {
-    const a = file("src/a.ts", 3, 1);
+  it("counts a file as viewed while its revision is the one it was viewed at", () => {
+    const a = file("src/a.ts", 3, 1, "100:40");
     const map = withViewed({}, [a], ["src/a.ts"]);
     expect(isViewedIn(map, a)).toBe(true);
   });
 
   it("un-views a file the agent edits after it was viewed", () => {
+    const map = withViewed({}, [file("src/a.ts", 3, 1, "100:40")], ["src/a.ts"]);
+    expect(isViewedIn(map, file("src/a.ts", 5, 1, "101:60"))).toBe(false);
+    expect(isViewedIn(map, file("src/a.ts", 3, 2, "101:30"))).toBe(false);
+    // The edit that keeps the counts: one line swapped for another of the
+    // same length. Only the revision tells.
+    expect(isViewedIn(map, file("src/a.ts", 3, 1, "101:40"))).toBe(false);
+  });
+
+  it("works from the counts alone on a host without revisions", () => {
     const map = withViewed({}, [file("src/a.ts", 3, 1)], ["src/a.ts"]);
-    expect(isViewedIn(map, file("src/a.ts", 5, 1))).toBe(false);
-    expect(isViewedIn(map, file("src/a.ts", 3, 2))).toBe(false);
+    expect(isViewedIn(map, file("src/a.ts", 3, 1))).toBe(true);
+    expect(isViewedIn(map, file("src/a.ts", 4, 1))).toBe(false);
   });
 
   it("marks only the named paths, and skips paths not in the list", () => {
     const a = file("a.ts", 1, 0);
     const b = file("b.ts", 2, 0);
     const map = withViewed({}, [a, b], ["b.ts", "gone.ts"]);
-    expect(map).toEqual({ "b.ts": "2:0" });
+    expect(map).toEqual({ "b.ts": fileRevision(b) });
     expect(isViewedIn(map, a)).toBe(false);
   });
 

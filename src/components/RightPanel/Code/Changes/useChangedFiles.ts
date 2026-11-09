@@ -1,15 +1,9 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import {
-  type AgentRecord,
-  api,
-  type DiffBaseMode,
-  type FileStatus,
-  type GitState,
-  type TrackedRepo,
-} from "@/api";
+import { type AgentRecord, api, type DiffBaseMode, type FileStatus, type TrackedRepo } from "@/api";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
+import { fileRevision } from "@/util/diff";
 import { usePoll } from "@/util/hooks";
 
 export interface ChangedFiles {
@@ -19,9 +13,12 @@ export interface ChangedFiles {
   /** The fork-point list could not be fetched, so `files` is the uncommitted
    *  list — a subset of what was asked for. */
   degraded: boolean;
-  /** False until the scope's list has answered once for this agent. */
+  /** False until the scope's list is known for every checkout of the agent;
+   *  an unanswered checkout must not read as a clean one. */
   loaded: boolean;
 }
+
+const NONE: FileStatus[] = [];
 
 /** Every file the agent's checkouts changed in `base`'s scope. Under
  *  Uncommitted that is the list the store's git poll already keeps a second
@@ -39,13 +36,14 @@ export function useChangedFiles(
   const sinceFork = useForkFiles(agent.id, base === "fork", busy);
 
   return useMemo(() => {
+    const fromStore = { files: uncommitted ?? NONE, loaded: uncommitted !== null };
     const picked =
       base === "head"
-        ? { files: uncommitted, degraded: false, loaded: true }
+        ? { ...fromStore, degraded: false }
         : sinceFork === null
-          ? { files: [], degraded: false, loaded: false }
+          ? { files: NONE, degraded: false, loaded: false }
           : sinceFork.failed
-            ? { files: uncommitted, degraded: true, loaded: true }
+            ? { ...fromStore, degraded: true }
             : { files: sinceFork.files, degraded: false, loaded: true };
     return {
       ...picked,
@@ -55,40 +53,52 @@ export function useChangedFiles(
   }, [base, uncommitted, sinceFork]);
 }
 
+/** One checkout's uncommitted files as the store knows them: undefined until
+ *  its git poll has answered. */
+export type CheckoutFiles = { files: FileStatus[] } | undefined;
+
 /** The uncommitted files of an agent's checkouts as one list, from each
- *  checkout's git state (`states` aligned with `repos`; undefined where the
- *  poll hasn't answered). A multi-repo agent's paths are prefixed with their
- *  checkout's directory, as `list_changed_files` prefixes them. */
+ *  checkout's files (`states` aligned with `repos`). Null while any checkout
+ *  is still unanswered: a list missing a checkout would pass for the whole. A
+ *  multi-repo agent's paths are prefixed with their checkout's directory, as
+ *  `list_changed_files` prefixes them. */
 export function uncommittedFiles(
   repos: TrackedRepo[],
-  states: (GitState | undefined)[],
-): FileStatus[] {
-  if (repos.length <= 1) return states[0]?.files ?? [];
+  states: CheckoutFiles[],
+): FileStatus[] | null {
+  if (repos.some((_, i) => states[i] === undefined)) return null;
+  if (repos.length <= 1) return states[0]?.files ?? NONE;
   return repos.flatMap((repo, i) =>
-    (states[i]?.files ?? []).map((f) => ({ ...f, path: `${repo.subdir}/${f.path}` })),
+    (states[i]?.files ?? NONE).map((f) => ({ ...f, path: `${repo.subdir}/${f.path}` })),
   );
 }
 
-function useUncommittedFiles(agent: AgentRecord): FileStatus[] {
+/** A checkout whose git state the host refuses to read (planted config) has
+ *  answered, with nothing: the Git panel shows what to do about it. */
+const BLOCKED: CheckoutFiles = { files: NONE };
+
+function useUncommittedFiles(agent: AgentRecord): FileStatus[] | null {
   const states = useAppStore(
     useShallow((s) =>
-      agent.repos.map(
-        (repo, i) => s.gitStates[checkoutKey(agent.id, i === 0 ? undefined : repo.subdir)],
-      ),
+      agent.repos.map((repo, i): CheckoutFiles => {
+        const key = checkoutKey(agent.id, i === 0 ? undefined : repo.subdir);
+        return s.gitStates[key] ?? (s.gitBlocked[key] ? BLOCKED : undefined);
+      }),
     ),
   );
   return useStableList(useMemo(() => uncommittedFiles(agent.repos, states), [agent.repos, states]));
 }
 
 const sigOf = (files: FileStatus[]) =>
-  files.map((f) => `${f.path}\n${f.kind}\n${f.additions}\n${f.deletions}`).join("\n");
+  files.map((f) => `${f.path}\n${f.kind}\n${fileRevision(f)}`).join("\n");
 
 /** `files` by value: the array handed out before, while a new one holds the
- *  same files with the same counts. */
-function useStableList(files: FileStatus[]): FileStatus[] {
+ *  same files at the same revisions. */
+function useStableList(files: FileStatus[] | null): FileStatus[] | null {
   const kept = useRef({ seen: files, out: files });
   if (kept.current.seen !== files) {
-    const same = sigOf(kept.current.out) === sigOf(files);
+    const same =
+      kept.current.out !== null && files !== null && sigOf(kept.current.out) === sigOf(files);
     kept.current = { seen: files, out: same ? kept.current.out : files };
   }
   return kept.current.out;
@@ -114,7 +124,7 @@ function useForkFiles(agentId: string, enabled: boolean, busy: boolean): ForkFil
     if (!enabled) return;
     const result = await api.listChangedFiles(agentId, "fork").then(
       (files): ForkFiles => ({ files, failed: false }),
-      (): ForkFiles => ({ files: [], failed: true }),
+      (): ForkFiles => ({ files: NONE, failed: true }),
     );
     if (shown.current !== agentId) return;
     const sig = `${result.failed}\n${sigOf(result.files)}`;

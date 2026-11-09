@@ -23,8 +23,9 @@ export interface Step {
   title: string | null;
   note: string;
   anchors: StepAnchor[];
-  /** None of the step's files is among the changes in view: kept so its note
-   *  still reads in order, but there is nothing to show for it. */
+  /** The step points at files and none is among the changes in view: kept so
+   *  its note still reads in order, but there is nothing to show for it. A
+   *  step with no anchors (an agent explaining before it points) isn't stale. */
   stale: boolean;
   /** Ordinal of the user turn the step was made in (transcript steps). */
   turn?: number;
@@ -69,7 +70,7 @@ export function stepsFromTour(tour: Tour, files: FileStatus[]): Step[] {
       anchors: s.anchors.map((a) => ({ path: a.path, range: { start: a.start, end: a.end } })),
       stale: false,
     };
-    step.stale = presentAnchor(step, files) === undefined;
+    step.stale = step.anchors.length > 0 && presentAnchor(step, files) === undefined;
     return step;
   });
 }

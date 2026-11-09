@@ -33,10 +33,12 @@ export interface WalkthroughProps {
   onViewed?: (paths: string[]) => void;
 }
 
-/** A step with none of its files in view, reached with Prev / Next / Resume.
- *  The diff pane can't go there, so the strip shows the step over the file the
- *  reader was on, until they open another. */
-interface Parked {
+/** What the walkthrough last put on screen: a step, over the file it opened
+ *  (or over the list, or the file already there, for a step with nothing to
+ *  open). While the pane still shows that file the reader is on that step;
+ *  once it shows another, they moved on their own. A step needs no file of
+ *  its own to be read: an agent's tour may explain before it points. */
+interface Shown {
   agentId: string;
   index: number;
   path: string | null;
@@ -44,11 +46,13 @@ interface Parked {
 
 export function Walkthrough({ agent, files, currentPath, onGo, onViewed }: WalkthroughProps) {
   const { steps, source, index, setIndex } = useWalkthrough(agent, files);
-  const [parked, setParked] = useState<Parked | null>(null);
+  const [shown, setShown] = useState<Shown | null>(null);
 
-  const isParked =
-    parked?.agentId === agent.id && parked.index === index && parked.path === currentPath;
-  const current = isParked ? index : stepIndexFor(steps, currentPath, index);
+  const started = shown !== null && shown.agentId === agent.id;
+  const current =
+    shown !== null && shown.agentId === agent.id && shown.path === currentPath
+      ? shown.index
+      : stepIndexFor(steps, currentPath, index);
 
   const go = useCallback(
     (i: number) => {
@@ -56,12 +60,8 @@ export function Walkthrough({ agent, files, currentPath, onGo, onViewed }: Walkt
       if (!step) return;
       setIndex(i);
       const anchor = presentAnchor(step, files);
-      if (anchor) {
-        setParked(null);
-        onGo(anchor.path, anchor.range);
-      } else {
-        setParked({ agentId: agent.id, index: i, path: currentPath });
-      }
+      setShown({ agentId: agent.id, index: i, path: anchor ? anchor.path : currentPath });
+      if (anchor) onGo(anchor.path, anchor.range);
     },
     [steps, files, setIndex, onGo, agent.id, currentPath],
   );
@@ -84,41 +84,39 @@ export function Walkthrough({ agent, files, currentPath, onGo, onViewed }: Walkt
   const open = useCallback(
     (anchor: StepAnchor) => {
       setIndex(current);
-      setParked(null);
+      setShown({ agentId: agent.id, index: current, path: anchor.path });
       onGo(anchor.path, anchor.range);
     },
-    [current, setIndex, onGo],
+    [current, setIndex, onGo, agent.id],
   );
 
-  // `j` / `k` step while the diff pane is up; a chord with a modifier is
-  // someone else's.
-  useBareKeys(currentPath !== null && steps.length > 0 ? { j: next, k: prev } : null);
+  // `j` / `k` step while a step is on screen or a diff is up; a chord with a
+  // modifier is someone else's.
+  const onStrip = current !== -1;
+  useBareKeys(steps.length > 0 && (onStrip || currentPath !== null) ? { j: next, k: prev } : null);
 
   if (steps.length === 0) return null;
 
-  if (currentPath === null) {
-    const first = steps.findIndex((s) => presentAnchor(s, files) !== undefined);
+  if (onStrip) {
     return (
-      <StartCard
-        count={steps.length}
-        source={source}
-        onStart={first === -1 ? undefined : () => go(first)}
+      <StepStrip
+        step={steps[current]}
+        index={current}
+        total={steps.length}
+        files={files}
+        currentPath={currentPath}
+        onOpen={open}
+        onPrev={prev}
+        onNext={next}
       />
     );
   }
 
-  if (current === -1) return <ResumeStrip step={index + 1} onResume={() => go(index)} />;
+  if (currentPath === null) {
+    return (
+      <StartCard count={steps.length} source={source} started={started} onStart={() => go(index)} />
+    );
+  }
 
-  return (
-    <StepStrip
-      step={steps[current]}
-      index={current}
-      total={steps.length}
-      files={files}
-      currentPath={currentPath}
-      onOpen={open}
-      onPrev={prev}
-      onNext={next}
-    />
-  );
+  return <ResumeStrip step={index + 1} started={started} onResume={() => go(index)} />;
 }

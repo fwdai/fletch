@@ -3,11 +3,12 @@
 // an edit after viewing un-views it, with no event needed to say so.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { DiffBaseMode, FileStatus } from "@/api";
+import { fileRevision } from "@/util/diff";
 
-/** path → the "adds:dels" signature the file had when it was viewed. */
+/** path → the revision (`fileRevision`) the file had when it was viewed. */
 export type ViewedMap = Record<string, string>;
 
-export const signatureOf = (f: FileStatus) => `${f.additions}:${f.deletions}`;
+const signatureOf = fileRevision;
 
 export const isViewedIn = (map: ViewedMap, f: FileStatus) => map[f.path] === signatureOf(f);
 

@@ -6,7 +6,7 @@ import type { Step, StepAnchor } from "./model";
 interface Props {
   step: Step;
   files: FileStatus[];
-  currentPath: string;
+  currentPath: string | null;
   onOpen: (anchor: StepAnchor) => void;
 }
 

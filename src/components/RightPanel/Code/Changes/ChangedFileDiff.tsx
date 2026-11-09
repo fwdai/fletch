@@ -1,13 +1,13 @@
 // One changed file's diff, opened from a changes list (the Code panel's or the
 // Git panel's): the editor's header with a way back, the file's place in the
 // list with prev/next (also `[` / `]`), and the diff, refetched whenever the
-// file's counts move so it tracks the agent's edits.
+// file's revision moves so it tracks the agent's edits.
 import type { DiffBaseMode, FileStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ViewerHeader } from "@/components/RightPanel/FilePanel/ViewerHeader";
 import { IconButton } from "@/components/ui/IconButton";
 import { useHljsTheme } from "@/util/codeTheme";
-import { statusLetter } from "@/util/diff";
+import { fileRevision, statusLetter } from "@/util/diff";
 import { basename, parentDir } from "@/util/format";
 import { useBareKeys } from "@/util/hooks";
 import { DiffPane, extOf, useFileDiff } from "../DiffView";
@@ -53,12 +53,9 @@ export function ChangedFileDiff({
   const next = index >= 0 && index < files.length - 1 ? files[index + 1] : null;
 
   const fetchPath = repoDir ? `${repoDir}/${path}` : path;
-  const diff = useFileDiff(
-    agentId,
-    fetchPath,
-    file ? `${file.additions}:${file.deletions}` : "",
-    base,
-  );
+  // Refetched whenever the file's revision moves — an edit that keeps the
+  // line counts included.
+  const diff = useFileDiff(agentId, fetchPath, file ? fileRevision(file) : "", base);
   const freshKeys = useFreshLines(`${base}:${fetchPath}`, diff);
 
   useBareKeys({

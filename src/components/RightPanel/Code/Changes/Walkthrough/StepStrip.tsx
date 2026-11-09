@@ -9,13 +9,14 @@ interface Props {
   index: number;
   total: number;
   files: FileStatus[];
-  currentPath: string;
+  /** The file the diff pane shows; null over the list. */
+  currentPath: string | null;
   onOpen: (anchor: StepAnchor) => void;
   onPrev: () => void;
   onNext: () => void;
 }
 
-/** Over the diff: the step being read, its files, and the way on. */
+/** Over the diff or the list: the step being read, its files, and the way on. */
 export function StepStrip({
   step,
   index,
