@@ -1,5 +1,5 @@
-// FilePanel — the "Files" mode of the Code panel. Browse the agent's checkout
-// and view/edit any file's contents (diffs live in the Code panel's Live mode).
+// FilePanel — the "Explore" mode of the Code panel. Browse the agent's checkout
+// and view/edit any file's contents (the list of changes is the Changes mode).
 //
 // This orchestrator owns the explorer's state + file operations and switches
 // between two modes:
@@ -35,7 +35,7 @@ import {
 interface FilePanelProps {
   agent: AgentRecord;
   // The open file is owned by the parent Code panel so it survives a switch to
-  // Live mode (and so "Open in editor" from Live can target it).
+  // Changes mode (and so a diff's "Edit" button can target it).
   openPath: string | null;
   onOpenPath: (path: string | null) => void;
   // The Code panel's base switch: what the editor's gutter and Diff view
@@ -58,6 +58,7 @@ export function FilePanel({ agent, openPath, onOpenPath, diffBase }: FilePanelPr
 
   // Reset per-agent so one checkout's search/expansion doesn't leak. (The open
   // file is owned by the parent and reset there.)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: agent.id is the intended reset trigger
   useEffect(() => {
     setQuery("");
     setChangedOnly(false);

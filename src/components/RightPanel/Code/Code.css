@@ -1,4 +1,4 @@
-/* ─── code panel: Files | Live, behind a secondary mode switch ───── */
+/* ─── code panel: Changes | Explore, behind a secondary mode switch ───── */
 .code-panel {
   flex: 1;
   min-height: 0;
@@ -74,7 +74,7 @@
   animation: code-tab-live 1.6s ease-in-out infinite;
 }
 
-/* Live mode — activity feed of agent edits as diffs (ported from the design). */
+/* Changes mode — the changed-file list and one file's diff. */
 .code-wrap {
   flex: 1;
   display: flex;
@@ -114,30 +114,6 @@
 }
 .code-h .ch-rem {
   color: var(--danger);
-}
-
-.code-h .code-open {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 22px;
-  padding: 0 9px;
-  border-radius: 11px;
-  font-weight: 500;
-  border: 1px solid var(--bd-soft);
-  background: transparent;
-  color: var(--fg-2);
-  cursor: pointer;
-  transition:
-    color 0.12s,
-    background 0.12s,
-    border-color 0.12s;
-}
-.code-h .code-open:hover {
-  color: var(--fg-0);
-  border-color: var(--bd);
-  background: var(--hover);
 }
 
 .code-h .code-follow {
@@ -197,106 +173,24 @@
   background: color-mix(in oklch, var(--success), transparent 84%);
 }
 
-.code-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 6px 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
+/* the fork-point list couldn't be fetched: one quiet line, not a banner */
+.code-degraded {
+  flex-shrink: 0;
+  padding: 5px 12px;
   border-bottom: 1px solid var(--bd-soft);
-  background: var(--bg-0);
-  scrollbar-width: thin;
-  scroll-behavior: smooth;
-  flex-shrink: 0;
-}
-.code-tabs::-webkit-scrollbar {
-  height: 4px;
-}
-.code-tabs::-webkit-scrollbar-thumb {
-  background: var(--bd-soft);
-  border-radius: 2px;
-}
-.code-tab {
-  flex-shrink: 0;
-  gap: 7px;
-  height: 26px;
-  padding: 0 9px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  color: var(--fg-2);
-  cursor: pointer;
-  transition:
-    background 0.12s,
-    color 0.12s,
-    border-color 0.12s;
-  position: relative;
-}
-.code-tab:hover {
-  color: var(--fg-0);
-  background: var(--hover);
-}
-.code-tab.active {
+  color: var(--fg-3);
   background: var(--bg-1);
-  color: var(--fg-0);
-  border-color: var(--bd-soft);
-  box-shadow: 0 1px 0 var(--bg-1);
 }
-.code-tab .ct-status {
-  font-family: var(--font-mono);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  flex-shrink: 0;
+
+.code-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0 14px;
+  background: var(--bg-1);
 }
-.code-tab.status-m .ct-status {
-  background: color-mix(in oklch, var(--info), transparent 80%);
-  color: var(--info);
-}
-.code-tab.status-a .ct-status,
-.code-tab.status-u .ct-status {
-  background: color-mix(in oklch, var(--success), transparent 80%);
-  color: var(--success);
-}
-.code-tab.status-d .ct-status {
-  background: color-mix(in oklch, var(--danger), transparent 80%);
-  color: var(--danger);
-}
-.code-tab.status-r .ct-status {
-  background: color-mix(in oklch, var(--warn), transparent 80%);
-  color: var(--warn);
-}
-.code-tab .ct-name {
-  font-family: var(--font-mono);
-  font-weight: 500;
-  letter-spacing: -0.005em;
-}
-.code-tab .ct-stats {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--font-mono);
-}
-.code-tab .ct-stats .a {
-  color: var(--success);
-}
-.code-tab .ct-stats .r {
-  color: var(--danger);
-}
-.code-tab .ct-live {
-  margin-left: 1px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--success);
-  flex-shrink: 0;
-  animation: code-tab-live 1.6s ease-in-out infinite;
-}
+
+/* the live marker: on the mode switch's dot and on the file being edited */
 @keyframes code-tab-live {
   0%,
   100% {
@@ -306,8 +200,113 @@
     box-shadow: 0 0 0 4px color-mix(in oklch, var(--success), transparent 88%);
   }
 }
-.code-tab.live.active {
-  border-color: color-mix(in oklch, var(--success), transparent 60%);
+
+/* ─── changed-file list — the Code panel's Changes and the Git panel's
+   uncommitted files (which tightens the row to its ladder in GitPanel.css) ── */
+.cfl {
+  padding: 0;
+}
+.cfl-row {
+  gap: 10px;
+  padding: 6px 12px;
+  font-family: var(--font-mono);
+  color: var(--fg-1);
+  cursor: default;
+  transition: background 0.1s;
+}
+.cfl-row:hover {
+  background: var(--hover);
+}
+/* rows that open the file's diff in place of the list */
+.cfl-row.openable {
+  cursor: pointer;
+}
+.cfl-row.active {
+  background: var(--bg-2);
+}
+.cfl-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.cfl-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-3);
+}
+.cfl-base {
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-0);
+  font-weight: 600;
+}
+.cfl-stats {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.cfl-stats .add {
+  color: var(--success);
+}
+.cfl-stats .rem {
+  color: var(--danger);
+}
+/* read, and unchanged since: recedes so the unread stand out */
+.cfl-row.viewed .cfl-name,
+.cfl-row.viewed .cfl-stats {
+  opacity: 0.5;
+}
+.cfl-live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  animation: code-tab-live 1.6s ease-in-out infinite;
+}
+.cfl-viewed {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.cfl-row:hover .cfl-viewed,
+.cfl-viewed:focus-visible,
+.cfl-viewed.on {
+  opacity: 1;
+}
+.cfl-viewed.on {
+  color: var(--success);
+}
+.cfl-chev {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.cfl-row.openable:hover .cfl-chev {
+  opacity: 1;
+}
+/* "2 / 5" beside the prev/next arrows in the diff header */
+.cfd-pos {
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+/* the tree never shows these two statuses; the change lists do */
+.fp-badge.s-u,
+.fp-badge.s-\! {
+  background: color-mix(in oklch, var(--badge-color), transparent 82%);
+  color: var(--badge-color);
+}
+.fp-badge.s-u {
+  --badge-color: var(--success);
+}
+.fp-badge.s-\! {
+  --badge-color: var(--danger);
 }
 
 .code-diff {
@@ -415,6 +414,17 @@
 }
 .code-diff .dl.fresh {
   animation: code-line-arrive 1.6s ease-out;
+}
+/* the range a walkthrough step points at, highlighted as it lands */
+.code-diff .dl.focus {
+  animation: code-line-focus 1.5s ease-out;
+}
+@keyframes code-line-focus {
+  0%,
+  40% {
+    box-shadow: inset 2px 0 0 var(--accent);
+    background-color: color-mix(in oklch, var(--accent), transparent 80%);
+  }
 }
 @keyframes code-line-arrive {
   0% {
