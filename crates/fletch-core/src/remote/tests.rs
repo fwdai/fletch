@@ -4358,7 +4358,7 @@ async fn a_full_devices_offer_reaches_the_screen_and_may_be_repeated() {
     assert_eq!(answer["ok"], true, "{answer}");
     assert_eq!(answer["result"], json!({}));
     let expected = json!({ "deviceId": device_id, "deviceName": "Mac A", "url": INVITE });
-    assert_eq!(offers_shown(&sink), [expected.clone()]);
+    assert_eq!(offers_shown(&sink), std::slice::from_ref(&expected));
 
     ws.request("3", "offer_invite", json!({ "url": INVITE }))
         .await;

@@ -474,6 +474,18 @@ stolen `host_key` lets an attacker impersonate the host to paired phones;
 deleting the file regenerates the key on next launch, after which every phone
 must pair again.
 
+Pairing back (see "Pairing back") hands a host a live, full-access code for the
+desktop that offers it, so when it goes out matters. Anyone on the LAN can
+announce a familiar name (see "Discovery"), and a host picked by that name
+accepts its own pairing prompt: had the code gone out with `pair_request`,
+choosing the wrong name would have given that host control of the desktop,
+with no prompt on the desktop at all. So the code leaves only after the
+pairing, on a click at the desktop, by which time the person there has seen
+whether the Mac they meant showed the prompt and the six digits. A host that
+accepted its own prompt never showed them anything. And the code goes only
+to a host that paired the desktop with Full, over the connection that pairing
+authenticated.
+
 Still in place from v1: pairing needs a single-use code, minted on the desktop
 and valid five minutes; turning remote access off closes every connection with
 `4004`; ops are an explicit allowlist with no shell, no file writes and no raw
@@ -667,6 +679,41 @@ The device's nonce stays in its Rust layer between the two frames
 nonce it has not yet revealed. Known-answer vectors are in
 `crates/fletch-proto/src/pairing.rs`.
 
+### Pairing back
+
+Two desktops that are both hosts can each control the other after one
+confirmed pairing, with one more click on the side that asked:
+
+1. Mac A pairs with Mac B by confirmation (above), and the person at B
+   accepts. If A's own remote access is listening, and the `protocol.ops` B
+   answered A lists `offer_invite` (B knows the op, and paired A with Full),
+   A asks: "Paired with “B”. Also let B control this Mac?" — Allow or Not now.
+   Nothing about A has left it yet.
+2. On Allow, A mints a pairing code of its own (`remote_begin_pairing`, preset
+   `full`) and sends its `fletch://pair` link to B over the connection it just
+   authenticated: `{ "op": "offer_invite", "args": { "url": "fletch://pair?…" } }`.
+3. B keeps a `url` of printable ASCII starting `fletch://pair?`, at most
+   2 KiB; anything else is answered `That isn't a Fletch pairing link.` It
+   raises `remote:invite-offered` `{ deviceId, deviceName, url }` on its own
+   screen and answers `{}`. A host with nobody at its screen (the headless
+   host) has no app to pair with anything and answers `This host can't
+   control other machines.`
+4. B's desktop pairs with the link as an ordinary `pair` with a code, over A's
+   LAN address or its relay, and says "Now controlling “A” too". It trusts the
+   link because of the device it came from: a Full device of B, which the
+   person at B accepted moments earlier. A failure is shown on B's screen.
+
+`offer_invite` is in the `publish` scope (see "Scopes"): the link grants full
+control of the sender's own machine, and a device the person at B paired with
+less (Control) may not hand one over. Why A asks only after pairing, rather
+than sending its link with the request: see "Threat model (v2)".
+
+The code A mints is a five-minute Full pairing window on A, like one from
+Settings › Devices. Until it is redeemed it is A's newest window, so a
+confirmed pairing to A in that moment would take it, scopes and all. B redeems
+it within seconds of the click, it is single use, and if B never does
+(offline, an error) it lapses after five minutes.
+
 ### `hello`
 
 ```json
@@ -701,7 +748,7 @@ The six scopes, and what each one covers:
 | `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; every project setting (`set_project_setting`, and the icon through `project_icon_set`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides, and which provider account the host's agents run under (`set_active_provider_account`) |
 | `workflows` | launch, cancel and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
-| `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be — and `autopilot_set`, for the same reason: an enrolled checkout's pushes skip the prompt (see "Autopilot"), so switching autopilot on is a standing publish grant; plus the five settings that decide how a publish happens: `set_publish_confirmation`, `set_publish_approval_wait`, `set_branch_prefix`, `set_draft_prs`, `set_agent_attribution_removed` |
+| `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be — and `autopilot_set`, for the same reason: an enrolled checkout's pushes skip the prompt (see "Autopilot"), so switching autopilot on is a standing publish grant; plus the five settings that decide how a publish happens: `set_publish_confirmation`, `set_publish_approval_wait`, `set_branch_prefix`, `set_draft_prs`, `set_agent_attribution_removed`; and `offer_invite`, which hands this host a full-access code for the sender's own machine, so only a Full device may (see "Pairing back") |
 
 Every op in the table below has exactly one scope. `register_push` is outside
 the scheme and always allowed: it writes the calling device's own APNs token
@@ -974,6 +1021,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `project_icon_candidates` | `{ projectId }` — a fresh scan of the project's repositories on the host for its icon (docs/project-surfaces-plan.md §3.6), primary repo first, best first; each with its image for a thumbnail. `path` is repo-relative (a secondary repo's starts with its folder name). Read-only | `{ path, source, width: number \| null, mime, data }[]` — `data` base64 |
 | `project_icon_set` | `{ projectId, source: string \| null, bytes?: string }` — make `source` the project's icon: `detected:<path>` (one of the candidates' `path`s, re-checked against a fresh scan — never an arbitrary file), `file` with the image's `bytes` (base64, at most 1 MB), `builtin:<glyph>` (`web`, `desktop`, `mobile`, `cli`, `library`, `docs`), `initial`, or `null` to clear the choice (detection fills an undecided project in on add, relocate and the host's startup pass). The image is copied under the host's data directory, so the repository is never read to draw it. Writes `icon.source` and emits `project_settings:changed` and `workspace:changed` | `Workspace` |
 | `project_icon_get` | `{ projectId }` — the stored icon: fetch it when the project's `ProjectRef.icon_hash` changes, never per snapshot. An SVG is drawn through `<img>`, never inlined | `{ glyph } \| { mime, data } \| null` — `null` draws the initial |
+| `offer_invite` | `{ url }` — a `fletch://pair` link for the sending desktop's own machine, printable ASCII, at most 2 KiB; `publish` scope; raises `remote:invite-offered` on the host's screen, and a host with no screen refuses it (see "Pairing back") | `{}` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation

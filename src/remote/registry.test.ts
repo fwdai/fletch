@@ -93,9 +93,12 @@ function fakeClient() {
      *  answer rejects, which is what the registry's advisory reads must
      *  survive. */
     calls: [] as string[],
+    /** The args of each call, in step with `calls`. */
+    args: [] as (Record<string, unknown> | undefined)[],
     answers: {} as Record<string, unknown>,
-    call(op: string) {
+    call(op: string, args?: Record<string, unknown>) {
       self.calls.push(op);
+      self.args.push(args);
       return op in self.answers
         ? Promise.resolve(self.answers[op])
         : Promise.reject(new Error(`unstubbed op ${op}`));
@@ -126,6 +129,8 @@ function fakeClient() {
     },
     retrying: false,
     host: null,
+    /** Set by a test to what the last handshake reported. */
+    protocol: null as HostProtocol | null,
     hostKey: HOST_KEY,
     via: null,
     /** Set by a test to what the real client holds after a handshake. */
@@ -463,6 +468,35 @@ describe("the paired-host lifecycle", () => {
     client.moveTo("error", "Connection closed (1006)");
     expect(entry()).toBeUndefined();
     expect(Object.keys(store.getState().environments)).toEqual([LOCAL_ENVIRONMENT_ID]);
+  });
+
+  it("sends one op over a managed host's connection, and answers with its result", async () => {
+    const { registry, client } = harness();
+    await registry.adopt(RECORD);
+    client.answers.offer_invite = {};
+
+    await expect(
+      registry.call(HOST_KEY, "offer_invite", { url: "fletch://pair?token=K7PQ2M9X" }),
+    ).resolves.toEqual({});
+    expect(client.calls.at(-1)).toBe("offer_invite");
+    expect(client.args.at(-1)).toEqual({ url: "fletch://pair?token=K7PQ2M9X" });
+  });
+
+  it("refuses to call a host it does not manage", async () => {
+    const { registry } = harness();
+    await expect(registry.call(HOST_KEY, "offer_invite")).rejects.toThrow("not paired");
+  });
+
+  it("says whether a managed host answers an op, from what its handshake said", async () => {
+    const { registry, client } = harness();
+    expect(registry.supports(HOST_KEY, "offer_invite")).toBe(false);
+    await registry.adopt(RECORD);
+
+    client.protocol = { ...PROTOCOL, ops: [...PROTOCOL.ops, "offer_invite"] };
+    expect(registry.supports(HOST_KEY, "offer_invite")).toBe(true);
+    // A Control pairing, or an older host: the op is not in what it answered.
+    client.protocol = PROTOCOL;
+    expect(registry.supports(HOST_KEY, "offer_invite")).toBe(false);
   });
 
   it("never removes the local environment", () => {

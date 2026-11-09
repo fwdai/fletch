@@ -40,7 +40,7 @@ import type {
   ProviderLoginExitEvent,
   ProviderLoginOutputEvent,
 } from "./types/providers";
-import type { PairRequest } from "./types/remote";
+import type { InviteOffer, PairRequest } from "./types/remote";
 import type { ReviewState } from "./types/review";
 import type {
   RoadmapItem,
@@ -435,6 +435,12 @@ export function onPairRequestEnded(cb: (e: { id: string }) => void): Promise<Unl
  *  longer works. */
 export function onPairingClosed(cb: (e: { reason: string }) => void): Promise<UnlistenFn> {
   return onLocal<{ reason: string }>("remote:pairing-closed", cb);
+}
+
+/** A desktop paired with this Mac (with Full access) offered its own pairing
+ *  link, so this Mac can control it too. */
+export function onInviteOffered(cb: (e: InviteOffer) => void): Promise<UnlistenFn> {
+  return onLocal<InviteOffer>("remote:invite-offered", cb);
 }
 
 /** The box image install moved: progress while downloading, then the outcome.

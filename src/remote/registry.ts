@@ -100,6 +100,13 @@ export interface HostRegistry {
   forget(hostKey: string): void;
   /** The live client for a host, for whatever needs to talk to it directly. */
   get(hostKey: string): RemoteClient | undefined;
+  /** Whether a host under management answers `op` for this device — what its
+   *  last handshake said (`hostSupports`). False for a host not managed here. */
+  supports(hostKey: string, op: string): boolean;
+  /** Send one op to a host under management over its live connection, and
+   *  answer with the result. Rejects when the host is not managed here or not
+   *  connected, and with the host's words when it refuses. */
+  call<T>(hostKey: string, op: string, args?: Record<string, unknown>): Promise<T>;
 }
 
 export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
@@ -304,5 +311,16 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
     forget,
 
     get: (hostKey) => clients.get(hostKey),
+
+    supports(hostKey, op) {
+      const client = clients.get(hostKey);
+      return !!client && hostSupports(client.protocol, op);
+    },
+
+    call<T>(hostKey: string, op: string, args?: Record<string, unknown>) {
+      const client = clients.get(hostKey);
+      if (!client) return Promise.reject(new Error("That host is not paired with this Mac."));
+      return client.call<T>(op, args);
+    },
   };
 }

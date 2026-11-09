@@ -95,6 +95,16 @@ export interface PairRequest {
   code: string;
 }
 
+/** A paired desktop handing this Mac its own pairing link (`offer_invite`,
+ *  docs/remote-protocol.md "Pairing back"), so this Mac can control it too.
+ *  Only a device paired with Full access can send one. */
+export interface InviteOffer {
+  deviceId: string;
+  deviceName: string;
+  /** `fletch://pair?…`, its shape checked by the host. */
+  url: string;
+}
+
 /** A minted pairing code: 8 characters from `A-Z2-9`, single use, five minutes. */
 export interface PairingInvite {
   token: string;

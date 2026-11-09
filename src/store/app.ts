@@ -10,6 +10,14 @@ import {
 import { refreshWorkspace } from "./refreshWorkspace";
 import type { SliceCreator } from "./types";
 
+/** A host this Mac just paired with by confirmation, which could control this
+ *  Mac too if the person here allows it (docs/remote-protocol.md, "Pairing
+ *  back"). */
+export interface PairBackOffer {
+  hostKey: string;
+  name: string;
+}
+
 export interface AppSlice {
   busy: boolean;
   lastError: string | null;
@@ -34,6 +42,8 @@ export interface AppSlice {
   /** Download progress of the update a manual check found, while it's being
    *  fetched and staged. `null` before one is found and once it's done. */
   updateDownload: UpdateProgress | null;
+  /** The pair-back question `PairBackPrompt` is asking, if any. */
+  pairBackOffer: PairBackOffer | null;
 
   init: () => Promise<void>;
   setBootStatus: (status: BootStatus) => void;
@@ -41,6 +51,8 @@ export interface AppSlice {
   /** Surface a message in the global error banner. For components (which can't
    *  call `set`) to report a failure they'd otherwise have to swallow. */
   setLastError: (message: string) => void;
+  /** Ask, or stop asking, whether a host may control this Mac too. */
+  setPairBackOffer: (offer: PairBackOffer | null) => void;
   /** Record that an update has been staged (drives the restart toast). */
   setUpdateReady: (version: string, notes: string | null) => void;
   /** Dismiss the restart toast. The staged update still applies on next launch. */
@@ -57,6 +69,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
   updateReadyNotes: null,
   updateCheckStatus: null,
   updateDownload: null,
+  pairBackOffer: null,
   initialized: false,
   settingsHydrated: false,
   bootStatus: INITIAL_BOOT_STATUS,
@@ -112,6 +125,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
 
   clearError: () => set({ lastError: null }),
   setLastError: (message) => set({ lastError: message }),
+  setPairBackOffer: (pairBackOffer) => set({ pairBackOffer }),
 
   setUpdateReady: (version, notes) => set({ updateReadyVersion: version, updateReadyNotes: notes }),
   dismissUpdate: () => set({ updateReadyVersion: null, updateReadyNotes: null }),
