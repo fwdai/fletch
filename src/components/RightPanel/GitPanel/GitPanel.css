@@ -317,20 +317,21 @@ button.rg-head {
 .m-attention .rg-dot {
   background: var(--rg-tone);
 }
-.m-attention.current .rg-mark {
-  background: color-mix(in oklch, var(--rg-tone), transparent 84%);
-}
 /* done: a check on a soft green disc (purple once landed) */
 .m-done .rg-mark {
   color: var(--success);
   background: color-mix(in oklch, var(--success), transparent 86%);
 }
+.m-running .rg-mark {
+  color: var(--info);
+}
 .m-done.t-merged .rg-mark {
   color: var(--merged);
   background: color-mix(in oklch, var(--merged), transparent 86%);
 }
-.m-running .rg-mark {
-  color: var(--info);
+/* the halo of the current step that wants attention */
+.m-attention.current .rg-mark {
+  background: color-mix(in oklch, var(--rg-tone), transparent 84%);
 }
 /* title · summary: the title holds its weight, the summary says the state */
 .rg-title {
@@ -463,90 +464,17 @@ button.rg-head {
   color: var(--fg-0);
 }
 /* the lists that live under a row sit flush with its text, with their hover
-   bleeding a little past it — the row's rail stays untouched */
-.rg-body .pr-checks,
-.rg-body .pr-comments {
-  margin-top: 0;
-}
-.rg-body .git-file {
+   bleeding a little past it — the row's rail stays untouched (the changed-file
+   list's rows are styled in Code.css; the checks and threads below) */
+.rg-body .cfl-row {
   padding: 5px 8px;
   margin: 0 -8px;
   border-radius: var(--r-sm);
 }
-
-/* files list */
-.git-file-list {
-  padding: 0;
-}
-.git-file {
-  gap: 10px;
-  padding: 6px 18px;
-  font-family: var(--font-mono);
-  color: var(--fg-1);
-  cursor: default;
-  transition: background 0.1s;
-}
-.git-file:hover {
-  background: var(--hover);
-}
-/* rows that open the file's diff in place of the list */
-.git-file.openable {
-  cursor: pointer;
-}
-.git-file .gc {
-  flex-shrink: 0;
-  color: var(--fg-3);
-  opacity: 0;
-  transition: opacity 0.1s;
-}
-.git-file.openable:hover .gc {
-  opacity: 1;
-}
-/* "2 / 5" beside the prev/next arrows in the diff view header */
-.git-diff-pos {
-  color: var(--fg-3);
-  font-variant-numeric: tabular-nums;
-}
-.git-file .gs {
-  width: 14px;
-  text-align: center;
-  font-weight: 600;
-}
-.git-file .gs.modified {
-  color: var(--warn);
-}
-.git-file .gs.added {
-  color: var(--success);
-}
-.git-file .gs.deleted {
-  color: var(--danger);
-}
-.git-file .gs.renamed {
-  color: var(--info);
-}
-.git-file .gs.untracked {
-  color: var(--success);
-}
-.git-file .gs.conflicted {
-  color: var(--danger);
-}
-.git-file .gn {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.git-file .gx {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
-.git-file .gx .add {
-  color: var(--success);
-}
-.git-file .gx .rem {
-  color: var(--danger);
+/* the Changes row's way to the committed work, when nothing is uncommitted */
+.rg-code-link {
+  flex: none;
+  margin-left: 6px;
 }
 
 /* state cards — rendered in the scrollable body, above the files */
@@ -704,10 +632,7 @@ button.rg-head {
   color: var(--fg-1);
   background: var(--hover);
 }
-.git-commit .cm-title .cm-revert svg {
-  width: 11px;
-  height: 11px;
-}
+/* (its glyph's size is in the glyph block at the end of the file) */
 
 /* override textarea */
 .git-commit .cm-input {
@@ -810,11 +735,6 @@ button.rg-head {
 .theme-light .git-split .gsa-main {
   color: var(--btn-fg-light);
 }
-.git-split .gsa-main svg {
-  width: 13px;
-  height: 13px;
-  opacity: 1;
-}
 .git-split .gsa-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -843,11 +763,6 @@ button.rg-head {
 .theme-light .git-split .gsa-caret {
   color: var(--btn-fg-light);
 }
-.git-split .gsa-caret svg {
-  width: 12px;
-  height: 12px;
-  opacity: 0.9;
-}
 .git-split .gsa-caret:hover:not(:disabled) {
   background: oklch(from var(--accent) calc(l + 0.04) c h);
 }
@@ -860,10 +775,6 @@ button.rg-head {
 .git-split.success .gsa-caret {
   background: var(--success);
   color: oklch(0.16 0.02 150);
-}
-.theme-light .git-split.success .gsa-main,
-.theme-light .git-split.success .gsa-caret {
-  color: oklch(0.99 0.01 150);
 }
 .git-split.success .gsa-main:hover:not(:disabled),
 .git-split.success .gsa-caret:hover:not(:disabled) {
@@ -912,6 +823,10 @@ button.rg-head {
 .git-split.danger .gsa-main:hover:not(:disabled),
 .git-split.danger .gsa-caret:hover:not(:disabled) {
   background: color-mix(in oklch, var(--danger), transparent 90%);
+}
+.theme-light .git-split.success .gsa-main,
+.theme-light .git-split.success .gsa-caret {
+  color: oklch(0.99 0.01 150);
 }
 
 /* narrow panel: stack the bar and let the button span the full width */
@@ -1010,9 +925,7 @@ button.rg-head {
   opacity: 0;
   flex: none;
 }
-.pr-check:hover svg {
-  opacity: 0.7;
-}
+/* (shown on hover: see the glyph block at the end of the file) */
 .pc-dot {
   width: 7px;
   height: 7px;
@@ -1048,6 +961,11 @@ button.rg-head {
   flex-direction: column;
   gap: 2px;
   margin-top: 10px;
+}
+/* under a ladder row, flush with its text */
+.rg-body .pr-checks,
+.rg-body .pr-comments {
+  margin-top: 0;
 }
 .pr-comments-h {
   display: flex;
@@ -1257,9 +1175,6 @@ button.rg-head {
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-}
-.pr-comment .pc-act svg {
-  flex: none;
 }
 .pr-comment .pc-act:hover {
   background: var(--bg-4, var(--bg-2));
@@ -1496,4 +1411,29 @@ button.rg-head {
 /* the armed dismiss: one more click closes the finding for good */
 .pr-comment .pc-act--danger {
   color: var(--danger);
+}
+
+/* ── glyphs inside composite controls: a check row's hover arrow, a thread's
+   action buttons, the split button's halves, the commit composer's revert.
+   Last in the file so no lighter `svg` rule elsewhere follows a heavier one
+   (none of them target the same glyph). ── */
+.pr-check:hover svg {
+  opacity: 0.7;
+}
+.pr-comment .pc-act svg {
+  flex: none;
+}
+.git-split .gsa-main svg {
+  width: 13px;
+  height: 13px;
+  opacity: 1;
+}
+.git-split .gsa-caret svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.9;
+}
+.git-commit .cm-title .cm-revert svg {
+  width: 11px;
+  height: 11px;
 }

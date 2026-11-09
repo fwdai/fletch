@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AgentRecord, PrComments, ReviewPhase, TrackedRepo } from "@/api";
+import { presetReviewAllChanges } from "@/components/RightPanel/Code/prefs";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import { providerLabel } from "@/data/providers";
 import { delegationLabel } from "@/delegation";
@@ -296,6 +297,18 @@ export function GitRepoSection({
   // in the Code tab's tree), which is how `get_file_diff` picks the checkout.
   const repoDir = agent.repos.length > 1 ? repo?.subdir : undefined;
 
+  // The Changes row's way to the work the uncommitted list can't show: the
+  // Code panel, opened on Changes in the All scope.
+  const codeTab = useAppStore((s) => s.features.code);
+  const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
+  const reviewInCode =
+    acting && codeTab
+      ? () => {
+          presetReviewAllChanges();
+          setRightPanelTab(agent.id, "code");
+        }
+      : null;
+
   // The commit composer yields while the agent holds a delegation, and only
   // belongs to the lane whose tree it commits.
   const showCommit = acting && committable && !delegation;
@@ -338,6 +351,7 @@ export function GitRepoSection({
                   onAddToChat: addCommentToChat,
                   ending: laneEnding,
                   review: reviewBodies,
+                  onReviewInCode: reviewInCode,
                 }}
               />
             )}
