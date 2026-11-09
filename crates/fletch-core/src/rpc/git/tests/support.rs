@@ -29,6 +29,15 @@ pub(super) fn dispatcher(cwd: &Path) -> GitDispatcher {
     )
 }
 
+/// GitHub as it answers when no open PR has any branch as head or base.
+pub(super) fn no_open_prs() -> crate::rpc::git::ledger::StaticPrIndex {
+    crate::rpc::git::ledger::StaticPrIndex {
+        heads: Vec::new(),
+        bases: Vec::new(),
+        reachable: true,
+    }
+}
+
 /// Make `repo` not sign, whatever the developer's global config says. The
 /// publication layer reads the repo's effective `commit.gpgsign`, and a
 /// global `true` with a key this process cannot reach would otherwise fail

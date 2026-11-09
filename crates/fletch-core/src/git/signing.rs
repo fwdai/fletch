@@ -631,6 +631,7 @@ mod tests {
                 source_repo: &fx.source,
                 branch: "feat",
                 force: false,
+                expect: None,
             },
             Tip::Branch,
         )

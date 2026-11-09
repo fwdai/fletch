@@ -41,6 +41,7 @@ pub async fn push_agent_impl(
             source_repo: &repo.repo_path,
             branch: &branch,
             force: false,
+            expect: None,
         },
         git::Tip::Branch,
     )

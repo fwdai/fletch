@@ -433,17 +433,21 @@ fn owned_branches_migration_seeds_each_recorded_branch() {
     init(dir.path()).unwrap();
 
     let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
-    let rows: Vec<(String, String, String)> = conn
-        .prepare("SELECT workspace_id, subdir, branch FROM worktree_branches ORDER BY workspace_id, subdir")
+    let rows: Vec<(String, String, String, Option<String>)> = conn
+        .prepare(
+            "SELECT workspace_id, subdir, branch, tip FROM worktree_branches \
+             ORDER BY workspace_id, subdir",
+        )
         .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
     assert_eq!(
         rows,
-        [("w".into(), "app".into(), "feat/mine".into())],
-        "only a recorded branch is seeded as owned"
+        [("w".into(), "app".into(), "feat/mine".into(), None)],
+        "only a recorded branch is seeded as owned, with no tip: what it last \
+         published is unknown"
     );
 }
 

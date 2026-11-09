@@ -22,7 +22,7 @@ use std::path::Path;
 
 use super::identity::{branch_tip, check_identity_of, Identity};
 use super::signing::{host_signs_commits, refresh_remote_refs, sign_unpublished};
-use super::transport::push_commit;
+use super::transport::{push_commit, Lease};
 use crate::error::{Error, Result};
 
 /// What a publish sends: the branch as it stands when read, or one exact
@@ -50,6 +50,11 @@ pub struct Publication<'a> {
     /// advertises right now, and refuses one this checkout never integrated
     /// (`git::transport::push_source`). Needs exactly one push URL.
     pub force: bool,
+    /// For a force: the tip origin must still hold for the push to go through,
+    /// instead of whatever it advertises when the push runs — the commit a
+    /// caller already checked, so the check and the overwrite are one atomic
+    /// step. `None` keeps the read-at-push lease. Ignored without `force`.
+    pub expect: Option<&'a str>,
 }
 
 /// What went out.
@@ -78,7 +83,11 @@ pub async fn publish(p: &Publication<'_>, tip: Tip<'_>) -> Result<Published> {
     } else {
         tip
     };
-    let summary = push_commit(p.checkout, p.source_repo, &tip, p.branch, p.force).await?;
+    let lease = p.force.then_some(match p.expect {
+        Some(expected) => Lease::Expect(expected),
+        None => Lease::Live,
+    });
+    let summary = push_commit(p.checkout, p.source_repo, &tip, p.branch, lease).await?;
     Ok(Published { summary, tip })
 }
 
@@ -173,6 +182,7 @@ mod tests {
             source_repo: &fx.source,
             branch,
             force: false,
+            expect: None,
         }
     }
 
@@ -578,6 +588,7 @@ mod tests {
                 source_repo: &fx.source,
                 branch: "main",
                 force: false,
+                expect: None,
             },
             Tip::Branch,
         )

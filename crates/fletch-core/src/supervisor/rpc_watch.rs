@@ -116,28 +116,6 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
                 }
             }
         }
-        rpc::RpcEvent::Named { name, payload } if name == rpc::git::EVENT_BRANCH_OWNED => {
-            let Some(branch) = payload.get("branch").and_then(|v| v.as_str()) else {
-                tracing::warn!(
-                    event = %name,
-                    payload = %payload,
-                    "git dispatcher emitted ownership event without branch"
-                );
-                return;
-            };
-            if let Ok(record) = sup.workspace.agent(agent_id) {
-                if let Some(subdir) = event_subdir(&record, &payload) {
-                    if let Err(e) = sup.workspace.record_owned_branch(agent_id, subdir, branch) {
-                        tracing::warn!(
-                            error = %e,
-                            agent_id = %agent_id,
-                            branch = %branch,
-                            "git_push/open_pr: failed to record owned branch"
-                        );
-                    }
-                }
-            }
-        }
         rpc::RpcEvent::Named { name, payload } if name == rpc::git::EVENT_PR_OPENED => {
             let Some(number) = payload.get("number").and_then(|v| v.as_u64()) else {
                 tracing::warn!(
@@ -176,17 +154,14 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
                     // the wrong branch into the PR. A no-op write when the base
                     // wasn't redirected, so no need to compare first.
                     //
-                    // The record only. The live `GitDispatcher` stamps its base
-                    // at construction and is not rebuilt until the next
-                    // resume/turn, so a *second* bare `open_pr` in this same
-                    // session still defaults to the spawn base — same bounded
-                    // staleness the dispatcher already documents for
-                    // `owned_branches` (see `supervisor::lifecycle`). The app path
-                    // self-corrects, because the panel reads its trigger's
-                    // `base` param from this row; a bare op call does not.
-                    // Making the base live would mean interior mutability on a
-                    // struct deliberately stamped once at spawn, which is a
-                    // bigger change than it buys.
+                    // The record only. What a push is authorized against reads
+                    // this row at the push (`rpc::git::ledger`), but the live
+                    // `GitDispatcher`'s *default* `open_pr` base is stamped at
+                    // construction, so a second bare `open_pr` in this same
+                    // session still defaults to the spawn base until the next
+                    // resume/turn. The app path self-corrects, because the
+                    // panel reads its trigger's `base` param from this row; a
+                    // bare op call does not.
                     if let Some(base) = payload.get("base").and_then(|v| v.as_str()) {
                         if let Err(e) = sup.workspace.set_repo_parent_branch(agent_id, subdir, base)
                         {

@@ -29,7 +29,7 @@ pub(crate) mod tests;
 mod tours;
 mod turns;
 
-pub use agents::{agent_accounts, live_agents_on_account, session_accounts};
+pub use agents::{agent_accounts, live_agents_on_account, session_accounts, OwnedBranch};
 pub use factory::{is_per_turn_provider, new_agent_record};
 pub use folder_grants::FolderGrant;
 pub use lineage::{Anchor, HistoryPage, SessionLineage, HISTORY_PAGE_DEFAULT, HISTORY_PAGE_MAX};

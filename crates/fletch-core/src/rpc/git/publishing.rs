@@ -3,10 +3,12 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use super::args::{arg_bool, arg_branch, arg_branch_named, refuse_option_like};
+use super::ledger::PrSide;
 use super::targets::{approval_repo, with_repo, Target};
-use super::{GitDispatcher, EVENT_BRANCH_CREATED, EVENT_BRANCH_OWNED, EVENT_PR_OPENED};
-use crate::rpc::caps::Publication;
+use super::{GitDispatcher, EVENT_BRANCH_CREATED, EVENT_PR_OPENED};
+use crate::rpc::caps::{same_branch, BranchFacts, Lineage, LiveFacts, Publication};
 use crate::rpc::{approval, Response, RpcEvent};
+use crate::workspace::OwnedBranch;
 
 impl GitDispatcher {
     /// Fails closed when the gate is on but there is no window to ask through.
@@ -105,15 +107,13 @@ impl GitDispatcher {
         if let Some(resp) = refuse_option_like(id, "open_pr", "branch", &branch) {
             return (resp, effects);
         }
-        // Deliberately the *recorded* base (`t.records()`), never `base`: reading it
-        // from the request would let an agent name a decoy base and publish over
-        // the real one.
-        if let Some(why) = self
-            .caps
-            .refuses_publish(Publication::OpenPr, &branch, t.records())
-        {
-            return (Response::err(id, why), effects);
-        }
+        // Deliberately the *recorded* base, never `base`: reading it from the
+        // request would let an agent name a decoy base and publish over the
+        // real one.
+        let cleared = match self.clear_publish(&t, Publication::OpenPr, &branch).await {
+            Ok(cleared) => cleared,
+            Err(why) => return (Response::err(id, why), effects),
+        };
         // Before the prompt, so nobody approves a push the host then refuses…
         if let Err(resp) = checked_tip(id, &t.cwd, &branch).await {
             return (resp, effects);
@@ -134,15 +134,20 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-        let born_on_origin = born_on_origin_by_this_push(&t, &branch).await;
-        if let Err(e) = t.publish(&branch, &tip, false).await {
-            return (
-                Response::err(id, format!("open_pr push failed: {e}")),
-                effects,
-            );
-        }
-        if born_on_origin {
-            note_branch_born(&t, &branch, !publishes_other_head, &mut effects);
+        let born = cleared.owned.is_none() && creates_on_origin(&t, &branch).await;
+        let published = match t.publish(&branch, &tip, None).await {
+            Ok(published) => published,
+            Err(e) => {
+                return (
+                    Response::err(id, format!("open_pr push failed: {e}")),
+                    effects,
+                )
+            }
+        };
+        self.record_publish(&t, &branch, &cleared, false, born, &published.tip)
+            .await;
+        if born && !publishes_other_head {
+            note_checkout_branch(&t, &branch, &mut effects);
         }
         // By the branch just published, not the checkout's HEAD: with
         // `args.head` the two differ. In the user's repository, like every
@@ -208,17 +213,16 @@ impl GitDispatcher {
         }
         // Lease-based, so a stale local view can't clobber remote work it hasn't seen.
         let force = arg_bool(args, "force");
+        let publication = Publication::Push { force };
         // Earliest point `branch` is known. The whole branch policy, force
         // included, runs here: every refusal the host can make on its own comes
         // before the prompt, so nobody approves a push the host then refuses, and
         // before anything below touches the checkout — publishing may rewrite the
         // unpublished commits (signing), and a refused request must leave no trace.
-        if let Some(why) =
-            self.caps
-                .refuses_publish(Publication::Push { force }, &branch, t.records())
-        {
-            return (Response::err(id, why), effects);
-        }
+        let cleared = match self.clear_publish(&t, publication, &branch).await {
+            Ok(cleared) => cleared,
+            Err(why) => return (Response::err(id, why), effects),
+        };
         if let Err(resp) = checked_tip(id, &t.cwd, &branch).await {
             return (resp, effects);
         }
@@ -239,48 +243,183 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-        let born_on_origin = born_on_origin_by_this_push(&t, &branch).await;
-        match t.publish(&branch, &tip, force).await {
-            Ok(summary) => {
-                if born_on_origin {
-                    note_branch_born(&t, &branch, true, &mut effects);
+        // The live facts too: a PR can merge, and a branch be rewritten, while
+        // the prompt is open. Only when the policy read any, so an ordinary
+        // push asks nothing twice.
+        let cleared = if cleared.live_checked {
+            match self.clear_publish(&t, publication, &branch).await {
+                Ok(cleared) => cleared,
+                Err(why) => return (Response::err(id, why), effects),
+            }
+        } else {
+            cleared
+        };
+        let born = cleared.owned.is_none() && creates_on_origin(&t, &branch).await;
+        // A force leases against the tip its lineage was checked at, so what
+        // lands on origin after the check fails the push instead of being lost.
+        let lease = force.then_some(cleared.expect.as_deref());
+        match t.publish(&branch, &tip, lease).await {
+            Ok(published) => {
+                self.record_publish(&t, &branch, &cleared, force, born, &published.tip)
+                    .await;
+                if born {
+                    note_checkout_branch(&t, &branch, &mut effects);
                 }
-                (Response::ok(id, 0, summary, String::new()), effects)
+                (
+                    Response::ok(id, 0, published.summary, String::new()),
+                    effects,
+                )
             }
             Err(e) => (Response::err(id, e.to_string()), effects),
         }
     }
+
+    /// The publish policy (`caps::refuses_publish`) over facts read now: the
+    /// recorded base and the branches this workspace created (the ledger),
+    /// plus whatever GitHub and origin must answer for this request
+    /// (`caps::live_needs`). Never a spawn-time copy: within a session a PR
+    /// merges, a new PR moves the base, a force moves the tip.
+    async fn clear_publish(
+        &self,
+        t: &Target,
+        publication: Publication,
+        branch: &str,
+    ) -> std::result::Result<Cleared, String> {
+        let subdir = t.subdir.as_deref();
+        let base = self
+            .ledger
+            .base(subdir)
+            .unwrap_or_else(|| t.base_branch.clone());
+        let owned = self
+            .ledger
+            .owned(subdir)
+            .into_iter()
+            .find(|own| same_branch(&own.name, branch));
+        let needs = self
+            .caps
+            .live_needs(publication, branch, &base, owned.is_some());
+        let mut live = LiveFacts::default();
+        if needs.heads_open_pr {
+            live.heads_open_pr = self
+                .pr_index
+                .has_open_pr(&t.source_repo, PrSide::Head, branch)
+                .await;
+        }
+        if needs.bases_open_pr {
+            live.bases_open_pr = self
+                .pr_index
+                .has_open_pr(&t.source_repo, PrSide::Base, branch)
+                .await;
+        }
+        if needs.lineage {
+            let recorded = owned.as_ref().and_then(|own| own.tip.as_deref());
+            live.lineage = lineage(t, branch, recorded).await;
+        }
+        let facts = BranchFacts {
+            base: &base,
+            owned: owned.is_some(),
+            live,
+        };
+        if let Some(why) = self.caps.refuses_publish(publication, branch, &facts) {
+            return Err(why);
+        }
+        let expect = match facts.live.lineage {
+            Lineage::Continuous { at } => Some(at),
+            _ => None,
+        };
+        Ok(Cleared {
+            owned,
+            expect,
+            live_checked: needs.any(),
+        })
+    }
+
+    /// Record a publish that landed `tip` on `branch` in the ledger. A push
+    /// that created the branch makes it this workspace's own; on a branch
+    /// already owned, the tip moves only when the push continued the branch
+    /// this workspace made — a force, whose lineage was checked, or a plain
+    /// push descending from the last recorded tip. A plain push onto a
+    /// same-named branch someone else recreated (allowed, as to any branch)
+    /// must not adopt it, or the next force would pass its lineage check.
+    async fn record_publish(
+        &self,
+        t: &Target,
+        branch: &str,
+        cleared: &Cleared,
+        force: bool,
+        born: bool,
+        tip: &str,
+    ) {
+        let subdir = t.subdir.as_deref();
+        if born {
+            self.ledger.record_push(subdir, branch, tip, true);
+            return;
+        }
+        let Some(owned) = &cleared.owned else {
+            return;
+        };
+        let continues = force
+            || match owned.tip.as_deref() {
+                None => true,
+                Some(last) => crate::git::descends_from(&t.cwd, tip, last).await == Some(true),
+            };
+        if continues {
+            self.ledger.record_push(subdir, branch, tip, false);
+        }
+    }
+}
+
+/// What [`GitDispatcher::clear_publish`] found for a request it allowed.
+struct Cleared {
+    /// The ledger's record of the branch, when this workspace created it.
+    owned: Option<OwnedBranch>,
+    /// For a force: the tip origin must still hold when the push lands — the
+    /// one the lineage check read. `None` leases against whatever origin
+    /// holds then (a branch recorded before tips were, or absent).
+    expect: Option<String>,
+    /// The policy read live facts, which can change while an approval prompt
+    /// is open.
+    live_checked: bool,
+}
+
+/// Whether origin's `branch` is still the one this workspace created: its tip
+/// contains `recorded`, the commit this workspace last published there.
+async fn lineage(t: &Target, branch: &str, recorded: Option<&str>) -> Lineage {
+    let Some(recorded) = recorded else {
+        return Lineage::Unrecorded;
+    };
+    match crate::git::remote_branch_tip(&t.cwd, &t.source_repo, branch).await {
+        None => Lineage::Unknown,
+        Some(None) => Lineage::Absent,
+        Some(Some(at)) => match crate::git::descends_from(&t.cwd, &at, recorded).await {
+            Some(true) => Lineage::Continuous { at },
+            Some(false) => Lineage::Broken,
+            None => Lineage::Unknown,
+        },
+    }
 }
 
 /// Whether the push about to happen is what creates `branch` on origin — the
-/// one fact that makes a branch this workspace's own (`EVENT_BRANCH_OWNED`).
-/// Asked of origin itself, through the host's transport, never read from the
-/// checkout: a name the host materialized is only collision-free against the
-/// checkout's remote-tracking refs, which the agent can edit, so materializing
-/// proves nothing. Skipped for a branch already owned, and a probe that can't
-/// answer records nothing, so a flaky network never widens what is owned.
-async fn born_on_origin_by_this_push(t: &Target, branch: &str) -> bool {
-    if t.owns(branch) {
-        return false;
-    }
+/// one fact that makes a branch this workspace's own. Asked of origin itself,
+/// through the host's transport, never read from the checkout: a name the host
+/// materialized is only collision-free against the checkout's remote-tracking
+/// refs, which the agent can edit, so materializing proves nothing. A probe
+/// that can't answer records nothing, so a flaky network never widens what is
+/// owned.
+async fn creates_on_origin(t: &Target, branch: &str) -> bool {
     crate::git::remote_branch_exists(&t.cwd, &t.source_repo, branch).await == Some(false)
 }
 
-/// After a push created `branch` on origin: it is this workspace's own. When it
-/// is also where the agent works (`checked_out`) and the host didn't
-/// materialize it — a branch made with plain `git checkout -b` — it becomes the
-/// checkout's recorded branch too. A stack's other head published through
-/// `args.head` is owned but not checked out.
-fn note_branch_born(t: &Target, branch: &str, checked_out: bool, effects: &mut Vec<RpcEvent>) {
-    effects.push(RpcEvent::named(
-        EVENT_BRANCH_OWNED,
-        with_repo(json!({ "branch": branch }), &t.subdir),
-    ));
+/// After a push created the checked-out `branch` on origin: unless the host
+/// materialized it (and said so), it was made with plain `git checkout -b`,
+/// and becomes the checkout's recorded branch now. A stack's other head
+/// published through `args.head` is not where the agent works.
+fn note_checkout_branch(t: &Target, branch: &str, effects: &mut Vec<RpcEvent>) {
     let materialized = effects.iter().any(|e| {
         let RpcEvent::Named { name, .. } = e;
         name == EVENT_BRANCH_CREATED
     });
-    if checked_out && !materialized {
+    if !materialized {
         effects.push(RpcEvent::named(
             EVENT_BRANCH_CREATED,
             with_repo(json!({ "branch": branch }), &t.subdir),
@@ -290,19 +429,26 @@ fn note_branch_born(t: &Target, branch: &str, checked_out: bool, effects: &mut V
 
 impl Target {
     /// Publish `tip` to `branch` through the host publication layer, which
-    /// signs when the user's repository does (`git::publish`).
-    async fn publish(&self, branch: &str, tip: &str, force: bool) -> crate::error::Result<String> {
-        let published = crate::git::publish(
+    /// signs when the user's repository does (`git::publish`). `force` is
+    /// `Some(expect)` for a lease-guarded force: `expect` the tip origin must
+    /// still hold, or `None` for whatever it holds when the push runs.
+    async fn publish(
+        &self,
+        branch: &str,
+        tip: &str,
+        force: Option<Option<&str>>,
+    ) -> crate::error::Result<crate::git::Published> {
+        crate::git::publish(
             &crate::git::Publication {
                 checkout: &self.cwd,
                 source_repo: &self.source_repo,
                 branch,
-                force,
+                force: force.is_some(),
+                expect: force.flatten(),
             },
             crate::git::Tip::Commit(tip),
         )
-        .await?;
-        Ok(published.summary)
+        .await
     }
 }
 

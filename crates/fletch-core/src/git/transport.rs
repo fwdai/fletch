@@ -38,7 +38,20 @@ pub(super) async fn push(
     force: bool,
 ) -> Result<String> {
     let source = format!("refs/heads/{branch}");
-    push_source(checkout, source_repo, &source, branch, force).await
+    let lease = force.then_some(Lease::Live);
+    push_source(checkout, source_repo, &source, branch, lease).await
+}
+
+/// What a force push expects to overwrite. Either way the expected tip must
+/// be one this checkout integrated ([`require_integrated`]).
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Lease<'a> {
+    /// The tip the push remote advertises when the push runs.
+    Live,
+    /// Exactly this tip, which the caller already checked: if origin moved
+    /// since, git rejects the push, so nothing written after the check is
+    /// overwritten.
+    Expect(&'a str),
 }
 
 /// [`push`] of one exact commit to `refs/heads/<branch>`: the commit a check
@@ -52,9 +65,9 @@ pub(super) async fn push_commit(
     source_repo: &Path,
     commit: &str,
     branch: &str,
-    force: bool,
+    lease: Option<Lease<'_>>,
 ) -> Result<String> {
-    let summary = push_source(checkout, source_repo, commit, branch, force).await?;
+    let summary = push_source(checkout, source_repo, commit, branch, lease).await?;
     // Best effort, as `-u` would be: a local branch that no longer exists has
     // nothing to track, and the push already happened.
     let upstream = format!("origin/{branch}");
@@ -72,7 +85,8 @@ pub(super) async fn push_commit(
 ///
 /// - a plain push goes to every push URL, as git's would; a force needs
 ///   exactly one, since one lease cannot describe two remotes;
-/// - the lease expects the tip the push remote advertises right now
+/// - a force is `Some(lease)`: it expects the tip the push remote advertises
+///   right now, or the caller's checked tip ([`Lease`])
 ///   (`--force-with-lease=<branch>:<expected>`, empty for "absent"), and the
 ///   check `--force-if-includes` would make — skipped by git once the
 ///   expected value is explicit — is [`require_integrated`];
@@ -84,10 +98,11 @@ async fn push_source(
     source_repo: &Path,
     source: &str,
     branch: &str,
-    force: bool,
+    lease: Option<Lease<'_>>,
 ) -> Result<String> {
     let t = Transport::open(checkout, source_repo).await?;
     let remotes = t.push_remotes();
+    let force = lease.is_some();
     if force && remotes.len() > 1 {
         return Err(Error::Git(format!(
             "refusing to force-push '{branch}': origin has {} push URLs and a lease can hold \
@@ -96,9 +111,12 @@ async fn push_source(
         )));
     }
     let pushed = resolve(checkout, source).await?;
-    let mut lease = Vec::new();
-    if force {
-        let expected = t.tip(&remotes[0], branch).await?;
+    let mut lease_args = Vec::new();
+    if let Some(lease) = lease {
+        let expected = match lease {
+            Lease::Live => t.tip(&remotes[0], branch).await?,
+            Lease::Expect(expected) => Some(expected.to_string()),
+        };
         // As git does, a push that changes nothing is up to date, not forced.
         if let Some(expected) = expected
             .as_deref()
@@ -106,7 +124,7 @@ async fn push_source(
         {
             require_integrated(checkout, branch, expected).await?;
         }
-        lease.push(format!(
+        lease_args.push(format!(
             "--force-with-lease=refs/heads/{branch}:{}",
             expected.as_deref().unwrap_or_default()
         ));
@@ -114,7 +132,7 @@ async fn push_source(
     let refspec = format!("{source}:refs/heads/{branch}");
     let mut up_to_date = true;
     for url in remotes {
-        let out = t.push(url, &lease, &refspec).await?;
+        let out = t.push(url, &lease_args, &refspec).await?;
         if !out.status.success() {
             return Err(Error::Git(format!(
                 "push failed: {}",
@@ -278,14 +296,47 @@ pub async fn remote_branch_exists(
     source_repo: &Path,
     branch: &str,
 ) -> Option<bool> {
+    remote_branch_tip(checkout, source_repo, branch)
+        .await
+        .map(|tip| tip.is_some())
+}
+
+/// The commit `branch` points at on `origin` *right now*, asked the way
+/// [`remote_branch_exists`] asks: `Some(None)` when no such branch is there,
+/// `None` when the question couldn't be answered.
+pub async fn remote_branch_tip(
+    checkout: &Path,
+    source_repo: &Path,
+    branch: &str,
+) -> Option<Option<String>> {
     // Through `Transport`: the user's remote and config. A refused config, a
     // repointed origin or a failed `ls-remote` (a missing remote, a rejected
     // credential, a timeout) is "couldn't ask", never absence. `tip` matches
     // the name verbatim, so a glob GitHub would reject as a literal base is
     // absent like any other name that isn't a branch.
     let t = Transport::open(checkout, source_repo).await.ok()?;
-    let tip = t.tip(t.fetch_remote(), branch).await.ok()?;
-    Some(tip.is_some())
+    t.tip(t.fetch_remote(), branch).await.ok()
+}
+
+/// Whether commit `descendant` contains commit `ancestor` (or is it), read
+/// from `checkout`'s objects. `None` when that can't be told — typically
+/// `descendant` was never fetched into the checkout — as opposed to
+/// `Some(false)`, a history that does not contain it.
+pub async fn descends_from(checkout: &Path, descendant: &str, ancestor: &str) -> Option<bool> {
+    if descendant == ancestor {
+        return Some(true);
+    }
+    let out = git_output(
+        checkout,
+        &["merge-base", "--is-ancestor", ancestor, descendant],
+    )
+    .await
+    .ok()?;
+    match out.status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
 }
 
 /// Rebase the current branch onto `base` (e.g. "main"). Used by the clean-state

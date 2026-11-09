@@ -5,6 +5,15 @@ use rusqlite::OptionalExtension;
 
 use super::*;
 
+/// A branch this workspace created on origin (`WorkspaceManager::owned_branches`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedBranch {
+    pub name: String,
+    /// The commit this workspace last published to it; `None` for a branch
+    /// recorded before tips were (migration 0060's seed) until its next push.
+    pub tip: Option<String>,
+}
+
 /// Every provider session Fletch has run, by its provider session id, with
 /// the account its workspace is stamped with (`default` for no stamp) — what
 /// the usage scan credits that session's spend to. Archived workspaces
@@ -347,49 +356,54 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// Record that this workspace's push created `branch` on origin from the
-    /// checkout at `subdir` — the `git.branch_owned` path, and nothing else:
-    /// ownership is what force and a stacked base are authorized against
-    /// (`rpc::caps::refuses_publish`). Idempotent; a branch stays owned for the
-    /// workspace's life.
-    pub fn record_owned_branch(&self, agent_id: &str, subdir: &str, branch: &str) -> Result<()> {
+    /// Record a push this workspace's agent made to `branch` from the checkout
+    /// at `subdir`, landing `tip` on origin. `created` — origin held no such
+    /// branch before this push — makes the branch this workspace's own, a new
+    /// incarnation if it was owned before and deleted since. Any other push
+    /// only moves the tip of a branch already owned; a branch the workspace
+    /// did not create stays unrecorded. The only writer of ownership, which
+    /// force and a stacked base are authorized against
+    /// (`rpc::caps::refuses_publish`).
+    pub fn record_branch_push(
+        &self,
+        agent_id: &str,
+        subdir: &str,
+        branch: &str,
+        tip: &str,
+        created: bool,
+    ) -> Result<()> {
         let conn = self.db.lock();
-        conn.execute(
-            "INSERT OR IGNORE INTO worktree_branches (workspace_id, subdir, branch, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![agent_id, subdir, branch, now_millis()],
-        )?;
+        if created {
+            conn.execute(
+                "INSERT INTO worktree_branches (workspace_id, subdir, branch, tip, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(workspace_id, subdir, branch) DO UPDATE SET tip = excluded.tip",
+                rusqlite::params![agent_id, subdir, branch, tip, now_millis()],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE worktree_branches SET tip = ?4
+                  WHERE workspace_id = ?1 AND subdir = ?2 AND branch = ?3",
+                rusqlite::params![agent_id, subdir, branch, tip],
+            )?;
+        }
         Ok(())
     }
 
-    /// Head branches of one checkout's PRs whose last recorded state is open.
-    /// Says review is pending on a branch, never who made it: adopted PRs are
-    /// in the set too (see `owned_branches` for that).
-    pub fn open_pr_branches(&self, agent_id: &str, subdir: &str) -> Result<Vec<String>> {
-        let conn = self.db.lock();
-        let mut stmt = conn.prepare(
-            "SELECT branch FROM worktree_prs
-              WHERE workspace_id = ?1 AND subdir = ?2 AND state = 'open'
-                AND branch IS NOT NULL AND TRIM(branch) <> ''
-              ORDER BY number",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![agent_id, subdir], |row| {
-            row.get::<_, String>(0)
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
     /// The branches this workspace created on origin from one checkout, oldest
-    /// first.
-    pub fn owned_branches(&self, agent_id: &str, subdir: &str) -> Result<Vec<String>> {
+    /// first, each with the commit it last published there.
+    pub fn owned_branches(&self, agent_id: &str, subdir: &str) -> Result<Vec<OwnedBranch>> {
         let conn = self.db.lock();
         let mut stmt = conn.prepare(
-            "SELECT branch FROM worktree_branches
+            "SELECT branch, tip FROM worktree_branches
               WHERE workspace_id = ?1 AND subdir = ?2
               ORDER BY created_at, branch",
         )?;
         let rows = stmt.query_map(rusqlite::params![agent_id, subdir], |row| {
-            row.get::<_, String>(0)
+            Ok(OwnedBranch {
+                name: row.get(0)?,
+                tip: row.get(1)?,
+            })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }

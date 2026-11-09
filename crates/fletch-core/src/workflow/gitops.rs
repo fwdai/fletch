@@ -179,6 +179,7 @@ pub async fn finalize(f: &Finalize<'_>) -> Result<FinalizeOutcome> {
             source_repo,
             branch,
             force: false,
+            expect: None,
         },
         git::Tip::Commit(&head),
     )

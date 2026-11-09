@@ -385,7 +385,7 @@ async fn open_pr_stays_refused_on_an_owned_base() {
         "feat/backend".to_string(),
         AgentCaps::interactive(),
     )
-    .with_owned_branches(&["feat/backend"]);
+    .with_owned_branches(&[("feat/backend", None)]);
     for args in [json!({"title": "t"}), json!({"title": "t", "base": "main"})] {
         let (resp, fx) = disp.dispatch_inner("b5", "open_pr", &args).await;
         assert!(!resp.ok, "{args}: {resp:?}");

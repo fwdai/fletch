@@ -1,6 +1,7 @@
 mod args;
 mod commands;
 mod issue_reads;
+pub mod ledger;
 mod pr_reads;
 mod pr_writes;
 mod publishing;
@@ -23,14 +24,9 @@ use super::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
 /// The checkout is now on `branch`: payload `{ "branch" }` (plus `repo`). The
 /// watcher records it as the checkout's branch, for display and PR discovery.
-/// It grants nothing; ownership is `EVENT_BRANCH_OWNED`.
+/// It grants nothing: ownership is the dispatcher's own record
+/// (`ledger::BranchLedger`), written at the push.
 pub const EVENT_BRANCH_CREATED: &str = "git.branch_created";
-
-/// This workspace's push created `branch` on origin, which held no such branch
-/// a moment before: payload `{ "branch" }` (plus `repo`). The watcher adds it to
-/// the checkout's owned branches, the record force and a stacked base are
-/// authorized against (`caps::refuses_publish`).
-pub const EVENT_BRANCH_OWNED: &str = "git.branch_owned";
 
 pub const EVENT_PR_OPENED: &str = "git.pr_opened";
 
@@ -89,13 +85,6 @@ pub struct RepoTarget {
     /// The user's own repository `cwd` was cloned from (`Target::source_repo`).
     pub source_repo: PathBuf,
     pub base_branch: String,
-    /// The branches this workspace created on origin from this checkout, as
-    /// recorded when the dispatcher was built. The only branches it may
-    /// force-push, and the only base it may push to (`caps::refuses_publish`).
-    pub owned_branches: Vec<String>,
-    /// Head branches of the checkout's open PRs, read with `owned_branches`.
-    /// A base must be among them too, so a push to it lands in a PR.
-    pub open_pr_heads: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -107,11 +96,13 @@ pub struct GitDispatcher {
     source_repo: PathBuf,
     base_branch: String,
     default_subdir: Option<String>,
-    /// The default checkout's `RepoTarget::owned_branches`; empty fails a force
-    /// closed.
-    owned_branches: Vec<String>,
-    /// The default checkout's `RepoTarget::open_pr_heads`.
-    open_pr_heads: Vec<String>,
+    /// The host's records a push is authorized against — base, owned branches,
+    /// what was last published to each — read and written at the push, never
+    /// stamped (`ledger`). Without an engine, an in-memory ledger that owns
+    /// only what its own pushes create.
+    ledger: std::sync::Arc<dyn ledger::BranchLedger>,
+    /// GitHub's open PRs, asked at the push when a rule needs them.
+    pr_index: std::sync::Arc<dyn ledger::PullRequestIndex>,
     /// Primary included. Empty without `with_repos`, so `args.repo` is then rejected.
     repos: std::collections::HashMap<String, RepoTarget>,
     /// Resolved at open_pr time, not construction, so a mid-session issue pick
@@ -137,8 +128,8 @@ impl GitDispatcher {
             source_repo,
             base_branch,
             default_subdir: None,
-            owned_branches: Vec::new(),
-            open_pr_heads: Vec::new(),
+            ledger: std::sync::Arc::new(ledger::MemoryLedger::default()),
+            pr_index: std::sync::Arc::new(ledger::GitHubPrIndex),
             repos: std::collections::HashMap::new(),
             issue_agent: None,
             caps,
@@ -157,16 +148,31 @@ impl GitDispatcher {
         self
     }
 
-    #[cfg(test)]
-    pub fn with_owned_branches(mut self, branches: &[&str]) -> Self {
-        self.owned_branches = branches.iter().map(|b| b.to_string()).collect();
+    /// Authorize pushes against `ledger` (the workspace database's, in
+    /// production: `ledger::WorkspaceLedger`).
+    pub fn with_ledger(mut self, ledger: std::sync::Arc<dyn ledger::BranchLedger>) -> Self {
+        self.ledger = ledger;
         self
     }
 
     #[cfg(test)]
-    pub fn with_open_pr_heads(mut self, heads: &[&str]) -> Self {
-        self.open_pr_heads = heads.iter().map(|b| b.to_string()).collect();
+    pub fn with_pr_index(mut self, index: impl ledger::PullRequestIndex + 'static) -> Self {
+        self.pr_index = std::sync::Arc::new(index);
         self
+    }
+
+    /// An in-memory ledger that owns `branches`, each with the tip it last
+    /// published (`None`: recorded before tips were).
+    #[cfg(test)]
+    pub fn with_owned_branches(self, branches: &[(&str, Option<&str>)]) -> Self {
+        self.with_ledger(std::sync::Arc::new(ledger::MemoryLedger::owning(branches)))
+    }
+
+    /// The ledger's owned branches of the default checkout, as a test reads
+    /// them back after a push.
+    #[cfg(test)]
+    pub fn owned_now(&self) -> Vec<crate::workspace::OwnedBranch> {
+        self.ledger.owned(self.default_subdir.as_deref())
     }
 
     pub fn with_approval(mut self, sink: crate::host::Sink, agent_id: &str) -> Self {
@@ -187,12 +193,6 @@ impl GitDispatcher {
             .collect();
         let primary = self.repos.values().find(|repo| repo.cwd == self.cwd);
         self.default_subdir = primary.map(|repo| repo.subdir.clone());
-        self.owned_branches = primary
-            .map(|repo| repo.owned_branches.clone())
-            .unwrap_or_default();
-        self.open_pr_heads = primary
-            .map(|repo| repo.open_pr_heads.clone())
-            .unwrap_or_default();
         self
     }
 

@@ -223,6 +223,7 @@ pub async fn repo_create_and_push(
             source_repo: target,
             branch: &branch,
             force: false,
+            expect: None,
         },
         crate::git::Tip::Branch,
     )

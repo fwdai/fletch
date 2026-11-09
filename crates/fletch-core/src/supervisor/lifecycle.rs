@@ -1138,29 +1138,11 @@ impl Supervisor {
         for r in &record.repos {
             let checkout = r.checkout_path(agent_id)?;
             let base = r.base_branch().await;
-            // The branches this workspace created on origin from this checkout,
-            // which fence force and the stacked-base push
-            // (`rpc::caps::refuses_publish`). Read with `base`, so a base
-            // rewritten by stacking on an owned branch arrives with it. A branch
-            // created this session joins on the next resume/turn, when the
-            // dispatcher is rebuilt; a failed read owns nothing, which only
-            // refuses more. The open PR heads say whether an owned base still
-            // has a PR to review what is pushed to it; same failure rule.
-            let owned_branches = self
-                .workspace
-                .owned_branches(agent_id, &r.subdir)
-                .unwrap_or_default();
-            let open_pr_heads = self
-                .workspace
-                .open_pr_branches(agent_id, &r.subdir)
-                .unwrap_or_default();
             repo_targets.push(rpc::git::RepoTarget {
                 subdir: r.subdir.clone(),
                 cwd: checkout,
                 source_repo: r.repo_path.clone(),
                 base_branch: base,
-                owned_branches,
-                open_pr_heads,
             });
         }
         // A workspace started from an issue carries its ref here ("123" for
@@ -1189,7 +1171,14 @@ impl Supervisor {
                 .with_repos(repo_targets)
                 .with_close_issue(agent_id, close_issue)
                 .with_approval(ctx.sink.clone(), agent_id)
-                .with_review(ctx.clone(), agent_id);
+                .with_review(ctx.clone(), agent_id)
+                // Pushes are authorized against the workspace's records as they
+                // stand at the push, not as they stood at spawn
+                // (`rpc::git::ledger`).
+                .with_ledger(Arc::new(rpc::git::ledger::WorkspaceLedger::new(
+                    ctx.clone(),
+                    agent_id,
+                )));
         // A roadmap PM chat gets the roadmap ops (roadmap_list /
         // roadmap_propose), scoped to its own project; a local reviewer gets
         // `review_submit` (`rpc::review`), the one op its mandate needs. Both

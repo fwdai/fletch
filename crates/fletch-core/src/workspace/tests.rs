@@ -1597,12 +1597,15 @@ fn bind(wm: &WorkspaceManager, id: &str, subdir: &str, pr: &crate::github::PrSta
     wm.set_focused_pr(id, subdir, pr.number).unwrap().unwrap();
 }
 
-/// Ownership is written by `record_owned_branch` alone: neither the checkout's
-/// recorded branch moving nor a PR joining the set — adopted from a teammate,
-/// say — makes a branch owned. Owned branches accumulate across new branches,
-/// so the lower branch of a stack stays owned, and are scoped to the checkout.
+/// Ownership is written by `record_branch_push` alone, and only by a push
+/// that created the branch: neither the checkout's recorded branch moving, a
+/// PR joining the set (adopted from a teammate, say), nor a push to a branch
+/// someone else created makes a branch owned. A later push moves only an
+/// owned branch's tip, and a push creating it again is a new incarnation.
+/// Owned branches accumulate, so the lower branch of a stack stays owned, and
+/// are scoped to the checkout.
 #[test]
-fn owned_branches_are_recorded_only_by_their_own_write() {
+fn owned_branches_are_recorded_only_by_a_push_that_created_them() {
     let db = test_db();
     let wm = WorkspaceManager::new(db.clone());
     seed_repo(&db, "/r");
@@ -1617,6 +1620,10 @@ fn owned_branches_are_recorded_only_by_their_own_write() {
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
     let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+    let owned = |name: &str, tip: &str| OwnedBranch {
+        name: name.into(),
+        tip: Some(tip.into()),
+    };
 
     wm.set_repo_branch(&id, &subdir, "feat/checked-out")
         .unwrap();
@@ -1631,80 +1638,34 @@ fn owned_branches_are_recorded_only_by_their_own_write() {
         branch: Some("teammate/wip".into()),
     };
     wm.record_repo_pr(&id, &subdir, &adopted).unwrap();
+    wm.record_branch_push(&id, &subdir, "teammate/wip", "t1", false)
+        .unwrap();
     assert!(
         wm.owned_branches(&id, &subdir).unwrap().is_empty(),
-        "a checkout's branch or an adopted PR is not ownership"
+        "a checkout's branch, an adopted PR or a push to another's branch is not ownership"
     );
 
-    wm.record_owned_branch(&id, &subdir, "feat/backend")
+    wm.record_branch_push(&id, &subdir, "feat/backend", "b1", true)
         .unwrap();
-    wm.record_owned_branch(&id, &subdir, "feat/ui").unwrap();
-    wm.record_owned_branch(&id, &subdir, "feat/backend")
+    wm.record_branch_push(&id, &subdir, "feat/ui", "u1", true)
+        .unwrap();
+    wm.record_branch_push(&id, &subdir, "feat/backend", "b2", false)
         .unwrap();
     wm.set_repo_branch(&id, &subdir, "feat/ui").unwrap();
     assert_eq!(
         wm.owned_branches(&id, &subdir).unwrap(),
-        ["feat/backend", "feat/ui"],
-        "idempotent, and the lower branch of a stack stays owned"
+        [owned("feat/backend", "b2"), owned("feat/ui", "u1")],
+        "a later push moves the tip, and the lower branch of a stack stays owned"
+    );
+    wm.record_branch_push(&id, &subdir, "feat/ui", "u9", true)
+        .unwrap();
+    assert_eq!(
+        wm.owned_branches(&id, &subdir).unwrap()[1],
+        owned("feat/ui", "u9"),
+        "created again: the new incarnation's tip"
     );
     assert!(wm.owned_branches(&id, "other-repo").unwrap().is_empty());
     assert!(wm.owned_branches("ag-other", &subdir).unwrap().is_empty());
-}
-
-/// Only PRs still open count as review pending on their branch: a merged or
-/// closed lower PR no longer reviews anything pushed to it, and a row whose
-/// branch was never learned names nothing.
-#[test]
-fn open_pr_branches_leave_out_settled_and_unnamed_prs() {
-    let db = test_db();
-    let wm = WorkspaceManager::new(db.clone());
-    seed_repo(&db, "/r");
-    let mut rec = new_agent_record(
-        "denali".into(),
-        "a".into(),
-        "claude".into(),
-        mk_repo("/r"),
-        "task".into(),
-        AgentView::Custom,
-    );
-    let id = rec.id.clone();
-    wm.add_agent(&mut rec).unwrap();
-    let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
-
-    let pr = |number: u32, state: crate::github::PrStatus, branch: Option<&str>| {
-        crate::github::PrState {
-            number,
-            url: format!("https://github.com/o/r/pull/{number}"),
-            title: String::new(),
-            state,
-            mergeable: crate::github::MergeableState::Unknown,
-            opened_at: None,
-            merged_at: None,
-            branch: branch.map(str::to_string),
-        }
-    };
-    use crate::github::PrStatus::{Closed, Merged, Open};
-    for p in [
-        pr(1, Open, Some("feat/backend")),
-        pr(2, Merged, Some("feat/merged")),
-        pr(3, Closed, Some("feat/closed")),
-        pr(4, Open, None),
-        pr(5, Open, Some("feat/ui")),
-    ] {
-        wm.record_repo_pr(&id, &subdir, &p).unwrap();
-    }
-    assert_eq!(
-        wm.open_pr_branches(&id, &subdir).unwrap(),
-        ["feat/backend", "feat/ui"]
-    );
-
-    wm.record_repo_pr(&id, &subdir, &pr(1, Merged, Some("feat/backend")))
-        .unwrap();
-    assert_eq!(
-        wm.open_pr_branches(&id, &subdir).unwrap(),
-        ["feat/ui"],
-        "a lower PR that merges stops counting"
-    );
 }
 
 /// A checkout accumulates every PR it has held, not just the current binding:
