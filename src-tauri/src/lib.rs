@@ -1375,6 +1375,7 @@ pub fn run() {
             commands::list_repo_tree,
             commands::read_checkout_file,
             commands::get_file_diff,
+            commands::get_tour,
             commands::write_checkout_file,
             commands::rename_checkout_path,
             commands::delete_checkout_path,

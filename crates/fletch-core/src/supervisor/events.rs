@@ -371,6 +371,23 @@ pub(super) fn emit_title(sink: &dyn EventSink, agent_id: &str, title: String) {
 }
 
 #[derive(Clone, serde::Serialize)]
+struct TourChangedPayload {
+    agent_id: String,
+}
+
+/// The agent wrote its walkthrough via the `tour_set` mailbox op. Carries no
+/// steps: the Code panel reloads them with `get_tour`.
+pub(super) fn emit_tour_changed(sink: &dyn EventSink, agent_id: &str) {
+    emit(
+        sink,
+        "tour:changed",
+        TourChangedPayload {
+            agent_id: agent_id.to_string(),
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
 struct AgentNotifyPayload {
     agent_id: String,
     title: String,

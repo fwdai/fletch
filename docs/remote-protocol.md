@@ -796,6 +796,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `list_changed_files` | `{ agentId, baseMode? }` — the files changed in the agent's checkouts: `"fork"` (the default) since the fork point, committed or not, untracked files included; `"head"` only uncommitted work (also what `"fork"` answers when the fork point can't be resolved). `staged` is always false under `"fork"`. Paths are prefixed with the checkout's subdir for a multi-repo agent, as in `list_checkout_tree` | `FileStatus[]` |
 | `read_checkout_file` | `{ agentId, path, baseMode? }` | `CheckoutFileContents` |
 | `get_file_diff` | as command | `string` |
+| `get_tour` | `{ agentId }` — the walkthrough the agent wrote of its changes (`tour_set`), newest only; `tour:changed` says when to read it again | `Tour \| null` |
 | `commit_agent` | as command | `null` |
 | `push_agent` | as command | `string` |
 | `pull_agent` | as command — `git pull` in the checkout, with the same GitHub credential `push_agent` spends | `null` |
@@ -1353,7 +1354,7 @@ verify:report          publish:approval-requested
 publish:approval-resolved
 delegation:changed
 autopilot:state        autopilot:event        autopilot:switches
-review:changed
+review:changed         tour:changed
 wf:event               wf:run                 wf:run-deleted
 roadmap:item           roadmap:item-deleted   roadmap:item-event
 roadmap:proposal       roadmap:proposal-deleted
@@ -1554,6 +1555,10 @@ client replaces its row for `(agent_id, subdir)` with it and seeds the set with
 `get_reviews {}` after every handshake. The findings themselves are review
 threads, carried by `pr:threads_changed` beside GitHub's (each thread has a
 `source`).
+
+`tour:changed` `{ agent_id }` says the agent wrote a new walkthrough of its
+changes, replacing the last; it carries no steps, so a client showing that
+agent's changes reads `get_tour` again.
 
 The whole `wf:*` and `roadmap:*` stream is forwarded, so a remote run monitor
 and a remote board stay live instead of rendering once and going stale. Four

@@ -177,3 +177,37 @@ root), every git op accepts an optional `args.repo` — the sibling checkout's
 directory name — and defaults to your starting repository when absent. Commit
 in each repo with plain local git; use `args.repo` only for the host-brokered
 ops above, e.g. `{"op":"git_push","args":{"repo":"backend","branch":"feat/x"}}`.
+
+### Walkthrough
+
+`tour_set` gives the user a guided reading of your changes: the Code panel
+shows it beside the diff, so they can step through the change in the order it
+makes sense instead of file by file. Args: `{"steps":[{"title":"…","note":"…",
+"anchors":[{"path":"src/a.ts","start":10,"end":24}]}]}` — `title` optional (max
+80 chars), `note` required (max 600), at most 12 `anchors` (may be empty).
+`path` is relative to the repository root, prefixed with the checkout's
+directory name in a multi-repo workspace (`backend/src/a.rs`); `start` and
+`end` are 1-indexed, inclusive lines of the file's current content.
+
+- Call it at the end of every turn that changed code, just before your final
+  reply, covering that turn's changes; and again before `open_pr`, covering
+  the whole PR. Fire-and-forget, like `set_title`.
+- Order the steps the way you would explain the change, roughly the order it
+  was built: contract and data, then logic, call sites, UI, tests.
+- 3–12 steps, one idea each. A step groups that idea's hunks across files: a
+  button, its handler and its style are one step with three anchors.
+- A note is one or two sentences on what the step does and why. Do not restate
+  the diff; it is right beside the note.
+- A repeat call replaces the whole tour.
+
+Put the explanation of a change in the tour, not in code comments. Comments in
+code are for its future readers and must describe the code as it is, never the
+change that produced it.
+
+```sh
+ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+jq -n --arg id "$ID" '{id:$id,op:"tour_set",args:{steps:[
+  {title:"Limit setting",note:"Per-deployment request limit instead of a constant.",anchors:[{path:"src/config.ts",start:12,end:18}]},
+  {note:"Counts requests per key and answers 429 past the limit.",anchors:[{path:"src/limit.ts",start:1,end:42},{path:"src/server.ts",start:30,end:31}]}
+]}}' > "$FLETCH_RPC_DIR/requests/$ID.json.tmp" && mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"
+```
