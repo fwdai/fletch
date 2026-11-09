@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::host::EngineCtx;
 use crate::rpc;
 
-use super::events::{emit_branch, emit_git_action, emit_notify, emit_title};
+use super::events::{emit_branch, emit_git_action, emit_notify, emit_title, emit_tour_changed};
 use super::Supervisor;
 
 /// How often the per-agent RPC watcher scans its mailbox for new requests.
@@ -279,6 +279,30 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
                     error = %e,
                     agent_id = %agent_id,
                     "set_title: failed to persist workspace title"
+                ),
+            }
+        }
+        rpc::RpcEvent::Named { name, payload } if name == rpc::git::EVENT_TOUR_SET => {
+            let steps: Vec<crate::workspace::TourStep> =
+                match serde_json::from_value(payload["steps"].clone()) {
+                    Ok(steps) => steps,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "dispatcher emitted tour event without steps");
+                        return;
+                    }
+                };
+            // Credited to the turn being explained when the host knows it; a
+            // lookup failure costs only that link, not the tour.
+            let turn_id = sup
+                .workspace
+                .latest_user_turn_id(agent_id)
+                .unwrap_or_default();
+            match sup.workspace.set_tour(agent_id, turn_id.as_deref(), &steps) {
+                Ok(()) => emit_tour_changed(ctx.sink.as_ref(), agent_id),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    agent_id = %agent_id,
+                    "tour_set: failed to persist the walkthrough"
                 ),
             }
         }

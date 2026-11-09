@@ -28,6 +28,7 @@ mod session;
 mod settings;
 mod shell;
 mod tooling;
+mod tour;
 mod workflow;
 mod workspace;
 
@@ -53,5 +54,6 @@ pub use session::*;
 pub use settings::*;
 pub use shell::*;
 pub use tooling::*;
+pub use tour::*;
 pub use workflow::*;
 pub use workspace::*;

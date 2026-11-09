@@ -26,6 +26,7 @@ mod repos;
 mod sessions;
 #[cfg(test)]
 pub(crate) mod tests;
+mod tours;
 mod turns;
 
 pub use agents::{agent_accounts, live_agents_on_account, session_accounts};
@@ -38,6 +39,7 @@ pub use paths::{
     repo_checkout_path, sweep_discarded_checkouts, tools_root, WORKSPACES_ROOT_ENV,
 };
 pub use sessions::NativeTranscript;
+pub use tours::{Tour, TourAnchor, TourStep};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

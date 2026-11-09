@@ -152,6 +152,7 @@ pub const OPS: &[&str] = &[
     "list_changed_files",
     "read_checkout_file",
     "get_file_diff",
+    "get_tour",
     "commit_agent",
     "push_agent",
     "pull_agent",
@@ -476,6 +477,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("list_changed_files", Scope::Observe),
     ("read_checkout_file", Scope::Observe),
     ("get_file_diff", Scope::Observe),
+    ("get_tour", Scope::Observe),
     // Commits and the rest of the Git panel's working-tree moves stay with the
     // agents that own the checkout: nothing they do leaves this machine.
     ("commit_agent", Scope::Agents),
@@ -1018,6 +1020,11 @@ impl Dispatch for SupervisorDispatch {
                         crate::commands::get_file_diff_impl(sup, &a.agent_id, &a.path, a.base_mode)
                             .await,
                     )
+                }
+
+                "get_tour" => {
+                    let a: AgentArgs = parse(args)?;
+                    res(sup.workspace.get_tour(&a.agent_id))
                 }
 
                 "commit_agent" => {
