@@ -6,7 +6,7 @@ import { useAppStore } from "@/store";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
-import { groupProjectRefs } from "@/util/projects";
+import { groupProjectRefs, projectKeyResolver } from "@/util/projects";
 import { useRuns } from "@/workflows/run/useRuns";
 import { isGroupOpen, type OpenMap } from "./groupOpen";
 import { NewProjectPopover } from "./NewProjectPopover";
@@ -61,7 +61,6 @@ function groupByProject(
 ): ProjectGroupData[] {
   const groups = new Map<string, ProjectGroupData>();
   const byPath = new Map<string, ProjectGroupData>();
-  const byProjectId = new Map<string, ProjectGroupData>();
   for (const project of groupProjectRefs(refs)) {
     const g: ProjectGroupData = {
       key: project.id,
@@ -74,31 +73,30 @@ function groupByProject(
       pinned: true,
     };
     groups.set(project.id, g);
-    if (project.repos[0].project_id) byProjectId.set(project.repos[0].project_id, g);
     for (const r of project.repos) byPath.set(r.path, g);
   }
-  // Resolve real backend work (agents, runs) to its group: by project first, so
-  // a relocate — which moves the repo path but keeps the project_id — attaches
-  // to the moved group instead of forking. A repo that isn't pinned at all
-  // still surfaces its work via a path-keyed fallback group.
+  // Resolve real backend work (agents, runs) to its group (see
+  // `projectKeyResolver`): by project first, so a relocate attaches to the
+  // moved group instead of forking. A repo that isn't pinned at all still
+  // surfaces its work via a path-keyed fallback group.
+  const keyOf = projectKeyResolver(refs);
   const groupFor = (projectId: string, path: string | undefined): ProjectGroupData | null => {
-    const byId = projectId ? byProjectId.get(projectId) : undefined;
-    if (byId) return byId;
-    if (!path) return null;
-    let g = byPath.get(path);
+    const key = keyOf(projectId, path);
+    if (key === undefined) return null;
+    let g = groups.get(key);
     if (!g) {
       g = {
-        key: path,
-        label: basename(path),
-        repoPaths: [path],
-        primaryPath: path,
+        key,
+        label: basename(key),
+        repoPaths: [key],
+        primaryPath: key,
         agents: [],
         drafts: [],
         runs: [],
         pinned: false,
       };
-      groups.set(path, g);
-      byPath.set(path, g);
+      groups.set(key, g);
+      byPath.set(key, g);
     }
     return g;
   };
