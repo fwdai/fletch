@@ -39,7 +39,6 @@ export interface FeatureFlags {
   code: boolean;
   run: boolean;
   terminal: boolean;
-  thinkingBudget: boolean;
   /** Show the context badge (usage + compact) in the conversation header. */
   tokenUsage: boolean;
   /** Float projects with recently launched or running agents to the top of
@@ -57,7 +56,6 @@ export const DEFAULT_FEATURES: FeatureFlags = {
   code: true,
   run: false,
   terminal: false,
-  thinkingBudget: true,
   tokenUsage: true,
   sidebarActiveFirst: true,
   nativeView: false,
@@ -76,6 +74,7 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
       autoEdit?: boolean;
       sidebarUsage?: boolean;
       missionControl?: boolean;
+      thinkingBudget?: boolean;
     };
     // The old "Files" and "Diff" tabs were merged into the Code panel; honor a
     // saved preference for either when migrating an existing settings blob.
@@ -96,6 +95,7 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
       autoEdit: _autoEdit,
       sidebarUsage: _sidebarUsage,
       missionControl: _missionControl,
+      thinkingBudget: _thinkingBudget,
       ...rest
     } = saved;
     void _files;
@@ -104,6 +104,7 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
     void _autoEdit;
     void _sidebarUsage;
     void _missionControl;
+    void _thinkingBudget;
     if (preMigration) delete rest.tokenUsage;
     return {
       ...DEFAULT_FEATURES,

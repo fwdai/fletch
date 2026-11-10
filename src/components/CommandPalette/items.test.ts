@@ -85,7 +85,6 @@ function state(over: Partial<AppState> = {}): AppState {
       code: true,
       run: false,
       terminal: false,
-      thinkingBudget: true,
       tokenUsage: true,
       sidebarActiveFirst: true,
       nativeView: false,

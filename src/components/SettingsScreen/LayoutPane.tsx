@@ -24,14 +24,6 @@ const HEADER: FeatureItem[] = [
   },
 ];
 
-const COMPOSER: FeatureItem[] = [
-  {
-    key: "thinkingBudget",
-    title: "Thinking budget",
-    sub: "Show a low / medium / high reasoning cap.",
-  },
-];
-
 const SIDEBAR: FeatureItem[] = [
   {
     key: "sidebarActiveFirst",
@@ -52,9 +44,9 @@ function FeatureRows({ items }: { items: FeatureItem[] }) {
 }
 
 /** Settings › Interface › Layout: what appears where around an agent — the
- *  right-rail panels, the header's context badge, the composer's optional
- *  controls, and the sidebar's extras. Group labels and order match the quick-settings popover so the same
- *  toggle reads the same on both. */
+ *  right-rail panels, the header's context badge, and the sidebar's extras.
+ *  Group labels and order match the quick-settings popover so the same toggle
+ *  reads the same on both. */
 export function LayoutPane() {
   return (
     <div className="set-pane">
@@ -70,10 +62,6 @@ export function LayoutPane() {
 
       <SetGroup label="Header">
         <FeatureRows items={HEADER} />
-      </SetGroup>
-
-      <SetGroup label="Composer">
-        <FeatureRows items={COMPOSER} />
       </SetGroup>
 
       <SetGroup label="Sidebar" last>

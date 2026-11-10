@@ -31,10 +31,6 @@ const FEATURE_GROUPS: { label: string; items: FeatureItem[] }[] = [
     items: [{ key: "tokenUsage", title: "Token usage", sub: "Context window badge with compact" }],
   },
   {
-    label: "Composer",
-    items: [{ key: "thinkingBudget", title: "Thinking budget", sub: "Low / medium / high cap" }],
-  },
-  {
     label: "Sidebar",
     items: [
       {
@@ -122,9 +118,10 @@ function Popover({ onClose }: { onClose: () => void }) {
         {PROVIDERS.map((p) => {
           // Live-discovered models (static description until the catalog has
           // data), plus the live-probed version when the backend has resolved
-          // it — never a fabricated plan name or version string.
+          // it — never a fabricated plan name or version string. One model name
+          // keeps the line to a single row; the full list is in All settings.
           const version = providerVersions[p.id];
-          const models = modelSummary(modelsByAgent[p.id]) ?? PROVIDER_DETAIL[p.id].models;
+          const models = modelSummary(modelsByAgent[p.id], 1) ?? PROVIDER_DETAIL[p.id].models;
           const description = [models, version].filter(Boolean).join(" · ");
           return (
             <SettingsRow key={p.id} label={p.label} description={description}>
