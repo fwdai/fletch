@@ -63,27 +63,35 @@ export async function addHost(target: PairTarget, onCode?: CodeHandler): Promise
 const OFFER_INVITE = "offer_invite";
 
 /** After a confirmed pairing, put the pair-back question to the person here
- *  (docs/remote-protocol.md, "Pairing back") — only when there is something to
- *  offer: this Mac's own remote access is listening, and the host takes the
+ *  (docs/remote-protocol.md, "Pairing back") — only when the host takes the
  *  offer from this device (`offer_invite` is in what it answered, which means
- *  a host that knows the op and a Full pairing). Nothing is minted here; that
- *  waits for Allow (`offerPairBack`). Never rejects: the pairing stands. */
+ *  a host that knows the op and a Full pairing) and this Mac can be a host at
+ *  all (its device store works). A Mac whose remote control is off is asked
+ *  too, and told that Allow turns it on. Nothing is minted or switched on
+ *  here; that waits for Allow (`offerPairBack`). Never rejects: the pairing
+ *  stands. */
 async function askToPairBack(record: HostRecord): Promise<void> {
   if (!hosts.supports(record.hostKey, OFFER_INVITE)) return;
-  const listening = await remoteApi.remoteStatus().then(
-    (status) => status.listening,
-    () => false,
-  );
-  if (listening) {
-    useAppStore.getState().setPairBackOffer({ hostKey: record.hostKey, name: record.name });
-  }
+  const status = await remoteApi.remoteStatus().catch(() => null);
+  if (!status || status.error) return;
+  useAppStore.getState().setPairBackOffer({
+    hostKey: record.hostKey,
+    name: record.name,
+    enables: !status.listening,
+  });
 }
 
-/** Let the host at `hostKey` control this Mac too, on the person's Allow: mint
- *  a Full pairing link here and hand it over with `offer_invite`, which the
- *  host pairs with by itself. Rejects with the reason. The link is single use,
- *  and lapses after five minutes if the host never redeems it. */
+/** Let the host at `hostKey` control this Mac too, on the person's Allow: turn
+ *  this Mac's remote control on if it is off, mint a Full pairing link here
+ *  and hand it over with `offer_invite`, which the host pairs with by itself.
+ *  Rejects with the reason. The link is single use, and lapses after five
+ *  minutes if the host never redeems it. */
 export async function offerPairBack(hostKey: string): Promise<void> {
+  const status = await remoteApi.remoteStatus();
+  if (!status.listening) {
+    const now = await remoteApi.remoteSetEnabled(true);
+    if (!now.listening) throw new Error(now.error ?? "Couldn't turn on remote control here.");
+  }
   const { url } = await remoteApi.remoteBeginPairing("full");
   await hosts.call(hostKey, OFFER_INVITE, { url });
 }

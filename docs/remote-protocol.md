@@ -685,11 +685,13 @@ Two desktops that are both hosts can each control the other after one
 confirmed pairing, with one more click on the side that asked:
 
 1. Mac A pairs with Mac B by confirmation (above), and the person at B
-   accepts. If A's own remote access is listening, and the `protocol.ops` B
-   answered A lists `offer_invite` (B knows the op, and paired A with Full),
-   A asks: "Paired with “B”. Also let B control this Mac?" — Allow or Not now.
-   Nothing about A has left it yet.
-2. On Allow, A mints a pairing code of its own (`remote_begin_pairing`, preset
+   accepts. If the `protocol.ops` B answered A lists `offer_invite` (B knows
+   the op, and paired A with Full), A asks: "Paired with “B”. Let B control
+   this Mac too?" — Allow or Not now, with the reminder to allow only a
+   pairing the person accepted on B themselves. Nothing about A has left it
+   yet, and A's remote access is as it was.
+2. On Allow, A turns its own remote access on if it was off (the question
+   says so), mints a pairing code of its own (`remote_begin_pairing`, preset
    `full`) and sends its `fletch://pair` link to B over the connection it just
    authenticated: `{ "op": "offer_invite", "args": { "url": "fletch://pair?…" } }`.
 3. B keeps a `url` of printable ASCII starting `fletch://pair?`, at most

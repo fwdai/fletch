@@ -16,6 +16,8 @@ import type { SliceCreator } from "./types";
 export interface PairBackOffer {
   hostKey: string;
   name: string;
+  /** This Mac's remote control is off, and Allow turns it on. */
+  enables: boolean;
 }
 
 export interface AppSlice {

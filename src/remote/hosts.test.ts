@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const remote = vi.hoisted(() => ({
   remoteStatus: vi.fn(),
+  remoteSetEnabled: vi.fn(),
   remoteBeginPairing: vi.fn(),
 }));
 vi.mock("@/api/domains/remote", () => ({ remoteApi: remote }));
@@ -30,7 +31,8 @@ beforeEach(() => {
   pair = vi.spyOn(hosts, "pair").mockResolvedValue(RECORD);
   supports = vi.spyOn(hosts, "supports").mockReturnValue(true);
   call = vi.spyOn(hosts, "call").mockResolvedValue({});
-  remote.remoteStatus.mockResolvedValue({ listening: true });
+  remote.remoteStatus.mockResolvedValue({ listening: true, error: null });
+  remote.remoteSetEnabled.mockResolvedValue({ listening: true, error: null });
   remote.remoteBeginPairing.mockResolvedValue({ url: INVITE });
 });
 
@@ -39,13 +41,27 @@ describe("after a confirmed pairing, this Mac asks whether the host may control 
   it("asks when this Mac is a host and the host takes offers — and mints nothing yet", async () => {
     await addHost(NEARBY);
     expect(supports).toHaveBeenCalledWith("mac-b", "offer_invite");
-    expect(useAppStore.getState().pairBackOffer).toEqual({ hostKey: "mac-b", name: "Mac B" });
+    expect(useAppStore.getState().pairBackOffer).toEqual({
+      hostKey: "mac-b",
+      name: "Mac B",
+      enables: false,
+    });
     expect(remote.remoteBeginPairing).not.toHaveBeenCalled();
     expect(call).not.toHaveBeenCalled();
   });
 
-  it("does not ask when this Mac's remote access is off: there is nothing to offer", async () => {
-    remote.remoteStatus.mockResolvedValue({ listening: false });
+  it("asks with remote control off too, saying Allow turns it on, and turns nothing on yet", async () => {
+    remote.remoteStatus.mockResolvedValue({ listening: false, error: null });
+    await addHost(NEARBY);
+    expect(useAppStore.getState().pairBackOffer).toMatchObject({ enables: true });
+    expect(remote.remoteSetEnabled).not.toHaveBeenCalled();
+  });
+
+  it("does not ask when this Mac cannot be a host: its device store is broken", async () => {
+    remote.remoteStatus.mockResolvedValue({ listening: false, error: "can't store devices" });
+    await addHost(NEARBY);
+    expect(useAppStore.getState().pairBackOffer).toBeNull();
+    remote.remoteStatus.mockRejectedValue(new Error("no engine"));
     await addHost(NEARBY);
     expect(useAppStore.getState().pairBackOffer).toBeNull();
   });
@@ -65,8 +81,24 @@ describe("after a confirmed pairing, this Mac asks whether the host may control 
 
   it("on Allow, mints a Full link here and hands it to that host", async () => {
     await offerPairBack("mac-b");
+    expect(remote.remoteSetEnabled).not.toHaveBeenCalled();
     expect(remote.remoteBeginPairing).toHaveBeenCalledWith("full");
     expect(call).toHaveBeenCalledWith("mac-b", "offer_invite", { url: INVITE });
+  });
+
+  it("on Allow with remote control off, turns it on first", async () => {
+    remote.remoteStatus.mockResolvedValue({ listening: false, error: null });
+    await offerPairBack("mac-b");
+    expect(remote.remoteSetEnabled).toHaveBeenCalledWith(true);
+    expect(call).toHaveBeenCalledWith("mac-b", "offer_invite", { url: INVITE });
+  });
+
+  it("hands nothing over when remote control will not come up", async () => {
+    remote.remoteStatus.mockResolvedValue({ listening: false, error: null });
+    remote.remoteSetEnabled.mockResolvedValue({ listening: false, error: "port in use" });
+    await expect(offerPairBack("mac-b")).rejects.toThrow("port in use");
+    expect(remote.remoteBeginPairing).not.toHaveBeenCalled();
+    expect(call).not.toHaveBeenCalled();
   });
 
   it("rejects with the host's words when it refuses", async () => {
