@@ -2,9 +2,11 @@ import type { KeyboardEvent, MouseEvent } from "react";
 import { useState } from "react";
 import { contextPercent, resolveContextWindow } from "@/adapters/usage";
 import type { AgentRecord, AgentStatus, ShortStats } from "@/api";
-import { AgentIdentityChip } from "@/components/AgentIdentityChip";
+import { AgentIdentityChip, useAgentIdentityLabel } from "@/components/AgentIdentityChip";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { IsolationIcon } from "@/components/TitleBar/WorkspaceStatus/IsolationIcon";
+import { shownIsolation } from "@/components/TitleBar/WorkspaceStatus/isolation";
 import { Badge } from "@/components/ui/Badge";
 import { providerChip, providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
@@ -91,6 +93,12 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // one — surfaced in the running chip's tooltip (":port").
   const runPort = useAppStore((s) => s.runs[agent.id]?.port ?? null);
   const pending = useAppStore((s) => s.pendingToolUse[agent.id]);
+  // Where the agent is confined, as the title bar shows it for the selected
+  // workspace: only a box agent has a phase, and a workspace on the move shows
+  // where it is going.
+  const boxPhase = useAppStore((s) => s.boxStates[agent.id]?.phase);
+  const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
+  const identity = useAgentIdentityLabel(agent);
   // Which step a fresh spawn is on, from `agent:spawn-progress` — the loader's
   // tooltip. Absent for anything but a spawn this client watched.
   const spawnStage = useAppStore((s) => s.spawnStage[agent.id]);
@@ -141,6 +149,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const contextWindow = resolveContextWindow(usage, catalog);
   const pct = contextPercent(usage, contextWindow);
   const stats: AgentStats = {
+    agent: identity,
     launched: age || "just now",
     runtime: liveRuntime(agent.created_at, now, agent.status),
     contextTokens: pct == null ? null : usage?.context.tokens,
@@ -275,8 +284,17 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             </span>
           </span>
         </div>
+        {/* Where it lives (sandbox + codename, as in the title bar), what came
+            of it (PR / diff and the conditional hints), then the byline: who
+            is doing it and since when — the hover target for the details. */}
         <div className="agent-sub flex-center">
-          <AgentIdentityChip agent={agent} size={12} />
+          <IsolationIcon
+            isolation={shownIsolation(agent.sandbox_engine, movingTo)}
+            boxPhase={boxPhase}
+            moving={movingTo !== null}
+            size={12}
+            tip
+          />
           <span className="a-task a-codename">{agent.name}</span>
           {agentPrs.length > 0 ? (
             <PrPill prs={agentPrs} />
@@ -315,11 +333,12 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             </Badge>
           )}
           <span
-            className="a-time"
+            className="a-byline"
             onMouseEnter={() => setStatsOpen(true)}
             onMouseLeave={() => setStatsOpen(false)}
           >
-            {age}
+            <AgentIdentityChip agent={agent} size={12} tip={false} />
+            <span className="a-time">{age}</span>
             {statsOpen && <AgentStatsPopover stats={stats} />}
           </span>
         </div>
@@ -381,7 +400,10 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
           </span>
         </span>
       </div>
+      {/* No sandbox glyph yet: where a draft runs is the composer's pick until
+          it spawns. What will run it sits where a real row's byline does. */}
       <div className="agent-sub flex-center">
+        <span className="a-task a-codename">{draft.name}</span>
         {workflow ? (
           <span className="ag-prov-chip tip" data-tip="Workflow run">
             <Icon name="combine" size={12} />
@@ -391,7 +413,6 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
             <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={12} />
           </span>
         )}
-        <span className="a-task a-codename">{draft.name}</span>
       </div>
     </div>
   );
