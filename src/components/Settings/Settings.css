@@ -53,6 +53,9 @@
   color: var(--fg-3);
   margin-top: 2px;
   font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sp-toggle {
   position: relative;
