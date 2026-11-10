@@ -1,9 +1,10 @@
 import { invokeLocal } from "../invoke";
-import type { PairingInvite, PairingPreset, RemoteStatus } from "../types/remote";
+import type { NearbyHost, PairingInvite, PairingPreset, RemoteStatus } from "../types/remote";
 
 /** Host-side control of the paired-device remote server. These are not remote
  *  ops — they are how the desktop turns the listener on, points it at a relay,
- *  mints pairing codes and revokes devices. The mutating ones answer with the
+ *  mints pairing codes, revokes devices and lists the hosts nearby. The
+ *  mutating ones answer with the
  *  resulting status so the pane never has to re-read (and never renders a state
  *  in between). */
 export const remoteApi = {
@@ -27,4 +28,8 @@ export const remoteApi = {
     invokeLocal<boolean>("remote_answer_pair_request", { id, accept }),
   remoteRevokeDevice: (deviceId: string) =>
     invokeLocal<RemoteStatus>("remote_revoke_device", { deviceId }),
+  /** Browse the LAN for `durationMs` and answer with the other Fletch hosts
+   *  announcing themselves, this Mac left out. Nothing browses between calls. */
+  remoteBrowseNearby: (durationMs: number) =>
+    invokeLocal<NearbyHost[]>("remote_browse_nearby", { durationMs }),
 };

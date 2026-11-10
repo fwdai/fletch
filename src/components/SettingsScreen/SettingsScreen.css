@@ -1256,9 +1256,10 @@
   color: var(--danger);
 }
 
-/* ── MOBILE DEVICES ──────────────────────────────────────────────────── */
-/* Relay URL, edited in place beside the link's state. */
-.set-relay-url {
+/* ── DEVICES ─────────────────────────────────────────────────────────── */
+/* A short text field edited in place on a row: the port, a pairing link, a
+   host's pairing code. */
+.set-text-field {
   width: 230px;
   height: 26px;
   padding: 0 8px;
@@ -1268,26 +1269,32 @@
   border-radius: var(--r-sm);
   outline: none;
 }
+.set-text-field:focus {
+  border-color: var(--accent);
+}
 .set-port {
   width: 90px;
   font-variant-numeric: tabular-nums;
 }
-/* A pairing link is long and pasted rather than typed, so it gets more room
-   than the relay URL it borrows its look from. */
+/* A pairing link is long and pasted rather than typed, so it gets more room. */
 .set-pair-link {
   width: 320px;
 }
-.set-relay-url:focus {
-  border-color: var(--accent);
+/* Eight characters, typed off another screen. */
+.set-pair-code-input {
+  width: 120px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
-.set-relay-pill {
-  color: var(--fg-3);
+/* The six digits a confirmed pairing shows on both screens: the one thing on
+   the row to read off, so they are set large. */
+.set-pair-digits {
+  color: var(--fg-0);
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
   white-space: nowrap;
-}
-.set-relay-pill[data-state="error"] {
-  color: var(--danger);
-  white-space: normal;
-  max-width: 28ch;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Live pairing code. Its own block rather than a `set-row`: the code is the
@@ -1295,7 +1302,7 @@
 .set-pair {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 28px;
   padding: 16px 0;
   border-bottom: 1px solid var(--bd-soft);
 }
@@ -1306,22 +1313,41 @@
   flex: 1;
   min-width: 0;
 }
+/* One line per kind of client: who it is, then how it gets in. */
+.set-pair-ways {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 46ch);
+  gap: 10px 20px;
+  margin: 0;
+}
+.set-pair-ways dt {
+  color: var(--fg-0);
+}
+.set-pair-ways dd {
+  margin: 0;
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
+.set-pair-main .set-inline-warn {
+  margin-top: 12px;
+}
 .set-pair-code {
-  font-size: 30px;
+  font-size: 26px;
   font-weight: 500;
   letter-spacing: 0.18em;
   color: var(--fg-0);
   line-height: 1.1;
+  margin-top: 8px;
 }
 .set-pair-copy {
   color: var(--fg-2);
-  margin-top: 6px;
-  max-width: 44ch;
+  margin-top: 14px;
+  max-width: 56ch;
   text-wrap: pretty;
 }
 .set-pair-meta {
-  gap: 6px;
-  margin-top: 8px;
+  gap: 14px;
+  margin-top: 14px;
 }
 .set-pair-clock {
   color: var(--fg-3);
@@ -1329,26 +1355,26 @@
 .set-pair-clock.urgent {
   color: var(--warn);
 }
-.set-pair-actions {
-  gap: 8px;
-  margin-top: 12px;
-}
 /* The address a phone types, beside the code it types with it. */
 .set-pair-addr {
   color: var(--fg-0);
-  margin-top: 8px;
 }
-/* "Can't scan?": the typed-entry fallback, out of the way of the QR. */
-.set-pair-manual {
-  margin-top: 10px;
-}
-.set-pair-manual-btn {
-  color: var(--fg-3);
+/* An action that reads as part of its sentence: copying the link, opening
+   the typed-entry fallback. */
+.set-pair-link-btn {
+  color: var(--fg-1);
   cursor: pointer;
   text-decoration: underline;
+  text-decoration-color: var(--fg-3);
   text-underline-offset: 2px;
 }
-.set-pair-manual-btn:hover {
+.set-pair-link-btn:hover {
+  color: var(--fg-0);
+}
+.set-pair-meta .set-pair-link-btn {
+  color: var(--fg-3);
+}
+.set-pair-meta .set-pair-link-btn:hover {
   color: var(--fg-1);
 }
 /* White quiet zone regardless of theme — a dark-on-dark QR does not scan. */

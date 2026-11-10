@@ -1,3 +1,4 @@
+import type { PairTarget } from "./registry";
 import { DEFAULT_PORT, type HostTarget } from "./types";
 
 /** `<ip-or-name>[:port]`, or `[<ipv6>][:port]`. A bare IPv6 literal is
@@ -47,6 +48,33 @@ export function parsePairUrl(input: string): HostTarget | null {
   const relay = params.get("relay")?.trim();
   if (relay) target.relay = relay;
   return target;
+}
+
+/** Turn a pairing link into something this desktop can pair with, or say why
+ *  it isn't — pasted into Settings, or offered by a paired desktop
+ *  (`offer_invite`).
+ *
+ *  Three refusals, each with the step that produces the missing piece:
+ *  anything that is not a `fletch://pair?…` link at all (or one with no
+ *  dialable `addr=`, which `parsePairUrl` refuses for the same reason); a link
+ *  with no `host=`, whose key is the environment id here and so cannot be
+ *  pinned on first contact the way the phone does; and a link with no `token=`,
+ *  which is a link to *reach* a host rather than to pair with one. */
+export function pairTargetFrom(input: string): { target: PairTarget } | { error: string } {
+  const target = parsePairUrl(input);
+  if (!target) {
+    return {
+      error:
+        "That isn't a Fletch pairing link. On the other machine, open Settings › Devices › Clients and copy the pairing link.",
+    };
+  }
+  if (!target.hostKey) {
+    return { error: "That pairing link carries no host key. Generate a new one on the host." };
+  }
+  if (!target.pairingToken) {
+    return { error: "That link has no pairing code. Generate a new one on the host." };
+  }
+  return { target: { ...target, hostKey: target.hostKey, pairingToken: target.pairingToken } };
 }
 
 /** `ws://<host>:<port>/ws`. IPv6 literals need bracketing. */

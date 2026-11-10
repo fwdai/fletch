@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { SetRow } from "../primitives";
+import { SetRow } from "../../primitives";
 
-/** Settings › Remote control › the listen port. Committed on blur/Enter; the
+/** Settings › Devices › Clients › the listen port. Committed on blur/Enter; the
  *  host validates (and, when listening, rebinds) before the value is stored, so
  *  the field follows the reported port rather than the keystrokes. */
 export function PortRow({
@@ -32,15 +32,15 @@ export function PortRow({
   return (
     <SetRow
       title="Port"
-      sub="Local port the phone dials on your network. Phones without a relay must pair again after a change."
+      sub="Local port other devices dial on your network. After a change, devices already paired reach this Mac through the relay."
     >
       <input
-        className="set-relay-url set-port mono text-sm"
+        className="set-text-field set-port mono text-sm"
         inputMode="numeric"
         value={draft}
         spellCheck={false}
         disabled={disabled}
-        aria-label="Remote control port"
+        aria-label="Remote access port"
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {

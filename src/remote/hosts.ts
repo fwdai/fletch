@@ -1,16 +1,20 @@
-// The app's one host registry, and the three things anything outside it wants:
-// dial the saved hosts at startup, add one from a pairing link, forget one.
+// The app's one host registry, and the things anything outside it wants: dial
+// the saved hosts at startup, add one from a pairing link, forget one, and pair
+// back with a desktop that is a host too ("Pairing back").
 //
 // This is the only module that puts the registry, the app store and the
 // settings row together; `./registry` is the lifecycle on its own and knows
 // about none of them.
 
+import { remoteApi } from "@/api/domains/remote";
 import { forgetHost as forgetRecord, loadHosts, saveHost, updateHost } from "@/storage/remoteHosts";
 import { useAppStore } from "@/store";
 import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { ProtocolClient } from "./client";
 import { thisDevice } from "./device";
-import { createHostRegistry, type PairTarget } from "./registry";
+import { pairTargetFrom } from "./pairing";
+import { createHostRegistry, type HostRecord, type PairTarget } from "./registry";
+import type { CodeHandler } from "./types";
 import { openWebSocket } from "./ws";
 
 export const hosts = createHostRegistry({
@@ -46,10 +50,59 @@ export async function startSavedHosts(): Promise<void> {
 }
 
 /** Pair with the host a link points at, then remember it and keep it
- *  connected. Rejects with the host's own words when the handshake fails. */
-export async function addHost(target: PairTarget): Promise<void> {
-  const record = await hosts.pair(target);
+ *  connected. Rejects with the host's own words when the handshake fails.
+ *  `onCode` hears the six digits of a confirmed pairing, after which the
+ *  person here may be asked whether that host can control this Mac too. */
+export async function addHost(target: PairTarget, onCode?: CodeHandler): Promise<void> {
+  const record = await hosts.pair(target, onCode);
   await saveHost({ ...record, pairedAt: new Date().toISOString() });
+  if (target.confirm && !target.pairingToken) await askToPairBack(record);
+}
+
+/** The op that hands a host this Mac's own pairing link. */
+const OFFER_INVITE = "offer_invite";
+
+/** After a confirmed pairing, put the pair-back question to the person here
+ *  (docs/remote-protocol.md, "Pairing back") — only when the host takes the
+ *  offer from this device (`offer_invite` is in what it answered, which means
+ *  a host that knows the op and a Full pairing) and this Mac can be a host at
+ *  all (its device store works). A Mac whose remote control is off is asked
+ *  too, and told that Allow turns it on. Nothing is minted or switched on
+ *  here; that waits for Allow (`offerPairBack`). Never rejects: the pairing
+ *  stands. */
+async function askToPairBack(record: HostRecord): Promise<void> {
+  if (!hosts.supports(record.hostKey, OFFER_INVITE)) return;
+  const status = await remoteApi.remoteStatus().catch(() => null);
+  if (!status || status.error) return;
+  useAppStore.getState().setPairBackOffer({
+    hostKey: record.hostKey,
+    name: record.name,
+    enables: !status.listening,
+  });
+}
+
+/** Let the host at `hostKey` control this Mac too, on the person's Allow: turn
+ *  this Mac's remote control on if it is off, mint a Full pairing link here
+ *  and hand it over with `offer_invite`, which the host pairs with by itself.
+ *  Rejects with the reason. The link is single use, and lapses after five
+ *  minutes if the host never redeems it. */
+export async function offerPairBack(hostKey: string): Promise<void> {
+  const status = await remoteApi.remoteStatus();
+  if (!status.listening) {
+    const now = await remoteApi.remoteSetEnabled(true);
+    if (!now.listening) throw new Error(now.error ?? "Couldn't turn on remote control here.");
+  }
+  const { url } = await remoteApi.remoteBeginPairing("full");
+  await hosts.call(hostKey, OFFER_INVITE, { url });
+}
+
+/** Pair with a link a paired desktop offered (`remote:invite-offered`). Its
+ *  sender is a Full device of this Mac, which the person here accepted, handing
+ *  over its own machine; so it is paired with like a pasted link. */
+export async function pairWithOfferedLink(url: string): Promise<void> {
+  const parsed = pairTargetFrom(url);
+  if ("error" in parsed) throw new Error(parsed.error);
+  await addHost(parsed.target);
 }
 
 /** Close the connection and drop the record. Idempotent.

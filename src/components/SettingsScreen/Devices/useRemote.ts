@@ -18,26 +18,29 @@ export interface Remote {
   /** The host closed the invite's window before it expired (too many pairing
    *  requests from the network): its code no longer works. */
   inviteClosed: boolean;
+  /** Why the last command failed, else why the last invite could not be
+   *  minted. */
   error: string | null;
   busy: boolean;
+  /** Turning remote access on brings Fletch's relay with it; the host sees to
+   *  that (`remote_set_enabled`), so there is no relay setter here. */
   setEnabled: (enabled: boolean) => Promise<void>;
   setPort: (port: number) => Promise<void>;
-  setRelay: (url: string | null) => Promise<void>;
   /** Mint a code granting `preset`. The host refuses a preset it does not
    *  define, which surfaces as `error`. */
   beginPairing: (preset: PairingPreset) => Promise<void>;
   revoke: (deviceId: string) => Promise<void>;
-  clearInvite: () => void;
 }
 
-/** Server state for the Remote control pane. Deliberately local rather than
- *  a store slice: nothing outside this pane reads it, and it is only live while
- *  the pane is mounted. */
+/** Server state for the Devices page. Deliberately local rather than a store
+ *  slice: nothing outside this page reads it, and it is only live while the
+ *  page is mounted. */
 export function useRemote(): Remote {
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [invite, setInvite] = useState<PairingInvite | null>(null);
   const [inviteClosed, setInviteClosed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -65,6 +68,7 @@ export function useRemote(): Remote {
   const mutate = useCallback(async (call: () => Promise<RemoteStatus>) => {
     setBusy(true);
     setError(null);
+    setInviteError(null);
     try {
       setStatus(await call());
     } catch (e) {
@@ -92,18 +96,15 @@ export function useRemote(): Remote {
     [mutate],
   );
 
-  const setRelay = useCallback(
-    (url: string | null) => mutate(() => api.remoteSetRelay(url)),
-    [mutate],
-  );
-
+  // Its own error, not `error`: the page mints invites on its own, and one
+  // landing right after a failed command must not wipe that command's reason.
   const beginPairing = useCallback(async (preset: PairingPreset) => {
-    setError(null);
     try {
       setInvite(await api.remoteBeginPairing(preset));
       setInviteClosed(false);
+      setInviteError(null);
     } catch (e) {
-      setError(String(e));
+      setInviteError(String(e));
     }
   }, []);
 
@@ -112,22 +113,15 @@ export function useRemote(): Remote {
     [mutate],
   );
 
-  const clearInvite = useCallback(() => {
-    setInvite(null);
-    setInviteClosed(false);
-  }, []);
-
   return {
     status,
     invite,
     inviteClosed,
-    error,
+    error: error ?? inviteError,
     busy,
     setEnabled,
     setPort,
-    setRelay,
     beginPairing,
     revoke,
-    clearInvite,
   };
 }

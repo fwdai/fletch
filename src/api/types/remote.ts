@@ -1,6 +1,10 @@
-/** DTOs for the paired-device remote server (Settings › Remote control).
- *  Mirrors the Rust types in `src-tauri/src/remote/`; the wire contract is
- *  `docs/remote-protocol.md`. */
+/** DTOs for the paired-device remote server (Settings › Devices).
+ *  Mirrors the Rust types in `crates/fletch-core/src/remote/`; the wire
+ *  contract is `docs/remote-protocol.md`. */
+
+/** What `remote_browse_nearby` answers with, one per host. Shared with the
+ *  phone's browse plugin, so it lives beside the client code. */
+export type { NearbyHost } from "@/remote/nearby";
 
 /** One device paired with this host. */
 export interface RemoteDevice {
@@ -38,13 +42,10 @@ export const ALL_SCOPES = [
 /** The named scope sets pairing offers (`remote::PAIRING_PRESETS`). */
 export type PairingPreset = "full" | "control";
 
-/** The relay the desktop offers when the switch goes on. Mirrors
- *  `DEFAULT_RELAY_URL` in `src-tauri/src/remote/mod.rs`; only a suggestion —
- *  the persisted setting is what decides, and anyone can run their own. */
-export const DEFAULT_RELAY_URL = "wss://relay.fletch.sh";
-
 /** How the outbound host link is doing. `off` means no URL is set, or remote
- *  access itself is off; `error` stands between reconnect attempts. */
+ *  access itself is off; `error` stands between reconnect attempts. The
+ *  desktop sets Fletch's relay whenever remote access is on
+ *  (`remote::ensure_relay_setting`), so there is nothing to choose here. */
 export type RelayState = "off" | "connecting" | "connected" | "error";
 
 /** `remote_status.relay`: the configured relay and the link to it. */
@@ -84,13 +85,24 @@ export interface RemoteStatus {
 }
 
 /** A device asking to pair, confirmed on this Mac (docs/remote-protocol.md,
- *  "Confirmed pairing"). Only while "Pair a device" is open. */
+ *  "Confirmed pairing"). Only while a pairing window is open, which on the
+ *  desktop is while Settings › Devices is. */
 export interface PairRequest {
   id: string;
   deviceName: string;
   platform: string;
   /** Six digits the device is showing too. They must match. */
   code: string;
+}
+
+/** A paired desktop handing this Mac its own pairing link (`offer_invite`,
+ *  docs/remote-protocol.md "Pairing back"), so this Mac can control it too.
+ *  Only a device paired with Full access can send one. */
+export interface InviteOffer {
+  deviceId: string;
+  deviceName: string;
+  /** `fletch://pair?…`, its shape checked by the host. */
+  url: string;
 }
 
 /** A minted pairing code: 8 characters from `A-Z2-9`, single use, five minutes. */

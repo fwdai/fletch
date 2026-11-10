@@ -6,6 +6,10 @@
 //! Only a host with someone at its screen installs the hook. The desktop does;
 //! the headless host does not, and refuses confirmed pairings so the phone
 //! falls back to the code.
+//!
+//! The same hook carries the other half of pairing two desktops: a paired
+//! desktop that is a host too may hand over its own pairing link afterwards
+//! (`offer_invite`, "Pairing back"), and this screen pairs with it.
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -23,6 +27,9 @@ pub const PAIR_REQUEST_ENDED_EVENT: &str = "remote:pair-request-ended";
 /// that no longer works. Anyone on the LAN can cause it, which is why the card
 /// has to be told rather than left counting down.
 pub const PAIRING_CLOSED_EVENT: &str = "remote:pairing-closed";
+/// Raised with `{ deviceId, deviceName, url }` when a paired desktop offers its
+/// own pairing link (`offer_invite`), so this screen can pair with it.
+pub const INVITE_OFFERED_EVENT: &str = "remote:invite-offered";
 
 /// One pending question, as the desktop shows it.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -42,6 +49,36 @@ pub struct PairPrompt {
 pub const NO_CONFIRMER: &str =
     "This host can't confirm a pairing on its screen. Enter the code it shows instead.";
 pub const BUSY: &str = "Your Mac is answering another pairing request. Try again in a moment.";
+
+/// What a host with nobody at its screen answers `offer_invite` with: there is
+/// no app on it to pair with anything.
+pub const NO_CLIENT: &str = "This host can't control other machines.";
+/// What `offer_invite` answers when the link fails [`checked_invite`].
+pub const BAD_INVITE: &str = "That isn't a Fletch pairing link.";
+
+/// The longest link `offer_invite` takes. A real one is a few hundred bytes: a
+/// key, an address, a relay URL, a code and a machine name.
+pub const MAX_INVITE_LEN: usize = 2048;
+
+/// `offer_invite`'s link, kept only when it looks like what "Pair a device"
+/// mints: a `fletch://pair?` link of printable ASCII, at most
+/// [`MAX_INVITE_LEN`] bytes.
+pub fn checked_invite(value: Option<&serde_json::Value>) -> Option<String> {
+    let link = value?.as_str()?;
+    let sane = link.len() <= MAX_INVITE_LEN
+        && link.starts_with("fletch://pair?")
+        && link.bytes().all(|b| b.is_ascii_graphic());
+    sane.then(|| link.to_string())
+}
+
+/// A paired desktop's own pairing link, as the screen gets it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteOffer {
+    pub device_id: String,
+    pub device_name: String,
+    pub url: String,
+}
 
 struct Open {
     prompt: PairPrompt,
@@ -100,6 +137,14 @@ impl PairPrompts {
                 &serde_json::json!({ "reason": reason }),
             );
         }
+    }
+
+    /// Hand a paired desktop's pairing link to the screen. [`NO_CLIENT`] on a
+    /// host with no screen, which has no app to pair with it.
+    pub fn offer_invite(&self, offer: &InviteOffer) -> Result<(), &'static str> {
+        let sink = self.confirmer.lock().clone().ok_or(NO_CLIENT)?;
+        emit(sink.as_ref(), INVITE_OFFERED_EVENT, offer);
+        Ok(())
     }
 
     /// The question still waiting, for a window that missed the event.

@@ -1,13 +1,15 @@
-//! Host-side commands for the paired-device remote server (Settings → Mobile
-//! devices). These are not remote ops: they are how the *desktop* turns the
-//! listener on, mints pairing codes and revokes devices.
+//! Host-side commands for the paired-device remote server (Settings →
+//! Devices). These are not remote ops: they are how the *desktop* turns the
+//! listener on, mints pairing codes, revokes devices and lists the other hosts
+//! nearby.
 
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::State;
 
 use crate::database;
 use crate::error::{Error, Result};
-use crate::remote::{PairingInvite, RemoteState, RemoteStatus};
+use crate::remote::{NearbyHost, PairingInvite, RemoteState, RemoteStatus};
 use crate::DbState;
 
 #[tauri::command]
@@ -25,13 +27,23 @@ pub async fn remote_set_enabled(
     db: State<'_, DbState>,
     enabled: bool,
 ) -> Result<RemoteStatus> {
-    let port = {
+    let (port, relay) = {
         let conn = db.lock();
-        crate::remote::parse_port(
-            database::get_setting(&conn, crate::remote::PORT_SETTING).as_deref(),
+        (
+            crate::remote::parse_port(
+                database::get_setting(&conn, crate::remote::PORT_SETTING).as_deref(),
+            ),
+            // The relay comes with remote access on the desktop: with nothing
+            // stored, Fletch's own is written in (see `ensure_relay_setting`).
+            enabled.then(|| crate::remote::ensure_relay_setting(&conn)),
         )
     };
     if enabled {
+        // Set before `start`, so the link comes up with the listener. Left
+        // alone when it already matches, which spares a live link a reconnect.
+        if let Some(relay) = relay.filter(|url| remote.relay_url().as_ref() != Some(url)) {
+            remote.inner().set_relay(Some(relay))?;
+        }
         remote.inner().start(port)?;
     } else {
         remote.stop();
@@ -129,6 +141,29 @@ pub fn remote_answer_pair_request(
     accept: bool,
 ) -> bool {
     remote.prompts().answer(&id, accept)
+}
+
+/// The longest one browse may run. Settings asks for a couple of seconds at a
+/// time; the bound only stops a stray caller parking a blocking thread.
+const MAX_BROWSE: Duration = Duration::from_secs(10);
+
+/// The other Fletch hosts announcing themselves on this network
+/// (docs/remote-protocol.md, "Discovery"), for Settings › Devices › Hosts:
+/// browse for `duration_ms` and answer with every host seen by the end, this
+/// one left out. Nothing browses between calls, so the list is only gathered
+/// while that tab is open and asking. Whether or not remote access is on: a
+/// Mac pairing *with* another host needs no listener of its own.
+#[tauri::command]
+pub async fn remote_browse_nearby(
+    remote: State<'_, Arc<RemoteState>>,
+    duration_ms: u64,
+) -> Result<Vec<NearbyHost>> {
+    let own_id = remote.host_id();
+    let duration = Duration::from_millis(duration_ms).min(MAX_BROWSE);
+    tauri::async_runtime::spawn_blocking(move || crate::remote::browse_nearby(duration, &own_id))
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?
+        .map_err(Error::Other)
 }
 
 #[tauri::command]

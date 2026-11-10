@@ -17,6 +17,7 @@ import type { EnvironmentSwitchSlice } from "@/store/environmentSwitch";
 import type { ConnectionStatus, EnvironmentsSlice } from "@/store/environments";
 import { parseAddress } from "./pairing";
 import {
+  type CodeHandler,
   type ConnectionState,
   type DeviceInfo,
   type HelloResult,
@@ -47,12 +48,13 @@ export interface HostRecord {
   relay?: string;
 }
 
-/** A parsed `fletch://pair` link good enough to pair with. The desktop insists
- *  on the host key where the phone may pin one on first contact: here the key
- *  *is* the environment id, so there is nowhere to put a host without one. */
+/** A target good enough to pair with: a parsed `fletch://pair` link, or a host
+ *  picked from the nearby list — so it carries a `pairingToken` or `confirm`.
+ *  The desktop insists on the host key where the phone may pin one on first
+ *  contact: here the key *is* the environment id, so there is nowhere to put a
+ *  host without one. */
 export interface PairTarget extends HostTarget {
   hostKey: string;
-  pairingToken: string;
 }
 
 export interface HostRegistryOptions {
@@ -91,12 +93,20 @@ export interface HostRegistry {
   adopt(record: HostRecord): Promise<void>;
   /** Pair from a parsed link, and answer with the record to save. On failure
    *  the entry and its client are dropped — nothing was saved, so nothing
-   *  should be left behind — and the reason is rethrown for the pane. */
-  pair(target: PairTarget): Promise<HostRecord>;
+   *  should be left behind — and the reason is rethrown for the pane.
+   *  `onCode` hears the six digits of a confirmed pairing (`confirm`). */
+  pair(target: PairTarget, onCode?: CodeHandler): Promise<HostRecord>;
   /** Stop for good, and drop the environment. */
   forget(hostKey: string): void;
   /** The live client for a host, for whatever needs to talk to it directly. */
   get(hostKey: string): RemoteClient | undefined;
+  /** Whether a host under management answers `op` for this device — what its
+   *  last handshake said (`hostSupports`). False for a host not managed here. */
+  supports(hostKey: string, op: string): boolean;
+  /** Send one op to a host under management over its live connection, and
+   *  answer with the result. Rejects when the host is not managed here or not
+   *  connected, and with the host's words when it refuses. */
+  call<T>(hostKey: string, op: string, args?: Record<string, unknown>): Promise<T>;
 }
 
 export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
@@ -269,7 +279,7 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
       void dial.catch(() => {});
     },
 
-    async pair(target) {
+    async pair(target, onCode) {
       // Re-pairing a host already under management replaces it: the old client
       // holds a device registration this handshake is about to supersede.
       forget(target.hostKey);
@@ -280,6 +290,8 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
         relay: target.relay,
       };
       const { client, dial } = await start(record, target);
+      // In time: the code needs the host's nonce, a round trip away.
+      const offCode = onCode && client.onConfirmCode(onCode);
       try {
         const snapshot = await dial;
         return {
@@ -291,11 +303,24 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
       } catch (e) {
         forget(target.hostKey);
         throw e;
+      } finally {
+        offCode?.();
       }
     },
 
     forget,
 
     get: (hostKey) => clients.get(hostKey),
+
+    supports(hostKey, op) {
+      const client = clients.get(hostKey);
+      return !!client && hostSupports(client.protocol, op);
+    },
+
+    call<T>(hostKey: string, op: string, args?: Record<string, unknown>) {
+      const client = clients.get(hostKey);
+      if (!client) return Promise.reject(new Error("That host is not paired with this Mac."));
+      return client.call<T>(op, args);
+    },
   };
 }

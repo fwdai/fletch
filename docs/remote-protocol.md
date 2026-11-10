@@ -185,7 +185,11 @@ Cloudflare Worker fronting one Durable Object per host ID (`relay/` in this
 repo); anyone can run their own and point both apps at it.
 
 - **Base URL.** Host setting `remote.relay_url`; absent or empty means no
-  relay. The desktop's suggested default is `wss://relay.fletch.sh`. The
+  relay. The desktop has no relay switch: whenever remote access is on — at
+  launch and when it is turned on — an absent or blank setting is filled with
+  `wss://relay.fletch.sh`, and a URL already stored (someone's own relay) is
+  kept. The headless host reads the setting as stored, and its
+  `--relay <url>` / `--no-relay` override it for the run. The
   pairing link carries the URL as `relay=<url-encoded>` when set, and the phone
   persists it with the host. The host also answers it in every `pair` and
   `hello` result (see "Authentication and pairing"), so a device paired by hand
@@ -328,6 +332,19 @@ address.
   the handshake. It then pairs by confirmation (see "Confirmed pairing"), or
   with the code where the host cannot confirm. A typed address is the fallback
   for networks that block multicast.
+- **Browsing from a desktop.** A desktop pairing with another host (Settings ›
+  Devices › Hosts) browses the same service through `remote_browse_nearby`
+  (see "Host-side settings and commands"), in rounds of a couple of seconds
+  and only while that tab is open; the headless host never browses. Each
+  instance is read from its TXT record — `name` (the instance label when
+  absent), `id` (instances without one are skipped), `port` (the SRV port
+  when absent or unparseable) — plus the IPv4 addresses it resolved to.
+  Instances announcing the desktop's own `id` are left out, and two claiming
+  the same `id` are listed once. Picking one dials the first resolved address
+  with `fletch-<label>.local` raced beside it (as on reconnect, see "Relay" →
+  "Phone side"), or the `.local` name alone when nothing resolved, pinning
+  the TXT `id`; it then pairs by confirmation, falling back to the host's code
+  when the host answers that it cannot confirm.
 - **Reconnecting.** See "Relay" → "Phone side": the host name is raced against
   the saved address within the LAN budget.
 
@@ -447,7 +464,7 @@ during a QR pairing cannot impersonate the host, because the phone already
 holds the host's key. A confirmed pairing defeats one too: the six digits
 match only when both ends saw the same handshake, the commit-then-reveal order
 leaves no offline search, and the per-window cap on requests leaves an
-attacker at most five unseen tries — five in a million — per "Pair a device"
+attacker at most five unseen tries — five in a million — per pairing window
 (see "Confirmed pairing").
 During a hand-typed *code* pairing an active attacker on the same LAN could
 impersonate the host for that one pairing (trust on first use); that is the
@@ -456,6 +473,18 @@ Settings (revoke also closes the device's live connections with `4003`). A
 stolen `host_key` lets an attacker impersonate the host to paired phones;
 deleting the file regenerates the key on next launch, after which every phone
 must pair again.
+
+Pairing back (see "Pairing back") hands a host a live, full-access code for the
+desktop that offers it, so when it goes out matters. Anyone on the LAN can
+announce a familiar name (see "Discovery"), and a host picked by that name
+accepts its own pairing prompt: had the code gone out with `pair_request`,
+choosing the wrong name would have given that host control of the desktop,
+with no prompt on the desktop at all. So the code leaves only after the
+pairing, on a click at the desktop, by which time the person there has seen
+whether the Mac they meant showed the prompt and the six digits. A host that
+accepted its own prompt never showed them anything. And the code goes only
+to a host that paired the desktop with Full, over the connection that pairing
+authenticated.
 
 Still in place from v1: pairing needs a single-use code, minted on the desktop
 and valid five minutes; turning remote access off closes every connection with
@@ -532,12 +561,16 @@ not have on record (never paired, or revoked) closes with `4003`.
 
 ### `pair`
 
-Desktop Settings → "Remote control" → "Pair a device" calls the Tauri command
-`remote_begin_pairing`, which mints a one-time pairing code (8 chars from
+Desktop Settings → "Devices" keeps a pairing window open while it is on screen,
+through the Tauri command `remote_begin_pairing`: it mints the next invite
+whenever none is live (none yet, or the last one lapsed, was redeemed, or
+granted another preset than the one chosen), but not after the host closed the
+window for too many requests (see "Confirmed pairing") — that takes a click on
+"New code". `remote_begin_pairing` mints a one-time pairing code (8 chars from
 `A-Z2-9`, no ambiguous glyphs), valid 5 minutes, single use. The code carries
 the scope preset the pairing will grant (see "Scopes"); the link does not, so
-nothing a client says can widen it. Settings shows the code as text and as a QR
-code encoding:
+nothing a client says can widen it. Settings › Devices › Clients shows the code
+as text and as a QR code encoding:
 
 ```
 fletch://pair?host=<host public key, base64url>&addr=<ip>:<port>&relay=<url-encoded relay base URL>&token=<code>&name=<url-encoded host name>
@@ -588,9 +621,11 @@ forwarding events. The host does NOT push a snapshot; the client issues
 
 A device that found the host by discovery (see "Discovery") pairs without a
 code: it asks, and someone at the host accepts, comparing a six-digit code both
-screens show. It needs the same *pairing window* as a code — a live invite
-from "Pair a device" — and is granted that invite's scopes; accepting redeems
-the invite, so one "Pair a device" admits one device whichever way it pairs.
+screens show. It needs the same *pairing window* as a code — a live invite,
+which the desktop keeps open while Settings › Devices is on screen and a
+headless host opens with `fletch-host pair` — and is granted that invite's
+scopes; accepting redeems the invite, so one invite admits one device whichever
+way it pairs.
 
 A code derived from the Noise transcript alone could be ground by a party in
 the middle, which picks its own ephemeral keys and could try a million offline
@@ -626,9 +661,13 @@ learns the host-side digits on every `pair_request` and can hang up unseen
 when they do not match the phone's. Each such roll is a one-in-a-million
 chance, so the host caps them: a pairing window answers at most five
 `pair_request`s, and the sixth closes it along with every live pairing code.
-The bound is therefore five in a million (one in 200 000) per "Pair a device",
-and every further window takes someone at the Mac to open it. Since anyone on
-the network can close a window this way, the host tells its own screen
+The bound is therefore five in a million (one in 200 000) per window. The
+desktop reopens a window on its own only when the last one lapsed (five
+minutes) or was redeemed, and only while Settings › Devices is open; one the
+host closed for too many requests stays closed until someone at the Mac clicks
+"New code". So a party in the middle gets at most five tries per five minutes
+the page is open, and none after tripping the cap. Since anyone on the network
+can close a window this way, the host tells its own screen
 (`remote:pairing-closed`), and the pairing card stops showing the spent code.
 
 A pairing the host accepts but cannot store — `pair` or confirmed — does not
@@ -639,6 +678,43 @@ The device's nonce stays in its Rust layer between the two frames
 (`remote_pair_commit` and `remote_pair_code`), so the webview never holds a
 nonce it has not yet revealed. Known-answer vectors are in
 `crates/fletch-proto/src/pairing.rs`.
+
+### Pairing back
+
+Two desktops that are both hosts can each control the other after one
+confirmed pairing, with one more click on the side that asked:
+
+1. Mac A pairs with Mac B by confirmation (above), and the person at B
+   accepts. If the `protocol.ops` B answered A lists `offer_invite` (B knows
+   the op, and paired A with Full), A asks: "Paired with “B”. Let B control
+   this Mac too?" — Allow or Not now, with the reminder to allow only a
+   pairing the person accepted on B themselves. Nothing about A has left it
+   yet, and A's remote access is as it was.
+2. On Allow, A turns its own remote access on if it was off (the question
+   says so), mints a pairing code of its own (`remote_begin_pairing`, preset
+   `full`) and sends its `fletch://pair` link to B over the connection it just
+   authenticated: `{ "op": "offer_invite", "args": { "url": "fletch://pair?…" } }`.
+3. B keeps a `url` of printable ASCII starting `fletch://pair?`, at most
+   2 KiB; anything else is answered `That isn't a Fletch pairing link.` It
+   raises `remote:invite-offered` `{ deviceId, deviceName, url }` on its own
+   screen and answers `{}`. A host with nobody at its screen (the headless
+   host) has no app to pair with anything and answers `This host can't
+   control other machines.`
+4. B's desktop pairs with the link as an ordinary `pair` with a code, over A's
+   LAN address or its relay, and says "Now controlling “A” too". It trusts the
+   link because of the device it came from: a Full device of B, which the
+   person at B accepted moments earlier. A failure is shown on B's screen.
+
+`offer_invite` is in the `publish` scope (see "Scopes"): the link grants full
+control of the sender's own machine, and a device the person at B paired with
+less (Control) may not hand one over. Why A asks only after pairing, rather
+than sending its link with the request: see "Threat model (v2)".
+
+The code A mints is a five-minute Full pairing window on A, like one from
+Settings › Devices. Until it is redeemed it is A's newest window, so a
+confirmed pairing to A in that moment would take it, scopes and all. B redeems
+it within seconds of the click, it is single use, and if B never does
+(offline, an error) it lapses after five minutes.
 
 ### `hello`
 
@@ -674,7 +750,7 @@ The six scopes, and what each one covers:
 | `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; every project setting (`set_project_setting`, and the icon through `project_icon_set`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides, and which provider account the host's agents run under (`set_active_provider_account`) |
 | `workflows` | launch, cancel and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
-| `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be — and `autopilot_set`, for the same reason: an enrolled checkout's pushes skip the prompt (see "Autopilot"), so switching autopilot on is a standing publish grant; plus the five settings that decide how a publish happens: `set_publish_confirmation`, `set_publish_approval_wait`, `set_branch_prefix`, `set_draft_prs`, `set_agent_attribution_removed` |
+| `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be — and `autopilot_set`, for the same reason: an enrolled checkout's pushes skip the prompt (see "Autopilot"), so switching autopilot on is a standing publish grant; plus the five settings that decide how a publish happens: `set_publish_confirmation`, `set_publish_approval_wait`, `set_branch_prefix`, `set_draft_prs`, `set_agent_attribution_removed`; and `offer_invite`, which hands this host a full-access code for the sender's own machine, so only a Full device may (see "Pairing back") |
 
 Every op in the table below has exactly one scope. `register_push` is outside
 the scheme and always allowed: it writes the calling device's own APNs token
@@ -947,6 +1023,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `project_icon_candidates` | `{ projectId }` — a fresh scan of the project's repositories on the host for its icon (docs/project-surfaces-plan.md §3.6), primary repo first, best first; each with its image for a thumbnail. `path` is repo-relative (a secondary repo's starts with its folder name). Read-only | `{ path, source, width: number \| null, mime, data }[]` — `data` base64 |
 | `project_icon_set` | `{ projectId, source: string \| null, bytes?: string }` — make `source` the project's icon: `detected:<path>` (one of the candidates' `path`s, re-checked against a fresh scan — never an arbitrary file), `file` with the image's `bytes` (base64, at most 1 MB), `builtin:<glyph>` (`web`, `desktop`, `mobile`, `cli`, `library`, `docs`), `initial`, or `null` to clear the choice (detection fills an undecided project in on add, relocate and the host's startup pass). The image is copied under the host's data directory, so the repository is never read to draw it. Writes `icon.source` and emits `project_settings:changed` and `workspace:changed` | `Workspace` |
 | `project_icon_get` | `{ projectId }` — the stored icon: fetch it when the project's `ProjectRef.icon_hash` changes, never per snapshot. An SVG is drawn through `<img>`, never inlined | `{ glyph } \| { mime, data } \| null` — `null` draws the initial |
+| `offer_invite` | `{ url }` — a `fletch://pair` link for the sending desktop's own machine, printable ASCII, at most 2 KiB; `publish` scope; raises `remote:invite-offered` on the host's screen, and a host with no screen refuses it (see "Pairing back") | `{}` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
@@ -1826,12 +1903,16 @@ a phone.
 | command | purpose |
 |---|---|
 | `remote_status` | `{ enabled, listening, port, name, hostId, addresses: string[], devices: RemoteDevice[], relay: RelayStatus, error: string \| null }` — `hostId` is the host public key, base64url; `name` is what a device sees this machine called (the same string `pair`/`hello` and the pairing URL carry), which is also how a desktop acting as a *client* names itself when it pairs with another host |
-| `remote_set_enabled` | `{ enabled }` start/stop the listener and the relay link; persists setting `remote.enabled`; disabling closes live connections with `4004` |
+| `remote_set_enabled` | `{ enabled }` start/stop the listener and the relay link; persists setting `remote.enabled`; enabling first fills an absent or blank `remote.relay_url` with `wss://relay.fletch.sh` (see "Relay"), so the link comes up with the listener; disabling closes live connections with `4004` |
 | `remote_set_port` | `{ port }` persist setting `remote.port`; a running listener moves to it at once (its connections close with `1012`, the relay link stays up), an idle one records it for the next start; refused, with nothing stored, when the port cannot be bound; returns `RemoteStatus` |
-| `remote_set_relay` | `{ url: string \| null }` persist setting `remote.relay_url` (null/empty clears it) and connect or drop the host link accordingly; returns `RemoteStatus` |
+| `remote_set_relay` | `{ url: string \| null }` persist setting `remote.relay_url` (null/empty clears it) and connect or drop the host link accordingly; returns `RemoteStatus`. Settings no longer calls it (the relay has no switch); a cleared URL is filled in again at the next launch or enable |
 | `remote_begin_pairing` | `{ preset?: "full" \| "control" }` (absent is `full`) → `{ token, url, expiresAt, preset, scopes }`; refused for a preset the host does not define, and while the listener is down or `error` is set |
 | `remote_revoke_device` | `{ deviceId }`; drops the credential and closes that device's live connections with `4003` |
+| `remote_browse_nearby` | `{ durationMs }` (capped at 10 s) → `NearbyHost[]`: browse `_fletch._tcp` for that long and answer with every other host still announced at the end (see "Discovery" → "Browsing from a desktop"). Nothing browses between calls; works whether or not remote access is on, since pairing *with* a host needs no listener here. Desktop only |
 
+`NearbyHost = { name, hostKey, port, addresses: string[] }` — TXT `name`, `id`
+and `port`, and the instance's IPv4 addresses, sorted; the phone's browse
+plugin answers the same shape without `addresses`.
 `RemoteDevice = { deviceId, name, platform, createdAt, lastSeenAt, connected, pushEnabled, scopes }`,
 where `connected` is derived from the live connections, not from `lastSeenAt`,
 and `scopes` is what the device was paired with (see "Scopes").

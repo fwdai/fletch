@@ -14,7 +14,9 @@
 //!
 //! Adding an op is: a row in `docs/remote-protocol.md`, a name in [`OPS`], and
 //! one match arm here — unless it needs to know *which device* is asking, in
-//! which case it goes in [`SESSION_OPS`] and is answered by `server`.
+//! which case it goes in [`SESSION_OPS`] and is answered by `server`. The one
+//! op that needs both a scope and the device, [`OFFER_INVITE`], is in [`OPS`]
+//! for its scope and answered by `server` all the same, with no arm here.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -335,7 +337,16 @@ pub const OPS: &[&str] = &[
     "project_icon_candidates",
     "project_icon_set",
     "project_icon_get",
+    // A paired desktop handing over its own pairing link ("Pairing back").
+    OFFER_INVITE,
 ];
+
+/// A paired desktop offering this host its own pairing link. In [`OPS`] so it
+/// is scoped (a Full device only, see `OP_SCOPES`) and advertised by scope, but
+/// answered by `server` like a [`SESSION_OPS`] op: the offer names the device
+/// that made it. No arm in `dispatch`, so a route that skipped the session
+/// layer fails closed as [`UNKNOWN_OP`].
+pub const OFFER_INVITE: &str = "offer_invite";
 
 pub const REGISTER_PUSH: &str = "register_push";
 
@@ -667,6 +678,9 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("project_icon_candidates", Scope::Observe),
     ("project_icon_set", Scope::Projects),
     ("project_icon_get", Scope::Observe),
+    // Handing this host a live, full-access code for the device's own machine:
+    // only a device paired with Full may, so `publish`, which Control lacks.
+    (OFFER_INVITE, Scope::Publish),
 ];
 
 /// The one scope that reaches `op`. `None` for a name outside [`OPS`] —

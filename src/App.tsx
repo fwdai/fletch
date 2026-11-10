@@ -10,6 +10,8 @@ import { FolderPickerHost } from "./components/FolderPicker";
 import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
 import { Onboarding } from "./components/Onboarding";
+import { PairBackNotice } from "./components/PairBackNotice";
+import { PairBackPrompt } from "./components/PairBackPrompt";
 import { PairRequestPrompt } from "./components/PairRequest";
 import { ProjectSettingsScreen } from "./components/ProjectSettingsScreen";
 import { PublishApproval } from "./components/PublishApproval";
@@ -204,6 +206,10 @@ function AppShell() {
       <BoxReadyToast />
       <PublishApproval />
       <PairRequestPrompt />
+      {/* The two halves of pairing two desktops both ways: asked here after
+          pairing with a host, and told here once a host's offer is taken. */}
+      <PairBackPrompt />
+      <PairBackNotice />
       {/* One bubble for every `data-tip` trigger in the app. */}
       <TooltipLayer />
     </div>

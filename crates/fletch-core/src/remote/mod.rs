@@ -12,7 +12,8 @@
 //! `relay` the outbound host link that carries off-LAN devices, `session` the
 //! live-connection registry, `dispatch` the op allowlist, `events` the taps on
 //! the engine's event stream, `push` the two alert triggers those taps raise,
-//! `discovery` the LAN announcement, `confirm` the Mac's side of a confirmed
+//! `discovery` the LAN announcement (and the desktop's browse for other
+//! hosts), `confirm` the Mac's side of a confirmed
 //! pairing. This module owns the state those share
 //! and the lifecycle of the listener, its announcement and the relay link.
 
@@ -32,6 +33,7 @@ mod session;
 mod tests;
 
 pub use auth::{DeviceStore, PairingTokens};
+pub use discovery::{browse_nearby, NearbyHost};
 pub use dispatch::{
     preset_scopes, Dispatch, DispatchFuture, DispatchResult, Scope, SupervisorDispatch,
     DICTATION_UNAVAILABLE, FORBIDDEN, UNKNOWN_OP,
@@ -61,18 +63,38 @@ use crate::host::sink::EVENT_BUFFER;
 pub const ENABLED_SETTING: &str = "remote.enabled";
 /// `settings` key holding a TCP port override.
 pub const PORT_SETTING: &str = "remote.port";
-/// `settings` key holding the relay base URL. Absent or empty means no relay:
-/// the setting has no default, since a host that is only ever on its own LAN
-/// should not be dialling anything outbound.
+/// `settings` key holding the relay base URL. Absent or empty means no relay.
+/// The headless host reads it as stored (its `--relay`/`--no-relay` override
+/// it); the desktop fills in [`DEFAULT_RELAY_URL`] whenever remote access is
+/// on, see [`ensure_relay_setting`].
 pub const RELAY_URL_SETTING: &str = "remote.relay_url";
-/// The URL the settings pane offers when the user turns the relay on. Only a
-/// suggestion — the setting is what decides, and anyone can run their own.
-///
-/// The canonical copy: the pane sends this string down from TypeScript
-/// (`src/api/types/remote.ts`), so nothing in Rust reads it outside the tests
-/// that check it is a URL `set_relay` accepts.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Fletch's relay: what the desktop stores in [`RELAY_URL_SETTING`] when remote
+/// access is on and nothing is stored there. Anyone can run their own; a URL
+/// already in the setting is kept.
 pub const DEFAULT_RELAY_URL: &str = "wss://relay.fletch.sh";
+
+/// The relay URL the desktop runs with while remote access is on. The relay
+/// is not a choice there — it is how a phone reaches this Mac off its network
+/// — so with nothing in [`RELAY_URL_SETTING`] (absent, or blank from a relay
+/// switched off back when Settings had a switch for it), [`DEFAULT_RELAY_URL`]
+/// is written there and returned. A URL that is stored, someone's own relay,
+/// is returned as it is.
+///
+/// Called at launch and when remote access is turned on. The headless host
+/// never calls it, so `--relay`/`--no-relay` keep deciding there. A failed
+/// write is logged and the default used anyway: the setting being stale must
+/// not leave a phone unable to reach this Mac.
+pub fn ensure_relay_setting(conn: &rusqlite::Connection) -> String {
+    if let Some(url) =
+        crate::database::get_setting(conn, RELAY_URL_SETTING).filter(|u| !u.trim().is_empty())
+    {
+        return url;
+    }
+    if let Err(e) = crate::database::set_setting(conn, RELAY_URL_SETTING, DEFAULT_RELAY_URL) {
+        tracing::warn!(error = %e, "remote: default relay url not stored");
+    }
+    DEFAULT_RELAY_URL.to_string()
+}
 /// The pairing presets `begin_pairing` accepts, in the order a chooser should
 /// offer them. Each one names a scope set in [`dispatch::preset_scopes`].
 pub const PAIRING_PRESETS: [&str; 2] = ["full", "control"];
