@@ -136,6 +136,37 @@ describe("a project added while the sidebar is focused", () => {
     expect(setProjectFocus).toHaveBeenCalledWith([]);
   });
 
+  it("drops the join when the focus was changed while the runs were on their way", async () => {
+    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app", "/repos/other"]));
+    store.setState({ projectFocus: ["id-0"] });
+    let answer: (runs: never[]) => void = () => {};
+    api.wfListRuns.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    api.cloneRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other", "/repos/new"]));
+
+    await store.getState().cloneRepo("x/new", "/repos");
+    // The user picks another project before the host answers.
+    store.setState({ projectFocus: ["id-1"] });
+    answer([]);
+    await settled();
+
+    expect(setProjectFocus).not.toHaveBeenCalled();
+  });
+
+  it("drops the join when the environment was switched meanwhile", async () => {
+    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app", "/repos/other"]));
+    store.setState({ projectFocus: ["id-0"], activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+    let answer: (runs: never[]) => void = () => {};
+    api.wfListRuns.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    api.cloneRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other", "/repos/new"]));
+
+    await store.getState().cloneRepo("x/new", "/repos");
+    store.setState({ activeEnvironmentId: "host-1" });
+    answer([]);
+    await settled();
+
+    expect(setProjectFocus).not.toHaveBeenCalled();
+  });
+
   it("leaves all projects showing when no focus is on", async () => {
     const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app"]));
     // A saved key of a project that is gone is not a focus.

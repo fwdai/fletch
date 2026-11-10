@@ -34,11 +34,18 @@ function addedProjectPath(before: Workspace | null | undefined, after: Workspace
  *  Which projects there are — and so whether the saved keys are a focus at
  *  all, and whether the result names every project — takes the workflow runs
  *  (see `store/projectFocus`), which the store doesn't hold. They are asked
- *  for only when something is saved; the usual add never waits on them. */
+ *  for only when something is saved; the usual add never waits on them.
+ *
+ *  The answer can be slow, and it is only good for the question asked: if the
+ *  focus was changed or the environment switched meanwhile, the user has
+ *  moved on and the join is dropped rather than applied to a newer choice. */
 async function joinProjectFocus(get: () => AppState, path: string): Promise<void> {
-  if (get().projectFocus.length === 0) return;
+  const asked = get();
+  if (asked.projectFocus.length === 0) return;
   const runs = await api.wfListRuns().catch(() => []);
   const s = get();
+  if (s.projectFocus !== asked.projectFocus) return;
+  if (s.activeEnvironmentId !== asked.activeEnvironmentId) return;
   const ref = s.workspace?.projects.find((p) => p.path === path);
   if (!ref || focusedProjectCount(s, runs) === 0) return;
   s.setProjectFocus(normalizeFocus([...s.projectFocus, projectKey(ref)], projectKeys(s, runs)));
