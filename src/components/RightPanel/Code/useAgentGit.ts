@@ -57,13 +57,23 @@ export function aggregateGit(checkouts: CheckoutGit[]): AgentGit {
 }
 
 export function useAgentGit(agent: AgentRecord): AgentGit {
-  const checkouts = useAppStore(
-    useShallow((s) =>
-      agent.repos.map((repo, i): CheckoutGit => {
-        const key = checkoutKey(agent.id, i === 0 ? undefined : repo.subdir);
-        return { subdir: repo.subdir, state: s.gitStates[key], blocked: s.gitBlocked[key] };
-      }),
-    ),
+  // The selectors hand back the store's own per-checkout values, which are the
+  // same references from one call to the next; the checkouts are assembled in
+  // the memo. A selector that built them would never return an equal result.
+  const keys = agent.repos.map((repo, i) =>
+    checkoutKey(agent.id, i === 0 ? undefined : repo.subdir),
   );
-  return useMemo(() => aggregateGit(checkouts), [checkouts]);
+  const states = useAppStore(useShallow((s) => keys.map((k) => s.gitStates[k])));
+  const blocked = useAppStore(useShallow((s) => keys.map((k) => s.gitBlocked[k])));
+  return useMemo(
+    () =>
+      aggregateGit(
+        agent.repos.map((repo, i) => ({
+          subdir: repo.subdir,
+          state: states[i],
+          blocked: blocked[i],
+        })),
+      ),
+    [agent.repos, states, blocked],
+  );
 }

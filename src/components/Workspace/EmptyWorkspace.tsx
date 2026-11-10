@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "@/api";
+import { api, type ProjectRef } from "@/api";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
@@ -17,6 +17,8 @@ import { workspaceTypeOptionsFor } from "@/store/workspaceTypes";
 import { WorkflowComposer, WorkflowHeading } from "@/workflows/run/WorkflowComposer";
 import { creationNote } from "./creationNote";
 
+const NO_PROJECTS: ProjectRef[] = [];
+
 /** Empty-state pane shown when the user has started a draft agent.
  *  First message in the composer spawns the real agent and dispatches
  *  the message in one go. */
@@ -33,7 +35,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   // a project they've since switched away from can be discarded rather than
   // applied out of order (see the ProjectPicker's onChange).
   const pickedRepoPath = useRef<string | null>(null);
-  const projectRefs = useAppStore((s) => s.workspace?.projects ?? []);
+  const projectRefs = useAppStore((s) => s.workspace?.projects ?? NO_PROJECTS);
   // One picker entry per project: a multi-repo project shows once, valued at
   // its primary (first) repo, which is where the agent spawns.
   const projectOptions = useMemo(() => {
