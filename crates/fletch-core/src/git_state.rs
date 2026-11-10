@@ -780,7 +780,15 @@ fn read_command(checkout_path: &Path) -> tokio::process::Command {
 }
 
 /// A digest of the checkout's uncommitted *content*: sha256 over the binary
-/// diff of the tree against HEAD, then each untracked file's path and blob id.
+/// diff of the tree against HEAD, then each untracked entry, sorted by path,
+/// as the kind of thing it is, the way git would record it:
+///
+/// - a regular file by its path and blob id;
+/// - a symlink by its path and its target, never what it points to;
+/// - a nested repository or linked worktree, which git lists once as
+///   `<path>/`, by its path alone: what is inside belongs to that
+///   repository, so nothing there is read.
+///
 /// Two trees with the same HEAD and the same status but a different line in
 /// one dirty file digest differently — what a status read (paths, kinds,
 /// line counts) cannot tell apart.
@@ -788,14 +796,14 @@ fn read_command(checkout_path: &Path) -> tokio::process::Command {
 /// Every command is read-only and hardened like [`query`]: the checkout's
 /// steerable config is refused first, and `--no-ext-diff`, `--no-textconv`
 /// and `--no-filters` keep a planted diff driver, textconv or clean filter
-/// from running on the host (`--no-filters` also hashes a symlink as its
-/// target *path*, never the file it points to).
+/// from running on the host. `hash-object` follows a symlink, so it is only
+/// given what [`untracked_link_targets`] found is not one.
 ///
 /// All or nothing: a digest that left any content out would compare equal to
-/// one that saw it, so every failure — a command's exit status, the paths
-/// written to `hash-object`, an id missing from its answer — is an error
-/// naming the last line git wrote to stderr. The caller decides what an
-/// unverifiable tree means.
+/// one that saw it, so every failure — a command's exit status, a link that
+/// can't be read, the paths written to `hash-object`, an id missing from its
+/// answer — is an error naming the last line git wrote to stderr. The caller
+/// decides what an unverifiable tree means.
 pub async fn content_digest(checkout_path: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     use std::os::unix::ffi::OsStrExt;
@@ -824,21 +832,33 @@ pub async fn content_digest(checkout_path: &Path) -> Result<String> {
         .output()
         .await?;
     require_success("git ls-files", &listed)?;
+    // One record per entry, `<path>\0<what>\n`: `what` is a file's blob id,
+    // `link <sha256 of the target>` or `repo`. A blob id is bare hex, so no
+    // two kinds of entry frame alike.
+    let mut records: Vec<(&[u8], String)> = Vec::new();
+    let mut entries: Vec<&[u8]> = Vec::new();
+    for raw in listed.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        // Only a nested repository or linked worktree is listed as a
+        // directory.
+        if raw.ends_with(b"/") {
+            records.push((raw, "repo".to_string()));
+        } else {
+            entries.push(raw);
+        }
+    }
+    let targets = untracked_link_targets(checkout_path, &entries).await?;
     // `hash-object --stdin-paths` reads one path per line, so a name with a
     // newline in it goes on its own argv instead (they are rare).
     let mut paths: Vec<&[u8]> = Vec::new();
     let mut newline_named: Vec<&[u8]> = Vec::new();
-    for raw in listed.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
-        if raw.contains(&b'\n') {
-            newline_named.push(raw);
-        } else {
-            paths.push(raw);
+    for (path, target) in entries.into_iter().zip(targets) {
+        match target {
+            Some(target) => records.push((path, format!("link {:x}", Sha256::digest(target)))),
+            None if path.contains(&b'\n') => newline_named.push(path),
+            None => paths.push(path),
         }
     }
-    paths.sort_unstable();
-    newline_named.sort_unstable();
 
-    let mut ids: Vec<String> = Vec::with_capacity(paths.len());
     if !paths.is_empty() {
         let mut child = read_command(checkout_path)
             .args(["hash-object", "--no-filters", "--stdin-paths"])
@@ -862,7 +882,7 @@ pub async fn content_digest(checkout_path: &Path) -> Result<String> {
         let out = out?;
         require_success("git hash-object", &out)?;
         written.map_err(|e| Error::Other(format!("git hash-object: writing its paths: {e}")))?;
-        ids = String::from_utf8_lossy(&out.stdout)
+        let ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
             .lines()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
@@ -874,12 +894,7 @@ pub async fn content_digest(checkout_path: &Path) -> Result<String> {
                 paths.len()
             )));
         }
-    }
-    for (path, id) in paths.iter().zip(&ids) {
-        hasher.update(path);
-        hasher.update(b"\0");
-        hasher.update(id.as_bytes());
-        hasher.update(b"\n");
+        records.extend(paths.into_iter().zip(ids));
     }
     for path in newline_named {
         let out = read_command(checkout_path)
@@ -894,12 +909,96 @@ pub async fn content_digest(checkout_path: &Path) -> Result<String> {
                 "git hash-object: no id for an untracked file".into(),
             ));
         }
+        records.push((path, id));
+    }
+    records.sort_unstable();
+    for (path, what) in &records {
         hasher.update(path);
         hasher.update(b"\0");
-        hasher.update(id.as_bytes());
+        hasher.update(what.as_bytes());
         hasher.update(b"\n");
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// The target of each of `rels` (paths under `checkout_path`) that is a
+/// symlink, `None` for each that is not, read where the checkout lives: on
+/// this host, or in its box's guest ([`link_targets_in_guest`]). Both give
+/// the target's raw bytes, so a tree reads the same wherever it is. A link
+/// whose target can't be read is an error; anything else is `None`, for
+/// `hash-object` to read or fail on.
+async fn untracked_link_targets(
+    checkout_path: &Path,
+    rels: &[&[u8]],
+) -> Result<Vec<Option<Vec<u8>>>> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    if rels.is_empty() {
+        return Ok(Vec::new());
+    }
+    if let exec @ crate::exec::Executor::Remote(_) = crate::exec::for_path(checkout_path) {
+        return link_targets_in_guest(&exec, checkout_path, rels).await;
+    }
+    let paths: Vec<std::path::PathBuf> = rels
+        .iter()
+        .map(|rel| checkout_path.join(std::ffi::OsStr::from_bytes(rel)))
+        .collect();
+    tokio::task::spawn_blocking(move || {
+        paths
+            .iter()
+            .map(|path| {
+                if !std::fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()) {
+                    return Ok(None);
+                }
+                std::fs::read_link(path)
+                    .map(|target| Some(target.into_os_string().into_vec()))
+                    .map_err(|e| Error::Other(format!("reading {}: {e}", path.display())))
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| Error::Other(format!("reading untracked links: {e}")))?
+}
+
+/// [`untracked_link_targets`] for a checkout a box keeps in its guest: one
+/// bash over stdin, names in and targets out NUL-separated, so any name and
+/// any target come through byte for byte. Unlike [`guest_lines`], a failed
+/// read is an error.
+async fn link_targets_in_guest(
+    exec: &crate::exec::Executor,
+    checkout_path: &Path,
+    rels: &[&[u8]],
+) -> Result<Vec<Option<Vec<u8>>>> {
+    const SCRIPT: &str = r#"
+while IFS= read -r -d '' f; do
+  if [ -L "$f" ]; then readlink -n -- "$f" || exit 1; fi
+  printf '\0'
+done
+"#;
+    const WHAT: &str = "untracked links in the box";
+    let mut input: Vec<u8> = Vec::new();
+    for rel in rels {
+        input.extend_from_slice(rel);
+        input.push(0);
+    }
+    let mut cmd = tokio::process::Command::from(exec.command("bash", checkout_path, &[]));
+    cmd.args(["-c", SCRIPT, "bash"]);
+    let out = crate::git::output_with_stdin(cmd, &input, crate::git::LOCAL_TIMEOUT, WHAT).await?;
+    require_success(WHAT, &out)?;
+    let answers = out.stdout.iter().filter(|b| **b == 0).count();
+    if answers != rels.len() {
+        return Err(Error::Other(format!(
+            "{WHAT}: {answers} answers for {} entries",
+            rels.len()
+        )));
+    }
+    // A symlink's target is never empty, so an empty answer is "not a link".
+    Ok(out
+        .stdout
+        .split(|b| *b == 0)
+        .take(answers)
+        .map(|target| (!target.is_empty()).then(|| target.to_vec()))
+        .collect())
 }
 
 /// `Ok` for a command that exited zero, else an error naming it and the last
@@ -2135,6 +2234,37 @@ mod tests {
         let (counts, over) =
             untracked_additions_in_guest(&exec, td.path(), rels(&["tail.txt"]), 1024, 1024).await;
         assert_eq!((counts, over), (vec![2], false));
+    }
+
+    /// The guest's link read, run through the local executor, answers as the
+    /// host's does: each link's raw target, whatever it points at or the
+    /// names hold, and nothing for what is not a link.
+    #[tokio::test]
+    async fn guest_link_targets_read_as_the_hosts_do() {
+        use std::os::unix::fs::symlink;
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        std::fs::create_dir(root.join("dir")).unwrap();
+        std::fs::write(root.join("file"), "x").unwrap();
+        symlink("dir", root.join("to-dir")).unwrap();
+        symlink("nowhere", root.join("dangling")).unwrap();
+        symlink("file", root.join("to-file")).unwrap();
+        symlink("odd\ntarget", root.join("new\nline")).unwrap();
+        let rels: [&[u8]; 5] = [b"file", b"to-dir", b"dangling", b"to-file", b"new\nline"];
+        let want = vec![
+            None,
+            Some(b"dir".to_vec()),
+            Some(b"nowhere".to_vec()),
+            Some(b"file".to_vec()),
+            Some(b"odd\ntarget".to_vec()),
+        ];
+
+        assert_eq!(untracked_link_targets(root, &rels).await.unwrap(), want);
+        let exec = crate::exec::Executor::Local;
+        assert_eq!(
+            link_targets_in_guest(&exec, root, &rels).await.unwrap(),
+            want
+        );
     }
 
     fn kind_name(kind: &StatusKind) -> &'static str {
