@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyFocus, toggleFocus } from "./projectFocus";
+import { applyFocus, normalizeFocus, toggleFocus } from "./projectFocus";
 
 const ALL = ["a", "b", "c"];
 const groups = ALL.map((key) => ({ key }));
@@ -28,6 +28,13 @@ describe("toggleFocus", () => {
 
   it("drops keys of projects that no longer exist", () => {
     expect(toggleFocus(["gone", "a"], "b", ALL)).toEqual(["a", "b"]);
+  });
+});
+
+describe("normalizeFocus", () => {
+  it("orders by the list, drops what is gone, and reads every project as no focus", () => {
+    expect(normalizeFocus(["c", "gone", "a"], ALL)).toEqual(["a", "c"]);
+    expect(normalizeFocus(["c", "b", "a"], ALL)).toEqual([]);
   });
 });
 

@@ -15,7 +15,7 @@ import { ProjectGroup } from "./ProjectGroup";
 import type { ProjectOption } from "./ProjectSelector";
 import { ProjectsBar } from "./ProjectsBar";
 import { applyFocus } from "./projectFocus";
-import { projectSignal, strongestSignal } from "./projectSignal";
+import { projectSignal } from "./projectSignal";
 import { bubbleActive } from "./recentProjects";
 import { focusRow, SIDEBAR_LIST_ID, stepOrigin, visibleRows } from "./rowNav";
 import { SidebarFooter } from "./SidebarFooter";
@@ -227,14 +227,10 @@ export function Sidebar() {
   useEffect(() => {
     setOpenMap((m) => ({ ...m, ...Object.fromEntries(savedFocus.map((k) => [k, true])) }));
   }, [savedFocus]);
-  const focused = useMemo(() => applyFocus(groups, focus), [groups, focus]);
-  const filtered = useMemo(() => applySearch(focused, query), [focused, query]);
-  // A focus must not cost the user a question: whatever is going on in the
-  // projects it hides shows on the selector.
-  const hiddenSignal = useMemo(() => {
-    const inView = new Set(focused.map((g) => g.key));
-    return strongestSignal(projectOptions.filter((o) => !inView.has(o.key)).map((o) => o.signal));
-  }, [focused, projectOptions]);
+  const filtered = useMemo(
+    () => applySearch(applyFocus(groups, focus), query),
+    [groups, focus, query],
+  );
 
   // Projects the user is working in float to the top (see `bubbleActive`);
   // the quiet ones keep the manual order beneath them. This is what the user
@@ -396,12 +392,7 @@ export function Sidebar() {
   return (
     <>
       <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
-      <ProjectsBar
-        projects={projectOptions}
-        focus={focus}
-        hiddenSignal={hiddenSignal}
-        onFocusChange={setFocus}
-      />
+      <ProjectsBar projects={projectOptions} focus={focus} onFocusChange={setFocus} />
       <div id={SIDEBAR_LIST_ID} className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">
           {filtered.length === 0 ? (

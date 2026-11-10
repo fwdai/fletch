@@ -1,11 +1,12 @@
 import { api, type Workspace } from "@/api";
+import { normalizeFocus } from "@/components/Sidebar/projectFocus";
 import { dropAgentEntries } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
 import { projectKey } from "@/util/projects";
 import { track } from "@/util/track";
 import { activeGateReason, type GateName } from "./capabilities";
-import { focusedProjectCount } from "./projectFocus";
+import { focusedProjectCount, projectKeys } from "./projectFocus";
 import type { AppState, SliceCreator } from "./types";
 
 /** Refuse a write the environment the user is driving cannot take. The control
@@ -28,11 +29,19 @@ function addedProjectPath(before: Workspace | null | undefined, after: Workspace
 
 /** A project added while the sidebar is narrowed to a focus joins that focus.
  *  The list shows only what is picked, so a project left out of it would be
- *  added and nowhere to be seen. With no focus on there is nothing to join. */
-function joinProjectFocus(s: AppState, path: string): void {
-  if (focusedProjectCount(s) === 0) return;
+ *  added and nowhere to be seen. With no focus on there is nothing to join.
+ *
+ *  Which projects there are — and so whether the saved keys are a focus at
+ *  all, and whether the result names every project — takes the workflow runs
+ *  (see `store/projectFocus`), which the store doesn't hold. They are asked
+ *  for only when something is saved; the usual add never waits on them. */
+async function joinProjectFocus(get: () => AppState, path: string): Promise<void> {
+  if (get().projectFocus.length === 0) return;
+  const runs = await api.wfListRuns().catch(() => []);
+  const s = get();
   const ref = s.workspace?.projects.find((p) => p.path === path);
-  if (ref) s.setProjectFocus([...s.projectFocus, projectKey(ref)]);
+  if (!ref || focusedProjectCount(s, runs) === 0) return;
+  s.setProjectFocus(normalizeFocus([...s.projectFocus, projectKey(ref)], projectKeys(s, runs)));
 }
 
 export interface ReposSlice {
@@ -92,7 +101,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
       // project is the moment a new user actually starts. Method + first only —
       // never the path.
       track("project_added", { method: "existing", first });
-      joinProjectFocus(get(), added);
+      void joinProjectFocus(get, added);
       if (opts?.draft !== false) void get().draftAfterProjectAdd(added, first);
     } catch (e) {
       set({ lastError: String(e) });
@@ -209,7 +218,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     track("project_added", { method: "clone", first });
     const added = addedProjectPath(before, ws);
     if (!added) return;
-    joinProjectFocus(get(), added);
+    void joinProjectFocus(get, added);
     void get().draftAfterProjectAdd(added, first);
   },
 
@@ -225,7 +234,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     track("project_added", { method: "create", first });
     const added = addedProjectPath(before, ws);
     if (!added) return;
-    joinProjectFocus(get(), added);
+    void joinProjectFocus(get, added);
     void get().draftAfterProjectAdd(added, first);
   },
 });

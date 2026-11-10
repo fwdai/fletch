@@ -15,6 +15,7 @@ const { api, track } = vi.hoisted(() => ({
     allocateDraftName: vi.fn(),
     repoDefaultBranch: vi.fn(),
     listRepoBranches: vi.fn(),
+    wfListRuns: vi.fn(),
   },
   track: vi.fn(),
 }));
@@ -93,6 +94,7 @@ beforeEach(() => {
   api.allocateDraftName.mockResolvedValue("everest");
   api.repoDefaultBranch.mockResolvedValue("main");
   api.listRepoBranches.mockResolvedValue(["main"]);
+  api.wfListRuns.mockResolvedValue([]);
 });
 
 describe("a project added while the sidebar is focused", () => {
@@ -102,8 +104,36 @@ describe("a project added while the sidebar is focused", () => {
     api.cloneRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other", "/repos/new"]));
 
     await store.getState().cloneRepo("x/new", "/repos");
+    await settled();
 
     expect(setProjectFocus).toHaveBeenCalledWith(["id-0", "id-2"]);
+  });
+
+  it("joins a focus on a project only a workflow run keeps listed", async () => {
+    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app"]));
+    store.setState({ projectFocus: ["/repos/gone"] });
+    api.wfListRuns.mockResolvedValue([
+      { id: "r1", project_id: "id-gone", repo_path: "/repos/gone" },
+    ]);
+    api.cloneRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/new"]));
+
+    await store.getState().cloneRepo("x/new", "/repos");
+    await settled();
+
+    expect(setProjectFocus).toHaveBeenCalledWith(["id-1", "/repos/gone"]);
+  });
+
+  it("goes back to all projects when the focus then names every one", async () => {
+    // Focused on one of two projects, then the other was removed: the saved
+    // focus still names the survivor.
+    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app"]));
+    store.setState({ projectFocus: ["id-0"] });
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other"]));
+
+    await store.getState().addWorkspaceRepo("/repos/other");
+    await settled();
+
+    expect(setProjectFocus).toHaveBeenCalledWith([]);
   });
 
   it("leaves all projects showing when no focus is on", async () => {
@@ -113,6 +143,7 @@ describe("a project added while the sidebar is focused", () => {
     api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other"]));
 
     await store.getState().addWorkspaceRepo("/repos/other");
+    await settled();
 
     expect(setProjectFocus).not.toHaveBeenCalled();
   });
