@@ -24,9 +24,7 @@ export function TitleBar() {
     <div className="tb flex-center" data-tauri-drag-region>
       <div className="tb-lights-gutter" data-tauri-drag-region />
       <div className="tb-logo iflex-center" data-tauri-drag-region>
-        <FletchLockup>
-          <span className="tb-badge iflex-center">beta</span>
-        </FletchLockup>
+        <FletchLockup />
       </div>
       <div className="tb-center">
         <WorkspaceStatus />

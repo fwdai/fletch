@@ -5,7 +5,6 @@ export function Wordmark() {
     <div className="wordmark">
       <FletchMark className="wordmark-mark" />
       fletch
-      <span className="beta">BETA</span>
     </div>
   );
 }
