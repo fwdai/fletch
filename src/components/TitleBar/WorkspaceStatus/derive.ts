@@ -1,8 +1,9 @@
 import type { AgentStatus } from "@/api";
 
-/** The four glanceable states the capsule dot collapses to. Distinct from
- *  AgentStatus: `waiting` is derived (running + a pending question), and
- *  spawning/stopped fold into running/idle. */
+/** The four glanceable states an agent's status collapses to (the status dot,
+ *  the capsule's shimmer, the palette's label). Distinct from AgentStatus:
+ *  `waiting` is derived (running + a pending question), and spawning/stopped
+ *  fold into running/idle. */
 export type DotStatus = "running" | "waiting" | "idle" | "error";
 
 export const STATUS_LABEL: Record<DotStatus, string> = {
@@ -12,7 +13,7 @@ export const STATUS_LABEL: Record<DotStatus, string> = {
   error: "Failed",
 };
 
-/** Map the agent's run status (+ a pending question) to the capsule dot.
+/** Map the agent's run status (+ a pending question) to its glanceable state.
  *  `awaiting` mirrors the sidebar row: running with an unanswered prompt is
  *  "your court", not "still working". */
 export function dotStatus(status: AgentStatus, awaiting: boolean): DotStatus {
