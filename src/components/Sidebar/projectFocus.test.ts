@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyFocus, normalizeFocus, toggleFocus } from "./projectFocus";
+import { applyFocus, joinFocus, normalizeFocus, toggleFocus } from "./projectFocus";
 
 const ALL = ["a", "b", "c"];
 const groups = ALL.map((key) => ({ key }));
@@ -35,6 +35,21 @@ describe("normalizeFocus", () => {
   it("orders by the list, drops what is gone, and reads every project as no focus", () => {
     expect(normalizeFocus(["c", "gone", "a"], ALL)).toEqual(["a", "c"]);
     expect(normalizeFocus(["c", "b", "a"], ALL)).toEqual([]);
+  });
+});
+
+describe("joinFocus", () => {
+  it("adds a project to the focus that is on", () => {
+    expect(joinFocus(["a"], "c", ALL)).toEqual(["a", "c"]);
+  });
+
+  it("goes back to all projects when the focus then names every one", () => {
+    expect(joinFocus(["a", "b"], "c", ALL)).toEqual([]);
+  });
+
+  it("has nothing to do with no focus on, or before the project is listed", () => {
+    expect(joinFocus([], "c", ALL)).toBeNull();
+    expect(joinFocus(["a"], "new", ALL)).toBeNull();
   });
 });
 

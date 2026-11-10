@@ -15,7 +15,6 @@ const { api, track } = vi.hoisted(() => ({
     allocateDraftName: vi.fn(),
     repoDefaultBranch: vi.fn(),
     listRepoBranches: vi.fn(),
-    wfListRuns: vi.fn(),
   },
   track: vi.fn(),
 }));
@@ -45,7 +44,7 @@ const workspaceOf = (paths: string[]): Workspace => ({
 const makeStore = (workspace: Workspace | null) => {
   const closeProjectScreen = vi.fn();
   const setLastError = vi.fn();
-  const setProjectFocus = vi.fn();
+  const requestFocusJoin = vi.fn();
   const store = create<AppState>()(
     (...a) =>
       ({
@@ -55,13 +54,12 @@ const makeStore = (workspace: Workspace | null) => {
         ...createComposerSlice(...a),
         closeProjectScreen,
         setLastError,
-        setProjectFocus,
-        projectFocus: [],
+        requestFocusJoin,
       }) as unknown as AppState,
   );
   // biome-ignore lint/suspicious/noExplicitAny: partial store seed
   store.setState({ workspace, customAgents: [], modelsByAgent: {} } as any);
-  return { store, closeProjectScreen, setLastError, setProjectFocus };
+  return { store, closeProjectScreen, setLastError, requestFocusJoin };
 };
 
 /** Let the fire-and-forget hand-off settle. */
@@ -94,104 +92,25 @@ beforeEach(() => {
   api.allocateDraftName.mockResolvedValue("everest");
   api.repoDefaultBranch.mockResolvedValue("main");
   api.listRepoBranches.mockResolvedValue(["main"]);
-  api.wfListRuns.mockResolvedValue([]);
 });
 
 describe("a project added while the sidebar is focused", () => {
-  it("joins the focus, so it is listed", async () => {
-    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app", "/repos/other"]));
-    store.setState({ projectFocus: ["id-0"] });
+  it("asks to join the focus, by the key the sidebar groups it under", async () => {
+    const { store, requestFocusJoin } = makeStore(workspaceOf(["/repos/app", "/repos/other"]));
     api.cloneRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other", "/repos/new"]));
 
     await store.getState().cloneRepo("x/new", "/repos");
-    await settled();
 
-    expect(setProjectFocus).toHaveBeenCalledWith(["id-0", "id-2"]);
+    expect(requestFocusJoin).toHaveBeenCalledWith("id-2");
   });
 
-  it("joins a focus on a project only a workflow run keeps listed", async () => {
-    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app"]));
-    store.setState({ projectFocus: ["/repos/gone"] });
-    api.wfListRuns.mockResolvedValue([
-      { id: "r1", project_id: "id-gone", repo_path: "/repos/gone" },
-    ]);
-    api.cloneRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/new"]));
+  it("asks for nothing when the add pinned nothing new", async () => {
+    const { store, requestFocusJoin } = makeStore(workspaceOf(["/repos/app"]));
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
 
-    await store.getState().cloneRepo("x/new", "/repos");
-    await settled();
+    await store.getState().addWorkspaceRepo("/repos/app");
 
-    expect(setProjectFocus).toHaveBeenCalledWith(["id-1", "/repos/gone"]);
-  });
-
-  it("goes back to all projects when the focus then names every one", async () => {
-    // Focused on one of two projects, then the other was removed: the saved
-    // focus still names the survivor.
-    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app"]));
-    store.setState({ projectFocus: ["id-0"] });
-    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other"]));
-
-    await store.getState().addWorkspaceRepo("/repos/other");
-    await settled();
-
-    expect(setProjectFocus).toHaveBeenCalledWith([]);
-  });
-
-  it("drops the join when the focus was changed while the runs were on their way", async () => {
-    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app", "/repos/other"]));
-    store.setState({ projectFocus: ["id-0"] });
-    let answer: (runs: never[]) => void = () => {};
-    api.wfListRuns.mockReturnValue(new Promise((resolve) => (answer = resolve)));
-    api.cloneRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other", "/repos/new"]));
-
-    await store.getState().cloneRepo("x/new", "/repos");
-    // The user picks another project before the host answers.
-    store.setState({ projectFocus: ["id-1"] });
-    answer([]);
-    await settled();
-
-    expect(setProjectFocus).not.toHaveBeenCalled();
-  });
-
-  it("drops the join when the environment was switched meanwhile", async () => {
-    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app", "/repos/other"]));
-    store.setState({ projectFocus: ["id-0"], activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
-    let answer: (runs: never[]) => void = () => {};
-    api.wfListRuns.mockReturnValue(new Promise((resolve) => (answer = resolve)));
-    api.cloneRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other", "/repos/new"]));
-
-    await store.getState().cloneRepo("x/new", "/repos");
-    store.setState({ activeEnvironmentId: "host-1" });
-    answer([]);
-    await settled();
-
-    expect(setProjectFocus).not.toHaveBeenCalled();
-  });
-
-  it("keeps the focus as it stands when the runs cannot be read", async () => {
-    // One pinned project in the store; the sidebar may list a run-only one
-    // beside it, which a failed read cannot rule out. Tidying against the
-    // store alone would read this focus as every project and clear it.
-    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app"]));
-    store.setState({ projectFocus: ["id-0"] });
-    api.wfListRuns.mockRejectedValue(new Error("host unreachable"));
-    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other"]));
-
-    await store.getState().addWorkspaceRepo("/repos/other");
-    await settled();
-
-    expect(setProjectFocus).toHaveBeenCalledWith(["id-0", "id-1"]);
-  });
-
-  it("leaves all projects showing when no focus is on", async () => {
-    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app"]));
-    // A saved key of a project that is gone is not a focus.
-    store.setState({ projectFocus: ["id-gone"] });
-    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other"]));
-
-    await store.getState().addWorkspaceRepo("/repos/other");
-    await settled();
-
-    expect(setProjectFocus).not.toHaveBeenCalled();
+    expect(requestFocusJoin).not.toHaveBeenCalled();
   });
 });
 

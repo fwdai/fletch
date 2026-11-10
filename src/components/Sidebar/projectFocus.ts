@@ -14,6 +14,19 @@ export function normalizeFocus(keys: Iterable<string>, all: readonly string[]): 
   return ordered.length === all.length ? [] : ordered;
 }
 
+/** The focus once the project `key` joins it — a project just added while
+ *  the list is narrowed, which a strict list would otherwise leave out. Null
+ *  while there is nothing to do: no focus is on, or the project isn't listed
+ *  yet. */
+export function joinFocus(
+  focus: ProjectFocus,
+  key: string,
+  all: readonly string[],
+): string[] | null {
+  if (focus.length === 0 || !all.includes(key)) return null;
+  return normalizeFocus([...focus, key], all);
+}
+
 /** Add `key` to the focus, or take it out. */
 export function toggleFocus(focus: ProjectFocus, key: string, all: readonly string[]): string[] {
   const next = new Set(focus);

@@ -1,12 +1,10 @@
 import { api, type Workspace } from "@/api";
-import { normalizeFocus } from "@/components/Sidebar/projectFocus";
 import { dropAgentEntries } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
 import { projectKey } from "@/util/projects";
 import { track } from "@/util/track";
 import { activeGateReason, type GateName } from "./capabilities";
-import { focusedProjectCount, projectKeys } from "./projectFocus";
 import type { AppState, SliceCreator } from "./types";
 
 /** Refuse a write the environment the user is driving cannot take. The control
@@ -27,35 +25,13 @@ function addedProjectPath(before: Workspace | null | undefined, after: Workspace
   return after.projects.find((p) => !known.has(p.path))?.path ?? null;
 }
 
-/** A project added while the sidebar is narrowed to a focus joins that focus.
- *  The list shows only what is picked, so a project left out of it would be
- *  added and nowhere to be seen. With no focus on there is nothing to join.
- *
- *  Which projects there are — and so whether the saved keys are a focus at
- *  all, and whether the result names every project — takes the workflow runs
- *  (see `store/projectFocus`), which the store doesn't hold. They are asked
- *  for only when something is saved; the usual add never waits on them.
- *
- *  The answer can be slow, and it is only good for the question asked: if the
- *  focus was changed or the environment switched meanwhile, the user has
- *  moved on and the join is dropped rather than applied to a newer choice.
- *
- *  A failed read is not an empty list. Without the runs the projects known
- *  here may be fewer than the sidebar lists, and tidying the focus against
- *  them could read it as naming every project and clear it. So the project
- *  then joins a focus the store can vouch for as it stands, nothing dropped
- *  and nothing collapsed, and the next change to the focus tidies it. */
-async function joinProjectFocus(get: () => AppState, path: string): Promise<void> {
-  const asked = get();
-  if (asked.projectFocus.length === 0) return;
-  const runs = await api.wfListRuns().catch(() => null);
-  const s = get();
-  if (s.projectFocus !== asked.projectFocus) return;
-  if (s.activeEnvironmentId !== asked.activeEnvironmentId) return;
+/** A project added while the sidebar is narrowed to a focus joins that focus:
+ *  the list shows only what is picked, so a project left out of it would be
+ *  added and nowhere to be seen. This only asks; the sidebar applies it (see
+ *  `focusJoin`). */
+function joinProjectFocus(s: AppState, path: string): void {
   const ref = s.workspace?.projects.find((p) => p.path === path);
-  if (!ref || focusedProjectCount(s, runs ?? []) === 0) return;
-  const joined = [...s.projectFocus, projectKey(ref)];
-  s.setProjectFocus(runs ? normalizeFocus(joined, projectKeys(s, runs)) : joined);
+  if (ref) s.requestFocusJoin(projectKey(ref));
 }
 
 export interface ReposSlice {
@@ -115,7 +91,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
       // project is the moment a new user actually starts. Method + first only —
       // never the path.
       track("project_added", { method: "existing", first });
-      void joinProjectFocus(get, added);
+      joinProjectFocus(get(), added);
       if (opts?.draft !== false) void get().draftAfterProjectAdd(added, first);
     } catch (e) {
       set({ lastError: String(e) });
@@ -232,7 +208,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     track("project_added", { method: "clone", first });
     const added = addedProjectPath(before, ws);
     if (!added) return;
-    void joinProjectFocus(get, added);
+    joinProjectFocus(get(), added);
     void get().draftAfterProjectAdd(added, first);
   },
 
@@ -248,7 +224,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     track("project_added", { method: "create", first });
     const added = addedProjectPath(before, ws);
     if (!added) return;
-    void joinProjectFocus(get, added);
+    joinProjectFocus(get(), added);
     void get().draftAfterProjectAdd(added, first);
   },
 });
