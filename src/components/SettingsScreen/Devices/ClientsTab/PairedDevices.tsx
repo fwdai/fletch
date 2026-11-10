@@ -2,20 +2,22 @@ import { SetGroup, SetRow } from "../../primitives";
 import type { Remote } from "../useRemote";
 import { DeviceRow } from "./DeviceRow";
 
-/** The devices allowed to control this Mac, each with its revoke. */
+/** The devices allowed to control this Mac, each with its revoke. The page's
+ *  last group while this Mac is not listening: there is no pairing window to
+ *  show under it then. */
 export function PairedDevices({ remote }: { remote: Remote }) {
   const { status, busy, revoke } = remote;
   const devices = status?.devices ?? [];
 
   return (
-    <SetGroup label="Paired devices" last>
+    <SetGroup label="Paired" last={!status?.listening}>
       {devices.length === 0 ? (
         <SetRow
-          title="Devices"
+          title="No clients yet"
           sub={
             status?.listening
-              ? "None yet."
-              : "None yet. Turn on remote control to pair a phone or another Mac."
+              ? "Pair a phone or another Mac below."
+              : "Turn on remote control to pair a phone or another Mac."
           }
         />
       ) : (

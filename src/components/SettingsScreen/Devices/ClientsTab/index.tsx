@@ -5,8 +5,8 @@ import { PairedDevices } from "./PairedDevices";
 import { PairingGroup } from "./PairingGroup";
 
 /** Settings › Devices › Clients: the devices allowed to control this Mac —
- *  this Mac *as a host*. Whether it lets them in, the pairing window a new one
- *  comes through, and the ones already paired. The server state is the page's
+ *  this Mac *as a host*. Whether it lets them in, the ones already paired, and
+ *  the pairing window a new one comes through. The server state is the page's
  *  (`useRemote`), since the pairing window stays open on either tab. */
 export function ClientsTab({
   remote,
@@ -20,8 +20,8 @@ export function ClientsTab({
   return (
     <>
       <ConnectionGroup remote={remote} />
-      <PairingGroup remote={remote} preset={preset} onPreset={onPreset} />
       <PairedDevices remote={remote} />
+      <PairingGroup remote={remote} preset={preset} onPreset={onPreset} />
     </>
   );
 }

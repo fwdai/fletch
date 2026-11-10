@@ -1,11 +1,11 @@
 import { SectionSwitch, type SectionTab } from "../SectionSwitch";
 
 const TABS: SectionTab[] = [
-  { id: "hosts", label: "Hosts", icon: "laptop" },
   { id: "clients", label: "Clients", icon: "phone" },
+  { id: "hosts", label: "Hosts", icon: "laptop" },
 ];
 
-/** The Hosts / Clients switch on the Devices page. */
+/** The Clients / Hosts switch on the Devices page. */
 export function DevicesSwitch() {
   return <SectionSwitch tabs={TABS} />;
 }

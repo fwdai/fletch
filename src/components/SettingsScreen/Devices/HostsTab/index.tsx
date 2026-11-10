@@ -13,11 +13,9 @@ export function HostsTab() {
 
   return (
     <>
-      <AddHost paired={hosts} add={add} />
-
-      <SetGroup label="Hosts" last>
+      <SetGroup label="Paired">
         {hosts.length === 0 ? (
-          <SetRow title="Hosts" sub="None yet. This Mac only runs its own agents." />
+          <SetRow title="No hosts yet" sub="This Mac only runs its own agents." />
         ) : (
           hosts.map((host) => (
             <HostRow
@@ -29,6 +27,8 @@ export function HostsTab() {
           ))
         )}
       </SetGroup>
+
+      <AddHost paired={hosts} add={add} />
     </>
   );
 }

@@ -33,10 +33,12 @@ const CUSTOMIZE_IDS: SettingsSection[] = ["agents", "tools", "skills"];
 // and neither the app nor the macOS sandbox limits what it can reach.
 const SANDBOX_IDS: SettingsSection[] = ["sandbox", "network"];
 
-// This Mac on both ends of remote control: the hosts it controls and the
-// clients (phones, other Macs) that control it. One entry, because pairing is
+// This Mac on both ends of remote control: the clients (phones, other Macs)
+// that control it and the hosts it controls. One entry, because pairing is
 // one act seen from two sides; one pane behind both tabs (DevicesPane).
-const DEVICES_IDS: SettingsSection[] = ["hosts", "clients"];
+// Clients first: pairing a phone is what most visits are for, and the switch
+// that turns remote control on is there.
+const DEVICES_IDS: SettingsSection[] = ["clients", "hosts"];
 
 // The agent view itself: what appears around an agent and how you talk to it.
 // Not "Workspace" — the title bar already calls agent sessions workspaces, and
@@ -92,7 +94,7 @@ const NAV: NavItem[] = [
   { id: "review", label: "Review", icon: "search", order: 56, group: GUARDRAILS_GROUP },
   // Radio waves: things reaching each other, which both tabs are about.
   {
-    id: "hosts",
+    id: "clients",
     label: "Devices",
     icon: "radio",
     order: 60,
@@ -161,7 +163,7 @@ export function settingsNav(opts: {
 
 /** A section the palette can jump to: a nav entry, or one of the sub-tabs a
  *  grouped entry folds in (Tools and Skills under Customize, Network under
- *  Sandbox, Clients under Devices). The sub-tab labels mirror
+ *  Sandbox, Hosts under Devices). The sub-tab labels mirror
  *  `CustomizeSwitch` / `SandboxSwitch` / `DevicesSwitch`. */
 export interface SettingsDestination {
   id: SettingsSection;
@@ -175,7 +177,7 @@ const SUBSECTIONS: Partial<Record<SettingsSection, { label: string; icon: IconNa
   tools: { label: "Tools", icon: "webhook" },
   skills: { label: "Skills", icon: "notebookPen" },
   network: { label: "Network", icon: "globe" },
-  clients: { label: "Clients", icon: "phone" },
+  hosts: { label: "Hosts", icon: "laptop" },
 };
 
 /** Every section reachable on this build, sub-tabs included, in nav order. */

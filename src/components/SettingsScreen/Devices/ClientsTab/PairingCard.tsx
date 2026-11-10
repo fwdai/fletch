@@ -2,9 +2,9 @@ import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useState } from "react";
 import type { PairingInvite } from "@/api";
 import { Button } from "@/components/ui/Button";
-import { CopyButton } from "@/components/ui/CopyButton";
 import { parsePairUrl } from "@/remote/pairing";
-import { presetLabel } from "./presets";
+import { useCopy } from "@/util/useCopy";
+import { SetRow } from "../../primitives";
 
 const QR_SIZE = 148;
 
@@ -25,17 +25,19 @@ function useCountdown(iso: string): number {
   return left;
 }
 
-/** The live pairing invitation — the window during which this Mac will pair a
- *  device, kept open while Settings › Devices is — QR first: the iPhone's own
- *  camera opens the `fletch://pair` link it encodes, which brings everything
- *  the phone needs and authenticates this Mac outright. Another Mac on this
- *  network needs none of it: it picks this Mac in its Devices › Hosts tab and
- *  asks, and the app-wide prompt (`PairRequest`) is where it is accepted. The
- *  phone's "Macs nearby" list works the same way, and the code and address are
- *  the last resort, for networks where the phone cannot see the list. Single
- *  use and five minutes; the pane mints the next one on its own, so the
- *  countdown says how long this code is good for rather than asking for a
- *  click. The copied link is how a Mac on another network pairs. */
+/** The live pairing invitation: the window during which this Mac will pair a
+ *  device, kept open while Settings › Devices is. One line per kind of client,
+ *  since each comes in its own way. A phone scans the QR: its camera opens the
+ *  `fletch://pair` link, which brings everything it needs and authenticates
+ *  this Mac outright. A Mac on this network picks this one in its Hosts tab
+ *  and asks, and the app-wide prompt (`PairRequest`) is where it is accepted.
+ *  A Mac anywhere else is handed the same link, copied. The typed code and
+ *  address are the last resort, for a phone that can neither scan nor see the
+ *  nearby list.
+ *
+ *  Single use and five minutes; the pane mints the next one on its own, so
+ *  the countdown says how long this code (and a link copied from it) is good
+ *  for rather than asking for a click. */
 export function PairingCard({
   invite,
   hostName,
@@ -50,91 +52,87 @@ export function PairingCard({
    *  network): the code is spent, whatever the countdown says, and only a
    *  click here opens the next one. */
   closed?: boolean;
-  /** No relay link is up, so the phone can only reach this Mac from the same
+  /** No relay link is up, so a device can only reach this Mac from the same
    *  network. */
   lanOnly?: boolean;
   onRegenerate: () => void;
 }) {
   const left = useCountdown(invite.expiresAt);
-  // Over either way: lapsed, or closed by the host. Same card, different words.
-  const expired = left === 0 || !!closed;
   const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
   const [manual, setManual] = useState(false);
+  const { copied, copy } = useCopy(invite.url);
   const link = parsePairUrl(invite.url);
+  const thisMac = hostName ? `“${hostName}”` : "this Mac";
+
+  if (closed) {
+    return (
+      <SetRow
+        title="Pairing is paused"
+        sub="Too many pairing attempts came from this network. Start again when you are ready."
+      >
+        <Button variant="outline" size="sm" onClick={onRegenerate}>
+          New code
+        </Button>
+      </SetRow>
+    );
+  }
+  // Lapsed: the pane is already minting the next one.
+  if (left === 0) return <SetRow title="Refreshing the pairing code…" />;
 
   return (
-    <div className="set-pair" data-expired={expired ? "1" : "0"}>
+    <div className="set-pair">
       <div className="set-pair-main">
-        <div className="set-pair-copy text-sm">
-          {closed
-            ? "Pairing closed after too many attempts from this network. Generate a new code."
-            : expired
-              ? "This code has expired. A new one is on its way."
-              : `Scan this with your phone's camera to pair it. It grants ${presetLabel(
-                  invite.preset,
-                )} access.`}
-        </div>
-        {!expired && (
-          <div className="set-pair-copy text-sm">
-            A Mac pairs by picking {hostName ? `“${hostName}”` : "this Mac"} in its Settings ›
-            Devices › Hosts. Accept here when it asks.
-          </div>
-        )}
-        {!expired && lanOnly && (
+        <dl className="set-pair-ways text-sm">
+          <dt>Phone</dt>
+          <dd>Scan the code with its camera.</dd>
+          <dt>Mac nearby</dt>
+          <dd>Pick {thisMac} in its Settings › Devices › Hosts, then accept here.</dd>
+          <dt>Mac elsewhere</dt>
+          <dd>
+            <button type="button" className="set-pair-link-btn" onClick={() => void copy()}>
+              {copied ? "Copied" : "Copy the pairing link"}
+            </button>{" "}
+            and paste it there instead.
+          </dd>
+        </dl>
+        {lanOnly && (
           <div className="set-inline-warn text-sm">
-            This Mac can't be reached from other networks right now, so keep your phone on the same
-            network while it pairs.
+            This Mac can't be reached from other networks right now, so pair from the same network.
           </div>
         )}
-        {!expired && (
-          <div className="set-pair-manual text-sm">
-            {manual ? (
+        {manual && (
+          <div className="set-pair-copy text-sm">
+            In Fletch on your phone, pick {thisMac} under Macs nearby and accept here. Not listed?
+            Enter this code
+            {link ? (
               <>
-                <div className="set-pair-copy">
-                  {hostName
-                    ? `Pick “${hostName}” under Macs nearby in Fletch on your phone, then accept here when this Mac asks.`
-                    : "Pick this Mac under Macs nearby in Fletch on your phone, then accept here when this Mac asks."}
-                </div>
-                <div className="set-pair-copy">
-                  Not listed? Enter this code
-                  {link ? (
-                    <>
-                      {" "}
-                      and address:{" "}
-                      <span className="set-pair-addr mono">
-                        {link.host}:{link.port}
-                      </span>
-                    </>
-                  ) : (
-                    ":"
-                  )}
-                </div>
-                <div className="set-pair-code mono">{invite.token}</div>
+                {" "}
+                and address{" "}
+                <span className="set-pair-addr mono">
+                  {link.host}:{link.port}
+                </span>
+                :
               </>
             ) : (
-              <button type="button" className="set-pair-manual-btn" onClick={() => setManual(true)}>
-                Can't scan?
-              </button>
+              ":"
             )}
+            <div className="set-pair-code mono">{invite.token}</div>
           </div>
         )}
         <div className="set-pair-meta text-xs flex-center">
           <span className={`set-pair-clock mono ${left <= 30 ? "urgent" : ""}`}>
-            {closed ? "closed" : expired ? "expired" : `expires in ${mmss}`}
+            new code in {mmss}
           </span>
-          <CopyButton text={invite.url} tip="Copy pairing link, for a Mac on another network" />
-        </div>
-        <div className="set-pair-actions flex-center">
-          <Button variant="outline" size="sm" onClick={onRegenerate}>
-            New code
-          </Button>
+          {!manual && (
+            <button type="button" className="set-pair-link-btn" onClick={() => setManual(true)}>
+              Can't scan?
+            </button>
+          )}
         </div>
       </div>
-      {!expired && (
-        <div className="set-pair-qr">
-          <QRCodeSVG value={invite.url} size={QR_SIZE} level="M" marginSize={2} />
-        </div>
-      )}
+      <div className="set-pair-qr">
+        <QRCodeSVG value={invite.url} size={QR_SIZE} level="M" marginSize={2} />
+      </div>
     </div>
   );
 }

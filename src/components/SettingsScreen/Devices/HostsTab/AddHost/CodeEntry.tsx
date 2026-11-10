@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import type { NearbyHost } from "@/remote/nearby";
 import { SetRow } from "../../../primitives";
@@ -21,9 +22,9 @@ export function CodeEntry({
 
   return (
     <SetRow
-      title={`Pair with ${host.name}`}
-      sub="Enter the code shown on that host. On a headless host, run fletch-host pair to show one."
-      align="start"
+      icon={<Icon name="laptop" size={16} />}
+      title={host.name}
+      sub="Nobody is at its screen to accept. Enter the code from fletch-host pair."
     >
       <input
         className="set-text-field set-pair-code-input mono text-sm"
@@ -32,6 +33,8 @@ export function CodeEntry({
         spellCheck={false}
         autoCapitalize="characters"
         autoCorrect="off"
+        // biome-ignore lint/a11y/noAutofocus: the row appears because its host was just picked, and the code is all it asks for
+        autoFocus
         disabled={sending}
         aria-label="Pairing code"
         onChange={(e) => setCode(e.target.value)}
@@ -39,7 +42,7 @@ export function CodeEntry({
           if (e.key === "Enter" && ready) onSubmit(code);
         }}
       />
-      <Button variant="primary" disabled={!ready} onClick={() => onSubmit(code)}>
+      <Button variant="primary" size="sm" disabled={!ready} onClick={() => onSubmit(code)}>
         {sending ? "Pairing…" : "Pair"}
       </Button>
       <Button variant="ghost" size="sm" onClick={onCancel}>

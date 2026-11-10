@@ -7,8 +7,7 @@ import { PairingCard } from "./PairingCard";
 import { CONTROL_PRESET_HELP, PAIRING_PRESETS } from "./presets";
 
 /** The pairing window the page keeps open (`usePairingWindow`): what the next
- *  device is granted, and the QR and code a phone pairs with. A Mac nearby
- *  needs neither — it asks, and the app-wide prompt takes it from there. Only
+ *  client is granted, and how each kind of client comes through it. Only
  *  while this Mac is listening: there is no window to show otherwise. */
 export function PairingGroup({
   remote,
@@ -23,12 +22,12 @@ export function PairingGroup({
   if (!status?.listening) return null;
 
   return (
-    <SetGroup label="Pair a device">
+    <SetGroup label="Add a client" last>
       <SetRow
         title="Access"
         sub={
           <>
-            What the next device you pair may do.
+            What the next client you pair may do.
             <br />
             {CONTROL_PRESET_HELP}
           </>
