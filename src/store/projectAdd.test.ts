@@ -44,6 +44,7 @@ const workspaceOf = (paths: string[]): Workspace => ({
 const makeStore = (workspace: Workspace | null) => {
   const closeProjectScreen = vi.fn();
   const setLastError = vi.fn();
+  const requestFocusJoin = vi.fn();
   const store = create<AppState>()(
     (...a) =>
       ({
@@ -53,11 +54,12 @@ const makeStore = (workspace: Workspace | null) => {
         ...createComposerSlice(...a),
         closeProjectScreen,
         setLastError,
+        requestFocusJoin,
       }) as unknown as AppState,
   );
   // biome-ignore lint/suspicious/noExplicitAny: partial store seed
   store.setState({ workspace, customAgents: [], modelsByAgent: {} } as any);
-  return { store, closeProjectScreen, setLastError };
+  return { store, closeProjectScreen, setLastError, requestFocusJoin };
 };
 
 /** Let the fire-and-forget hand-off settle. */
@@ -90,6 +92,26 @@ beforeEach(() => {
   api.allocateDraftName.mockResolvedValue("everest");
   api.repoDefaultBranch.mockResolvedValue("main");
   api.listRepoBranches.mockResolvedValue(["main"]);
+});
+
+describe("a project added while the sidebar is focused", () => {
+  it("asks to join the focus, by the key the sidebar groups it under", async () => {
+    const { store, requestFocusJoin } = makeStore(workspaceOf(["/repos/app", "/repos/other"]));
+    api.cloneRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other", "/repos/new"]));
+
+    await store.getState().cloneRepo("x/new", "/repos");
+
+    expect(requestFocusJoin).toHaveBeenCalledWith("id-2");
+  });
+
+  it("asks for nothing when the add pinned nothing new", async () => {
+    const { store, requestFocusJoin } = makeStore(workspaceOf(["/repos/app"]));
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
+
+    await store.getState().addWorkspaceRepo("/repos/app");
+
+    expect(requestFocusJoin).not.toHaveBeenCalled();
+  });
 });
 
 describe("the draft after a project is added", () => {

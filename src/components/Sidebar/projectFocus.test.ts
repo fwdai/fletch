@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyFocus, toggleFocus } from "./projectFocus";
+import { applyFocus, joinFocus, normalizeFocus, toggleFocus } from "./projectFocus";
 
 const ALL = ["a", "b", "c"];
 const groups = ALL.map((key) => ({ key }));
@@ -31,16 +31,34 @@ describe("toggleFocus", () => {
   });
 });
 
+describe("normalizeFocus", () => {
+  it("orders by the list, drops what is gone, and reads every project as no focus", () => {
+    expect(normalizeFocus(["c", "gone", "a"], ALL)).toEqual(["a", "c"]);
+    expect(normalizeFocus(["c", "b", "a"], ALL)).toEqual([]);
+  });
+});
+
+describe("joinFocus", () => {
+  it("adds a project to the focus that is on", () => {
+    expect(joinFocus(["a"], "c", ALL)).toEqual(["a", "c"]);
+  });
+
+  it("goes back to all projects when the focus then names every one", () => {
+    expect(joinFocus(["a", "b"], "c", ALL)).toEqual([]);
+  });
+
+  it("has nothing to do with no focus on, or before the project is listed", () => {
+    expect(joinFocus([], "c", ALL)).toBeNull();
+    expect(joinFocus(["a"], "new", ALL)).toBeNull();
+  });
+});
+
 describe("applyFocus", () => {
   it("shows everything without a focus", () => {
-    expect(keys(applyFocus(groups, [], null))).toEqual(ALL);
+    expect(keys(applyFocus(groups, []))).toEqual(ALL);
   });
 
   it("narrows to the focused projects, in list order", () => {
-    expect(keys(applyFocus(groups, ["c", "a"], null))).toEqual(["a", "c"]);
-  });
-
-  it("keeps the project of the open workspace in view", () => {
-    expect(keys(applyFocus(groups, ["a"], "c"))).toEqual(["a", "c"]);
+    expect(keys(applyFocus(groups, ["c", "a"]))).toEqual(["a", "c"]);
   });
 });

@@ -57,6 +57,8 @@ const STASH_KEYS = [
   // is parked with the view it was raised over, and an environment entered
   // starts without one — its own gate decides whether it can be raised.
   "addProjectOpen",
+  // A project waiting to join the sidebar's focus is this environment's.
+  "focusJoin",
   // Per-agent chat state.
   "offSidebarAgents",
   "managedLogs",
@@ -150,6 +152,7 @@ const BLANK: Pick<AppState, StashKey> = {
   projectScreen: null,
   attendedChatId: null,
   addProjectOpen: false,
+  focusJoin: null,
   offSidebarAgents: {},
   managedLogs: {},
   pendingToolUse: {},

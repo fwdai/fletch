@@ -69,6 +69,13 @@ export interface UiSlice {
    *  all projects (see `components/Sidebar/projectFocus.ts`). In the store so
    *  the palette and ⌘⇧P can set it from anywhere; saved in localStorage. */
   projectFocus: string[];
+  /** The group key of a project just added while something was saved as the
+   *  focus, waiting to join it. The add flows only ask (`requestFocusJoin`);
+   *  the sidebar decides and applies it (`useProjectFocus`), because only it
+   *  knows every project it lists — workflow runs keep some listed, and runs
+   *  are not in the store. Any change to the focus drops it: a join is for the
+   *  focus it was asked under, never a newer one. */
+  focusJoin: string | null;
   /** First-run onboarding overlay. `onboardingComplete` is persisted (DB
    *  settings); the overlay auto-opens for new users on init and is
    *  re-openable from Settings › Developer (dev builds and admins). */
@@ -170,6 +177,7 @@ export interface UiSlice {
   openAddProject: () => void;
   closeAddProject: () => void;
   setProjectFocus: (keys: string[]) => void;
+  requestFocusJoin: (key: string) => void;
   /** Open the onboarding overlay (e.g. "Replay tour" from Settings). */
   openOnboarding: () => void;
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
@@ -233,6 +241,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   feedbackNudgeOpen: false,
   addProjectOpen: false,
   projectFocus: loadProjectFocus(),
+  focusJoin: null,
   onboardingOpen: false,
   onboardingComplete: false,
   historyOpen: false,
@@ -301,7 +310,11 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   closeAddProject: () => set({ addProjectOpen: false }),
   setProjectFocus: (keys) => {
     saveProjectFocus(keys);
-    set({ projectFocus: keys });
+    set({ projectFocus: keys, focusJoin: null });
+  },
+  requestFocusJoin: (key) => {
+    // With nothing saved every project shows already, the new one included.
+    if (get().projectFocus.length > 0) set({ focusJoin: key });
   },
   openOnboarding: () => set({ onboardingOpen: true }),
   closeOnboarding: () => {

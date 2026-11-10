@@ -2,9 +2,10 @@ import { api, type Workspace } from "@/api";
 import { dropAgentEntries } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
+import { projectKey } from "@/util/projects";
 import { track } from "@/util/track";
 import { activeGateReason, type GateName } from "./capabilities";
-import type { SliceCreator } from "./types";
+import type { AppState, SliceCreator } from "./types";
 
 /** Refuse a write the environment the user is driving cannot take. The control
  *  is already disabled with this reason, so this is the backstop for the paths
@@ -22,6 +23,15 @@ function refuseWhenGated(gate: GateName = "projectAdmin"): void {
 function addedProjectPath(before: Workspace | null | undefined, after: Workspace): string | null {
   const known = new Set(before?.projects.map((p) => p.path) ?? []);
   return after.projects.find((p) => !known.has(p.path))?.path ?? null;
+}
+
+/** A project added while the sidebar is narrowed to a focus joins that focus:
+ *  the list shows only what is picked, so a project left out of it would be
+ *  added and nowhere to be seen. This only asks; the sidebar applies it (see
+ *  `focusJoin`). */
+function joinProjectFocus(s: AppState, path: string): void {
+  const ref = s.workspace?.projects.find((p) => p.path === path);
+  if (ref) s.requestFocusJoin(projectKey(ref));
 }
 
 export interface ReposSlice {
@@ -81,6 +91,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
       // project is the moment a new user actually starts. Method + first only —
       // never the path.
       track("project_added", { method: "existing", first });
+      joinProjectFocus(get(), added);
       if (opts?.draft !== false) void get().draftAfterProjectAdd(added, first);
     } catch (e) {
       set({ lastError: String(e) });
@@ -196,7 +207,9 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     set({ workspace: ws });
     track("project_added", { method: "clone", first });
     const added = addedProjectPath(before, ws);
-    if (added) void get().draftAfterProjectAdd(added, first);
+    if (!added) return;
+    joinProjectFocus(get(), added);
+    void get().draftAfterProjectAdd(added, first);
   },
 
   createRepo: async (name, destParent, isPrivate, description, publish) => {
@@ -210,6 +223,8 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     set({ workspace: ws });
     track("project_added", { method: "create", first });
     const added = addedProjectPath(before, ws);
-    if (added) void get().draftAfterProjectAdd(added, first);
+    if (!added) return;
+    joinProjectFocus(get(), added);
+    void get().draftAfterProjectAdd(added, first);
   },
 });
