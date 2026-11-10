@@ -112,7 +112,7 @@ Concepts, the workflow reference, and the isolation design live at **[fletch.sh/
 
 Questions, workflows worth stealing, and anything that isn't a bug go in **[Discussions](https://github.com/fwdai/fletch/discussions)**. Two threads to start with:
 
-- **[Known gaps in the beta](https://github.com/fwdai/fletch/discussions/523)** — what doesn't work yet, written down rather than discovered. Read this before you file anything.
+- **[Known gaps](https://github.com/fwdai/fletch/discussions/523)** — what doesn't work yet, written down rather than discovered. Read this before you file anything.
 - **[What would you fix first](https://github.com/fwdai/fletch/discussions/526)** — the one that actually shapes what gets built next.
 
 Reproducible bugs belong in [Issues](https://github.com/fwdai/fletch/issues). Common questions are answered on the [FAQ](https://fletch.sh/faq).

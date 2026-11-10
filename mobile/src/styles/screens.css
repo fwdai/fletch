@@ -30,17 +30,6 @@
   position: relative;
   top: 0.5px;
 }
-.wordmark .beta {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.14em;
-  color: var(--fg-3);
-  border: 1px solid var(--bd);
-  padding: 2px 5px;
-  border-radius: 5px;
-  font-weight: 500;
-  margin-left: 2px;
-}
 .host {
   display: inline-flex;
   align-items: center;
