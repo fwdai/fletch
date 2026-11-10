@@ -1,8 +1,8 @@
 /* ═══ workspace status capsule ═══════════════════════════════════════
  * The functional center of the title bar, three segments: the project pill
- * (a link to the full-screen project page), the workspace (isolation icon
- * badged with the agent's status + agent name) and its git state (git/PR
- * badge), each of the last two with its own popover on hover/focus.
+ * (a link to the full-screen project page), the workspace (isolation icon +
+ * agent name, which shimmers while the agent works) and its git state
+ * (git/PR badge), each of the last two with its own popover on hover/focus.
  * Plain/home variants share the tokens. */
 .ws-cap-wrap {
   -webkit-app-region: no-drag;
@@ -175,33 +175,6 @@
     animation: none;
     opacity: 0;
   }
-}
-
-/* the workspace's mark: its isolation icon with the agent's status dot on
- * the top-right corner (the bottom-right is where the seatbelt glyph keeps
- * its lock). The icon is cut away around the dot, so the badge reads on any
- * pill background, and the dot sits outside the icon's span so a box's phase
- * pulse doesn't dim it. */
-.ws-mark {
-  position: relative;
-  display: inline-flex;
-  flex-shrink: 0;
-}
-.ws-mark .ws-iso {
-  mask: radial-gradient(circle at calc(100% - 1px) 1px, transparent 5px, #000 5.5px);
-}
-.ws-mark .ws-dot {
-  position: absolute;
-  top: -2.5px;
-  right: -2.5px;
-  width: 7px;
-  height: 7px;
-}
-.ws-mark .ws-dot.running::after {
-  inset: -2px;
-}
-.ws-mark .ws-dot.waiting {
-  box-shadow: none;
 }
 
 /* inline git / PR badge */

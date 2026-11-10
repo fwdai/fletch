@@ -98,7 +98,7 @@ function HomeSummary() {
 }
 
 /** A not-yet-spawned draft: the project pill, then a static pill with the
- *  idle dot, pending name, and a quiet "new agent" tag. */
+ *  pending name and a quiet "new agent" tag. */
 function DraftCapsule({
   name,
   repoPath,
@@ -113,7 +113,6 @@ function DraftCapsule({
       {repoPath && projectName && <ProjectPill repoPath={repoPath} name={projectName} />}
       <div className="ws-cap static">
         <span className="ws-ctx">
-          <StatusDot status="idle" />
           <span className="ws-agent-name">{name}</span>
         </span>
         <span className="ws-badge quiet mono">new agent</span>
