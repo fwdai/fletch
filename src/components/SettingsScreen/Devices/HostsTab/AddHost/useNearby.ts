@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { api, type NearbyHost } from "@/api";
+import { nextSightings, type Sighting } from "./nearbyPairing";
 
 /** One browse, then a pause, round and round while the Hosts tab is mounted:
- *  a host that appears or leaves shows up within a few seconds, and nothing
- *  browses once the tab is gone. The phone's Pair screen does the same. */
+ *  a host that appears shows up within a few seconds, one that leaves is gone
+ *  a couple of rounds later (`nextSightings`), and nothing browses once the
+ *  tab is gone. The phone's Pair screen does the same. */
 const BROWSE_MS = 2000;
 const PAUSE_MS = 2000;
 
@@ -11,7 +13,7 @@ const PAUSE_MS = 2000;
  *  `searching` is true until the first browse has answered, so the list can
  *  tell "still looking" from "nobody here". */
 export function useNearby(): { hosts: NearbyHost[]; searching: boolean } {
-  const [hosts, setHosts] = useState<NearbyHost[]>([]);
+  const [seen, setSeen] = useState<Sighting[]>([]);
   const [searching, setSearching] = useState(true);
 
   useEffect(() => {
@@ -22,7 +24,7 @@ export function useNearby(): { hosts: NearbyHost[]; searching: boolean } {
       // than an error: pasting a link is still there.
       const found = await api.remoteBrowseNearby(BROWSE_MS).catch(() => [] as NearbyHost[]);
       if (stopped) return;
-      setHosts(found);
+      setSeen((prev) => nextSightings(prev, found));
       setSearching(false);
       timer = setTimeout(() => void round(), PAUSE_MS);
     };
@@ -33,5 +35,5 @@ export function useNearby(): { hosts: NearbyHost[]; searching: boolean } {
     };
   }, []);
 
-  return { hosts, searching };
+  return { hosts: seen.map((s) => s.host), searching };
 }

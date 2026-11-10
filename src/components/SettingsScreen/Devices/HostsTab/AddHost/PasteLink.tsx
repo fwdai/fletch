@@ -4,9 +4,10 @@ import { SetDisclosure, SetRow } from "../../../primitives";
 import type { AddHost } from "../usePairedHosts";
 import { pairTargetFrom } from "./pairLink";
 
-/** The way in for a host the nearby list cannot see — another network, a
- *  cloud box: paste the `fletch://pair?…` link it minted. Behind a disclosure,
- *  since on a shared network picking the host is quicker. */
+/** The way in for a host the nearby list cannot see (another network, a
+ *  cloud box): paste the `fletch://pair?…` link it minted. Behind a disclosure
+ *  that says when it applies, since on a shared network picking the host is
+ *  quicker. */
 export function PasteLink({ add }: { add: AddHost }) {
   const [link, setLink] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -33,10 +34,10 @@ export function PasteLink({ add }: { add: AddHost }) {
   };
 
   return (
-    <SetDisclosure label="Paste a pairing link">
+    <SetDisclosure label="On another network? Paste a pairing link">
       <SetRow
         title="Pairing link"
-        sub="For a host on another network or a cloud box. Copy it from the host's Settings › Devices › Clients, or from fletch-host pair."
+        sub="Copy it on the other Mac in Settings › Devices › Clients, or run fletch-host pair on a headless host."
         align="start"
       >
         <input
@@ -56,7 +57,12 @@ export function PasteLink({ add }: { add: AddHost }) {
             if (e.key === "Enter") void submit();
           }}
         />
-        <Button variant="primary" disabled={busy || !link.trim()} onClick={() => void submit()}>
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={busy || !link.trim()}
+          onClick={() => void submit()}
+        >
           {busy ? "Pairing…" : "Add host"}
         </Button>
       </SetRow>
