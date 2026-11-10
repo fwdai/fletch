@@ -19,7 +19,7 @@ import {
 } from "../src/remote/mock/fixtures";
 import { agentOf, api, client, projectOf, useStore } from "../src/store";
 import { isReplayed, replayLiveTurn } from "../src/store/liveTurn";
-import { clearHost, loadSettings, saveSettings } from "../src/store/persist";
+import { forgetHost, loadSettings, saveHost, saveSettings } from "../src/store/persist";
 import { pastHistory } from "../src/store/transcript";
 
 const state = () => useStore.getState();
@@ -63,18 +63,21 @@ describe("connection and snapshot", () => {
 
 describe("relay setting", () => {
   it("keeps the relay next to the host, and forgets it with the host", async () => {
-    await saveSettings({
+    await saveSettings({ theme: "dark" });
+    await saveHost({
+      hostKey: "k",
+      name: "Studio Mac",
       host: "192.168.1.24",
       port: 47285,
-      hostKey: "k",
       relay: "wss://relay.test",
-      theme: "dark",
     });
-    expect((await loadSettings()).relay).toBe("wss://relay.test");
-    await clearHost();
+    expect((await loadSettings()).hosts?.find((h) => h.hostKey === "k")?.relay).toBe(
+      "wss://relay.test",
+    );
+    await forgetHost("k");
     const after = await loadSettings();
-    expect(after.relay).toBeUndefined();
-    expect(after.host).toBeUndefined();
+    expect(after.hosts?.some((h) => h.hostKey === "k")).toBe(false);
+    expect(after.activeHostKey).toBeUndefined();
     expect(after.theme).toBe("dark");
   });
 

@@ -63,9 +63,10 @@ export async function startPush(next: PushDeps): Promise<void> {
 
   // Apple wants a registration on every launch, and it is also what releases a
   // tap that arrived while the webview was still loading. Only where the user
-  // has already agreed, though: asking is the pairing's job, below.
+  // has already agreed — for any paired host, since every one of them holds
+  // the token and may alert — though: asking is the pairing's job, below.
   const saved = await loadSettings();
-  if (saved.hostKey && saved.pushPermission?.[saved.hostKey] === "granted") {
+  if (saved.hosts?.some((h) => saved.pushPermission?.[h.hostKey] === "granted")) {
     await registerPush().catch(ignore);
   }
 }
@@ -82,10 +83,11 @@ export async function syncPush(): Promise<void> {
   await report();
 }
 
-/** Called by `unpair`, while the authenticated link is still up: the host only
- *  drops this phone's token on an explicit `{ token: null }`, so leaving without
- *  one would let a Mac this phone has forgotten keep alerting it. Best effort —
- *  an unpair must not be blocked by a host that is already gone. */
+/** Called when the active host is forgotten, while the authenticated link is
+ *  still up: the host only drops this phone's token on an explicit
+ *  `{ token: null }`, so leaving without one would let a Mac this phone has
+ *  forgotten keep alerting it. Best effort — forgetting must not be blocked by
+ *  a host that is already gone. */
 export async function forgetPush(): Promise<void> {
   if (deps?.client.state !== "connected") return;
   // Bounded: remote calls have no timeout, and a host that has stopped

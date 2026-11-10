@@ -1,6 +1,6 @@
 import { Icon } from "@desktop/components/Icon";
 import { ignore } from "../../lib/ignore";
-import { client, useStore } from "../../store";
+import { activeHostName, client, useStore } from "../../store";
 import { STEP_LABELS, Working } from "../Pair/Progress";
 
 /** Home's whole body while there is no workspace to show: the link to the Mac
@@ -13,13 +13,14 @@ import { STEP_LABELS, Working } from "../Pair/Progress";
  *  on its own (a dropped socket, the Mac asleep), and those read as
  *  "reconnecting"; the few it cannot clear (this device unpaired, remote
  *  access switched off, a changed host key) are stated as they are and point
- *  at the Host sheet, where the fix lives. */
+ *  at the Host sheet, where the fix lives. Another paired Mac is always a tap
+ *  away in the header's host switcher. */
 export function HostState() {
   const connection = useStore((s) => s.connection);
   const error = useStore((s) => s.connectionError);
   const retrying = useStore((s) => s.retrying);
   const step = useStore((s) => s.pairStep);
-  const hostName = useStore((s) => s.hostInfo?.name);
+  const hostName = useStore(activeHostName);
   const reconnect = useStore((s) => s.reconnect);
   const openSheet = useStore((s) => s.openSheet);
   const host = hostName ?? client.target?.name ?? "your Mac";
