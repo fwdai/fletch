@@ -1,8 +1,9 @@
 /* ═══ workspace status capsule ═══════════════════════════════════════
  * The functional center of the title bar, three segments: the project pill
  * (a link to the full-screen project page), the workspace (isolation icon +
- * agent name) and its git state (git/PR badge), each of the last two with
- * its own popover on hover/focus. Plain/home variants share the tokens. */
+ * agent name, which shimmers while the agent works) and its git state
+ * (git/PR badge), each of the last two with its own popover on hover/focus.
+ * Plain/home variants share the tokens. */
 .ws-cap-wrap {
   -webkit-app-region: no-drag;
   display: flex;
@@ -122,7 +123,8 @@
   text-overflow: ellipsis;
 }
 
-/* status dot */
+/* status dot — the workspace popover's head, the Home summary, the command
+ * palette's agent rows */
 .ws-dot {
   width: 8px;
   height: 8px;

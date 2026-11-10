@@ -500,22 +500,10 @@ button.pname:focus-visible {
   color: var(--fg-1);
   font-weight: 500;
 }
-/* shimmer + rail share one clock (--ag-sync) so their sweeps move in tandem */
+/* shimmer (base.css) + rail share one clock (--ag-sync) so their sweeps move
+ * in tandem */
 .ag-name.shimmer {
-  background: linear-gradient(100deg, var(--fg-1) 34%, var(--fg-0) 50%, var(--fg-1) 66%);
-  background-size: 220% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: agShimmer var(--ag-sync) linear infinite;
-}
-@keyframes agShimmer {
-  0% {
-    background-position: 140% 0;
-  }
-  100% {
-    background-position: -40% 0;
-  }
+  animation-duration: var(--ag-sync);
 }
 /* dev-server "running" indicator — a green play mark in a tinted, bordered
  * circle beside the identity chip. Signals the worktree's app is up, distinct

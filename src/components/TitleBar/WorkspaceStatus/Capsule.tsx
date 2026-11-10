@@ -9,7 +9,6 @@ import { GitPopover } from "./GitPopover";
 import { IsolationIcon } from "./IsolationIcon";
 import { shownIsolation } from "./isolation";
 import { ProjectPill } from "./ProjectPill";
-import { StatusDot } from "./StatusDot";
 import { useCapsuleData } from "./useCapsuleData";
 import { WorkspacePopover } from "./WorkspacePopover";
 
@@ -22,9 +21,11 @@ interface Props {
 }
 
 /** The capsule for the active agent, three `/`-separated segments: the
- *  project pill (status dot + project name) that opens the full-screen project
- *  page; the workspace — how it is isolated + its name, with the workspace
- *  popover; and its git state — badge (+ checks), with the git popover. */
+ *  project pill (icon + project name) that opens the full-screen project
+ *  page; the workspace — how it is isolated + its name, which shimmers while
+ *  the agent works, with the workspace popover; and its git state — badge
+ *  (+ checks), with the git popover. Idle, waiting and failed carry no mark
+ *  here: the sidebar row and the chat show them, the popover names them. */
 export function Capsule({ agent, repoPath, projectName }: Props) {
   const pending = useAppStore((s) => s.pendingToolUse[agent.id]);
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
@@ -43,21 +44,20 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
     if (rightCollapsed) toggleRight();
   }, [agent.id, rightCollapsed, setRightPanelTab, toggleRight]);
 
-  const hasProject = !!(repoPath && projectName);
-
   return (
     <div className="ws-cap-wrap">
-      {hasProject && <ProjectPill repoPath={repoPath} name={projectName} status={status} />}
+      {repoPath && projectName && <ProjectPill repoPath={repoPath} name={projectName} />}
       <div className="ws-cap-main">
         <div className="ws-cap" tabIndex={0}>
           <span className="ws-ctx">
-            {!hasProject && <StatusDot status={status} />}
             <IsolationIcon
               isolation={shownIsolation(agent.sandbox_engine, movingTo)}
               boxPhase={boxPhase}
               moving={movingTo !== null}
             />
-            <span className="ws-agent-name">{agent.name}</span>
+            <span className={`ws-agent-name ${status === "running" ? "shimmer" : ""}`}>
+              {agent.name}
+            </span>
           </span>
           <Icon name="chevD" size={11} className="ws-caret" />
         </div>
