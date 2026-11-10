@@ -256,10 +256,9 @@ export interface MobileState
   /** Make a paired host the live one: drop the current connection and greet
    *  `hostKey` with `hello` — this device is already registered there. */
   switchHost(hostKey: string): Promise<void>;
-  /** Forget a paired host. The active one is told to drop the push token
-   *  first and the app moves on to the next paired host, if any. */
-  forgetHost(hostKey: string): Promise<void>;
-  /** Forget the active host (the Host sheet's Unpair). */
+  /** Forget the active host (the Host sheet's Unpair): it is told to drop the
+   *  push token first, and the app moves on to the next paired host, if any.
+   *  Only the active host can be forgotten, because only it can be told. */
   unpair(): Promise<void>;
   /** Open the Pair screen to add another host. */
   addHost(): void;
@@ -1055,21 +1054,18 @@ export const useStore = create<MobileState>()((set, get) => ({
     await get().connect(targetOf(saved));
   },
 
-  async forgetHost(hostKey) {
-    const active = hostKey === get().hostKey;
-    if (active) {
-      // Before the link drops: the host keeps the push token until told
-      // otherwise. Only the live host can be told; one forgotten from the list
-      // keeps it, and an alert from it no longer opens anything here.
-      await forgetPush();
-      client.disconnect();
-      // A PR read still out describes the host being forgotten.
-      fencePrWrites();
-    }
+  async unpair() {
+    const { hostKey } = get();
+    if (!hostKey) return;
+    // Before the link drops: the host keeps the push token until told
+    // otherwise.
+    await forgetPush();
+    client.disconnect();
+    // A PR read still out describes the host being forgotten.
+    fencePrWrites();
     if (!mockEnabled()) await forgetSavedHost(hostKey);
     const hosts = get().hosts.filter((h) => h.hostKey !== hostKey);
     set({ hosts });
-    if (!active) return;
     // Still paired elsewhere: carry on there, straight from this host to the
     // next, rather than by way of the Pair screen.
     const next = hosts[0];
@@ -1087,11 +1083,6 @@ export const useStore = create<MobileState>()((set, get) => ({
       // leaving it on the Pair screen would offer the user a dead retry.
       pairTarget: null,
     });
-  },
-
-  async unpair() {
-    const { hostKey } = get();
-    if (hostKey) await get().forgetHost(hostKey);
   },
 
   addHost() {

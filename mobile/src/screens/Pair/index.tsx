@@ -49,7 +49,11 @@ export function PairScreen() {
   const busy = step !== null;
   const parsed = parseAddress(address);
   // A link already says which Mac; there is nothing to browse for.
-  const { hosts, searching } = useNearby(!linked);
+  const nearby = useNearby(!linked);
+  const searching = nearby.searching;
+  // Adding another Mac: the ones already paired are in the host switcher.
+  const paired = useStore((s) => s.hosts);
+  const hosts = nearby.hosts.filter((h) => !paired.some((p) => p.hostKey === h.hostKey));
 
   // A link the app was opened with lands in the store, not in these fields.
   useEffect(() => {

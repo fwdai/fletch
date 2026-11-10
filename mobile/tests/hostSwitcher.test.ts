@@ -1,6 +1,6 @@
 // The Home header's host switcher: the chip names the live host, and its
-// dropdown lists every paired one — tap to switch, the bin to forget — with
-// adding a host and the Host sheet below. The store's actions are stubbed; what
+// dropdown lists every paired one, a tap from switching, with adding a host
+// and the Host sheet (where the active one is unpaired) below. The store's actions are stubbed; what
 // they do is multiHost.test's business.
 
 import { act, createElement } from "react";
@@ -16,7 +16,6 @@ const HOSTS = [
 
 const actions = {
   switchHost: vi.fn(async (_hostKey: string) => {}),
-  forgetHost: vi.fn(async (_hostKey: string) => {}),
   addHost: vi.fn(),
   openSheet: vi.fn(),
 };
@@ -71,21 +70,6 @@ test("switching still works while the live host cannot be reached", async () => 
   await open();
   await act(async () => button(host, "Studio Mac")?.click());
   expect(actions.switchHost).toHaveBeenCalledWith("studio");
-});
-
-test("forgetting a host asks first, naming it", async () => {
-  const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
-  await open();
-  const forget = host.querySelector<HTMLButtonElement>('[aria-label="Forget Studio Mac"]');
-  await act(async () => forget?.click());
-  expect(confirm.mock.calls[0][0]).toContain("Studio Mac");
-  expect(actions.forgetHost).not.toHaveBeenCalled();
-
-  confirm.mockReturnValueOnce(true);
-  await act(async () => forget?.click());
-  expect(actions.forgetHost).toHaveBeenCalledWith("studio");
-  expect(menu(host)).toBeNull();
-  confirm.mockRestore();
 });
 
 test("adds a host, or opens the Host sheet, from below the list", async () => {

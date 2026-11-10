@@ -11,40 +11,28 @@ export function HostRow({
   host,
   connection,
   onSelect,
-  onForget,
 }: {
   host: SavedHost;
   connection: ConnectionState | null;
   onSelect: () => void;
-  onForget: () => void;
 }) {
   const active = connection !== null;
   return (
-    <div className="row hm-host">
-      <button
-        type="button"
-        className="hm-pick"
-        role="menuitemradio"
-        aria-checked={active}
-        onClick={onSelect}
-      >
-        <span className="hm-mark">
-          <span className={`dot ${active ? connectionDot(connection) : "idle"}`} />
-        </span>
-        <div className="main">
-          <div className="lbl">{host.name}</div>
-          {active && <div className="sub">{CONNECTION_TEXT[connection]}</div>}
-        </div>
-        {active && <Icon name="check" size={18} strokeWidth={2} className="check-ic" />}
-      </button>
-      <button
-        type="button"
-        className="hm-forget"
-        aria-label={`Forget ${host.name}`}
-        onClick={onForget}
-      >
-        <Icon name="trash" size={15} />
-      </button>
-    </div>
+    <button
+      type="button"
+      className="row"
+      role="menuitemradio"
+      aria-checked={active}
+      onClick={onSelect}
+    >
+      <span className="hm-mark">
+        <span className={`dot ${active ? connectionDot(connection) : "idle"}`} />
+      </span>
+      <div className="main">
+        <div className="lbl">{host.name}</div>
+        {active && <div className="sub">{CONNECTION_TEXT[connection]}</div>}
+      </div>
+      {active && <Icon name="check" size={18} strokeWidth={2} className="check-ic" />}
+    </button>
   );
 }

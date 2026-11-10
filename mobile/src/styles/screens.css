@@ -99,39 +99,12 @@
   padding-top: 10px;
   padding-bottom: 10px;
 }
-.host-menu .hm-host {
-  padding: 0 8px 0 0;
-  gap: 4px;
-}
-.hm-pick {
-  flex: 1;
-  min-width: 0;
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 6px 10px 14px;
-  text-align: left;
-}
 .hm-mark {
   width: 16px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
   color: var(--fg-2);
-}
-.hm-forget {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  border-radius: 10px;
-  color: var(--fg-3);
-}
-.hm-forget:active {
-  background: var(--bg-3);
-  color: var(--danger);
 }
 .host-pair:not(.alone) .host {
   border-top-right-radius: 0;

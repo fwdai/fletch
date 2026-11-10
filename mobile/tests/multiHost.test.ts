@@ -153,14 +153,6 @@ describe("switching hosts", () => {
 });
 
 describe("forgetting hosts", () => {
-  it("forgets one that is not live without touching the live one", async () => {
-    await state().forgetHost(STUDIO);
-    expect(keys()).toEqual([MINI]);
-    expect(await savedKeys()).toEqual([MINI]);
-    expect(state().hostKey).toBe(MINI);
-    expect(state().connection).toBe("connected");
-  });
-
   it("cancelling an addition goes back to the live host", async () => {
     state().addHost();
     expect(state().addingHost).toBe(true);
@@ -170,7 +162,7 @@ describe("forgetting hosts", () => {
     await state().cancelAddHost();
     expect(state().addingHost).toBe(false);
     await liveOn(MINI);
-    expect(keys()).toEqual([MINI]);
+    expect(keys()).toEqual([MINI, STUDIO]);
   });
 
   it("forgets the live host and carries on with the next one", async () => {
@@ -182,7 +174,7 @@ describe("forgetting hosts", () => {
 
     const seen: (string | null)[] = [];
     const off = useStore.subscribe((s) => seen.push(s.hostKey));
-    await state().forgetHost(STUDIO);
+    await state().unpair();
     await liveOn(MINI);
     off();
     // Straight to the next host: an unpaired moment would flash the Pair screen.
