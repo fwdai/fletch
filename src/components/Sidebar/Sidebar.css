@@ -158,12 +158,131 @@
 .side-section {
   padding: 4px;
 }
+
+/* ── projects bar ─────────────────────────────────────────────────────────
+   Pinned between the header and the list, on the header's 12px inset and its
+   30px control height: the project selector with a compact "+" beside it, or
+   the full-width "Add project" button until there are two projects. */
+.side-projects {
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 0 12px 8px;
+}
+.side-add {
+  display: flex;
+  flex-shrink: 0;
+}
+.side-add:only-child {
+  flex: 1;
+}
+.side-add-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-md);
+}
+.proj-select {
+  flex: 1;
+  min-width: 0;
+}
+.proj-select-btn {
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  color: var(--fg-2);
+  text-align: left;
+  transition:
+    border-color 0.12s,
+    color 0.12s,
+    background 0.12s;
+}
+.proj-select-btn:hover,
+.proj-select-btn[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--fg-1);
+}
+.proj-select-btn:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: -1px;
+}
+/* A focus is on: the list below is narrowed, and the trigger says so. */
+.proj-select-btn.on {
+  border-color: var(--accent-line);
+  color: var(--fg-0);
+}
+.proj-select-label {
+  flex: 1;
+  min-width: 0;
+}
+.proj-select-btn > svg:last-child {
+  opacity: 0.7;
+}
+/* The menu spans the trigger instead of hanging off its right edge, and
+   scrolls once the project list outgrows it. */
+.proj-select > .dd {
+  left: 0;
+  min-width: 0;
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+}
+.proj-select .dd-item {
+  width: 100%;
+  text-align: left;
+}
+.proj-select .dd-item > svg:last-child {
+  color: var(--accent);
+}
+.proj-select .dd-item:focus-visible,
+.proj-opt button:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: -1px;
+}
+/* A project row is two buttons, so the padding moves into them and each one
+   fills its part of the row. The checkbox column lines up with the icon of
+   the "All projects" row above. */
+.proj-select .proj-opt {
+  gap: 0;
+  padding: 0;
+}
+.proj-opt-check {
+  align-self: stretch;
+  padding: 0 9px;
+  border-radius: var(--r-sm);
+}
+.proj-opt-box {
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--fg-3);
+  border-radius: 4px;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+.proj-opt-check:hover .proj-opt-box {
+  border-color: var(--accent);
+}
+.proj-opt-check[aria-checked="true"] .proj-opt-box {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.proj-opt-name {
+  flex: 1;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px 9px 7px 0;
+  border-radius: var(--r-sm);
+  text-align: left;
+}
+
 .add-proj-cta {
   justify-content: center;
   gap: 6px;
   width: 100%;
-  height: 32px;
-  margin-bottom: 12px;
+  height: 30px;
   border: 1px dashed var(--bd);
   border-radius: var(--r-md);
   color: var(--fg-2);

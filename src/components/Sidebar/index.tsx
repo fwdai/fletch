@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRecord, ProjectRef, WfRun } from "@/api";
-import { Icon } from "@/components/Icon";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
 import {
   loadProjectActivity,
@@ -9,7 +8,6 @@ import {
 } from "@/storage/projectActivity";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { ADD_PROJECT_GATES, useAnyGate } from "@/store/capabilities";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
@@ -19,10 +17,14 @@ import { isGroupOpen, type OpenMap } from "./groupOpen";
 import { NewProjectPopover } from "./NewProjectPopover";
 import { PaletteHint } from "./PaletteHint";
 import { ProjectGroup } from "./ProjectGroup";
+import type { ProjectOption } from "./ProjectSelector";
+import { ProjectsBar } from "./ProjectsBar";
+import { applyFocus } from "./projectFocus";
 import { bubbleActive } from "./recentProjects";
 import { focusRow, SIDEBAR_LIST_ID, stepOrigin, visibleRows } from "./rowNav";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarHeader } from "./SidebarHeader";
+import { useProjectFocus } from "./useProjectFocus";
 import { useProjectReorder } from "./useProjectReorder";
 
 interface ProjectGroupData {
@@ -137,7 +139,6 @@ function applySearch(groups: ProjectGroupData[], q: string): ProjectGroupData[] 
 }
 
 export function Sidebar() {
-  const addProjectGate = useAnyGate(ADD_PROJECT_GATES);
   const workspace = useAppStore((s) => s.workspace);
   const drafts = useAppStore((s) => s.drafts);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
@@ -164,7 +165,6 @@ export function Sidebar() {
   // and the store applies the gate); the modal it leads to is this
   // component's own.
   const npOpen = useAppStore((s) => s.addProjectOpen);
-  const openAddProject = useAppStore((s) => s.openAddProject);
   const closeAddProject = useAppStore((s) => s.closeAddProject);
   const [npMode, setNpMode] = useState<NewProjectMode | null>(null);
   // Transient drag state for reordering: the group being dragged and the one
@@ -204,7 +204,41 @@ export function Sidebar() {
     const byPath = new Map(built.map((g) => [g.primaryPath, g]));
     return order.map((p) => byPath.get(p)).filter((g): g is ProjectGroupData => g !== undefined);
   }, [workspace?.projects, liveAgents, drafts, runs, sortPaths]);
-  const filtered = useMemo(() => applySearch(groups, query), [groups, query]);
+
+  // The project selector narrows the list to a focus; the search then filters
+  // inside it. Its menu lists every project, in the manual order.
+  const groupKeys = useMemo(() => groups.map((g) => g.key), [groups]);
+  const { focus, setFocus } = useProjectFocus(groupKeys);
+  const selectedKey = useMemo(
+    () =>
+      groups.find(
+        (g) =>
+          g.agents.some((a) => a.id === selectedAgentId) ||
+          g.drafts.some((d) => d.id === activeDraftId) ||
+          g.runs.some((r) => r.id === selectedRunId),
+      )?.key ?? null,
+    [groups, selectedAgentId, activeDraftId, selectedRunId],
+  );
+  const projectOptions = useMemo<ProjectOption[]>(
+    () =>
+      groups.map((g) => ({
+        key: g.key,
+        label: g.label,
+        icon: workspace?.projects.find((p) => p.path === g.primaryPath) ?? { name: g.label },
+        count: g.agents.length + g.drafts.length + g.runs.length,
+      })),
+    [groups, workspace?.projects],
+  );
+  // Focusing on a project is asking to see its workspaces, so the projects
+  // picked open with the pick.
+  function changeFocus(keys: string[]) {
+    setFocus(keys);
+    setOpenMap((m) => ({ ...m, ...Object.fromEntries(keys.map((k) => [k, true])) }));
+  }
+  const filtered = useMemo(
+    () => applySearch(applyFocus(groups, focus, selectedKey), query),
+    [groups, focus, selectedKey, query],
+  );
 
   // Projects the user is working in float to the top (see `bubbleActive`);
   // the quiet ones keep the manual order beneath them. This is what the user
@@ -385,25 +419,9 @@ export function Sidebar() {
   return (
     <>
       <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
+      <ProjectsBar projects={projectOptions} focus={focus} onFocusChange={changeFocus} />
       <div id={SIDEBAR_LIST_ID} className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">
-          {/* Open while the environment can run any of the three flows behind
-              it — this Mac always can, a host by its descriptor — and closed,
-              with the reason, when it can run none. A disabled button gets no
-              pointer events in the WebView, so the tooltip trigger has to be
-              the wrapper. */}
-          <span className={addProjectGate ? "tip" : undefined} data-tip={addProjectGate}>
-            <button
-              className="add-proj-cta flex-center text-sm"
-              onClick={openAddProject}
-              disabled={addProjectGate !== null}
-              aria-label="Add project"
-            >
-              <Icon name="plus" size={13} />
-              <span>Add project</span>
-            </button>
-          </span>
-
           {filtered.length === 0 ? (
             <div className="empty-msg" style={{ padding: "28px 12px" }}>
               <div className="et">{query ? "No matches" : "No projects yet"}</div>
