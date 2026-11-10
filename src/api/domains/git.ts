@@ -4,7 +4,6 @@ import type {
   AutopilotSnapshot,
   DelegationEvent,
   GitIdentity,
-  GitMeta,
   GitState,
   ShortStats,
 } from "../types/git";
@@ -22,7 +21,6 @@ export const gitApi = {
   getGitState: (agentId: string, subdir?: string, poll?: boolean) =>
     invoke<GitState | null>("get_git_state", { agentId, subdir, poll }),
   getAllShortstats: () => invoke<Record<string, ShortStats>>("get_all_shortstats"),
-  getAllGitMeta: () => invoke<Record<string, GitMeta>>("get_all_git_meta"),
   /** Hand a git playbook (`action`) to the agent. The host composes the
    *  trigger, holds it while the agent is mid-turn and watches it to its end;
    *  resolves to the delegation as recorded (`queued` or `started`). */

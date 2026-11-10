@@ -4,7 +4,7 @@
 //! This used to be a webview timer, which fetched once per open window and not
 //! at all with every window shut. The fetch touches repos the host owns, so it
 //! runs here, once, however many clients are watching. Nothing is emitted: the
-//! clients' `get_all_git_meta` poll reads the advanced ref on its next tick.
+//! next read that resolves a base (`git::resolve_base`) sees the advanced ref.
 //!
 //! Modelled on `auto_archive`: each pass runs on its own task so a panic is
 //! logged and the loop goes on.

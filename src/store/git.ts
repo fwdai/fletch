@@ -1,7 +1,6 @@
 import {
   api,
   type DelegationEvent,
-  type GitMeta,
   type GitState,
   type PrChecks,
   type PrComments,
@@ -43,11 +42,6 @@ export interface GitSlice {
    *  poll — kept in its own map so the focused agent's richer `gitStates`
    *  entry isn't clobbered by a slower bulk reply. */
   gitShortstats: Record<string, ShortStats>;
-  /** Advisory per-checkout git metadata (base staleness + changed-file paths),
-   *  keyed by `checkoutKey(agentId, subdir?)`. Fed by the app-wide `getAllGitMeta`
-   *  poll — separate from `gitShortstats` (badge numbers) so each evolves on its
-   *  own cadence. Drives the "base moved" staleness chips and overlap hints. */
-  gitMeta: Record<string, GitMeta>;
   /** PR state, keyed by `checkoutKey(agentId, subdir?)` — plain agent_id for the
    *  primary repo, `agentId::subdir` for a secondary repo. Seeded by
    *  `loadAllPrStatus` and the focused checkouts' one-shot `fetchPrLive`, then
@@ -118,9 +112,6 @@ export interface GitSlice {
   /** Fetch compact shortstats for every live agent in one round-trip
    *  (used by the app-wide background poll). */
   fetchAllShortstats: () => Promise<void>;
-  /** Fetch advisory git metadata (base staleness + file paths) for every live
-   *  checkout in one round-trip (app-wide background poll, local git only). */
-  fetchAllGitMeta: () => Promise<void>;
   fetchPrState: (agentId: string, subdir?: string) => Promise<void>;
   /** Seed the fleet's PR state + CI from one `get_all_pr_status` read: every
    *  repo with a known PR across every agent, keyed by `checkoutKey`, so the
@@ -230,26 +221,11 @@ export function checkoutKey(agentId: string, subdir?: string): string {
 }
 
 /** Inverse of [`checkoutKey`]. Splits on the FIRST `::` so a subdir containing
- *  the separator still round-trips — the same prefix assumption `maxBehind` and
- *  `dropScopedEntries` already rely on. */
+ *  the separator still round-trips — the same prefix assumption
+ *  `dropScopedEntries` already relies on. */
 export function splitCheckoutKey(key: string): { agentId: string; subdir?: string } {
   const at = key.indexOf("::");
   return at === -1 ? { agentId: key } : { agentId: key.slice(0, at), subdir: key.slice(at + 2) };
-}
-
-/** Max `behind` across an agent's checkouts (the `agentId` primary key plus
- *  every `agentId::subdir` secondary in `gitMeta`), or null when every base is
- *  unknown or fresh — a stale secondary must surface even when the primary is
- *  current. */
-export function maxBehind(meta: Record<string, GitMeta>, agentId: string): number | null {
-  const prefix = `${agentId}::`;
-  let worst: number | null = null;
-  for (const [key, m] of Object.entries(meta)) {
-    if (key !== agentId && !key.startsWith(prefix)) continue;
-    if (m.behind == null || m.behind <= 0) continue;
-    if (worst == null || m.behind > worst) worst = m.behind;
-  }
-  return worst;
 }
 
 // Shared shape for the simple git mutations: run the backend call, refresh git
@@ -444,7 +420,6 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   gitStates: {},
   gitBlocked: {},
   gitShortstats: {},
-  gitMeta: {},
   prStates: {},
   prChecks: {},
   prComments: {},
@@ -487,18 +462,6 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // out naturally. This map is independent of `gitStates`, so the
       // focused panel's full-state poll can't be clobbered.
       set({ gitShortstats: map });
-    } catch {
-      // non-fatal — next poll tick will retry
-    }
-  },
-
-  fetchAllGitMeta: async () => {
-    try {
-      const map = await api.getAllGitMeta();
-      // Replace wholesale (like gitShortstats) — agents removed between ticks
-      // fall out naturally, and this map is independent of gitStates so the
-      // focused panel's full-state poll is never clobbered.
-      set({ gitMeta: map });
     } catch {
       // non-fatal — next poll tick will retry
     }

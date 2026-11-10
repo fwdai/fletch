@@ -32,9 +32,8 @@ export interface AutopilotSignal {
 /** The autopilot state across ALL of an agent's checkouts worth a mark, or null
  *  when none of them is mid-turn.
  *
- *  Scans the primary key (`agentId`) plus every `agentId::subdir` secondary —
- *  the same prefix scan `maxBehind` uses, because a secondary repo's autopilot
- *  is just as real as the primary's. The first checkout scanned wins, so the row
+ *  Scans the primary key (`agentId`) plus every `agentId::subdir` secondary,
+ *  because a secondary repo's autopilot is just as real as the primary's. The first checkout scanned wins, so the row
  *  doesn't flip between equally-busy siblings as the map's key order shifts. */
 export function autopilotSignal(
   autopilot: Record<string, AutopilotCheckout>,

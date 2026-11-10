@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use parking_lot::Mutex;
 
 use crate::error::Result;
-use crate::git_state::{self, GitMeta, GitState, ShortStats};
+use crate::git_state::{self, GitState, ShortStats};
 use crate::supervisor::Supervisor;
 
 use super::files::{agent_repo_checkout_opt, checkout_pending};
@@ -88,10 +88,9 @@ pub(crate) async fn poll_unless_asleep<T>(
     (!asleep()).then_some(value)
 }
 
-/// What [`poll_checkout`] last read from each box checkout, per poll. Each
-/// sweep drops the checkouts it no longer reads.
+/// What [`poll_checkout`] last read from each box checkout. Each sweep drops
+/// the checkouts it no longer reads.
 static LAST_SHORTSTATS: Mutex<BTreeMap<PathBuf, ShortStats>> = Mutex::new(BTreeMap::new());
-static LAST_GIT_META: Mutex<BTreeMap<PathBuf, GitMeta>> = Mutex::new(BTreeMap::new());
 
 /// `read` of `checkout` for a bulk poll ([`poll_unless_asleep`]). A sleeping
 /// box answers its last read, which its stopped guest cannot have changed, so
@@ -177,69 +176,6 @@ pub async fn get_all_shortstats_impl(
     Ok(out)
 }
 
-/// Advisory fleet-wide git metadata for every live agent's checkouts, keyed by
-/// the frontend's `gitKey` convention (plain agent id for the primary repo,
-/// `"{agent_id}::{subdir}"` for secondaries — same as the PR maps). Feeds the
-/// always-visible "base moved · N behind" chips and the cross-agent
-/// file-overlap hints.
-///
-/// Purely local git — no network. Each checkout's `behind` is measured against
-/// its resolved base tip (`git::resolve_base`), preferring the SOURCE repo's
-/// `refs/remotes/origin/<base>` that the host's base-freshness loop
-/// ([`refresh_base_freshness_impl`]) advances, whenever that commit is readable from the checkout. Without a
-/// GitHub connection the source ref never advances, so `behind` stays
-/// unknown/zero and no chip shows — the intended silent degrade. File paths
-/// always resolve (local status), so overlap hints work with or without GitHub.
-///
-/// Queried in parallel; a git error degrades that checkout to a bare
-/// unknown-behind / empty-files entry rather than dropping it. A sleeping box
-/// is not woken to be read ([`poll_checkout`]).
-///
-/// Shared with the remote dispatcher.
-pub async fn get_all_git_meta_impl(
-    supervisor: &Supervisor,
-) -> Result<std::collections::HashMap<String, GitMeta>> {
-    let workspace = match supervisor.workspace.current() {
-        Some(w) => w,
-        None => return Ok(Default::default()),
-    };
-    let mut set = tokio::task::JoinSet::new();
-    let mut seen = BTreeSet::new();
-    for agent in workspace.agents {
-        if agent.archive.is_some() || checkout_pending(supervisor, &agent.id) {
-            continue;
-        }
-        for (i, repo) in agent.repos.iter().enumerate() {
-            let Ok(checkout) = repo.checkout_path(&agent.id) else {
-                continue;
-            };
-            let key = crate::supervisor::pr_map_key(&agent.id, &repo.subdir, i == 0);
-            // Resolved inside the task, not in this loop: resolving a base
-            // shells out to git, and doing that serially would make the poll's
-            // latency scale with the fleet size instead of the slowest checkout.
-            let repo = repo.clone();
-            seen.insert(checkout.clone());
-            set.spawn(async move {
-                let read = async {
-                    let base = repo.resolve_base(&checkout).await;
-                    git_state::git_meta(&checkout, &base).await
-                };
-                (key, poll_checkout(&LAST_GIT_META, &checkout, read).await)
-            });
-        }
-    }
-    let mut out = std::collections::HashMap::new();
-    while let Some(res) = set.join_next().await {
-        if let Ok((key, Some(meta))) = res {
-            out.insert(key, meta);
-        }
-    }
-    LAST_GIT_META
-        .lock()
-        .retain(|checkout, _| seen.contains(checkout));
-    Ok(out)
-}
-
 /// What one base-freshness pass did, for the host's log line.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BaseFreshness {
@@ -260,8 +196,8 @@ impl BaseFreshness {
     }
 }
 
-/// Fetch each project's base branch on its SOURCE repo, so `get_all_git_meta`
-/// can measure staleness against a base that moved on GitHub (a sibling's PR
+/// Fetch each project's base branch on its SOURCE repo, so a checkout's base
+/// (`git::resolve_base`) is the one that moved on GitHub (a sibling's PR
 /// merging, a teammate's push). One fetch per distinct `(source repo, base)` —
 /// deduped so a multi-agent project pays a single fetch, and the shared object
 /// store propagates it to every clone.
@@ -269,8 +205,7 @@ impl BaseFreshness {
 /// Best-effort and silent by contract: no GitHub credential or a paused
 /// rate-limit backoff skips the whole pass, and each fetch failure is logged
 /// and stepped over — a background fetch must never raise a user-facing error.
-/// Nothing is emitted: there is no git-meta event, and the clients'
-/// `get_all_git_meta` poll reads the moved ref on its next tick.
+/// Nothing is emitted: the next read that resolves a base sees the moved ref.
 ///
 /// Run by the host's own loop (`supervisor::base_freshness`) and by the
 /// desktop's `refresh_base_freshness` command.
