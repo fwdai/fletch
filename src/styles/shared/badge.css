@@ -169,13 +169,11 @@
   background: var(--hover);
   color: var(--fg-1);
 }
-/* where the workspace runs, in front of its codename as in the title bar. In
- * a list the glyph is identity, not status, so it sits at the codename's
- * weight: only a box in transit (pulse) or in trouble (red) keeps its
- * title-bar tint, and a stopped one stays a step dimmer. */
-.agent-sub .ws-iso.seatbelt,
-.agent-sub .ws-iso.box.running {
-  color: var(--fg-2);
+/* where the workspace runs, in front of its codename as in the title bar and
+ * in the title bar's own tints (`.ws-iso`). The glyph and the codename are one
+ * unit, so they sit 4px apart rather than at the row's 8px gap. */
+.agent-sub .ws-iso {
+  margin-right: -4px;
 }
 /* the byline — who is doing the work and since when — closes the row and is
  * one hover target for the details popover */
