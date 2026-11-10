@@ -38,17 +38,24 @@ function addedProjectPath(before: Workspace | null | undefined, after: Workspace
  *
  *  The answer can be slow, and it is only good for the question asked: if the
  *  focus was changed or the environment switched meanwhile, the user has
- *  moved on and the join is dropped rather than applied to a newer choice. */
+ *  moved on and the join is dropped rather than applied to a newer choice.
+ *
+ *  A failed read is not an empty list. Without the runs the projects known
+ *  here may be fewer than the sidebar lists, and tidying the focus against
+ *  them could read it as naming every project and clear it. So the project
+ *  then joins a focus the store can vouch for as it stands, nothing dropped
+ *  and nothing collapsed, and the next change to the focus tidies it. */
 async function joinProjectFocus(get: () => AppState, path: string): Promise<void> {
   const asked = get();
   if (asked.projectFocus.length === 0) return;
-  const runs = await api.wfListRuns().catch(() => []);
+  const runs = await api.wfListRuns().catch(() => null);
   const s = get();
   if (s.projectFocus !== asked.projectFocus) return;
   if (s.activeEnvironmentId !== asked.activeEnvironmentId) return;
   const ref = s.workspace?.projects.find((p) => p.path === path);
-  if (!ref || focusedProjectCount(s, runs) === 0) return;
-  s.setProjectFocus(normalizeFocus([...s.projectFocus, projectKey(ref)], projectKeys(s, runs)));
+  if (!ref || focusedProjectCount(s, runs ?? []) === 0) return;
+  const joined = [...s.projectFocus, projectKey(ref)];
+  s.setProjectFocus(runs ? normalizeFocus(joined, projectKeys(s, runs)) : joined);
 }
 
 export interface ReposSlice {

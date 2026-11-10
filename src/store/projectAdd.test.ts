@@ -167,6 +167,21 @@ describe("a project added while the sidebar is focused", () => {
     expect(setProjectFocus).not.toHaveBeenCalled();
   });
 
+  it("keeps the focus as it stands when the runs cannot be read", async () => {
+    // One pinned project in the store; the sidebar may list a run-only one
+    // beside it, which a failed read cannot rule out. Tidying against the
+    // store alone would read this focus as every project and clear it.
+    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app"]));
+    store.setState({ projectFocus: ["id-0"] });
+    api.wfListRuns.mockRejectedValue(new Error("host unreachable"));
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other"]));
+
+    await store.getState().addWorkspaceRepo("/repos/other");
+    await settled();
+
+    expect(setProjectFocus).toHaveBeenCalledWith(["id-0", "id-1"]);
+  });
+
   it("leaves all projects showing when no focus is on", async () => {
     const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app"]));
     // A saved key of a project that is gone is not a focus.
