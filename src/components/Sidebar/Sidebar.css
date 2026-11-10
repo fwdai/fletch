@@ -207,10 +207,10 @@
   outline: 1px solid var(--accent-line);
   outline-offset: -1px;
 }
-/* A focus is on: the list below is narrowed, and the trigger says so. */
+/* A focus is on. The label carries that ("2 of 6 projects"); the trigger only
+   steps up from placeholder grey, staying quieter than the list it narrows. */
 .proj-select-btn.on {
-  border-color: var(--accent-line);
-  color: var(--fg-0);
+  color: var(--fg-1);
 }
 .proj-select-label {
   flex: 1;
