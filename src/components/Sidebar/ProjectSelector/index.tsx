@@ -23,9 +23,7 @@ interface Props {
  *  The trigger says what the focus is — "All projects", or "2 of 6
  *  projects" — so a narrowed list never looks like projects went missing. It
  *  counts rather than names: the focused projects' own headers are right
- *  below it, and the menu ticks which ones they are. The count is the focus,
- *  not the rows on screen: the project of the open workspace can be listed
- *  on top of it (see `applyFocus`) without being picked.
+ *  below it, and the menu ticks which ones they are.
  *
  *  What a focus hides can still need the user, so the trigger wears a dot
  *  while an agent in a hidden project is waiting, has unopened results or is

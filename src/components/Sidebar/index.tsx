@@ -204,16 +204,6 @@ export function Sidebar() {
   // inside it. Its menu lists every project, in the manual order.
   const groupKeys = useMemo(() => groups.map((g) => g.key), [groups]);
   const { focus, setFocus } = useProjectFocus(groupKeys);
-  const selectedKey = useMemo(
-    () =>
-      groups.find(
-        (g) =>
-          g.agents.some((a) => a.id === selectedAgentId) ||
-          g.drafts.some((d) => d.id === activeDraftId) ||
-          g.runs.some((r) => r.id === selectedRunId),
-      )?.key ?? null,
-    [groups, selectedAgentId, activeDraftId, selectedRunId],
-  );
   // Both maps are selected whole (stable references) and read outside the
   // selector, as the agent rows do.
   const pendingToolUse = useAppStore((s) => s.pendingToolUse);
@@ -237,10 +227,7 @@ export function Sidebar() {
   useEffect(() => {
     setOpenMap((m) => ({ ...m, ...Object.fromEntries(savedFocus.map((k) => [k, true])) }));
   }, [savedFocus]);
-  const focused = useMemo(
-    () => applyFocus(groups, focus, selectedKey),
-    [groups, focus, selectedKey],
-  );
+  const focused = useMemo(() => applyFocus(groups, focus), [groups, focus]);
   const filtered = useMemo(() => applySearch(focused, query), [focused, query]);
   // A focus must not cost the user a question: whatever is going on in the
   // projects it hides shows on the selector.

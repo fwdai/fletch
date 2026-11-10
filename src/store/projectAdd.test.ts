@@ -44,6 +44,7 @@ const workspaceOf = (paths: string[]): Workspace => ({
 const makeStore = (workspace: Workspace | null) => {
   const closeProjectScreen = vi.fn();
   const setLastError = vi.fn();
+  const setProjectFocus = vi.fn();
   const store = create<AppState>()(
     (...a) =>
       ({
@@ -53,11 +54,13 @@ const makeStore = (workspace: Workspace | null) => {
         ...createComposerSlice(...a),
         closeProjectScreen,
         setLastError,
+        setProjectFocus,
+        projectFocus: [],
       }) as unknown as AppState,
   );
   // biome-ignore lint/suspicious/noExplicitAny: partial store seed
   store.setState({ workspace, customAgents: [], modelsByAgent: {} } as any);
-  return { store, closeProjectScreen, setLastError };
+  return { store, closeProjectScreen, setLastError, setProjectFocus };
 };
 
 /** Let the fire-and-forget hand-off settle. */
@@ -90,6 +93,29 @@ beforeEach(() => {
   api.allocateDraftName.mockResolvedValue("everest");
   api.repoDefaultBranch.mockResolvedValue("main");
   api.listRepoBranches.mockResolvedValue(["main"]);
+});
+
+describe("a project added while the sidebar is focused", () => {
+  it("joins the focus, so it is listed", async () => {
+    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app", "/repos/other"]));
+    store.setState({ projectFocus: ["id-0"] });
+    api.cloneRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other", "/repos/new"]));
+
+    await store.getState().cloneRepo("x/new", "/repos");
+
+    expect(setProjectFocus).toHaveBeenCalledWith(["id-0", "id-2"]);
+  });
+
+  it("leaves all projects showing when no focus is on", async () => {
+    const { store, setProjectFocus } = makeStore(workspaceOf(["/repos/app"]));
+    // A saved key of a project that is gone is not a focus.
+    store.setState({ projectFocus: ["id-gone"] });
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/other"]));
+
+    await store.getState().addWorkspaceRepo("/repos/other");
+
+    expect(setProjectFocus).not.toHaveBeenCalled();
+  });
 });
 
 describe("the draft after a project is added", () => {

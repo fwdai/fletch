@@ -16,17 +16,15 @@ export function toggleFocus(focus: ProjectFocus, key: string, all: readonly stri
 
 /** The groups the focus leaves in view, in their incoming order.
  *
- *  The group holding the open workspace (`selectedKey`) stays whatever the
- *  focus says — the same rule that keeps the selected row out of the "older"
- *  fold. Jumping to a workspace through the palette or a notification, or
- *  adding a project, must not land on a sidebar that doesn't show where you
- *  are. */
+ *  Strict: a project that isn't picked isn't listed, even while a workspace
+ *  of it is the one open. What goes on in the projects left out shows as a
+ *  mark on the selector instead (see `projectSignal`), so the list is always
+ *  exactly what was picked. */
 export function applyFocus<G extends { key: string }>(
   groups: readonly G[],
   focus: ProjectFocus,
-  selectedKey: string | null,
 ): G[] {
   if (focus.length === 0) return groups.slice();
   const shown = new Set(focus);
-  return groups.filter((g) => shown.has(g.key) || g.key === selectedKey);
+  return groups.filter((g) => shown.has(g.key));
 }

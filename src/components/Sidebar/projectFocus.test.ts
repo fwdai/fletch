@@ -33,14 +33,10 @@ describe("toggleFocus", () => {
 
 describe("applyFocus", () => {
   it("shows everything without a focus", () => {
-    expect(keys(applyFocus(groups, [], null))).toEqual(ALL);
+    expect(keys(applyFocus(groups, []))).toEqual(ALL);
   });
 
   it("narrows to the focused projects, in list order", () => {
-    expect(keys(applyFocus(groups, ["c", "a"], null))).toEqual(["a", "c"]);
-  });
-
-  it("keeps the project of the open workspace in view", () => {
-    expect(keys(applyFocus(groups, ["a"], "c"))).toEqual(["a", "c"]);
+    expect(keys(applyFocus(groups, ["c", "a"]))).toEqual(["a", "c"]);
   });
 });
