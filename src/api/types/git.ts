@@ -37,17 +37,6 @@ export interface ShortStats {
   file_count: number;
 }
 
-/** Advisory fleet-wide git metadata for one checkout, keyed by `checkoutKey` in the
- *  bulk `getAllGitMeta` reply. `behind` (base moved ahead of this checkout) and
- *  `files` (working-tree paths) drive the always-visible staleness chip and the
- *  cross-agent overlap hints. `behind` is null when the base tip can't be
- *  resolved (no GitHub / no fetch yet) — render nothing, never a zero. */
-export interface GitMeta {
-  base: string;
-  behind: number | null;
-  files: string[];
-}
-
 export interface GitState {
   branch: string;
   parent_branch: string;

@@ -12,7 +12,6 @@ import { providerChip, providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { maxBehind } from "@/store/git";
 import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import { useAgentPrs } from "@/util/prState";
@@ -67,11 +66,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // (loadAllPrStatus) or the host watcher's events recorded for it.
   const agentPrs = useAgentPrs(agent);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
-  // Base-staleness across the agent's checkouts (stalest wins — a behind
-  // secondary must surface even when the primary is fresh). A quiet "base
-  // moved" cue, shown only when a base has genuinely moved ahead (behind > 0);
-  // an unknown or zero count renders nothing (never a fake 0).
-  const behind = useAppStore((s) => maxBehind(s.gitMeta, agent.id));
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
   // Autopilot across the agent's checkouts, rolled up to the one mark the row has
   // room for (see autopilotSignal for the precedence). Until now enrollment was
@@ -301,16 +295,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
           ) : hasChanges ? (
             <DiffStat stats={shortstats} />
           ) : null}
-          {behind != null && behind > 0 && (
-            <span
-              className="a-stale tip"
-              data-tip={`Base has moved ${behind} commit(s) ahead`}
-              aria-label={`Base moved ${behind} commits ahead`}
-            >
-              <Icon name="branch" size={9} />
-              {behind}
-            </span>
-          )}
           <AutopilotMark signal={autopilot} />
           {subRunning > 0 && (
             <span

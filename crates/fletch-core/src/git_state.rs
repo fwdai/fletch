@@ -96,26 +96,6 @@ pub struct ShortStats {
     pub file_count: u32,
 }
 
-/// Advisory fleet-wide git metadata for one checkout: how far its base has
-/// moved ahead of it (staleness) and which files it touches (cross-agent
-/// overlap hints). Distinct from `ShortStats` — which is deliberately just the
-/// three badge numbers — so the always-current 5s shortstats path stays a flat
-/// number-only payload while this slower, advisory signal evolves on its own.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct GitMeta {
-    /// The base branch this checkout is measured against (its parent branch).
-    pub base: String,
-    /// Commits the base has moved ahead of this checkout's HEAD, or `None` when
-    /// the base tip can't be resolved (no origin ref / never fetched). `None`
-    /// and `Some(0)` both render no staleness chip — a moved base is only shown
-    /// when it's genuinely ahead.
-    pub behind: Option<u32>,
-    /// Working-tree file paths (same set `git status` reports), for the
-    /// frontend's pairwise overlap selector. Empty when the tree is clean or
-    /// unreadable.
-    pub files: Vec<String>,
-}
-
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FileStatus {
     pub path: String,
@@ -483,56 +463,6 @@ pub async fn shortstats(checkout_path: &Path) -> ShortStats {
         additions,
         deletions,
         file_count,
-    }
-}
-
-/// Ceiling on how many working-tree paths `git_meta` ships per checkout.
-///
-/// These paths serve one advisory consumer — the frontend's pairwise overlap
-/// hint, which builds a `Set` per checkout and intersects every pair sharing a
-/// source repo. So an unbounded list costs twice: the IPC payload, and an
-/// O(n·m) pass across the fleet, both scaling with whatever happens to be
-/// untracked rather than with what the agent actually changed. Truncating can
-/// only cost a hint that was never promised to be exhaustive, and a real
-/// changed set is orders of magnitude under this.
-const MAX_META_FILES: usize = 500;
-
-/// Base-staleness + changed-file paths for one checkout — the advisory bulk
-/// poll behind the "base moved" chips and cross-agent overlap hints.
-///
-/// `base.tip` is the freshest base commit this checkout can actually read (see
-/// `git::resolve_base`): the SOURCE repo's `refs/remotes/origin/<base>` when the
-/// clone shares its objects — one background fetch there makes a moved base
-/// measurable from every checkout, with no per-clone network round-trip — else
-/// the clone's own refs. `None` → the base couldn't be resolved (no origin / no
-/// fetch yet), so staleness degrades to unknown rather than a fake zero. File
-/// paths always come straight from the checkout's `git status`.
-pub async fn git_meta(checkout_path: &Path, base: &crate::git::ResolvedBase) -> GitMeta {
-    // Same reason as `shortstats`. `files` is already documented as empty when the
-    // tree is unreadable, so this needs no new state to express itself.
-    if !crate::git::hardening::config_is_safe(checkout_path).await {
-        return GitMeta {
-            base: base.name.clone(),
-            behind: None,
-            files: Vec::new(),
-        };
-    }
-    let files = run_status(checkout_path)
-        .await
-        .map(|o| parse_porcelain(&o))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|f| f.path)
-        .take(MAX_META_FILES)
-        .collect();
-    let behind = match &base.tip {
-        Some(tip) => rev_list_count(checkout_path, &[&format!("HEAD..{tip}")]).await,
-        None => None,
-    };
-    GitMeta {
-        base: base.name.clone(),
-        behind,
-        files,
     }
 }
 
@@ -1987,83 +1917,6 @@ mod tests {
 
         commit(&clone, "work.txt");
         assert_eq!(query_unpushed(&clone).await, 1);
-    }
-
-    // --- git_meta ---
-
-    #[tokio::test]
-    async fn git_meta_counts_behind_against_the_source_tracking_ref() {
-        // Mirror the live topology: a `--shared` clone borrows the source's
-        // objects, so a base SHA that only exists in the source (a moved
-        // base the clone never fetched) is still countable in the clone.
-        let td = tempfile::tempdir().unwrap();
-        let run = |dir: &Path, args: &[&str]| {
-            crate::git::testing::git(dir, args);
-        };
-        let capture = |dir: &Path, args: &[&str]| {
-            let out = crate::git::testing::git_output(dir, args);
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
-
-        let source = td.path().join("source");
-        std::fs::create_dir_all(&source).unwrap();
-        run(&source, &["init", "-q", "-b", "main"]);
-        run(&source, &["config", "user.email", "t@example.com"]);
-        run(&source, &["config", "user.name", "Tester"]);
-        std::fs::write(source.join("a.txt"), b"one").unwrap();
-        run(&source, &["add", "-A"]);
-        run(&source, &["commit", "-q", "-m", "first"]);
-
-        // Shared clone, then branch off and commit — one ahead, zero behind.
-        let clone = td.path().join("clone");
-        run(
-            td.path(),
-            &[
-                "clone",
-                "-q",
-                "--shared",
-                source.to_str().unwrap(),
-                clone.to_str().unwrap(),
-            ],
-        );
-        run(&clone, &["config", "user.email", "t@example.com"]);
-        run(&clone, &["config", "user.name", "Tester"]);
-        run(&clone, &["checkout", "-q", "-b", "feature"]);
-        std::fs::write(clone.join("f.txt"), b"work").unwrap();
-        run(&clone, &["add", "-A"]);
-        run(&clone, &["commit", "-q", "-m", "feature work"]);
-
-        // The base advances by two commits in the source only (the clone never
-        // fetches) — but the objects are shared via alternates.
-        std::fs::write(source.join("b.txt"), b"two").unwrap();
-        run(&source, &["add", "-A"]);
-        run(&source, &["commit", "-q", "-m", "second"]);
-        std::fs::write(source.join("c.txt"), b"three").unwrap();
-        run(&source, &["add", "-A"]);
-        run(&source, &["commit", "-q", "-m", "third"]);
-        let moved_base = capture(&source, &["rev-parse", "main"]);
-        // What the background freshness fetch leaves behind on the source.
-        run(
-            &source,
-            &["update-ref", "refs/remotes/origin/main", &moved_base],
-        );
-
-        // A staged-but-uncommitted edit in the clone shows up as a changed file.
-        std::fs::write(clone.join("dirty.txt"), b"x").unwrap();
-
-        let base = crate::git::resolve_base(&clone, &source, "main", None).await;
-        assert_eq!(base.tip.as_deref(), Some(moved_base.as_str()));
-        let meta = git_meta(&clone, &base).await;
-        assert_eq!(meta.base, "main");
-        assert_eq!(meta.behind, Some(2), "base moved two commits ahead");
-        assert!(meta.files.iter().any(|p| p == "dirty.txt"));
-
-        // Unresolvable base → unknown behind, files still resolve.
-        let unknown = crate::git::resolve_base(&clone, &source, "no-such-base", None).await;
-        assert_eq!(unknown.tip, None);
-        let meta_none = git_meta(&clone, &unknown).await;
-        assert_eq!(meta_none.behind, None);
-        assert!(meta_none.files.iter().any(|p| p == "dirty.txt"));
     }
 
     // --- changed_since ---

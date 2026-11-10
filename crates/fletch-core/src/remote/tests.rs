@@ -561,7 +561,6 @@ fn allowlist_matches_the_protocol_table() {
         "read_live_turn",
         "get_git_state",
         "get_all_shortstats",
-        "get_all_git_meta",
         "get_all_pr_status",
         "list_checkout_tree",
         "list_changed_files",

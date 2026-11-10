@@ -148,7 +148,6 @@ pub const OPS: &[&str] = &[
     "read_live_turn",
     "get_git_state",
     "get_all_shortstats",
-    "get_all_git_meta",
     "get_all_pr_status",
     "list_checkout_tree",
     "list_changed_files",
@@ -482,7 +481,6 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("read_live_turn", Scope::Observe),
     ("get_git_state", Scope::Observe),
     ("get_all_shortstats", Scope::Observe),
-    ("get_all_git_meta", Scope::Observe),
     ("get_all_pr_status", Scope::Observe),
     ("list_checkout_tree", Scope::Observe),
     ("list_changed_files", Scope::Observe),
@@ -987,8 +985,6 @@ impl Dispatch for SupervisorDispatch {
                 }
 
                 "get_all_shortstats" => res(crate::commands::get_all_shortstats_impl(sup).await),
-
-                "get_all_git_meta" => res(crate::commands::get_all_git_meta_impl(sup).await),
 
                 // The sidebar's seed (the desktop's Tauri command of the same
                 // name): the caller decides when a closed PR deserves an

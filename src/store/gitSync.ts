@@ -10,8 +10,6 @@
 // Polled here (local git on the host; no GitHub), paused while the document is
 // hidden (`usePoll`):
 //   - fleet shortstats, 5 s — the sidebar numbers;
-//   - fleet git meta, 15 s — the "base moved" chips and overlap hints, measured
-//     against the base the host's loop keeps fetched;
 //   - the focused agent's full git state, 1 s with the panel showing, 10 s not.
 //
 // Listened to (folded by `eventListeners`), with one read to seed:
@@ -34,13 +32,10 @@ import type { AppState } from "./types";
 /** Mount once, at the app root. */
 export function useGitSync() {
   const fetchAllShortstats = useAppStore((s) => s.fetchAllShortstats);
-  const fetchAllGitMeta = useAppStore((s) => s.fetchAllGitMeta);
   const fetchGitState = useAppStore((s) => s.fetchGitState);
   const loadAllPrStatus = useAppStore((s) => s.loadAllPrStatus);
 
   usePoll(fetchAllShortstats, 5000, [fetchAllShortstats]);
-
-  usePoll(fetchAllGitMeta, 15000, [fetchAllGitMeta]);
 
   const panelVisible = useAppStore((s) => !s.rightCollapsed && !s.activeDraftId);
   useTrackedRepoPoll(fetchGitState, panelVisible ? 1000 : 10000, panelVisible);
