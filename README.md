@@ -21,8 +21,6 @@ Run Claude Code, Codex, Cursor, OpenCode and more in sealed workspaces, each wit
 https://github.com/user-attachments/assets/fb1b548e-bb4c-4417-ae38-431d1325541f
 
 
-<sub>[Watch the full walkthrough →](https://fletch.sh/fletch-demo.mp4)</sub>
-
 </div>
 
 <!-- The GIF is a self-contained 26s loop (1280x800, 5.3 MB): seven agents in the
