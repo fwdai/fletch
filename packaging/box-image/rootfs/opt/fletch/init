@@ -137,6 +137,11 @@ step="binding the host paths"
 # the data disk. The root is read-only erofs, so the first component of each
 # path is shadowed with a tmpfs first. Shadowing a directory the guest itself
 # lives in would break it, so those are refused.
+# The directories between a path and that tmpfs belong to agent, like the home
+# most of them sit in: the guest user makes their other entries (a tenant's
+# mailbox and writable root, the toolchain cache). Set at every boot, not only
+# when made, since those in the home persist on the data disk; -h, so a link
+# the guest user left there is not followed.
 bind_identity() { # <guest path> <data dir>
   case "$1" in /?*/?*) ;; *) fail "$1 is not an absolute path with two components or more";; esac
   top=${1#/}; top=/${top%%/*}
@@ -147,6 +152,11 @@ bind_identity() { # <guest path> <data dir>
   [ -d "$top" ] || fail "no $top directory in the image to mount $1 under"
   mountpoint -q "$top" || mount -t tmpfs -o mode=755,nosuid,nodev tmpfs "$top"
   mkdir -p "$1"
+  dir=${1%/*}
+  while [ "$dir" != "$top" ]; do
+    chown -h agent:agent "$dir"
+    dir=${dir%/*}
+  done
   mount --bind "$2" "$1"
 }
 bind_identity "$FLETCH_BOX_HOME" /data/home

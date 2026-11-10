@@ -1,7 +1,8 @@
 #!/bin/sh
 # Boot a built image with its layers on this machine (an Apple silicon Mac, or
 # an x86-64 or arm64 Linux host with KVM) and check the guest over ssh:
-# the layer overlays, the tools in them, a headless screenshot, fletch-guest.
+# the layer overlays, the tools in them, a headless screenshot, fletch-guest,
+# the directories the guest user makes beside init's binds.
 # What test.sh cannot cover (init, libkrun, the real kernel). Stages the dev
 # runtime and builds the CLI when `fletch-box` is not on PATH.
 #
@@ -53,6 +54,10 @@ ssh_ free -m
 echo "== fletch-guest exec"
 ssh_ sh -c 'umask 077; printf "HOME=/data/home\nPATH=/usr/local/bin:/usr/bin:/bin\n" > /data/run/t.env'
 ssh_ fletch-guest exec --env-file /data/run/t.env --cwd /tmp -- sh -c 'echo exec ok: $HOME'
+echo "== a tenant's mailbox and writable root, the toolchain cache, made as agent"
+ssh_ mkdir -p -m 700 -- "$HOME/.fletch/rpc/$ID-tenant/requests" "$HOME/.fletch/rpc/$ID-tenant/responses"
+ssh_ mkdir -p -- "$HOME/.fletch/workspaces/$ID-tenant" "$HOME/.fletch/toolchain-cache/$ID"
+echo "tenant dirs ok"
 
 echo "== stopping"
 fletch-box stop "$ID"
