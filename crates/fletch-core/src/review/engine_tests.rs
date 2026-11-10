@@ -919,6 +919,83 @@ async fn a_newline_named_untracked_file_is_hashed_by_content() {
     assert_eq!(content_digest(&repo).await.unwrap(), first);
 }
 
+/// A nested repository and a linked worktree (an agent's own, under
+/// `.claude/worktrees/`) are each listed once, as a directory, and digest by
+/// their path alone: what is inside them is theirs, not this checkout's.
+#[tokio::test]
+async fn a_nested_repository_digests_by_its_path_alone() {
+    use crate::git::testing::{commit_file, git, init_repo};
+    use crate::git_state::content_digest;
+    let td = tempfile::tempdir().unwrap();
+    let repo = td.path().join("repo");
+    init_repo(&repo);
+    commit_file(&repo, "a.txt");
+    let clean = content_digest(&repo).await.unwrap();
+
+    let nested = repo.join("vendor").join("lib");
+    init_repo(&nested);
+    commit_file(&nested, "lib.txt");
+    let worktree = repo.join(".claude/worktrees/agent-1");
+    git(
+        &repo,
+        &["worktree", "add", "-d", worktree.to_str().unwrap()],
+    );
+    let nesting = content_digest(&repo).await.unwrap();
+    assert_ne!(nesting, clean, "a nested repository is part of the tree");
+    assert_eq!(content_digest(&repo).await.unwrap(), nesting, "stable");
+
+    std::fs::write(nested.join("lib.txt"), "edited").unwrap();
+    std::fs::write(worktree.join("a.txt"), "edited").unwrap();
+    assert_eq!(content_digest(&repo).await.unwrap(), nesting);
+
+    std::fs::write(repo.join("new.txt"), "first").unwrap();
+    let untracked = content_digest(&repo).await.unwrap();
+    assert_ne!(untracked, nesting);
+    std::fs::write(repo.join("new.txt"), "second").unwrap();
+    assert_ne!(
+        content_digest(&repo).await.unwrap(),
+        untracked,
+        "an untracked file's content edit must move it"
+    );
+}
+
+/// An untracked symlink digests by its target, never by what it points to,
+/// so a link to a directory or to nothing digests too. A link and a file
+/// holding its target are different trees.
+#[tokio::test]
+async fn an_untracked_symlink_digests_by_its_target() {
+    use crate::git::testing::{commit_file, init_repo};
+    use crate::git_state::content_digest;
+    use std::os::unix::fs::symlink;
+    let td = tempfile::tempdir().unwrap();
+    let repo = td.path().join("repo");
+    init_repo(&repo);
+    commit_file(&repo, "a.txt");
+    let outside = td.path().join("outside.txt");
+    std::fs::write(&outside, "first").unwrap();
+    symlink(td.path(), repo.join("to-dir")).unwrap();
+    symlink("nowhere", repo.join("dangling")).unwrap();
+    symlink(&outside, repo.join("to-file")).unwrap();
+
+    let linked = content_digest(&repo).await.unwrap();
+    assert_eq!(content_digest(&repo).await.unwrap(), linked, "stable");
+    std::fs::write(&outside, "second").unwrap();
+    assert_eq!(
+        content_digest(&repo).await.unwrap(),
+        linked,
+        "what a link points to is not the checkout's"
+    );
+
+    std::fs::remove_file(repo.join("dangling")).unwrap();
+    symlink("elsewhere", repo.join("dangling")).unwrap();
+    let retargeted = content_digest(&repo).await.unwrap();
+    assert_ne!(retargeted, linked, "retargeting a link must move it");
+
+    std::fs::remove_file(repo.join("dangling")).unwrap();
+    std::fs::write(repo.join("dangling"), "elsewhere").unwrap();
+    assert_ne!(content_digest(&repo).await.unwrap(), retargeted);
+}
+
 // ── the reviewer resolution ────────────────────────────────────────────────
 
 fn conn() -> rusqlite::Connection {

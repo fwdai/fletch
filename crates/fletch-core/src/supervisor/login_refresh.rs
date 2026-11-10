@@ -32,7 +32,6 @@ use crate::workspace::{AgentRecord, AgentStatus};
 
 use super::account_switch::{ensure_signed_in, managed};
 use super::events::emit_workspace_changed;
-use super::lifecycle::arm_spawn_timeout;
 use super::Supervisor;
 
 const GAVE_UP_MSG: &str = "Claude rejected this account's login again after a refresh. \
@@ -390,17 +389,9 @@ impl Supervisor {
         self.activities.lock().remove(agent_id);
         self.native_inputs.lock().remove(agent_id);
 
-        self.set_status(ctx, agent_id, AgentStatus::Spawning, None);
-        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
         // Let the old process fully release its session before resuming it.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        if let Err(e) = self.start_process(ctx, agent_id).await {
-            let err = e.to_string();
-            self.set_status(ctx, agent_id, AgentStatus::Error, Some(err));
-            return Err(e);
-        }
-        Ok(())
+        self.launch(ctx, agent_id, Some(Duration::from_millis(150)))
+            .await
     }
 
     /// Stop `agent_id`'s process and start it again on its own session,

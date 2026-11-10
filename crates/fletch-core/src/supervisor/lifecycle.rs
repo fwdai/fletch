@@ -1365,6 +1365,28 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Launch `agent_id`: `Spawning` under the spawn watchdog, then
+    /// [`Self::start_process`], after `pause` when given (time for a process
+    /// it replaces to let go of its session). A failed launch leaves the
+    /// agent in `Error` with the reason, and hands the error back.
+    pub(super) async fn launch(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+        pause: Option<Duration>,
+    ) -> Result<()> {
+        self.set_status(ctx, agent_id, AgentStatus::Spawning, None);
+        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
+        if let Some(pause) = pause {
+            tokio::time::sleep(pause).await;
+        }
+        if let Err(e) = self.start_process(ctx, agent_id).await {
+            fail_spawn(self, ctx, agent_id, e.to_string());
+            return Err(e);
+        }
+        Ok(())
+    }
+
     /// Spawn the agent's child process, dispatching on provider class
     /// (per-turn vs. claude) and view (Native PTY vs. Custom managed/exec).
     /// Returns the live `Agent` handle for the supervisor to track.
@@ -1677,11 +1699,7 @@ impl Supervisor {
         // Refused here, before the status flips, rather than deep in the
         // launch (`AgentRecord::launch_session`).
         record.launch_session()?;
-        self.set_status(&ctx, agent_id, AgentStatus::Spawning, None);
-        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
-
-        self.start_process(&ctx, agent_id).await?;
-        Ok(())
+        self.launch(&ctx, agent_id, None).await
     }
 
     pub fn write_to_agent(
@@ -1761,17 +1779,8 @@ impl Supervisor {
 
         self.workspace.update_agent_view(agent_id, new_view)?;
         emit_view(ctx.sink.as_ref(), agent_id, new_view);
-        self.set_status(&ctx, agent_id, AgentStatus::Spawning, None);
-        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        if let Err(e) = self.start_process(&ctx, agent_id).await {
-            let err = e.to_string();
-            self.set_status(&ctx, agent_id, AgentStatus::Error, Some(err));
-            return Err(e);
-        }
-        Ok(())
+        self.launch(&ctx, agent_id, Some(Duration::from_millis(150)))
+            .await
     }
 
     /// Change a session's reasoning effort mid-conversation. Persists the new
@@ -2917,5 +2926,27 @@ mod tests {
             SessionStart::Resume,
             "it has had a first prompt"
         );
+    }
+
+    /// A resume whose launch is refused ends in `Error` with the refusal,
+    /// not left `Spawning` for the watchdog to report as a timeout.
+    #[tokio::test]
+    async fn a_failed_resume_leaves_the_agent_in_error_with_the_reason() {
+        let td = tempfile::tempdir().unwrap();
+        let sup = Arc::new(fixture(td.path()));
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        // A move under way refuses the launch (`settle_before_acting`).
+        sup.moving.lock().insert("codex".into());
+
+        let err = sup
+            .clone()
+            .resume_agent(ctx, "codex")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("moving"), "{err}");
+        assert_eq!(sup.status_of("codex"), Some(AgentStatus::Error));
+        assert_eq!(sup.workspace.agent("codex").unwrap().last_error, Some(err));
     }
 }
