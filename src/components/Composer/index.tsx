@@ -227,7 +227,6 @@ export function Composer({
   onChangeModel,
   activeModel,
 }: Props) {
-  const features = useAppStore((s) => s.features);
   const modelCatalog = useAppStore((s) => s.modelCatalog);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const customAgents = useAppStore((s) => s.customAgents);
@@ -491,7 +490,7 @@ export function Composer({
                 }
               }}
             />
-            {features.thinkingBudget && thinkingLevels.length > 0 && modelSupportsThinking && (
+            {thinkingLevels.length > 0 && modelSupportsThinking && (
               <EffortPicker
                 levels={thinkingLevels}
                 value={thinkingValue}
