@@ -48,12 +48,12 @@ use crate::host::EngineCtx;
 use crate::sandbox::provision::CheckoutSpec;
 use crate::sandbox::{self, stamped_engine, EngineKind};
 use crate::workspace::{
-    agent_parent_dir, folder_grants, moving_dir, moving_root, AgentRecord, AgentStatus, Anchor,
-    SessionLineage, TrackedRepo, WorkspaceManager,
+    agent_parent_dir, folder_grants, moving_dir, moving_root, AgentRecord, Anchor, SessionLineage,
+    TrackedRepo, WorkspaceManager,
 };
 
 use super::events::emit_workspace_changed;
-use super::lifecycle::{arm_spawn_timeout, fail_spawn, provision_codegraph_index};
+use super::lifecycle::{fail_spawn, provision_codegraph_index};
 use super::Supervisor;
 
 const BUSY: &str = "Wait for the turn to finish before moving the workspace.";
@@ -393,11 +393,8 @@ impl Supervisor {
         self.discard_prefetch(agent_id);
         if was_up && self.checkouts_at_rest(agent_id).is_ok() {
             let _ = self.prefetch_login(agent_id).await;
-            self.set_status(ctx, agent_id, AgentStatus::Spawning, None);
-            arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
-            if let Err(e) = self.start_process(ctx, agent_id).await {
-                fail_spawn(self, ctx, agent_id, e.to_string());
-            }
+            // A failed launch is the agent's own, shown in its status.
+            let _ = self.launch(ctx, agent_id, None).await;
         }
         error
     }
