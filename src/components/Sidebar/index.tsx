@@ -1,11 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRecord, ProjectRef, WfRun } from "@/api";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
-import {
-  loadProjectActivity,
-  type ProjectActivity,
-  stampProjectActivity,
-} from "@/storage/projectActivity";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { arrowTarget } from "@/util/arrowNav";
@@ -27,6 +22,7 @@ import { SidebarFooter } from "./SidebarFooter";
 import { SidebarHeader } from "./SidebarHeader";
 import { useProjectFocus } from "./useProjectFocus";
 import { useProjectReorder } from "./useProjectReorder";
+import { useTurnActivity } from "./useTurnActivity";
 
 interface ProjectGroupData {
   /** Stable group id: the project_id, or the repo path for repos that aren't
@@ -258,28 +254,8 @@ export function Sidebar() {
   // did by hand — drag today's project up — automated, and it can be switched
   // off in Settings › Layout. Off while searching too: the result set is
   // short and its order should match the list it came from.
-  //
-  // Launches are on the agent records; turns are not, so each turn start is
-  // stamped on its project here and kept locally. A resumed idle workspace
-  // then counts as activity the moment its message is sent.
   const activeFirst = useAppStore((s) => s.features.sidebarActiveFirst);
-  const turnStartedAt = useAppStore((s) => s.turnStartedAt);
-  const [turns, setTurns] = useState(loadProjectActivity);
-  useEffect(() => {
-    const stamps: ProjectActivity = {};
-    for (const g of groups) {
-      for (const a of g.agents) {
-        const t = turnStartedAt[a.id];
-        if (t !== undefined && t > (stamps[g.key] ?? 0)) stamps[g.key] = t;
-      }
-    }
-    // Only a newer start than the one on record is a change; otherwise this
-    // would re-stamp (and re-render) on every groups update.
-    setTurns((prev) => {
-      const fresh = Object.entries(stamps).some(([k, t]) => t > (prev[k] ?? 0));
-      return fresh ? stampProjectActivity(stamps) : prev;
-    });
-  }, [groups, turnStartedAt]);
+  const { projectTurns, agentTurns } = useTurnActivity(groups);
   // The age cutoffs here and in each group's fold are re-checked once a minute,
   // so a project (or a row) that ages out while the app sits open settles back
   // without waiting for the next snapshot. One clock, shared with the groups.
@@ -287,9 +263,9 @@ export function Sidebar() {
   const { active, rest } = useMemo(
     () =>
       activeFirst && !searching
-        ? bubbleActive(filtered, now, turns)
+        ? bubbleActive(filtered, now, projectTurns)
         : { active: [], rest: filtered },
-    [filtered, searching, activeFirst, turns, now],
+    [filtered, searching, activeFirst, projectTurns, now],
   );
 
   // Dragging is the manual mode. With active-first on the top of the list is
@@ -418,6 +394,7 @@ export function Sidebar() {
         open={isGroupOpen(g.key, searching, openMap, searchOpenMap)}
         onToggle={() => toggleGroup(g.key)}
         fold={!searching}
+        activity={agentTurns}
         now={now}
         reorderable={reorderable}
         dragging={dragPath === g.primaryPath}
