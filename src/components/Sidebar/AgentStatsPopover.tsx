@@ -2,6 +2,8 @@ import type { ContextState } from "@/adapters/usage";
 import { formatCost, formatTokens } from "@/util/format";
 
 export interface AgentStats {
+  /** Who is doing the work: the custom agent's name, the model, the effort. */
+  agent: string;
   launched: string;
   runtime: string;
   /** Context-window fill in tokens, or null when it isn't known. */
@@ -19,8 +21,9 @@ export interface AgentStats {
   costUsd: number | null;
 }
 
-/** Floats off the agent-row time chip on hover. Visual lift only —
- *  pure stats display, no actions. */
+/** Floats off the agent row's byline (identity chip + age) on hover: who is
+ *  doing the work, then what it has cost so far. Visual lift only — pure
+ *  display, no actions. */
 export function AgentStatsPopover({ stats }: { stats: AgentStats }) {
   const contextTokens = stats.contextTokens;
   const contextLabel =
@@ -36,6 +39,7 @@ export function AgentStatsPopover({ stats }: { stats: AgentStats }) {
 
   return (
     <div className="ag-stats-pop" onClick={(e) => e.stopPropagation()}>
+      <Row label="Agent" value={stats.agent} />
       <Row label="Launched" value={stats.launched} />
       <Row label="Runtime" value={stats.runtime} />
       <Row label="Context" value={contextLabel} />

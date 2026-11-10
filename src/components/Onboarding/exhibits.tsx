@@ -4,6 +4,8 @@
 
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { IsolationIcon } from "@/components/TitleBar/WorkspaceStatus/IsolationIcon";
+import { isolationOf } from "@/components/TitleBar/WorkspaceStatus/isolation";
 import { Badge } from "@/components/ui/Badge";
 import type { ProviderId } from "@/data/providers";
 import { providerChip } from "@/data/providers";
@@ -38,6 +40,9 @@ interface ParallelAgent {
   unseen?: boolean;
   active?: boolean;
 }
+
+/** The sandbox a new workspace gets unless the user picks the VM. */
+const DEFAULT_ISOLATION = isolationOf(null);
 
 const PARALLEL_AGENTS: ParallelAgent[] = [
   {
@@ -109,14 +114,17 @@ function ExhibitAgentRow({ a, i }: { a: ParallelAgent; i: number }) {
         </span>
       </div>
       <div className="agent-sub flex-center">
-        <span className="ag-prov-chip">
-          <ProviderIcon slug={a.provider} {...providerChip(a.provider)} size={12} />
-        </span>
+        <IsolationIcon isolation={DEFAULT_ISOLATION} size={12} />
         <span className="a-task a-codename">{a.name}</span>
         <span className="a-diff">
           <span className="add">+{a.add}</span> <span className="del">−{a.rem}</span>
         </span>
-        <span className="a-time">{a.age}</span>
+        <span className="a-byline">
+          <span className="ag-prov-chip">
+            <ProviderIcon slug={a.provider} {...providerChip(a.provider)} size={12} />
+          </span>
+          <span className="a-time">{a.age}</span>
+        </span>
       </div>
     </div>
   );
