@@ -15,7 +15,11 @@ Run Claude Code, Codex, Cursor, OpenCode and more in sealed workspaces, each wit
 ![Platform: macOS 13+](https://img.shields.io/badge/Platform-macOS%2013%2B-lightgrey.svg)
 ![Built with Tauri](https://img.shields.io/badge/Built%20with-Tauri%202-24C8DB.svg)
 
-<img src="docs/fletch-demo.gif" alt="Fletch running seven agents in parallel. One agent's task is followed from its tool calls through tests passing to a merged pull request." width="900">
+
+
+
+https://github.com/user-attachments/assets/fb1b548e-bb4c-4417-ae38-431d1325541f
+
 
 <sub>[Watch the full walkthrough →](https://fletch.sh/fletch-demo.mp4)</sub>
 
