@@ -1,5 +1,7 @@
 import { Icon } from "@/components/Icon";
 import { type IconSubject, ProjectIcon } from "@/components/ProjectIcon";
+import type { ProjectSignal } from "../projectSignal";
+import { SignalDot } from "./SignalDot";
 
 /** A project as the selector lists it. */
 export interface ProjectOption {
@@ -10,6 +12,8 @@ export interface ProjectOption {
   icon: IconSubject;
   /** Workspaces, drafts and runs in the project. */
   count: number;
+  /** What its agents are up to, if anything (see `projectSignal`). */
+  signal: ProjectSignal | null;
 }
 
 interface Props {
@@ -48,6 +52,7 @@ export function ProjectOptionRow({ project, checked, onToggle, onOnly }: Props) 
       >
         <ProjectIcon project={project.icon} size={14} />
         <span className="di-l">{project.label}</span>
+        {project.signal && <SignalDot signal={project.signal} />}
         <span className="di-m">{project.count}</span>
       </button>
     </div>

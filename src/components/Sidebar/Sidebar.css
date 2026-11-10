@@ -219,6 +219,23 @@
 .proj-select-btn > svg:last-child {
   opacity: 0.7;
 }
+/* What the agents of a project are up to, in the colours their rows use: on
+   the trigger for the projects a focus hides, in the menu for each one. */
+.proj-signal {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.proj-signal[data-signal="waiting"] {
+  background: var(--warn);
+}
+.proj-signal[data-signal="unseen"] {
+  background: var(--accent);
+}
+.proj-signal[data-signal="running"] {
+  background: var(--success);
+}
 /* The menu spans the trigger instead of hanging off its right edge, and
    scrolls once the project list outgrows it. */
 .proj-select > .dd {

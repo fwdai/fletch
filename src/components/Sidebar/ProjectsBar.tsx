@@ -5,10 +5,12 @@ import { ADD_PROJECT_GATES, useAnyGate } from "@/store/capabilities";
 import { useShortcutKeys } from "@/util/shortcuts";
 import { type ProjectOption, ProjectSelector } from "./ProjectSelector";
 import type { ProjectFocus } from "./projectFocus";
+import type { ProjectSignal } from "./projectSignal";
 
 interface Props {
   projects: readonly ProjectOption[];
   focus: ProjectFocus;
+  hiddenSignal: ProjectSignal | null;
   onFocusChange: (focus: string[]) => void;
 }
 
@@ -19,7 +21,7 @@ interface Props {
  *  until there is a second one the row is the full-width "Add project" button
  *  — which is also what a first launch needs to see. From two projects on, it
  *  is the selector with a compact "+" beside it. */
-export function ProjectsBar({ projects, focus, onFocusChange }: Props) {
+export function ProjectsBar({ projects, focus, hiddenSignal, onFocusChange }: Props) {
   // Open while the environment can run any of the three add flows — this Mac
   // always can, a host by its descriptor — and closed, with the reason, when
   // it can run none. A disabled button gets no pointer events in the WebView,
@@ -31,7 +33,14 @@ export function ProjectsBar({ projects, focus, onFocusChange }: Props) {
 
   return (
     <div className="side-projects flex-center">
-      {selectable && <ProjectSelector projects={projects} focus={focus} onChange={onFocusChange} />}
+      {selectable && (
+        <ProjectSelector
+          projects={projects}
+          focus={focus}
+          hiddenSignal={hiddenSignal}
+          onChange={onFocusChange}
+        />
+      )}
       <span className={`side-add ${gate ? "tip" : ""}`} data-tip={gate}>
         {selectable ? (
           <IconButton
