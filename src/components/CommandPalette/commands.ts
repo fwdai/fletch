@@ -9,9 +9,17 @@ import { editorsFor, preferredEditor } from "@/components/TitleBar/OpenInEditor/
 import { ACCENTS } from "@/data/providers";
 import { activeEntry } from "@/store/capabilities";
 import { ADD_PROJECT_GATES, anyGateReason, gateReason } from "@/store/gates";
+import {
+  focusedProjectCount,
+  isOnlyFocus,
+  projectCount,
+  surfaceProjectKey,
+} from "@/store/projectFocus";
 import { activeSurface, surfaceAgent, surfaceRepoPath } from "@/store/surface";
 import type { AppState } from "@/store/types";
+import { basename } from "@/util/format";
 import { SHORTCUT_BY_ID } from "@/util/keymap";
+import { projectKey } from "@/util/projects";
 import { checkoutBase } from "@/util/prState";
 import { newAgentRepoPath, runShortcutAction } from "@/util/shortcuts";
 import {
@@ -213,6 +221,30 @@ const SHORTCUT_ROWS: ShortcutRow[] = [
     hint: "Narrow the list to a name or branch",
     when: hasAgents,
     keywords: "find  filter  sidebar",
+  },
+  // The chord toggles; the row only ever narrows, and steps aside once the
+  // sidebar is on this project alone ("Show all projects" is the way back).
+  {
+    id: "focusProject",
+    icon: "layers",
+    section: SEC.view,
+    hint: (ctx) => {
+      const key = surfaceProjectKey(ctx.s, ctx.runs);
+      if (!key) return undefined;
+      // A pinned project by its name; an unpinned repo, keyed by its path, by
+      // its folder — what the sidebar heads each group with.
+      const pinned = ctx.s.workspace?.projects.find((p) => projectKey(p) === key);
+      return `Show only ${pinned?.name ?? basename(key)} in the sidebar`;
+    },
+    when: (ctx) => {
+      const key = surfaceProjectKey(ctx.s, ctx.runs);
+      return key !== undefined && projectCount(ctx.s, ctx.runs) > 1 && !isOnlyFocus(ctx.s, key);
+    },
+    keywords: "filter  narrow  only  sidebar  hide  projects  selector",
+    run: (ctx) => {
+      const key = surfaceProjectKey(ctx.s, ctx.runs);
+      if (key) ctx.s.setProjectFocus([key]);
+    },
   },
   {
     id: "prevAgent",
@@ -430,6 +462,19 @@ export function pageItems(ctx: PaletteContext): PaletteItem[] {
     keywords: "preferences  configure  options",
     page: "settings",
   });
+  const focused = focusedProjectCount(s, ctx.runs);
+  if (focused > 0) {
+    items.push({
+      id: "show-all-projects",
+      label: "Show all projects",
+      hint: `The sidebar is on ${focused} of ${projectCount(s, ctx.runs)}`,
+      leading: { kind: "icon", name: "layers" },
+      section: SEC.view,
+      keywords: "focus  filter  unfocus  clear  reset  sidebar  selector",
+      run: () => s.setProjectFocus([]),
+      remember: true,
+    });
+  }
   const accent = ACCENTS.find((a) => a.id === s.accent) ?? ACCENTS[0];
   items.push({
     id: "accent",

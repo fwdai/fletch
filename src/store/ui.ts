@@ -5,6 +5,7 @@ import {
   type SettingsIntent,
   type SettingsSection,
 } from "@/storage/preferences";
+import { loadProjectFocus, saveProjectFocus } from "@/storage/projectFocus";
 import { setSetting } from "@/storage/settings";
 import { createKeyedQueue } from "@/util/keyedQueue";
 import { type Combo, resetProblem, type ShortcutOverrides } from "@/util/keymap";
@@ -64,6 +65,10 @@ export interface UiSlice {
    *  the store rather than the sidebar's own state so ⌘O can open it from
    *  anywhere; the sidebar renders it and clears the flag when it unmounts. */
   addProjectOpen: boolean;
+  /** The projects the sidebar is narrowed to, as its group keys; empty for
+   *  all projects (see `components/Sidebar/projectFocus.ts`). In the store so
+   *  the palette and ⌘⇧P can set it from anywhere; saved in localStorage. */
+  projectFocus: string[];
   /** First-run onboarding overlay. `onboardingComplete` is persisted (DB
    *  settings); the overlay auto-opens for new users on init and is
    *  re-openable from Settings › Developer (dev builds and admins). */
@@ -164,6 +169,7 @@ export interface UiSlice {
    *  sidebar button, ⌘O and anything later all get the same answer. */
   openAddProject: () => void;
   closeAddProject: () => void;
+  setProjectFocus: (keys: string[]) => void;
   /** Open the onboarding overlay (e.g. "Replay tour" from Settings). */
   openOnboarding: () => void;
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
@@ -226,6 +232,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   feedbackOpen: false,
   feedbackNudgeOpen: false,
   addProjectOpen: false,
+  projectFocus: loadProjectFocus(),
   onboardingOpen: false,
   onboardingComplete: false,
   historyOpen: false,
@@ -292,6 +299,10 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     set({ addProjectOpen: true });
   },
   closeAddProject: () => set({ addProjectOpen: false }),
+  setProjectFocus: (keys) => {
+    saveProjectFocus(keys);
+    set({ projectFocus: keys });
+  },
   openOnboarding: () => set({ onboardingOpen: true }),
   closeOnboarding: () => {
     const firstCompletion = !get().onboardingComplete;

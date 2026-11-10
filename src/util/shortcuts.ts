@@ -1,10 +1,12 @@
 import { useEffect } from "react";
+import { api } from "@/api";
 import { stepSelection } from "@/components/Sidebar/rowNav";
 import { openInPreferredEditor } from "@/components/TitleBar/OpenInEditor/editors";
 import type { FeatureFlags } from "@/storage/preferences";
 import type { AppState } from "@/store";
 import { useAppStore } from "@/store";
 import { activeGateReason, type GateName } from "@/store/capabilities";
+import { focusNeedsRuns, isOnlyFocus, projectCount, surfaceProjectKey } from "@/store/projectFocus";
 import { activeSurface, surfaceAgent, surfaceRepoPath } from "@/store/surface";
 import type { RightPanelTab } from "@/store/types";
 import { isTypingTarget } from "@/util/hooks";
@@ -90,6 +92,18 @@ function toggleProjectView(view: "roadmap" | "settings") {
   else if (repo) s.openProjectSettings(repo);
 }
 
+/** Narrow the sidebar to the project in front; with the sidebar already on
+ *  that project alone, back to all of them. The workflow runs are fetched
+ *  only when the answer turns on them (see `store/projectFocus`), so the
+ *  usual press stays synchronous. */
+async function toggleProjectFocus() {
+  const runs = focusNeedsRuns(useAppStore.getState()) ? await api.wfListRuns().catch(() => []) : [];
+  const s = useAppStore.getState();
+  const key = surfaceProjectKey(s, runs);
+  if (!key || projectCount(s, runs) < 2) return;
+  withSidebar(s, () => s.setProjectFocus(isOnlyFocus(s, key) ? [] : [key]));
+}
+
 const ACTIONS: Record<string, Action> = {
   palette: { whileTyping: true, run: () => useAppStore.getState().togglePalette() },
   search: {
@@ -98,6 +112,7 @@ const ACTIONS: Record<string, Action> = {
       withSidebar(useAppStore.getState(), () => document.getElementById("sidebar-search")?.focus());
     },
   },
+  focusProject: { whileTyping: true, run: () => void toggleProjectFocus() },
   // Over the sidebar's own rows, so search, folding and closed groups apply
   // exactly as they do to ↑/↓ — which means the sidebar has to be on screen.
   prevAgent: {

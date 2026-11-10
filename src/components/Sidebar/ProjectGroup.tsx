@@ -29,6 +29,9 @@ interface Props {
   /** Fold stale and over-cap workspaces behind an "older" row (see
    *  `foldAgents`). Off while searching: every remaining row is a match. */
   fold: boolean;
+  /** When a turn last started in each workspace, by agent id: what the fold
+   *  counts as recent, beside the launch time. */
+  activity: Readonly<Record<string, number>>;
   /** The sidebar's minute clock, so the fold's age cutoff moves with time. */
   now: number;
   /** Whether this group can be dragged to reorder: only with "Active projects
@@ -54,6 +57,7 @@ export function ProjectGroup({
   open,
   onToggle,
   fold,
+  activity,
   now,
   reorderable,
   dragging,
@@ -84,9 +88,9 @@ export function ProjectGroup({
   const { shown, hidden } = useMemo(
     () =>
       fold
-        ? foldAgents(agents, { now, selectedId: selectedAgentId })
+        ? foldAgents(agents, { now, selectedId: selectedAgentId, activity })
         : { shown: agents, hidden: [] },
-    [fold, agents, selectedAgentId, now],
+    [fold, agents, selectedAgentId, activity, now],
   );
   const foldable = hidden.length > 0;
 

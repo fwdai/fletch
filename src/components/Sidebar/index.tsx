@@ -1,29 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRecord, ProjectRef, WfRun } from "@/api";
-import { Icon } from "@/components/Icon";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
-import {
-  loadProjectActivity,
-  type ProjectActivity,
-  stampProjectActivity,
-} from "@/storage/projectActivity";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { ADD_PROJECT_GATES, useAnyGate } from "@/store/capabilities";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
-import { groupProjectRefs } from "@/util/projects";
+import { groupProjectRefs, projectKeyResolver } from "@/util/projects";
 import { useRuns } from "@/workflows/run/useRuns";
 import { isGroupOpen, type OpenMap } from "./groupOpen";
 import { NewProjectPopover } from "./NewProjectPopover";
 import { PaletteHint } from "./PaletteHint";
 import { ProjectGroup } from "./ProjectGroup";
+import type { ProjectOption } from "./ProjectSelector";
+import { ProjectsBar } from "./ProjectsBar";
+import { applyFocus } from "./projectFocus";
+import { projectSignal, strongestSignal } from "./projectSignal";
 import { bubbleActive } from "./recentProjects";
 import { focusRow, SIDEBAR_LIST_ID, stepOrigin, visibleRows } from "./rowNav";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarHeader } from "./SidebarHeader";
+import { useProjectFocus } from "./useProjectFocus";
 import { useProjectReorder } from "./useProjectReorder";
+import { useTurnActivity } from "./useTurnActivity";
 
 interface ProjectGroupData {
   /** Stable group id: the project_id, or the repo path for repos that aren't
@@ -62,7 +61,6 @@ function groupByProject(
 ): ProjectGroupData[] {
   const groups = new Map<string, ProjectGroupData>();
   const byPath = new Map<string, ProjectGroupData>();
-  const byProjectId = new Map<string, ProjectGroupData>();
   for (const project of groupProjectRefs(refs)) {
     const g: ProjectGroupData = {
       key: project.id,
@@ -75,31 +73,30 @@ function groupByProject(
       pinned: true,
     };
     groups.set(project.id, g);
-    if (project.repos[0].project_id) byProjectId.set(project.repos[0].project_id, g);
     for (const r of project.repos) byPath.set(r.path, g);
   }
-  // Resolve real backend work (agents, runs) to its group: by project first, so
-  // a relocate — which moves the repo path but keeps the project_id — attaches
-  // to the moved group instead of forking. A repo that isn't pinned at all
-  // still surfaces its work via a path-keyed fallback group.
+  // Resolve real backend work (agents, runs) to its group (see
+  // `projectKeyResolver`): by project first, so a relocate attaches to the
+  // moved group instead of forking. A repo that isn't pinned at all still
+  // surfaces its work via a path-keyed fallback group.
+  const keyOf = projectKeyResolver(refs);
   const groupFor = (projectId: string, path: string | undefined): ProjectGroupData | null => {
-    const byId = projectId ? byProjectId.get(projectId) : undefined;
-    if (byId) return byId;
-    if (!path) return null;
-    let g = byPath.get(path);
+    const key = keyOf(projectId, path);
+    if (key === undefined) return null;
+    let g = groups.get(key);
     if (!g) {
       g = {
-        key: path,
-        label: basename(path),
-        repoPaths: [path],
-        primaryPath: path,
+        key,
+        label: basename(key),
+        repoPaths: [key],
+        primaryPath: key,
         agents: [],
         drafts: [],
         runs: [],
         pinned: false,
       };
-      groups.set(path, g);
-      byPath.set(path, g);
+      groups.set(key, g);
+      byPath.set(key, g);
     }
     return g;
   };
@@ -137,7 +134,6 @@ function applySearch(groups: ProjectGroupData[], q: string): ProjectGroupData[] 
 }
 
 export function Sidebar() {
-  const addProjectGate = useAnyGate(ADD_PROJECT_GATES);
   const workspace = useAppStore((s) => s.workspace);
   const drafts = useAppStore((s) => s.drafts);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
@@ -164,7 +160,6 @@ export function Sidebar() {
   // and the store applies the gate); the modal it leads to is this
   // component's own.
   const npOpen = useAppStore((s) => s.addProjectOpen);
-  const openAddProject = useAppStore((s) => s.openAddProject);
   const closeAddProject = useAppStore((s) => s.closeAddProject);
   const [npMode, setNpMode] = useState<NewProjectMode | null>(null);
   // Transient drag state for reordering: the group being dragged and the one
@@ -204,35 +199,63 @@ export function Sidebar() {
     const byPath = new Map(built.map((g) => [g.primaryPath, g]));
     return order.map((p) => byPath.get(p)).filter((g): g is ProjectGroupData => g !== undefined);
   }, [workspace?.projects, liveAgents, drafts, runs, sortPaths]);
-  const filtered = useMemo(() => applySearch(groups, query), [groups, query]);
+
+  // The project selector narrows the list to a focus; the search then filters
+  // inside it. Its menu lists every project, in the manual order.
+  const groupKeys = useMemo(() => groups.map((g) => g.key), [groups]);
+  const { focus, setFocus } = useProjectFocus(groupKeys);
+  const selectedKey = useMemo(
+    () =>
+      groups.find(
+        (g) =>
+          g.agents.some((a) => a.id === selectedAgentId) ||
+          g.drafts.some((d) => d.id === activeDraftId) ||
+          g.runs.some((r) => r.id === selectedRunId),
+      )?.key ?? null,
+    [groups, selectedAgentId, activeDraftId, selectedRunId],
+  );
+  // Both maps are selected whole (stable references) and read outside the
+  // selector, as the agent rows do.
+  const pendingToolUse = useAppStore((s) => s.pendingToolUse);
+  const unseenResults = useAppStore((s) => s.unseenResults);
+  const projectOptions = useMemo<ProjectOption[]>(
+    () =>
+      groups.map((g) => ({
+        key: g.key,
+        label: g.label,
+        icon: workspace?.projects.find((p) => p.path === g.primaryPath) ?? { name: g.label },
+        count: g.agents.length + g.drafts.length + g.runs.length,
+        signal: projectSignal(g, { pending: pendingToolUse, unseen: unseenResults }),
+      })),
+    [groups, workspace?.projects, pendingToolUse, unseenResults],
+  );
+  // Focusing on a project is asking to see its workspaces, so the projects
+  // picked open with the pick — wherever it was made: the selector, the
+  // palette or ⌘⇧P. Keyed on the store's own array, which only changes when
+  // a focus is set, so a group the user then closes stays closed.
+  const savedFocus = useAppStore((s) => s.projectFocus);
+  useEffect(() => {
+    setOpenMap((m) => ({ ...m, ...Object.fromEntries(savedFocus.map((k) => [k, true])) }));
+  }, [savedFocus]);
+  const focused = useMemo(
+    () => applyFocus(groups, focus, selectedKey),
+    [groups, focus, selectedKey],
+  );
+  const filtered = useMemo(() => applySearch(focused, query), [focused, query]);
+  // A focus must not cost the user a question: whatever is going on in the
+  // projects it hides shows on the selector.
+  const hiddenSignal = useMemo(() => {
+    const inView = new Set(focused.map((g) => g.key));
+    return strongestSignal(projectOptions.filter((o) => !inView.has(o.key)).map((o) => o.signal));
+  }, [focused, projectOptions]);
 
   // Projects the user is working in float to the top (see `bubbleActive`);
   // the quiet ones keep the manual order beneath them. This is what the user
   // did by hand — drag today's project up — automated, and it can be switched
   // off in Settings › Layout. Off while searching too: the result set is
   // short and its order should match the list it came from.
-  //
-  // Launches are on the agent records; turns are not, so each turn start is
-  // stamped on its project here and kept locally. A resumed idle workspace
-  // then counts as activity the moment its message is sent.
   const activeFirst = useAppStore((s) => s.features.sidebarActiveFirst);
-  const turnStartedAt = useAppStore((s) => s.turnStartedAt);
-  const [turns, setTurns] = useState(loadProjectActivity);
-  useEffect(() => {
-    const stamps: ProjectActivity = {};
-    for (const g of groups) {
-      for (const a of g.agents) {
-        const t = turnStartedAt[a.id];
-        if (t !== undefined && t > (stamps[g.key] ?? 0)) stamps[g.key] = t;
-      }
-    }
-    // Only a newer start than the one on record is a change; otherwise this
-    // would re-stamp (and re-render) on every groups update.
-    setTurns((prev) => {
-      const fresh = Object.entries(stamps).some(([k, t]) => t > (prev[k] ?? 0));
-      return fresh ? stampProjectActivity(stamps) : prev;
-    });
-  }, [groups, turnStartedAt]);
+  const { projectTurns, agentTurns } = useTurnActivity(groups);
   // The age cutoffs here and in each group's fold are re-checked once a minute,
   // so a project (or a row) that ages out while the app sits open settles back
   // without waiting for the next snapshot. One clock, shared with the groups.
@@ -240,9 +263,9 @@ export function Sidebar() {
   const { active, rest } = useMemo(
     () =>
       activeFirst && !searching
-        ? bubbleActive(filtered, now, turns)
+        ? bubbleActive(filtered, now, projectTurns)
         : { active: [], rest: filtered },
-    [filtered, searching, activeFirst, turns, now],
+    [filtered, searching, activeFirst, projectTurns, now],
   );
 
   // Dragging is the manual mode. With active-first on the top of the list is
@@ -371,6 +394,7 @@ export function Sidebar() {
         open={isGroupOpen(g.key, searching, openMap, searchOpenMap)}
         onToggle={() => toggleGroup(g.key)}
         fold={!searching}
+        activity={agentTurns}
         now={now}
         reorderable={reorderable}
         dragging={dragPath === g.primaryPath}
@@ -385,25 +409,14 @@ export function Sidebar() {
   return (
     <>
       <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
+      <ProjectsBar
+        projects={projectOptions}
+        focus={focus}
+        hiddenSignal={hiddenSignal}
+        onFocusChange={setFocus}
+      />
       <div id={SIDEBAR_LIST_ID} className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">
-          {/* Open while the environment can run any of the three flows behind
-              it — this Mac always can, a host by its descriptor — and closed,
-              with the reason, when it can run none. A disabled button gets no
-              pointer events in the WebView, so the tooltip trigger has to be
-              the wrapper. */}
-          <span className={addProjectGate ? "tip" : undefined} data-tip={addProjectGate}>
-            <button
-              className="add-proj-cta flex-center text-sm"
-              onClick={openAddProject}
-              disabled={addProjectGate !== null}
-              aria-label="Add project"
-            >
-              <Icon name="plus" size={13} />
-              <span>Add project</span>
-            </button>
-          </span>
-
           {filtered.length === 0 ? (
             <div className="empty-msg" style={{ padding: "28px 12px" }}>
               <div className="et">{query ? "No matches" : "No projects yet"}</div>

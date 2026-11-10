@@ -3,27 +3,18 @@
 // backend migration — it's a purely cosmetic, per-machine preference keyed by
 // repo path. Matches the app's `q2:` localStorage key convention.
 
+import { loadStringList, saveStringList } from "./localList";
+
 const PROJECT_ORDER_KEY = "q2:projectOrder";
 
 /** Read the saved repo-path order. Returns [] on a missing or corrupt value. */
 export function loadProjectOrder(): string[] {
-  try {
-    const raw = localStorage.getItem(PROJECT_ORDER_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string") : [];
-  } catch {
-    return [];
-  }
+  return loadStringList(PROJECT_ORDER_KEY);
 }
 
 /** Persist the repo-path order. Write failures (private mode / quota) are ignored. */
 export function saveProjectOrder(order: string[]): void {
-  try {
-    localStorage.setItem(PROJECT_ORDER_KEY, JSON.stringify(order));
-  } catch {
-    // best-effort — ordering is non-critical cosmetic state
-  }
+  saveStringList(PROJECT_ORDER_KEY, order);
 }
 
 /** Rewrite a path in the saved order after a relocate, so the project keeps its
