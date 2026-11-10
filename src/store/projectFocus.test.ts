@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { focusedProjectCount, projectCount, surfaceProjectKey } from "./projectFocus";
+import type { WfRun } from "@/api";
+import {
+  focusedProjectCount,
+  focusNeedsRuns,
+  projectCount,
+  surfaceProjectKey,
+} from "./projectFocus";
 import type { AppState } from "./types";
 
 type Agent = NonNullable<AppState["workspace"]>["agents"][number];
@@ -12,6 +18,9 @@ const agent = (id: string, projectId: string, repo: string) =>
     repos: [{ repo_path: repo }],
     archive: null,
   }) as Agent;
+
+const run = (id: string, projectId: string, repo: string) =>
+  ({ id, project_id: projectId, repo_path: repo }) as WfRun;
 
 const PROJECTS = [
   { path: "/a", name: "a", project_id: "p-a" },
@@ -58,8 +67,13 @@ describe("surfaceProjectKey", () => {
     expect(surfaceProjectKey(state())).toBe("p-a");
   });
 
-  it("names no project while a workflow run is in front", () => {
-    expect(surfaceProjectKey(state({ selectedRunId: "run-in-b" }))).toBeUndefined();
+  it("is the project of the workflow run in front, not the one last used", () => {
+    const s = state({ selectedRunId: "r1" });
+    expect(surfaceProjectKey(s, [run("r1", "p-b", "/b")])).toBe("p-b");
+  });
+
+  it("names no project for a run it was not given", () => {
+    expect(surfaceProjectKey(state({ selectedRunId: "r1" }))).toBeUndefined();
   });
 });
 
@@ -77,6 +91,25 @@ describe("the projects there are to focus on", () => {
     } as never);
     expect(projectCount(detached)).toBe(2);
     expect(focusedProjectCount(detached)).toBe(1);
+  });
+
+  it("counts an unpinned repo only a workflow run keeps listed", () => {
+    const s = state({
+      workspace: { projects: [PROJECTS[0]], repos: ["/a"], agents: [] },
+      projectFocus: ["/gone"],
+    } as never);
+    const runs = [run("r1", "p-gone", "/gone")];
+    expect(projectCount(s, runs)).toBe(2);
+    expect(focusedProjectCount(s, runs)).toBe(1);
+  });
+
+  it("needs the runs only with a run in front or too few projects to choose between", () => {
+    expect(focusNeedsRuns(state())).toBe(false);
+    expect(focusNeedsRuns(state({ selectedRunId: "r1" }))).toBe(true);
+    const one = state({
+      workspace: { projects: [PROJECTS[0]], repos: ["/a"], agents: [] },
+    } as never);
+    expect(focusNeedsRuns(one)).toBe(true);
   });
 
   it("does not count archived agents or saved keys of projects that are gone", () => {
