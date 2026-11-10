@@ -110,12 +110,10 @@ function DraftCapsule({
 }) {
   return (
     <div className="ws-cap-wrap">
-      {repoPath && projectName && (
-        <ProjectPill repoPath={repoPath} name={projectName} status="idle" />
-      )}
+      {repoPath && projectName && <ProjectPill repoPath={repoPath} name={projectName} />}
       <div className="ws-cap static">
         <span className="ws-ctx">
-          {!(repoPath && projectName) && <StatusDot status="idle" />}
+          <StatusDot status="idle" />
           <span className="ws-agent-name">{name}</span>
         </span>
         <span className="ws-badge quiet mono">new agent</span>

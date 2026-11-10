@@ -1,21 +1,11 @@
 import { ProjectIcon } from "@/components/ProjectIcon";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
-import type { DotStatus } from "./derive";
-import { StatusDot } from "./StatusDot";
 
-/** The left half of the capsule: status dot + project display name in a pill
+/** The left half of the capsule: the project's icon + display name in a pill
  *  that opens the project's roadmap, plus the `/` separator to the workspace
- *  pill beside it. */
-export function ProjectPill({
-  repoPath,
-  name,
-  status,
-}: {
-  repoPath: string;
-  name: string;
-  status: DotStatus;
-}) {
+ *  pill beside it. The agent's status belongs to the workspace, not here. */
+export function ProjectPill({ repoPath, name }: { repoPath: string; name: string }) {
   const openRoadmap = useAppStore((s) => s.openRoadmap);
   const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
   // The page behind this pill is the roadmap, which a host does not answer for.
@@ -31,7 +21,6 @@ export function ProjectPill({
         disabled={roadmapGate !== null}
         onClick={() => openRoadmap(repoPath)}
       >
-        <StatusDot status={status} />
         <ProjectIcon project={project ?? { name }} size={12} />
         <span className="ws-proj-name">{name}</span>
       </button>
