@@ -10,9 +10,10 @@
 // built in the selector fails the same way.
 //
 // This finds the shapes that break the rule in a file's source. It reads
-// syntax, not types, so it names only what is certain to be a new value and
-// says nothing about a selector passed by name or a result that comes out of a
-// function call.
+// syntax, not types, so it says nothing about a selector passed by name or a
+// result that comes out of a function call. Where a method is both an array's
+// and a string's (`slice`, `concat`) it is read as the array's, which builds
+// one; a string says so by being spelled as one (`String(s.id).slice(0, 8)`).
 import ts from "typescript";
 
 export interface UnstableSelector {
@@ -24,8 +25,7 @@ export interface UnstableSelector {
 const STORE_HOOKS = new Set(["useAppStore"]);
 const SHALLOW_HOOKS = new Set(["useShallow"]);
 
-/** Array methods that return a new array whatever they are given. `slice` and
- *  `concat` are left out: strings have them too, and those are values. */
+/** Array methods that return a new array whatever they are given. */
 const BUILDS_ARRAY = new Set([
   "map",
   "filter",
@@ -36,6 +36,12 @@ const BUILDS_ARRAY = new Set([
   "toSpliced",
   "split",
 ]);
+/** Methods arrays and strings share: a new array from an array, a value from
+ *  a string. Read as the array's unless the receiver `isSpelledAsString`. */
+const ARRAY_OR_STRING = new Set(["slice", "concat"]);
+/** Methods that hand back the array they were called on, so the result is new
+ *  exactly when that array is: `[...s.items].sort()`. */
+const RETURNS_RECEIVER = new Set(["sort", "reverse", "fill"]);
 const OBJECT_BUILDERS = new Set(["keys", "values", "entries", "fromEntries"]);
 
 type Selector = ts.ArrowFunction | ts.FunctionExpression;
@@ -57,6 +63,23 @@ function unwrap(node: ts.Expression): ts.Expression {
     e = e.expression;
   }
   return e;
+}
+
+/** A string by its spelling alone: a literal, a template, a `String(…)` call. */
+function isSpelledAsString(node: ts.Expression): boolean {
+  const e = unwrap(node);
+  return (
+    ts.isStringLiteralLike(e) ||
+    ts.isTemplateExpression(e) ||
+    (ts.isCallExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === "String")
+  );
+}
+
+interface Built {
+  at: ts.Expression;
+  what: string;
+  /** What to do when the reading is wrong, for the shapes syntax can't settle. */
+  unless?: string;
 }
 
 /** What `fn` can return: its expression body, or every `return` of its block
@@ -89,11 +112,8 @@ function localsOf(fn: Selector): Map<string, ts.Expression> {
 }
 
 /** The expression inside `node` that builds a new object or array each time it
- *  runs, with what it is; undefined when nothing certain does. */
-function built(
-  node: ts.Expression,
-  locals: Map<string, ts.Expression>,
-): { at: ts.Expression; what: string } | undefined {
+ *  runs, with what it is; undefined when nothing here does. */
+function built(node: ts.Expression, locals: Map<string, ts.Expression>): Built | undefined {
   const e = unwrap(node);
   if (ts.isArrayLiteralExpression(e)) return { at: e, what: "array" };
   if (ts.isObjectLiteralExpression(e)) return { at: e, what: "object" };
@@ -119,6 +139,10 @@ function built(
     if (onGlobal("Object") && OBJECT_BUILDERS.has(name.text)) return { at: e, what: "array" };
     if (onGlobal("Array") && name.text === "from") return { at: e, what: "array" };
     if (BUILDS_ARRAY.has(name.text)) return { at: e, what: "array" };
+    if (ARRAY_OR_STRING.has(name.text) && !isSpelledAsString(on)) {
+      return { at: e, what: "array", unless: "if it is a string, call it on `String(…)`" };
+    }
+    if (RETURNS_RECEIVER.has(name.text)) return built(on, locals);
   }
   return undefined;
 }
@@ -152,11 +176,13 @@ function elementsOf(result: ts.Expression): { of: ts.Expression; in: Selector | 
 export function unstableSelectors(fileName: string, source: string): UnstableSelector[] {
   const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
   const found: UnstableSelector[] = [];
-  const report = (hit: { at: ts.Expression; what: string }, why: string) => {
+  const report = (hit: Built, why: string) => {
     const text = hit.at.getText(file).replace(/\s+/g, " ");
+    const shown = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+    const unless = hit.unless ? ` (${hit.unless})` : "";
     found.push({
       line: file.getLineAndCharacterOfPosition(hit.at.getStart(file)).line + 1,
-      message: `${why} \`${text.length > 80 ? `${text.slice(0, 80)}…` : text}\` is a new ${hit.what} on every call`,
+      message: `${why} \`${shown}\` is a new ${hit.what} on every call${unless}`,
     });
   };
 

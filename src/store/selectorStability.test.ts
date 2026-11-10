@@ -33,6 +33,30 @@ describe("unstableSelectors", () => {
     expect(flagged("useAppStore((s) => new Set(s.ids));")).toBe(true);
   });
 
+  it("reads slice and concat as an array's, unless the receiver is spelled as a string", () => {
+    expect(flagged("useAppStore((s) => s.items.slice());")).toBe(true);
+    expect(flagged("useAppStore((s) => s.items.concat(extra));")).toBe(true);
+    expect(flagged("useAppStore((s) => s.items?.slice(0, 3) ?? null);")).toBe(true);
+    expect(flagged("useAppStore(useShallow((s) => keys.map((k) => s.lists[k].slice(-5))));")).toBe(
+      true,
+    );
+    expect(
+      unstableSelectors("case.tsx", "useAppStore((s) => s.id.slice(0, 8));")[0].message,
+    ).toMatch(/String\(…\)/);
+
+    expect(flagged("useAppStore((s) => String(s.id).slice(0, 8));")).toBe(false);
+    expect(flagged(`useAppStore((s) => \`\${s.first} \`.concat(s.last));`)).toBe(false);
+    expect(flagged('useAppStore((s) => "#".concat(s.id));')).toBe(false);
+    expect(flagged("useAppStore((s) => s.items.slice(0, 3).length);")).toBe(false);
+  });
+
+  it("follows a method that hands back the array it was called on", () => {
+    expect(flagged("useAppStore((s) => [...s.items].sort(byName));")).toBe(true);
+    expect(flagged("useAppStore((s) => s.items.filter(isLive).reverse());")).toBe(true);
+    expect(flagged("useAppStore((s) => s.items.slice().sort(byName));")).toBe(true);
+    expect(flagged("useAppStore((s) => s.items.sort(byName));")).toBe(false);
+  });
+
   it("follows a const the selector returns", () => {
     const source = `useAppStore((s) => {
       const live = s.agents.filter((a) => a.live);
