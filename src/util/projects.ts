@@ -16,11 +16,15 @@ export interface ProjectGroup {
   repos: ProjectRef[];
 }
 
+/** What a repo's project is keyed by: the host's `project_id`, or the repo
+ *  path where the project row is missing. */
+export const projectKey = (ref: ProjectRef): string => ref.project_id || ref.path;
+
 /** Fold per-repo refs into one group per project, in first-seen order. */
 export function groupProjectRefs(refs: readonly ProjectRef[]): ProjectGroup[] {
   const groups = new Map<string, ProjectGroup>();
   for (const ref of refs) {
-    const id = ref.project_id || ref.path;
+    const id = projectKey(ref);
     let group = groups.get(id);
     if (!group) {
       group = { id, name: ref.name, repos: [] };

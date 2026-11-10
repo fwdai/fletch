@@ -53,6 +53,13 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
           "Focus the sidebar filter, showing the sidebar if hidden; ↓ steps into the list.",
       },
       {
+        id: "focusProject",
+        combos: ["Mod+Shift+P"],
+        label: "Focus on this project",
+        description:
+          "Narrow the sidebar to the current project, showing the sidebar if hidden; pressed again, show all projects.",
+      },
+      {
         id: "prevAgent",
         combos: ["Mod+Shift+["],
         label: "Previous in the sidebar",

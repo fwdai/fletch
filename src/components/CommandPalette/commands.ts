@@ -9,6 +9,12 @@ import { editorsFor, preferredEditor } from "@/components/TitleBar/OpenInEditor/
 import { ACCENTS } from "@/data/providers";
 import { activeEntry } from "@/store/capabilities";
 import { ADD_PROJECT_GATES, anyGateReason, gateReason } from "@/store/gates";
+import {
+  focusedProjectCount,
+  isOnlyFocus,
+  projectCount,
+  surfaceProjectKey,
+} from "@/store/projectFocus";
 import { activeSurface, surfaceAgent, surfaceRepoPath } from "@/store/surface";
 import type { AppState } from "@/store/types";
 import { SHORTCUT_BY_ID } from "@/util/keymap";
@@ -213,6 +219,26 @@ const SHORTCUT_ROWS: ShortcutRow[] = [
     hint: "Narrow the list to a name or branch",
     when: hasAgents,
     keywords: "find  filter  sidebar",
+  },
+  // The chord toggles; the row only ever narrows, and steps aside once the
+  // sidebar is on this project alone ("Show all projects" is the way back).
+  {
+    id: "focusProject",
+    icon: "layers",
+    section: SEC.view,
+    hint: (ctx) => {
+      const repo = surfaceRepoPath(ctx.s);
+      return repo ? `Show only ${projectName(ctx.s, repo)} in the sidebar` : undefined;
+    },
+    when: (ctx) => {
+      const key = surfaceProjectKey(ctx.s);
+      return key !== undefined && projectCount(ctx.s) > 1 && !isOnlyFocus(ctx.s, key);
+    },
+    keywords: "filter  narrow  only  sidebar  hide  projects  selector",
+    run: (ctx) => {
+      const key = surfaceProjectKey(ctx.s);
+      if (key) ctx.s.setProjectFocus([key]);
+    },
   },
   {
     id: "prevAgent",
@@ -430,6 +456,19 @@ export function pageItems(ctx: PaletteContext): PaletteItem[] {
     keywords: "preferences  configure  options",
     page: "settings",
   });
+  const focused = focusedProjectCount(s);
+  if (focused > 0) {
+    items.push({
+      id: "show-all-projects",
+      label: "Show all projects",
+      hint: `The sidebar is on ${focused} of ${projectCount(s)}`,
+      leading: { kind: "icon", name: "layers" },
+      section: SEC.view,
+      keywords: "focus  filter  unfocus  clear  reset  sidebar  selector",
+      run: () => s.setProjectFocus([]),
+      remember: true,
+    });
+  }
   const accent = ACCENTS.find((a) => a.id === s.accent) ?? ACCENTS[0];
   items.push({
     id: "accent",

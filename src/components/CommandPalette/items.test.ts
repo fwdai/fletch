@@ -60,6 +60,7 @@ function state(over: Partial<AppState> = {}): AppState {
     setAccent: vi.fn(),
     setLastError: vi.fn(),
     togglePalette: vi.fn(),
+    setProjectFocus: vi.fn(),
     toggleHistory: vi.fn(),
     toggleSettings: vi.fn(),
     closeSettingsScreen: vi.fn(),
@@ -69,6 +70,7 @@ function state(over: Partial<AppState> = {}): AppState {
   return {
     workspace: { repos: PROJECTS.map((p) => p.path), projects: PROJECTS, agents: [] },
     drafts: [],
+    projectFocus: [],
     pendingToolUse: {},
     delegations: {},
     environments: {
@@ -148,6 +150,30 @@ describe("rootItems", () => {
   it("names the project New agent will start in, the way ⌘N picks it", () => {
     expect(find(ctx(), "newAgent").hint).toBe("in relay");
     expect(find(ctx({ lastRepoPath: undefined }), "newAgent").hint).toBe("in fletch");
+  });
+
+  it("focuses the sidebar on the project in front, and offers the way back once it is", () => {
+    const all = ctx();
+    const focus = find(all, "focusProject");
+    expect(focus.hint).toBe("Show only relay in the sidebar");
+    expect(ids(all)).not.toContain("show-all-projects");
+    focus.run?.();
+    expect(all.s.setProjectFocus).toHaveBeenCalledWith(["p-relay"]);
+
+    const narrowed = ctx({ projectFocus: ["p-relay"] });
+    expect(ids(narrowed)).not.toContain("focusProject");
+    const back = find(narrowed, "show-all-projects");
+    expect(back.hint).toBe("The sidebar is on 1 of 2");
+    back.run?.();
+    expect(narrowed.s.setProjectFocus).toHaveBeenCalledWith([]);
+  });
+
+  it("has no project focus to offer with a single project", () => {
+    const one = ctx({
+      workspace: { repos: ["/w/fletch"], projects: [PROJECTS[0]], agents: [] },
+      lastRepoPath: "/w/fletch",
+    } as Partial<AppState>);
+    expect(ids(one)).not.toContain("focusProject");
   });
 
   it("keeps agent-only actions off the list until an agent is in front", () => {

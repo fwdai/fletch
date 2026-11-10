@@ -232,11 +232,13 @@ export function Sidebar() {
     [groups, workspace?.projects, pendingToolUse, unseenResults],
   );
   // Focusing on a project is asking to see its workspaces, so the projects
-  // picked open with the pick.
-  function changeFocus(keys: string[]) {
-    setFocus(keys);
-    setOpenMap((m) => ({ ...m, ...Object.fromEntries(keys.map((k) => [k, true])) }));
-  }
+  // picked open with the pick — wherever it was made: the selector, the
+  // palette or ⌘⇧P. Keyed on the store's own array, which only changes when
+  // a focus is set, so a group the user then closes stays closed.
+  const savedFocus = useAppStore((s) => s.projectFocus);
+  useEffect(() => {
+    setOpenMap((m) => ({ ...m, ...Object.fromEntries(savedFocus.map((k) => [k, true])) }));
+  }, [savedFocus]);
   const focused = useMemo(
     () => applyFocus(groups, focus, selectedKey),
     [groups, focus, selectedKey],
@@ -413,7 +415,7 @@ export function Sidebar() {
         projects={projectOptions}
         focus={focus}
         hiddenSignal={hiddenSignal}
-        onFocusChange={changeFocus}
+        onFocusChange={setFocus}
       />
       <div id={SIDEBAR_LIST_ID} className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">

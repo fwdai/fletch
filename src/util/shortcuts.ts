@@ -5,6 +5,7 @@ import type { FeatureFlags } from "@/storage/preferences";
 import type { AppState } from "@/store";
 import { useAppStore } from "@/store";
 import { activeGateReason, type GateName } from "@/store/capabilities";
+import { isOnlyFocus, projectCount, surfaceProjectKey } from "@/store/projectFocus";
 import { activeSurface, surfaceAgent, surfaceRepoPath } from "@/store/surface";
 import type { RightPanelTab } from "@/store/types";
 import { isTypingTarget } from "@/util/hooks";
@@ -96,6 +97,17 @@ const ACTIONS: Record<string, Action> = {
     run: () => {
       // The input mounts with the sidebar, so the focus waits a frame for it.
       withSidebar(useAppStore.getState(), () => document.getElementById("sidebar-search")?.focus());
+    },
+  },
+  // Narrows the sidebar to the project in front; pressed with the sidebar
+  // already on that project alone, back to all of them.
+  focusProject: {
+    whileTyping: true,
+    run: () => {
+      const s = useAppStore.getState();
+      const key = surfaceProjectKey(s);
+      if (!key || projectCount(s) < 2) return;
+      withSidebar(s, () => s.setProjectFocus(isOnlyFocus(s, key) ? [] : [key]));
     },
   },
   // Over the sidebar's own rows, so search, folding and closed groups apply
