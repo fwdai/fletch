@@ -1787,10 +1787,10 @@ impl BoxRegistry {
     /// makes it that now when the box is down after a clean stop; a running
     /// box's disk is offered when it stops, as every box's is.
     pub async fn seed_from(&self, agent_id: &str) {
-        let Some(dir) = self.box_dir_with_a_disk(agent_id) else {
+        let Some(identity) = self.identity_with_a_disk(agent_id) else {
             return;
         };
-        if let Err(e) = seed::want(&dir) {
+        if let Err(e) = seed::want(&identity) {
             tracing::warn!(agent_id, error = %e, "could not ask for a box's disk as its project's seed");
             return;
         }
@@ -1807,8 +1807,8 @@ impl BoxRegistry {
         let agent_ids: Vec<String> = self.entries.lock().keys().cloned().collect();
         for agent_id in agent_ids {
             let wanted = self
-                .box_dir_with_a_disk(&agent_id)
-                .is_some_and(|dir| seed::is_wanted(&dir));
+                .identity_with_a_disk(&agent_id)
+                .is_some_and(|identity| seed::is_wanted(&identity));
             if wanted {
                 self.offer_seed_while_down(&agent_id).await;
             }
@@ -1839,10 +1839,10 @@ impl BoxRegistry {
         }
     }
 
-    fn box_dir_with_a_disk(&self, agent_id: &str) -> Option<PathBuf> {
+    fn identity_with_a_disk(&self, agent_id: &str) -> Option<BoxIdentity> {
         let identity = self.entries.lock().get(agent_id)?.identity.clone();
         let dir = identity.box_dir().ok()?;
-        dir.join(DATA_DISK).exists().then_some(dir)
+        dir.join(DATA_DISK).exists().then_some(identity)
     }
 
     /// Stop the box and delete its directory: the agent is gone. Forgets the

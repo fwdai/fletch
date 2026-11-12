@@ -10,7 +10,7 @@ use crate::workspace::AgentRecord;
 /// Starts `checkout`, a checkout of `record`'s workspace just made, from its
 /// project's seed ([`seed::start_from`]), then cleans away what its base does
 /// not ignore, as a box's provisioning does. A checkout that cannot start from
-/// the seed stays as it was made.
+/// the seed, or cannot be cleaned after, stays as it was made.
 pub async fn start(record: &AgentRecord, checkout: &Path) {
     if let Some(store) = store(&record.project_id) {
         start_checkout(store, record.project_id.clone(), checkout).await;
@@ -19,35 +19,46 @@ pub async fn start(record: &AgentRecord, checkout: &Path) {
 
 /// [`start`] for a checkout of `project_id`, whose store is `store`.
 pub(super) async fn start_checkout(store: PathBuf, project_id: String, checkout: &Path) {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
     let into = checkout.to_path_buf();
-    let planted = tokio::task::spawn_blocking(move || {
-        seed::start_from(&store, &project_id, |_| true, |seed| plant(seed, &into))
+    let planting = tokio::task::spawn_blocking(move || {
+        let mut planted = Vec::new();
+        seed::start_from(
+            &store,
+            &project_id,
+            |_| true,
+            |seed| {
+                planted = plant(seed, &into);
+                !planted.is_empty()
+            },
+        );
+        planted
     });
-    if !planted.await.unwrap_or(false) {
+    let planted = planting.await.unwrap_or_default();
+    if planted.is_empty() {
         return;
     }
     if let Err(e) = crate::git::run_git(checkout, &["clean", "-ffdq"], "clean").await {
         tracing::warn!(checkout = %checkout.display(), error = %e, "could not clean what a checkout's seed left");
+        unplant(&planted);
     }
 }
 
 /// Merges into `checkout` what `seed` keeps for a checkout of its name
-/// ([`merge`]), and answers whether anything was cloned. After a failure
-/// nothing cloned is left.
-fn plant(seed: &Path, checkout: &Path) -> bool {
+/// ([`merge`]), and answers what it cloned. After a failure nothing cloned
+/// is left.
+fn plant(seed: &Path, checkout: &Path) -> Vec<PathBuf> {
     let mut planted = Vec::new();
-    match merge_seed(seed, checkout, &mut planted) {
-        Ok(()) => !planted.is_empty(),
-        Err(e) => {
-            tracing::warn!(checkout = %checkout.display(), error = %e, "could not start a checkout from its project's seed");
-            for path in &planted {
-                let _ = super::remove(path);
-            }
-            false
-        }
+    if let Err(e) = merge_seed(seed, checkout, &mut planted) {
+        tracing::warn!(checkout = %checkout.display(), error = %e, "could not start a checkout from its project's seed");
+        unplant(&planted);
+        planted.clear();
+    }
+    planted
+}
+
+fn unplant(planted: &[PathBuf]) {
+    for path in planted {
+        let _ = super::remove(path);
     }
 }
 

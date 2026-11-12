@@ -769,7 +769,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     ));
     // The macOS sandbox's seeds, once every workspace is on its side: what
     // the last run left of them, and the workspaces still wanted as one.
-    sandbox::seatbelt_startup(&workspace);
+    sandbox::seatbelt_startup();
     // And the image, downloaded on its own so boxes become the engine
     // without anyone asking for them. The desktop waits for onboarding to
     // have been completed once (its welcome carries the data-sharing

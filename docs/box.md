@@ -75,7 +75,7 @@ rules with its own (docs/isolation.md, "The seed of a workspace on this Mac").
 <checkouts base>/box-seeds/<project id>/seed/made.json           what it was made without, and for which request
 <checkouts base>/box-seeds/<project id>/seed-built-at.json       the workspaces whose files it holds
 <checkouts base>/box-seeds/<project id>/candidate-<id>/disk.img  a clone of a box's disk, to be reduced
-<box dir>/seed-wanted                                             this box's disk is to be the next seed
+<checkouts base>/box-seeds/<project id>/wanted/<agent id>        this box's disk is to be the next seed
 ```
 
 A project's first seed is made of the first box to stop cleanly (not on app
@@ -101,7 +101,7 @@ Three structures carry the rules:
   disk is built) one at a time, in the order they were cloned; none is
   skipped because another is being made. A candidate that is no longer needed
   at its turn (the project got its first seed meanwhile) is dropped.
-- **A request is answered by one candidate.** `seed-wanted` holds a request
+- **A request is answered by one candidate.** `wanted/<agent id>` holds a request
   of its own (`seed/request.rs`), ordered by when it was made; the candidate cloned under it
   withdraws that request, and only once it is answered: a workbench has
   looked at the disk and what it found is settled (the seed published, or

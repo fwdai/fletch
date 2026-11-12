@@ -31,15 +31,13 @@ use parking_lot::Mutex;
 
 use crate::error::{Error, Result};
 use crate::sandbox::seed::{self, AtRest};
-use crate::sandbox::{stamped_engine, EngineKind};
-use crate::workspace::{AgentRecord, WorkspaceManager};
+use crate::workspace::AgentRecord;
 
 pub use start::start;
 
 const SEEDS: &str = "workspace-seeds";
 /// In a seed or a candidate: one directory per checkout, named as it is.
 const TREE: &str = "tree";
-const WANTED: &str = "wanted";
 
 /// The turns each agent started since the app started, by agent id.
 static TURNS: Mutex<BTreeMap<String, Turns>> = Mutex::new(BTreeMap::new());
@@ -59,13 +57,8 @@ pub fn seeds_dir() -> Option<PathBuf> {
     )
 }
 
-/// `None` for a project id that cannot name a directory.
 fn store(project_id: &str) -> Option<PathBuf> {
-    crate::sandbox::toolchain_cache::project_root_in(&seeds_dir()?, project_id).ok()
-}
-
-fn request_file(store: &Path, agent_id: &str) -> PathBuf {
-    store.join(WANTED).join(agent_id)
+    seed::store_of(&seeds_dir()?, project_id)
 }
 
 /// A turn of `agent_id` started: its workspace, if it is being taken for its
@@ -77,11 +70,19 @@ pub fn turn_started(agent_id: &str) {
     turns.running = true;
 }
 
+/// The turn `agent_id` was starting did not start after all: its workspace
+/// is at rest again, as it was.
+pub fn turn_start_reverted(agent_id: &str) {
+    if let Some(turns) = TURNS.lock().get_mut(agent_id) {
+        turns.running = false;
+    }
+}
+
 /// The agent of `record` is not running a turn. When it was, its workspace
 /// is offered as its project's seed ([`seed::offer`]).
 pub fn turn_ended(record: &AgentRecord) {
     if let Some(started) = end_turn(&record.id) {
-        offer(record, started);
+        offer(&record.project_id, &record.id, started);
     }
 }
 
@@ -101,61 +102,41 @@ pub fn merged(record: &AgentRecord) {
     let Some(store) = store(&record.project_id) else {
         return;
     };
-    let asked = std::fs::create_dir_all(store.join(WANTED))
-        .and_then(|()| seed::want(&request_file(&store, &record.id)));
-    if let Err(e) = asked {
+    if let Err(e) = seed::want(&store, &record.id) {
         tracing::warn!(agent_id = %record.id, error = %e, "could not ask for a workspace as its project's seed");
         return;
     }
     if let Some(started) = turns_at_rest(&record.id) {
-        offer(record, started);
+        offer(&record.project_id, &record.id, started);
     }
 }
 
-/// Forgets `agent_id`, whose workspace goes: its turns, and its request.
+/// Forgets the turns of `agent_id`, whose workspace goes.
 pub fn forget(agent_id: &str) {
     TURNS.lock().remove(agent_id);
-    let stores = seeds_dir().and_then(|dir| std::fs::read_dir(dir).ok());
-    for store in stores.into_iter().flatten().flatten() {
-        let _ = std::fs::remove_file(request_file(&store.path(), agent_id));
-    }
 }
 
 /// At boot, once every project's settings file is read: removes the
 /// candidates an earlier run left ([`seed::remove_abandoned_candidates`]) and
-/// offers each workspace on this Mac still wanted as its project's seed.
-pub fn startup(workspace: &WorkspaceManager) {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
-    if let Some(dir) = seeds_dir() {
-        seed::remove_abandoned_candidates(&dir);
-    }
-    let Ok(ids) = workspace.live_agent_ids() else {
+/// offers each workspace still wanted as its project's seed.
+pub fn startup() {
+    let Some(dir) = seeds_dir() else {
         return;
     };
-    let records = ids.iter().filter_map(|id| workspace.agent(id).ok());
-    for record in records.filter(|record| stamped_engine(record) == EngineKind::SandboxExec) {
-        let wanted = store(&record.project_id)
-            .is_some_and(|store| seed::is_wanted(&request_file(&store, &record.id)));
-        if wanted {
-            offer(&record, turns_started(&record.id));
-        }
+    seed::remove_abandoned_candidates(&dir);
+    for (project_id, agent_id) in seed::wanted(&dir) {
+        offer(&project_id, &agent_id, turns_started(&agent_id));
     }
 }
 
-fn offer(record: &AgentRecord, turns: u64) {
-    if !cfg!(target_os = "macos") {
+/// Offers `agent_id`'s workspace, at rest after `turns` turns, off the
+/// caller's path: [`seed::offer`] waits for the store's lock, which is held
+/// for as long as a checkout starts from the seed, and a turn's end must not
+/// wait for that.
+fn offer(project_id: &str, agent_id: &str, turns: u64) {
+    let Some(at_rest) = CheckoutsAtRest::of(project_id, agent_id, turns) else {
         return;
-    }
-    if let Some(at_rest) = CheckoutsAtRest::of(record, turns) {
-        offer_off_the_callers_path(at_rest);
-    }
-}
-
-/// [`seed::offer`] waits for the store's lock, which is held for as long as a
-/// checkout starts from the seed, and a turn's end must not wait for that.
-fn offer_off_the_callers_path(at_rest: CheckoutsAtRest) {
+    };
     crate::host::spawn(async move {
         let _ = tokio::task::spawn_blocking(move || seed::offer(at_rest)).await;
     });
@@ -192,20 +173,17 @@ struct CheckoutsAtRest {
     /// The agent's directory: one checkout per repository, and Fletch's own.
     workspace: PathBuf,
     store: PathBuf,
-    request_file: PathBuf,
     /// The turns the agent had started when the workspace was offered.
     turns: u64,
 }
 
 impl CheckoutsAtRest {
-    fn of(record: &AgentRecord, turns: u64) -> Option<Self> {
-        let store = store(&record.project_id)?;
+    fn of(project_id: &str, agent_id: &str, turns: u64) -> Option<Self> {
         Some(Self {
-            agent_id: record.id.clone(),
-            project_id: record.project_id.clone(),
-            workspace: crate::workspace::agent_parent_dir(&record.id).ok()?,
-            request_file: request_file(&store, &record.id),
-            store,
+            agent_id: agent_id.to_string(),
+            project_id: project_id.to_string(),
+            workspace: crate::workspace::agent_parent_dir(agent_id).ok()?,
+            store: store(project_id)?,
             turns,
         })
     }
@@ -222,14 +200,6 @@ impl AtRest for CheckoutsAtRest {
 
     fn store(&self) -> &Path {
         &self.store
-    }
-
-    fn request_file(&self) -> &Path {
-        &self.request_file
-    }
-
-    fn take(&self, candidate: &Path) -> io::Result<()> {
-        std::fs::create_dir_all(candidate)
     }
 
     /// An error when a turn started meanwhile: what was cloned may be half

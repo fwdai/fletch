@@ -7,7 +7,7 @@
 //! <project seeds dir>/<project id>/seed/made.json           what it was made without, and for which request
 //! <project seeds dir>/<project id>/seed-built-at.json       the workspaces whose files it holds
 //! <project seeds dir>/<project id>/candidate-<id>/disk.img  a clone of a box's disk, to be reduced
-//! <box dir>/seed-wanted                                      this box's disk is to be the next seed
+//! <project seeds dir>/<project id>/wanted/<agent id>        this box's disk is to be the next seed
 //! ```
 //!
 //! A box is at rest while it is down after a clean stop ([`DownBox`]). Its
@@ -41,7 +41,6 @@ use crate::sandbox::ToolchainCache;
 
 const DISK: &str = "disk.img";
 const BUILT_AT: &str = "seed-built-at.json";
-const BOX_WANTED: &str = "seed-wanted";
 const REDUCE: &str = include_str!("seed.sh");
 
 const REDUCE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -55,20 +54,19 @@ static HAD_NOTHING: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
 /// Where every project's seed is kept, one directory per project id. Beside
 /// the boxes, so a clone never crosses a volume.
-pub fn project_seeds_dir() -> Option<PathBuf> {
+pub fn seeds_dir() -> Option<PathBuf> {
     Some(super::boxes_root().ok()?.with_file_name("box-seeds"))
 }
 
-/// `None` for a project id that cannot name a directory.
-fn project_dir(identity: &BoxIdentity) -> Option<PathBuf> {
-    crate::sandbox::toolchain_cache_root(&identity.home, &identity.project_id).ok()?;
-    Some(project_seeds_dir()?.join(&identity.project_id))
+/// The store of the project of `identity`'s box.
+fn store(identity: &BoxIdentity) -> Option<PathBuf> {
+    seed::store_of(&seeds_dir()?, &identity.project_id)
 }
 
 /// Creates the data disk of a new box: a clone of its project's seed when
 /// there is one of `bytes`, an empty disk otherwise.
 pub fn new_data_disk(identity: &BoxIdentity, data: &Path, bytes: u64) -> io::Result<()> {
-    let cloned = project_dir(identity)
+    let cloned = store(identity)
         .is_some_and(|project| clone_seed(&project, &identity.project_id, data, bytes));
     if cloned {
         Ok(())
@@ -110,7 +108,7 @@ fn record_built_at(project: &Path, root: &Path) -> io::Result<()> {
 /// Links each path the project's seed was built at to `identity`'s own root,
 /// in its box, where nothing is at that path yet.
 pub async fn link_built_at(channel: &Channel, identity: &BoxIdentity) {
-    let built_at = project_dir(identity).map_or_else(Vec::new, |project| built_at(&project));
+    let built_at = store(identity).map_or_else(Vec::new, |project| built_at(&project));
     let links: Vec<String> = built_at
         .iter()
         .filter(|at| **at != identity.writable_root && at.starts_with(&identity.home))
@@ -136,24 +134,22 @@ pub async fn link_built_at(channel: &Channel, identity: &BoxIdentity) {
     );
 }
 
-/// Asks that the disk of the box in `box_dir` become its project's seed
+/// Asks that the disk of `identity`'s box become its project's seed
 /// ([`seed::want`]).
-pub fn want(box_dir: &Path) -> io::Result<()> {
-    seed::want(&box_dir.join(BOX_WANTED))
+pub fn want(identity: &BoxIdentity) -> io::Result<()> {
+    let store = store(identity).ok_or(io::ErrorKind::InvalidInput)?;
+    seed::want(&store, &identity.agent_id)
 }
 
-pub fn is_wanted(box_dir: &Path) -> bool {
-    seed::is_wanted(&box_dir.join(BOX_WANTED))
+pub fn is_wanted(identity: &BoxIdentity) -> bool {
+    store(identity).is_some_and(|store| seed::is_wanted(&store, &identity.agent_id))
 }
 
 /// Offers the disk of a box that is down as its project's seed
 /// ([`seed::offer`]). The disk is cloned here, while the box cannot boot; the
 /// rest happens on a workbench, off the caller's path.
 pub(super) fn offer(down: &DownBox<'_>) {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
-    let Some(project) = project_dir(down.identity) else {
+    let Some(project) = store(down.identity) else {
         return;
     };
     let disk = down.dir.join(DATA_DISK);
@@ -162,14 +158,13 @@ pub(super) fn offer(down: &DownBox<'_>) {
         disk_kib: held_kib(&disk),
         disk,
         project,
-        request_file: down.dir.join(BOX_WANTED),
     });
 }
 
 /// Removes the candidates an earlier run of the app left
 /// ([`seed::remove_abandoned_candidates`]).
 pub fn remove_abandoned_candidates() {
-    if let Some(dir) = project_seeds_dir() {
+    if let Some(dir) = seeds_dir() {
         seed::remove_abandoned_candidates(&dir);
     }
 }
@@ -181,7 +176,6 @@ struct DiskAtRest {
     /// What the disk held when the box was offered.
     disk_kib: u64,
     project: PathBuf,
-    request_file: PathBuf,
 }
 
 impl AtRest for DiskAtRest {
@@ -195,10 +189,6 @@ impl AtRest for DiskAtRest {
 
     fn store(&self) -> &Path {
         &self.project
-    }
-
-    fn request_file(&self) -> &Path {
-        &self.request_file
     }
 
     fn may_be_first(&self) -> bool {
@@ -265,7 +255,13 @@ async fn reduce(identity: &BoxIdentity, disk: &Path, excluded: &[String]) -> Res
     let bench = Workbench::boot(&ready.paths, &ready.image.path(), dir, disk, None).await?;
     let cache = toolchain_cache_on_disk(identity);
     let worth_inheriting_kib = WORTH_INHERITING_KIB.to_string();
-    let mut words = vec!["bash", "/tmp/seed.sh", &cache, &worth_inheriting_kib];
+    let mut words = vec![
+        "bash",
+        "/tmp/seed.sh",
+        &cache,
+        &worth_inheriting_kib,
+        crate::codegraph::INDEX_DIR,
+    ];
     words.extend(excluded.iter().map(String::as_str));
     let ran = async {
         let script = Path::new("/tmp/seed.sh");
@@ -372,7 +368,6 @@ mod tests {
             disk: dir.path().join("data.img"),
             disk_kib: 0,
             project: dir.path().join("project"),
-            request_file: dir.path().join("seed-wanted"),
         };
         let (this_size, another_size) = (dir.path().join("this"), dir.path().join("another"));
         disks::create_sparse(&this_size.join(DISK), bytes).unwrap();

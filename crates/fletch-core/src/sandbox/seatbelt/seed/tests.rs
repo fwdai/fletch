@@ -58,7 +58,6 @@ fn at_rest(dir: &Path, agent_id: &str, project_id: &str) -> CheckoutsAtRest {
         agent_id: agent_id.into(),
         project_id: project_id.into(),
         workspace: dir.join(agent_id),
-        request_file: request_file(&store, agent_id),
         store,
         turns: turns_started(agent_id),
     }
@@ -179,6 +178,19 @@ fn only_the_end_of_a_turn_that_ran_offers_a_workspace() {
     assert_eq!(turns_at_rest(agent_id), Some(1));
 }
 
+#[test]
+fn a_turn_that_did_not_start_after_all_leaves_the_workspace_at_rest() {
+    let agent_id = "seatbelt-seed-turn-reverted";
+    turn_started(agent_id);
+    turn_start_reverted(agent_id);
+    assert_eq!(
+        turns_at_rest(agent_id),
+        Some(1),
+        "a merge is offered at once"
+    );
+    assert_eq!(end_turn(agent_id), None, "and no turn is left to end");
+}
+
 #[tokio::test]
 async fn a_workspace_a_turn_started_in_while_it_was_taken_is_not_made_the_seed() {
     let (_dir, dir) = scratch();
@@ -189,13 +201,13 @@ async fn a_workspace_a_turn_started_in_while_it_was_taken_is_not_made_the_seed()
 
     let taken = at_rest(&dir, agent_id, &project_id);
     let candidate = dir.join("taken");
-    taken.take(&candidate).unwrap();
+    std::fs::create_dir_all(&candidate).unwrap();
     turn_started(agent_id);
     assert!(taken.reduce(&candidate, &[]).await.is_err());
 
     let at_rest = at_rest(&dir, agent_id, &project_id);
     let candidate = dir.join("at-rest");
-    at_rest.take(&candidate).unwrap();
+    std::fs::create_dir_all(&candidate).unwrap();
     assert!(at_rest.reduce(&candidate, &[]).await.unwrap() >= WORTH_INHERITING_KIB);
 }
 
@@ -257,11 +269,9 @@ async fn a_projects_first_workspace_seeds_the_next_and_a_merged_one_replaces_it(
     assert!(no_candidate(), "a workspace not merged is not taken");
     assert_eq!(seed_built_by(), first);
 
-    let wanted = request_file(&store, second);
-    std::fs::create_dir_all(store.join(WANTED)).unwrap();
-    seed::want(&wanted).unwrap();
+    seed::want(&store, second).unwrap();
     seed::offer(at_rest(&dir, second, &project_id));
     wait_for(|| seed_built_by() == second).await;
-    wait_for(|| !seed::is_wanted(&wanted)).await;
+    wait_for(|| !seed::is_wanted(&store, second)).await;
     assert_eq!(read(&repo.join("node_modules/pkg/built-by")), first);
 }

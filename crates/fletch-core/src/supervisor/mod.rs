@@ -382,6 +382,9 @@ impl Supervisor {
                 None => statuses.remove(agent_id),
             };
         }
+        if let Ok(record) = self.workspace.agent(agent_id) {
+            crate::sandbox::turn_start_reverted(&record);
+        }
         let _ = self.status_tx.send(StatusEvent {
             agent_id: agent_id.to_string(),
             status: AgentStatus::Idle,

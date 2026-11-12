@@ -166,11 +166,9 @@ fn cache_dirs_on_host(home: &Path) -> impl Iterator<Item = PathBuf> + '_ {
 fn stores_on_host(engine: EngineKind, home: &Path) -> Vec<PathBuf> {
     match engine {
         EngineKind::SandboxExec => std::iter::once(toolchain_cache_dir(home))
-            .chain(super::seatbelt::seed::seeds_dir())
+            .chain(super::seeds_dir(engine))
             .collect(),
-        EngineKind::Box => super::boxes::seed::project_seeds_dir()
-            .into_iter()
-            .collect(),
+        EngineKind::Box => super::seeds_dir(engine).into_iter().collect(),
     }
 }
 

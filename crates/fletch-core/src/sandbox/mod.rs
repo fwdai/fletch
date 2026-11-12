@@ -537,13 +537,28 @@ pub fn setup_allowance(record: &AgentRecord) -> Duration {
     }
 }
 
-/// Discard what the engine keeps for `agent_id` outside its host dirs: a box
-/// agent's VM and box directory, data disk and checkouts included, and a
-/// request for a workspace on this Mac as its project's seed. A directory
-/// probe for every other agent, so callers run it unconditionally.
+/// Discard what the engines keep for `agent_id` outside its host dirs: its
+/// request to be its project's seed, whichever engine's store holds it, and
+/// a box agent's VM and box directory, data disk and checkouts included. A
+/// directory probe for every other agent, so callers run it unconditionally.
 pub async fn discard_agent_state(agent_id: &str) -> Result<()> {
     seatbelt::seed::forget(agent_id);
+    for dir in EngineKind::ALL
+        .iter()
+        .filter_map(|&engine| seeds_dir(engine))
+    {
+        seed::forget(&dir, agent_id);
+    }
     boxes::discard_if_any(agent_id).await
+}
+
+/// Where `engine` keeps its projects' seeds on this machine, one store per
+/// project id.
+pub(in crate::sandbox) fn seeds_dir(engine: EngineKind) -> Option<PathBuf> {
+    match engine {
+        EngineKind::Box => boxes::seed::seeds_dir(),
+        EngineKind::SandboxExec => seatbelt::seed::seeds_dir(),
+    }
 }
 
 /// A turn of `record`'s agent started. A workspace on this Mac counts it: one
@@ -552,6 +567,16 @@ pub fn turn_started(record: &AgentRecord) {
     match stamped_engine(record) {
         EngineKind::Box => {}
         EngineKind::SandboxExec => seatbelt::seed::turn_started(&record.id),
+    }
+}
+
+/// The turn of `record`'s agent that [`turn_started`] heard of did not start
+/// after all (its message could not be handed over). What an engine opened
+/// for it stays for the turn that will.
+pub fn turn_start_reverted(record: &AgentRecord) {
+    match stamped_engine(record) {
+        EngineKind::Box => {}
+        EngineKind::SandboxExec => seatbelt::seed::turn_start_reverted(&record.id),
     }
 }
 
@@ -582,8 +607,8 @@ pub async fn merged_into_default_branch(record: &AgentRecord) {
 
 /// At boot, once every project's settings file is read: what the seeds of
 /// workspaces on this Mac left from the last run (`seatbelt::seed::startup`).
-pub fn seatbelt_startup(workspace: &crate::workspace::WorkspaceManager) {
-    seatbelt::seed::startup(workspace);
+pub fn seatbelt_startup() {
+    seatbelt::seed::startup();
 }
 
 /// Stop every engine-held VM cleanly as the app quits, once the agents'

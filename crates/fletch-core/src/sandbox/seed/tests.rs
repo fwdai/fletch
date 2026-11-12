@@ -1,27 +1,26 @@
-use std::io;
 use std::path::{Path, PathBuf};
 
 use super::candidate::Candidate;
 use super::request::{standing_request, withdraw, Request};
 use super::store::{publish, seed_in_force, Made, CANDIDATE_PREFIX, MADE, SEED};
-use super::{is_wanted, want, AtRest, WORTH_INHERITING_KIB};
+use super::{forget, is_wanted, want, wanted, AtRest, WORTH_INHERITING_KIB};
 use crate::error::Result;
 use crate::project_file::SeedSettings;
 
 const PROJECT_ID: &str = "seed-core-tests";
+const AGENT_ID: &str = "kansai";
 
 /// A workspace at rest whose candidate already holds what was taken of it,
 /// and keeps something worth inheriting.
 struct Workspace {
     store: PathBuf,
-    request_file: PathBuf,
     may_be_first: bool,
     usable: bool,
 }
 
 impl AtRest for Workspace {
     fn agent_id(&self) -> &str {
-        "kansai"
+        AGENT_ID
     }
 
     fn project_id(&self) -> &str {
@@ -32,10 +31,6 @@ impl AtRest for Workspace {
         &self.store
     }
 
-    fn request_file(&self) -> &Path {
-        &self.request_file
-    }
-
     fn may_be_first(&self) -> bool {
         self.may_be_first
     }
@@ -44,18 +39,8 @@ impl AtRest for Workspace {
         self.usable
     }
 
-    fn take(&self, _candidate: &Path) -> io::Result<()> {
-        Ok(())
-    }
-
     async fn reduce(&self, _candidate: &Path, _excluded: &[String]) -> Result<u64> {
         Ok(WORTH_INHERITING_KIB)
-    }
-
-    fn kept_nothing(&self) {}
-
-    fn publishing(&self) -> io::Result<()> {
-        Ok(())
     }
 }
 
@@ -86,7 +71,6 @@ fn candidate(project: &Path, may_be_first: bool, request: Option<Request>) -> Ca
     Candidate {
         at_rest: Workspace {
             store: project.to_path_buf(),
-            request_file: project.join("seed-wanted"),
             may_be_first,
             usable: true,
         },
@@ -95,9 +79,9 @@ fn candidate(project: &Path, may_be_first: bool, request: Option<Request>) -> Ca
     }
 }
 
-fn new_request(request_file: &Path) -> Request {
-    want(request_file).unwrap();
-    standing_request(request_file).unwrap()
+fn new_request(store: &Path) -> Request {
+    want(store, AGENT_ID).unwrap();
+    standing_request(store, AGENT_ID).unwrap()
 }
 
 fn seed_held(project: &Path) -> Option<String> {
@@ -194,23 +178,44 @@ fn a_candidate_that_cannot_take_the_seeds_place_fails_and_leaves_it() {
 #[test]
 fn a_request_is_withdrawn_only_by_the_answer_to_it() {
     let dir = tempfile::tempdir().unwrap();
-    let wanted = dir.path().join("seed-wanted");
-    assert!(!is_wanted(&wanted));
+    let store = dir.path();
+    assert!(!is_wanted(store, AGENT_ID));
 
-    let taken_under = new_request(&wanted);
-    let newer = new_request(&wanted);
+    let taken_under = new_request(store);
+    let newer = new_request(store);
     assert!(newer > taken_under);
-    withdraw(&wanted, taken_under);
-    assert!(is_wanted(&wanted), "a newer request stands");
+    withdraw(store, AGENT_ID, taken_under);
+    assert!(is_wanted(store, AGENT_ID), "a newer request stands");
 
-    withdraw(&wanted, newer);
-    assert!(!is_wanted(&wanted));
+    withdraw(store, AGENT_ID, newer);
+    assert!(!is_wanted(store, AGENT_ID));
+}
+
+#[test]
+fn a_request_is_found_by_its_project_and_agent_and_forgotten_with_the_workspace() {
+    let stores = tempfile::tempdir().unwrap();
+    let store = stores.path().join(PROJECT_ID);
+    want(&store, AGENT_ID).unwrap();
+    want(&store, "chiapas").unwrap();
+    let mut standing = wanted(stores.path());
+    standing.sort();
+    assert_eq!(
+        standing,
+        [
+            (PROJECT_ID.to_string(), "chiapas".to_string()),
+            (PROJECT_ID.to_string(), AGENT_ID.to_string()),
+        ]
+    );
+
+    forget(stores.path(), AGENT_ID);
+    assert!(!is_wanted(&store, AGENT_ID));
+    assert!(is_wanted(&store, "chiapas"));
 }
 
 #[test]
 fn a_workspace_is_needed_for_a_request_newer_than_the_one_the_seed_answers() {
     let dir = tempfile::tempdir().unwrap();
-    let wanted = dir.path().join("seed-wanted");
+    let wanted = dir.path().join("another-store");
     let (older, answered, newer) = (
         new_request(&wanted),
         new_request(&wanted),
@@ -232,7 +237,7 @@ fn a_workspace_is_needed_for_a_request_newer_than_the_one_the_seed_answers() {
 fn a_project_without_a_seed_needs_a_workspace_that_was_asked_for_or_may_be_its_first() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("project");
-    let request = Some(new_request(&dir.path().join("seed-wanted")));
+    let request = Some(new_request(&dir.path().join("another-store")));
     let on = SeedSettings::default();
 
     assert!(candidate(&project, true, None).is_needed(&on));
@@ -261,14 +266,13 @@ async fn a_candidate_the_engine_cannot_use_is_not_made_the_seed_and_answers_its_
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("project");
     let taken = candidate_dir(&project, "taken");
-    let wanted = project.join("seed-wanted");
     crate::project_file::set_seed_settings(PROJECT_ID, SeedSettings::default());
-    let mut asked_for = candidate(&project, true, Some(new_request(&wanted)));
+    let mut asked_for = candidate(&project, true, Some(new_request(&project)));
     asked_for.at_rest.usable = false;
 
     asked_for.settle().await;
 
-    assert!(!is_wanted(&wanted));
+    assert!(!is_wanted(&project, AGENT_ID));
     assert!(!project.join(SEED).exists());
     assert!(!taken.exists());
 }
