@@ -555,13 +555,17 @@ pub fn turn_started(record: &AgentRecord) {
     }
 }
 
-/// A turn of `record`'s agent ended, however it ended: whatever the engine
-/// opened for that turn closes (a box's network opened from the composer),
-/// and a workspace on this Mac, at rest now, is offered as its project's
-/// seed.
-pub fn turn_ended(record: &AgentRecord) {
+/// A turn of `agent_id` ended, however it ended: whatever the engine opened
+/// for that turn closes (a box's network opened from the composer), and a
+/// workspace on this Mac, at rest now, is offered as its project's seed. An
+/// agent whose `record` could not be read is closed as a box is, which is a
+/// no-op for one without a box.
+pub fn turn_ended(agent_id: &str, record: Option<&AgentRecord>) {
+    let Some(record) = record else {
+        return boxes::turn_ended(agent_id);
+    };
     match stamped_engine(record) {
-        EngineKind::Box => boxes::turn_ended(&record.id),
+        EngineKind::Box => boxes::turn_ended(agent_id),
         EngineKind::SandboxExec => seatbelt::seed::turn_ended(record),
     }
 }

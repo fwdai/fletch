@@ -479,12 +479,11 @@ impl Supervisor {
         // Running starts a turn and any other status ends it, for the sandbox
         // too: a network opened for the turn closes, never left for whatever
         // the next message brings, and the workspace is at rest between turns.
-        if let Ok(record) = self.workspace.agent(agent_id) {
-            if status == AgentStatus::Running {
-                crate::sandbox::turn_started(&record);
-            } else {
-                crate::sandbox::turn_ended(&record);
-            }
+        let record = self.workspace.agent(agent_id).ok();
+        if status != AgentStatus::Running {
+            crate::sandbox::turn_ended(agent_id, record.as_ref());
+        } else if let Some(record) = &record {
+            crate::sandbox::turn_started(record);
         }
         // Close the in-flight turn's timer on any terminal state. Idle covers
         // the in-band turn-end and clean process exit; Error covers a crash.

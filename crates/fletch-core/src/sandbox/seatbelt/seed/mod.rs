@@ -149,8 +149,16 @@ fn offer(record: &AgentRecord, turns: u64) {
         return;
     }
     if let Some(at_rest) = CheckoutsAtRest::of(record, turns) {
-        seed::offer(at_rest);
+        offer_off_the_callers_path(at_rest);
     }
+}
+
+/// [`seed::offer`] waits for the store's lock, which is held for as long as a
+/// checkout starts from the seed, and a turn's end must not wait for that.
+fn offer_off_the_callers_path(at_rest: CheckoutsAtRest) {
+    crate::host::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || seed::offer(at_rest)).await;
+    });
 }
 
 fn turns_started(agent_id: &str) -> u64 {
