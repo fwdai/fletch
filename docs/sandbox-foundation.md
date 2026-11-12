@@ -132,7 +132,10 @@ engine enforces) and `docs/box.md` is the box runtime.
     the child runs. `on_host` serves a seatbelt agent and a host Run command,
     `in_guest` a box. What an engine does with it is its own: seatbelt grants
     the root, a box creates it on its disk, which starts as a clone of the
-    project's seed (`boxes/seed.rs`, docs/box.md). Deleting a project and boot's
+    project's seed (docs/box.md). The seed's rules are engine-neutral
+    (`sandbox/seed/`); an engine supplies, through `seed::AtRest`, how a
+    workspace at rest is taken and reduced, and starts a new workspace from
+    the seed (`boxes/seed.rs`). Deleting a project and boot's
     sweep call `remove_project_cache` and `reclaim_toolchain_caches`, which
     cover every engine: each one states where it keeps per-project caches on
     this machine (`cache_dir_on_host`, matched exhaustively), so a new store
