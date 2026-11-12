@@ -38,17 +38,51 @@ pub fn clone_sharing_blocks(from: &Path, to: &Path) -> io::Result<()> {
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    clonefile(from, to)
+    clonefile(from, to, 0)
+}
+
+/// Clones the directory tree `from` to a `to` that does not exist yet, each
+/// file sharing every block with its source until one is written, as
+/// [`clone_sharing_blocks`] does. Never follows a symbolic link: one in the
+/// tree is cloned as the link, and a path that goes through one fails, so
+/// `from` and `to` are given with none in them (canonical).
+pub fn clone_tree_sharing_blocks(from: &Path, to: &Path) -> io::Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    clone_tree(from, to)
 }
 
 #[cfg(target_os = "macos")]
-fn clonefile(from: &Path, to: &Path) -> io::Result<()> {
+fn clone_tree(from: &Path, to: &Path) -> io::Result<()> {
+    // <sys/clonefile.h>; the libc crate has no names for them.
+    const CLONE_NOFOLLOW: u32 = 0x0001;
+    const CLONE_NOFOLLOW_ANY: u32 = 0x0008;
+    let entry = std::fs::symlink_metadata(from)?;
+    if !entry.is_dir() {
+        return clonefile(from, to, CLONE_NOFOLLOW | CLONE_NOFOLLOW_ANY);
+    }
+    std::fs::create_dir(to)?;
+    for child in std::fs::read_dir(from)? {
+        let name = child?.file_name();
+        clone_tree(&from.join(&name), &to.join(&name))?;
+    }
+    std::fs::set_permissions(to, entry.permissions())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clone_tree(_from: &Path, _to: &Path) -> io::Result<()> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
+#[cfg(target_os = "macos")]
+fn clonefile(from: &Path, to: &Path, flags: u32) -> io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     let from = CString::new(from.as_os_str().as_bytes())?;
     let to = CString::new(to.as_os_str().as_bytes())?;
-    // SAFETY: two valid NUL-terminated paths; no flags.
-    if unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+    // SAFETY: two valid NUL-terminated paths; flags the call defines.
+    if unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), flags) } == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
@@ -56,7 +90,7 @@ fn clonefile(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn clonefile(_from: &Path, _to: &Path) -> io::Result<()> {
+fn clonefile(_from: &Path, _to: &Path, _flags: u32) -> io::Result<()> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
@@ -170,6 +204,53 @@ mod tests {
         std::fs::write(&to, b"b").unwrap();
         assert!(clone_sharing_blocks(&from, &to).is_err());
         assert_eq!(std::fs::read(&to).unwrap(), b"b");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_tree_clone_holds_nested_directories_and_links_as_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        let from = dir.join("from");
+        std::fs::create_dir_all(from.join("a/b")).unwrap();
+        std::fs::write(from.join("a/b/file"), b"nested").unwrap();
+        std::os::unix::fs::symlink("a/b/file", from.join("link")).unwrap();
+        std::os::unix::fs::symlink(dir.join("elsewhere"), from.join("a/out")).unwrap();
+        let to = dir.join("into/tree");
+
+        clone_tree_sharing_blocks(&from, &to).unwrap();
+
+        assert_eq!(std::fs::read(to.join("a/b/file")).unwrap(), b"nested");
+        assert_eq!(
+            std::fs::read_link(to.join("link")).unwrap(),
+            Path::new("a/b/file")
+        );
+        assert_eq!(
+            std::fs::read_link(to.join("a/out")).unwrap(),
+            dir.join("elsewhere")
+        );
+        std::fs::write(to.join("a/b/file"), b"changed").unwrap();
+        assert_eq!(std::fs::read(from.join("a/b/file")).unwrap(), b"nested");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_tree_clone_fails_rather_than_copy_or_follow_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        let from = dir.join("from");
+        std::fs::create_dir_all(from.join("a")).unwrap();
+        std::fs::write(from.join("a/file"), b"from").unwrap();
+        let to = dir.join("to");
+        std::fs::create_dir_all(to.join("a")).unwrap();
+        std::fs::write(to.join("a/file"), b"there").unwrap();
+        assert!(clone_tree_sharing_blocks(&from, &to).is_err());
+        assert_eq!(std::fs::read(to.join("a/file")).unwrap(), b"there");
+
+        std::os::unix::fs::symlink(&from, dir.join("via-link")).unwrap();
+        let through_a_link = dir.join("through-a-link");
+        assert!(clone_tree_sharing_blocks(&dir.join("via-link/a"), &through_a_link).is_err());
+        assert!(!through_a_link.join("file").exists());
     }
 
     #[cfg(target_os = "macos")]
