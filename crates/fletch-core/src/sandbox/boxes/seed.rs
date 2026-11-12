@@ -45,8 +45,6 @@ const REDUCE: &str = include_str!("seed.sh");
 /// A disk that keeps less than this had nothing installed worth inheriting.
 const WORTH_INHERITING_KIB: u64 = 1024;
 const REDUCE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-/// How many workspaces' paths a seed remembers its files were built at.
-const BUILT_AT_KEPT: usize = 8;
 /// A box whose disk had nothing worth inheriting is asked again for its
 /// project's first seed once the disk holds this many times as much.
 const ASKED_AGAIN_FOR_A_DISK_TIMES: f64 = 1.5;
@@ -73,7 +71,8 @@ fn project_dir(identity: &BoxIdentity) -> Option<PathBuf> {
 }
 
 /// The writable roots of the workspaces whose files the project's seed
-/// holds, the newest first.
+/// holds, the newest first. Every one the project ever had: a file kept
+/// through any number of seeds still names the path it was built at.
 fn built_at(project: &Path) -> Vec<PathBuf> {
     std::fs::read(project.join(SEED_BUILT_AT))
         .ok()
@@ -129,9 +128,14 @@ pub async fn link_built_at(channel: &Channel, identity: &BoxIdentity) {
 }
 
 /// Asks that the disk of the box in `box_dir` become its project's seed.
-/// [`offer`] answers it once the box is down.
+/// [`offer`] answers it once the box is down, and the request stays until a
+/// workbench has looked at the disk.
 pub fn want(box_dir: &Path) -> io::Result<()> {
     std::fs::write(box_dir.join(BOX_WANTED), "")
+}
+
+pub fn is_wanted(box_dir: &Path) -> bool {
+    box_dir.join(BOX_WANTED).exists()
 }
 
 /// Makes the disk of `identity`'s box its project's seed, when it is wanted
@@ -145,12 +149,11 @@ pub fn offer(identity: &BoxIdentity, box_dir: &Path) {
     let Some(project) = project_dir(identity) else {
         return;
     };
-    let wanted = box_dir.join(BOX_WANTED);
     let disk = box_dir.join(DATA_DISK);
     let disk_kib = held_kib(&disk);
     let would_be_the_first =
         !project.join(SEED_DISK).exists() && may_have_something_now(&identity.agent_id, disk_kib);
-    if !wanted.exists() && !would_be_the_first {
+    if !is_wanted(box_dir) && !would_be_the_first {
         return;
     }
     let staged = project.join("seed.img.new");
@@ -167,8 +170,7 @@ pub fn offer(identity: &BoxIdentity, box_dir: &Path) {
         }
         BEING_MADE.lock().push(project.clone());
     }
-    let _ = std::fs::remove_file(&wanted);
-    let identity = identity.clone();
+    let (identity, wanted) = (identity.clone(), box_dir.join(BOX_WANTED));
     tokio::spawn(async move {
         let kept_kib = reduce(&identity, &staged).await;
         tracing::info!(
@@ -176,10 +178,15 @@ pub fn offer(identity: &BoxIdentity, box_dir: &Path) {
             ?kept_kib,
             "reduced a box's disk to make a seed of it"
         );
-        let worth_inheriting = kept_kib.is_ok_and(|kib| kib >= WORTH_INHERITING_KIB);
-        if !worth_inheriting {
-            had_nothing(&identity.agent_id, disk_kib);
+        // A disk the workbench could not reduce was not looked at: the
+        // request stays, and the box is asked again at its next stop.
+        if let Ok(kept_kib) = kept_kib {
+            let _ = std::fs::remove_file(&wanted);
+            if kept_kib < WORTH_INHERITING_KIB {
+                had_nothing(&identity.agent_id, disk_kib);
+            }
         }
+        let worth_inheriting = kept_kib.is_ok_and(|kib| kib >= WORTH_INHERITING_KIB);
         settle(&project, &staged, &identity.writable_root, worth_inheriting);
         BEING_MADE
             .lock()
@@ -214,25 +221,27 @@ fn held_kib(disk: &Path) -> u64 {
 
 /// Ends the making of a seed: `staged`, reduced from the workspace at `root`,
 /// becomes the project's seed when it is `worth_inheriting`, and is removed
-/// otherwise, leaving the seed there was.
+/// otherwise, leaving the seed there was. Where it was built is recorded
+/// before the seed is replaced: a root recorded for a disk that did not
+/// become the seed is one link nothing uses, a seed without its root is
+/// files whose paths do not resolve.
 fn settle(project: &Path, staged: &Path, root: &Path, worth_inheriting: bool) {
     let _store = STORE.lock();
-    let became_the_seed =
-        worth_inheriting && std::fs::rename(staged, project.join(SEED_DISK)).is_ok();
-    let _ = remove_if_exists(staged);
-    if !became_the_seed {
-        return;
+    if worth_inheriting {
+        let published = record_built_at(project, root)
+            .and_then(|()| std::fs::rename(staged, project.join(SEED_DISK)));
+        if let Err(e) = published {
+            tracing::warn!(project = %project.display(), error = %e, "could not publish a project's seed");
+        }
     }
+    let _ = remove_if_exists(staged);
+}
+
+fn record_built_at(project: &Path, root: &Path) -> io::Result<()> {
     let mut built_at = built_at(project);
     built_at.retain(|at| at != root);
     built_at.insert(0, root.to_path_buf());
-    built_at.truncate(BUILT_AT_KEPT);
-    let written = serde_json::to_vec(&built_at)
-        .map_err(io::Error::from)
-        .and_then(|json| std::fs::write(project.join(SEED_BUILT_AT), json));
-    if let Err(e) = written {
-        tracing::warn!(project = %project.display(), error = %e, "could not record where a seed was built");
-    }
+    std::fs::write(project.join(SEED_BUILT_AT), serde_json::to_vec(&built_at)?)
 }
 
 /// Runs `seed.sh` on a workbench booted on `disk`, a clone of the data disk
@@ -345,6 +354,33 @@ mod tests {
         std::fs::write(&staged, "fourth seed").unwrap();
         settle(&project, &staged, Path::new("/w/kansai"), true);
         assert_eq!(built_at(&project), roots(&["/w/kansai", "/w/chiapas"]));
+    }
+
+    #[test]
+    fn a_seed_remembers_every_workspace_it_was_ever_built_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project_with_seed(dir.path(), b"seed");
+        let staged = project.join("seed.img.new");
+        let all: Vec<String> = (0..40).map(|n| format!("/w/workspace-{n}")).collect();
+        for root in &all {
+            std::fs::write(&staged, root).unwrap();
+            settle(&project, &staged, Path::new(root), true);
+        }
+        let mut newest_first: Vec<PathBuf> = all.iter().map(PathBuf::from).collect();
+        newest_first.reverse();
+        assert_eq!(built_at(&project), newest_first);
+    }
+
+    #[test]
+    fn where_a_seed_was_built_is_recorded_even_if_the_disk_cannot_be_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project_with_seed(dir.path(), b"seed");
+        let missing = project.join("seed.img.new");
+
+        settle(&project, &missing, Path::new("/w/chiapas"), true);
+
+        assert_eq!(std::fs::read(project.join(SEED_DISK)).unwrap(), b"seed");
+        assert_eq!(built_at(&project), roots(&["/w/chiapas"]));
     }
 
     #[test]

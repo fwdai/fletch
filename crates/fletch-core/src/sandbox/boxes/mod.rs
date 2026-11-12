@@ -1920,6 +1920,9 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
                 tracing::warn!(agent_id = %record.id, error = %e, "box tenant not routed");
             }
         }
+        // A merge asked for a box's disk as its project's seed, and the app
+        // quit before the box stopped any other way.
+        crate::host::spawn(BoxRegistry::global().offer_wanted_seeds());
     }
     // The CLI version a tools disk is keyed by is probed once per process,
     // so a CLI update since the last run shows here first: start its disk

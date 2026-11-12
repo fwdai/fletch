@@ -1769,9 +1769,37 @@ impl BoxRegistry {
 
     /// Wants `agent_id`'s disk as its project's seed ([`seed::want`]), and
     /// makes it that now when the box is down after a clean stop; a running
-    /// box's disk is offered when it stops, as every box's is. Under the box's lifecycle lock,
-    /// so no boot starts on the disk while it is cloned.
+    /// box's disk is offered when it stops, as every box's is.
     pub async fn seed_from(&self, agent_id: &str) {
+        let Some(dir) = self.box_dir_with_a_disk(agent_id) else {
+            return;
+        };
+        if let Err(e) = seed::want(&dir) {
+            tracing::warn!(agent_id, error = %e, "could not ask for a box's disk as its project's seed");
+            return;
+        }
+        self.offer_seed_while_down(agent_id).await;
+    }
+
+    /// Offers every box whose disk is still wanted as its project's seed: a
+    /// box that was running when its work was merged and was stopped by the
+    /// app's exit, where nothing is offered.
+    pub async fn offer_wanted_seeds(&self) {
+        let agent_ids: Vec<String> = self.entries.lock().keys().cloned().collect();
+        for agent_id in agent_ids {
+            let wanted = self
+                .box_dir_with_a_disk(&agent_id)
+                .is_some_and(|dir| seed::is_wanted(&dir));
+            if wanted {
+                self.offer_seed_while_down(&agent_id).await;
+            }
+        }
+    }
+
+    /// [`seed::offer`] for `agent_id`'s box when it is down after a clean
+    /// stop. Under the box's lifecycle lock, so no boot starts on the disk
+    /// while it is cloned.
+    async fn offer_seed_while_down(&self, agent_id: &str) {
         let known = self
             .entries
             .lock()
@@ -1783,17 +1811,16 @@ impl BoxRegistry {
         let Ok(dir) = identity.box_dir() else {
             return;
         };
-        if !dir.join(DATA_DISK).exists() {
-            return;
-        }
-        if let Err(e) = seed::want(&dir) {
-            tracing::warn!(agent_id, error = %e, "could not ask for a box's disk as its project's seed");
-            return;
-        }
         let _guard = lifecycle.lock().await;
         if self.running(agent_id).is_none() && !Dirty::in_dir(&dir).is_set() {
             seed::offer(&identity, &dir);
         }
+    }
+
+    fn box_dir_with_a_disk(&self, agent_id: &str) -> Option<PathBuf> {
+        let identity = self.entries.lock().get(agent_id)?.identity.clone();
+        let dir = identity.box_dir().ok()?;
+        dir.join(DATA_DISK).exists().then_some(dir)
     }
 
     /// Stop the box and delete its directory: the agent is gone. Forgets the

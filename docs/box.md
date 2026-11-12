@@ -75,8 +75,10 @@ workspace installed matters to the others once its work is in the base. When
 a workspace's pull request merges into its repository's default branch (the
 PR watcher, `sandbox::merged_into_default_branch`), its box's disk is wanted
 as the seed, and becomes it the next time the box is down after a clean stop:
-at once when it already is, else when it stops. The disk is cloned while the
-box is down, and the clone is reduced on a
+at once when it already is, else when it stops, or when the app next starts
+if it quit first. The request stays with the box until a workbench has
+looked at its disk, so a failed attempt is made again. The disk is cloned
+while the box is down, and the clone is reduced on a
 workbench (`fletch_box::workbench`: a throwaway box booted on one disk, as a
 tools disk is built) by `seed.sh`, run as the guest user:
 
@@ -100,7 +102,8 @@ the seed left and then runs `git clean -ffd`, so a file of the base wins and
 nothing the base does not ignore stays behind as an untracked file. What a
 seed holds was built at the path of the workspace it came from, and some of
 it says so (a virtualenv's scripts): provisioning links each of those paths
-to the box's own root. Not covered: a build directory that refuses to be
+to the box's own root, every one the project's seeds ever came from, since a
+file kept through any number of seeds still names its first. Not covered: a build directory that refuses to be
 used from another path (CMake's), which the project's build recreates.
 
 A host that cannot clone without copying (anything but macOS) makes and uses

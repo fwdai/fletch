@@ -288,7 +288,7 @@ async fn claude_runs_from_the_tools_disk() {
 /// directories and the toolchain cache, and the second box's checkout is
 /// provisioned over a clone of that with nothing else of the first. From then
 /// on only a workspace whose work was merged replaces the seed: when its box
-/// stops, or at once when it is already down.
+/// stops, at once when it is already down, or when the app next starts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "boots real boxes; see the module docs"]
 async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
@@ -422,6 +422,16 @@ async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
     registry.seed_from(&first.agent_id).await;
     wait_for(
         || newest_built_at().as_ref() == Some(&first.writable_root),
+        Duration::from_secs(120),
+    )
+    .await;
+
+    // Still wanted when the app starts (it quit before the box stopped any
+    // other way): the seed is replaced then.
+    super::seed::want(&super::box_dir(&second.agent_id).unwrap()).unwrap();
+    registry.offer_wanted_seeds().await;
+    wait_for(
+        || newest_built_at().as_ref() == Some(&second.writable_root),
         Duration::from_secs(120),
     )
     .await;
