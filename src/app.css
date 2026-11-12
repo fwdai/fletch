@@ -32,6 +32,7 @@
 @import "./components/Composer/ModelPicker/ModelPicker.css";
 @import "./components/RightPanel/RightPanel.css";
 @import "./components/RightPanel/Code/Code.css";
+@import "./components/RightPanel/ChangedFileList/ChangedFileList.css";
 @import "./components/RightPanel/GitPanel/GitPanel.css";
 @import "./components/RightPanel/RunPanel.css";
 @import "./components/Workspace/Draft.css";

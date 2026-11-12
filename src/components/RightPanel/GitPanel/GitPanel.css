@@ -463,14 +463,6 @@ button.rg-head {
 .rg-link:hover {
   color: var(--fg-0);
 }
-/* the lists that live under a row sit flush with its text, with their hover
-   bleeding a little past it — the row's rail stays untouched (the changed-file
-   list's rows are styled in Code.css; the checks and threads below) */
-.rg-body .cfl-row {
-  padding: 5px 8px;
-  margin: 0 -8px;
-  border-radius: var(--r-sm);
-}
 /* the Changes row's way to the committed work, when nothing is uncommitted */
 .rg-code-link {
   flex: none;

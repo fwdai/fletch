@@ -1,6 +1,10 @@
 // One row per changed file — the Code panel's Changes list and the Git panel's
-// uncommitted list. Everything beyond the row itself is opt-in, so the Git
-// panel gets a plain list by passing only `files` and `onOpen`.
+// uncommitted list. Every row has the same shape wherever the list shows:
+// `placement` only seats the list in its surroundings, and the extras (viewed
+// marks, the live dot) sit ahead of the line counts, so the counts and the
+// chevron end on the same column with or without them. Everything beyond the
+// row itself is opt-in, so the Git panel gets a plain list by passing only
+// `files` and `onOpen`.
 import type { FileStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -9,6 +13,10 @@ import { basename, parentDir } from "@/util/format";
 
 interface ChangedFileListProps {
   files: FileStatus[];
+  /** `panel` (default): the list is a panel's body, its rows inset from the
+   *  panel's edges. `nested`: it opens under another row, its text flush with
+   *  that row's and the row highlight bleeding past it. */
+  placement?: "panel" | "nested";
   /** Rows open the file's diff when given; without it the list is read-only. */
   onOpen?: (path: string) => void;
   /** The file last opened, marked so the list keeps the reader's place. */
@@ -22,6 +30,7 @@ interface ChangedFileListProps {
 
 export function ChangedFileList({
   files,
+  placement = "panel",
   onOpen,
   activePath,
   liveFile,
@@ -29,7 +38,7 @@ export function ChangedFileList({
   onToggleViewed,
 }: ChangedFileListProps) {
   return (
-    <div className="cfl">
+    <div className={`cfl ${placement}`}>
       {files.map((f) => {
         const viewed = isViewed?.(f) ?? false;
         const dir = parentDir(f.path);
@@ -52,10 +61,6 @@ export function ChangedFileList({
               {dir && <span className="cfl-dir">{dir}/</span>}
               <span className="cfl-base">{basename(f.path)}</span>
             </span>
-            <span className="cfl-stats text-xs">
-              {f.additions > 0 && <span className="add">+{f.additions}</span>}
-              {f.deletions > 0 && <span className="rem">−{f.deletions}</span>}
-            </span>
             {f.path === liveFile && <span className="cfl-live" title="The agent is editing this" />}
             {isViewed && onToggleViewed && (
               <IconButton
@@ -71,6 +76,10 @@ export function ChangedFileList({
                 <Icon name="check" />
               </IconButton>
             )}
+            <span className="cfl-stats text-xs">
+              {f.additions > 0 && <span className="add">+{f.additions}</span>}
+              {f.deletions > 0 && <span className="rem">−{f.deletions}</span>}
+            </span>
             {onOpen && <Icon name="chevR" size={11} className="cfl-chev" />}
           </div>
         );
