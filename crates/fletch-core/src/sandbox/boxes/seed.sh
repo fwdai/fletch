@@ -4,6 +4,7 @@
 #
 #   seed.sh <the project's toolchain cache on this disk, or ""> \
 #           <KiB a directory must hold to be kept> \
+#           <the name of a directory never kept: Fletch's own index> \
 #           [<path in a checkout never kept>...]
 #
 # Kept: in each checkout under /data/ws, the directories git ignores as a
@@ -24,14 +25,12 @@ set -euo pipefail
 
 CACHE=$1
 WORTH_INHERITING_KIB=$2
-shift 2
+NOT_INHERITED=$3
+shift 3
 
 WS=/data/ws
 KEPT=$WS/.fletch-seed-kept
 KEPT_CACHE=$WS/.fletch-seed-cache
-# Fletch's own index of one checkout's files, ignored by git like a build dir.
-NOT_INHERITED=.codegraph
-
 rm -rf "$KEPT" "$KEPT_CACHE"
 mkdir "$KEPT"
 for checkout in "$WS"/*/; do

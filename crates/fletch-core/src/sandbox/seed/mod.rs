@@ -9,7 +9,7 @@
 //! <store>/seed/              what the engine kept of a workspace
 //! <store>/seed/made.json     what it was made without, and for which request
 //! <store>/candidate-<id>/    what the engine took of a workspace, to be reduced
-//! <request file>             this workspace is to be the next seed
+//! <store>/wanted/<agent id>  this workspace is to be the next seed
 //! ```
 //!
 //! A project's first seed is made of the first workspace found at rest with
@@ -45,8 +45,8 @@ use parking_lot::Mutex;
 use crate::error::Result;
 
 pub use candidate::offer;
-pub use request::{is_wanted, want};
-pub use store::{remove_abandoned_candidates, start_from};
+pub use request::{forget, is_wanted, want, wanted};
+pub use store::{remove_abandoned_candidates, start_from, store_of};
 
 /// A directory, or a whole workspace, that keeps less than this has nothing
 /// worth inheriting.
@@ -56,23 +56,33 @@ pub const WORTH_INHERITING_KIB: u64 = 1024;
 /// request; each is a few file operations.
 static STORE: Mutex<()> = Mutex::new(());
 
+/// Whether this host can share a seed's blocks with the workspaces started
+/// from it. One that would have to copy makes and uses no seed.
+fn shares_blocks() -> bool {
+    cfg!(target_os = "macos")
+}
+
 /// A workspace at rest, as one engine sees it: what a seed is made of.
 pub trait AtRest: Send + Sync + 'static {
     fn agent_id(&self) -> &str;
     fn project_id(&self) -> &str;
     /// This engine's store for the workspace's project.
     fn store(&self) -> &Path;
-    /// Where the workspace's request is kept.
-    fn request_file(&self) -> &Path;
     /// Whether the workspace may be its project's first seed.
-    fn may_be_first(&self) -> bool;
+    fn may_be_first(&self) -> bool {
+        true
+    }
     /// Whether this engine could start a workspace now from what `seed`
     /// holds: the project's seed, or a candidate. A seed it could not is
     /// removed; a candidate it could not is never made the seed.
-    fn usable(&self, seed: &Path) -> bool;
-    /// Takes what a seed is made of into `candidate`, a directory not made
-    /// yet. Runs while the workspace is at rest, before [`offer`] returns.
-    fn take(&self, candidate: &Path) -> io::Result<()>;
+    fn usable(&self, _seed: &Path) -> bool {
+        true
+    }
+    /// Takes into `candidate`, an empty directory, what can only be taken
+    /// while the workspace is at rest. Runs before [`offer`] returns.
+    fn take(&self, _candidate: &Path) -> io::Result<()> {
+        Ok(())
+    }
     /// Makes `candidate` hold what a seed keeps, with nothing at the
     /// `excluded` paths, and answers the KiB it kept. Runs in the
     /// candidate's turn.
@@ -82,10 +92,12 @@ pub trait AtRest: Send + Sync + 'static {
         excluded: &[String],
     ) -> impl Future<Output = Result<u64>> + Send;
     /// The workspace kept nothing worth inheriting.
-    fn kept_nothing(&self);
+    fn kept_nothing(&self) {}
     /// Runs just before the candidate becomes the seed, under the store's
     /// lock. An error leaves the seed there was.
-    fn publishing(&self) -> io::Result<()>;
+    fn publishing(&self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// What the JSON file at `path` holds; the default when there is none.

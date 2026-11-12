@@ -6,8 +6,8 @@
 //! `root` writable for the child and adds its `env` to the child's. A deleted
 //! project's caches go with it and boot sweeps what a deletion missed
 //! ([`remove_project_cache`], [`reclaim_toolchain_caches`]); both cover every
-//! engine, each of which says where it keeps caches on this machine
-//! ([`cache_dir_on_host`]). The layout and who moves it: [`layout`].
+//! engine, each of which says where it keeps a store per project on this
+//! machine ([`stores_on_host`]). The layout and who moves it: [`layout`].
 //!
 //! **Why redirect.** A seatbelt agent runs the host's toolchains, and those
 //! write caches and stores outside the checkout: bun to `~/.bun/install/cache`,
@@ -55,6 +55,7 @@ use super::cargo_home;
 use super::engine::EngineKind;
 use crate::error::{Error, Result};
 
+pub(in crate::sandbox) use layout::project_root_in;
 pub use layout::{toolchain_cache_dir, toolchain_cache_root, TOOLCHAIN_CACHE_ROOT_ENV};
 pub use vars::Platform;
 
@@ -155,16 +156,19 @@ pub fn reclaim_toolchain_caches(home: &Path, live_project_ids: &HashSet<String>)
 fn cache_dirs_on_host(home: &Path) -> impl Iterator<Item = PathBuf> + '_ {
     EngineKind::ALL
         .iter()
-        .filter_map(move |&engine| cache_dir_on_host(engine, home))
+        .flat_map(move |&engine| stores_on_host(engine, home))
 }
 
-/// The directory on this machine where `engine` keeps one cache per project,
-/// named by project id: the directories seatbelt's toolchains write, the
-/// seeds a project's boxes start from, which carry its cache.
-fn cache_dir_on_host(engine: EngineKind, home: &Path) -> Option<PathBuf> {
+/// The directories on this machine where `engine` keeps one store per
+/// project, named by project id: the directories seatbelt's toolchains write
+/// and the seeds its workspaces start from; the seeds a project's boxes start
+/// from, which carry its cache.
+fn stores_on_host(engine: EngineKind, home: &Path) -> Vec<PathBuf> {
     match engine {
-        EngineKind::SandboxExec => Some(toolchain_cache_dir(home)),
-        EngineKind::Box => super::boxes::seed::project_seeds_dir(),
+        EngineKind::SandboxExec => std::iter::once(toolchain_cache_dir(home))
+            .chain(super::seeds_dir(engine))
+            .collect(),
+        EngineKind::Box => super::seeds_dir(engine).into_iter().collect(),
     }
 }
 
@@ -172,15 +176,17 @@ fn cache_dir_on_host(engine: EngineKind, home: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// Cleanup looks in the directory host launches cache in: the one holding
-    /// every root [`ToolchainCache::on_host`] hands out.
+    /// Cleanup looks in the directory host launches cache in, the one holding
+    /// every root [`ToolchainCache::on_host`] hands out, and in the one their
+    /// workspaces' seeds are kept in.
     #[test]
     fn cleanup_covers_the_roots_host_launches_use() {
         let home = Path::new("/Users/u");
         let root = toolchain_cache_root(home, "0b9f3c1e-6a4d-4e8b-9c2f-1d7e5a3b8c90").unwrap();
-        assert_eq!(
-            cache_dir_on_host(EngineKind::SandboxExec, home).as_deref(),
-            root.parent()
-        );
+        let stores = stores_on_host(EngineKind::SandboxExec, home);
+        assert!(stores
+            .iter()
+            .any(|dir| Some(dir.as_path()) == root.parent()));
+        assert!(stores.contains(&crate::sandbox::seatbelt::seed::seeds_dir().unwrap()));
     }
 }

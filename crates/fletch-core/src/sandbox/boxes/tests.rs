@@ -335,7 +335,7 @@ async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
-    let seeds = super::seed::project_seeds_dir().unwrap().join(&project);
+    let seeds = super::seed::seeds_dir().unwrap().join(&project);
     let (seed, built_at) = (seeds.join("seed"), seeds.join("seed-built-at.json"));
     let no_candidate = || {
         std::fs::read_dir(&seeds).map_or(true, |entries| {
@@ -449,7 +449,7 @@ async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
 
     // Still wanted when the app starts (it quit before the box stopped any
     // other way): the seed is replaced then.
-    super::seed::want(&super::box_dir(&second.agent_id).unwrap()).unwrap();
+    super::seed::want(&second).unwrap();
     registry.offer_wanted_seeds().await;
     wait_for(
         || newest_built_at().as_ref() == Some(&second.writable_root),

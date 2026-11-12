@@ -24,7 +24,7 @@ use crate::workspace::projects_root;
 
 /// The index directory name codegraph writes inside a project root, and the
 /// line we add to a checkout's `.git/info/exclude` so it never shows in diffs.
-const INDEX_DIR: &str = ".codegraph";
+pub(crate) const INDEX_DIR: &str = ".codegraph";
 /// The index db and its WAL sidecars — the only files worth copying between
 /// checkouts. `daemon.pid`/`daemon.sock` are per-checkout runtime state and are
 /// deliberately never copied.

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::request::{standing_request, withdraw, Request};
 use super::store::{self, Made, CANDIDATE_PREFIX};
-use super::{AtRest, STORE, WORTH_INHERITING_KIB};
+use super::{shares_blocks, AtRest, STORE, WORTH_INHERITING_KIB};
 use crate::error::{Error, Result};
 use crate::project_file::SeedSettings;
 
@@ -15,6 +15,9 @@ static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// taken here, while the workspace is at rest; the rest happens in the
 /// candidate's turn, off the caller's path.
 pub fn offer(at_rest: impl AtRest) {
+    if !shares_blocks() {
+        return;
+    }
     if let Some(candidate) = Candidate::take(at_rest) {
         crate::host::spawn(candidate.settle());
     }
@@ -36,14 +39,16 @@ impl<W: AtRest> Candidate<W> {
             dir: at_rest
                 .store()
                 .join(format!("{CANDIDATE_PREFIX}{}", uuid::Uuid::new_v4())),
-            request: standing_request(at_rest.request_file()),
+            request: standing_request(at_rest.store(), at_rest.agent_id()),
             at_rest,
         };
         if !candidate.is_needed(&settings) {
             candidate.withdraw_request();
             return None;
         }
-        match candidate.at_rest.take(&candidate.dir) {
+        let taken = std::fs::create_dir_all(&candidate.dir)
+            .and_then(|()| candidate.at_rest.take(&candidate.dir));
+        match taken {
             Ok(()) => Some(candidate),
             Err(e) => {
                 tracing::warn!(error = %e, "could not take a workspace to make a seed of it");
@@ -126,7 +131,7 @@ impl<W: AtRest> Candidate<W> {
 
     fn withdraw_request(&self) {
         if let Some(request) = self.request {
-            withdraw(self.at_rest.request_file(), request);
+            withdraw(self.at_rest.store(), self.at_rest.agent_id(), request);
         }
     }
 }

@@ -32,7 +32,7 @@ There is no third mode and no silent fallback between them
   `(allow default)`, denies all writes, then re-allows a specific set of paths
   (last-match-wins SBPL). **Reads and network stay open.** The agent runs as
   *you* — same user, same read access, same network — so this is write
-  protection, not a virtual machine (`sandbox/seatbelt.rs`).
+  protection, not a virtual machine (`sandbox/seatbelt/`).
 - **The box.** Each agent runs in its own Linux micro-VM, its checkout inside
   the guest. Nothing of your machine is in the guest but the folders you grant
   the workspace, so the rest of your filesystem is unreachable *even for
@@ -74,7 +74,7 @@ own on-disk state dirs (so the agent CLI can persist transcripts, config, and
 refreshed auth), `~/.claude.json`, and its project's toolchain cache. Fletch's
 own application-data directory (`fletch.db` — transcripts and settings) is
 explicitly denied **both read and write**, so a confined agent can neither
-exfiltrate nor forge app state (`sandbox/seatbelt.rs`).
+exfiltrate nor forge app state (`sandbox/seatbelt/`).
 
 One read deny is there for the user's sake rather than the boundary's. macOS
 asks before an app — or any process it spawned, which an agent is — first reads
@@ -178,6 +178,63 @@ a link there leads nowhere outside the box. The file panel's Save is the one
 host write into a checkout that follows links, because repositories
 legitimately contain them; it checks that the resolved path stays inside the
 checkout instead (`commands/files.rs`, `safe_join`).
+
+### The seed of a workspace on this Mac
+
+A new checkout on this Mac starts with what its project's seed keeps for it,
+as a new box does (docs/box.md, "The seed", whose rules are the engine-neutral
+core's, `sandbox/seed/`): the large directories git ignores in a workspace's
+checkouts, as APFS clones that take no space until a workspace changes them.
+Package downloads and Playwright's browsers are not in it: the project's
+workspaces on this Mac share its toolchain cache already
+(`sandbox/seatbelt/seed/`).
+
+```text
+<checkouts base>/workspace-seeds/<project id>/seed/tree/<checkout>/…   what a workspace kept, where it was
+<checkouts base>/workspace-seeds/<project id>/seed/made.json           what it was made without, and for which request
+<checkouts base>/workspace-seeds/<project id>/candidate-<id>/tree/…    what is kept of a workspace, being made
+<checkouts base>/workspace-seeds/<project id>/wanted/<agent id>        this workspace is to be the next seed
+```
+
+The store is beside the checkouts root (`~/.fletch/workspace-seeds`, or
+`~/.fletch/dev/workspace-seeds` for a debug build), on its volume, and under
+no write grant of any profile, so no agent can write a seed.
+
+A workspace is offered as its project's seed whenever a turn of its agent
+ends, which makes the project's first seed; after that it replaces the seed
+only once its pull request merges into the default branch, at once if no turn
+runs, else at that turn's end, or at the next start if the app quit first.
+What is kept, in each checkout (each directory of the workspace that is a git
+top level): the directories git ignores as a whole that hold at least 1 MiB,
+where they were, but for Fletch's own `.codegraph` and the paths the project
+excludes. These are the box's rules (`boxes/seed.sh`) plus one: a directory
+tied to its path, which holds an executable whose `#!` line names the
+workspace (a virtualenv's scripts), is not kept. Nothing in a checkout is read
+through a link: a link is kept as the link, and a directory git lists through
+one is not kept. A kept directory is cloned file by file, never copied
+(`disks::clone_tree_sharing_blocks`).
+
+A box is down while its disk is cloned; an agent on this Mac can start a turn
+while its workspace is taken. So the turns each agent starts are counted, and
+a workspace in which one started meanwhile is not made the seed: it is offered
+again when that turn ends.
+
+A checkout just provisioned or restored merges what the seed keeps for a
+checkout of its name: what it lacks is cloned whole, a directory both hold is
+merged, and anything else it holds stays. `git clean -ffdq` then removes what
+its base does not ignore. A checkout that cannot start from the seed stays the
+plain clone.
+
+Known limits:
+
+- A directory tied to its path is never inherited; each workspace builds its
+  own (a virtualenv).
+- A build directory that refuses another path otherwise (CMake's) is
+  inherited as it is, and the project's build recreates it.
+- Only turns are counted: a process outside one (the Run panel's dev server,
+  a job an agent left running) may be writing while a workspace is taken.
+- Until a project has its first seed, every turn end of its workspaces costs
+  a git listing in each of their checkouts.
 
 ## The isolation matrix
 
@@ -491,8 +548,9 @@ to `~/.fletch/workspaces/`; a one-time migration handles existing installs
 The code is canonical. When this document and the code disagree, the code wins —
 and this document should be corrected.
 
-- `crates/fletch-core/src/sandbox/seatbelt.rs` — the macOS `sandbox-exec` profile: the
-  deny-writes-then-re-allow model, the writable set, and the app-data deny.
+- `crates/fletch-core/src/sandbox/seatbelt/` — the macOS `sandbox-exec` profile: the
+  deny-writes-then-re-allow model, the writable set, and the app-data deny;
+  and the seed of a workspace on this Mac (`seed/`).
 - `crates/fletch-core/src/sandbox/boxes/` — the box engine: the micro-VM per
   agent, the checkout inside the guest, and the guest-home mechanism
   (`home.rs`) that seeds a provider's home and keeps its credential files in

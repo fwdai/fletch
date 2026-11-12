@@ -51,6 +51,8 @@
 //! agent's PATH — a read-denied binary can't be stat'ed, so PATH lookup would
 //! skip it and fall through to the Xcode CLT shim.
 
+pub(super) mod seed;
+
 use std::path::{Path, PathBuf};
 
 use super::engine::{

@@ -1,11 +1,11 @@
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fletch_box::disks;
 use serde::{Deserialize, Serialize};
 
 use super::request::Request;
-use super::{read_json, STORE};
+use super::{read_json, shares_blocks, STORE};
 use crate::project_file::SeedSettings;
 
 pub(super) const SEED: &str = "seed";
@@ -21,6 +21,12 @@ pub(super) struct Made {
     pub(super) for_request: Option<Request>,
 }
 
+/// The store of `project_id` among those under `stores_dir`, one directory
+/// per project id. `None` for an id that cannot name a directory.
+pub fn store_of(stores_dir: &Path, project_id: &str) -> Option<PathBuf> {
+    crate::sandbox::toolchain_cache::project_root_in(stores_dir, project_id).ok()
+}
+
 /// Starts a workspace of `project_id` from the project's seed in `store`,
 /// while its settings allow a workspace to start from one and the engine
 /// can (`usable`): `start` is given the seed, under the store's lock, and
@@ -31,6 +37,9 @@ pub fn start_from(
     usable: impl FnOnce(&Path) -> bool,
     start: impl FnOnce(&Path) -> bool,
 ) -> bool {
+    if !shares_blocks() {
+        return false;
+    }
     let Some(settings) = crate::project_file::seed_settings(project_id) else {
         return false;
     };
