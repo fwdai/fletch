@@ -1,0 +1,22 @@
+import type { ProjectFileReport, ProjectFileWhich } from "@/api";
+
+export const FILE_LABEL: Record<ProjectFileWhich, string> = {
+  shared: ".fletch/settings.json",
+  local: ".fletch/settings.local.json",
+};
+
+/** Both files, the team's before yours. */
+export const FILES: readonly ProjectFileWhich[] = ["shared", "local"];
+
+export const fileReport = (files: ProjectFileReport[], which: ProjectFileWhich) =>
+  files.find((f) => f.path === FILE_LABEL[which]);
+
+/** The first file, the team's before yours, whose report `holds`. */
+export const fileHolding = (
+  files: ProjectFileReport[],
+  holds: (file: ProjectFileReport) => boolean,
+): ProjectFileWhich | null =>
+  FILES.find((which) => {
+    const file = fileReport(files, which);
+    return !!file && holds(file);
+  }) ?? null;

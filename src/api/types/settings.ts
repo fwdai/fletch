@@ -29,18 +29,42 @@ export interface ProjectFileReport {
   allow: string[];
   /** This file's `egress.disable`. */
   disable: string[];
+  /** This file's `seed` section. */
+  seed: ProjectFileSeed;
+}
+
+/** What one settings file says of the project's starting disk (`seed`). */
+export interface ProjectFileSeed {
+  /** `seed.enabled`; null when the file does not say. */
+  enabled: boolean | null;
+  /** `seed.exclude`: paths inside a checkout, as the host spells them. */
+  exclude: string[];
+  /** The file's warnings about the `seed` section; also in its `warnings`. */
+  warnings: string[];
+}
+
+/** The project's starting disk as both settings files set it. */
+export interface SeedSettings {
+  /** The local file's word over the team's; on when neither says. */
+  enabled: boolean;
+  /** Both files' exclusions, sorted. */
+  exclude: string[];
 }
 
 /** Which settings file an edit goes to: the team's `.fletch/settings.json`
  *  or the user's own `.fletch/settings.local.json`. */
 export type ProjectFileWhich = "shared" | "local";
 
-/** An edit to one settings file's `egress` lists. */
+/** An edit to one settings file's `egress` lists and `seed` section. */
 export interface ProjectFileEdit {
   allowAdd?: string[];
   allowRemove?: string[];
   disableAdd?: string[];
   disableRemove?: string[];
+  /** Writes `seed.enabled`; null takes it out of the file. */
+  seedEnabled?: boolean | null;
+  seedExcludeAdd?: string[];
+  seedExcludeRemove?: string[];
 }
 
 /** `project_file_status`: what a project's settings files say, read from its
@@ -54,6 +78,7 @@ export interface ProjectFileStatus {
   files: ProjectFileReport[];
   /** `disabled`: inherited patterns the files turn off. */
   egress: { applied: string[]; pending: string[]; disabled: string[] };
+  seed: SeedSettings;
 }
 
 /** `project_file:changed`: reload `project_file_status`. */

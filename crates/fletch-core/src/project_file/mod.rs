@@ -42,7 +42,7 @@ use crate::error::{Error, Result};
 use crate::host::Sink;
 
 pub use file::{
-    parse, Edit, FileReport, Parsed, SeedSettings, Which, DIR, LOCAL_FILE, SHARED_FILE,
+    parse, Edit, FileReport, FileSeed, Parsed, SeedSettings, Which, DIR, LOCAL_FILE, SHARED_FILE,
 };
 use file::{read_files, stamp, Read, Stamp};
 
@@ -77,6 +77,8 @@ pub struct ProjectFileStatus {
     pub error: Option<String>,
     pub files: Vec<FileReport>,
     pub egress: EgressStatus,
+    /// What the files say of the seed, both files together.
+    pub seed: SeedSettings,
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +114,7 @@ impl Entry {
                 pending,
                 disabled: self.read.egress_disable.clone(),
             },
+            seed: self.read.seed.clone(),
         }
     }
 }
@@ -482,6 +485,79 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(repo.join(DIR).join(SHARED_FILE)).unwrap(),
             "{ // the team's\n }"
+        );
+    }
+
+    /// What the files say of the seed is part of the status, each file's own
+    /// part included, so a change to it alone is a change; an edit from the
+    /// app writes it without approving anything, and a path that could leave
+    /// the checkout is refused.
+    #[test]
+    fn the_seed_section_is_part_of_the_status() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        write(&repo, r#"{ "seed": { "exclude": ["uploads"] } }"#);
+        let (db, _dir) = db_with_project(&repo, "pf-seed");
+        let conn = db.lock();
+
+        let (status, _) = refresh(&conn, "pf-seed");
+        assert_eq!(
+            status.seed,
+            SeedSettings {
+                enabled: true,
+                exclude: vec!["uploads".into()],
+            }
+        );
+        assert_eq!(status.files[0].seed.exclude, vec!["uploads"]);
+
+        write(
+            &repo,
+            r#"{ "seed": { "enabled": false, "exclude": ["uploads"] } }"#,
+        );
+        let (status, changed) = refresh(&conn, "pf-seed");
+        assert!(changed);
+        assert!(!status.seed.enabled);
+        assert!(!refresh(&conn, "pf-seed").1);
+
+        let status = edit(
+            &conn,
+            "pf-seed",
+            Which::Local,
+            &Edit {
+                seed_enabled: Some(Some(true)),
+                seed_exclude_add: vec!["data/db".into()],
+                ..Edit::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            status.seed,
+            SeedSettings {
+                enabled: true,
+                exclude: vec!["data/db".into(), "uploads".into()],
+            }
+        );
+        assert_eq!(status.files[1].seed.enabled, Some(true));
+        assert_eq!(seed_settings("pf-seed"), Some(status.seed));
+        assert!(load_approved(&conn, "pf-seed").is_empty());
+
+        let refused = edit(
+            &conn,
+            "pf-seed",
+            Which::Local,
+            &Edit {
+                seed_exclude_add: vec!["../uploads".into()],
+                ..Edit::default()
+            },
+        );
+        assert!(refused
+            .unwrap_err()
+            .to_string()
+            .contains("not a path inside the checkout"));
+        assert_eq!(
+            seed_settings("pf-seed").unwrap().exclude,
+            vec!["data/db", "uploads"]
         );
     }
 
