@@ -7,12 +7,12 @@
 import { getAdapter, type RawEvent } from "../adapters";
 import {
   aggregate,
-  EMPTY_SNAPSHOT,
   hasUsage,
   type Spend,
   sessionSpend,
   type UsageEvent,
   type UsageSnapshot,
+  unspentSnapshot,
   usageFromRecords,
   withLiveTurn,
   withSupersededSpend,
@@ -101,10 +101,12 @@ export async function persistLiveUsage(
   }
 }
 
-/** Each agent's turn in flight, as its live stream has reported it: the
- *  snapshot the records gave before it, and the calls since. The store holds
- *  only the two folded together. */
-const liveTurns = new Map<string, { base: UsageSnapshot; events: UsageEvent[] }>();
+/** What each agent's live stream has reported beyond its records: `base`, the
+ *  snapshot the records last gave, and the calls streamed since. The store
+ *  holds only the two folded together. `seen` counts every call ever folded,
+ *  so a point in the stream can be named (`liveUsageMark`) and still mean the
+ *  same thing after earlier calls were handed to the records. */
+const liveTurns = new Map<string, { base: UsageSnapshot; events: UsageEvent[]; seen: number }>();
 
 /** Fold the usage a live event reports (`liveUsageEvents`) into the agent's
  *  snapshot, so the gauge moves while the turn runs instead of when its records
@@ -116,22 +118,46 @@ export function foldLiveUsage(
   agentId: string,
   rawEvent: RawEvent,
 ): void {
-  const events = getAdapter(providerFor(get(), agentId)).liveUsageEvents?.(rawEvent) ?? [];
+  const agent = agentRecord(get(), agentId);
+  const events = getAdapter(agent?.provider).liveUsageEvents?.(rawEvent) ?? [];
   if (events.length === 0) return;
   let turn = liveTurns.get(agentId);
   if (!turn) {
-    turn = { base: get().usage[agentId] ?? EMPTY_SNAPSHOT, events: [] };
+    // A call need not name its model; until one does, the window is the
+    // spawn model's — the same one the gauge showed before the call.
+    turn = { base: get().usage[agentId] ?? unspentSnapshot(agent?.model), events: [], seen: 0 };
     liveTurns.set(agentId, turn);
   }
   turn.events.push(...events);
+  turn.seen += events.length;
   set({ usage: { ...get().usage, [agentId]: withLiveTurn(turn.base, aggregate(turn.events)) } });
 }
 
-/** The records now hold the agent's usage, the live turn's calls among them:
- *  drop what the stream reported, or the next fold would count it twice. Call
- *  it wherever a snapshot built from records is written to the store. */
-export function settleLiveUsage(agentId: string): void {
-  liveTurns.delete(agentId);
+/** Where the agent's live stream stands. Take it BEFORE reading the records a
+ *  snapshot is built from, and pass it to `settleLiveUsage`: the read is async,
+ *  and calls that stream in while it runs are not in what it returns. */
+export function liveUsageMark(agentId: string): number {
+  return liveTurns.get(agentId)?.seen ?? 0;
+}
+
+/** Hand the agent's usage back to the records: `recorded` is the snapshot they
+ *  give, read when the stream stood at `mark`. The calls streamed up to the
+ *  mark are theirs now and are dropped — the next fold would otherwise count
+ *  them twice. Calls streamed after it stay, folded over `recorded`.
+ *
+ *  Returns the snapshot to put in the store. Call it wherever one built from
+ *  records is written there. */
+export function settleLiveUsage(
+  agentId: string,
+  recorded: UsageSnapshot,
+  mark: number,
+): UsageSnapshot {
+  const turn = liveTurns.get(agentId);
+  if (!turn) return recorded;
+  const since = Math.min(turn.events.length, Math.max(0, turn.seen - mark));
+  turn.base = recorded;
+  turn.events = since > 0 ? turn.events.slice(-since) : [];
+  return withLiveTurn(recorded, aggregate(turn.events));
 }
 
 /** FNV-1a over the event JSON — a short, stable id for an event that carries

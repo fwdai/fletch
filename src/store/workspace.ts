@@ -25,6 +25,7 @@ import {
   dropAgentEntries,
   expandSlashCommand,
   isAgentBusy,
+  liveUsageMark,
   mergeUserTurns,
   passthroughSlashName,
   patchAgentRecord,
@@ -971,11 +972,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // transcript bodies, rendered via normalizeTranscript→reduce. readHistory
       // lazily ingests on-disk history when the DB is empty; overlaying
       // outgoing/pending user turns keeps a failed send visible on reload.
+      // Before the read: calls that stream in while it runs are not in the
+      // records it returns, and must survive them (see settleLiveUsage).
+      const mark = liveUsageMark(id);
       const { records, turns } = await readHistory(id);
       const items = mergeUserTurns(reduceRecords(provider, records), turns);
       const usage = usageFromRecords(provider, records);
+      const settled = hasUsage(usage) ? settleLiveUsage(id, usage, mark) : null;
       if (hasUsage(usage)) {
-        settleLiveUsage(id);
         // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
         // spend belongs to its project like anyone else's.
         void recordWorkspaceUsage(id, agentRecord(get(), id)?.project_id, usage);
@@ -989,7 +993,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
           managedLogs: { ...state.managedLogs, [id]: items },
           // Only overwrite when records carried usage — cursor folds usage
           // live, so an empty records result must not wipe it.
-          ...(hasUsage(usage) ? { usage: { ...state.usage, [id]: usage } } : {}),
+          ...(settled ? { usage: { ...state.usage, [id]: settled } } : {}),
         };
       });
     } catch (e) {

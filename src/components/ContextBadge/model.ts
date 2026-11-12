@@ -1,9 +1,4 @@
-import {
-  contextPercent,
-  EMPTY_SNAPSHOT,
-  resolveContextWindow,
-  type UsageSnapshot,
-} from "@/adapters/usage";
+import { contextPercent, resolveContextWindow, type UsageSnapshot } from "@/adapters/usage";
 import type { SlimCatalog } from "@/data/modelCatalog/types";
 
 /** Where a compaction stands: none in sight, one running, or one that is the
@@ -30,15 +25,6 @@ export interface ContextView {
   free: number;
   segments: WindowSegment[];
   tone: "ok" | "danger";
-}
-
-/** What the badge shows for an agent with no usage in the store yet: nothing
- *  spent, the window unmeasured, and sized by the model it was spawned with
- *  rather than the default (a 1M-window model would otherwise read as 200k
- *  until its first call). */
-export function unspent(model: string | null | undefined): UsageSnapshot {
-  if (!model) return EMPTY_SNAPSHOT;
-  return { ...EMPTY_SNAPSHOT, context: { ...EMPTY_SNAPSHOT.context, model } };
 }
 
 /** The window split by cache state — the truthful stand-in for the design's

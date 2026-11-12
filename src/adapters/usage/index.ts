@@ -87,6 +87,15 @@ export const EMPTY_SNAPSHOT: UsageSnapshot = Object.freeze({
   coverage: "complete" as Coverage,
 });
 
+/** An agent that has spent nothing yet: the window unmeasured, and sized by
+ *  the model it was spawned with rather than the default — a 1M-window model
+ *  would otherwise read as 200k until a call names it. What a gauge shows, and
+ *  what a live turn folds onto, before any snapshot exists. */
+export function unspentSnapshot(model: string | null | undefined): UsageSnapshot {
+  if (!model) return EMPTY_SNAPSHOT;
+  return { ...EMPTY_SNAPSHOT, context: { ...EMPTY_SNAPSHOT.context, model } };
+}
+
 /** True once the session has spent anything. Distinguishes "nothing yet" from
  *  "an agent that reports no usage", which is why the store guards writes with
  *  it rather than overwriting a good snapshot with an empty one. */

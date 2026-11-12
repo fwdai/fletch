@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { hasUsage, priceSnapshot, reportsUsage } from "@/adapters/usage";
+import { hasUsage, priceSnapshot, reportsUsage, unspentSnapshot } from "@/adapters/usage";
 import type { AgentRecord } from "@/api";
 import { useAppStore } from "@/store";
 import { compactBlocker, isCompacting, supportsCompaction } from "@/store/compaction";
@@ -9,7 +9,7 @@ import { Breakdown } from "./Breakdown";
 import { Chip } from "./Chip";
 import { CompactButton } from "./CompactButton";
 import { CompactFooter } from "./CompactFooter";
-import { type CompactPhase, contextView, unspent } from "./model";
+import { type CompactPhase, contextView } from "./model";
 
 /** The conversation header's context badge (see the Context Badge component
  *  spec): how much of the model's window the conversation fills, a breakdown
@@ -38,7 +38,7 @@ export function ContextBadge({ agent }: { agent: AgentRecord }) {
 
   if (!show || !reportsUsage(agent.provider)) return null;
 
-  const usage = stored ?? unspent(agent.model);
+  const usage = stored ?? unspentSnapshot(agent.model);
   const phase: CompactPhase = compacting ? "compacting" : usage.context.compacted ? "done" : "idle";
   const view = contextView(usage, catalog, phase);
   const open = hover || pinned;

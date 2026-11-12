@@ -63,6 +63,7 @@ import {
   dischargeSending,
   foldLiveUsage,
   isAgentBusy,
+  liveUsageMark,
   mergeUserTurns,
   mirrorSentTurn,
   needsSessionIdRefresh,
@@ -378,6 +379,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       const id = e.agent_id;
       void (async () => {
         try {
+          // Before the read: calls that stream in while it runs are not in the
+          // records it returns, and must survive them (see settleLiveUsage).
+          const mark = liveUsageMark(id);
           const [records, turns] = await Promise.all([
             api.readSessionRecords(id),
             api.readUserTurns(id),
@@ -391,12 +395,12 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
           // carryForwardStoreOnly.
           const items = carryForwardStoreOnly(rebuilt, get().managedLogs[id] ?? []);
           const usage = usageFromRecords(provider, records);
-          if (hasUsage(usage)) settleLiveUsage(id);
+          // Only overwrite when records carried usage — cursor folds usage
+          // live, so an empty records result must not wipe it.
+          const settled = hasUsage(usage) ? settleLiveUsage(id, usage, mark) : null;
           set((state) => ({
             managedLogs: { ...state.managedLogs, [id]: items },
-            // Only overwrite when records carried usage — cursor folds usage
-            // live, so an empty records result must not wipe it.
-            usage: hasUsage(usage) ? { ...state.usage, [id]: usage } : state.usage,
+            usage: settled ? { ...state.usage, [id]: settled } : state.usage,
           }));
           // After the usage above: a compaction that has ended shows as
           // compacted in the same render it stops showing as compacting.
