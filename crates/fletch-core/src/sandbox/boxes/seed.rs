@@ -3,9 +3,11 @@
 //! shares their blocks with every other workspace until it changes them.
 //!
 //! ```text
-//! <project seeds dir>/<project id>/seed.img             a workspace disk, reduced
-//! <project seeds dir>/<project id>/seed-built-at.json   the workspaces whose files it holds
-//! <box dir>/seed-wanted                                  this box's disk is to be the next seed
+//! <project seeds dir>/<project id>/seed/disk.img            a workspace disk, reduced
+//! <project seeds dir>/<project id>/seed/made-without.json   the paths excluded when it was made
+//! <project seeds dir>/<project id>/seed-built-at.json       the workspaces whose files it holds
+//! <project seeds dir>/<project id>/candidate-<id>/disk.img  a clone of a box's disk, to be reduced
+//! <box dir>/seed-wanted                                      this box's disk is to be the next seed
 //! ```
 //!
 //! A project's first seed is made of the first box to stop cleanly with
@@ -14,10 +16,14 @@
 //! work is in the base: when its pull request merges into the repository's
 //! default branch, its disk is wanted as the seed ([`want`]) and replaces it
 //! the next time its box is down after a clean stop. Both go through
-//! [`offer`]: a clone of the disk is reduced on a workbench by `seed.sh` to
-//! the directories git ignores in each checkout and the project's toolchain
-//! cache, with nothing else of that workspace left; a disk the script did
-//! not finish on is discarded.
+//! [`offer`]: the disk is cloned as a [`Candidate`], which a workbench
+//! reduces with `seed.sh` to the large directories git ignores in each
+//! checkout and the project's toolchain cache, with nothing else of that
+//! workspace left. Only a candidate the script finished on is published.
+//!
+//! The project's settings file says what a seed may hold
+//! ([`crate::project_file::SeedSettings`]): paths never kept, or no seed at
+//! all. A seed made before a path was excluded is removed, not started from.
 //!
 //! A new box's data disk is a clone of the seed ([`new_data_disk`]), and
 //! provisioning checks the base out over what the seed left (`provision`).
@@ -29,31 +35,37 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use fletch_box::workbench::Workbench;
+use fletch_box::workbench::{BenchDir, Workbench};
 use fletch_box::{disks, Channel, StopOutcome};
 use parking_lot::Mutex;
 
-use super::registry::{BoxIdentity, DATA_DISK};
+use super::registry::{BoxIdentity, DownBox, DATA_DISK};
 use crate::error::{Error, Result};
+use crate::project_file::SeedSettings;
 use crate::sandbox::ToolchainCache;
 
-const SEED_DISK: &str = "seed.img";
-const SEED_BUILT_AT: &str = "seed-built-at.json";
+const SEED: &str = "seed";
+const CANDIDATE_PREFIX: &str = "candidate-";
+const DISK: &str = "disk.img";
+const MADE_WITHOUT: &str = "made-without.json";
+const BUILT_AT: &str = "seed-built-at.json";
 const BOX_WANTED: &str = "seed-wanted";
 const REDUCE: &str = include_str!("seed.sh");
 
-/// A disk that keeps less than this had nothing installed worth inheriting.
+/// A directory, or a whole disk, that keeps less than this has nothing worth
+/// inheriting.
 const WORTH_INHERITING_KIB: u64 = 1024;
 const REDUCE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// A box whose disk had nothing worth inheriting is asked again for its
 /// project's first seed once the disk holds this many times as much.
 const ASKED_AGAIN_FOR_A_DISK_TIMES: f64 = 1.5;
 
-/// Serializes every read and write of a project's seed; each is a few file
-/// operations.
+/// Serializes every read and write of a project's seed and of a box's
+/// request; each is a few file operations.
 static STORE: Mutex<()> = Mutex::new(());
-/// The projects whose seed is being made, one at a time each.
-static BEING_MADE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+/// One candidate is on a workbench at a time; the others wait their turn in
+/// the order they were cloned.
+static WORKBENCH_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// The boxes whose disk had nothing worth inheriting, by agent id, with the
 /// KiB the disk held then. Forgotten when the app restarts.
 static HAD_NOTHING: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
@@ -70,20 +82,12 @@ fn project_dir(identity: &BoxIdentity) -> Option<PathBuf> {
     Some(project_seeds_dir()?.join(&identity.project_id))
 }
 
-/// The writable roots of the workspaces whose files the project's seed
-/// holds, the newest first. Every one the project ever had: a file kept
-/// through any number of seeds still names the path it was built at.
-fn built_at(project: &Path) -> Vec<PathBuf> {
-    std::fs::read(project.join(SEED_BUILT_AT))
-        .ok()
-        .and_then(|json| serde_json::from_slice(&json).ok())
-        .unwrap_or_default()
-}
-
 /// Creates the data disk of a new box: a clone of its project's seed when
 /// there is one of `bytes`, an empty disk otherwise.
 pub fn new_data_disk(identity: &BoxIdentity, data: &Path, bytes: u64) -> io::Result<()> {
-    let cloned = project_dir(identity).is_some_and(|project| clone_seed(&project, data, bytes));
+    let settings = crate::project_file::seed_settings(&identity.project_id);
+    let cloned =
+        project_dir(identity).is_some_and(|project| clone_seed(&project, &settings, data, bytes));
     if cloned {
         Ok(())
     } else {
@@ -91,11 +95,49 @@ pub fn new_data_disk(identity: &BoxIdentity, data: &Path, bytes: u64) -> io::Res
     }
 }
 
-fn clone_seed(project: &Path, data: &Path, bytes: u64) -> bool {
+fn clone_seed(project: &Path, settings: &SeedSettings, data: &Path, bytes: u64) -> bool {
     let _store = STORE.lock();
-    let seed = project.join(SEED_DISK);
-    std::fs::metadata(&seed).is_ok_and(|seed| seed.len() == bytes)
-        && disks::clone_sharing_blocks(&seed, data).is_ok()
+    seed_in_force(project, settings).is_some_and(|seed| {
+        std::fs::metadata(&seed).is_ok_and(|seed| seed.len() == bytes)
+            && disks::clone_sharing_blocks(&seed, data).is_ok()
+    })
+}
+
+/// The disk of the project's seed, while `settings` allow a box to start from
+/// it: seeds are on, and it was made without every path they exclude now. A
+/// seed they do not allow is removed. The caller holds [`STORE`].
+fn seed_in_force(project: &Path, settings: &SeedSettings) -> Option<PathBuf> {
+    let seed = project.join(SEED);
+    if !seed.exists() {
+        return None;
+    }
+    let made_without: Vec<String> = read_json(&seed.join(MADE_WITHOUT));
+    let allowed = settings.enabled
+        && settings
+            .exclude
+            .iter()
+            .all(|path| made_without.contains(path));
+    if allowed {
+        return Some(seed.join(DISK));
+    }
+    if let Err(e) = std::fs::remove_dir_all(&seed) {
+        tracing::warn!(seed = %seed.display(), error = %e, "could not remove a seed its project's settings no longer allow");
+    }
+    None
+}
+
+/// The writable roots of the workspaces whose files the project's seed
+/// holds, the newest first. Every one the project ever had: a file kept
+/// through any number of seeds still names the path it was built at.
+fn built_at(project: &Path) -> Vec<PathBuf> {
+    read_json(&project.join(BUILT_AT))
+}
+
+fn record_built_at(project: &Path, root: &Path) -> io::Result<()> {
+    let mut built_at = built_at(project);
+    built_at.retain(|at| at != root);
+    built_at.insert(0, root.to_path_buf());
+    std::fs::write(project.join(BUILT_AT), serde_json::to_vec(&built_at)?)
 }
 
 /// Links each path the project's seed was built at to `identity`'s own root,
@@ -128,70 +170,179 @@ pub async fn link_built_at(channel: &Channel, identity: &BoxIdentity) {
 }
 
 /// Asks that the disk of the box in `box_dir` become its project's seed.
-/// [`offer`] answers it once the box is down, and the request stays until a
-/// workbench has looked at the disk.
+/// [`offer`] answers it once the box is down, and the request stands until a
+/// workbench has looked at a disk cloned after it was made.
 pub fn want(box_dir: &Path) -> io::Result<()> {
-    std::fs::write(box_dir.join(BOX_WANTED), "")
+    let _store = STORE.lock();
+    std::fs::write(box_dir.join(BOX_WANTED), uuid::Uuid::new_v4().to_string())
 }
 
 pub fn is_wanted(box_dir: &Path) -> bool {
-    box_dir.join(BOX_WANTED).exists()
+    standing_request(box_dir).is_some()
 }
 
-/// Makes the disk of `identity`'s box its project's seed, when it is wanted
-/// ([`want`]) or the project has none yet. For a box that is down after a
-/// clean stop, and stays down until this returns: the disk is cloned here,
-/// the rest happens on a workbench, off the caller's path.
-pub fn offer(identity: &BoxIdentity, box_dir: &Path) {
-    if !cfg!(target_os = "macos") {
-        return;
+/// The request standing for the box in `box_dir`: what [`want`] wrote, which
+/// no other request has.
+fn standing_request(box_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(box_dir.join(BOX_WANTED)).ok()
+}
+
+/// Withdraws the request `answered`, unless a newer one has replaced it.
+fn withdraw(box_dir: &Path, answered: &str) {
+    let _store = STORE.lock();
+    if standing_request(box_dir).as_deref() == Some(answered) {
+        let _ = std::fs::remove_file(box_dir.join(BOX_WANTED));
     }
-    let Some(project) = project_dir(identity) else {
-        return;
-    };
-    let disk = box_dir.join(DATA_DISK);
-    let disk_kib = held_kib(&disk);
-    let would_be_the_first =
-        !project.join(SEED_DISK).exists() && may_have_something_now(&identity.agent_id, disk_kib);
-    if !is_wanted(box_dir) && !would_be_the_first {
-        return;
+}
+
+/// Makes the disk of a box that is down its project's seed, when it is wanted
+/// ([`want`]) or the project has none yet. The disk is cloned here, while the
+/// box cannot boot; the rest happens on a workbench, off the caller's path.
+pub(super) fn offer(down: &DownBox<'_>) {
+    if let Some(candidate) = Candidate::clone_of(down) {
+        crate::host::spawn(candidate.settle());
     }
-    let staged = project.join("seed.img.new");
-    {
-        let _store = STORE.lock();
-        if BEING_MADE.lock().contains(&project) {
-            return;
+}
+
+/// Removes the candidates an earlier run of the app left: one lives only as
+/// long as the task that settles it.
+pub fn remove_abandoned_candidates() {
+    let projects = project_seeds_dir().and_then(|dir| std::fs::read_dir(dir).ok());
+    let entries = projects
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|project| std::fs::read_dir(project.path()).ok())
+        .flatten()
+        .flatten();
+    for entry in entries {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(CANDIDATE_PREFIX)
+        {
+            let _ = std::fs::remove_dir_all(entry.path());
         }
-        let cloned =
-            remove_if_exists(&staged).and_then(|()| disks::clone_sharing_blocks(&disk, &staged));
-        if let Err(e) = cloned {
-            tracing::warn!(error = %e, "could not clone a box's disk to make a seed of it");
-            return;
-        }
-        BEING_MADE.lock().push(project.clone());
     }
-    let (identity, wanted) = (identity.clone(), box_dir.join(BOX_WANTED));
-    tokio::spawn(async move {
-        let kept_kib = reduce(&identity, &staged).await;
-        tracing::info!(
-            agent_id = identity.agent_id,
-            ?kept_kib,
-            "reduced a box's disk to make a seed of it"
-        );
-        // A disk the workbench could not reduce was not looked at: the
-        // request stays, and the box is asked again at its next stop.
-        if let Ok(kept_kib) = kept_kib {
-            let _ = std::fs::remove_file(&wanted);
-            if kept_kib < WORTH_INHERITING_KIB {
-                had_nothing(&identity.agent_id, disk_kib);
+}
+
+/// A clone of a down box's disk, on its way to being its project's seed. The
+/// clone goes when this does.
+struct Candidate {
+    identity: BoxIdentity,
+    box_dir: PathBuf,
+    project: PathBuf,
+    settings: SeedSettings,
+    dir: PathBuf,
+    /// What the box's own disk held when it was cloned.
+    box_disk_kib: u64,
+    /// The request the disk was cloned under, when one stood.
+    request: Option<String>,
+}
+
+impl Candidate {
+    fn clone_of(down: &DownBox<'_>) -> Option<Candidate> {
+        if !cfg!(target_os = "macos") {
+            return None;
+        }
+        let project = project_dir(down.identity)?;
+        let box_disk = down.dir.join(DATA_DISK);
+        let candidate = Candidate {
+            identity: down.identity.clone(),
+            box_dir: down.dir.to_path_buf(),
+            settings: crate::project_file::seed_settings(&down.identity.project_id),
+            dir: project.join(format!("{CANDIDATE_PREFIX}{}", uuid::Uuid::new_v4())),
+            box_disk_kib: held_kib(&box_disk),
+            request: standing_request(down.dir),
+            project,
+        };
+        if !candidate.is_needed() {
+            return None;
+        }
+        match disks::clone_sharing_blocks(&box_disk, &candidate.dir.join(DISK)) {
+            Ok(()) => Some(candidate),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not clone a box's disk to make a seed of it");
+                None
             }
         }
-        let worth_inheriting = kept_kib.is_ok_and(|kib| kib >= WORTH_INHERITING_KIB);
-        settle(&project, &staged, &identity.writable_root, worth_inheriting);
-        BEING_MADE
-            .lock()
-            .retain(|being_made| *being_made != project);
-    });
+    }
+
+    /// Whether the project has use for this disk: seeds are on, and the disk
+    /// was asked for or may be the first seed of a project without one.
+    fn is_needed(&self) -> bool {
+        let _store = STORE.lock();
+        let has_seed = seed_in_force(&self.project, &self.settings).is_some();
+        let may_be_the_first =
+            !has_seed && may_have_something_now(&self.identity.agent_id, self.box_disk_kib);
+        self.settings.enabled && (self.request.is_some() || may_be_the_first)
+    }
+
+    /// Takes the candidate to a workbench in its turn. The request it was
+    /// cloned under is withdrawn once the workbench has looked at the disk and
+    /// what it found is settled; after any failure the request stands, and
+    /// the box is offered again.
+    async fn settle(self) {
+        let _turn = WORKBENCH_TURN.lock().await;
+        if !self.is_needed() {
+            return;
+        }
+        let agent_id = &self.identity.agent_id;
+        match self.examine().await {
+            Ok(kept_kib) => {
+                tracing::info!(
+                    agent_id,
+                    kept_kib,
+                    "looked at a box's disk for its project's seed"
+                );
+                if let Some(request) = &self.request {
+                    withdraw(&self.box_dir, request);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(agent_id, error = %e, "could not make a seed of a box's disk");
+            }
+        }
+    }
+
+    /// Reduces the candidate on a workbench and publishes it when it kept
+    /// something worth inheriting. Answers the KiB it kept.
+    async fn examine(&self) -> Result<u64> {
+        let kept_kib = reduce(&self.identity, &self.dir.join(DISK), &self.settings.exclude).await?;
+        if kept_kib >= WORTH_INHERITING_KIB {
+            publish(
+                &self.project,
+                &self.dir,
+                &self.identity.writable_root,
+                &self.settings.exclude,
+            )?;
+        } else {
+            had_nothing(&self.identity.agent_id, self.box_disk_kib);
+        }
+        Ok(kept_kib)
+    }
+}
+
+impl Drop for Candidate {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Makes `candidate`, reduced from the workspace at `root` without the paths
+/// in `excluded`, the project's seed. What it was made without goes with its
+/// disk in one rename. Where it was built is recorded first: a root recorded
+/// for a candidate that did not become the seed is one link nothing uses, a
+/// seed without its root is files whose paths do not resolve.
+fn publish(project: &Path, candidate: &Path, root: &Path, excluded: &[String]) -> io::Result<()> {
+    let _store = STORE.lock();
+    record_built_at(project, root)?;
+    std::fs::write(candidate.join(MADE_WITHOUT), serde_json::to_vec(excluded)?)?;
+    let seed = project.join(SEED);
+    if seed.exists() {
+        std::fs::remove_dir_all(&seed)?;
+    }
+    std::fs::rename(candidate, seed)
 }
 
 /// Whether the disk of `agent_id`'s box, holding `disk_kib`, may have
@@ -219,43 +370,21 @@ fn held_kib(disk: &Path) -> u64 {
     std::fs::metadata(disk).map_or(0, |disk| disk.blocks() / 2)
 }
 
-/// Ends the making of a seed: `staged`, reduced from the workspace at `root`,
-/// becomes the project's seed when it is `worth_inheriting`, and is removed
-/// otherwise, leaving the seed there was. Where it was built is recorded
-/// before the seed is replaced: a root recorded for a disk that did not
-/// become the seed is one link nothing uses, a seed without its root is
-/// files whose paths do not resolve.
-fn settle(project: &Path, staged: &Path, root: &Path, worth_inheriting: bool) {
-    let _store = STORE.lock();
-    if worth_inheriting {
-        let published = record_built_at(project, root)
-            .and_then(|()| std::fs::rename(staged, project.join(SEED_DISK)));
-        if let Err(e) = published {
-            tracing::warn!(project = %project.display(), error = %e, "could not publish a project's seed");
-        }
-    }
-    let _ = remove_if_exists(staged);
-}
-
-fn record_built_at(project: &Path, root: &Path) -> io::Result<()> {
-    let mut built_at = built_at(project);
-    built_at.retain(|at| at != root);
-    built_at.insert(0, root.to_path_buf());
-    std::fs::write(project.join(SEED_BUILT_AT), serde_json::to_vec(&built_at)?)
-}
-
 /// Runs `seed.sh` on a workbench booted on `disk`, a clone of the data disk
-/// of `identity`'s box, and answers the KiB it kept. An error unless the
-/// script finished and the bench stopped cleanly.
-async fn reduce(identity: &BoxIdentity, disk: &Path) -> Result<u64> {
+/// of `identity`'s box, keeping nothing at the paths in `excluded`, and
+/// answers the KiB it kept. An error unless the script finished and the bench
+/// stopped cleanly.
+async fn reduce(identity: &BoxIdentity, disk: &Path, excluded: &[String]) -> Result<u64> {
     let ready = super::setup::ready_now()?;
-    let dir = Workbench::fresh_dir(&ready.paths, "seed")?;
+    let dir = BenchDir::fresh(&ready.paths, "seed")?;
     let bench = Workbench::boot(&ready.paths, &ready.image.path(), dir, disk, None).await?;
     let cache = toolchain_cache_on_disk(identity);
+    let worth_inheriting_kib = WORTH_INHERITING_KIB.to_string();
+    let mut words = vec!["bash", "/tmp/seed.sh", &cache, &worth_inheriting_kib];
+    words.extend(excluded.iter().map(String::as_str));
     let ran = async {
         let script = Path::new("/tmp/seed.sh");
         bench.channel.put(REDUCE.as_bytes(), script, 0o755).await?;
-        let words = ["bash", "/tmp/seed.sh", cache.as_str()];
         let run = bench.channel.exec(None, None, &words);
         tokio::time::timeout(REDUCE_TIMEOUT, run)
             .await
@@ -301,22 +430,47 @@ fn toolchain_cache_on_disk(identity: &BoxIdentity) -> String {
         .unwrap_or_default()
 }
 
-fn remove_if_exists(file: &Path) -> io::Result<()> {
-    match std::fs::remove_file(file) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
-    }
+/// What the JSON file at `path` holds; the default when there is none.
+fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    std::fs::read(path)
+        .ok()
+        .and_then(|json| serde_json::from_slice(&json).ok())
+        .unwrap_or_default()
 }
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
-    fn project_with_seed(dir: &Path, disk: &[u8]) -> PathBuf {
+    fn project_with_seed(dir: &Path, disk: &[u8], made_without: &[&str]) -> PathBuf {
         let project = dir.join("project");
-        std::fs::create_dir_all(&project).unwrap();
-        std::fs::write(project.join(SEED_DISK), disk).unwrap();
+        let seed = project.join(SEED);
+        std::fs::create_dir_all(&seed).unwrap();
+        std::fs::write(seed.join(DISK), disk).unwrap();
+        std::fs::write(
+            seed.join(MADE_WITHOUT),
+            serde_json::to_vec(made_without).unwrap(),
+        )
+        .unwrap();
         project
+    }
+
+    fn candidate(project: &Path, disk: &str) -> PathBuf {
+        let candidate = project.join(format!("{CANDIDATE_PREFIX}test"));
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::write(candidate.join(DISK), disk).unwrap();
+        candidate
+    }
+
+    fn seed_disk(project: &Path) -> Option<String> {
+        std::fs::read_to_string(project.join(SEED).join(DISK)).ok()
+    }
+
+    fn excluding(paths: &[&str]) -> SeedSettings {
+        SeedSettings {
+            enabled: true,
+            exclude: paths.iter().map(|path| path.to_string()).collect(),
+        }
     }
 
     fn roots(roots: &[&str]) -> Vec<PathBuf> {
@@ -326,61 +480,114 @@ mod tests {
     #[test]
     fn a_new_box_gets_a_clone_of_a_seed_its_size() {
         let dir = tempfile::tempdir().unwrap();
-        let project = project_with_seed(dir.path(), b"seed");
+        let project = project_with_seed(dir.path(), b"seed", &[]);
         let data = dir.path().join("data.img");
+        let settings = SeedSettings::default();
 
-        assert!(!clone_seed(&project, &data, 8));
+        assert!(!clone_seed(&project, &settings, &data, 8));
         assert!(!data.exists());
-        assert!(clone_seed(&project, &data, 4));
+        assert!(clone_seed(&project, &settings, &data, 4));
         assert_eq!(std::fs::read(&data).unwrap(), b"seed");
     }
 
     #[test]
-    fn a_disk_worth_inheriting_replaces_the_seed_and_leads_where_it_was_built() {
+    fn a_seed_made_before_a_path_was_excluded_is_removed_not_started_from() {
         let dir = tempfile::tempdir().unwrap();
-        let project = project_with_seed(dir.path(), b"old seed");
-        let staged = project.join("seed.img.new");
-        for (root, disk) in [("/w/kansai", "second seed"), ("/w/chiapas", "third seed")] {
-            std::fs::write(&staged, disk).unwrap();
-            settle(&project, &staged, Path::new(root), true);
-        }
+        let project = project_with_seed(dir.path(), b"seed", &["uploads"]);
+        let data = dir.path().join("data.img");
 
-        assert_eq!(
-            std::fs::read(project.join(SEED_DISK)).unwrap(),
-            b"third seed"
-        );
-        assert_eq!(built_at(&project), roots(&["/w/chiapas", "/w/kansai"]));
+        assert!(clone_seed(&project, &excluding(&[]), &data, 4));
+        std::fs::remove_file(&data).unwrap();
+        assert!(clone_seed(&project, &excluding(&["uploads"]), &data, 4));
+        std::fs::remove_file(&data).unwrap();
 
-        std::fs::write(&staged, "fourth seed").unwrap();
-        settle(&project, &staged, Path::new("/w/kansai"), true);
-        assert_eq!(built_at(&project), roots(&["/w/kansai", "/w/chiapas"]));
+        assert!(!clone_seed(
+            &project,
+            &excluding(&["uploads", "certs"]),
+            &data,
+            4
+        ));
+        assert!(!data.exists());
+        assert!(!project.join(SEED).exists());
     }
 
     #[test]
-    fn a_seed_remembers_every_workspace_it_was_ever_built_at() {
+    fn a_project_that_turned_seeds_off_loses_the_one_it_had() {
         let dir = tempfile::tempdir().unwrap();
-        let project = project_with_seed(dir.path(), b"seed");
-        let staged = project.join("seed.img.new");
+        let project = project_with_seed(dir.path(), b"seed", &[]);
+        let data = dir.path().join("data.img");
+        let off = SeedSettings {
+            enabled: false,
+            exclude: Vec::new(),
+        };
+
+        assert!(!clone_seed(&project, &off, &data, 4));
+        assert!(!data.exists());
+        assert!(!project.join(SEED).exists());
+    }
+
+    #[test]
+    fn a_published_candidate_replaces_the_seed_with_what_it_was_made_without() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project_with_seed(dir.path(), b"old seed", &[]);
+        let excluded = vec!["uploads".to_string()];
+
+        let second = candidate(&project, "second seed");
+        publish(&project, &second, Path::new("/w/kansai"), &excluded).unwrap();
+
+        assert_eq!(seed_disk(&project).as_deref(), Some("second seed"));
+        assert!(!second.exists());
+        let data = dir.path().join("data.img");
+        assert!(clone_seed(&project, &excluding(&["uploads"]), &data, 11));
+    }
+
+    #[test]
+    fn a_seed_remembers_every_workspace_it_was_ever_built_at_the_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project_with_seed(dir.path(), b"seed", &[]);
         let all: Vec<String> = (0..40).map(|n| format!("/w/workspace-{n}")).collect();
         for root in &all {
-            std::fs::write(&staged, root).unwrap();
-            settle(&project, &staged, Path::new(root), true);
+            publish(&project, &candidate(&project, root), Path::new(root), &[]).unwrap();
         }
         let mut newest_first: Vec<PathBuf> = all.iter().map(PathBuf::from).collect();
         newest_first.reverse();
         assert_eq!(built_at(&project), newest_first);
+
+        let again = candidate(&project, "again");
+        publish(&project, &again, Path::new("/w/workspace-0"), &[]).unwrap();
+        assert_eq!(
+            built_at(&project)[..2],
+            roots(&["/w/workspace-0", "/w/workspace-39"])
+        );
+        assert_eq!(built_at(&project).len(), 40);
     }
 
     #[test]
-    fn where_a_seed_was_built_is_recorded_even_if_the_disk_cannot_be_replaced() {
+    fn a_candidate_that_cannot_replace_the_seed_fails_and_leaves_it() {
         let dir = tempfile::tempdir().unwrap();
-        let project = project_with_seed(dir.path(), b"seed");
-        let missing = project.join("seed.img.new");
+        let project = project_with_seed(dir.path(), b"seed", &[]);
+        let missing = project.join(format!("{CANDIDATE_PREFIX}missing"));
 
-        settle(&project, &missing, Path::new("/w/chiapas"), true);
+        assert!(publish(&project, &missing, Path::new("/w/chiapas"), &[]).is_err());
 
-        assert_eq!(std::fs::read(project.join(SEED_DISK)).unwrap(), b"seed");
+        assert_eq!(seed_disk(&project).as_deref(), Some("seed"));
         assert_eq!(built_at(&project), roots(&["/w/chiapas"]));
+    }
+
+    #[test]
+    fn a_request_is_withdrawn_only_by_the_answer_to_it() {
+        let box_dir = tempfile::tempdir().unwrap();
+        assert!(!is_wanted(box_dir.path()));
+
+        want(box_dir.path()).unwrap();
+        let cloned_under = standing_request(box_dir.path()).unwrap();
+        want(box_dir.path()).unwrap();
+        withdraw(box_dir.path(), &cloned_under);
+        assert!(is_wanted(box_dir.path()), "a newer request stands");
+
+        let newer = standing_request(box_dir.path()).unwrap();
+        withdraw(box_dir.path(), &newer);
+        assert!(!is_wanted(box_dir.path()));
     }
 
     #[test]
@@ -391,19 +598,5 @@ mod tests {
         assert!(!may_have_something_now(agent, 140));
         assert!(may_have_something_now(agent, 150));
         assert!(may_have_something_now("another-box", 1));
-    }
-
-    #[test]
-    fn a_disk_that_kept_nothing_leaves_the_seed_there_was() {
-        let dir = tempfile::tempdir().unwrap();
-        let project = project_with_seed(dir.path(), b"seed");
-        let staged = project.join("seed.img.new");
-        std::fs::write(&staged, b"reduced to nothing").unwrap();
-
-        settle(&project, &staged, Path::new("/w/chiapas"), false);
-
-        assert_eq!(std::fs::read(project.join(SEED_DISK)).unwrap(), b"seed");
-        assert!(!staged.exists());
-        assert_eq!(built_at(&project), roots(&[]));
     }
 }

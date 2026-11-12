@@ -4,6 +4,7 @@
 //! project's seed on one.
 
 use std::collections::BTreeMap;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -18,21 +19,13 @@ const STOP_GRACE: Duration = Duration::from_secs(15);
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-pub struct Workbench {
-    pub channel: Channel,
-    /// The guest user's `$HOME` on the bench, on the disk.
-    pub guest_home: PathBuf,
-    vm: Vm,
-    dir: PathBuf,
-    stopped: bool,
-}
+/// A bench's directory of sockets and key, removed when dropped.
+pub struct BenchDir(PathBuf);
 
-impl Workbench {
-    /// A fresh directory for a bench's sockets and key, named for its
-    /// `purpose` and unlike any other bench's of this process, under the run
-    /// root so socket paths stay short. [`Workbench::boot`] takes it over and
-    /// removes it when the bench goes.
-    pub fn fresh_dir(paths: &RuntimePaths, purpose: &str) -> Result<PathBuf> {
+impl BenchDir {
+    /// A fresh directory named for the bench's `purpose` and unlike any other
+    /// bench's of this process, under the run root so socket paths stay short.
+    pub fn fresh(paths: &RuntimePaths, purpose: &str) -> Result<BenchDir> {
         let dir = paths.run_root.join(format!(
             "{purpose}-{}-{}",
             std::process::id(),
@@ -40,16 +33,40 @@ impl Workbench {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(Error::io(format!("create {}", dir.display())))?;
-        Ok(dir)
+        Ok(BenchDir(dir))
     }
+}
 
-    /// Boots `image` in `dir` ([`Workbench::fresh_dir`]) with `disk` as its
-    /// data disk. `egress` is the socket of a proxy the caller serves, for
-    /// work that needs the network.
+impl Deref for BenchDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for BenchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+pub struct Workbench {
+    pub channel: Channel,
+    /// The guest user's `$HOME` on the bench, on the disk.
+    pub guest_home: PathBuf,
+    vm: Vm,
+    stopped: bool,
+    _dir: BenchDir,
+}
+
+impl Workbench {
+    /// Boots `image` in `dir` with `disk` as its data disk. `egress` is the
+    /// socket of a proxy the caller serves, for work that needs the network.
     pub async fn boot(
         paths: &RuntimePaths,
         image: &Path,
-        dir: PathBuf,
+        dir: BenchDir,
         disk: &Path,
         egress: Option<&Path>,
     ) -> Result<Workbench> {
@@ -114,12 +131,11 @@ impl Workbench {
                 channel,
                 guest_home,
                 vm,
-                dir,
                 stopped: false,
+                _dir: dir,
             }),
             Err(e) => {
                 vm.kill();
-                let _ = std::fs::remove_dir_all(&dir);
                 Err(e)
             }
         }
@@ -139,10 +155,34 @@ impl Drop for Workbench {
         if !self.stopped {
             self.vm.kill();
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_bench_that_does_not_boot_leaves_no_directory() {
+        let run_root = tempfile::tempdir().unwrap();
+        let paths = RuntimePaths {
+            helper: run_root.path().join("no-such-helper"),
+            lib_dir: None,
+            run_root: run_root.path().to_path_buf(),
+        };
+        let dir = BenchDir::fresh(&paths, "bench").unwrap();
+        let at = dir.to_path_buf();
+        assert!(at.is_dir());
+
+        let image = run_root.path().join("no-such-image");
+        let disk = run_root.path().join("no-such-disk");
+        let booted = Workbench::boot(&paths, &image, dir, &disk, None).await;
+
+        assert!(booted.is_err());
+        assert!(!at.exists());
+    }
 }

@@ -284,9 +284,10 @@ async fn claude_runs_from_the_tools_disk() {
 }
 
 /// A project's first box to stop becomes what its next workspaces start
-/// with: its disk is the project's seed, reduced to its checkout's ignored
-/// directories and the toolchain cache, and the second box's checkout is
-/// provisioned over a clone of that with nothing else of the first. From then
+/// with: its disk is the project's seed, reduced to its checkout's large
+/// ignored directories and the toolchain cache, without the paths the project
+/// excludes, and the second box's checkout is provisioned over a clone of
+/// that with nothing else of the first. From then
 /// on only a workspace whose work was merged replaces the seed: when its box
 /// stops, at once when it is already down, or when the app next starts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -335,7 +336,24 @@ async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     let seeds = super::seed::project_seeds_dir().unwrap().join(&project);
-    let (seed, built_at) = (seeds.join("seed.img"), seeds.join("seed-built-at.json"));
+    let (seed, built_at) = (seeds.join("seed"), seeds.join("seed-built-at.json"));
+    let no_candidate = || {
+        std::fs::read_dir(&seeds).map_or(true, |entries| {
+            entries.flatten().all(|entry| {
+                !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("candidate-")
+            })
+        })
+    };
+    crate::project_file::set_seed_settings(
+        &project,
+        crate::project_file::SeedSettings {
+            enabled: true,
+            exclude: vec!["node_modules/private".into()],
+        },
+    );
     let newest_built_at = || {
         std::fs::read(&built_at)
             .ok()
@@ -354,6 +372,8 @@ async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
         "cd {checkout} \
          && mkdir -p node_modules/pkg && echo installed > node_modules/pkg/index.js \
          && python3 -m venv node_modules/venv \
+         && mkdir -p node_modules/private dist && echo upload > node_modules/private/data \
+         && echo key > dist/key.pem \
          && mkdir -p {cache}/npm && echo downloaded > {cache}/npm/tarball \
          && echo secret > .env && echo wip > untracked.txt && echo changed >> README.md \
          && echo notes > {home}/notes.txt",
@@ -378,6 +398,7 @@ async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
         "cd {checkout} && cat node_modules/pkg/index.js {cache}/npm/tarball \
          && git status --porcelain \
          && test ! -e .env && test ! -e untracked.txt && test ! -e {home}/notes.txt \
+         && test ! -e node_modules/private && test ! -e dist \
          && head -1 node_modules/venv/bin/pip | grep -q {built_at} \
          && node_modules/venv/bin/pip --version >/dev/null \
          && readlink {built_at}",
@@ -387,8 +408,9 @@ async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
     assert_eq!(
         sh(running, inherited).await,
         format!("installed\ndownloaded\n{}", second.writable_root.display()),
-        "the dependency, the download, a clean tree, and the first workspace's path linked \
-         to this one, where its virtualenv's scripts still find their interpreter"
+        "the dependency, the download, a clean tree, no excluded path and no small ignored \
+         directory, and the first workspace's path linked to this one, where its \
+         virtualenv's scripts still find their interpreter"
     );
     assert_eq!(
         crate::git::rev_parse(&checkout, "HEAD").await.unwrap(),
@@ -396,9 +418,8 @@ async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
     );
 
     // Merged while its box runs: the seed is replaced when the box stops.
-    let staged = seeds.join("seed.img.new");
     registry.seed_from(&second.agent_id).await;
-    assert!(!staged.exists());
+    assert!(no_candidate());
     registry
         .stop(&second.agent_id, StopReason::User)
         .await
@@ -415,7 +436,7 @@ async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
         .stop(&first.agent_id, StopReason::User)
         .await
         .unwrap();
-    assert!(!staged.exists());
+    assert!(no_candidate());
     assert_eq!(newest_built_at().as_ref(), Some(&second.writable_root));
 
     // Merged while its box is down: the seed is replaced at once.

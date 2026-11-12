@@ -62,9 +62,11 @@ project's dependencies and downloads installed, and shares their blocks with
 every other workspace until it changes them.
 
 ```text
-<checkouts base>/box-seeds/<project id>/seed.img             a workspace disk, reduced
-<checkouts base>/box-seeds/<project id>/seed-built-at.json   the workspaces whose files it holds
-<box dir>/seed-wanted                                         this box's disk is to be the next seed
+<checkouts base>/box-seeds/<project id>/seed/disk.img            a workspace disk, reduced
+<checkouts base>/box-seeds/<project id>/seed/made-without.json   the paths excluded when it was made
+<checkouts base>/box-seeds/<project id>/seed-built-at.json       the workspaces whose files it holds
+<checkouts base>/box-seeds/<project id>/candidate-<id>/disk.img  a clone of a box's disk, to be reduced
+<box dir>/seed-wanted                                             this box's disk is to be the next seed
 ```
 
 A project's first seed is made of the first box to stop cleanly (not on app
@@ -75,27 +77,71 @@ workspace installed matters to the others once its work is in the base. When
 a workspace's pull request merges into its repository's default branch (the
 PR watcher, `sandbox::merged_into_default_branch`), its box's disk is wanted
 as the seed, and becomes it the next time the box is down after a clean stop:
-at once when it already is, else when it stops, or when the app next starts
-if it quit first. The request stays with the box until a workbench has
-looked at its disk, so a failed attempt is made again. The disk is cloned
-while the box is down, and the clone is reduced on a
-workbench (`fletch_box::workbench`: a throwaway box booted on one disk, as a
-tools disk is built) by `seed.sh`, run as the guest user:
+at once when it already is, else when it stops, or once the app has started
+and a workbench can boot (`setup::start_what_waits_for_the_image`) if it quit
+first.
 
-- Kept: in each checkout, the directories git ignores as a whole
-  (`node_modules`, `target`, `.venv`, build output), where they were; and the
-  project's toolchain cache (package downloads, Playwright's browsers).
+Three structures carry the rules:
+
+- **A disk is cloned only from a `DownBox`** (`boxes/registry.rs`), which
+  borrows the box's lifecycle lock, held. Only the registry can make one, so
+  no boot can be writing the disk while it is cloned.
+- **A clone is a `Candidate`**, in a directory of its own that goes when the
+  candidate does. Candidates take their turn on a workbench
+  (`fletch_box::workbench`: a throwaway box booted on one disk, as a tools
+  disk is built) one at a time, in the order they were cloned; none is
+  skipped because another is being made. A candidate that is no longer needed
+  at its turn (the project got its first seed meanwhile) is dropped.
+- **A request is answered by one candidate.** `seed-wanted` holds an id of
+  its own; the candidate cloned under it withdraws that request, and only
+  once a workbench has looked at the disk and what it found is settled: the
+  seed published, or nothing worth inheriting. After any failure, and for a
+  request made after the clone was taken, the request stands and the box is
+  offered again.
+
+On the workbench the candidate is reduced by `seed.sh`, run as the guest
+user:
+
+- Kept: in each checkout, the directories git ignores as a whole and that
+  hold at least 1 MiB (`node_modules`, `target`, `.venv`, build output),
+  where they were; and the project's toolchain cache (package downloads,
+  Playwright's browsers).
 - Removed: the checkout's tracked and untracked files and its `.git`, so no
   work, branch or commit of that workspace is left; ignored files that are
-  not a whole directory (`.env`, a local database); Fletch's own index
+  not a whole directory (`.env`, a local database); ignored directories
+  under 1 MiB (certificates, local settings), which save nothing and are a
+  workspace's own; the paths the project excludes; Fletch's own index
   (`.codegraph`); the rest of the home, the mailbox and the launch env files.
 
-A disk the script did not finish on, or whose bench had to be killed, is
+A candidate the script did not finish on, or whose bench had to be killed, is
 discarded, and one that keeps under 1 MiB is not made the seed; the seed
-there was stays. Of two disks wanted at once, the second waits for its box's
-next clean stop. The guest's ssh host key, which only root in the guest can
-remove, stays on a seed: the host reads the key from each boot's console and
-reaches a guest only over that box's own socket.
+there was stays. A seed is published as a directory, its disk and what it
+was made without in one rename. The guest's ssh host key, which only root in
+the guest can remove, stays on a seed: the host reads the key from each
+boot's console and reaches a guest only over that box's own socket.
+
+The project says what a seed may hold in its settings file
+(`.fletch/settings.json`, `.fletch/settings.local.json`; `project_file`),
+read from the user's repository and never from an agent's checkout, so an
+agent's change counts once it is merged:
+
+```jsonc
+{
+  "seed": {
+    "enabled": true,                    // false: the project has no seed
+    "exclude": ["uploads", "data/db"]   // paths in a checkout never kept
+  }
+}
+```
+
+Both only narrow what a new box starts with, so they apply without approval;
+the local file's `enabled` stands over the team's and the exclusions of both
+add up. An excluded path is removed from whatever was kept, whether it is an
+ignored directory, inside one or above one. A seed made before a path was
+excluded, or of a project that turned seeds off, is removed the next time it
+would be used, and the next box to stop cleanly makes the first seed again.
+What still reaches a seed: a large ignored directory nobody excluded, within
+the same project, user and machine.
 
 Provisioning a checkout in a box checks the base out with `--force` over what
 the seed left and then runs `git clean -ffd`, so a file of the base wins and

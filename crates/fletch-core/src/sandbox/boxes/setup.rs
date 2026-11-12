@@ -180,7 +180,7 @@ pub fn start_install() -> Result<()> {
                 status.progress = None;
                 status.version = Some(image.version);
                 publish(&status);
-                prebuild_tools();
+                start_what_waits_for_the_image();
             }
             // The user's own stop: no retry.
             Err(fletch_box::Error::Cancelled) => publish(&image_status()),
@@ -302,6 +302,15 @@ async fn wait_for_image(on_progress: &mut impl FnMut(String)) -> Result<Installe
             }
         }
     }
+}
+
+/// Starts the background work that needs a box runtime and this build's
+/// image: at boot, when both may be there already, and when the image's
+/// install finishes. Each piece is a no-op while either is missing, so a
+/// piece that found them missing at boot runs when the install is in.
+pub fn start_what_waits_for_the_image() {
+    prebuild_tools();
+    crate::host::spawn(registry::BoxRegistry::global().offer_wanted_seeds());
 }
 
 /// Build the tools disk of every supported provider whose CLI this host has,

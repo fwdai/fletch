@@ -19,7 +19,9 @@
 //!
 //! Sections today: `egress.allow`, host patterns a project's boxes may reach on
 //! top of the app's list (`sandbox::boxes::registry::egress_policy`). Both
-//! files' additions need approval alike for now.
+//! files' additions need approval alike for now. And `seed`, what the disk a
+//! project's new boxes start from may hold (`sandbox::boxes::seed`):
+//! `enabled` and `exclude`, which only narrow it and so need no approval.
 //!
 //! Like the box settings it feeds, the state is mirrored in-process — the box
 //! registry has no database handle — and kept current by [`watch`]: a poll of
@@ -39,7 +41,9 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 use crate::host::Sink;
 
-pub use file::{parse, Edit, FileReport, Parsed, Which, DIR, LOCAL_FILE, SHARED_FILE};
+pub use file::{
+    parse, Edit, FileReport, Parsed, SeedSettings, Which, DIR, LOCAL_FILE, SHARED_FILE,
+};
 use file::{read_files, stamp, Read, Stamp};
 
 /// Project setting: a JSON array of the host patterns the user approved from
@@ -134,6 +138,28 @@ pub fn egress_delta(project_id: &str) -> crate::sandbox::boxes::allowlist::Delta
         add: status.egress.applied,
         remove: status.egress.disabled,
     }
+}
+
+/// What the files of `project_id` say of its seed, as last read. Applies
+/// without approval: it only narrows what a new box starts with.
+pub fn seed_settings(project_id: &str) -> SeedSettings {
+    STATE
+        .read()
+        .as_ref()
+        .and_then(|m| m.get(project_id))
+        .map(|e| e.read.seed.clone())
+        .unwrap_or_default()
+}
+
+/// Has `project_id`'s files say `seed`, for a test with no repository.
+#[cfg(test)]
+pub fn set_seed_settings(project_id: &str, seed: SeedSettings) {
+    let mut state = STATE.write();
+    let entry = state
+        .get_or_insert_with(HashMap::new)
+        .entry(project_id.to_string())
+        .or_default();
+    entry.read.seed = seed;
 }
 
 /// What the files of `project_id` say, as last read.

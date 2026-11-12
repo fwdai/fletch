@@ -84,6 +84,16 @@ pub struct BoxIdentity {
     pub shares: Vec<FolderGrant>,
 }
 
+/// A box that is down after a clean stop, and stays down for as long as this
+/// lives: it borrows the box's lifecycle lock, held, which every boot takes.
+/// Only the registry can make one, so nothing reads a box's disk at rest
+/// without it.
+pub(super) struct DownBox<'a> {
+    pub identity: &'a BoxIdentity,
+    pub dir: &'a Path,
+    _no_boot: &'a tokio::sync::MutexGuard<'a, ()>,
+}
+
 impl BoxIdentity {
     /// The identity of `agent_id`'s box, derived the way the launch context
     /// derives it: the writable root is the agent's parent dir, the mailbox
@@ -1675,7 +1685,7 @@ impl BoxRegistry {
             Some(bound) => tokio::time::timeout(bound, lifecycle.lock()).await.ok(),
             None => Some(lifecycle.lock().await),
         };
-        let outcome = if let Some(_guard) = guard {
+        let outcome = if let Some(no_boot) = guard {
             match reason {
                 StopReason::Discard => {}
                 StopReason::Shutdown => {
@@ -1710,17 +1720,23 @@ impl BoxRegistry {
                     super::home::pull_before_stop(&running).await;
                 }
             }
-            self.finish_stop(&running, stop_ladder(&running.vm, &running.channel, bound))
-                .await
+            let outcome = self
+                .finish_stop(&running, stop_ladder(&running.vm, &running.channel, bound))
+                .await;
+            // Not on app exit: nothing may start work that outlives the app.
+            if outcome.clean() && reason != StopReason::Shutdown {
+                seed::offer(&DownBox {
+                    identity: &running.identity,
+                    dir: &running.dir,
+                    _no_boot: &no_boot,
+                });
+            }
+            outcome
         } else {
             tracing::warn!(agent_id, "box lifecycle lock still held; killing its VM");
             self.finish_stop(&running, kill_rungs(&running.vm)).await
         };
         tracing::info!(agent_id, ?reason, ?outcome, "box stopped");
-        // Not on app exit: nothing may start work that outlives the app.
-        if outcome.clean() && reason != StopReason::Shutdown {
-            seed::offer(&running.identity, &running.dir);
-        }
         // Its disks' leases go with it (unless another holder of the box
         // outlives this), so a disk an update superseded can go now rather
         // than at the next app start. Not on app exit: the next start sweeps.
@@ -1781,10 +1797,13 @@ impl BoxRegistry {
         self.offer_seed_while_down(agent_id).await;
     }
 
-    /// Offers every box whose disk is still wanted as its project's seed: a
-    /// box that was running when its work was merged and was stopped by the
-    /// app's exit, where nothing is offered.
+    /// Offers every box whose disk is still wanted as its project's seed, once
+    /// a workbench can boot: a box stopped by the app's exit, where nothing is
+    /// offered, or one whose disk no workbench could be booted on before.
     pub async fn offer_wanted_seeds(&self) {
+        if setup::ready_now().is_err() {
+            return;
+        }
         let agent_ids: Vec<String> = self.entries.lock().keys().cloned().collect();
         for agent_id in agent_ids {
             let wanted = self
@@ -1797,8 +1816,7 @@ impl BoxRegistry {
     }
 
     /// [`seed::offer`] for `agent_id`'s box when it is down after a clean
-    /// stop. Under the box's lifecycle lock, so no boot starts on the disk
-    /// while it is cloned.
+    /// stop.
     async fn offer_seed_while_down(&self, agent_id: &str) {
         let known = self
             .entries
@@ -1811,9 +1829,13 @@ impl BoxRegistry {
         let Ok(dir) = identity.box_dir() else {
             return;
         };
-        let _guard = lifecycle.lock().await;
+        let no_boot = lifecycle.lock().await;
         if self.running(agent_id).is_none() && !Dirty::in_dir(&dir).is_set() {
-            seed::offer(&identity, &dir);
+            seed::offer(&DownBox {
+                identity: &identity,
+                dir: &dir,
+                _no_boot: &no_boot,
+            });
         }
     }
 

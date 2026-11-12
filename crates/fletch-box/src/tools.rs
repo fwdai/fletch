@@ -33,7 +33,7 @@ use crate::guest;
 use crate::image_store;
 use crate::runtime::{RuntimePaths, StopOutcome};
 use crate::version::version_key;
-use crate::workbench::Workbench;
+use crate::workbench::{BenchDir, Workbench};
 
 /// The providers with an install script, by id.
 pub const PROVIDERS: &[&str] = &["claude", "codex", "cursor", "opencode", "pi"];
@@ -518,7 +518,7 @@ async fn build_in(
 ) -> Result<()> {
     disks::create_sparse(disk, DISK_BYTES)
         .map_err(Error::io(format!("create {}", disk.display())))?;
-    let dir = Workbench::fresh_dir(paths, &format!("tools-{provider}"))?;
+    let dir = BenchDir::fresh(paths, &format!("tools-{provider}"))?;
 
     // Denials are logged, not fatal: the CLIs probe telemetry hosts the
     // default allow-list leaves out and carry on.

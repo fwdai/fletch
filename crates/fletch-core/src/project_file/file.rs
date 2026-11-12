@@ -2,7 +2,7 @@
 //! refusal to read an agent's checkout. Depends on nothing of the engine's, so
 //! it can be reasoned about (and tested) on its own.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 use serde::Serialize;
@@ -43,7 +43,31 @@ pub struct Parsed {
     pub egress_allow: Vec<String>,
     /// Inherited patterns to turn off, likewise.
     pub egress_disable: Vec<String>,
+    /// `seed.enabled`, when the file says.
+    pub seed_enabled: Option<bool>,
+    /// `seed.exclude`: paths inside a checkout, deduplicated.
+    pub seed_exclude: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+/// What the files say of the project's seed, the disk its new boxes start
+/// from (docs/box.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedSettings {
+    /// Whether the project has a seed at all. The local file's word stands
+    /// over the team's; on when neither says.
+    pub enabled: bool,
+    /// Paths inside a checkout that a seed never keeps: both files', sorted.
+    pub exclude: Vec<String>,
+}
+
+impl Default for SeedSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            exclude: Vec::new(),
+        }
+    }
 }
 
 /// Parse a settings file: JSON with `//` and `/* */` comments and trailing
@@ -60,6 +84,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         match key.as_str() {
             "$schema" => {}
             "egress" => parse_egress(value, &mut parsed),
+            "seed" => parse_seed(value, &mut parsed),
             _ => parsed.warnings.push(format!("unknown setting `{key}`")),
         }
     }
@@ -105,6 +130,56 @@ fn parse_egress(value: Value, parsed: &mut Parsed) {
                 Err(e) => parsed.warnings.push(format!("`egress.{key}`: {e}")),
             }
         }
+    }
+}
+
+fn parse_seed(value: Value, parsed: &mut Parsed) {
+    let Value::Object(seed) = value else {
+        parsed.warnings.push("`seed` must be an object".into());
+        return;
+    };
+    for (key, value) in seed {
+        match (key.as_str(), value) {
+            ("enabled", Value::Bool(enabled)) => parsed.seed_enabled = Some(enabled),
+            ("enabled", _) => parsed
+                .warnings
+                .push("`seed.enabled` must be true or false".into()),
+            ("exclude", Value::Array(items)) => {
+                for item in items {
+                    match path_inside_a_checkout(&item) {
+                        Ok(path) if parsed.seed_exclude.contains(&path) => {}
+                        Ok(path) => parsed.seed_exclude.push(path),
+                        Err(e) => parsed.warnings.push(format!("`seed.exclude`: {e}")),
+                    }
+                }
+            }
+            ("exclude", _) => parsed
+                .warnings
+                .push("`seed.exclude` must be a list of paths".into()),
+            (key, _) => parsed
+                .warnings
+                .push(format!("unknown setting `seed.{key}`")),
+        }
+    }
+}
+
+/// `item` as a path that cannot leave the checkout it is joined to: relative,
+/// of plain names only, spelled with single slashes and none trailing.
+fn path_inside_a_checkout(item: &Value) -> Result<String, String> {
+    let Value::String(raw) = item else {
+        return Err(format!("{item} is not a string"));
+    };
+    let names: Option<Vec<&str>> = Path::new(raw)
+        .components()
+        .filter(|part| *part != Component::CurDir)
+        .map(|part| match part {
+            Component::Normal(name) => name.to_str(),
+            _ => None,
+        })
+        .collect();
+    match names {
+        Some(names) if !names.is_empty() => Ok(names.join("/")),
+        _ => Err(format!("`{raw}` is not a path inside the checkout")),
     }
 }
 
@@ -388,6 +463,7 @@ pub struct Read {
     pub egress_allow: Vec<String>,
     /// Both files' turned-off patterns, likewise.
     pub egress_disable: Vec<String>,
+    pub seed: SeedSettings,
 }
 
 fn file_paths(repo: &Path) -> [(String, PathBuf); 2] {
@@ -462,6 +538,10 @@ pub fn read_files(repo: &Path, agents_root: Option<&Path>) -> Read {
                                     }
                                 }
                             }
+                            if let Some(enabled) = parsed.seed_enabled {
+                                read.seed.enabled = enabled;
+                            }
+                            read.seed.exclude.extend(parsed.seed_exclude);
                             report.allow = parsed.egress_allow;
                             report.disable = parsed.egress_disable;
                         }
@@ -471,6 +551,8 @@ pub fn read_files(repo: &Path, agents_root: Option<&Path>) -> Read {
         }
         read.files.push(report);
     }
+    read.seed.exclude.sort();
+    read.seed.exclude.dedup();
     read
 }
 
@@ -522,6 +604,41 @@ mod tests {
         assert!(parse("[1, 2]").is_err());
         assert!(parse("{ not json").is_err());
         assert_eq!(parse("{}").unwrap(), Parsed::default());
+    }
+
+    /// The seed section: the local file's `enabled` stands over the team's,
+    /// both files' exclusions are one sorted list spelled one way, and a path
+    /// that could leave the checkout is skipped with a warning.
+    #[test]
+    fn reads_what_a_seed_may_hold() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        assert_eq!(read_files(&repo, None).seed, SeedSettings::default());
+
+        write(
+            &repo,
+            SHARED_FILE,
+            r#"{ "seed": { "enabled": false,
+                 "exclude": ["uploads/", "data//db", "../other", "/abs", "", ".", "a/../b", 3] } }"#,
+        );
+        write(
+            &repo,
+            LOCAL_FILE,
+            r#"{ "seed": { "enabled": true, "exclude": ["certs", "./uploads"], "keep": [] } }"#,
+        );
+        let read = read_files(&repo, None);
+        assert_eq!(
+            read.seed,
+            SeedSettings {
+                enabled: true,
+                exclude: vec!["certs".into(), "data/db".into(), "uploads".into()],
+            }
+        );
+        assert_eq!(read.files[0].warnings.len(), 6, "{:?}", read.files[0]);
+        assert_eq!(read.files[1].warnings, vec!["unknown setting `seed.keep`"]);
+
+        std::fs::remove_file(repo.join(DIR).join(LOCAL_FILE)).unwrap();
+        assert!(!read_files(&repo, None).seed.enabled);
     }
 
     /// Both files are read, the team's first, their additions merged; a file
