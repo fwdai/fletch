@@ -37,6 +37,7 @@ use tokio::sync::Notify;
 
 use crate::github::{MergeState, PrChecks, PrComments, PrState, PrStatus};
 use crate::host::{EngineCtx, EventSink};
+use crate::workspace::{AgentRecord, WorkspaceManager};
 
 use super::events::{emit_pr_checks, emit_pr_set_entry, emit_pr_state, emit_pr_threads};
 use super::session_sync::resolve_all_pr_status;
@@ -340,8 +341,10 @@ async fn tick(
             {
                 crate::capture::ingest::on_pr_merged_by_number(ctx, agent_id, subdir, &read.state)
                     .await;
-                if went_into_default_branch(ctx, agent_id, subdir, &read.state).await {
-                    crate::sandbox::merged_into_default_branch(agent_id).await;
+                if let Ok(record) = WorkspaceManager::new(ctx.db.clone()).agent(agent_id) {
+                    if went_into_default_branch(&record, subdir, &read.state).await {
+                        crate::sandbox::merged_into_default_branch(&record).await;
+                    }
                 }
             }
             publish(
@@ -356,18 +359,14 @@ async fn tick(
     }
 }
 
-/// Whether `pr`, of `agent_id`'s checkout in `subdir` (its primary one for
+/// Whether `pr`, of `record`'s checkout in `subdir` (its primary one for
 /// `None`), has its repository's default branch as its base.
 async fn went_into_default_branch(
-    ctx: &EngineCtx,
-    agent_id: &str,
+    record: &AgentRecord,
     subdir: Option<&str>,
     pr: &PrState,
 ) -> bool {
     let Some(base) = pr.base.as_deref() else {
-        return false;
-    };
-    let Ok(record) = crate::workspace::WorkspaceManager::new(ctx.db.clone()).agent(agent_id) else {
         return false;
     };
     let repo = match subdir {

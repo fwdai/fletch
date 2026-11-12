@@ -448,7 +448,8 @@ fn host_default_reason(
 /// branch `parent_branch` as `origin` has it, falling back to `spec.base_ref`.
 /// A box's checkout goes into its guest (`git init` there, the base pushed
 /// over the channel, the same fixups), the box booting with the shares the
-/// agent's launch will ask for; seatbelt's is a `--shared` host clone.
+/// agent's launch will ask for; seatbelt's is a `--shared` host clone. Either
+/// starts from the project's seed when there is one.
 pub async fn provision_checkout(
     engine: EngineKind,
     record: &AgentRecord,
@@ -466,7 +467,11 @@ pub async fn provision_checkout(
             )
             .await
         }
-        EngineKind::SandboxExec => provision::provision_at_remote_base(spec, parent_branch).await,
+        EngineKind::SandboxExec => {
+            let freshness = provision::provision_at_remote_base(spec, parent_branch).await?;
+            seatbelt::seed::start(record, spec.dest).await;
+            Ok(freshness)
+        }
     }
 }
 
@@ -477,7 +482,7 @@ pub async fn provision_checkout(
 /// is gone for good it opens detached at `parent_branch_sha`. Returns whether
 /// it landed on the branch. A box rebuilds the checkout inside its guest from
 /// what the source repository holds; seatbelt walks the host clone's restore
-/// ladder.
+/// ladder, then starts the clone from the project's seed.
 pub async fn restore_checkout(
     engine: EngineKind,
     record: &AgentRecord,
@@ -491,14 +496,20 @@ pub async fn restore_checkout(
             let name = branch.map(|(name, _)| name);
             boxes::provision::restore(&identity, spec, name, parent_branch_sha).await
         }
-        EngineKind::SandboxExec => match branch {
-            Some((name, fetch_from)) => {
-                provision::provision_on_branch(spec, name, fetch_from, parent_branch_sha).await
-            }
-            None => provision::provision_recovering(spec, parent_branch_sha)
-                .await
-                .map(|()| false),
-        },
+        EngineKind::SandboxExec => {
+            let on_branch = match branch {
+                Some((name, fetch_from)) => {
+                    provision::provision_on_branch(spec, name, fetch_from, parent_branch_sha)
+                        .await?
+                }
+                None => {
+                    provision::provision_recovering(spec, parent_branch_sha).await?;
+                    false
+                }
+            };
+            seatbelt::seed::start(record, spec.dest).await;
+            Ok(on_branch)
+        }
     }
 }
 
@@ -527,25 +538,48 @@ pub fn setup_allowance(record: &AgentRecord) -> Duration {
 }
 
 /// Discard what the engine keeps for `agent_id` outside its host dirs: a box
-/// agent's VM and box directory, data disk and checkouts included. A
-/// directory probe for every other agent, so callers run it unconditionally.
+/// agent's VM and box directory, data disk and checkouts included, and a
+/// request for a workspace on this Mac as its project's seed. A directory
+/// probe for every other agent, so callers run it unconditionally.
 pub async fn discard_agent_state(agent_id: &str) -> Result<()> {
+    seatbelt::seed::forget(agent_id);
     boxes::discard_if_any(agent_id).await
 }
 
-/// A turn of `agent_id` ended, however it ended: whatever the engine opened
-/// for that turn closes (a box's network opened from the composer). A no-op
-/// for every other agent, so callers run it unconditionally.
-pub fn turn_ended(agent_id: &str) {
-    boxes::turn_ended(agent_id);
+/// A turn of `record`'s agent started. A workspace on this Mac counts it: one
+/// taken for its project's seed meanwhile is not made the seed.
+pub fn turn_started(record: &AgentRecord) {
+    match stamped_engine(record) {
+        EngineKind::Box => {}
+        EngineKind::SandboxExec => seatbelt::seed::turn_started(&record.id),
+    }
 }
 
-/// `agent_id`'s pull request merged into its repository's default branch:
-/// what the engine does once a workspace's work is in the base (a box's disk
-/// becomes what its project's next boxes start with). A no-op for every
-/// other agent, so callers run it unconditionally.
-pub async fn merged_into_default_branch(agent_id: &str) {
-    boxes::merged_into_default_branch(agent_id).await;
+/// A turn of `record`'s agent ended, however it ended: whatever the engine
+/// opened for that turn closes (a box's network opened from the composer),
+/// and a workspace on this Mac, at rest now, is offered as its project's
+/// seed.
+pub fn turn_ended(record: &AgentRecord) {
+    match stamped_engine(record) {
+        EngineKind::Box => boxes::turn_ended(&record.id),
+        EngineKind::SandboxExec => seatbelt::seed::turn_ended(record),
+    }
+}
+
+/// `record`'s pull request merged into its repository's default branch: its
+/// workspace becomes what its project's next workspaces start with (a box's
+/// disk, the ignored directories of a workspace on this Mac).
+pub async fn merged_into_default_branch(record: &AgentRecord) {
+    match stamped_engine(record) {
+        EngineKind::Box => boxes::merged_into_default_branch(&record.id).await,
+        EngineKind::SandboxExec => seatbelt::seed::merged(record),
+    }
+}
+
+/// At boot, once every project's settings file is read: what the seeds of
+/// workspaces on this Mac left from the last run (`seatbelt::seed::startup`).
+pub fn seatbelt_startup(workspace: &crate::workspace::WorkspaceManager) {
+    seatbelt::seed::startup(workspace);
 }
 
 /// Stop every engine-held VM cleanly as the app quits, once the agents'

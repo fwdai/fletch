@@ -65,11 +65,15 @@ pub trait AtRest: Send + Sync + 'static {
     /// Where the workspace's request is kept.
     fn request_file(&self) -> &Path;
     /// Whether the workspace may be its project's first seed.
-    fn may_be_first(&self) -> bool;
+    fn may_be_first(&self) -> bool {
+        true
+    }
     /// Whether this engine could start a workspace now from what `seed`
     /// holds: the project's seed, or a candidate. A seed it could not is
     /// removed; a candidate it could not is never made the seed.
-    fn usable(&self, seed: &Path) -> bool;
+    fn usable(&self, _seed: &Path) -> bool {
+        true
+    }
     /// Takes what a seed is made of into `candidate`, a directory not made
     /// yet. Runs while the workspace is at rest, before [`offer`] returns.
     fn take(&self, candidate: &Path) -> io::Result<()>;
@@ -82,10 +86,12 @@ pub trait AtRest: Send + Sync + 'static {
         excluded: &[String],
     ) -> impl Future<Output = Result<u64>> + Send;
     /// The workspace kept nothing worth inheriting.
-    fn kept_nothing(&self);
+    fn kept_nothing(&self) {}
     /// Runs just before the candidate becomes the seed, under the store's
     /// lock. An error leaves the seed there was.
-    fn publishing(&self) -> io::Result<()>;
+    fn publishing(&self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// What the JSON file at `path` holds; the default when there is none.

@@ -53,7 +53,7 @@ pub fn toolchain_cache_root(home: &Path, project_id: &str) -> Result<PathBuf> {
 /// where it enters a path, so a bad id fails the launch instead of widening the
 /// grant (`""` or `"."` would name the directory of every project's root,
 /// `"../x"` a sibling).
-pub(super) fn project_root_in(dir: &Path, project_id: &str) -> Result<PathBuf> {
+pub(in crate::sandbox) fn project_root_in(dir: &Path, project_id: &str) -> Result<PathBuf> {
     let mut parts = Path::new(project_id).components();
     match (parts.next(), parts.next()) {
         (Some(std::path::Component::Normal(_)), None) if !project_id.contains('/') => {

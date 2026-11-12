@@ -38,6 +38,7 @@ mod install;
 mod mirror;
 
 pub use install::{ensure_guest_bundle, ensure_installed, CODEGRAPH_VERSION};
+pub(crate) use mirror::INDEX_DIR;
 pub use mirror::{advance_mirror, append_git_exclude, copy_index_into, ensure_mirror, mirror_dir};
 
 use std::path::PathBuf;
