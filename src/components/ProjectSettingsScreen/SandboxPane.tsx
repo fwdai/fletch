@@ -4,13 +4,15 @@ import { useGate } from "@/store/capabilities";
 import { effectivePlacement, PLACEMENT_KEY, parsePlacement } from "@/util/placement";
 import { LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
 import { useProjectSettings } from "@/util/useProjectSettings";
+import { StartingDisk } from "./StartingDisk";
 
 /** Where this project's agents run: Automatic is a Linux VM when one can boot
  *  and the macOS sandbox for a repository the host found to build a macOS or
  *  iOS app (`ProjectRef.native_app`); the user can pin either here. The choice
  *  is the project's; the detection is per repository, as the spawn path reads
  *  it against the repo an agent is started in — so this reads the repo whose
- *  page is open, not the project's first. */
+ *  page is open, not the project's first. Below it, what a new VM starts
+ *  with. */
 export function SandboxPane({ projectId, repoPath }: { projectId: string; repoPath: string }) {
   const { settings, save } = useProjectSettings(projectId);
   const gate = useGate("projectSettings");
@@ -26,9 +28,9 @@ export function SandboxPane({ projectId, repoPath }: { projectId: string; repoPa
       <SetHead
         eyebrow="Project settings · Sandbox"
         title="Sandbox"
-        desc="Where this project's new workspaces run."
+        desc="Where this project's new workspaces run and what they start with."
       />
-      <SetGroup label="Isolation" last>
+      <SetGroup label="Isolation">
         <SetRow
           title="Where new workspaces run"
           sub={gate ?? auto}
@@ -51,6 +53,7 @@ export function SandboxPane({ projectId, repoPath }: { projectId: string; repoPa
           )}
         </SetRow>
       </SetGroup>
+      <StartingDisk projectId={projectId} />
     </div>
   );
 }
