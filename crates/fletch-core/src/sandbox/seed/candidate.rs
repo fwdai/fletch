@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::request::{standing_request, withdraw, Request};
 use super::store::{self, Made, CANDIDATE_PREFIX};
@@ -58,7 +58,8 @@ impl<W: AtRest> Candidate<W> {
     /// its first.
     pub(super) fn is_needed(&self, settings: &SeedSettings) -> bool {
         let _store = STORE.lock();
-        match store::seed_in_force(self.at_rest.store(), settings) {
+        let usable = |seed: &Path| self.at_rest.usable(seed);
+        match store::seed_in_force(self.at_rest.store(), settings, usable) {
             Some(seed) => self.request > seed.for_request,
             None => {
                 let may_be_the_first = self.at_rest.may_be_first();
@@ -69,16 +70,17 @@ impl<W: AtRest> Candidate<W> {
 
     /// Reduces the candidate in its turn, under the settings that stand
     /// then. The request it was taken under is withdrawn once it is
-    /// answered: the project has no use for the workspace, or what it kept
-    /// has been looked at and what was found is settled. After any failure
-    /// the request stands, and the workspace is offered again.
-    async fn settle(self) {
+    /// answered: the project has no use for the workspace, the engine could
+    /// not start a workspace from what was taken, or what it kept has been
+    /// looked at and what was found is settled. After any failure the
+    /// request stands, and the workspace is offered again.
+    pub(super) async fn settle(self) {
         let _turn = TURN.lock().await;
         let agent_id = self.at_rest.agent_id();
         let Some(settings) = crate::project_file::seed_settings(self.at_rest.project_id()) else {
             return;
         };
-        if !self.is_needed(&settings) {
+        if !self.is_needed(&settings) || !self.at_rest.usable(&self.dir) {
             self.withdraw_request();
             return;
         }

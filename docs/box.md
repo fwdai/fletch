@@ -59,7 +59,9 @@ A new box's data disk is a clone of its project's seed, when the project has
 one of the size the disk setting asks for: an APFS clone, which takes no
 space until the box writes to it. A new workspace then has the project's
 dependencies and downloads installed, and shares their blocks with every
-other workspace until it changes them.
+other workspace until it changes them. A seed of another size (the setting
+changed since it was made) is removed the next time it would be used, and a
+box whose disk is of another size is never made the seed, asked for or not.
 
 The rules below are the engine-neutral core's (`sandbox/seed/`: requests,
 the project's store, candidates). The box engine supplies, through
@@ -103,8 +105,9 @@ Three structures carry the rules:
   withdraws that request, and only once it is answered: a workbench has
   looked at the disk and what it found is settled (the seed published, or
   nothing worth inheriting), or the project has no use for the disk (seeds
-  are off, or the seed already answers a newer request, so an older merge
-  never replaces a newer one's seed). After any failure, and for a request
+  are off, the seed already answers a newer request, so an older merge
+  never replaces a newer one's seed, or the disk is not the size new boxes
+  are created with). After any failure, and for a request
   made after the clone was taken, the request stands and the box is offered
   again.
 - **Settings are read when they are used.** A candidate carries none: it
