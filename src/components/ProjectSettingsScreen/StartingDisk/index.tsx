@@ -24,7 +24,7 @@ export function StartingDisk({ projectId }: { projectId: string }) {
       {seed && (
         <>
           <EnabledRow editor={editor} on={seed.enabled} />
-          <ExcludedPaths editor={editor} paths={seed.exclude} />
+          <ExcludedPaths editor={editor} />
           {editor.canEdit && <ExcludeRow editor={editor} />}
         </>
       )}

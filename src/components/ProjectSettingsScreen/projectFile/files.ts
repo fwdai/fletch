@@ -5,6 +5,9 @@ export const FILE_LABEL: Record<ProjectFileWhich, string> = {
   local: ".fletch/settings.local.json",
 };
 
+/** Both files, the team's before yours. */
+export const FILES: readonly ProjectFileWhich[] = ["shared", "local"];
+
 export const fileReport = (files: ProjectFileReport[], which: ProjectFileWhich) =>
   files.find((f) => f.path === FILE_LABEL[which]);
 
@@ -13,7 +16,7 @@ export const fileHolding = (
   files: ProjectFileReport[],
   holds: (file: ProjectFileReport) => boolean,
 ): ProjectFileWhich | null =>
-  (["shared", "local"] as const).find((which) => {
+  FILES.find((which) => {
     const file = fileReport(files, which);
     return !!file && holds(file);
   }) ?? null;

@@ -110,9 +110,28 @@ describe("StartingDisk", () => {
     );
     await vi.waitFor(() => expect(input).toHaveProperty("value", ""));
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove uploads" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: `Remove uploads from ${FILE_LABEL.shared}` }),
+    );
     await vi.waitFor(() =>
       expect(edit).toHaveBeenCalledWith("p1", "shared", { seedExcludeRemove: ["uploads"] }),
+    );
+  });
+
+  it("shows a folder both files leave out once for each file, each with its own way out", async () => {
+    await mount(
+      statusOf([
+        report("shared", { exclude: ["uploads"] }),
+        report("local", { exclude: ["uploads"] }),
+      ]),
+    );
+    expect(screen.getAllByText("uploads")).toHaveLength(2);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `Remove uploads from ${FILE_LABEL.local}` }),
+    );
+    await vi.waitFor(() =>
+      expect(edit).toHaveBeenCalledWith("p1", "local", { seedExcludeRemove: ["uploads"] }),
     );
   });
 
