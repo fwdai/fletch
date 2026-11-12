@@ -23,7 +23,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use fletch_box::channel;
-use fletch_box::disks::{self, Dirty};
+use fletch_box::disks::Dirty;
 use fletch_box::egress::{EgressEvent, EgressPolicy, EgressProxy};
 use fletch_box::tools::{self, DiskMarker, DiskState, FoundDisk};
 use fletch_box::{guest, Channel, StopOutcome, Vm, VmSpec};
@@ -36,7 +36,9 @@ use crate::error::{Error, Result};
 use crate::workspace::{AgentRecord, FolderGrant};
 
 use super::executor::BoxExecutor;
-use super::{relay, settings, setup, tools_root, EgressEventPayload, EVENT_STATE, EVENT_TOOLS};
+use super::{
+    relay, seed, settings, setup, tools_root, EgressEventPayload, EVENT_STATE, EVENT_TOOLS,
+};
 
 pub const DATA_DISK: &str = "data.img";
 pub const CONSOLE: &str = "console.log";
@@ -80,6 +82,16 @@ pub struct BoxIdentity {
     /// can only be added at boot, so a box whose shares differ from its
     /// agent's grants is restarted by the next launch.
     pub shares: Vec<FolderGrant>,
+}
+
+/// A box that is down after a clean stop, and stays down for as long as this
+/// lives: it borrows the box's lifecycle lock, held, which every boot takes.
+/// Only the registry can make one, so nothing reads a box's disk at rest
+/// without it.
+pub(super) struct DownBox<'a> {
+    pub identity: &'a BoxIdentity,
+    pub dir: &'a Path,
+    _no_boot: &'a tokio::sync::MutexGuard<'a, ()>,
 }
 
 impl BoxIdentity {
@@ -1673,7 +1685,7 @@ impl BoxRegistry {
             Some(bound) => tokio::time::timeout(bound, lifecycle.lock()).await.ok(),
             None => Some(lifecycle.lock().await),
         };
-        let outcome = if let Some(_guard) = guard {
+        let outcome = if let Some(no_boot) = guard {
             match reason {
                 StopReason::Discard => {}
                 StopReason::Shutdown => {
@@ -1708,8 +1720,18 @@ impl BoxRegistry {
                     super::home::pull_before_stop(&running).await;
                 }
             }
-            self.finish_stop(&running, stop_ladder(&running.vm, &running.channel, bound))
-                .await
+            let outcome = self
+                .finish_stop(&running, stop_ladder(&running.vm, &running.channel, bound))
+                .await;
+            // Not on app exit: nothing may start work that outlives the app.
+            if outcome.clean() && reason != StopReason::Shutdown {
+                seed::offer(&DownBox {
+                    identity: &running.identity,
+                    dir: &running.dir,
+                    _no_boot: &no_boot,
+                });
+            }
+            outcome
         } else {
             tracing::warn!(agent_id, "box lifecycle lock still held; killing its VM");
             self.finish_stop(&running, kill_rungs(&running.vm)).await
@@ -1759,6 +1781,68 @@ impl BoxRegistry {
         }
         self.emit_state(agent_id);
         outcome
+    }
+
+    /// Wants `agent_id`'s disk as its project's seed ([`seed::want`]), and
+    /// makes it that now when the box is down after a clean stop; a running
+    /// box's disk is offered when it stops, as every box's is.
+    pub async fn seed_from(&self, agent_id: &str) {
+        let Some(dir) = self.box_dir_with_a_disk(agent_id) else {
+            return;
+        };
+        if let Err(e) = seed::want(&dir) {
+            tracing::warn!(agent_id, error = %e, "could not ask for a box's disk as its project's seed");
+            return;
+        }
+        self.offer_seed_while_down(agent_id).await;
+    }
+
+    /// Offers every box whose disk is still wanted as its project's seed, once
+    /// a workbench can boot: a box stopped by the app's exit, where nothing is
+    /// offered, or one whose disk no workbench could be booted on before.
+    pub async fn offer_wanted_seeds(&self) {
+        if setup::ready_now().is_err() {
+            return;
+        }
+        let agent_ids: Vec<String> = self.entries.lock().keys().cloned().collect();
+        for agent_id in agent_ids {
+            let wanted = self
+                .box_dir_with_a_disk(&agent_id)
+                .is_some_and(|dir| seed::is_wanted(&dir));
+            if wanted {
+                self.offer_seed_while_down(&agent_id).await;
+            }
+        }
+    }
+
+    /// [`seed::offer`] for `agent_id`'s box when it is down after a clean
+    /// stop.
+    async fn offer_seed_while_down(&self, agent_id: &str) {
+        let known = self
+            .entries
+            .lock()
+            .get(agent_id)
+            .map(|entry| (entry.identity.clone(), entry.lifecycle.clone()));
+        let Some((identity, lifecycle)) = known else {
+            return;
+        };
+        let Ok(dir) = identity.box_dir() else {
+            return;
+        };
+        let no_boot = lifecycle.lock().await;
+        if self.running(agent_id).is_none() && !Dirty::in_dir(&dir).is_set() {
+            seed::offer(&DownBox {
+                identity: &identity,
+                dir: &dir,
+                _no_boot: &no_boot,
+            });
+        }
+    }
+
+    fn box_dir_with_a_disk(&self, agent_id: &str) -> Option<PathBuf> {
+        let identity = self.entries.lock().get(agent_id)?.identity.clone();
+        let dir = identity.box_dir().ok()?;
+        dir.join(DATA_DISK).exists().then_some(dir)
     }
 
     /// Stop the box and delete its directory: the agent is gone. Forgets the
@@ -2150,7 +2234,8 @@ async fn boot(
     let authorized = channel::authorized_key(&key)?;
     let data = dir.join(DATA_DISK);
     if !data.exists() {
-        disks::create_sparse(&data, u64::from(settings::current().disk_gib) << 30)?;
+        let bytes = u64::from(settings::current().disk_gib) << 30;
+        seed::new_data_disk(identity, &data, bytes)?;
     }
     let dirty = Dirty::in_dir(&dir);
     if dirty.set()? {

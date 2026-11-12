@@ -283,6 +283,187 @@ async fn claude_runs_from_the_tools_disk() {
     BoxRegistry::global().discard(&agent_id).await.unwrap();
 }
 
+/// A project's first box to stop becomes what its next workspaces start
+/// with: its disk is the project's seed, reduced to its checkout's large
+/// ignored directories and the toolchain cache, without the paths the project
+/// excludes, and the second box's checkout is provisioned over a clone of
+/// that with nothing else of the first. From then
+/// on only a workspace whose work was merged replaces the seed: when its box
+/// stops, at once when it is already down, or when the app next starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "boots real boxes; see the module docs"]
+async fn a_projects_first_box_seeds_the_next_and_a_merged_one_replaces_it() {
+    let _data = setup().await;
+    let registry = BoxRegistry::global();
+    let project = uuid::Uuid::new_v4().to_string();
+    let boxed = |name: &str| {
+        let agent_id = format!("{name}-{}", std::process::id() % 10_000);
+        let identity = BoxIdentity::new(&agent_id, &project, "claude").unwrap();
+        std::fs::create_dir_all(&identity.writable_root).unwrap();
+        identity
+    };
+    let (first, second) = (boxed("seed-a"), boxed("seed-b"));
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let head = crate::git::rev_parse(&repo, "HEAD").await.unwrap();
+    let checkout_of = |identity: &BoxIdentity| identity.writable_root.join("fletch");
+    let provision = |identity: BoxIdentity| {
+        let (repo, head, dest) = (repo.clone(), head.clone(), checkout_of(&identity));
+        async move {
+            let spec = CheckoutSpec {
+                source_repo: &repo,
+                base_ref: &head,
+                dest: &dest,
+            };
+            super::provision::provision(&identity, &spec, None, Landing::Detached)
+                .await
+                .unwrap_or_else(|e| panic!("provision: {e}"));
+        }
+    };
+    let sh = |running: std::sync::Arc<super::registry::RunningBox>, script: String| async move {
+        let out = running
+            .channel
+            .exec(None, None, &["sh", "-ec", &script])
+            .await
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{script}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let seeds = super::seed::project_seeds_dir().unwrap().join(&project);
+    let (seed, built_at) = (seeds.join("seed"), seeds.join("seed-built-at.json"));
+    let no_candidate = || {
+        std::fs::read_dir(&seeds).map_or(true, |entries| {
+            entries.flatten().all(|entry| {
+                !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("candidate-")
+            })
+        })
+    };
+    crate::project_file::set_seed_settings(
+        &project,
+        crate::project_file::SeedSettings {
+            enabled: true,
+            exclude: vec!["node_modules/private".into()],
+        },
+    );
+    let newest_built_at = || {
+        std::fs::read(&built_at)
+            .ok()
+            .and_then(|json| serde_json::from_slice::<Vec<PathBuf>>(&json).ok())
+            .and_then(|roots| roots.into_iter().next())
+    };
+
+    provision(first.clone()).await;
+    let running = registry.ensure_running(&first).await.unwrap();
+    let home = first.home.display();
+    let cache = crate::sandbox::ToolchainCache::in_guest(&first.home, &project)
+        .unwrap()
+        .root;
+    let cache = cache.display();
+    let installed_and_worked = format!(
+        "cd {checkout} \
+         && mkdir -p node_modules/pkg && echo installed > node_modules/pkg/index.js \
+         && python3 -m venv node_modules/venv \
+         && mkdir -p node_modules/private dist && echo upload > node_modules/private/data \
+         && echo key > dist/key.pem \
+         && mkdir -p {cache}/npm && echo downloaded > {cache}/npm/tarball \
+         && echo secret > .env && echo wip > untracked.txt && echo changed >> README.md \
+         && echo notes > {home}/notes.txt",
+        checkout = checkout_of(&first).display(),
+    );
+    sh(running, installed_and_worked).await;
+    assert!(!seed.exists(), "a running box's disk is not cloned");
+    registry
+        .stop(&first.agent_id, StopReason::User)
+        .await
+        .unwrap();
+    wait_for(
+        || newest_built_at().as_ref() == Some(&first.writable_root),
+        Duration::from_secs(120),
+    )
+    .await;
+
+    provision(second.clone()).await;
+    let running = registry.ensure_running(&second).await.unwrap();
+    let checkout = checkout_of(&second);
+    let inherited = format!(
+        "cd {checkout} && cat node_modules/pkg/index.js {cache}/npm/tarball \
+         && git status --porcelain \
+         && test ! -e .env && test ! -e untracked.txt && test ! -e {home}/notes.txt \
+         && test ! -e node_modules/private && test ! -e dist \
+         && head -1 node_modules/venv/bin/pip | grep -q {built_at} \
+         && node_modules/venv/bin/pip --version >/dev/null \
+         && readlink {built_at}",
+        checkout = checkout.display(),
+        built_at = first.writable_root.display(),
+    );
+    assert_eq!(
+        sh(running, inherited).await,
+        format!("installed\ndownloaded\n{}", second.writable_root.display()),
+        "the dependency, the download, a clean tree, no excluded path and no small ignored \
+         directory, and the first workspace's path linked to this one, where its \
+         virtualenv's scripts still find their interpreter"
+    );
+    assert_eq!(
+        crate::git::rev_parse(&checkout, "HEAD").await.unwrap(),
+        head
+    );
+
+    // Merged while its box runs: the seed is replaced when the box stops.
+    registry.seed_from(&second.agent_id).await;
+    assert!(no_candidate());
+    registry
+        .stop(&second.agent_id, StopReason::User)
+        .await
+        .unwrap();
+    wait_for(
+        || newest_built_at().as_ref() == Some(&second.writable_root),
+        Duration::from_secs(120),
+    )
+    .await;
+
+    // Not merged: a project that has a seed keeps it through this box's stop.
+    registry.ensure_running(&first).await.unwrap();
+    registry
+        .stop(&first.agent_id, StopReason::User)
+        .await
+        .unwrap();
+    assert!(no_candidate());
+    assert_eq!(newest_built_at().as_ref(), Some(&second.writable_root));
+
+    // Merged while its box is down: the seed is replaced at once.
+    registry.seed_from(&first.agent_id).await;
+    wait_for(
+        || newest_built_at().as_ref() == Some(&first.writable_root),
+        Duration::from_secs(120),
+    )
+    .await;
+
+    // Still wanted when the app starts (it quit before the box stopped any
+    // other way): the seed is replaced then.
+    super::seed::want(&super::box_dir(&second.agent_id).unwrap()).unwrap();
+    registry.offer_wanted_seeds().await;
+    wait_for(
+        || newest_built_at().as_ref() == Some(&second.writable_root),
+        Duration::from_secs(120),
+    )
+    .await;
+
+    for identity in [&first, &second] {
+        registry.discard(&identity.agent_id).await.unwrap();
+    }
+    crate::sandbox::remove_project_cache(&first.home, &project);
+    assert!(!seeds.exists());
+}
+
 async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     while !done() {

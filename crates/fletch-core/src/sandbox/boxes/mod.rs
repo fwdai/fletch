@@ -104,6 +104,7 @@ pub mod provision;
 pub mod registry;
 pub mod relay;
 pub mod run;
+pub mod seed;
 pub mod settings;
 pub mod setup;
 pub mod ssh_access;
@@ -1861,6 +1862,13 @@ pub fn turn_ended(agent_id: &str) {
     BoxRegistry::global().set_turn_open(agent_id, false);
 }
 
+/// `agent_id`'s pull request merged into its repository's default branch:
+/// what its workspace installed is what the project's next workspaces should
+/// start with ([`seed`]). A no-op for every agent without a box of its own.
+pub async fn merged_into_default_branch(agent_id: &str) {
+    BoxRegistry::global().seed_from(agent_id).await;
+}
+
 /// Tell clients the set of VMs changed ([`EVENT_LIST`]).
 pub(crate) fn list_changed() {
     emit(EVENT_LIST, &serde_json::json!({}));
@@ -1913,10 +1921,13 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
             }
         }
     }
+    seed::remove_abandoned_candidates();
     // The CLI version a tools disk is keyed by is probed once per process,
     // so a CLI update since the last run shows here first: start its disk
     // now rather than at the first boot that misses it. Skips a settled disk.
-    setup::prebuild_tools();
+    // And a merge may have asked for a box's disk as its project's seed
+    // before the app quit.
+    setup::start_what_waits_for_the_image();
     // And the disks an earlier update superseded go, and the one the next
     // boot takes is hashed against its marker, off this thread: a launch
     // checks only the marker's size.

@@ -20,7 +20,8 @@ each part's README has the detail.
 ## What a box boots
 
 Disks, in order: `base.erofs` read-only as `/`; a per-box sparse ext4 data disk
-as `/data` (the agent's tree, home and ssh key live there); the tools disks
+as `/data` (the agent's tree, home and ssh key live there; a clone of the
+project's seed, below, when it has one); the tools disks
 (one per provider CLI, built once per CLI version: the owner's provider's,
 waited for, then every other provider's that is built by boot time, so a
 tenant of another provider — the local reviewer — runs from the same box); then
@@ -51,6 +52,121 @@ packages installed (`packages/<name>.txt`), so nothing is duplicated. Mesa's
 software GL and LLVM, locales, docs and man pages are excluded with dpkg path
 rules (`dpkg-excludes.cfg`); a headless browser never loads them. Images are
 lz4hc erofs (64 KiB clusters, dedupe): the guest kernel decodes LZ4 only.
+
+### The seed
+
+A new box's data disk is a clone of its project's seed, when the project has
+one of the size the disk setting asks for (`boxes/seed.rs`): an APFS clone,
+which takes no space until the box writes to it. A new workspace then has the
+project's dependencies and downloads installed, and shares their blocks with
+every other workspace until it changes them.
+
+```text
+<checkouts base>/box-seeds/<project id>/seed/disk.img            a workspace disk, reduced
+<checkouts base>/box-seeds/<project id>/seed/made.json           what it was made without, and for which request
+<checkouts base>/box-seeds/<project id>/seed-built-at.json       the workspaces whose files it holds
+<checkouts base>/box-seeds/<project id>/candidate-<id>/disk.img  a clone of a box's disk, to be reduced
+<box dir>/seed-wanted                                             this box's disk is to be the next seed
+```
+
+A project's first seed is made of the first box to stop cleanly (not on app
+exit) with something worth inheriting, so its workspaces share from as early
+as they can. A box whose disk had nothing is asked again once the disk holds
+half as much again. After the first, only a merge replaces the seed: what a
+workspace installed matters to the others once its work is in the base. When
+a workspace's pull request merges into its repository's default branch (the
+PR watcher, `sandbox::merged_into_default_branch`), its box's disk is wanted
+as the seed, and becomes it the next time the box is down after a clean stop:
+at once when it already is, else when it stops, or once the app has started
+and a workbench can boot (`setup::start_what_waits_for_the_image`) if it quit
+first.
+
+Three structures carry the rules:
+
+- **A disk is cloned only from a `DownBox`** (`boxes/registry.rs`), which
+  borrows the box's lifecycle lock, held. Only the registry can make one, so
+  no boot can be writing the disk while it is cloned.
+- **A clone is a `Candidate`**, in a directory of its own that goes when the
+  candidate does. Candidates take their turn on a workbench
+  (`fletch_box::workbench`: a throwaway box booted on one disk, as a tools
+  disk is built) one at a time, in the order they were cloned; none is
+  skipped because another is being made. A candidate that is no longer needed
+  at its turn (the project got its first seed meanwhile) is dropped.
+- **A request is answered by one candidate.** `seed-wanted` holds a request
+  of its own, ordered by when it was made; the candidate cloned under it
+  withdraws that request, and only once it is answered: a workbench has
+  looked at the disk and what it found is settled (the seed published, or
+  nothing worth inheriting), or the project has no use for the disk (seeds
+  are off, or the seed already answers a newer request, so an older merge
+  never replaces a newer one's seed). After any failure, and for a request
+  made after the clone was taken, the request stands and the box is offered
+  again.
+- **Settings are read when they are used.** A candidate carries none: it
+  reads the project's at its turn, and is not published if they changed
+  while it was reduced. A project whose settings file was not read yet
+  neither makes a seed nor starts from one, and boot reads every project's
+  file before any box's disk is looked at.
+
+On the workbench the candidate is reduced by `seed.sh`, run as the guest
+user:
+
+- Kept: in each checkout, the directories git ignores as a whole and that
+  hold at least 1 MiB (`node_modules`, `target`, `.venv`, build output),
+  where they were; and the project's toolchain cache (package downloads,
+  Playwright's browsers).
+- Removed: the checkout's tracked and untracked files and its `.git`, so no
+  work, branch or commit of that workspace is left; ignored files that are
+  not a whole directory (`.env`, a local database); ignored directories
+  under 1 MiB (certificates, local settings), which save nothing and are a
+  workspace's own; the paths the project excludes; Fletch's own index
+  (`.codegraph`); the rest of the home, the mailbox and the launch env files.
+
+A candidate the script did not finish on, or whose bench had to be killed, is
+discarded, and one that keeps under 1 MiB is not made the seed; the seed
+there was stays. A seed is published as a directory, its disk and how it was
+made together, exchanged for the seed there was in one step
+(`disks::exchange`), so a project that has a seed is never without one. The
+guest's ssh host key, which only root in
+the guest can remove, stays on a seed: the host reads the key from each
+boot's console and reaches a guest only over that box's own socket.
+
+The project says what a seed may hold in its settings file
+(`.fletch/settings.json`, `.fletch/settings.local.json`; `project_file`),
+read from the user's repository and never from an agent's checkout, so an
+agent's change counts once it is merged:
+
+```jsonc
+{
+  "seed": {
+    "enabled": true,                    // false: the project has no seed
+    "exclude": ["uploads", "data/db"]   // paths in a checkout never kept
+  }
+}
+```
+
+Both only narrow what a new box starts with, so they apply without approval;
+the local file's `enabled` stands over the team's and the exclusions of both
+add up. An excluded path is removed from whatever was kept, whether it is an
+ignored directory, inside one or above one. A seed made before a path was
+excluded, or of a project that turned seeds off, is removed the next time it
+would be used, and the next box to stop cleanly makes the first seed again.
+What still reaches a seed: a large ignored directory nobody excluded, within
+the same project, user and machine.
+
+Provisioning a checkout in a box checks the base out with `--force` over what
+the seed left and then runs `git clean -ffd`, so a file of the base wins and
+nothing the base does not ignore stays behind as an untracked file. What a
+seed holds was built at the path of the workspace it came from, and some of
+it says so (a virtualenv's scripts): provisioning links each of those paths
+to the box's own root, every one the project's seeds ever came from, since a
+file kept through any number of seeds still names its first. Not covered: a build directory that refuses to be
+used from another path (CMake's), which the project's build recreates.
+
+A host that cannot clone without copying (anything but macOS) makes and uses
+no seed. Deleting a project deletes its seed, and boot sweeps those of
+projects deleted meanwhile, through the same calls that clean seatbelt's
+toolchain caches (`sandbox::remove_project_cache`,
+`sandbox::reclaim_toolchain_caches`).
 
 Every agent process starts through `fletch-guest exec`, which clears the
 environment and loads the launch's env file. All ssh sessions are the one

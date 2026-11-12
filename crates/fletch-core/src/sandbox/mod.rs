@@ -539,6 +539,14 @@ pub fn turn_ended(agent_id: &str) {
     boxes::turn_ended(agent_id);
 }
 
+/// `agent_id`'s pull request merged into its repository's default branch:
+/// what the engine does once a workspace's work is in the base (a box's disk
+/// becomes what its project's next boxes start with). A no-op for every
+/// other agent, so callers run it unconditionally.
+pub async fn merged_into_default_branch(agent_id: &str) {
+    boxes::merged_into_default_branch(agent_id).await;
+}
+
 /// Stop every engine-held VM cleanly as the app quits, once the agents'
 /// sessions are gone, so no box disk is left dirty.
 pub fn shutdown_all() {

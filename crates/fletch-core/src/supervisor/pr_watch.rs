@@ -340,6 +340,9 @@ async fn tick(
             {
                 crate::capture::ingest::on_pr_merged_by_number(ctx, agent_id, subdir, &read.state)
                     .await;
+                if went_into_default_branch(ctx, agent_id, subdir, &read.state).await {
+                    crate::sandbox::merged_into_default_branch(agent_id).await;
+                }
             }
             publish(
                 ctx.sink.as_ref(),
@@ -350,6 +353,30 @@ async fn tick(
                 changes,
             );
         }
+    }
+}
+
+/// Whether `pr`, of `agent_id`'s checkout in `subdir` (its primary one for
+/// `None`), has its repository's default branch as its base.
+async fn went_into_default_branch(
+    ctx: &EngineCtx,
+    agent_id: &str,
+    subdir: Option<&str>,
+    pr: &PrState,
+) -> bool {
+    let Some(base) = pr.base.as_deref() else {
+        return false;
+    };
+    let Ok(record) = crate::workspace::WorkspaceManager::new(ctx.db.clone()).agent(agent_id) else {
+        return false;
+    };
+    let repo = match subdir {
+        Some(subdir) => record.repos.iter().find(|repo| repo.subdir == subdir),
+        None => record.repos.first(),
+    };
+    match repo {
+        Some(repo) => crate::git::default_branch(&repo.repo_path).await == base,
+        None => false,
     }
 }
 

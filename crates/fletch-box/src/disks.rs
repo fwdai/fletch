@@ -24,14 +24,21 @@ pub fn create_sparse(path: &Path, bytes: u64) -> io::Result<()> {
 /// APFS), a full copy elsewhere or when the filesystem refuses, with a warning
 /// because a template clone is expected to be free.
 pub fn clone(from: &Path, to: &Path) -> io::Result<()> {
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if let Err(e) = clonefile(from, to) {
+    if let Err(e) = clone_sharing_blocks(from, to) {
         tracing::warn!(from = %from.display(), to = %to.display(), error = %e, "clonefile unavailable; copying");
         std::fs::copy(from, to)?;
     }
     Ok(())
+}
+
+/// Clones `from` to a `to` that does not exist yet, the two sharing every
+/// block until one is written. Fails where the filesystem cannot do that,
+/// rather than copy: for a caller that clones because a copy costs too much.
+pub fn clone_sharing_blocks(from: &Path, to: &Path) -> io::Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    clonefile(from, to)
 }
 
 #[cfg(target_os = "macos")]
@@ -50,6 +57,28 @@ fn clonefile(from: &Path, to: &Path) -> io::Result<()> {
 
 #[cfg(not(target_os = "macos"))]
 fn clonefile(_from: &Path, _to: &Path) -> io::Result<()> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
+/// Exchanges what is at `a` and `b`, both existing, in one step: there is no
+/// moment at which either path is missing. Fails where the filesystem cannot
+/// do that, rather than rename twice.
+#[cfg(target_os = "macos")]
+pub fn exchange(a: &Path, b: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let a = CString::new(a.as_os_str().as_bytes())?;
+    let b = CString::new(b.as_os_str().as_bytes())?;
+    // SAFETY: two valid NUL-terminated paths; a flag the call defines.
+    if unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_SWAP) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn exchange(_a: &Path, _b: &Path) -> io::Result<()> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
@@ -129,6 +158,33 @@ mod tests {
         assert_eq!(std::fs::read(&to).unwrap(), b"template bytes");
         std::fs::write(&to, b"changed").unwrap();
         assert_eq!(std::fs::read(&from).unwrap(), b"template bytes");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_block_sharing_clone_never_replaces_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("a.img");
+        let to = dir.path().join("b.img");
+        std::fs::write(&from, b"a").unwrap();
+        std::fs::write(&to, b"b").unwrap();
+        assert!(clone_sharing_blocks(&from, &to).is_err());
+        assert_eq!(std::fs::read(&to).unwrap(), b"b");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_exchange_swaps_two_directories_and_needs_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir(&a).unwrap();
+        std::fs::write(a.join("was-in-a"), b"").unwrap();
+        assert!(exchange(&a, &b).is_err());
+
+        std::fs::create_dir(&b).unwrap();
+        exchange(&a, &b).unwrap();
+        assert!(b.join("was-in-a").exists());
+        assert!(!a.join("was-in-a").exists());
     }
 
     #[test]

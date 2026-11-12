@@ -755,6 +755,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // which has no ctx, and trimmed to its window once per start.
     sandbox::boxes::egress_log::install(db.clone());
     sandbox::boxes::egress_log::prune(&db.lock());
+    // Each project's `.fletch/settings.json`, read into its mirror before any
+    // box boots or has its disk looked at, and watched from further down
+    // (`project_file`).
+    crate::project_file::seed(&db.lock());
     sandbox::boxes::startup(&workspace);
     // A move between sandboxes the last run didn't finish: each workspace's
     // stamp says which side is it, and the other is cleared. Waited for, so
@@ -774,9 +778,6 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     if headless || onboarded {
         std::thread::spawn(sandbox::boxes::setup::autostart);
     }
-    // Each project's `.fletch/settings.json`, read into its mirror before any
-    // box boots and watched from here on (`project_file`).
-    crate::project_file::seed(&db.lock());
     crate::project_file::watch(db.clone(), sink.clone());
 
     // Quitting the desktop normally goes through `RunEvent::ExitRequested`, but
