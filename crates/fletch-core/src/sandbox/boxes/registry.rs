@@ -2234,8 +2234,7 @@ async fn boot(
     let authorized = channel::authorized_key(&key)?;
     let data = dir.join(DATA_DISK);
     if !data.exists() {
-        let bytes = u64::from(settings::current().disk_gib) << 30;
-        seed::new_data_disk(identity, &data, bytes)?;
+        seed::new_data_disk(identity, &data, settings::current().disk_bytes())?;
     }
     let dirty = Dirty::in_dir(&dir);
     if dirty.set()? {

@@ -22,21 +22,31 @@ pub(super) struct Made {
 }
 
 /// Starts a workspace of `project_id` from the project's seed in `store`,
-/// while its settings allow a workspace to start from one: `start` is given
-/// the seed, under the store's lock, and answers whether it started from it.
-pub fn start_from(store: &Path, project_id: &str, start: impl FnOnce(&Path) -> bool) -> bool {
+/// while its settings allow a workspace to start from one and the engine
+/// can (`usable`): `start` is given the seed, under the store's lock, and
+/// answers whether it started from it.
+pub fn start_from(
+    store: &Path,
+    project_id: &str,
+    usable: impl FnOnce(&Path) -> bool,
+    start: impl FnOnce(&Path) -> bool,
+) -> bool {
     let Some(settings) = crate::project_file::seed_settings(project_id) else {
         return false;
     };
     let _store = STORE.lock();
-    seed_in_force(store, &settings).is_some() && start(&store.join(SEED))
+    seed_in_force(store, &settings, usable).is_some() && start(&store.join(SEED))
 }
 
 /// How the project's seed in `store` was made, while `settings` allow a
-/// workspace to start from it: seeds are on, and it was made without every
-/// path they exclude now. A seed they do not allow is removed. The caller
-/// holds [`STORE`].
-pub(super) fn seed_in_force(store: &Path, settings: &SeedSettings) -> Option<Made> {
+/// workspace to start from it and the engine can (`usable`): seeds are on,
+/// and it was made without every path they exclude now. A seed either
+/// refuses is removed. The caller holds [`STORE`].
+pub(super) fn seed_in_force(
+    store: &Path,
+    settings: &SeedSettings,
+    usable: impl FnOnce(&Path) -> bool,
+) -> Option<Made> {
     let seed = store.join(SEED);
     if !seed.exists() {
         return None;
@@ -47,11 +57,11 @@ pub(super) fn seed_in_force(store: &Path, settings: &SeedSettings) -> Option<Mad
             .exclude
             .iter()
             .all(|path| made.without.contains(path));
-    if allowed {
+    if allowed && usable(&seed) {
         return Some(made);
     }
     if let Err(e) = std::fs::remove_dir_all(&seed) {
-        tracing::warn!(seed = %seed.display(), error = %e, "could not remove a seed its project's settings no longer allow");
+        tracing::warn!(seed = %seed.display(), error = %e, "could not remove a seed that may no longer be used");
     }
     None
 }

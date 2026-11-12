@@ -110,6 +110,13 @@ pub struct BoxSettings {
     pub egress_mode: EgressMode,
 }
 
+impl BoxSettings {
+    /// The size a new box's data disk is created with.
+    pub fn disk_bytes(&self) -> u64 {
+        u64::from(self.disk_gib) << 30
+    }
+}
+
 impl Default for BoxSettings {
     fn default() -> Self {
         Self {

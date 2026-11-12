@@ -66,6 +66,10 @@ pub trait AtRest: Send + Sync + 'static {
     fn request_file(&self) -> &Path;
     /// Whether the workspace may be its project's first seed.
     fn may_be_first(&self) -> bool;
+    /// Whether this engine could start a workspace now from what `seed`
+    /// holds: the project's seed, or a candidate. A seed it could not is
+    /// removed; a candidate it could not is never made the seed.
+    fn usable(&self, seed: &Path) -> bool;
     /// Takes what a seed is made of into `candidate`, a directory not made
     /// yet. Runs while the workspace is at rest, before [`offer`] returns.
     fn take(&self, candidate: &Path) -> io::Result<()>;

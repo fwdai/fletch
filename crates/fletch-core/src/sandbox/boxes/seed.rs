@@ -20,6 +20,10 @@
 //! What a seed holds was built at the path of the workspace it came from, and
 //! some of it says so (a virtualenv's scripts): provisioning links those
 //! paths to the box's own root, so they still resolve ([`link_built_at`]).
+//!
+//! Only a seed of the size new boxes are created with can be cloned for one:
+//! a seed of another size is removed, and a box whose disk is of another
+//! size is never made the seed.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -30,6 +34,7 @@ use fletch_box::{disks, Channel, StopOutcome};
 use parking_lot::Mutex;
 
 use super::registry::{BoxIdentity, DownBox, DATA_DISK};
+use super::settings;
 use crate::error::{Error, Result};
 use crate::sandbox::seed::{self, read_json, AtRest, WORTH_INHERITING_KIB};
 use crate::sandbox::ToolchainCache;
@@ -63,11 +68,8 @@ fn project_dir(identity: &BoxIdentity) -> Option<PathBuf> {
 /// Creates the data disk of a new box: a clone of its project's seed when
 /// there is one of `bytes`, an empty disk otherwise.
 pub fn new_data_disk(identity: &BoxIdentity, data: &Path, bytes: u64) -> io::Result<()> {
-    let cloned = project_dir(identity).is_some_and(|project| {
-        seed::start_from(&project, &identity.project_id, |seed| {
-            clone_seed(seed, data, bytes)
-        })
-    });
+    let cloned = project_dir(identity)
+        .is_some_and(|project| clone_seed(&project, &identity.project_id, data, bytes));
     if cloned {
         Ok(())
     } else {
@@ -75,10 +77,20 @@ pub fn new_data_disk(identity: &BoxIdentity, data: &Path, bytes: u64) -> io::Res
     }
 }
 
-fn clone_seed(seed: &Path, data: &Path, bytes: u64) -> bool {
-    let disk = seed.join(DISK);
-    std::fs::metadata(&disk).is_ok_and(|disk| disk.len() == bytes)
-        && disks::clone_sharing_blocks(&disk, data).is_ok()
+/// Clones the project's seed in `project` to `data` when it is in force and
+/// its disk is of `bytes`; a seed of another size is removed.
+fn clone_seed(project: &Path, project_id: &str, data: &Path, bytes: u64) -> bool {
+    seed::start_from(
+        project,
+        project_id,
+        |seed| has_a_disk_of(seed, bytes),
+        |seed| disks::clone_sharing_blocks(&seed.join(DISK), data).is_ok(),
+    )
+}
+
+/// Whether the disk in `dir`, a seed or a candidate, is `bytes` long.
+fn has_a_disk_of(dir: &Path, bytes: u64) -> bool {
+    std::fs::metadata(dir.join(DISK)).is_ok_and(|disk| disk.len() == bytes)
 }
 
 /// The writable roots of the workspaces whose files the project's seed
@@ -191,6 +203,10 @@ impl AtRest for DiskAtRest {
 
     fn may_be_first(&self) -> bool {
         may_have_something_now(&self.identity.agent_id, self.disk_kib)
+    }
+
+    fn usable(&self, seed: &Path) -> bool {
+        has_a_disk_of(seed, settings::current().disk_bytes())
     }
 
     fn take(&self, candidate: &Path) -> io::Result<()> {
@@ -307,18 +323,63 @@ mod tests {
         roots.iter().map(PathBuf::from).collect()
     }
 
+    /// A project of its own, with a seed whose disk holds `disk`.
+    fn project_with_seed(dir: &Path, disk: &[u8]) -> (PathBuf, String) {
+        let project = dir.join("project");
+        std::fs::create_dir_all(project.join("seed")).unwrap();
+        std::fs::write(project.join("seed").join(DISK), disk).unwrap();
+        let project_id = uuid::Uuid::new_v4().to_string();
+        crate::project_file::set_seed_settings(&project_id, Default::default());
+        (project, project_id)
+    }
+
     #[test]
     fn a_new_box_gets_a_clone_of_a_seed_its_size() {
         let dir = tempfile::tempdir().unwrap();
-        let seed = dir.path().join("seed");
-        std::fs::create_dir_all(&seed).unwrap();
-        std::fs::write(seed.join(DISK), b"seed").unwrap();
+        let (project, project_id) = project_with_seed(dir.path(), b"seed");
         let data = dir.path().join("data.img");
 
-        assert!(!clone_seed(&seed, &data, 8));
-        assert!(!data.exists());
-        assert!(clone_seed(&seed, &data, 4));
+        assert!(clone_seed(&project, &project_id, &data, 4));
         assert_eq!(std::fs::read(&data).unwrap(), b"seed");
+    }
+
+    #[test]
+    fn a_seed_of_another_size_is_removed_and_a_new_box_starts_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, project_id) = project_with_seed(dir.path(), b"seed");
+        let data = dir.path().join("data.img");
+
+        assert!(!clone_seed(&project, &project_id, &data, 8));
+        assert!(!data.exists());
+        assert!(!project.join("seed").exists());
+    }
+
+    #[test]
+    fn only_a_disk_of_the_size_new_boxes_are_created_with_can_be_a_seed() {
+        let _serial = settings::TEST_LOCK.blocking_lock();
+        let bytes = settings::current().disk_bytes();
+        let dir = tempfile::tempdir().unwrap();
+        let at_rest = DiskAtRest {
+            identity: BoxIdentity {
+                agent_id: "kansai".into(),
+                project_id: "project".into(),
+                provider: "claude".into(),
+                writable_root: "/w/kansai".into(),
+                rpc_dir: "/rpc/kansai".into(),
+                home: "/home".into(),
+                shares: Vec::new(),
+            },
+            disk: dir.path().join("data.img"),
+            disk_kib: 0,
+            project: dir.path().join("project"),
+            request_file: dir.path().join("seed-wanted"),
+        };
+        let (this_size, another_size) = (dir.path().join("this"), dir.path().join("another"));
+        disks::create_sparse(&this_size.join(DISK), bytes).unwrap();
+        disks::create_sparse(&another_size.join(DISK), bytes / 2).unwrap();
+
+        assert!(at_rest.usable(&this_size));
+        assert!(!at_rest.usable(&another_size));
     }
 
     #[test]

@@ -4,16 +4,19 @@ use std::path::{Path, PathBuf};
 use super::candidate::Candidate;
 use super::request::{standing_request, withdraw, Request};
 use super::store::{publish, seed_in_force, Made, CANDIDATE_PREFIX, MADE, SEED};
-use super::{is_wanted, want, AtRest};
+use super::{is_wanted, want, AtRest, WORTH_INHERITING_KIB};
 use crate::error::Result;
 use crate::project_file::SeedSettings;
 
-/// A workspace at rest that takes and keeps nothing: enough to ask whether
-/// its project needs it.
+const PROJECT_ID: &str = "seed-core-tests";
+
+/// A workspace at rest whose candidate already holds what was taken of it,
+/// and keeps something worth inheriting.
 struct Workspace {
     store: PathBuf,
     request_file: PathBuf,
     may_be_first: bool,
+    usable: bool,
 }
 
 impl AtRest for Workspace {
@@ -22,7 +25,7 @@ impl AtRest for Workspace {
     }
 
     fn project_id(&self) -> &str {
-        "project"
+        PROJECT_ID
     }
 
     fn store(&self) -> &Path {
@@ -37,12 +40,16 @@ impl AtRest for Workspace {
         self.may_be_first
     }
 
+    fn usable(&self, _seed: &Path) -> bool {
+        self.usable
+    }
+
     fn take(&self, _candidate: &Path) -> io::Result<()> {
         Ok(())
     }
 
     async fn reduce(&self, _candidate: &Path, _excluded: &[String]) -> Result<u64> {
-        Ok(0)
+        Ok(WORTH_INHERITING_KIB)
     }
 
     fn kept_nothing(&self) {}
@@ -81,6 +88,7 @@ fn candidate(project: &Path, may_be_first: bool, request: Option<Request>) -> Ca
             store: project.to_path_buf(),
             request_file: project.join("seed-wanted"),
             may_be_first,
+            usable: true,
         },
         dir: project.join(format!("{CANDIDATE_PREFIX}test")),
         request,
@@ -97,7 +105,7 @@ fn seed_held(project: &Path) -> Option<String> {
 }
 
 fn in_force(project: &Path, settings: &SeedSettings) -> bool {
-    seed_in_force(project, settings).is_some()
+    seed_in_force(project, settings, |_| true).is_some()
 }
 
 fn excluding(paths: &[&str]) -> SeedSettings {
@@ -233,4 +241,34 @@ fn a_project_without_a_seed_needs_a_workspace_that_was_asked_for_or_may_be_its_f
 
     assert!(!candidate(&project, false, None).is_needed(&on));
     assert!(candidate(&project, false, request).is_needed(&on));
+}
+
+#[test]
+fn a_seed_the_engine_cannot_use_is_removed_and_the_project_needs_a_first_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = project_with_seed(dir.path(), b"seed", &made(&[], None));
+    let on = SeedSettings::default();
+    assert!(!candidate(&project, true, None).is_needed(&on));
+
+    let mut first = candidate(&project, true, None);
+    first.at_rest.usable = false;
+    assert!(first.is_needed(&on));
+    assert!(!project.join(SEED).exists());
+}
+
+#[tokio::test]
+async fn a_candidate_the_engine_cannot_use_is_not_made_the_seed_and_answers_its_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    let taken = candidate_dir(&project, "taken");
+    let wanted = project.join("seed-wanted");
+    crate::project_file::set_seed_settings(PROJECT_ID, SeedSettings::default());
+    let mut asked_for = candidate(&project, true, Some(new_request(&wanted)));
+    asked_for.at_rest.usable = false;
+
+    asked_for.settle().await;
+
+    assert!(!is_wanted(&wanted));
+    assert!(!project.join(SEED).exists());
+    assert!(!taken.exists());
 }
