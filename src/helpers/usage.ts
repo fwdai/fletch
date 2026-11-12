@@ -104,20 +104,26 @@ export async function persistLiveUsage(
 /** What each agent's live stream has reported beyond its records: `base`, the
  *  snapshot the records last gave, and the calls streamed since. The store
  *  holds only the two folded together. `seen` counts every call ever folded,
- *  so a point in the stream can be named (`liveUsageMark`) and still mean the
- *  same thing after earlier calls were handed to the records; `settled` is the
- *  latest such point the records have been settled at. */
+ *  so a point in the stream can be named (`beginUsageRead`) and still mean the
+ *  same thing after earlier calls were handed to the records. */
 interface LiveTurn {
   base: UsageSnapshot;
   events: UsageEvent[];
   seen: number;
-  settled: number;
 }
 
 const liveTurns = new Map<string, LiveTurn>();
 
-/** The snapshot for the store: what the records gave, with the live calls on top. */
-const folded = (turn: LiveTurn) => withLiveTurn(turn.base, aggregate(turn.events));
+/** One read of an agent's records, as it stood when it began: its place among
+ *  all reads, and how far the agent's live stream had got. */
+export interface UsageRead {
+  order: number;
+  seen: number;
+}
+
+let reads = 0;
+/** Per agent, the latest read whose snapshot was settled. */
+const settledReads = new Map<string, number>();
 
 /** Fold the usage a live event reports (`liveUsageEvents`) into the agent's
  *  snapshot, so the gauge moves while the turn runs instead of when its records
@@ -136,50 +142,49 @@ export function foldLiveUsage(
   if (!turn) {
     // A call need not name its model; until one does, the window is the
     // spawn model's — the same one the gauge showed before the call.
-    turn = {
-      base: get().usage[agentId] ?? unspentSnapshot(agent?.model),
-      events: [],
-      seen: 0,
-      settled: 0,
-    };
+    turn = { base: get().usage[agentId] ?? unspentSnapshot(agent?.model), events: [], seen: 0 };
     liveTurns.set(agentId, turn);
   }
   turn.events.push(...events);
   turn.seen += events.length;
-  set({ usage: { ...get().usage, [agentId]: folded(turn) } });
+  set({
+    usage: { ...get().usage, [agentId]: withLiveTurn(turn.base, aggregate(turn.events)) },
+  });
 }
 
-/** Where the agent's live stream stands. Take it BEFORE reading the records a
- *  snapshot is built from, and pass it to `settleLiveUsage`: the read is async,
- *  and calls that stream in while it runs are not in what it returns. */
-export function liveUsageMark(agentId: string): number {
-  return liveTurns.get(agentId)?.seen ?? 0;
+/** Note that a read of the agent's records is starting. Call it BEFORE the
+ *  read and pass the result to `settleLiveUsage` with the snapshot it gave:
+ *  the read is async, so calls can stream in while it runs, and another read
+ *  can start after it and land first. */
+export function beginUsageRead(agentId: string): UsageRead {
+  reads += 1;
+  return { order: reads, seen: liveTurns.get(agentId)?.seen ?? 0 };
 }
 
-/** Hand the agent's usage back to the records: `recorded` is the snapshot they
- *  give, read when the stream stood at `mark`. The calls streamed up to the
- *  mark are theirs now and are dropped — the next fold would otherwise count
- *  them twice. Calls streamed after it stay, folded over `recorded`.
+/** Settle the agent's usage on the records: `recorded` is the snapshot `read`
+ *  gave. Returns the snapshot to put in the store, or null when it must be
+ *  left as it is. Call it wherever a snapshot built from records is written.
  *
- *  Reads overlap and can land out of order. One that started before a read
- *  already settled is the older of the two: its records are a subset, so it is
- *  ignored rather than allowed to roll the snapshot back.
+ *  Null is for a read that began before one already settled. Reads overlap and
+ *  land out of order; the earlier one holds the older records, and storing it
+ *  would roll the snapshot back — a compaction undone, a call lost.
  *
- *  Returns the snapshot to put in the store. Call it wherever one built from
- *  records is written there. */
+ *  Otherwise the calls streamed before the read began are the records' now and
+ *  are dropped, or the next fold would count them twice. Calls streamed since
+ *  are not in what it read, and stay folded over `recorded`. */
 export function settleLiveUsage(
   agentId: string,
   recorded: UsageSnapshot,
-  mark: number,
-): UsageSnapshot {
+  read: UsageRead,
+): UsageSnapshot | null {
+  if (read.order < (settledReads.get(agentId) ?? 0)) return null;
+  settledReads.set(agentId, read.order);
   const turn = liveTurns.get(agentId);
   if (!turn) return recorded;
-  if (mark < turn.settled) return folded(turn);
-  const since = Math.min(turn.events.length, turn.seen - mark);
+  const since = Math.min(turn.events.length, turn.seen - read.seen);
   turn.base = recorded;
   turn.events = since > 0 ? turn.events.slice(-since) : [];
-  turn.settled = mark;
-  return folded(turn);
+  return withLiveTurn(recorded, aggregate(turn.events));
 }
 
 /** FNV-1a over the event JSON — a short, stable id for an event that carries

@@ -10,7 +10,7 @@ vi.mock("@/storage/db", () => ({ dbUpsert: async () => "ok" }));
 import type { RawEvent } from "@/adapters/types";
 import { usageFromRecords } from "@/adapters/usage";
 import type { SessionRecord } from "@/api";
-import { foldLiveUsage, liveUsageMark, settleLiveUsage } from "@/helpers/usage";
+import { beginUsageRead, foldLiveUsage, settleLiveUsage, type UsageRead } from "@/helpers/usage";
 import type { AppState } from "@/store";
 
 const call = (id: string, input: number, cacheRead: number): RawEvent =>
@@ -51,10 +51,14 @@ function store(id: string, agent: { provider: string; model?: string }) {
   return {
     usage: () => state.usage[id],
     fold: (ev: RawEvent) => foldLiveUsage(get, set, id, ev),
-    mark: () => liveUsageMark(id),
-    /** A records refresh landing: the snapshot it read, settled and stored. */
-    refresh: (mark: number, ...bodies: RawEvent[]) =>
-      set({ usage: { [id]: settleLiveUsage(id, recorded(...bodies), mark) } }),
+    /** A records read starting. */
+    read: () => beginUsageRead(id),
+    /** That read landing with `bodies`: its snapshot settled, and stored unless
+     *  it is to be left alone. */
+    land: (read: UsageRead, ...bodies: RawEvent[]) => {
+      const settled = settleLiveUsage(id, recorded(...bodies), read);
+      if (settled) set({ usage: { [id]: settled } });
+    },
   };
 }
 
@@ -93,7 +97,7 @@ describe("settleLiveUsage", () => {
     s.fold(call("m1", 5, 8000));
 
     // Turn end: the records carry the same call, and replace the live fold.
-    s.refresh(s.mark(), call("m1", 5, 8000));
+    s.land(s.read(), call("m1", 5, 8000));
     expect(s.usage().spend.tokens).toMatchObject({ input: 5, cacheRead: 8000 });
 
     s.fold(call("m2", 7, 9000));
@@ -106,15 +110,15 @@ describe("settleLiveUsage", () => {
     const s = store("race", { provider: "claude" });
     s.fold(call("m1", 5, 8000));
 
-    const mark = s.mark(); // the refresh starts reading…
+    const read = s.read(); // the refresh starts reading…
     s.fold(call("m2", 7, 9000)); // …and the next call streams in meanwhile
-    s.refresh(mark, call("m1", 5, 8000)); // the read returns m1 only
+    s.land(read, call("m1", 5, 8000)); // the read returns m1 only
 
     expect(s.usage().context.tokens).toBe(9007);
     expect(s.usage().spend.tokens).toMatchObject({ input: 12, cacheRead: 17_000 });
 
     // The following refresh holds both, and nothing is left to fold over it.
-    s.refresh(s.mark(), call("m1", 5, 8000), call("m2", 7, 9000));
+    s.land(s.read(), call("m1", 5, 8000), call("m2", 7, 9000));
     expect(s.usage().spend.tokens).toMatchObject({ input: 12, cacheRead: 17_000 });
   });
 
@@ -123,21 +127,45 @@ describe("settleLiveUsage", () => {
   it("ignores an older read that lands after a newer one", () => {
     const s = store("overlap", { provider: "claude" });
     s.fold(call("m1", 5, 8000));
-    const first = s.mark(); // read 1 starts
+    const first = s.read();
     s.fold(call("m2", 7, 9000));
-    const second = s.mark(); // read 2 starts
+    const second = s.read();
 
-    s.refresh(second, call("m1", 5, 8000), call("m2", 7, 9000)); // read 2 lands first
-    s.refresh(first, call("m1", 5, 8000)); // read 1, older, lands last
+    s.land(second, call("m1", 5, 8000), call("m2", 7, 9000));
+    s.land(first, call("m1", 5, 8000));
 
     expect(s.usage().context.tokens).toBe(9007);
     expect(s.usage().spend.tokens).toMatchObject({ input: 12, cacheRead: 17_000 });
   });
 
-  it("hands back the records' snapshot untouched when nothing was streamed", () => {
-    const snapshot = recorded(call("m1", 5, 8000));
-    expect(settleLiveUsage("never-streamed", snapshot, liveUsageMark("never-streamed"))).toBe(
-      snapshot,
-    );
+  // Not every change to the records comes with a live call: a compaction is
+  // transcript-only. The older read must lose on its place among the reads,
+  // not on how far the live stream had got — that is the same for both here.
+  it("ignores an older read even when no call streamed between the two", () => {
+    const s = store("compaction", { provider: "claude" });
+    s.fold(call("m1", 5, 8000));
+    const first = s.read();
+    const second = s.read();
+    const boundary = {
+      type: "system",
+      subtype: "compact_boundary",
+      compactMetadata: { preTokens: 8005 },
+    } as RawEvent;
+
+    s.land(second, call("m1", 5, 8000), boundary);
+    s.land(first, call("m1", 5, 8000));
+
+    expect(s.usage().context).toMatchObject({ state: "reset", compacted: { freed: null } });
+  });
+
+  it("orders reads for an agent that never streamed a call, too", () => {
+    const s = store("records-only", { provider: "codex" });
+    const first = s.read();
+    const second = s.read();
+    const newer = recorded(call("m1", 5, 8000), call("m2", 7, 9000));
+
+    expect(settleLiveUsage("records-only", newer, second)).toBe(newer);
+    expect(settleLiveUsage("records-only", recorded(call("m1", 5, 8000)), first)).toBeNull();
+    expect(s.usage()).toBeUndefined();
   });
 });

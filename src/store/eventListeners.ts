@@ -59,11 +59,11 @@ import {
   agentRecord,
   applyEvent,
   applyFolderGrantsUpdate,
+  beginUsageRead,
   carryForwardStoreOnly,
   dischargeSending,
   foldLiveUsage,
   isAgentBusy,
-  liveUsageMark,
   mergeUserTurns,
   mirrorSentTurn,
   needsSessionIdRefresh,
@@ -379,9 +379,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       const id = e.agent_id;
       void (async () => {
         try {
-          // Before the read: calls that stream in while it runs are not in the
-          // records it returns, and must survive them (see settleLiveUsage).
-          const mark = liveUsageMark(id);
+          // Before the read: it can land after a later one, and calls that stream
+          // in while it runs are not in its records (see settleLiveUsage).
+          const read = beginUsageRead(id);
           const [records, turns] = await Promise.all([
             api.readSessionRecords(id),
             api.readUserTurns(id),
@@ -397,7 +397,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
           const usage = usageFromRecords(provider, records);
           // Only overwrite when records carried usage — cursor folds usage
           // live, so an empty records result must not wipe it.
-          const settled = hasUsage(usage) ? settleLiveUsage(id, usage, mark) : null;
+          const settled = hasUsage(usage) ? settleLiveUsage(id, usage, read) : null;
           set((state) => ({
             managedLogs: { ...state.managedLogs, [id]: items },
             usage: settled ? { ...state.usage, [id]: settled } : state.usage,
