@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { totalTokens, type UsageSnapshot } from "@/adapters/usage";
+import { hasUsage, totalTokens, type UsageSnapshot } from "@/adapters/usage";
 import { formatCost, formatTokensK } from "@/util/format";
 import type { ContextView } from "./model";
 
@@ -24,6 +24,7 @@ export function Breakdown({
 }) {
   const { tokens } = usage.spend;
   const reset = usage.context.state === "reset";
+  const spent = hasUsage(usage);
   return (
     <div className="usage-pop">
       <div className="up-head">
@@ -32,8 +33,10 @@ export function Breakdown({
           {view.pct == null ? (
             reset ? (
               "compacted"
-            ) : (
+            ) : spent ? (
               "unknown"
+            ) : (
+              "not measured yet"
             )
           ) : (
             <>
@@ -47,7 +50,9 @@ export function Breakdown({
         <div className="up-note text-sm">
           {reset
             ? "The next turn measures the new window."
-            : "This agent doesn't report context usage."}
+            : spent
+              ? "This agent doesn't report context usage."
+              : "The agent's first response measures the window."}
         </div>
       ) : (
         <WindowBar view={view} />

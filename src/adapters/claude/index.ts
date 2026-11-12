@@ -2,7 +2,7 @@ import type { ChatAdapter } from "@/adapters/types";
 import { normalizeTranscript } from "./normalize";
 import { claudePolicy } from "./policy";
 import { reduce } from "./reduce";
-import { usageEvents } from "./usage";
+import { liveUsageEvents, usageEvents } from "./usage";
 
 export const claudeAdapter: ChatAdapter = {
   id: "claude",
@@ -10,4 +10,5 @@ export const claudeAdapter: ChatAdapter = {
   normalizeTranscript,
   policy: claudePolicy,
   usageEvents,
+  liveUsageEvents,
 };

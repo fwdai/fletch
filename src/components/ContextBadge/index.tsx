@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { hasUsage, priceSnapshot } from "@/adapters/usage";
+import { hasUsage, priceSnapshot, reportsUsage, unspentSnapshot } from "@/adapters/usage";
 import type { AgentRecord } from "@/api";
 import { useAppStore } from "@/store";
 import { compactBlocker, isCompacting, supportsCompaction } from "@/store/compaction";
@@ -16,13 +16,14 @@ import { type CompactPhase, contextView } from "./model";
  *  that opens on hover and pins on click, and — for an agent that can — the
  *  one action that matters when context runs low, compact.
  *
- *  Hidden until the session has spent anything, and for agents that report no
- *  usage (cursor, antigravity). Gated on spend, not on the context reading: a
- *  compacted session has a known total and a temporarily unknown window, and
- *  hiding the badge there would look like the usage had been lost. */
+ *  There from the start, for every agent that reports usage (antigravity's does
+ *  not): until a call has measured the window it reads as unmeasured rather
+ *  than being absent, so a first turn that runs for half an hour shows where
+ *  its numbers will be. Compacting waits for spend — there is nothing to
+ *  summarize before it. */
 export function ContextBadge({ agent }: { agent: AgentRecord }) {
   const show = useAppStore((s) => s.features.tokenUsage);
-  const usage = useAppStore((s) => s.usage[agent.id]);
+  const stored = useAppStore((s) => s.usage[agent.id]);
   const catalog = useAppStore((s) => s.modelCatalog);
   const compacting = useAppStore((s) => isCompacting(s, agent.id));
   const blocker = useAppStore((s) => compactBlocker(s, agent.id));
@@ -35,12 +36,13 @@ export function ContextBadge({ agent }: { agent: AgentRecord }) {
   const unpin = useCallback(() => setPinned(false), []);
   useDismiss(ref, pinned, unpin);
 
-  if (!show || !usage || !hasUsage(usage)) return null;
+  if (!show || !reportsUsage(agent.provider)) return null;
 
+  const usage = stored ?? unspentSnapshot(agent.model);
   const phase: CompactPhase = compacting ? "compacting" : usage.context.compacted ? "done" : "idle";
   const view = contextView(usage, catalog, phase);
   const open = hover || pinned;
-  const canCompact = supportsCompaction(agent.provider);
+  const canCompact = hasUsage(usage) && supportsCompaction(agent.provider);
   // Once a compaction has landed there is nothing left to compact until the
   // conversation moves on, so the segment steps aside for the receipt.
   const showSegment = canCompact && phase !== "done";

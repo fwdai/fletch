@@ -87,6 +87,15 @@ export const EMPTY_SNAPSHOT: UsageSnapshot = Object.freeze({
   coverage: "complete" as Coverage,
 });
 
+/** An agent that has spent nothing yet: the window unmeasured, and sized by
+ *  the model it was spawned with rather than the default — a 1M-window model
+ *  would otherwise read as 200k until a call names it. What a gauge shows, and
+ *  what a live turn folds onto, before any snapshot exists. */
+export function unspentSnapshot(model: string | null | undefined): UsageSnapshot {
+  if (!model) return EMPTY_SNAPSHOT;
+  return { ...EMPTY_SNAPSHOT, context: { ...EMPTY_SNAPSHOT.context, model } };
+}
+
 /** True once the session has spent anything. Distinguishes "nothing yet" from
  *  "an agent that reports no usage", which is why the store guards writes with
  *  it rather than overwriting a good snapshot with an empty one. */
@@ -142,6 +151,33 @@ export function sessionSpend(records: SessionRecord[]): Spend {
 export function withSupersededSpend(usage: UsageSnapshot, superseded: Spend[]): UsageSnapshot {
   if (superseded.length === 0) return usage;
   return { ...usage, spend: superseded.reduce(addSpend, usage.spend) };
+}
+
+/** `base` — what the records say — with a turn in flight on top: `live`, the
+ *  snapshot of the calls its stream has reported so far (`liveUsageEvents`).
+ *  Their spend adds up; the window is the live one once a call of the turn has
+ *  measured it, since that measurement is newer than anything on record. */
+export function withLiveTurn(base: UsageSnapshot, live: UsageSnapshot): UsageSnapshot {
+  if (!hasUsage(live)) return base;
+  const measured = live.context.state === "measured";
+  const model = live.context.model ?? base.context.model;
+  return {
+    spend: addSpend(base.spend, live.spend),
+    context: measured
+      ? {
+          ...live.context,
+          limit: live.context.limit || base.context.limit,
+          ...(model && { model }),
+        }
+      : base.context,
+    coverage: base.coverage,
+  };
+}
+
+/** Whether `provider`'s agent reports token usage at all (antigravity's does
+ *  not), i.e. whether a gauge for it will ever have anything to show. */
+export function reportsUsage(provider: string | undefined): boolean {
+  return getAdapter(provider).usageEvents !== undefined;
 }
 
 function addSpend(a: Spend, b: Spend): Spend {

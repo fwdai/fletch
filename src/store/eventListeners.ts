@@ -59,8 +59,10 @@ import {
   agentRecord,
   applyEvent,
   applyFolderGrantsUpdate,
+  beginUsageRead,
   carryForwardStoreOnly,
   dischargeSending,
+  foldLiveUsage,
   isAgentBusy,
   mergeUserTurns,
   mirrorSentTurn,
@@ -71,6 +73,7 @@ import {
   providerFor,
   recordWorkspaceUsage,
   reduceRecords,
+  settleLiveUsage,
 } from "@/helpers";
 import { pushAgentOutput, pushShellOutput } from "@/pty/buffers";
 import { decodeBase64 } from "@/pty/decode";
@@ -323,6 +326,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       // Capture usage that lives only on the live stream (cursor) into
       // session_records so it folds like every other agent (see persistLiveUsage).
       void persistLiveUsage(get, set, e.agent_id, e.event as RawEvent);
+      // And the usage a stream reports ahead of its records (claude): fold it
+      // in now, so the context badge moves during the turn.
+      foldLiveUsage(get, set, e.agent_id, e.event as RawEvent);
       // Codex rollout files encrypt reasoning text, so retain the readable live
       // event as a compiled record and merge it back at its rollout item on replay.
       void persistLiveReasoning(get, e.agent_id, e.event as RawEvent);
@@ -373,6 +379,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       const id = e.agent_id;
       void (async () => {
         try {
+          // Before the read: it can land after a later one, and calls that stream
+          // in while it runs are not in its records (see settleLiveUsage).
+          const read = beginUsageRead(id);
           const [records, turns] = await Promise.all([
             api.readSessionRecords(id),
             api.readUserTurns(id),
@@ -386,11 +395,12 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
           // carryForwardStoreOnly.
           const items = carryForwardStoreOnly(rebuilt, get().managedLogs[id] ?? []);
           const usage = usageFromRecords(provider, records);
+          // Only overwrite when records carried usage — cursor folds usage
+          // live, so an empty records result must not wipe it.
+          const settled = hasUsage(usage) ? settleLiveUsage(id, usage, read) : null;
           set((state) => ({
             managedLogs: { ...state.managedLogs, [id]: items },
-            // Only overwrite when records carried usage — cursor folds usage
-            // live, so an empty records result must not wipe it.
-            usage: hasUsage(usage) ? { ...state.usage, [id]: usage } : state.usage,
+            usage: settled ? { ...state.usage, [id]: settled } : state.usage,
           }));
           // After the usage above: a compaction that has ended shows as
           // compacted in the same render it stops showing as compacting.
