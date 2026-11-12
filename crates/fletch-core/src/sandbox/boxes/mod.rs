@@ -104,6 +104,7 @@ pub mod provision;
 pub mod registry;
 pub mod relay;
 pub mod run;
+pub mod seed;
 pub mod settings;
 pub mod setup;
 pub mod ssh_access;
@@ -1859,6 +1860,13 @@ pub async fn discard_if_any(agent_id: &str) -> Result<()> {
 /// (`box_egress_open_turn`) closes. A no-op for every other agent.
 pub fn turn_ended(agent_id: &str) {
     BoxRegistry::global().set_turn_open(agent_id, false);
+}
+
+/// `agent_id`'s pull request merged into its repository's default branch:
+/// what its workspace installed is what the project's next workspaces should
+/// start with ([`seed`]). A no-op for every agent without a box of its own.
+pub async fn merged_into_default_branch(agent_id: &str) {
+    BoxRegistry::global().seed_from(agent_id).await;
 }
 
 /// Tell clients the set of VMs changed ([`EVENT_LIST`]).

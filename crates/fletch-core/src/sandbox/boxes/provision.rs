@@ -5,6 +5,8 @@
 //! repository). Everything after is the one pipeline every checkout gets
 //! (`sandbox::provision::fixups`), git and file writes routed to the guest by
 //! the executor seam, with the checkout from the pushed base as its step.
+//! The checkout path may already hold what the project's seed left there
+//! (`seed`): the directories another workspace's git ignored.
 //!
 //! The host also gets an empty placeholder directory at the checkout path: the
 //! ssh launcher is spawned with the checkout as its cwd, which must exist on
@@ -65,6 +67,7 @@ pub async fn provision(
         .status
         .success();
     let (sha, freshness) = base_commit(spec, base_branch, has_origin).await?;
+    super::seed::link_built_at(&running.channel, identity).await;
 
     if let Err(e) = deliver_base(&running, spec, &sha, base_branch.filter(|_| has_origin)).await {
         clone::discard(spec.dest).await;
@@ -72,11 +75,13 @@ pub async fn provision(
     }
 
     clone::fixups(spec, |dest| async move {
+        // Forced: the directory may hold what the project's seed left there
+        // (`seed`), and a file of the base wins over one of those.
         match landing {
             Landing::Detached => {
                 git::run_git(
                     &dest,
-                    &["checkout", "--detach", BASE_REF],
+                    &["checkout", "--force", "--detach", BASE_REF],
                     "checkout --detach",
                 )
                 .await?;
@@ -84,12 +89,15 @@ pub async fn provision(
             Landing::Branch(branch) => {
                 git::run_git(
                     &dest,
-                    &["checkout", "-b", branch, BASE_REF],
+                    &["checkout", "--force", "-b", branch, BASE_REF],
                     &format!("checkout -b {branch}"),
                 )
                 .await?;
             }
         }
+        // What the seed left that this base does not ignore would show as
+        // the workspace's own untracked files.
+        git::run_git(&dest, &["clean", "-ffdq"], "clean").await?;
         Ok(())
     })
     .await?;

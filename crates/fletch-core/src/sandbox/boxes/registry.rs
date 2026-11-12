@@ -23,7 +23,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use fletch_box::channel;
-use fletch_box::disks::{self, Dirty};
+use fletch_box::disks::Dirty;
 use fletch_box::egress::{EgressEvent, EgressPolicy, EgressProxy};
 use fletch_box::tools::{self, DiskMarker, DiskState, FoundDisk};
 use fletch_box::{guest, Channel, StopOutcome, Vm, VmSpec};
@@ -36,7 +36,9 @@ use crate::error::{Error, Result};
 use crate::workspace::{AgentRecord, FolderGrant};
 
 use super::executor::BoxExecutor;
-use super::{relay, settings, setup, tools_root, EgressEventPayload, EVENT_STATE, EVENT_TOOLS};
+use super::{
+    relay, seed, settings, setup, tools_root, EgressEventPayload, EVENT_STATE, EVENT_TOOLS,
+};
 
 pub const DATA_DISK: &str = "data.img";
 pub const CONSOLE: &str = "console.log";
@@ -1715,6 +1717,10 @@ impl BoxRegistry {
             self.finish_stop(&running, kill_rungs(&running.vm)).await
         };
         tracing::info!(agent_id, ?reason, ?outcome, "box stopped");
+        // Not on app exit: nothing may start work that outlives the app.
+        if outcome.clean() && reason != StopReason::Shutdown {
+            seed::offer(&running.identity, &running.dir);
+        }
         // Its disks' leases go with it (unless another holder of the box
         // outlives this), so a disk an update superseded can go now rather
         // than at the next app start. Not on app exit: the next start sweeps.
@@ -1759,6 +1765,35 @@ impl BoxRegistry {
         }
         self.emit_state(agent_id);
         outcome
+    }
+
+    /// Wants `agent_id`'s disk as its project's seed ([`seed::want`]), and
+    /// makes it that now when the box is down after a clean stop; a running
+    /// box's disk is offered when it stops, as every box's is. Under the box's lifecycle lock,
+    /// so no boot starts on the disk while it is cloned.
+    pub async fn seed_from(&self, agent_id: &str) {
+        let known = self
+            .entries
+            .lock()
+            .get(agent_id)
+            .map(|entry| (entry.identity.clone(), entry.lifecycle.clone()));
+        let Some((identity, lifecycle)) = known else {
+            return;
+        };
+        let Ok(dir) = identity.box_dir() else {
+            return;
+        };
+        if !dir.join(DATA_DISK).exists() {
+            return;
+        }
+        if let Err(e) = seed::want(&dir) {
+            tracing::warn!(agent_id, error = %e, "could not ask for a box's disk as its project's seed");
+            return;
+        }
+        let _guard = lifecycle.lock().await;
+        if self.running(agent_id).is_none() && !Dirty::in_dir(&dir).is_set() {
+            seed::offer(&identity, &dir);
+        }
     }
 
     /// Stop the box and delete its directory: the agent is gone. Forgets the
@@ -2150,7 +2185,8 @@ async fn boot(
     let authorized = channel::authorized_key(&key)?;
     let data = dir.join(DATA_DISK);
     if !data.exists() {
-        disks::create_sparse(&data, u64::from(settings::current().disk_gib) << 30)?;
+        let bytes = u64::from(settings::current().disk_gib) << 30;
+        seed::new_data_disk(identity, &data, bytes)?;
     }
     let dirty = Dirty::in_dir(&dir);
     if dirty.set()? {

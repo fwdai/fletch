@@ -85,7 +85,8 @@ impl ToolchainCache {
     }
 
     /// For a child in a box. A guest sees the host's paths as its own, so the
-    /// root is the same path on the box's own disk, and the box creates it.
+    /// root is the same path on the box's own disk, which starts as a clone
+    /// of the project's seed (`boxes::seed`), and the box creates it.
     /// Cargo keeps its default home there: a guest has no host cargo home to
     /// overlay.
     pub fn in_guest(home: &Path, project_id: &str) -> Result<Self> {
@@ -158,12 +159,12 @@ fn cache_dirs_on_host(home: &Path) -> impl Iterator<Item = PathBuf> + '_ {
 }
 
 /// The directory on this machine where `engine` keeps one cache per project,
-/// named by project id. `None` when it keeps none here: a box's cache is on
-/// the box's own disk and is deleted with the box.
+/// named by project id: the directories seatbelt's toolchains write, the
+/// seeds a project's boxes start from, which carry its cache.
 fn cache_dir_on_host(engine: EngineKind, home: &Path) -> Option<PathBuf> {
     match engine {
         EngineKind::SandboxExec => Some(toolchain_cache_dir(home)),
-        EngineKind::Box => None,
+        EngineKind::Box => super::boxes::seed::project_seeds_dir(),
     }
 }
 

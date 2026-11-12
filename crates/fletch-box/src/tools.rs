@@ -1,6 +1,6 @@
 //! Tools disks: one read-only ext4 disk per `<provider>-<version>` holding that
-//! provider's CLI, built by booting a throwaway box on the base image with a
-//! fresh sparse disk as `/data` and running the provider's install script from
+//! provider's CLI, built by booting a workbench ([`crate::workbench`]) on a
+//! fresh sparse disk and running the provider's install script from
 //! `crates/fletch-box/tools/` through the egress proxy. Init then mounts the
 //! disk's `tools/` directory at `/opt/fletch/tools`, so the CLI is at
 //! `/opt/fletch/tools/<provider>/bin/<cli>`.
@@ -16,24 +16,24 @@
 //! layout; the `fletch-box tools build` subcommand and the engine share
 //! [`build`].
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::channel::{self, Channel};
+use crate::channel::Channel;
 use crate::disks;
 use crate::egress::{EgressEvent, EgressPolicy, EgressProxy};
 use crate::error::{Error, Result};
 use crate::fsutil;
 use crate::guest;
 use crate::image_store;
-use crate::runtime::{RuntimePaths, StopOutcome, Vm, VmSpec};
+use crate::runtime::{RuntimePaths, StopOutcome};
 use crate::version::version_key;
+use crate::workbench::Workbench;
 
 /// The providers with an install script, by id.
 pub const PROVIDERS: &[&str] = &["claude", "codex", "cursor", "opencode", "pi"];
@@ -45,11 +45,6 @@ pub const DISK_BYTES: u64 = 4 << 30;
 
 /// How long an install may take end to end: npm over the proxy, a cold cache.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const READY_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// Numbers this process's build boxes ([`build`]), so builds running at once
-/// never share a box dir.
-static BUILD_SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// The provider's install script, as `crates/fletch-box/tools/<provider>.sh`.
 pub fn install_script(provider: &str) -> Option<&'static str> {
@@ -479,18 +474,6 @@ pub async fn build(
             .map_err(Error::io(format!("create {}", parent.display())))?;
     }
 
-    // A box dir of its own, under the run root like every box's, so socket
-    // paths stay short; removed on every exit path below. Its own per build,
-    // not per process: the engine builds every provider's disk at once, and
-    // builds sharing a dir wipe each other's ssh key and egress socket.
-    let id = format!(
-        "tools-{provider}-{}-{}",
-        std::process::id(),
-        BUILD_SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let dir = paths.run_root.join(&id);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(Error::io(format!("create {}", dir.display())))?;
     let staging = staging_path(out);
     let _ = std::fs::remove_file(&staging);
     let result = build_in(
@@ -500,13 +483,10 @@ pub async fn build(
         version,
         script,
         codegraph_bundle.as_deref(),
-        &id,
-        &dir,
         &staging,
         &mut log,
     )
     .await;
-    let _ = std::fs::remove_dir_all(&dir);
     if let Err(e) = result {
         let _ = std::fs::remove_file(&staging);
         return Err(e);
@@ -533,24 +513,12 @@ async fn build_in(
     version: &str,
     script: &str,
     codegraph_bundle: Option<&[u8]>,
-    id: &str,
-    dir: &Path,
     disk: &Path,
     log: &mut impl FnMut(&str),
 ) -> Result<()> {
     disks::create_sparse(disk, DISK_BYTES)
         .map_err(Error::io(format!("create {}", disk.display())))?;
-    let key = channel::keygen(dir)?;
-    let authorized = channel::authorized_key(&key)?;
-
-    // The identity paths are a contract with init, not something the install
-    // uses; a build has no agent, so they point at a scratch tree under the
-    // user's home (whose top directory the image has).
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| Error::Other("HOME is not set".into()))?;
-    let scratch = home.join(".fletch").join("tools-build");
-    let guest_home = scratch.join("home");
+    let dir = Workbench::fresh_dir(paths, &format!("tools-{provider}"))?;
 
     // Denials are logged, not fatal: the CLIs probe telemetry hosts the
     // default allow-list leaves out and carry on.
@@ -566,56 +534,20 @@ async fn build_in(
     )
     .map_err(Error::io("start the egress proxy"))?;
 
-    let mut spec = VmSpec::new(id, image, disk, &dir.join("console.log"));
-    spec.listen_ports = vec![
-        (guest::SSH_PORT, dir.join("ssh.sock")),
-        (guest::CONTROL_PORT, dir.join("ctl.sock")),
-    ];
-    spec.connect_ports = vec![(guest::EGRESS_PORT, proxy.socket().to_path_buf())];
-    spec.env = BTreeMap::from([
-        (
-            guest::ENV_WRITABLE_ROOT.to_owned(),
-            path_string(&scratch.join("ws")),
-        ),
-        (
-            guest::ENV_RPC_DIR.to_owned(),
-            path_string(&scratch.join("rpc")),
-        ),
-        (guest::ENV_HOME.to_owned(), path_string(&guest_home)),
-        (guest::ENV_AUTHORIZED_KEY.to_owned(), authorized),
-    ]);
-
-    let vm = Vm::start(paths, &spec)?;
-    let host_key = match vm.wait_ready(READY_TIMEOUT).await {
-        Ok(key) => key,
-        Err(e) => {
-            vm.kill();
-            return Err(e);
-        }
-    };
-    let known_hosts = dir.join(channel::KNOWN_HOSTS_FILE);
-    channel::write_known_hosts(&known_hosts, &host_key)?;
-    let chan = Channel::new(
-        dir,
-        &dir.join("ssh.sock"),
-        &key,
-        &known_hosts,
-        &paths.helper,
-    )?;
-
+    let bench = Workbench::boot(paths, image, dir, disk, Some(proxy.socket())).await?;
     let result = install(
-        &chan,
+        &bench.channel,
         provider,
         version,
         script,
         codegraph_bundle,
-        &guest_home,
+        &bench.guest_home,
         log,
     )
     .await;
     // Clean stop whatever happened: a killed VM loses recent writes, and a
     // failed build's disk is removed anyway.
-    let outcome = vm.stop(Duration::from_secs(15)).await;
+    let outcome = bench.stop().await;
     proxy.stop();
     result?;
     if outcome == StopOutcome::Killed {
@@ -712,10 +644,6 @@ async fn run_script(
         )));
     }
     Ok(())
-}
-
-fn path_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
