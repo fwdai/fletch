@@ -55,7 +55,7 @@ use super::{
     box_holding, executor, launch_files, BoxEngine, ConfinedView, Hold, COW_DIR, ENV_DENY,
 };
 use crate::error::{Error, Result};
-use crate::sandbox::KillHandle;
+use crate::sandbox::{KillHandle, ToolchainCache};
 
 /// The dirs under the home a Run may write besides the checkout and the
 /// project's toolchain cache: the Linux twin of the host Run profile's
@@ -278,10 +278,9 @@ impl GuestRun {
         cmd: &str,
         env: &[(String, String)],
     ) -> Result<(PathBuf, Vec<String>, KillHandle)> {
-        let (cache_root, cache_env) =
-            super::guest_toolchain_cache(&self.identity.home, &self.identity.project_id)?;
+        let cache = ToolchainCache::in_guest(&self.identity.home, &self.identity.project_id)?;
         let stores = run_stores(&self.identity.writable_root, &self.launch_id);
-        let mut view = run_view(&self.identity, cwd, &cache_root, &stores);
+        let mut view = run_view(&self.identity, cwd, &cache.root, &stores);
         // Every dir the view gives back or overlays, made first, since the
         // guest binds only what exists; one the guest cannot make (the cache
         // root under a `~/.fletch` the guest's init owns, as before an agent
@@ -326,11 +325,11 @@ impl GuestRun {
                     .into(),
             ));
         }
-        let mut all = if present.contains(&cache_root) {
-            cache_env
+        let mut all = if present.contains(&cache.root) {
+            cache.env
         } else {
             tracing::warn!(
-                root = %cache_root.display(),
+                root = %cache.root.display(),
                 "could not create the toolchain cache in the box; toolchains keep their defaults"
             );
             Vec::new()

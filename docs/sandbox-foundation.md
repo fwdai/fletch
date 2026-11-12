@@ -126,6 +126,17 @@ engine enforces) and `docs/box.md` is the box runtime.
    (`run_detect::Tree`), one listing then the files it needs, and the panel's
    look is passive: a stopped box answers with its last detection.
 
+10. **The toolchain cache is one type.** A launch gets a `ToolchainCache`
+    (`sandbox/toolchain_cache`): the directory its child may write and the env
+    pointing the child's toolchains into it, from the constructor for where
+    the child runs. `on_host` serves a seatbelt agent and a host Run command,
+    `in_guest` a box. What an engine does with it is its own: seatbelt grants
+    the root, a box creates it on its disk. Deleting a project and boot's
+    sweep call `remove_project_cache` and `reclaim_toolchain_caches`, which
+    cover every engine: each one states where it keeps per-project caches on
+    this machine (`cache_dir_on_host`, matched exhaustively), so a new store
+    is a new answer there, never a new call site.
+
 ## What `caps()` says today
 
 | capability | seatbelt | box |

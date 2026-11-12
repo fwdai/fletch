@@ -34,8 +34,8 @@ pub use seatbelt::{
     nested_checkouts_root, nested_rpc_root, profile_args, SANDBOX_EXEC,
 };
 pub use toolchain_cache::{
-    prepare_toolchain_cache, reclaim_toolchain_caches, remove_project_cache, toolchain_cache_dir,
-    toolchain_cache_root, BoxPlatform, ToolchainCache, TOOLCHAIN_CACHE_ROOT_ENV,
+    reclaim_toolchain_caches, remove_project_cache, toolchain_cache_dir, toolchain_cache_root,
+    ToolchainCache, TOOLCHAIN_CACHE_ROOT_ENV,
 };
 
 /// The engine an agent that *adopts* `tree` — works in an existing checkout

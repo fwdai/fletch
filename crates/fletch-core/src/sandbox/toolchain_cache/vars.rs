@@ -7,7 +7,7 @@ use Keying::{PerPlatform, Shared};
 
 /// Whether a row's contents differ per platform. A macOS agent and a Linux
 /// guest of one project share the root, so a per-platform row lands in a
-/// [`BoxPlatform::key`] subdir of its own.
+/// [`Platform::key`] subdir of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Keying {
     Shared,
@@ -104,7 +104,7 @@ pub(super) const TOOLCHAIN_CACHE_VARS: &[(&str, &str, Keying)] = &[
 /// scratch grants already cover `~/.cache` and `~/Library/Caches`, so
 /// XDG-conformant tools never fail in the first place. This table is for the
 /// toolchains that *don't* follow XDG.
-pub fn toolchain_cache_env(root: &Path, platform: BoxPlatform) -> Vec<(String, String)> {
+pub fn toolchain_cache_env(root: &Path, platform: Platform) -> Vec<(String, String)> {
     TOOLCHAIN_CACHE_VARS
         .iter()
         .map(|(var, subdir, keying)| {
@@ -120,12 +120,12 @@ pub fn toolchain_cache_env(root: &Path, platform: BoxPlatform) -> Vec<(String, S
 /// The OS and CPU a confined child runs on, keying the [`PerPlatform`] rows
 /// and the cargo overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BoxPlatform {
+pub struct Platform {
     os: &'static str,
     arch: &'static str,
 }
 
-impl BoxPlatform {
+impl Platform {
     /// The host itself: seatbelt agents and Run commands.
     pub fn host() -> Self {
         Self {
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn every_row_points_inside_the_root_once() {
         let root = Path::new(ROOT);
-        for platform in [BoxPlatform::host(), BoxPlatform::linux()] {
+        for platform in [Platform::host(), Platform::linux()] {
             let env = toolchain_cache_env(root, platform);
             assert_eq!(env.len(), TOOLCHAIN_CACHE_VARS.len());
             for (var, value) in &env {
@@ -186,8 +186,8 @@ mod tests {
     #[test]
     fn per_platform_rows_split_host_and_linux_and_nothing_else() {
         let root = Path::new(ROOT);
-        let host = toolchain_cache_env(root, BoxPlatform::host());
-        let linux = toolchain_cache_env(root, BoxPlatform::linux());
+        let host = toolchain_cache_env(root, Platform::host());
+        let linux = toolchain_cache_env(root, Platform::linux());
         let arch = std::env::consts::ARCH;
 
         let get = |env: &[(String, String)], var: &str| {

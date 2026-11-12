@@ -125,7 +125,7 @@ use crate::sandbox::engine::{
 };
 use crate::sandbox::placement::Placement;
 use crate::sandbox::provider::GuestEntry;
-use crate::sandbox::{policy, provider};
+use crate::sandbox::{policy, provider, ToolchainCache};
 
 pub use registry::{BoxIdentity, BoxPhase, BoxRegistry, RunningBox, StopReason};
 
@@ -1325,8 +1325,8 @@ impl SandboxEngine for BoxEngine {
         // The project's toolchain cache in the guest (made below), which a
         // confined launch sees as a copy of its own like the rest of what it
         // shares with the coder.
-        let (cache_root, cache_env) = guest_toolchain_cache(ctx.home, ctx.project_id)?;
-        let view = confined_view(ctx, is_tenant, &identity, &cache_root);
+        let cache = ToolchainCache::in_guest(ctx.home, ctx.project_id)?;
+        let view = confined_view(ctx, is_tenant, &identity, &cache.root);
         if is_tenant {
             // The tenant's writable root is routed to this box (its profile is
             // written there before the launch — `route_tenant` — but a launch
@@ -1382,18 +1382,18 @@ impl SandboxEngine for BoxEngine {
         // a box are its own disk anyway.
         let made = scope.run(
             &running.channel,
-            &["mkdir", "-p", "--", &cache_root.to_string_lossy()],
+            &["mkdir", "-p", "--", &cache.root.to_string_lossy()],
             None,
         );
         let cache_env = match made {
-            Ok(out) if out.status.success() => cache_env,
+            Ok(out) if out.status.success() => cache.env,
             failed => {
                 let why = failed.map_or_else(
                     |e| e.to_string(),
                     |out| String::from_utf8_lossy(&out.stderr).trim().to_string(),
                 );
                 tracing::warn!(
-                    root = %cache_root.display(),
+                    root = %cache.root.display(),
                     error = %why,
                     "could not create the toolchain cache in the box; toolchains keep their defaults"
                 );
@@ -1590,24 +1590,6 @@ impl SandboxEngine for BoxEngine {
         registry.detach(agent_id, launch_id);
         Ok(())
     }
-}
-
-/// The project's toolchain cache for a launch in a box, and the env pointing
-/// the toolchains into it: the root seatbelt grants this project
-/// (`toolchain_cache_root`), which by path identity is a directory on the
-/// guest's own disk, not the host's cache. Only the redirect rows: the cargo
-/// overlay `prepare_toolchain_cache` adds links the host's cargo home, which
-/// a guest does not have, and creating the root is the guest's to do.
-fn guest_toolchain_cache(
-    home: &Path,
-    project_id: &str,
-) -> Result<(PathBuf, Vec<(String, String)>)> {
-    let root = crate::sandbox::toolchain_cache_root(home, project_id)?;
-    let env = crate::sandbox::toolchain_cache::toolchain_cache_env(
-        &root,
-        crate::sandbox::BoxPlatform::linux(),
-    );
-    Ok((root, env))
 }
 
 /// The env file for a launch: the assembled env minus the deny-list, plus what

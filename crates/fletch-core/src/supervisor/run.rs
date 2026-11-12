@@ -773,12 +773,7 @@ pub(crate) fn sandboxed_run_command(
     home: &Path,
     project_id: &str,
 ) -> Result<SandboxedRunCommand> {
-    let cache = crate::sandbox::prepare_toolchain_cache(
-        home,
-        project_id,
-        cwd,
-        crate::sandbox::BoxPlatform::host(),
-    )?;
+    let cache = crate::sandbox::ToolchainCache::on_host(home, project_id, cwd)?;
     // Grant the target's git *common dir* so `git worktree add` (and later
     // commits) can write worktree admin data / objects / refs. For a normal
     // repo this is `<cwd>/.git`, already inside `writable_root`; for a linked
