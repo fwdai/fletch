@@ -39,7 +39,7 @@ pub(super) async fn start_checkout(store: PathBuf, project_id: String, checkout:
     }
     if let Err(e) = crate::git::run_git(checkout, &["clean", "-ffdq"], "clean").await {
         tracing::warn!(checkout = %checkout.display(), error = %e, "could not clean what a checkout's seed left");
-        unplant(&planted);
+        let _ = tokio::task::spawn_blocking(move || unplant(&planted)).await;
     }
 }
 
