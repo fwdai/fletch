@@ -75,12 +75,7 @@ impl SandboxEngine for SandboxExecEngine {
         // The project's toolchain cache, granted below and pointed at by the
         // env, so host toolchains have somewhere legitimate to write
         // (`super::toolchain_cache`).
-        let cache = super::prepare_toolchain_cache(
-            ctx.home,
-            ctx.project_id,
-            ctx.cwd,
-            super::BoxPlatform::host(),
-        )?;
+        let cache = super::ToolchainCache::on_host(ctx.home, ctx.project_id, ctx.cwd)?;
         let profile_text = build_profile(
             ctx.writable_root,
             ctx.rpc_dir,
@@ -638,7 +633,7 @@ const RUN_TOOLCHAIN_DIRS: &[&str] = &[
 /// still look up a Keychain login; closing that is a separate decision.
 ///
 /// `toolchain_cache` is the project's toolchain cache root
-/// ([`super::prepare_toolchain_cache`]), the same one the project's agents get.
+/// ([`super::ToolchainCache::on_host`]), the same one the project's agents get.
 ///
 /// `extra_writable` grants additional out-of-checkout paths the specific Run
 /// target needs. The Run panel passes the target's resolved git *common dir*:
@@ -865,7 +860,7 @@ pub(crate) fn pid_alive(_pid: i32) -> bool {
 /// (`agent::codex_home`), granted whole bar its `config.toml` (`None` for
 /// every other provider).
 /// `toolchain_cache` is the agent's project's toolchain cache root
-/// ([`super::prepare_toolchain_cache`]).
+/// ([`super::ToolchainCache::on_host`]).
 /// `source_repos` are the user's own repositories the checkouts were cloned
 /// from (`AgentLaunchCtx::source_repos`): read back out of the macOS privacy
 /// deny when one lives in Documents or iCloud Drive, since the `--shared`
