@@ -33,6 +33,8 @@ pub struct FileReport {
     pub allow: Vec<String>,
     /// This file's `egress.disable`, as read.
     pub disable: Vec<String>,
+    /// This file's `seed` section, as read.
+    pub seed: FileSeed,
 }
 
 /// What one file asks for.
@@ -43,16 +45,25 @@ pub struct Parsed {
     pub egress_allow: Vec<String>,
     /// Inherited patterns to turn off, likewise.
     pub egress_disable: Vec<String>,
+    pub seed: FileSeed,
+    /// Every warning, the seed section's included.
+    pub warnings: Vec<String>,
+}
+
+/// What one file says of the seed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct FileSeed {
     /// `seed.enabled`, when the file says.
-    pub seed_enabled: Option<bool>,
+    pub enabled: Option<bool>,
     /// `seed.exclude`: paths inside a checkout, deduplicated.
-    pub seed_exclude: Vec<String>,
+    pub exclude: Vec<String>,
+    /// What was skipped in the section.
     pub warnings: Vec<String>,
 }
 
 /// What the files say of the project's seed, the disk its new boxes start
 /// from (docs/box.md).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SeedSettings {
     /// Whether the project has a seed at all. The local file's word stands
     /// over the team's; on when neither says.
@@ -84,7 +95,10 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         match key.as_str() {
             "$schema" => {}
             "egress" => parse_egress(value, &mut parsed),
-            "seed" => parse_seed(value, &mut parsed),
+            "seed" => {
+                parse_seed(value, &mut parsed.seed);
+                parsed.warnings.extend(parsed.seed.warnings.iter().cloned());
+            }
             _ => parsed.warnings.push(format!("unknown setting `{key}`")),
         }
     }
@@ -120,9 +134,8 @@ fn parse_egress(value: Value, parsed: &mut Parsed) {
                     .push(format!("`egress.{key}`: {item} is not a string"));
                 continue;
             };
-            match raw.parse::<fletch_box::HostPattern>() {
-                Ok(pattern) => {
-                    let spelled = pattern.to_string();
+            match host_pattern(raw) {
+                Ok(spelled) => {
                     if !list.contains(&spelled) {
                         list.push(spelled);
                     }
@@ -133,42 +146,48 @@ fn parse_egress(value: Value, parsed: &mut Parsed) {
     }
 }
 
-fn parse_seed(value: Value, parsed: &mut Parsed) {
-    let Value::Object(seed) = value else {
-        parsed.warnings.push("`seed` must be an object".into());
+fn parse_seed(value: Value, seed: &mut FileSeed) {
+    let Value::Object(section) = value else {
+        seed.warnings.push("`seed` must be an object".into());
         return;
     };
-    for (key, value) in seed {
+    for (key, value) in section {
         match (key.as_str(), value) {
-            ("enabled", Value::Bool(enabled)) => parsed.seed_enabled = Some(enabled),
-            ("enabled", _) => parsed
+            ("enabled", Value::Bool(enabled)) => seed.enabled = Some(enabled),
+            ("enabled", _) => seed
                 .warnings
                 .push("`seed.enabled` must be true or false".into()),
             ("exclude", Value::Array(items)) => {
                 for item in items {
-                    match path_inside_a_checkout(&item) {
-                        Ok(path) if parsed.seed_exclude.contains(&path) => {}
-                        Ok(path) => parsed.seed_exclude.push(path),
-                        Err(e) => parsed.warnings.push(format!("`seed.exclude`: {e}")),
+                    let path = match &item {
+                        Value::String(raw) => path_inside_a_checkout(raw),
+                        _ => Err(format!("{item} is not a string")),
+                    };
+                    match path {
+                        Ok(path) if seed.exclude.contains(&path) => {}
+                        Ok(path) => seed.exclude.push(path),
+                        Err(e) => seed.warnings.push(format!("`seed.exclude`: {e}")),
                     }
                 }
             }
-            ("exclude", _) => parsed
+            ("exclude", _) => seed
                 .warnings
                 .push("`seed.exclude` must be a list of paths".into()),
-            (key, _) => parsed
-                .warnings
-                .push(format!("unknown setting `seed.{key}`")),
+            (key, _) => seed.warnings.push(format!("unknown setting `seed.{key}`")),
         }
     }
 }
 
-/// `item` as a path that cannot leave the checkout it is joined to: relative,
+/// `raw` as a host pattern, in `HostPattern`'s spelling.
+fn host_pattern(raw: &str) -> Result<String, String> {
+    raw.parse::<fletch_box::HostPattern>()
+        .map(|pattern| pattern.to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// `raw` as a path that cannot leave the checkout it is joined to: relative,
 /// of plain names only, spelled with single slashes and none trailing.
-fn path_inside_a_checkout(item: &Value) -> Result<String, String> {
-    let Value::String(raw) = item else {
-        return Err(format!("{item} is not a string"));
-    };
+fn path_inside_a_checkout(raw: &str) -> Result<String, String> {
     let names: Option<Vec<&str>> = Path::new(raw)
         .components()
         .filter(|part| *part != Component::CurDir)
@@ -225,8 +244,9 @@ impl Which {
     }
 }
 
-/// An edit to one file's `egress` lists: each pattern is normalized; adds go
-/// after removes.
+/// An edit to one file: its `egress` lists, each pattern normalized, and its
+/// `seed` section, each path spelled as the parser spells it. In each list,
+/// adds go after removes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Edit {
@@ -238,13 +258,30 @@ pub struct Edit {
     pub disable_add: Vec<String>,
     #[serde(default)]
     pub disable_remove: Vec<String>,
+    /// `seed.enabled`: `Some(Some(_))` writes it, `Some(None)` (`null` on the
+    /// wire) takes it out of the file, `None` (absent) leaves it.
+    #[serde(default, deserialize_with = "present")]
+    pub seed_enabled: Option<Option<bool>>,
+    #[serde(default)]
+    pub seed_exclude_add: Vec<String>,
+    #[serde(default)]
+    pub seed_exclude_remove: Vec<String>,
+}
+
+/// A field that is there, `null` included, as `Some`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 /// `text` (a settings file, or `None` for one that does not exist yet) with
 /// `edit` applied, as the JSON to write. Refused for a file with comments,
 /// which plain JSON would drop — that file is edited by hand — and for a
-/// pattern that does not parse. Everything else in the file is kept; an
-/// emptied list, and then an emptied `egress`, is left out.
+/// pattern or path that does not parse. Everything else in the file is kept;
+/// an emptied list, and then an emptied section, is left out.
 pub fn edit_text(text: Option<&str>, edit: &Edit) -> Result<String, String> {
     let text = text.unwrap_or("{}");
     if has_comments(text) {
@@ -259,55 +296,102 @@ pub fn edit_text(text: Option<&str>, edit: &Edit) -> Result<String, String> {
     let Value::Object(mut top) = value else {
         return Err("the file must hold a JSON object".into());
     };
-    let mut egress = match top.remove("egress") {
-        Some(Value::Object(egress)) => egress,
-        Some(_) => return Err("`egress` must be an object".into()),
-        None => serde_json::Map::new(),
-    };
-    for (key, remove, add) in [
-        ("allow", &edit.allow_remove, &edit.allow_add),
-        ("disable", &edit.disable_remove, &edit.disable_add),
-    ] {
-        let mut list: Vec<String> = match egress.remove(key) {
+    edit_list(
+        &mut top,
+        ("egress", "allow"),
+        &edit.allow_remove,
+        &edit.allow_add,
+        host_pattern,
+    )?;
+    edit_list(
+        &mut top,
+        ("egress", "disable"),
+        &edit.disable_remove,
+        &edit.disable_add,
+        host_pattern,
+    )?;
+    edit_list(
+        &mut top,
+        ("seed", "exclude"),
+        &edit.seed_exclude_remove,
+        &edit.seed_exclude_add,
+        path_inside_a_checkout,
+    )?;
+    if let Some(enabled) = edit.seed_enabled {
+        edit_section(&mut top, "seed", |seed| {
+            match enabled {
+                Some(enabled) => seed.insert("enabled".into(), Value::Bool(enabled)),
+                None => seed.remove("enabled"),
+            };
+            Ok(())
+        })?;
+    }
+    let mut out = serde_json::to_string_pretty(&Value::Object(top)).map_err(|e| e.to_string())?;
+    out.push('\n');
+    Ok(out)
+}
+
+type Object = serde_json::Map<String, Value>;
+
+/// The list of strings at `section.key`, with `remove` taken out and then
+/// `add` put in, each compared in `spell`'s spelling. A list with nothing to
+/// remove or add is left as it is.
+fn edit_list(
+    top: &mut Object,
+    (section, key): (&str, &str),
+    remove: &[String],
+    add: &[String],
+    spell: fn(&str) -> Result<String, String>,
+) -> Result<(), String> {
+    if remove.is_empty() && add.is_empty() {
+        return Ok(());
+    }
+    edit_section(top, section, |object| {
+        let mut list: Vec<String> = match object.remove(key) {
             Some(Value::Array(items)) => items
                 .into_iter()
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect(),
-            Some(_) => return Err(format!("`egress.{key}` must be a list")),
+            Some(_) => return Err(format!("`{section}.{key}` must be a list")),
             None => Vec::new(),
         };
-        let normalize = |raw: &String| {
-            raw.parse::<fletch_box::HostPattern>()
-                .map(|p| p.to_string())
-                .map_err(|e| e.to_string())
-        };
         for raw in remove {
-            let spelled = normalize(raw)?;
-            list.retain(|p| {
-                p.parse::<fletch_box::HostPattern>()
-                    .map(|q| q.to_string() != spelled)
-                    .unwrap_or(true)
-            });
+            let spelled = spell(raw)?;
+            list.retain(|item| spell(item).map_or(true, |s| s != spelled));
         }
         for raw in add {
-            let spelled = normalize(raw)?;
+            let spelled = spell(raw)?;
             if !list.contains(&spelled) {
                 list.push(spelled);
             }
         }
         if !list.is_empty() {
-            egress.insert(
-                key.to_string(),
+            object.insert(
+                key.into(),
                 Value::Array(list.into_iter().map(Value::String).collect()),
             );
         }
+        Ok(())
+    })
+}
+
+/// The object at `name` (an empty one when missing) through `change`, put
+/// back unless emptied.
+fn edit_section(
+    top: &mut Object,
+    name: &str,
+    change: impl FnOnce(&mut Object) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut object = match top.remove(name) {
+        Some(Value::Object(object)) => object,
+        Some(_) => return Err(format!("`{name}` must be an object")),
+        None => Object::new(),
+    };
+    change(&mut object)?;
+    if !object.is_empty() {
+        top.insert(name.into(), Value::Object(object));
     }
-    if !egress.is_empty() {
-        top.insert("egress".into(), Value::Object(egress));
-    }
-    let mut out = serde_json::to_string_pretty(&Value::Object(top)).map_err(|e| e.to_string())?;
-    out.push('\n');
-    Ok(out)
+    Ok(())
 }
 
 /// The repository's `info/exclude`, the git-ignore that is never committed:
@@ -538,12 +622,15 @@ pub fn read_files(repo: &Path, agents_root: Option<&Path>) -> Read {
                                     }
                                 }
                             }
-                            if let Some(enabled) = parsed.seed_enabled {
+                            if let Some(enabled) = parsed.seed.enabled {
                                 read.seed.enabled = enabled;
                             }
-                            read.seed.exclude.extend(parsed.seed_exclude);
+                            read.seed
+                                .exclude
+                                .extend(parsed.seed.exclude.iter().cloned());
                             report.allow = parsed.egress_allow;
                             report.disable = parsed.egress_disable;
+                            report.seed = parsed.seed;
                         }
                     },
                 }
@@ -639,6 +726,37 @@ mod tests {
 
         std::fs::remove_file(repo.join(DIR).join(LOCAL_FILE)).unwrap();
         assert!(!read_files(&repo, None).seed.enabled);
+    }
+
+    /// Each file reports its own seed section, and the warnings of that
+    /// section apart from the file's others.
+    #[test]
+    fn reports_each_files_seed_section() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        write(
+            &repo,
+            SHARED_FILE,
+            r#"{ "run": 1, "egress": { "allow": ["a.com"] },
+                 "seed": { "exclude": ["uploads/", "../up"] } }"#,
+        );
+        write(&repo, LOCAL_FILE, r#"{ "seed": { "enabled": false } }"#);
+        let read = read_files(&repo, None);
+        assert_eq!(read.files[0].seed.enabled, None);
+        assert_eq!(read.files[0].seed.exclude, vec!["uploads"]);
+        assert_eq!(read.files[0].warnings.len(), 2, "{:?}", read.files[0]);
+        assert_eq!(read.files[0].seed.warnings.len(), 1);
+        assert!(read.files[0].seed.warnings[0].contains("../up"));
+        assert_eq!(read.files[1].seed.enabled, Some(false));
+        assert!(read.files[1].seed.exclude.is_empty());
+
+        write(&repo, SHARED_FILE, r#"{ "seed": [] }"#);
+        let read = read_files(&repo, None);
+        assert_eq!(
+            read.files[0].seed.warnings,
+            vec!["`seed` must be an object"]
+        );
+        assert_eq!(read.files[0].warnings, read.files[0].seed.warnings);
     }
 
     /// Both files are read, the team's first, their additions merged; a file
@@ -784,6 +902,98 @@ mod tests {
             ..Edit::default()
         };
         assert!(edit_text(None, &bad).is_err());
+    }
+
+    /// The seed section: `enabled` is written or taken out, exclusions are
+    /// added and removed in the parser's spelling, the rest of the file is
+    /// kept, an emptied section is left out, and a path that could leave the
+    /// checkout is refused rather than written.
+    #[test]
+    fn edits_the_seed_section() {
+        let out = edit_text(
+            Some(r#"{ "$schema": "s", "egress": { "allow": ["a.com"] } }"#),
+            &Edit {
+                seed_enabled: Some(Some(false)),
+                seed_exclude_add: vec!["uploads/".into(), "./data//db".into()],
+                ..Edit::default()
+            },
+        )
+        .unwrap();
+        let parsed = parse(&out).unwrap();
+        assert_eq!(parsed.seed.enabled, Some(false));
+        assert_eq!(parsed.seed.exclude, vec!["uploads", "data/db"]);
+        assert_eq!(parsed.egress_allow, vec!["a.com"]);
+        assert!(out.contains(r#""$schema": "s""#));
+
+        let out = edit_text(
+            Some(&out),
+            &Edit {
+                seed_enabled: Some(None),
+                seed_exclude_remove: vec!["data/db/".into()],
+                ..Edit::default()
+            },
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["seed"], serde_json::json!({ "exclude": ["uploads"] }));
+
+        let emptied = edit_text(
+            Some(&out),
+            &Edit {
+                seed_exclude_remove: vec!["uploads".into()],
+                ..Edit::default()
+            },
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&emptied).unwrap();
+        assert!(value.get("seed").is_none());
+        assert_eq!(value["egress"]["allow"], serde_json::json!(["a.com"]));
+
+        for path in ["../elsewhere", "/etc", "", "a/../b"] {
+            let bad = Edit {
+                seed_exclude_add: vec![path.into()],
+                ..Edit::default()
+            };
+            let error = edit_text(None, &bad).unwrap_err();
+            assert!(error.contains("not a path inside the checkout"), "{error}");
+        }
+    }
+
+    /// An edit leaves a section it has nothing for as it is, even one the
+    /// parser would skip.
+    #[test]
+    fn leaves_a_section_it_does_not_edit() {
+        let out = edit_text(
+            Some(r#"{ "seed": 3, "egress": { "allow": [] } }"#),
+            &Edit {
+                disable_add: vec!["rubygems.org".into()],
+                ..Edit::default()
+            },
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["seed"], 3);
+        assert_eq!(value["egress"]["allow"], serde_json::json!([]));
+
+        let error = edit_text(
+            Some(r#"{ "seed": 3 }"#),
+            &Edit {
+                seed_enabled: Some(Some(true)),
+                ..Edit::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "`seed` must be an object");
+    }
+
+    /// `seedEnabled` on the wire: absent leaves the setting, `null` takes it
+    /// out, a boolean writes it.
+    #[test]
+    fn tells_a_cleared_setting_from_an_absent_one() {
+        let edit = |json: &str| serde_json::from_str::<Edit>(json).unwrap().seed_enabled;
+        assert_eq!(edit("{}"), None);
+        assert_eq!(edit(r#"{ "seedEnabled": null }"#), Some(None));
+        assert_eq!(edit(r#"{ "seedEnabled": false }"#), Some(Some(false)));
     }
 
     /// The local file is excluded through the repository's `info/exclude`,

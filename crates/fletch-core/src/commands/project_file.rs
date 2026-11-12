@@ -36,10 +36,11 @@ pub fn project_file_approve_impl(
     Ok(status)
 }
 
-/// `project_file_edit(project_id, file, edit)`: change the `egress` lists of
-/// one of the project's settings files from the app — `shared` is the team's
-/// `.fletch/settings.json`, `local` the user's own. Hosts added this way are
-/// approved as they are written. Refused for a file with comments.
+/// `project_file_edit(project_id, file, edit)`: change the `egress` lists or
+/// the `seed` section of one of the project's settings files from the app —
+/// `shared` is the team's `.fletch/settings.json`, `local` the user's own.
+/// Hosts added this way are approved as they are written. Refused for a file
+/// with comments.
 pub fn project_file_edit_impl(
     ctx: &EngineCtx,
     project_id: &str,

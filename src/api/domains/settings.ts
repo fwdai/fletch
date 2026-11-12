@@ -47,8 +47,9 @@ export const settingsApi = {
    *  reach them. Rejects a pattern the files do not hold now. */
   projectFileApprove: (projectId: string, patterns: string[]) =>
     invoke<ProjectFileStatus>("project_file_approve", { projectId, patterns }),
-  /** Change the `egress` lists of one settings file. Hosts added this way are
-   *  approved as written. Rejects a file with comments (edit it by hand). */
+  /** Change the `egress` lists or the `seed` section of one settings file.
+   *  Hosts added this way are approved as written. Rejects a file with
+   *  comments (edit it by hand) and a path outside the checkout. */
   projectFileEdit: (projectId: string, file: ProjectFileWhich, edit: ProjectFileEdit) =>
     invoke<ProjectFileStatus>("project_file_edit", { projectId, file, edit }),
   /** "Remove agent attribution": true strips agents' commit/PR attribution
