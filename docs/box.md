@@ -56,10 +56,16 @@ lz4hc erofs (64 KiB clusters, dedupe): the guest kernel decodes LZ4 only.
 ### The seed
 
 A new box's data disk is a clone of its project's seed, when the project has
-one of the size the disk setting asks for (`boxes/seed.rs`): an APFS clone,
-which takes no space until the box writes to it. A new workspace then has the
-project's dependencies and downloads installed, and shares their blocks with
-every other workspace until it changes them.
+one of the size the disk setting asks for: an APFS clone, which takes no
+space until the box writes to it. A new workspace then has the project's
+dependencies and downloads installed, and shares their blocks with every
+other workspace until it changes them.
+
+The rules below are the engine-neutral core's (`sandbox/seed/`: requests,
+the project's store, candidates). The box engine supplies, through
+`seed::AtRest`, what only it can do (`boxes/seed.rs`): take a down box's disk
+(a clone), reduce the clone on a workbench (`seed.sh`), and start a new box
+from the seed (`new_data_disk`).
 
 ```text
 <checkouts base>/box-seeds/<project id>/seed/disk.img            a workspace disk, reduced
@@ -86,14 +92,14 @@ Three structures carry the rules:
 - **A disk is cloned only from a `DownBox`** (`boxes/registry.rs`), which
   borrows the box's lifecycle lock, held. Only the registry can make one, so
   no boot can be writing the disk while it is cloned.
-- **A clone is a `Candidate`**, in a directory of its own that goes when the
-  candidate does. Candidates take their turn on a workbench
+- **A clone is a `Candidate`** (`seed/candidate.rs`), in a directory of its
+  own that goes when the candidate does. Candidates take their turn on a workbench
   (`fletch_box::workbench`: a throwaway box booted on one disk, as a tools
   disk is built) one at a time, in the order they were cloned; none is
   skipped because another is being made. A candidate that is no longer needed
   at its turn (the project got its first seed meanwhile) is dropped.
 - **A request is answered by one candidate.** `seed-wanted` holds a request
-  of its own, ordered by when it was made; the candidate cloned under it
+  of its own (`seed/request.rs`), ordered by when it was made; the candidate cloned under it
   withdraws that request, and only once it is answered: a workbench has
   looked at the disk and what it found is settled (the seed published, or
   nothing worth inheriting), or the project has no use for the disk (seeds

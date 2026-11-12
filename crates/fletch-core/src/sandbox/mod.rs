@@ -7,6 +7,7 @@ pub mod policy;
 pub mod provider;
 pub mod provision;
 mod seatbelt;
+mod seed;
 pub mod toolchain_cache;
 
 use std::path::{Path, PathBuf};
