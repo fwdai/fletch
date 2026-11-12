@@ -105,8 +105,13 @@ export async function persistLiveUsage(
  *  snapshot the records last gave, and the calls streamed since. The store
  *  holds only the two folded together. `seen` counts every call ever folded,
  *  so a point in the stream can be named (`beginUsageRead`) and still mean the
- *  same thing after earlier calls were handed to the records. */
+ *  same thing after earlier calls were handed to the records.
+ *
+ *  Keyed by agent id, which is a recycled place name: `created` says which
+ *  agent of that name the turn belongs to, so a new one never folds onto what
+ *  a discarded or another host's namesake left here. */
 interface LiveTurn {
+  created: string | undefined;
   base: UsageSnapshot;
   events: UsageEvent[];
   seen: number;
@@ -139,10 +144,16 @@ export function foldLiveUsage(
   const events = getAdapter(agent?.provider).liveUsageEvents?.(rawEvent) ?? [];
   if (events.length === 0) return;
   let turn = liveTurns.get(agentId);
+  if (turn?.created !== agent?.created_at) turn = undefined;
   if (!turn) {
-    // A call need not name its model; until one does, the window is the
-    // spawn model's — the same one the gauge showed before the call.
-    turn = { base: get().usage[agentId] ?? unspentSnapshot(agent?.model), events: [], seen: 0 };
+    turn = {
+      created: agent?.created_at,
+      // A call need not name its model; until one does, the window is the
+      // spawn model's — the same one the gauge showed before the call.
+      base: get().usage[agentId] ?? unspentSnapshot(agent?.model),
+      events: [],
+      seen: 0,
+    };
     liveTurns.set(agentId, turn);
   }
   turn.events.push(...events);

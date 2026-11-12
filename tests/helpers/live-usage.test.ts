@@ -38,7 +38,7 @@ const recorded = (...bodies: RawEvent[]) =>
 
 /** A store holding one agent, driven the way the event listeners drive it. The
  *  live turns are module state, so every test brings an agent of its own. */
-function store(id: string, agent: { provider: string; model?: string }) {
+function store(id: string, agent: { provider: string; model?: string; created_at?: string }) {
   let state = {
     usage: {},
     workspace: { agents: [{ id, ...agent }] },
@@ -78,6 +78,18 @@ describe("foldLiveUsage", () => {
     const s = store("model", { provider: "claude", model: "claude-opus-4-8[1m]" });
     s.fold(call("m1", 5, 8000));
     expect(s.usage().context).toMatchObject({ state: "measured", model: "claude-opus-4-8[1m]" });
+  });
+
+  // Agent ids are place names from a recycled pool: a discarded agent's name
+  // comes back on a new one, which must not inherit what the old one streamed.
+  it("starts a recycled id's agent from nothing", () => {
+    const old = store("lima", { provider: "claude", model: "old-model", created_at: "t1" });
+    old.fold(call("m1", 5, 8000));
+
+    const next = store("lima", { provider: "claude", model: "new-model", created_at: "t2" });
+    next.fold(call("m9", 7, 9000));
+    expect(next.usage().spend.tokens).toMatchObject({ input: 7, cacheRead: 9000 });
+    expect(next.usage().context).toMatchObject({ tokens: 9007, model: "new-model" });
   });
 
   it("ignores events that report no call, and agents whose stream reports none", () => {
