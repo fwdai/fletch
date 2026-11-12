@@ -46,6 +46,7 @@ from the kernel environment (`krun_set_env`), never from argv:
 | `FLETCH_BOX_AUTHORIZED_KEY` | one OpenSSH public key line, written to `/data/ssh/authorized_keys` |
 | `FLETCH_BOX_ID` | optional, shown in log lines |
 | `FLETCH_BOX_SHARES`, `FLETCH_BOX_SHARE_<i>` | folders the user shared: `ro:<path>` or `rw:<path>`, virtio-fs device `fletch-share-<i>` mounted at `<path>` |
+| `FLETCH_BOX_CACHE` | optional: a path inside `$HOME` where the cache disk (`/dev/vdc`, the tools disks and layers then follow it) is mounted; init prints `FLETCH_CACHE <KiB>` when it mounts the disk and when it stops (docs/box.md, "The cache disk") |
 
 | Path / port | What |
 | --- | --- |

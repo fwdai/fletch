@@ -63,6 +63,36 @@ pub fn scan(console: &str) -> Progress {
     Progress::Booting { host_key }
 }
 
+/// How much a box's cache disk held when init mounted it and when init
+/// stopped the box ([`guest::MARK_CACHE`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheUse {
+    pub mounted_kib: u64,
+    pub stopped_kib: u64,
+}
+
+/// `None` unless init said both: a box without a cache disk, or one that did
+/// not stop through init.
+pub fn cache_use(console: &str) -> Option<CacheUse> {
+    let said: Vec<u64> = console
+        .lines()
+        .filter_map(|line| {
+            line.trim_end_matches('\r')
+                .strip_prefix(guest::MARK_CACHE)?
+                .trim()
+                .parse()
+                .ok()
+        })
+        .collect();
+    match said[..] {
+        [mounted_kib, stopped_kib] => Some(CacheUse {
+            mounted_kib,
+            stopped_kib,
+        }),
+        _ => None,
+    }
+}
+
 /// The last `max` bytes of the console, on a char boundary.
 pub fn tail(console: &str, max: usize) -> &str {
     let mut start = console.len().saturating_sub(max);
@@ -99,6 +129,20 @@ mod tests {
             Progress::Failed("guest init failed: no data disk".into())
         );
         assert_eq!(key.known_hosts_line(), "box ssh-ed25519 AAAAC3\n");
+    }
+
+    #[test]
+    fn cache_use_needs_the_mount_and_the_stop_line() {
+        assert_eq!(cache_use("FLETCH_READY\n"), None);
+        assert_eq!(cache_use("FLETCH_CACHE 2076\r\nFLETCH_READY\r\n"), None);
+        assert_eq!(
+            cache_use("FLETCH_CACHE 2076\r\nFLETCH_READY\r\nFLETCH_CACHE 7196\r\noff\n"),
+            Some(CacheUse {
+                mounted_kib: 2076,
+                stopped_kib: 7196
+            })
+        );
+        assert_eq!(cache_use("FLETCH_CACHE lots\nFLETCH_CACHE 7196\n"), None);
     }
 
     #[test]

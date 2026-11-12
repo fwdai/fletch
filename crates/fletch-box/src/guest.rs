@@ -19,6 +19,9 @@ pub const STOP_LINE: &str = "stop\n";
 pub const MARK_HOSTKEY: &str = "FLETCH_HOSTKEY";
 pub const MARK_READY: &str = "FLETCH_READY";
 pub const MARK_INIT_ERROR: &str = "FLETCH_INIT_ERROR";
+/// `FLETCH_CACHE <KiB>`: how much the cache disk holds, printed once when
+/// init mounts it and once as it stops the box.
+pub const MARK_CACHE: &str = "FLETCH_CACHE";
 
 /// Kernel-side environment names init reads (set through `krun_set_env`, which
 /// is safe for `KEY=VALUE`; only argv is re-split by libkrun's init).
@@ -28,6 +31,9 @@ pub const ENV_HOME: &str = "FLETCH_BOX_HOME";
 /// One OpenSSH public key line; init writes it to the agent's authorized_keys.
 pub const ENV_AUTHORIZED_KEY: &str = "FLETCH_BOX_AUTHORIZED_KEY";
 pub const ENV_BOX_ID: &str = "FLETCH_BOX_ID";
+/// The guest path where init mounts the cache disk ([`DISK_CACHE`]); absent
+/// when the box has none.
+pub const ENV_CACHE: &str = "FLETCH_BOX_CACHE";
 /// How many folders the host shares with the guest (absent = none). Share `n`
 /// is the virtio-fs device tagged [`share_tag`]`(n)`, described by
 /// `FLETCH_BOX_SHARE_<n>` = `ro:<path>` or `rw:<path>`: init mounts it at that
@@ -58,15 +64,17 @@ pub const GID: u32 = 1000;
 /// The guest's loopback proxy, for processes that only honour `HTTPS_PROXY`.
 pub const LOOPBACK_PROXY: &str = "http://127.0.0.1:8899";
 
-/// Block device order: the base image, the data disk, then the tools disks
-/// (one per provider CLI the box carries, the owner's first) and the layer
-/// images. Init tells the disks after the data disk apart by content (ext4 is
-/// a tools disk, an erofs with [`LAYER_MARKER`] is a layer), not by letter,
-/// and mounts every tools disk's `tools/` at [`TOOLS_MOUNT`]: one bound, several
-/// overlaid with the first on top (image 0.3.5 and later; earlier guests
-/// refuse a second ext4 disk).
+/// Block device order: the base image, the data disk, the cache disk when the
+/// box has one ([`ENV_CACHE`]), then the tools disks (one per provider CLI the
+/// box carries, the owner's first) and the layer images. Init tells the disks
+/// after those apart by content (ext4 is a tools disk, an erofs with
+/// [`LAYER_MARKER`] is a layer), not by letter, and mounts every tools disk's
+/// `tools/` at [`TOOLS_MOUNT`]: one bound, several overlaid with the first on
+/// top (image 0.3.5 and later; earlier guests refuse a second ext4 disk).
 pub const DISK_BASE: &str = "/dev/vda";
 pub const DISK_DATA: &str = "/dev/vdb";
+pub const DISK_CACHE: &str = "/dev/vdc";
+/// The first tools disk of a box without a cache disk.
 pub const DISK_TOOLS: &str = "/dev/vdc";
 /// A layer image's marker file (`{name, version, dirs}`); init overlays each
 /// of the directories it names on the root, read-only.

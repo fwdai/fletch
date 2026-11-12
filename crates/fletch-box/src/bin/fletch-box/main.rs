@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use fletch_box::{
-    channel, disks, guest, image_store, Channel, EgressEvent, EgressPolicy, EgressProxy,
+    channel, disks, guest, image_store, CacheDisk, Channel, EgressEvent, EgressPolicy, EgressProxy,
     ImageStore, PinnedImage, RuntimePaths, StopOutcome, Vm, VmSpec,
 };
 
@@ -85,6 +85,13 @@ struct BootArgs {
     /// The data disk; created sparse (8 GiB) if absent.
     #[arg(long)]
     data: PathBuf,
+    /// A cache disk, mounted in the guest at --cache-path; created sparse if
+    /// absent.
+    #[arg(long, requires = "cache_path")]
+    cache: Option<PathBuf>,
+    /// Where the guest mounts --cache.
+    #[arg(long, requires = "cache")]
+    cache_path: Option<PathBuf>,
     /// Tools disks (one provider's CLI each), attached read-only in this order;
     /// init mounts them all at /opt/fletch/tools, the first on top.
     #[arg(long = "tools")]
@@ -306,6 +313,16 @@ async fn boot(args: BootArgs) -> Result<(), String> {
     spec.cpus = args.cpus;
     spec.memory_mib = args.mem;
     spec.tools_disks = args.tools.clone();
+    if let (Some(disk), Some(guest_path)) = (&args.cache, &args.cache_path) {
+        if !disk.exists() {
+            disks::create_sparse(disk, disks::CACHE_DISK_BYTES)
+                .map_err(|e| format!("create cache disk: {e}"))?;
+        }
+        spec.cache = Some(CacheDisk {
+            disk: disk.clone(),
+            guest_path: guest_path.clone(),
+        });
+    }
     spec.init = args.init.clone();
     spec.init_args = args.init_args.clone();
     spec.listen_ports = vec![
@@ -329,8 +346,10 @@ async fn boot(args: BootArgs) -> Result<(), String> {
         let bytes = std::fs::read(script).map_err(|e| format!("read {}: {e}", script.display()))?;
         let disk = dir.join("script.img");
         disks::write_script_disk(&bytes, &disk).map_err(|e| e.to_string())?;
-        // vda base, vdb data, then the tools disks, the layers, then this one.
-        let letter = (b'c' + args.tools.len() as u8 + args.layers.len() as u8) as char;
+        // vda base, vdb data, the cache disk if any, then the tools disks, the
+        // layers, then this one.
+        let before = usize::from(spec.cache.is_some()) + args.tools.len() + args.layers.len();
+        let letter = (b'c' + before as u8) as char;
         if spec.init_args.is_empty() {
             spec.init_args = vec!["/bin/sh".into(), format!("/dev/vd{letter}")];
         }

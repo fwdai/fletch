@@ -20,7 +20,8 @@ each part's README has the detail.
 ## What a box boots
 
 Disks, in order: `base.erofs` read-only as `/`; a per-box sparse ext4 data disk
-as `/data` (the agent's tree, home and ssh key live there); the tools disks
+as `/data` (the agent's tree, home and ssh key live there); the box's cache
+disk (below), when it has one; the tools disks
 (one per provider CLI, built once per CLI version: the owner's provider's,
 waited for, then every other provider's that is built by boot time, so a
 tenant of another provider — the local reviewer — runs from the same box); then
@@ -51,6 +52,43 @@ packages installed (`packages/<name>.txt`), so nothing is duplicated. Mesa's
 software GL and LLVM, locales, docs and man pages are excluded with dpkg path
 rules (`dpkg-excludes.cfg`); a headless browser never loads them. Images are
 lz4hc erofs (64 KiB clusters, dedupe): the guest kernel decodes LZ4 only.
+
+### The cache disk
+
+What a box's toolchains download (package caches, Playwright's browsers: the
+project's toolchain cache, `sandbox/toolchain_cache`) lives on a disk of its
+own, so the boxes of one project share it (`boxes/cache_disk.rs`):
+
+```text
+<checkouts base>/box-cache/<project id>/<generation>.img   the project's cache
+<box dir>/cache.img                                        one box's clone of it
+<box dir>/cache.json                                       which generation the clone came from
+```
+
+A box boots with a clone of the project's newest generation, an APFS clone
+that takes no space until the box writes to it. Init mounts it under `/data`,
+which a confined launch does not see, and binds it at the cache root
+(`FLETCH_BOX_CACHE`), so the reviewer's copy-on-write view and the Run view
+cover it like any directory of the home. Init prints `FLETCH_CACHE <KiB>` when
+it mounts the disk and when it stops the box. A box that stopped cleanly
+holding at least 1 MiB more than it started with has its disk published as
+the project's next generation, when it was cloned from the newest one; older
+generations are deleted, since every box holds a clone of its own. A box that
+added nothing starts from the newest generation at its next boot. Of two
+boxes that both added to one generation, the first to stop publishes and the
+other keeps its additions on its own disk, unpublished.
+
+A box that cached on its data disk before it had a cache disk has that
+directory moved onto the cache disk once it is ready (dropped when the
+project already has a cache), which returns the space to the data disk.
+
+The cache is never why a box fails to boot. A host that cannot clone without
+copying (anything but macOS) attaches no cache disk; a disk init cannot mount
+after `fsck` is formatted, and one it still cannot use is left out. In each
+case the cache root is a directory on the data disk, as before. Deleting a
+project deletes its cache disks, and boot sweeps those of projects deleted
+meanwhile, through the same calls that clean seatbelt's
+(`sandbox::remove_project_cache`, `sandbox::reclaim_toolchain_caches`).
 
 Every agent process starts through `fletch-guest exec`, which clears the
 environment and loads the launch's env file. All ssh sessions are the one

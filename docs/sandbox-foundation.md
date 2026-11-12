@@ -131,7 +131,8 @@ engine enforces) and `docs/box.md` is the box runtime.
     pointing the child's toolchains into it, from the constructor for where
     the child runs. `on_host` serves a seatbelt agent and a host Run command,
     `in_guest` a box. What an engine does with it is its own: seatbelt grants
-    the root, a box creates it on its disk. Deleting a project and boot's
+    the root, a box mounts a clone of the project's cache disk there
+    (`boxes/cache_disk.rs`). Deleting a project and boot's
     sweep call `remove_project_cache` and `reclaim_toolchain_caches`, which
     cover every engine: each one states where it keeps per-project caches on
     this machine (`cache_dir_on_host`, matched exhaustively), so a new store

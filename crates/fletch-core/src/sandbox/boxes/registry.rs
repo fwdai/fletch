@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 use fletch_box::channel;
 use fletch_box::disks::{self, Dirty};
 use fletch_box::egress::{EgressEvent, EgressPolicy, EgressProxy};
+use fletch_box::runtime::console;
 use fletch_box::tools::{self, DiskMarker, DiskState, FoundDisk};
 use fletch_box::{guest, Channel, StopOutcome, Vm, VmSpec};
 use parking_lot::Mutex;
@@ -35,6 +36,7 @@ use crate::codegraph::CODEGRAPH_VERSION;
 use crate::error::{Error, Result};
 use crate::workspace::{AgentRecord, FolderGrant};
 
+use super::cache_disk::BoxCache;
 use super::executor::BoxExecutor;
 use super::{relay, settings, setup, tools_root, EgressEventPayload, EVENT_STATE, EVENT_TOOLS};
 
@@ -244,6 +246,7 @@ pub struct RunningBox {
     proxy: Mutex<Option<EgressProxy>>,
     relays: relay::Relays,
     dirty: Dirty,
+    cache: Option<BoxCache>,
     /// Whether this boot's `fletch-guest` takes `exec --read-only`, once a
     /// launch has asked (`super::guest_confines`). The guest is the image's,
     /// fixed for the boot.
@@ -1749,6 +1752,9 @@ impl BoxRegistry {
             if let Err(e) = running.dirty.clear() {
                 tracing::warn!(agent_id, error = %e, "clearing the dirty marker failed");
             }
+            if let Some(cache) = &running.cache {
+                cache.settle(console::cache_use(&running.vm.console()));
+            }
         } else {
             tracing::warn!(agent_id, "box was killed; its disk is marked dirty");
         }
@@ -2153,6 +2159,7 @@ async fn boot(
         disks::create_sparse(&data, u64::from(settings::current().disk_gib) << 30)?;
     }
     let dirty = Dirty::in_dir(&dir);
+    let cache = BoxCache::attach(identity, &dir, !dirty.is_set());
     if dirty.set()? {
         tracing::warn!(
             agent_id,
@@ -2178,6 +2185,7 @@ async fn boot(
     let mut spec = VmSpec::new(&agent_id, &ready.image.path(), &data, &dir.join(CONSOLE));
     spec.cpus = knobs.cpus;
     spec.memory_mib = knobs.memory_mib;
+    spec.cache = cache.as_ref().map(BoxCache::vm_disk);
     spec.tools_disks = tools_leases
         .iter()
         .map(|lease| lease.path.clone())
@@ -2289,6 +2297,7 @@ async fn boot(
         proxy: Mutex::new(Some(proxy)),
         relays,
         dirty,
+        cache,
         read_only_exec: OnceLock::new(),
     })
 }

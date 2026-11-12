@@ -26,9 +26,10 @@ rm -rf "$B"
 mkdir -p "$B"
 
 echo "== booting base + devtools + browser (console: $B/console.log)"
+CACHE="$HOME/.fletch/toolchain-cache/$ID"
 fletch-box boot --id "$ID" --image "$OUT/base.erofs" \
   --layer "$OUT/layer-devtools.erofs" --layer "$OUT/layer-browser.erofs" \
-  --data "$B/data.img" \
+  --data "$B/data.img" --cache "$B/cache.img" --cache-path "$CACHE" \
   --env FLETCH_BOX_ID=$ID --env "FLETCH_BOX_HOME=$HOME" \
   --env "FLETCH_BOX_WRITABLE_ROOT=$HOME/.fletch/workspaces/$ID" \
   --env "FLETCH_BOX_RPC_DIR=$HOME/.fletch/rpc/$ID" > "$B/boot.log" 2>&1 &
@@ -54,11 +55,16 @@ ssh_ free -m
 echo "== fletch-guest exec"
 ssh_ sh -c 'umask 077; printf "HOME=/data/home\nPATH=/usr/local/bin:/usr/bin:/bin\n" > /data/run/t.env'
 ssh_ fletch-guest exec --env-file /data/run/t.env --cwd /tmp -- sh -c 'echo exec ok: $HOME'
-echo "== a tenant's mailbox and writable root, the toolchain cache, made as agent"
+echo "== a tenant's mailbox and writable root, made as agent"
 ssh_ mkdir -p -m 700 -- "$HOME/.fletch/rpc/$ID-tenant/requests" "$HOME/.fletch/rpc/$ID-tenant/responses"
-ssh_ mkdir -p -- "$HOME/.fletch/workspaces/$ID-tenant" "$HOME/.fletch/toolchain-cache/$ID"
+ssh_ mkdir -p -- "$HOME/.fletch/workspaces/$ID-tenant"
 echo "tenant dirs ok"
+echo "== the cache disk at the toolchain cache root, written as agent"
+ssh_ sh -c "findmnt -n -o SOURCE,FSTYPE,OPTIONS '$CACHE' && dd if=/dev/zero of='$CACHE/two-mebibytes' bs=1M count=2 2>/dev/null && ls -la '$CACHE'"
 
 echo "== stopping"
 fletch-box stop "$ID"
 wait $BOOT || true
+echo "== what init said the cache disk held, mounted and stopped"
+grep -c '^FLETCH_CACHE [0-9]' "$B/console.log" | grep -qx 2 || { echo "expected two FLETCH_CACHE lines"; exit 1; }
+grep '^FLETCH_CACHE' "$B/console.log"

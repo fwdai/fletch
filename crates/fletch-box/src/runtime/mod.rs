@@ -304,6 +304,7 @@ pub struct VmSpec {
     pub memory_mib: u32,
     pub base_image: PathBuf,
     pub data_disk: PathBuf,
+    pub cache: Option<CacheDisk>,
     /// Tools disks, one per provider CLI the box carries, attached read-only
     /// in this order; init mounts them all at [`guest::TOOLS_MOUNT`], the
     /// first on top.
@@ -342,6 +343,7 @@ impl VmSpec {
             memory_mib: 2048,
             base_image: base_image.into(),
             data_disk: data_disk.into(),
+            cache: None,
             tools_disks: Vec::new(),
             layers: Vec::new(),
             extra_disks: Vec::new(),
@@ -424,6 +426,11 @@ impl VmSpec {
                 read_only: false,
             },
         ];
+        disks.extend(self.cache.iter().map(|cache| Disk {
+            id: "cache".into(),
+            path: cache.disk.clone(),
+            read_only: false,
+        }));
         disks.extend(self.tools_disks.iter().enumerate().map(|(i, path)| Disk {
             id: format!("tools{i}"),
             path: path.clone(),
@@ -454,6 +461,12 @@ impl VmSpec {
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect();
         env.extend(self.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        if let Some(cache) = &self.cache {
+            env.insert(
+                guest::ENV_CACHE.into(),
+                cache.guest_path.to_string_lossy().into_owned(),
+            );
+        }
         let mut shares = Vec::new();
         if !self.shares.is_empty() {
             env.insert(guest::ENV_SHARES.into(), self.shares.len().to_string());
@@ -506,6 +519,14 @@ impl VmSpec {
                 .collect(),
         }
     }
+}
+
+/// A writable disk the guest mounts at `guest_path`, apart from the data disk:
+/// the host clones and replaces it without touching the box's own files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheDisk {
+    pub disk: PathBuf,
+    pub guest_path: PathBuf,
 }
 
 /// Which rung of the stop ladder ended the VM.
@@ -862,6 +883,41 @@ mod tests {
             spec.launch_config(&paths()).exec,
             ["/usr/bin/env", "/bin/sh", "/dev/vdc"]
         );
+    }
+
+    #[test]
+    fn a_cache_disk_follows_the_data_disk_and_names_its_mount() {
+        let mut spec = spec();
+        spec.tools_disks = vec!["/t/claude.img".into()];
+        spec.cache = Some(CacheDisk {
+            disk: "/b/cache.img".into(),
+            guest_path: "/Users/alex/.fletch/toolchain-cache/p1".into(),
+        });
+        let config = spec.launch_config(&paths());
+        assert_eq!(LaunchConfig::parse(&config.to_argv()).unwrap(), config);
+
+        let disks: Vec<_> = config
+            .disks
+            .iter()
+            .map(|d| (d.id.as_str(), d.read_only))
+            .collect();
+        assert_eq!(
+            disks,
+            [
+                ("base", true),
+                ("data", false),
+                ("cache", false),
+                ("tools0", true)
+            ]
+        );
+        assert!(config
+            .env
+            .contains(&"FLETCH_BOX_CACHE=/Users/alex/.fletch/toolchain-cache/p1".to_string()));
+        let without = self::spec().launch_config(&paths());
+        assert!(!without
+            .env
+            .iter()
+            .any(|kv| kv.starts_with("FLETCH_BOX_CACHE=")));
     }
 
     #[test]

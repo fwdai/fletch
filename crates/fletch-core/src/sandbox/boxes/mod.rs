@@ -94,6 +94,7 @@
 //! other phase (`mirror::record_disposal`, `sandbox::disposal_at_stop`).
 
 pub mod allowlist;
+pub mod cache_disk;
 pub mod egress_log;
 pub mod egress_prompt;
 pub mod executor;

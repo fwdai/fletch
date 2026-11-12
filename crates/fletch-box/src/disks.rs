@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 /// and nothing the guest writes can grow it past this.
 pub const DEFAULT_DATA_DISK_BYTES: u64 = 8 << 30;
 
+/// The size of a cache disk. Sparse like the data disk, and every clone of
+/// one is this size too.
+pub const CACHE_DISK_BYTES: u64 = 32 << 30;
+
 /// Creates an empty sparse `path` of `bytes`. Fails if it exists.
 pub fn create_sparse(path: &Path, bytes: u64) -> io::Result<()> {
     if let Some(parent) = path.parent() {
@@ -24,14 +28,21 @@ pub fn create_sparse(path: &Path, bytes: u64) -> io::Result<()> {
 /// APFS), a full copy elsewhere or when the filesystem refuses, with a warning
 /// because a template clone is expected to be free.
 pub fn clone(from: &Path, to: &Path) -> io::Result<()> {
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if let Err(e) = clonefile(from, to) {
+    if let Err(e) = clone_sharing_blocks(from, to) {
         tracing::warn!(from = %from.display(), to = %to.display(), error = %e, "clonefile unavailable; copying");
         std::fs::copy(from, to)?;
     }
     Ok(())
+}
+
+/// Clones `from` to a `to` that does not exist yet, the two sharing every
+/// block until one is written. Fails where the filesystem cannot do that,
+/// rather than copy: for a caller that clones because a copy costs too much.
+pub fn clone_sharing_blocks(from: &Path, to: &Path) -> io::Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    clonefile(from, to)
 }
 
 #[cfg(target_os = "macos")]
@@ -129,6 +140,18 @@ mod tests {
         assert_eq!(std::fs::read(&to).unwrap(), b"template bytes");
         std::fs::write(&to, b"changed").unwrap();
         assert_eq!(std::fs::read(&from).unwrap(), b"template bytes");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_block_sharing_clone_never_replaces_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("a.img");
+        let to = dir.path().join("b.img");
+        std::fs::write(&from, b"a").unwrap();
+        std::fs::write(&to, b"b").unwrap();
+        assert!(clone_sharing_blocks(&from, &to).is_err());
+        assert_eq!(std::fs::read(&to).unwrap(), b"b");
     }
 
     #[test]

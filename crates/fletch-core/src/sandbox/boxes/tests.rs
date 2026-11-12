@@ -283,6 +283,79 @@ async fn claude_runs_from_the_tools_disk() {
     BoxRegistry::global().discard(&agent_id).await.unwrap();
 }
 
+/// What one box of a project downloads is on the cache disk every other box
+/// of the project boots with, and on the host the two share its blocks: the
+/// first box's stop publishes its disk as the project's cache, and the second
+/// box starts from a clone of that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "boots real boxes; see the module docs"]
+async fn a_projects_boxes_share_what_one_of_them_cached() {
+    let _data = setup().await;
+    let registry = BoxRegistry::global();
+    let project = uuid::Uuid::new_v4().to_string();
+    let boxed = |name: &str| {
+        let agent_id = format!("{name}-{}", std::process::id() % 10_000);
+        let identity = BoxIdentity::new(&agent_id, &project, "claude").unwrap();
+        std::fs::create_dir_all(&identity.writable_root).unwrap();
+        identity
+    };
+    let (first, second) = (boxed("cache-a"), boxed("cache-b"));
+    let cached = ToolchainCache::in_guest(&first.home, &project)
+        .unwrap()
+        .root
+        .join("download");
+    let cached = cached.to_string_lossy();
+    let sha256 = |out: std::process::Output| {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string()
+    };
+
+    let running = registry.ensure_running(&first).await.unwrap();
+    let download =
+        format!("dd if=/dev/urandom of={cached} bs=1M count=8 2>/dev/null && sha256sum {cached}");
+    let downloaded = sha256(
+        running
+            .channel
+            .exec(None, None, &["sh", "-c", &download])
+            .await
+            .unwrap(),
+    );
+    drop(running);
+    let outcome = registry
+        .stop(&first.agent_id, StopReason::User)
+        .await
+        .unwrap();
+    assert_eq!(outcome, fletch_box::StopOutcome::Control);
+
+    let running = registry.ensure_running(&second).await.unwrap();
+    let found = sha256(
+        running
+            .channel
+            .exec(None, None, &["sha256sum", &cached])
+            .await
+            .unwrap(),
+    );
+    assert_eq!(found, downloaded);
+    drop(running);
+
+    for identity in [&first, &second] {
+        registry.discard(&identity.agent_id).await.unwrap();
+    }
+    crate::sandbox::remove_project_cache(&first.home, &project);
+    let project_cache = super::cache_disk::project_caches_dir()
+        .unwrap()
+        .join(&project);
+    assert!(!project_cache.exists());
+}
+
 async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     while !done() {

@@ -10,10 +10,14 @@
 #   FLETCH_BOX_AUTHORIZED_KEY  one OpenSSH public key line, the host's key for this box
 # Optional: FLETCH_BOX_ID, shown in log lines; FLETCH_BOX_SHARES=<n> with
 # FLETCH_BOX_SHARE_<i>=ro:<path> | rw:<path> for i < n, the folders the user
-# shared with this box, each the virtio-fs device tagged fletch-share-<i>.
+# shared with this box, each the virtio-fs device tagged fletch-share-<i>;
+# FLETCH_BOX_CACHE=<path>, where to mount the cache disk, which is then
+# /dev/vdc and the tools disks and layers follow it.
 #
 # Console markers the host reads, in order:
 #   FLETCH_HOSTKEY <type> <base64>   the guest's ssh host key (persisted on /data)
+#   FLETCH_CACHE <KiB>               what the cache disk holds: once when it is mounted
+#                                    and once when the box stops
 #   FLETCH_READY                     ssh (vsock 22), egress (6000) and control (5000) are live
 #   FLETCH_INIT_ERROR <text>         then a non-zero exit: a box that cannot be reached must
 #                                    never look ready
@@ -22,6 +26,10 @@ set -eu
 SSH_VSOCK=22 EGRESS_VSOCK=6000 CONTROL_VSOCK=5000 EGRESS_PORT=8899
 GUEST=/opt/fletch/bin/fletch-guest
 DATA_DEV=/dev/vdb
+CACHE_DEV=
+[ -z "${FLETCH_BOX_CACHE:-}" ] || CACHE_DEV=/dev/vdc
+CACHE_MNT=/data/cache
+CACHE_BEFORE=/data/cache-before
 
 step="starting"
 failed=
@@ -50,7 +58,8 @@ mkdir -m 755 /run/sshd   # sshd's privilege separation directory, needed even wi
 echo fletch-box > /proc/sys/kernel/hostname
 
 step="mounting layers"
-# Every disk after the data disk is told apart by content, not by its letter:
+# Every disk after the data disk and the cache disk is told apart by content,
+# not by its letter:
 # an erofs with a /.fletch-layer marker is a layer (devtools, browser, ...),
 # an ext4 is a tools disk (one provider's CLI each; a box may carry several),
 # a disk with no filesystem (a test's script disk) is left alone. Layers are
@@ -63,6 +72,7 @@ tools_devs=""
 n=0
 for dev in /dev/vd[c-z]; do
   [ -b "$dev" ] || continue
+  [ "$dev" != "$CACHE_DEV" ] || continue
   type=$(blkid -o value -s TYPE "$dev" 2>/dev/null || true)
   case "$type" in
     erofs)
@@ -97,11 +107,12 @@ step="mounting /data"
 # reach the end of the host file, which stock libkrun would truncate (Calina's
 # init; its libkrun patch 3 covers the rest). Lazy init keeps the sparse host
 # file sparse.
-format_data() {
-  size_kib=$(( $(blockdev --getsize64 "$DATA_DEV") / 1024 - 4096 ))
-  mkfs.ext4 -q -F -L fletch-data -E nodiscard,lazy_itable_init=1,lazy_journal_init=1 \
-    "$DATA_DEV" "${size_kib}k"
+format() { # <device> <label>
+  size_kib=$(( $(blockdev --getsize64 "$1") / 1024 - 4096 ))
+  mkfs.ext4 -q -F -L "$2" -E nodiscard,lazy_itable_init=1,lazy_journal_init=1 \
+    "$1" "${size_kib}k"
 }
+format_data() { format "$DATA_DEV" fletch-data; }
 # discard: deleted files give their space back to the host file. noinit_itable:
 # no background zeroing of inode tables, which would fill the sparse file.
 mount_data() {
@@ -163,6 +174,52 @@ bind_identity "$FLETCH_BOX_HOME" /data/home
 bind_identity "$FLETCH_BOX_RPC_DIR" /data/rpc
 bind_identity "$FLETCH_BOX_WRITABLE_ROOT" /data/ws
 
+# The cache disk: what the box's toolchains download, on a disk the host
+# clones between the boxes of one project. Mounted under /data, which a
+# confined launch does not see, and bound at FLETCH_BOX_CACHE, which it sees
+# as the host lets it. A cache never fails a boot: a disk that will not mount
+# after fsck is formatted, and one that still will not is left out, as is one
+# whose path is outside HOME, where init has nowhere to make it; the path then
+# stays a directory on the data disk.
+mount_cache() {
+  mount -t ext4 -o nosuid,nodev,noatime,discard,noinit_itable "$CACHE_DEV" "$CACHE_MNT" 2>/dev/null
+}
+cache_disk_mounts() {
+  [ -b "$CACHE_DEV" ] || return 1
+  case "$FLETCH_BOX_CACHE" in "$FLETCH_BOX_HOME"/?*) ;; *) return 1;; esac
+  mkdir -p "$CACHE_MNT"
+  if [ -n "$(blkid "$CACHE_DEV")" ]; then
+    mount_cache && return 0
+    e2fsck -y "$CACHE_DEV" >/dev/null 2>&1 || true
+    mount_cache && return 0
+    echo "fletch-init: the cache disk does not mount; formatting it" >&2
+  fi
+  format "$CACHE_DEV" fletch-cache && mount_cache
+}
+cache_kib() { df -k --output=used "$CACHE_MNT" | tail -n 1 | tr -d ' '; }
+cache_mounted=
+if [ -n "$CACHE_DEV" ]; then
+  step="mounting the cache disk"
+  if cache_disk_mounts; then
+    cache_mounted=1
+    # What this box cached on its data disk before it had a cache disk is set
+    # aside, to be moved onto the disk once the box is ready.
+    if [ ! -e "$CACHE_BEFORE" ] && [ -n "$(ls -A "$FLETCH_BOX_CACHE" 2>/dev/null)" ]; then
+      mv "$FLETCH_BOX_CACHE" "$CACHE_BEFORE"
+    fi
+    mkdir -p "$CACHE_MNT/files" "$FLETCH_BOX_CACHE"
+    chown agent:agent "$CACHE_MNT/files"
+    dir=$FLETCH_BOX_CACHE
+    while [ "$dir" != "$FLETCH_BOX_HOME" ]; do
+      chown -h agent:agent "$dir"
+      dir=${dir%/*}
+    done
+    echo "FLETCH_CACHE $(cache_kib)"
+    mount --bind "$CACHE_MNT/files" "$FLETCH_BOX_CACHE"
+  else
+    echo "fletch-init: no usable cache disk; the cache stays on the data disk" >&2
+  fi
+fi
 # The folders the user shared with this box, each at its own host path from its
 # virtio-fs device, after HOME so one inside it lands on top, and in the host's
 # order (parents first). Read-only is enforced on the host side; `ro` here only
@@ -240,6 +297,21 @@ start "$GUEST" wait-stop "$CONTROL_VSOCK"
 control=$!
 
 echo FLETCH_READY
+
+# The cache set aside above: moved onto a cache disk that has nothing yet,
+# dropped when the project's cache is already on it. After FLETCH_READY, since
+# a copy of gigabytes must not hold the boot; what the agent downloads
+# meanwhile is never overwritten.
+if [ -n "$cache_mounted" ] && [ -e "$CACHE_BEFORE" ]; then
+  (
+    if [ -z "$(ls -A "$CACHE_MNT/files")" ]; then
+      echo "fletch-init: moving this box's cache onto the cache disk"
+      cp -a --update=none "$CACHE_BEFORE/." "$CACHE_MNT/files/" || true
+    fi
+    rm -rf "$CACHE_BEFORE"
+  ) &
+fi
+
 wait "$control"   # returns once the host sent `stop`
 
 step="stopping"
@@ -249,6 +321,10 @@ kill -TERM -1 2>/dev/null || true
 sleep 0.2
 kill -KILL -1 2>/dev/null || true
 sync
+if [ -n "$cache_mounted" ]; then
+  echo "FLETCH_CACHE $(cache_kib)"
+  umount "$FLETCH_BOX_CACHE" "$CACHE_MNT" || echo "fletch-init: could not unmount the cache disk" >&2
+fi
 # Shared folders first, the last mounted first: one inside HOME pins its bind.
 i=$shares
 while [ "$i" -gt 0 ]; do
