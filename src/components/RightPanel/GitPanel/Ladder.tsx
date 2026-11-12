@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { type ReactNode, useState } from "react";
 import type { FileStatus, PrChecks, PrComment, PrComments, PrState, ReviewState } from "@/api";
 import { Icon } from "@/components/Icon";
-import { ChangedFileList } from "@/components/RightPanel/Code/Changes/ChangedFileList";
+import { ChangedFileList } from "@/components/RightPanel/ChangedFileList";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { ChecksSection, CommentsSection } from "./cards";
@@ -179,7 +179,9 @@ function rowTrailing(row: LadderRow, b: LadderBodies): ReactNode {
 function rowBody(row: LadderRow, b: LadderBodies): ReactNode {
   switch (row.key) {
     case "changes":
-      return b.files.length > 0 ? <ChangedFileList files={b.files} onOpen={b.onOpenFile} /> : null;
+      return b.files.length > 0 ? (
+        <ChangedFileList files={b.files} onOpen={b.onOpenFile} placement="nested" />
+      ) : null;
     case "commits":
       return b.commitsLink ? (
         <div className="rg-line text-sm">

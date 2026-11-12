@@ -4,11 +4,11 @@
 // and the Walkthrough rides on top of both views, moving the diff pane itself.
 import { useEffect, useRef, useState } from "react";
 import type { AgentRecord, DiffBaseMode } from "@/api";
+import { ChangedFileList } from "@/components/RightPanel/ChangedFileList";
 import { isAgentBusy } from "@/helpers";
 import { useAppStore } from "@/store";
 import { useAgentGit } from "../useAgentGit";
 import { ChangedFileDiff } from "./ChangedFileDiff";
-import { ChangedFileList } from "./ChangedFileList";
 import { BlockedHint, ChangesHeader, DegradedHint } from "./ChangesHeader";
 import { EmptyChanges } from "./EmptyChanges";
 import { useChangedFiles } from "./useChangedFiles";

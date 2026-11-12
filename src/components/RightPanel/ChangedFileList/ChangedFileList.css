@@ -1,0 +1,105 @@
+/* ─── ChangedFileList — one row per changed file, the same row wherever the
+   list shows (the Code panel's Changes, the Git panel's uncommitted files).
+   The placements only seat the list; nothing below them restyles a row. ── */
+
+/* the list is a panel's body: text 12px in from the panel's edges, the row
+   highlight 4px in */
+.cfl.panel {
+  padding-inline: 4px;
+}
+/* the list opens under another row: text flush with that row's, the row
+   highlight bleeding 8px past it */
+.cfl.nested {
+  margin-inline: -8px;
+}
+
+.cfl-row {
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  color: var(--fg-1);
+  cursor: default;
+  transition: background 0.1s;
+}
+.cfl-row:hover {
+  background: var(--hover);
+}
+/* rows that open the file's diff */
+.cfl-row.openable {
+  cursor: pointer;
+}
+.cfl-row.active {
+  background: var(--bg-2);
+}
+.cfl-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.cfl-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-3);
+}
+.cfl-base {
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-0);
+  font-weight: 600;
+}
+.cfl-stats {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.cfl-stats .add {
+  color: var(--success);
+}
+.cfl-stats .rem {
+  color: var(--danger);
+}
+/* read, and unchanged since: recedes so the unread stand out */
+.cfl-row.viewed .cfl-name,
+.cfl-row.viewed .cfl-stats {
+  opacity: 0.5;
+}
+/* pulses with the Code tab's live dot (`code-tab-live`, Code.css) */
+.cfl-live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  animation: code-tab-live 1.6s ease-in-out infinite;
+}
+/* the 22px button overhangs the row's padding rather than setting its height,
+   so a row is as tall as its text with or without it */
+.cfl-viewed {
+  flex-shrink: 0;
+  margin-block: -4px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.cfl-row:hover .cfl-viewed,
+.cfl-viewed:focus-visible,
+.cfl-viewed.on {
+  opacity: 1;
+}
+.cfl-viewed.on {
+  color: var(--success);
+}
+.cfl-chev {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.cfl-row.openable:hover .cfl-chev {
+  opacity: 1;
+}
