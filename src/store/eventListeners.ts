@@ -61,6 +61,7 @@ import {
   applyFolderGrantsUpdate,
   carryForwardStoreOnly,
   dischargeSending,
+  foldLiveUsage,
   isAgentBusy,
   mergeUserTurns,
   mirrorSentTurn,
@@ -71,6 +72,7 @@ import {
   providerFor,
   recordWorkspaceUsage,
   reduceRecords,
+  settleLiveUsage,
 } from "@/helpers";
 import { pushAgentOutput, pushShellOutput } from "@/pty/buffers";
 import { decodeBase64 } from "@/pty/decode";
@@ -323,6 +325,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       // Capture usage that lives only on the live stream (cursor) into
       // session_records so it folds like every other agent (see persistLiveUsage).
       void persistLiveUsage(get, set, e.agent_id, e.event as RawEvent);
+      // And the usage a stream reports ahead of its records (claude): fold it
+      // in now, so the context badge moves during the turn.
+      foldLiveUsage(get, set, e.agent_id, e.event as RawEvent);
       // Codex rollout files encrypt reasoning text, so retain the readable live
       // event as a compiled record and merge it back at its rollout item on replay.
       void persistLiveReasoning(get, e.agent_id, e.event as RawEvent);
@@ -386,6 +391,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
           // carryForwardStoreOnly.
           const items = carryForwardStoreOnly(rebuilt, get().managedLogs[id] ?? []);
           const usage = usageFromRecords(provider, records);
+          if (hasUsage(usage)) settleLiveUsage(id);
           set((state) => ({
             managedLogs: { ...state.managedLogs, [id]: items },
             // Only overwrite when records carried usage — cursor folds usage

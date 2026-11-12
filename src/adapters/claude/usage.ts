@@ -33,11 +33,29 @@ import type { UsageEvent } from "@/adapters/usage";
 
 export function usageEvents(body: RawEvent): UsageEvent[] {
   if (body.type === "system") return boundaryEvents(body);
+  return callEvents(body);
+}
+
+/** The calls of a turn in flight, off the live stream: it states each call as
+ *  it happens, in the transcript's own `assistant` shape, while the transcript
+ *  is only read at turn end. Compaction markers are left to the transcript —
+ *  the stream words them differently, and the next call measures the window
+ *  anyway. */
+export function liveUsageEvents(event: RawEvent): UsageEvent[] {
+  return callEvents(event);
+}
+
+/** One `assistant` line as the call it bills, from the transcript or the live
+ *  stream. The stream spells the envelope's own fields in snake_case — a
+ *  subagent's call is `isSidechain` on disk and carries a `parent_tool_use_id`
+ *  on the stream, an error envelope is `isApiErrorMessage` /
+ *  `is_api_error_message` — and has no `requestId`. */
+function callEvents(body: RawEvent): UsageEvent[] {
   if (body.type !== "assistant") return [];
   // An API-error envelope replays the failed call's usage under a new line, and
   // the placeholder `<synthetic>` model is the CLI talking to itself (interrupt
   // notices, error text). Neither is a billed call of its own.
-  if (body.isApiErrorMessage === true) return [];
+  if (body.isApiErrorMessage === true || body.is_api_error_message === true) return [];
   const message = asRecord(body.message);
   if (message.model === "<synthetic>") return [];
 
@@ -49,7 +67,9 @@ export function usageEvents(body: RawEvent): UsageEvent[] {
     cacheWrite: cacheCreationTokens(usage),
     id: requestId(body, message),
     model: typeof message.model === "string" ? message.model : undefined,
-    ownWindow: body.isSidechain === true,
+    ownWindow:
+      body.isSidechain === true ||
+      (typeof body.parent_tool_use_id === "string" && body.parent_tool_use_id !== ""),
   });
 }
 

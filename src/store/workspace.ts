@@ -35,6 +35,7 @@ import {
   replaceTurnBubble,
   repoPathFor,
   resolveBaseBranch,
+  settleLiveUsage,
   unsupportedManagedCommand,
   waitingBubble,
   whileSending,
@@ -974,6 +975,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       const items = mergeUserTurns(reduceRecords(provider, records), turns);
       const usage = usageFromRecords(provider, records);
       if (hasUsage(usage)) {
+        settleLiveUsage(id);
         // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
         // spend belongs to its project like anyone else's.
         void recordWorkspaceUsage(id, agentRecord(get(), id)?.project_id, usage);

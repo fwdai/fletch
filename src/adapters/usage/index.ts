@@ -144,6 +144,33 @@ export function withSupersededSpend(usage: UsageSnapshot, superseded: Spend[]): 
   return { ...usage, spend: superseded.reduce(addSpend, usage.spend) };
 }
 
+/** `base` — what the records say — with a turn in flight on top: `live`, the
+ *  snapshot of the calls its stream has reported so far (`liveUsageEvents`).
+ *  Their spend adds up; the window is the live one once a call of the turn has
+ *  measured it, since that measurement is newer than anything on record. */
+export function withLiveTurn(base: UsageSnapshot, live: UsageSnapshot): UsageSnapshot {
+  if (!hasUsage(live)) return base;
+  const measured = live.context.state === "measured";
+  const model = live.context.model ?? base.context.model;
+  return {
+    spend: addSpend(base.spend, live.spend),
+    context: measured
+      ? {
+          ...live.context,
+          limit: live.context.limit || base.context.limit,
+          ...(model && { model }),
+        }
+      : base.context,
+    coverage: base.coverage,
+  };
+}
+
+/** Whether `provider`'s agent reports token usage at all (antigravity's does
+ *  not), i.e. whether a gauge for it will ever have anything to show. */
+export function reportsUsage(provider: string | undefined): boolean {
+  return getAdapter(provider).usageEvents !== undefined;
+}
+
 function addSpend(a: Spend, b: Spend): Spend {
   const byModel = { ...a.byModel };
   for (const [model, tokens] of Object.entries(b.byModel)) {

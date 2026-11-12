@@ -7,12 +7,15 @@ import { opencodeAdapter } from "@/adapters/opencode";
 import { piAdapter } from "@/adapters/pi";
 import type { RawEvent } from "@/adapters/types";
 import {
+  aggregate,
   EMPTY_SNAPSHOT,
   hasUsage,
   priceSnapshot,
+  reportsUsage,
   sessionSpend,
   totalTokens,
   usageFromRecords,
+  withLiveTurn,
   withSupersededSpend,
 } from "@/adapters/usage";
 import type { SessionRecord } from "@/api";
@@ -857,6 +860,99 @@ describe("cursor usage (persisted live result)", () => {
       ]),
     ).toBe(EMPTY_SNAPSHOT);
   });
+});
+
+// ── a turn in flight ─────────────────────────────────────────────────────────
+
+// Claude's stream states each call as it happens, in the transcript's
+// `assistant` shape minus `requestId`, with a subagent's calls tagged by
+// `parent_tool_use_id` instead of `isSidechain`.
+describe("a turn in flight", () => {
+  const live = (...events: RawEvent[]) =>
+    aggregate(events.flatMap((e) => claudeAdapter.liveUsageEvents?.(e) ?? []));
+  const recorded = usageFromRecords("claude", [
+    record(
+      "claude",
+      claudeAssistant({
+        msgId: "m1",
+        requestId: "r1",
+        input: 10,
+        output: 100,
+        cacheRead: 5000,
+        model: "claude-opus-4-8",
+      }),
+    ),
+  ]);
+
+  it("adds the turn's spend to the records' and reads the window off its last call", () => {
+    const u = withLiveTurn(
+      recorded,
+      live(
+        claudeAssistant({ msgId: "m2", input: 4, output: 20, cacheRead: 6000 }),
+        claudeAssistant({ msgId: "m3", input: 6, output: 30, cacheRead: 9000 }),
+      ),
+    );
+    expect(u.spend.tokens).toEqual({ input: 20, output: 150, cacheRead: 20_000, cacheWrite: 0 });
+    expect(u.context).toMatchObject({ state: "measured", tokens: 9006 });
+    // The stream's calls named no model, so the one on record still stands.
+    expect(u.context.model).toBe("claude-opus-4-8");
+  });
+
+  it("measures a first turn, which has no records at all", () => {
+    const u = withLiveTurn(
+      EMPTY_SNAPSHOT,
+      live(
+        claudeAssistant({ msgId: "m1", input: 3, cacheWrite: 12_000, model: "claude-opus-4-8" }),
+      ),
+    );
+    expect(u.context).toMatchObject({
+      state: "measured",
+      tokens: 12_003,
+      model: "claude-opus-4-8",
+    });
+  });
+
+  it("counts a message once, however many blocks the stream emits it in", () => {
+    const block = (output: number) =>
+      claudeAssistant({ msgId: "m2", input: 4, output, cacheRead: 6000 });
+    expect(live(block(1), block(1), block(40)).spend.tokens.cacheRead).toBe(6000);
+  });
+
+  it("counts a subagent's call as spend without moving the window", () => {
+    const u = withLiveTurn(
+      recorded,
+      live(
+        claudeAssistant({
+          msgId: "sub1",
+          input: 900,
+          cacheRead: 40_000,
+          extra: { parent_tool_use_id: "toolu_1" },
+        }),
+      ),
+    );
+    expect(u.spend.tokens.input).toBe(910);
+    expect(u.context).toBe(recorded.context);
+  });
+
+  it("skips the stream's error envelope, which restates the failed call", () => {
+    const failed = claudeAssistant({
+      msgId: "m2",
+      input: 4,
+      cacheRead: 6000,
+      extra: { is_api_error_message: true },
+    });
+    expect(withLiveTurn(recorded, live(failed))).toBe(recorded);
+  });
+
+  it("leaves the records' snapshot alone until the stream reports a call", () => {
+    const boundary = { type: "system", subtype: "compact_boundary" } as RawEvent;
+    expect(withLiveTurn(recorded, live(boundary, { type: "result" } as RawEvent))).toBe(recorded);
+  });
+});
+
+it("only an agent that reports usage gets a gauge", () => {
+  expect(reportsUsage("claude")).toBe(true);
+  expect(reportsUsage("antigravity")).toBe(false);
 });
 
 it("antigravity reports no usage at all", () => {

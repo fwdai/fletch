@@ -193,4 +193,11 @@ export interface ChatAdapter {
    *  the aggregator's job, so that logic exists once instead of once per agent.
    *  Optional: agents that report no usage at all (antigravity) omit it. */
   usageEvents?(recordBody: RawEvent): UsageEvent[];
+  /** Translate ONE live stream event into the calls it reports, for an agent
+   *  whose stream states usage mid-turn while its records land at turn end
+   *  (claude). The store folds them over the records' snapshot so the gauge
+   *  moves during the turn (see `foldLiveUsage`); the records replace them when
+   *  they land. Absent, usage shows up when the turn ends. Not for
+   *  `persistLiveUsage` agents, whose live events already become records. */
+  liveUsageEvents?(rawEvent: RawEvent): UsageEvent[];
 }
