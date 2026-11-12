@@ -67,7 +67,8 @@ The rules below are the engine-neutral core's (`sandbox/seed/`: requests,
 the project's store, candidates). The box engine supplies, through
 `seed::AtRest`, what only it can do (`boxes/seed.rs`): take a down box's disk
 (a clone), reduce the clone on a workbench (`seed.sh`), and start a new box
-from the seed (`new_data_disk`).
+from the seed (`new_data_disk`). A workspace on this Mac follows the same
+rules with its own (docs/isolation.md, "The seed of a workspace on this Mac").
 
 ```text
 <checkouts base>/box-seeds/<project id>/seed/disk.img            a workspace disk, reduced

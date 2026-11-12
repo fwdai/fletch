@@ -132,14 +132,30 @@ engine enforces) and `docs/box.md` is the box runtime.
     the child runs. `on_host` serves a seatbelt agent and a host Run command,
     `in_guest` a box. What an engine does with it is its own: seatbelt grants
     the root, a box creates it on its disk, which starts as a clone of the
-    project's seed (docs/box.md). The seed's rules are engine-neutral
-    (`sandbox/seed/`); an engine supplies, through `seed::AtRest`, how a
-    workspace at rest is taken and reduced, and starts a new workspace from
-    the seed (`boxes/seed.rs`). Deleting a project and boot's
+    project's seed (docs/box.md). Deleting a project and boot's
     sweep call `remove_project_cache` and `reclaim_toolchain_caches`, which
-    cover every engine: each one states where it keeps per-project caches on
-    this machine (`cache_dir_on_host`, matched exhaustively), so a new store
-    is a new answer there, never a new call site.
+    cover every engine: each one states the directories where it keeps a
+    store per project on this machine (`stores_on_host`, matched
+    exhaustively), so a new store is a new answer there, never a new call
+    site.
+
+11. **The seed is one contract.** What a new workspace starts with, its
+    project's seed (the large directories git ignores in a workspace's
+    checkouts, shared copy-on-write), follows rules that are engine-neutral
+    (`sandbox/seed/`: when a workspace is wanted or may be the first, the
+    candidate, publishing, the project's settings). An engine supplies only
+    what it alone can do: through `seed::AtRest` it takes a workspace at rest
+    and reduces what it took to what a seed keeps, and it starts a new
+    workspace from the seed (`seed::start_from`). The box clones a stopped
+    box's disk, reduces the clone on a workbench and clones the seed for a
+    new box's disk (`boxes/seed.rs`, docs/box.md); seatbelt takes a workspace
+    between turns, clones its kept directories on the host and merges them
+    into a new checkout (`seatbelt/seed/`, docs/isolation.md). The rest of
+    the app calls the facade and names no engine: the supervisor's status
+    change calls `sandbox::turn_started` and `sandbox::turn_ended`, the PR
+    watcher `sandbox::merged_into_default_branch`, provisioning
+    `sandbox::provision_checkout` and `sandbox::restore_checkout`, disposal
+    `sandbox::discard_agent_state`.
 
 ## What `caps()` says today
 

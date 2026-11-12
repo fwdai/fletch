@@ -104,7 +104,7 @@ What each one guarantees about an agent (from [`sandbox/guarantees.rs`](crates/f
 
 Under both engines, workspaces are full shared-object clones, so an agent's writable `.git` lives entirely inside its sandbox; your repo's `.git` is never writable by an agent. Pushes and PR creation run host-side through a brokered RPC, so credentials never enter the sandbox, and each agent's capability grant constrains where it may publish: no agent can push the branch its work is reviewed against (nor `main`/`master`), and a workflow step agent can't publish at all. For its own branch, an agent publishes under your identity without asking — unless you turn on Settings › Git › "Ask before publishing" (off by default; it leaves autopilot and clicked Git actions alone, prompting only when an agent publishes on its own). Choose tasks and repos accordingly.
 
-The full write-up is [`docs/isolation.md`](docs/isolation.md) — the canonical, code-accurate account of both engines, the clone model, and the honest threat model. The code is canonical too: [`sandbox/seatbelt.rs`](crates/fletch-core/src/sandbox/seatbelt.rs), [`sandbox/boxes/`](crates/fletch-core/src/sandbox/boxes), and [`sandbox/provision.rs`](crates/fletch-core/src/sandbox/provision.rs).
+The full write-up is [`docs/isolation.md`](docs/isolation.md) — the canonical, code-accurate account of both engines, the clone model, and the honest threat model. The code is canonical too: [`sandbox/seatbelt/`](crates/fletch-core/src/sandbox/seatbelt), [`sandbox/boxes/`](crates/fletch-core/src/sandbox/boxes), and [`sandbox/provision.rs`](crates/fletch-core/src/sandbox/provision.rs).
 
 ## Documentation
 
