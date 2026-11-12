@@ -118,6 +118,22 @@ describe("settleLiveUsage", () => {
     expect(s.usage().spend.tokens).toMatchObject({ input: 12, cacheRead: 17_000 });
   });
 
+  // Every records-appended event starts its own read, so two can overlap and
+  // the one that started first — holding fewer records — can land last.
+  it("ignores an older read that lands after a newer one", () => {
+    const s = store("overlap", { provider: "claude" });
+    s.fold(call("m1", 5, 8000));
+    const first = s.mark(); // read 1 starts
+    s.fold(call("m2", 7, 9000));
+    const second = s.mark(); // read 2 starts
+
+    s.refresh(second, call("m1", 5, 8000), call("m2", 7, 9000)); // read 2 lands first
+    s.refresh(first, call("m1", 5, 8000)); // read 1, older, lands last
+
+    expect(s.usage().context.tokens).toBe(9007);
+    expect(s.usage().spend.tokens).toMatchObject({ input: 12, cacheRead: 17_000 });
+  });
+
   it("hands back the records' snapshot untouched when nothing was streamed", () => {
     const snapshot = recorded(call("m1", 5, 8000));
     expect(settleLiveUsage("never-streamed", snapshot, liveUsageMark("never-streamed"))).toBe(
