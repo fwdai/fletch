@@ -63,7 +63,7 @@ every other workspace until it changes them.
 
 ```text
 <checkouts base>/box-seeds/<project id>/seed/disk.img            a workspace disk, reduced
-<checkouts base>/box-seeds/<project id>/seed/made-without.json   the paths excluded when it was made
+<checkouts base>/box-seeds/<project id>/seed/made.json           what it was made without, and for which request
 <checkouts base>/box-seeds/<project id>/seed-built-at.json       the workspaces whose files it holds
 <checkouts base>/box-seeds/<project id>/candidate-<id>/disk.img  a clone of a box's disk, to be reduced
 <box dir>/seed-wanted                                             this box's disk is to be the next seed
@@ -92,12 +92,20 @@ Three structures carry the rules:
   disk is built) one at a time, in the order they were cloned; none is
   skipped because another is being made. A candidate that is no longer needed
   at its turn (the project got its first seed meanwhile) is dropped.
-- **A request is answered by one candidate.** `seed-wanted` holds an id of
-  its own; the candidate cloned under it withdraws that request, and only
-  once a workbench has looked at the disk and what it found is settled: the
-  seed published, or nothing worth inheriting. After any failure, and for a
-  request made after the clone was taken, the request stands and the box is
-  offered again.
+- **A request is answered by one candidate.** `seed-wanted` holds a request
+  of its own, ordered by when it was made; the candidate cloned under it
+  withdraws that request, and only once it is answered: a workbench has
+  looked at the disk and what it found is settled (the seed published, or
+  nothing worth inheriting), or the project has no use for the disk (seeds
+  are off, or the seed already answers a newer request, so an older merge
+  never replaces a newer one's seed). After any failure, and for a request
+  made after the clone was taken, the request stands and the box is offered
+  again.
+- **Settings are read when they are used.** A candidate carries none: it
+  reads the project's at its turn, and is not published if they changed
+  while it was reduced. A project whose settings file was not read yet
+  neither makes a seed nor starts from one, and boot reads every project's
+  file before any box's disk is looked at.
 
 On the workbench the candidate is reduced by `seed.sh`, run as the guest
 user:
@@ -115,8 +123,10 @@ user:
 
 A candidate the script did not finish on, or whose bench had to be killed, is
 discarded, and one that keeps under 1 MiB is not made the seed; the seed
-there was stays. A seed is published as a directory, its disk and what it
-was made without in one rename. The guest's ssh host key, which only root in
+there was stays. A seed is published as a directory, its disk and how it was
+made together, exchanged for the seed there was in one step
+(`disks::exchange`), so a project that has a seed is never without one. The
+guest's ssh host key, which only root in
 the guest can remove, stays on a seed: the host reads the key from each
 boot's console and reaches a guest only over that box's own socket.
 

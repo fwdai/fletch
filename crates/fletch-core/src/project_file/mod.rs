@@ -141,14 +141,14 @@ pub fn egress_delta(project_id: &str) -> crate::sandbox::boxes::allowlist::Delta
 }
 
 /// What the files of `project_id` say of its seed, as last read. Applies
-/// without approval: it only narrows what a new box starts with.
-pub fn seed_settings(project_id: &str) -> SeedSettings {
+/// without approval: it only narrows what a new box starts with. `None` for a
+/// project whose files were never read: what they exclude is not known yet.
+pub fn seed_settings(project_id: &str) -> Option<SeedSettings> {
     STATE
         .read()
         .as_ref()
         .and_then(|m| m.get(project_id))
         .map(|e| e.read.seed.clone())
-        .unwrap_or_default()
 }
 
 /// Has `project_id`'s files say `seed`, for a test with no repository.
