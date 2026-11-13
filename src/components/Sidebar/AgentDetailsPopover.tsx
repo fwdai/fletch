@@ -82,9 +82,13 @@ export function AgentDetailsPopover({
           {identity !== provider && <div className="ws-pop-iso-hint">{identity}</div>}
           <div className="st-rows">
             <Row label="Context" value={contextLabel} />
-            <div className="st-bar">
-              <div className="st-bar-fill" style={{ width: `${stats.contextPct ?? 0}%` }} />
-            </div>
+            {/* Drawn only with a share to draw: an empty track between two
+                rows reads as a second divider. */}
+            {stats.contextPct != null && (
+              <div className="st-bar">
+                <div className="st-bar-fill" style={{ width: `${stats.contextPct}%` }} />
+              </div>
+            )}
             <Row label="Tokens" value={ioLabel} />
             {stats.costUsd != null && stats.costUsd > 0 && (
               <Row label="Cost" value={formatCost(stats.costUsd)} />

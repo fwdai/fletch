@@ -195,13 +195,23 @@
   inset: -6px 0;
   z-index: -1;
 }
-/* the two parts, sandbox and agent: a glyph, then a tight column of lines */
+/* Vertical rhythm: every line of text in the card is 16px tall and lines
+ * stack with nothing between them, so the whole card sits on one 16px pitch.
+ * The only other measures are 2px (a heading to its facts, around the bar)
+ * and 6px (either side of the divider). */
 .ag-details-pop .ws-pop-iso {
   gap: 7px;
 }
 .ag-details-pop .ws-pop-iso-text {
-  gap: 1px;
+  gap: 0;
 }
+.ag-details-pop .ws-pop-iso-title,
+.ag-details-pop .ws-pop-iso-hint,
+.ag-details-pop .ws-pop-iso-fail,
+.ag-details-pop .st-row {
+  line-height: 16px;
+}
+/* a 12px glyph centred on its heading's 16px line */
 .ag-details-pop .ws-pop-iso .ws-iso,
 .ag-details-pop .ag-prov-chip {
   margin-top: 2px;
@@ -213,12 +223,14 @@
 .ag-details-pop .st-rows {
   margin-top: 2px;
 }
+/* A fixed height: the label and the mono value share a baseline, and their
+ * differing font metrics would otherwise stretch the row a pixel past 16. */
 .ag-details-pop .st-row {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   gap: 12px;
-  padding: 1px 0;
+  height: 16px;
   font-size: var(--fs-xs);
 }
 .ag-details-pop .st-row .st-k {
@@ -231,10 +243,12 @@
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+/* The context bar belongs to the row above it, the one break in the pitch.
+ * Its track is clearly visible, so the space it takes reads as a bar. */
 .ag-details-pop .st-bar {
   margin: 2px 0;
   height: 2px;
-  background: var(--hover);
+  background: var(--bd);
   border-radius: 1px;
   overflow: hidden;
 }
