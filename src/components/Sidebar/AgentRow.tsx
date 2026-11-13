@@ -11,7 +11,7 @@ import { providerChip, providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { formatAge } from "@/util/format";
+import { formatAge, formatDuration } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import { useAgentPrs } from "@/util/prState";
 import { AgentDetailsPopover, type AgentStats } from "./AgentDetailsPopover";
@@ -444,8 +444,5 @@ function liveRuntime(iso: string, now: number, status: AgentStatus): string {
   if (status === "stopped" || status === "error") return "—";
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return "—";
-  const sec = Math.max(0, Math.floor((now - t) / 1000));
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m}m ${s}s`;
+  return formatDuration(now - t);
 }
