@@ -164,9 +164,22 @@
 }
 /* where the workspace runs, in front of its codename as in the title bar and
  * in the title bar's own tints (`.ws-iso`). The glyph and the codename are one
- * unit, so they sit 4px apart rather than at the row's 8px gap. */
-.agent-sub .ws-iso {
-  margin-right: -4px;
+ * unit, so they sit 6px apart rather than at the row's 8px gap. The glyph is
+ * the hover target for the runtime popover: the padding is its hit area, and
+ * the negative margins keep the glyph itself on the title's left edge. */
+.agent-sub .a-sandbox {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+  flex-shrink: 0;
+  padding: 2px 3px;
+  margin: -2px -5px -2px -3px;
+  border-radius: 3px;
+  cursor: default;
+  transition: background 0.1s;
+}
+.agent-sub .a-sandbox:hover {
+  background: var(--hover);
 }
 /* the byline — who is doing the work and since when — closes the row and is
  * one hover target for the details popover */
@@ -206,6 +219,20 @@
   z-index: 220;
   font-family: var(--font-sans);
   animation: ddIn 0.12s var(--ease);
+}
+/* the runtime popover: the same shell, hung off the sandbox glyph at the row's
+ * left edge instead of the byline at its right */
+.ag-stats-pop.ag-runtime-pop {
+  left: 0;
+  right: auto;
+  width: 248px;
+}
+.ag-runtime-pop .ws-pop-div {
+  margin: 9px 0;
+}
+/* the chip sits on its title's line, as the sandbox glyph above it does */
+.ag-runtime-pop .ag-prov-chip {
+  margin-top: 1px;
 }
 .ag-stats-pop .st-row {
   display: flex;

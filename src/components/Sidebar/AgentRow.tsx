@@ -18,6 +18,7 @@ import { useAgentPrs } from "@/util/prState";
 import { type AgentStats, AgentStatsPopover } from "./AgentStatsPopover";
 import { type AutopilotSignal, autopilotSignal, autopilotTip } from "./autopilotSignal";
 import { PrPill } from "./PrPill";
+import { RuntimePopover } from "./RuntimePopover";
 import { SubagentRow } from "./SubagentRow";
 import { deriveSubagentChildren, failedTip, runningTip } from "./subagentChildren";
 
@@ -100,6 +101,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const archive = useAppStore((s) => s.archive);
   const now = useMinuteClock();
   const [statsOpen, setStatsOpen] = useState(false);
+  const [runtimeOpen, setRuntimeOpen] = useState(false);
   // Backgrounded sub-agents outlive the main turn: the agent reads `idle` while
   // they keep working, and a failure among them is otherwise invisible from
   // here. Same read pattern as autopilot — the per-agent map is selected whole
@@ -278,17 +280,24 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             </span>
           </span>
         </div>
-        {/* Where it lives (sandbox + codename, as in the title bar), what came
+        {/* Where it lives (sandbox + codename, as in the title bar; the glyph
+            is the hover target for the sandbox and the agent in it), what came
             of it (PR / diff and the conditional hints), then the byline: who
             is doing it and since when — the hover target for the details. */}
         <div className="agent-sub flex-center">
-          <IsolationIcon
-            isolation={shownIsolation(agent.sandbox_engine, movingTo)}
-            boxPhase={boxPhase}
-            moving={movingTo !== null}
-            size={12}
-            tip
-          />
+          <span
+            className="a-sandbox"
+            onMouseEnter={() => setRuntimeOpen(true)}
+            onMouseLeave={() => setRuntimeOpen(false)}
+          >
+            <IsolationIcon
+              isolation={shownIsolation(agent.sandbox_engine, movingTo)}
+              boxPhase={boxPhase}
+              moving={movingTo !== null}
+              size={11}
+            />
+            {runtimeOpen && <RuntimePopover agent={agent} />}
+          </span>
           <span className="a-task a-codename">{agent.name}</span>
           {agentPrs.length > 0 ? (
             <PrPill prs={agentPrs} />
