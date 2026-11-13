@@ -21,6 +21,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::watch;
 
+use super::registry::BoxRegistry;
 use crate::error::{Error, Result};
 
 /// The most ports of one box forwarded at once: each is an ssh connection.
@@ -30,6 +31,9 @@ const HOST_PORT_SCAN: u16 = 30;
 /// How long a forward's host listener may take to come up: one ssh
 /// connection through the proxy helper, handshake included.
 const FORWARD_READY: Duration = Duration::from_secs(20);
+/// How often the forwards are checked against what listens, so one that
+/// could not be opened, or whose ssh died, is opened again.
+const RETRY_EVERY: Duration = Duration::from_secs(5);
 
 /// A port something listens on in a box, and the port on this host that
 /// reaches it.
@@ -49,11 +53,20 @@ pub fn on_change(listener: impl Fn(&str, &[ForwardedPort]) + Send + Sync + 'stat
     *LISTENER.write() = Some(Arc::new(listener));
 }
 
-fn tell(agent_id: &str, ports: &[ForwardedPort]) {
-    let listener = LISTENER.read().clone();
-    if let Some(listener) = listener {
-        listener(agent_id, ports);
+fn tell(owner: &str, ports: &[ForwardedPort]) {
+    let Some(listener) = LISTENER.read().clone() else {
+        return;
+    };
+    for agent_id in audience(BoxRegistry::global(), owner) {
+        listener(&agent_id, ports);
     }
+}
+
+/// Who hears a box's forwards: its owner and the tenants that run in it,
+/// whose Run commands listen in the same guest.
+fn audience(registry: &BoxRegistry, owner: &str) -> Vec<String> {
+    let tenants = registry.tenants_of(owner).into_iter().map(|(id, _)| id);
+    std::iter::once(owner.to_string()).chain(tenants).collect()
 }
 
 /// Follow `fletch-guest listeners` in `channel`'s guest until `stop` says so,
@@ -91,20 +104,24 @@ async fn pump_listeners(
         agent_id,
         open: BTreeMap::new(),
     };
+    let mut listening = BTreeSet::new();
+    let mut retry = tokio::time::interval(RETRY_EVERY);
     loop {
         tokio::select! {
             line = lines.next_line() => match line? {
                 Some(line) => match parse_listeners(&line) {
-                    Ok(listening) => forwards.follow(&channel, &listening).await,
+                    Ok(ports) => listening = ports,
                     Err(e) => tracing::warn!(error = %e, %line, "box ports: bad listeners line"),
                 },
                 None => return Ok(()),
             },
+            _ = retry.tick() => {}
             _ = stop.changed() => {
                 let _ = child.start_kill();
                 return Ok(());
             }
         }
+        forwards.follow(&channel, &listening).await;
     }
 }
 
@@ -155,15 +172,13 @@ impl Forwards {
             .collect()
     }
 
-    /// Open and close forwards so they follow `listening`, then tell the
-    /// listener what is forwarded. A port that cannot be forwarded now is
-    /// tried again with the next change.
+    /// Open and close forwards so the live ones follow `listening`, then
+    /// tell the listener what is forwarded. A port that cannot be forwarded
+    /// now is tried again the next time round.
     async fn follow(&mut self, channel: &Channel, listening: &BTreeSet<u16>) {
+        self.open.retain(|_, forward| forward.alive());
         let forwarded = self.open.keys().copied().collect();
         let change = reconcile(&forwarded, listening, MAX_FORWARDS);
-        if change == Change::default() {
-            return;
-        }
         for guest_port in change.close {
             self.open.remove(&guest_port);
         }
@@ -247,6 +262,34 @@ mod tests {
             reconcile(&set(&[3000]), &set(&[3000]), MAX_FORWARDS),
             Change::default()
         );
+    }
+
+    /// What a retry rests on: with the guest's listeners unchanged, a port
+    /// whose forward never opened or has died (so is no longer among the
+    /// forwarded) is opened again.
+    #[test]
+    fn a_listening_port_without_a_live_forward_is_opened_again() {
+        let listening = set(&[3000, 5432]);
+        assert_eq!(
+            reconcile(&set(&[5432]), &listening, MAX_FORWARDS),
+            Change {
+                open: vec![3000],
+                close: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn a_boxs_forwards_are_told_to_its_owner_and_its_tenants() {
+        let registry = BoxRegistry::global();
+        let root = std::path::PathBuf::from("/ports-test/tenant-root");
+        registry.register_tenant("ports-test-tenant", root, "ports-test-owner", true);
+        assert_eq!(
+            audience(registry, "ports-test-owner"),
+            ["ports-test-owner", "ports-test-tenant"]
+        );
+        registry.forget_tenant("ports-test-tenant");
+        assert_eq!(audience(registry, "ports-test-owner"), ["ports-test-owner"]);
     }
 
     /// Past the cap the lowest new ports get the room left, and a forward
