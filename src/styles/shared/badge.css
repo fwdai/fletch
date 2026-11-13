@@ -221,9 +221,9 @@
   animation: ddIn 0.12s var(--ease);
 }
 /* the runtime popover: the same shell, hung off the sandbox glyph at the row's
- * left edge instead of the byline at its right */
+ * left edge. An `AnchoredPopover`, which positions it at body level, so the
+ * sidebar's scroller cannot clip it. */
 .ag-stats-pop.ag-runtime-pop {
-  left: 0;
   right: auto;
   width: 248px;
 }

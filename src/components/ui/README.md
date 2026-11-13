@@ -22,6 +22,7 @@ and is the path of least resistance for new UI.
 | `ModalSheet` | The wide overlay sheet (History, Project Settings) — dimmed backdrop + large card, no built-in header. `fill` pins it to full viewport height. | `.modal-sheet` |
 | `Scale` | A value picked from a few ordered stops, as a segmented meter (thinking effort, VM memory). Previews on hover and arrows; a click picks. | `.ui-scale` |
 | `Scrim` | Full-screen dim/click-catcher behind popovers and overlays. | `.ui-scrim` |
+| `AnchoredPopover` | A floating card hung off an element (`anchorRef`) and drawn at body level, so no scrolling ancestor clips it: below and left-aligned, above when only that side has room, clamped to the viewport. **Caller owns** when it is mounted and its skin (`className`). | — |
 
 Tooltips: pass `tip="…"` — it sets `.tip` + `data-tip`. The single
 `components/TooltipLayer` (mounted in `App`) draws one body-level bubble for

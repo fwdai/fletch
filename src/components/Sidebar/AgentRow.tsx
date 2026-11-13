@@ -1,5 +1,5 @@
 import type { KeyboardEvent, MouseEvent } from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { contextPercent, resolveContextWindow } from "@/adapters/usage";
 import type { AgentRecord, AgentStatus, ShortStats } from "@/api";
 import { AgentIdentityChip, useAgentIdentityLabel } from "@/components/AgentIdentityChip";
@@ -102,6 +102,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const now = useMinuteClock();
   const [statsOpen, setStatsOpen] = useState(false);
   const [runtimeOpen, setRuntimeOpen] = useState(false);
+  const sandboxRef = useRef<HTMLSpanElement>(null);
   // Backgrounded sub-agents outlive the main turn: the agent reads `idle` while
   // they keep working, and a failure among them is otherwise invisible from
   // here. Same read pattern as autopilot — the per-agent map is selected whole
@@ -286,6 +287,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             is doing it and since when — the hover target for the details. */}
         <div className="agent-sub flex-center">
           <span
+            ref={sandboxRef}
             className="a-sandbox"
             onMouseEnter={() => setRuntimeOpen(true)}
             onMouseLeave={() => setRuntimeOpen(false)}
@@ -296,7 +298,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
               moving={movingTo !== null}
               size={11}
             />
-            {runtimeOpen && <RuntimePopover agent={agent} />}
+            {runtimeOpen && <RuntimePopover agent={agent} anchorRef={sandboxRef} />}
           </span>
           <span className="a-task a-codename">{agent.name}</span>
           {agentPrs.length > 0 ? (
