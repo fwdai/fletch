@@ -291,6 +291,17 @@ table ip fletch-egress {
   }
 }
 EOF
+
+  step="dropping the proxy settings image 0.5.0 gave the docker client"
+  # That image copied them into the agent's home; they point containers at
+  # the bridge's $EGRESS_PORT, where nothing listens any more. The agent's
+  # other docker settings stay.
+  docker_config=/data/home/.docker/config.json
+  if [ "$(jq -r '.proxies.default.httpProxy // empty' "$docker_config" 2>/dev/null)" = "http://$bridge:$EGRESS_PORT" ]; then
+    setpriv --reuid=agent --regid=agent --clear-groups sh -c \
+      'jq "del(.proxies)" "$1" > "$1.new" && mv "$1.new" "$1"' sh "$docker_config" ||
+      echo "fletch-init: could not drop the old docker proxy settings" >&2
+  fi
 fi
 
 step="starting the control listener"
