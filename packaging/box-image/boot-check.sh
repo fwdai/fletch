@@ -2,8 +2,8 @@
 # Boot a built image with its layers on this machine (an Apple silicon Mac, or
 # an x86-64 or arm64 Linux host with KVM) and check the guest over ssh:
 # the layer overlays, the tools in them, a headless screenshot, the docker
-# daemon starting on demand, containers' egress and service names, sudo,
-# fletch-guest, the directories the guest user makes beside init's binds.
+# daemon starting on demand, sudo, fletch-guest, the directories the guest
+# user makes beside init's binds.
 # What test.sh cannot cover (init, libkrun, the real kernel). Stages the dev
 # runtime and builds the CLI when `fletch-box` is not on PATH.
 #
@@ -55,17 +55,6 @@ echo "== memory after boot"
 ssh_ free -m
 echo "== the docker daemon starts on the first connection to its socket"
 ssh_ sh -c '! pgrep -x dockerd && ls -l /run/docker.sock && docker version --format "client {{.Client.Version}}, server {{.Server.Version}}"'
-echo "== containers reach another service by name and the outside by the sentinel, with no proxy settings"
-# The proxy variables are the docker CLI's, as every launch's env file sets them.
-ssh_ sh -c 'export HTTPS_PROXY=http://127.0.0.1:8899 HTTP_PROXY=http://127.0.0.1:8899 NO_PROXY=127.0.0.1,localhost
-set -e; mkdir -p /tmp/names && cd /tmp/names
-printf "services:\n  web: { image: busybox, command: [httpd, -f, -p, \"80\", -h, /etc] }\n  client: { image: curlimages/curl, command: [sleep, infinity] }\n" > compose.yaml
-docker compose up -d --quiet-pull
-docker compose exec -T client sh -c "set -e; test -z \"\$(env | grep -i proxy)\"; echo no proxy settings
-curl -sSf -o /dev/null http://web/hostname; echo web by name: ok
-curl -sSf -o /dev/null https://registry.npmjs.org/; echo https://registry.npmjs.org: ok
-curl -sSf -o /dev/null http://deb.debian.org/debian/; echo http://deb.debian.org: ok"
-docker compose down -t 0 2>/dev/null'
 echo "== sudo, and the system written through its overlay"
 ssh_ sh -c 'sudo -n id -u && sudo -n touch /usr/local/share/boot-check && sudo -n rm /usr/local/share/boot-check && echo writable'
 echo "== fletch-guest exec"

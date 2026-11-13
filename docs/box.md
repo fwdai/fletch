@@ -254,20 +254,15 @@ Linux machine, and nothing of it costs anything until it is used.
   backend: the guest kernel has nf_tables and no iptables. Podman is not
   used: its healthchecks need systemd timers, so `compose up --wait` never
   returns in a box.
-- **Containers and builds get out with no proxy settings.** The daemon's
-  `dns` is the bridge's address (`172.17.0.1`), where `fletch-guest
-  sentinel-dns` answers any name with a dot with one sentinel address
-  (`198.18.0.1`, no AAAA) and a single-label name with NXDOMAIN. Docker's own
-  resolver answers compose service names first, so traffic between services
-  stays direct. Init's nftables table `ip fletch-egress`, ahead of Docker's
-  NAT, sends the sentinel's ports 80 and 443 to `fletch-guest
-  transparent-egress`, which takes the host from the `Host` header or the TLS
-  server name and opens `CONNECT host:port` to the egress proxy over the
-  guest's vsock: the same policy, and the egress log names the real host.
-  Image builds get the same DNS. Only ports 80 and 443 leave; an IP address
-  or another port is unreachable, and a connection that names no host, or
-  that the proxy refuses, is closed at once. Processes in the guest itself
-  keep the proxy variables, and their lookups never reach `sentinel-dns`.
+- **Containers and builds reach the egress proxy.** The egress loopback binds
+  every address (the guest has no network device, so that reaches nothing
+  else), and the Docker client config init puts in the agent's home
+  (`~/.docker/config.json`, only when it has none) hands
+  `http://172.17.0.1:8899` to every container and image build as its proxy.
+  A container has no DNS for outside names; what does not honour the proxy
+  variables does not get out. Known gap: a client that does honour them also
+  sends plain-HTTP requests to another compose service by name through the
+  proxy, which cannot resolve it.
 - **`sudo` and a writable system.** `/usr`, `/etc` and `/var` are each one
   overlay: the base, the layers, and above them the box's own changes on the
   data disk (`/data/sys`), so `sudo apt-get install` works and survives a
