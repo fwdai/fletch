@@ -114,7 +114,9 @@ function ExhibitAgentRow({ a, i }: { a: ParallelAgent; i: number }) {
         </span>
       </div>
       <div className="agent-sub flex-center">
-        <IsolationIcon isolation={DEFAULT_ISOLATION} size={12} />
+        <span className="a-sandbox">
+          <IsolationIcon isolation={DEFAULT_ISOLATION} size={11} />
+        </span>
         <span className="a-task a-codename">{a.name}</span>
         <span className="a-diff">
           <span className="add">+{a.add}</span> <span className="del">−{a.rem}</span>

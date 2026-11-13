@@ -149,24 +149,14 @@
   color: var(--fg-3);
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
-  position: relative;
-  cursor: default;
   padding: 1px 3px;
-  border-radius: 3px;
   flex-shrink: 0;
-  transition:
-    background 0.1s,
-    color 0.1s;
-}
-.agent-sub .a-time:hover {
-  background: var(--hover);
-  color: var(--fg-1);
 }
 /* where the workspace runs, in front of its codename as in the title bar and
  * in the title bar's own tints (`.ws-iso`). The glyph and the codename are one
  * unit, so they sit 6px apart rather than at the row's 8px gap. The glyph is
- * the hover target for the runtime popover: the padding is its hit area, and
- * the negative margins keep the glyph itself on the title's left edge. */
+ * the row's hover target for its details card: the padding is its hit area,
+ * and the negative margins keep the glyph itself on the title's left edge. */
 .agent-sub .a-sandbox {
   display: inline-flex;
   align-items: center;
@@ -181,36 +171,23 @@
 .agent-sub .a-sandbox:hover {
   background: var(--hover);
 }
-/* the byline — who is doing the work and since when — closes the row and is
- * one hover target for the details popover */
+/* the onboarding exhibit's byline: an agent chip beside the age */
 .agent-sub .a-byline {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  position: relative;
   flex-shrink: 0;
   padding: 1px 3px;
-  border-radius: 3px;
-  cursor: default;
-  transition: background 0.1s;
-}
-.agent-sub .a-byline:hover {
-  background: var(--hover);
 }
 .agent-sub .a-byline .a-time {
-  position: static;
   padding: 0;
-  background: none;
-}
-.agent-sub .a-byline:hover .a-time {
-  color: var(--fg-1);
 }
 
-.ag-stats-pop {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  width: 220px;
+/* the agent row's details card (`AgentDetailsPopover`), hung off the sandbox
+ * glyph. An `AnchoredPopover` positions it, at body level, so the sidebar's
+ * scroller cannot clip it. */
+.ag-details-pop {
+  width: 248px;
   background: var(--bg-2);
   border: 1px solid var(--bd);
   border-radius: var(--r-md);
@@ -220,30 +197,27 @@
   font-family: var(--font-sans);
   animation: ddIn 0.12s var(--ease);
 }
-/* the runtime popover: the same shell, hung off the sandbox glyph at the row's
- * left edge. An `AnchoredPopover`, which positions it at body level, so the
- * sidebar's scroller cannot clip it. */
-.ag-stats-pop.ag-runtime-pop {
-  right: auto;
-  width: 248px;
-}
 /* An invisible bridge across the 6px gap to the glyph, on whichever side the
  * card opened, so the pointer can travel into the card (to select a failure
  * reason) without dropping the hover. Behind the card's own content. */
-.ag-runtime-pop::before {
+.ag-details-pop::before {
   content: "";
   position: absolute;
   inset: -6px 0;
   z-index: -1;
 }
-.ag-runtime-pop .ws-pop-div {
+.ag-details-pop .ws-pop-div {
   margin: 9px 0;
 }
 /* the chip sits on its title's line, as the sandbox glyph above it does */
-.ag-runtime-pop .ag-prov-chip {
+.ag-details-pop .ag-prov-chip {
   margin-top: 1px;
 }
-.ag-stats-pop .st-row {
+/* the facts under each part, in its text column */
+.ag-details-pop .st-rows {
+  margin-top: 2px;
+}
+.ag-details-pop .st-row {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
@@ -251,25 +225,25 @@
   padding: 3px 0;
   font-size: var(--fs-sm);
 }
-.ag-stats-pop .st-row .st-k {
+.ag-details-pop .st-row .st-k {
   color: var(--fg-2);
   flex-shrink: 0;
 }
-.ag-stats-pop .st-row .st-v {
+.ag-details-pop .st-row .st-v {
   color: var(--fg-0);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
-.ag-stats-pop .st-bar {
+.ag-details-pop .st-bar {
   margin-top: 6px;
   height: 3px;
   background: var(--hover);
   border-radius: 2px;
   overflow: hidden;
 }
-.ag-stats-pop .st-bar-fill {
+.ag-details-pop .st-bar-fill {
   height: 100%;
   background: var(--accent);
   border-radius: 2px;
