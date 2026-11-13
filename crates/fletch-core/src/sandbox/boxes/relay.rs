@@ -30,7 +30,10 @@
 //!   (`<box>/claude-projects/`, `<box>/codex-sessions/`), and on reconnect
 //!   tells the guest how much it already holds (`--offsets`).
 //!
-//! Both reconnect with backoff while the VM runs; `Relays::stop` ends them.
+//! A third session, `fletch-guest listeners`, rides along for the box's port
+//! forwards ([`super::ports`]).
+//!
+//! Each reconnects with backoff while the VM runs; `Relays::stop` ends them.
 //! The line handling is pure functions over a child's stdio so a scripted
 //! child stands in for the guest in tests.
 
@@ -82,7 +85,8 @@ pub enum Event {
 }
 
 /// The relays of one running box: the owner's mailbox, the transcript tail,
-/// and one more mailbox per tenant ([`Relays::add_mailbox`]).
+/// one more mailbox per tenant ([`Relays::add_mailbox`]) and the port
+/// forwards ([`Relays::forward_ports`]).
 pub struct Relays {
     stop: watch::Sender<bool>,
     tasks: parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -181,6 +185,13 @@ impl Relays {
         self.tasks.lock().push(task);
     }
 
+    /// Forward every port the guest listens on to this host
+    /// ([`super::ports`]), ending with the box's relays.
+    pub fn forward_ports(&self, channel: Arc<Channel>, agent_id: &str) {
+        let task = super::ports::spawn(channel, agent_id, self.stop.subscribe());
+        self.tasks.lock().push(task);
+    }
+
     /// Tell every loop to end and wait briefly for them; whatever is still
     /// running is aborted (its ssh child is `kill_on_drop`).
     pub async fn stop(&self) {
@@ -246,8 +257,11 @@ fn spawn_mailbox(
 
 /// Keep one relay alive: spawn, pump until the child ends, back off, again —
 /// until `stop` says so. A spawn failure backs off like a dropped session.
-async fn run_with_reconnect<S, P, Fut>(mut stop: watch::Receiver<bool>, spawn: S, pump: P)
-where
+pub(super) async fn run_with_reconnect<S, P, Fut>(
+    mut stop: watch::Receiver<bool>,
+    spawn: S,
+    pump: P,
+) where
     S: Fn() -> fletch_box::Result<Child>,
     P: Fn(Child, watch::Receiver<bool>) -> Fut,
     Fut: std::future::Future<Output = io::Result<()>>,

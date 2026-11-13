@@ -16,6 +16,8 @@ pub enum Category {
     SourceHosting,
     /// The guest's own package mirrors.
     OsPackages,
+    /// Container image registries and the hosts their image layers download from.
+    ContainerRegistries,
 }
 
 impl Category {
@@ -27,14 +29,16 @@ impl Category {
             Category::Toolchains => "toolchains",
             Category::SourceHosting => "source_hosting",
             Category::OsPackages => "os_packages",
+            Category::ContainerRegistries => "container_registries",
         }
     }
 }
 
 /// The template every box starts from, maintained here and grouped by what it
 /// serves: the providers' full host sets, the package registries, the common
-/// toolchain installers and CDNs, source hosting and the guest's apt mirrors.
-/// The user's global list and a project's settings build on top of it.
+/// toolchain installers and CDNs, source hosting, the guest's apt mirrors and
+/// the container registries. The user's global list and a project's settings
+/// build on top of it.
 ///
 /// What stays out on purpose: general-purpose upload sinks (cloud storage
 /// buckets such as `storage.googleapis.com`, pastebins, tunnels), where a box
@@ -119,6 +123,32 @@ pub const TEMPLATE: &[(&str, Category)] = &[
     ("deb.debian.org", Category::OsPackages),
     ("security.debian.org", Category::OsPackages),
     ("snapshot.debian.org", Category::OsPackages),
+    // Each registry redirects a pull's image layers to a download host of its
+    // own, which the pull needs as much as the registry.
+    ("registry-1.docker.io", Category::ContainerRegistries),
+    ("auth.docker.io", Category::ContainerRegistries),
+    (
+        "production.cloudfront.docker.com",
+        Category::ContainerRegistries,
+    ),
+    ("ghcr.io", Category::ContainerRegistries),
+    (
+        "pkg-containers.githubusercontent.com",
+        Category::ContainerRegistries,
+    ),
+    ("quay.io", Category::ContainerRegistries),
+    ("*.quay.io", Category::ContainerRegistries),
+    ("mcr.microsoft.com", Category::ContainerRegistries),
+    ("*.data.mcr.microsoft.com", Category::ContainerRegistries),
+    ("public.ecr.aws", Category::ContainerRegistries),
+    // ECR Public's own CloudFront distribution: undocumented, but the one its
+    // layers came from for every repository tried. Not `*.cloudfront.net`,
+    // which is anyone's.
+    (
+        "d5l0dvt14r5h8.cloudfront.net",
+        Category::ContainerRegistries,
+    ),
+    ("gcr.io", Category::ContainerRegistries),
 ];
 
 /// The template's patterns, in order. Kept for the callers that want the
@@ -380,6 +410,33 @@ mod tests {
                 .map(|(p, _)| *p)
                 .collect::<Vec<_>>()
                 .as_slice()
+        );
+    }
+
+    /// A pull reaches each registry and the host its layers come from, and no
+    /// other CloudFront distribution.
+    #[test]
+    fn container_registries_and_their_layer_hosts_are_allowed() {
+        let policy = EgressPolicy::default();
+        for host in [
+            "registry-1.docker.io",
+            "auth.docker.io",
+            "production.cloudfront.docker.com",
+            "ghcr.io",
+            "pkg-containers.githubusercontent.com",
+            "quay.io",
+            "cdn01.quay.io",
+            "mcr.microsoft.com",
+            "eastus.data.mcr.microsoft.com",
+            "public.ecr.aws",
+            "d5l0dvt14r5h8.cloudfront.net",
+            "gcr.io",
+        ] {
+            assert_eq!(policy.check(host, 443), Ok(()), "{host}");
+        }
+        assert_eq!(
+            policy.check("d111111abcdef8.cloudfront.net", 443),
+            Err(Denial::Host)
         );
     }
 

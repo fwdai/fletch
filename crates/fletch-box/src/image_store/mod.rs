@@ -4,7 +4,7 @@
 //! A release (`box-image-v<version>`, built by `packaging/box-image`) holds a
 //! `manifest.json` and the files it lists: `base.erofs`, the root every box
 //! boots, and `layer-<name>.erofs`, read-only layers init overlays on it
-//! ([`OPTIONAL_LAYERS`]: `devtools`, `browser`). Each build names one release
+//! ([`OPTIONAL_LAYERS`]: `devtools`, `browser`, `containers`). Each build names one release
 //! ([`PinnedImage::this_build`]); the manifest gives every file's size and
 //! sha256, which a download is verified against as it arrives, so a truncated
 //! or corrupted download never installs. Next to each file the release may
@@ -47,11 +47,12 @@ pub const MANIFEST: &str = "manifest.json";
 pub const BASE: &str = "base";
 /// The layers a release may carry besides the base, in the order init stacks
 /// them. `devtools`: gcc, python3, pip, Node headers. `browser`: Debian's
-/// chromium-headless-shell and the Noto fonts. The app attaches all of them to
+/// chromium-headless-shell and the Noto fonts. `containers`: Docker Engine,
+/// containerd, the compose and buildx plugins. The app attaches all of them to
 /// every box: a layer is a read-only disk the boxes share, so it costs disk
 /// once and no guest memory until something reads it, and block devices are
 /// fixed at boot, so one left out cannot be added to a running box.
-pub const OPTIONAL_LAYERS: &[&str] = &["devtools", "browser"];
+pub const OPTIONAL_LAYERS: &[&str] = &["devtools", "browser", "containers"];
 /// A manifest is a few hundred KB at most (the package lists); anything past this is not one.
 const MAX_MANIFEST: u64 = 4 << 20;
 const STAGING_PREFIX: &str = ".staging-";
@@ -206,7 +207,7 @@ impl PinnedImage {
     /// launch agents the host-side contract no longer matches. A push to main
     /// that changes the image publishes this version (`box-image.yml`), so a
     /// merged build finds its image.
-    pub const VERSION: &'static str = "0.4.1";
+    pub const VERSION: &'static str = "0.5.1";
 
     /// This build's image, from `base_url` (the `box_image_url` setting) or
     /// the GitHub release.

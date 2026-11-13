@@ -51,7 +51,7 @@ run_in_container() {
 run_in_container /src/build.sh /out "$VERSION"
 if [ "$TEST" = 1 ]; then
   echo "== testing the images"
-  run_in_container sh -c "apt-get -qq update && apt-get -qq install -y --no-install-recommends jq >/dev/null && /src/test.sh /out"
+  run_in_container sh -c "apt-get -qq update && apt-get -qq install -y --no-install-recommends jq bind9-dnsutils >/dev/null && /src/test.sh /out"
 fi
 
 echo "== delta manifests"

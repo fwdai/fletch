@@ -1,13 +1,14 @@
 //! `exec --env-file <path> [--args-file <file>] [--cwd <dir>] [--read-only
 //! <dir>]... [--writable <path>]... [--cow <dir> <store>]... [--cow-file
-//! <file> <copy>]... -- <cmd...>`: a clean environment from a file, then exec.
-//! Every ssh session into a box starts here, so a process sees exactly what
-//! the host wrote for this launch and nothing from sshd, a shell profile or
-//! the box itself. With `--args-file`, the command takes the file's arguments
-//! after its own, and the file is removed. With `--read-only`, the command
-//! sees each such directory read-only, whoever owns it, bar each `--writable`
-//! path inside one, and each `--cow` directory or `--cow-file` file inside
-//! one as a private copy it may write ([`crate::confine`]).
+//! <file> <copy>]... [--hide <path>]... -- <cmd...>`: a clean environment
+//! from a file, then exec. Every ssh session into a box starts here, so a
+//! process sees exactly what the host wrote for this launch and nothing from
+//! sshd, a shell profile or the box itself. With `--args-file`, the command
+//! takes the file's arguments after its own, and the file is removed. With
+//! `--read-only`, the command sees each such directory read-only, whoever
+//! owns it, bar each `--writable` path inside one, and each `--cow`
+//! directory or `--cow-file` file inside one as a private copy it may write;
+//! with `--hide`, it cannot open the file or socket ([`crate::confine`]).
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -64,8 +65,8 @@ struct Options {
     env_file: String,
     args_file: Option<PathBuf>,
     cwd: Option<String>,
-    /// Every `--read-only`, `--writable`, `--cow` and `--cow-file`, in order;
-    /// absolute. How they lie in each other is checked against the
+    /// Every `--read-only`, `--writable`, `--cow`, `--cow-file` and `--hide`,
+    /// in order; absolute. How they lie in each other is checked against the
     /// filesystem ([`confine::check_paths`]).
     view: confine::View,
 }
@@ -73,7 +74,7 @@ struct Options {
 fn parse_options(opts: &[String]) -> std::result::Result<Options, String> {
     let (mut env_file, mut args_file, mut cwd) = (None, None, None);
     let (mut read_only, mut writable) = (Vec::new(), Vec::new());
-    let (mut cow, mut cow_files) = (Vec::new(), Vec::new());
+    let (mut cow, mut cow_files, mut hide) = (Vec::new(), Vec::new(), Vec::new());
     let mut it = opts.iter();
     while let Some(opt) = it.next() {
         match opt.as_str() {
@@ -84,6 +85,7 @@ fn parse_options(opts: &[String]) -> std::result::Result<Options, String> {
             "--writable" => writable.push(absolute(opt, it.next())?),
             "--cow" => cow.push(absolute_pair(opt, "<dir> <store>", &mut it)?),
             "--cow-file" => cow_files.push(absolute_pair(opt, "<file> <copy>", &mut it)?),
+            "--hide" => hide.push(absolute(opt, it.next())?),
             other => return Err(format!("exec: unknown option {other}")),
         }
     }
@@ -96,6 +98,7 @@ fn parse_options(opts: &[String]) -> std::result::Result<Options, String> {
             writable,
             cow,
             cow_files,
+            hide,
         },
     })
 }
@@ -237,6 +240,7 @@ mod tests {
         args.extend(words("--cow /a/.cursor /a/own/s"));
         args.extend(words("--cow-file /a/.claude.json /a/own/c"));
         args.extend(words("--args-file /data/run/1.42.args"));
+        args.extend(words("--hide /run/docker.sock --hide /run/x.sock"));
         let opts = parse_options(&args).unwrap();
         let pair = |a: &str, b: &str| (PathBuf::from(a), PathBuf::from(b));
         assert_eq!(
@@ -250,6 +254,10 @@ mod tests {
                     writable: vec![PathBuf::from("/a/own"), PathBuf::from("/a/.state.json")],
                     cow: vec![pair("/a/.cursor", "/a/own/s")],
                     cow_files: vec![pair("/a/.claude.json", "/a/own/c")],
+                    hide: vec![
+                        PathBuf::from("/run/docker.sock"),
+                        PathBuf::from("/run/x.sock")
+                    ],
                 },
             }
         );
@@ -273,6 +281,8 @@ mod tests {
                 "--cow-file needs <file> <copy>",
             ),
             ("--env-file /e --cow-file /a copy", "not an absolute path"),
+            ("--env-file /e --hide", "--hide needs a path"),
+            ("--env-file /e --hide docker.sock", "not an absolute path"),
             ("--env-file /e --args-file", "--args-file needs a path"),
             (
                 "--env-file /e --args-file run/1.args",

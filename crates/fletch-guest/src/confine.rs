@@ -1,8 +1,9 @@
 //! `exec --read-only <dir> --writable <path> --cow <dir> <store> --cow-file
-//! <file> <copy>`: run the command with each `--read-only` directory
-//! read-only, whole, each `--writable` path inside one writable again, and
-//! each `--cow` directory and `--cow-file` file inside one a private
-//! copy-on-write view of its own. Inside a box every ssh session is the one
+//! <file> <copy> --hide <path>`: run the command with each `--read-only`
+//! directory read-only, whole, each `--writable` path inside one writable
+//! again, each `--cow` directory and `--cow-file` file inside one a private
+//! copy-on-write view of its own, and each `--hide` file or socket out of
+//! its reach. Inside a box every ssh session is the one
 //! guest user, so a file mode cannot keep one process off a tree another may
 //! write; the kernel's namespaces can. The command gets namespaces of its own:
 //!
@@ -19,7 +20,10 @@
 //!   in `<store>/upper`, which must lie in a writable path, so nothing it
 //!   writes reaches the directory itself, whether the file it writes existed
 //!   before or not. And each `--cow-file` file has its private `<copy>` bound
-//!   over it, made from the file the first time. The data disk's own
+//!   over it, made from the file the first time. Each `--hide` path that
+//!   exists is covered by a bind of `/dev/null`, as runc masks a file:
+//!   opening it opens nothing of the file's, and connecting to it reaches no
+//!   socket (the docker socket, which would hand out root). The data disk's own
 //!   mountpoint (`/data`, where the same trees are reachable as `/data/ws/…`)
 //!   is covered by an empty read-only tmpfs; the identity binds at the host
 //!   paths are separate mounts and stay;
@@ -42,7 +46,9 @@
 //! What the confinement does not cover is everything outside the named trees
 //! that the guest user may write anyway (`/tmp` and the other scratch tmpfs)
 //! and what another process of that user may be asked to do over a socket:
-//! the network namespace is the guest's.
+//! the network namespace is the guest's. Nor does a `--hide` cover outlive
+//! its file: one that root removes and makes again at the path after the
+//! launch is reachable.
 //!
 //! Every step fails closed: the command never runs unconfined because a step
 //! did not work.
@@ -68,6 +74,8 @@ pub struct View {
     pub cow: Vec<(PathBuf, PathBuf)>,
     /// `--cow-file <file> <copy>`.
     pub cow_files: Vec<(PathBuf, PathBuf)>,
+    /// `--hide <path>`.
+    pub hide: Vec<PathBuf>,
 }
 
 impl View {
@@ -77,6 +85,7 @@ impl View {
             && self.writable.is_empty()
             && self.cow.is_empty()
             && self.cow_files.is_empty()
+            && self.hide.is_empty()
     }
 }
 
@@ -90,16 +99,18 @@ impl View {
 /// file an existing regular file strictly inside a read-only directory and in
 /// no `--cow` one. A store or copy must lie where the command may write
 /// (strictly inside a writable path, or outside every read-only directory),
-/// clear of its directory; it need not exist yet. None of them may reach its
-/// target through a symbolic link: a mount follows one, so a link another
-/// process of the guest user planted at a path would open whatever it points
-/// to.
+/// clear of its directory; it need not exist yet. A `--hide` path may lie
+/// anywhere and need not exist (there is nothing to hide then), but one that
+/// does is not a directory. None of them may reach its target through a
+/// symbolic link: a mount follows one, so a link another process of the
+/// guest user planted at a path would open whatever it points to.
 pub fn check_paths(view: &View) -> Result<(), String> {
     let View {
         read_only,
         writable,
         cow,
         cow_files,
+        hide,
     } = view;
     let held = |path: &Path| read_only.iter().any(|dir| inside(path, dir));
     for dir in read_only {
@@ -178,6 +189,14 @@ pub fn check_paths(view: &View) -> Result<(), String> {
             return Err(format!("--cow-file {}: not a file", copy.display()));
         }
     }
+    for path in hide {
+        if missing(path) {
+            continue;
+        }
+        if resolved(path, "--hide")?.is_dir() {
+            return Err(format!("--hide {}: a directory", path.display()));
+        }
+    }
     Ok(())
 }
 
@@ -223,6 +242,12 @@ fn resolved(path: &Path, option: &str) -> Result<std::fs::Metadata, String> {
 /// Whether `path` lies strictly below `dir`, by whole components.
 fn inside(path: &Path, dir: &Path) -> bool {
     path != dir && path.starts_with(dir)
+}
+
+/// Whether nothing is at `path`, not even a link; a path that cannot be
+/// looked at is not missing.
+fn missing(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// Confines this process to `view` (module docs), which [`check_paths`] has
@@ -350,6 +375,10 @@ mod imp {
         for (file, copy) in &view.cow_files {
             bind_copy(file, copy)
                 .map_err(|e| format!("--cow-file {} {}: {e}", file.display(), copy.display()))?;
+        }
+        // Last, so no bind above lands over a cover.
+        for path in &view.hide {
+            hide(path).map_err(|e| format!("--hide {}: {e}", path.display()))?;
         }
 
         // pid 1 of a namespace is the reaper of every orphan in it and
@@ -502,6 +531,22 @@ mod imp {
         let (src, dst) = (c_path(copy)?, c_path(file)?);
         mount(Some(src.as_c_str()), &dst, None, libc::MS_BIND, None)
             .map_err(|e| format!("binding the copy: {e}"))
+    }
+
+    /// `path` covered by a bind of `/dev/null`. Nothing there, nothing to
+    /// cover: so too for a path under `/data`, an empty tmpfs by now.
+    fn hide(path: &Path) -> Result<(), String> {
+        if super::missing(path) {
+            return Ok(());
+        }
+        mount(
+            Some(c"/dev/null"),
+            &c_path(path)?,
+            None,
+            libc::MS_BIND,
+            None,
+        )
+        .map_err(|e| format!("covering it: {e}"))
     }
 
     /// `dir` made (owner-only) where it is missing, and then a directory that
@@ -838,6 +883,34 @@ mod tests {
         assert!(err.contains("symbolic link"), "{err}");
     }
 
+    /// A hidden path is a file or a socket wherever it lies, or nothing at
+    /// all; never a directory, nor a path through a link.
+    #[cfg(unix)]
+    #[test]
+    fn hidden_paths_are_files_or_sockets_when_they_exist() {
+        let (_guard, root) = tempdir();
+        let (file, socket, dir) = (root.join("f"), root.join("s"), root.join("d"));
+        std::fs::write(&file, b"").unwrap();
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        let link = root.join("l");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        let hide = |path: &Path| {
+            check_paths(&View {
+                hide: vec![path.to_path_buf()],
+                ..View::default()
+            })
+        };
+
+        for path in [&file, &socket, &root.join("missing")] {
+            assert!(hide(path).is_ok(), "{}: {:?}", path.display(), hide(path));
+        }
+        let err = hide(&dir).unwrap_err();
+        assert!(err.contains("a directory"), "{err}");
+        let err = hide(&link).unwrap_err();
+        assert!(err.contains("symbolic link"), "{err}");
+    }
+
     /// A reviewer's tree: a home it only reads, its own root in it, a shared
     /// state dir and state file, and a directory and file outside the home.
     struct Tree {
@@ -885,6 +958,7 @@ mod tests {
                 writable: vec![self.own.clone()],
                 cow: owned(cow),
                 cow_files: owned(cow_files),
+                hide: Vec::new(),
             }
         }
     }

@@ -1,5 +1,12 @@
 export type RunPhase = "idle" | "setup" | "running" | "stopped";
 
+/** A port something listens on in a VM workspace's guest, and the port on
+ *  this Mac forwarded to it. */
+export interface ForwardedPort {
+  guest_port: number;
+  port: number;
+}
+
 /** An agent's run as the backend holds it, fetched by a panel on mount. It
  *  races the `run:state` stream, so it is applied only when its `revision` is
  *  newer than what the store already holds. */
@@ -16,6 +23,10 @@ export interface RunStateSnapshot {
    *  forward from `port` reaches; null on the host, where `port` is that
    *  port. Set and cleared with `port`. */
   guest_port?: number | null;
+  /** Every port listening in a VM workspace's guest, the run command's own
+   *  among them, in any phase: an agent may start a server itself. Always
+   *  empty on the host. Absent from a host from before the field. */
+  ports?: ForwardedPort[];
   /** The run's revision when this was taken, as on `RunStateEvent.revision`;
    *  0 for an agent that never ran. Absent from a host from before it. */
   revision?: number;
@@ -99,6 +110,8 @@ export interface RunStateEvent {
   /** The guest end of the forward, as on `RunStateSnapshot.guest_port`; set and
    *  cleared with `port`. */
   guest_port?: number | null;
+  /** The guest's forwarded ports, as on `RunStateSnapshot.ports`. */
+  ports?: ForwardedPort[];
   /** Monotonic per agent, bumped on every change to the run. Events and the
    *  snapshot reach the frontend in no guaranteed order, so whatever is no
    *  newer than what the store holds is dropped. Absent from a host from
@@ -122,6 +135,8 @@ export interface RunStatus {
   phase: RunPhase;
   port: number | null;
   guest_port: number | null;
+  /** Empty for a host that sends none. */
+  ports: ForwardedPort[];
   last_error: string | null;
   /** Null for a host that sends none, whose states the store applies in
    *  arrival order and whose port comes on `run:port`. */

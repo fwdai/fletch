@@ -2363,6 +2363,7 @@ async fn boot(
     let tail = (provider_home.transport() == crate::sandbox::provider::Transport::Tail)
         .then_some((sessions.as_path(), mirror.as_path()));
     let relays = relay::Relays::start(channel.clone(), &dir, &identity.rpc_dir, tail);
+    relays.forward_ports(channel.clone(), &agent_id);
     Ok(RunningBox {
         identity: identity.clone(),
         dir,

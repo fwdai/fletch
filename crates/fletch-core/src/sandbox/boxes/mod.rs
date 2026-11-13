@@ -26,8 +26,9 @@
 //!   waits on them.
 //! - [`ssh_access`]: the user's own ssh client reaching a box, for an
 //!   editor's remote mode.
-//! - [`run`]: the Run panel's process in the guest, its port forwarded to
-//!   the host.
+//! - [`run`]: the Run panel's process in the guest.
+//! - [`ports`]: every port something listens on in the guest, forwarded to
+//!   the host while the box runs.
 //!
 //! Host-side layout per box (`~/.fletch/[dev/]boxes/<agent id>/`, a sibling of
 //! the workspaces root rather than inside it, so no host file sits under a path
@@ -70,7 +71,8 @@
 //! nothing it writes reaches it, a file that did not exist before included,
 //! so no per-provider list of what a CLI executes is needed; its session
 //! transcripts are read from its upper layer ([`ConfinedView::private_path`]).
-//! `/data` is hidden, `/proc` is private and no capability is left. This is
+//! `/data` and Docker's socket are hidden, `/proc` is private and no
+//! capability is left. This is
 //! enforced with no fallback: a guest that predates the options or cannot set
 //! them up refuses the launch, naming the box image to update. What it does
 //! not cover is scratch the guest user may write anyway (`/tmp` and the other
@@ -78,8 +80,9 @@
 //!
 //! What touches a checkout from the host goes through the seam, or asks
 //! [`box_holding`] and refuses with the reason. The Run panel's process runs
-//! in the guest as a launch of the box, its port forwarded to the host
-//! ([`run`]). Not in the guest yet, each refusing or skipping rather than
+//! in the guest as a launch of the box ([`run`]), reached from the host
+//! through the box's forward for its port ([`ports`]). Not in the guest yet,
+//! each refusing or skipping rather than
 //! acting on the host's empty placeholder: verification (`verify`) and
 //! workflow step agents (`BoxEngine::launch_agent` refuses a blackboard). Codegraph
 //! runs in the guest from the tools disk ([`codegraph_bin`]), the attribution
@@ -100,6 +103,7 @@ pub mod executor;
 pub mod home;
 mod launch_files;
 pub mod mirror;
+pub mod ports;
 pub mod provision;
 pub mod registry;
 pub mod relay;
@@ -496,9 +500,6 @@ pub struct BoxEngine {
     /// Every live launch's files in its guest, by launch id: written and
     /// removed under each one's own lock ([`launch_files::LaunchFiles`]).
     files: Mutex<std::collections::HashMap<String, Arc<launch_files::LaunchFiles>>>,
-    /// The port forward of every live Run launch, by launch id
-    /// ([`run::GuestRun`]): dropped, and so ended, by the launch's kill.
-    forwards: Mutex<std::collections::HashMap<String, fletch_box::Forward>>,
     /// Every live Run launch, by launch id, with its copy-on-write stores
     /// ([`run::GuestRun`]): its kill ends the command's process group in the
     /// guest itself, rather than leave that to the tty hangup the ssh
@@ -514,20 +515,10 @@ impl BoxEngine {
                 Arc::new(BoxEngine {
                     pending: Mutex::new(std::collections::HashMap::new()),
                     files: Mutex::new(std::collections::HashMap::new()),
-                    forwards: Mutex::new(std::collections::HashMap::new()),
                     runs: Mutex::new(std::collections::HashMap::new()),
                 })
             })
             .clone()
-    }
-
-    /// Keep `forward` for as long as launch `launch_id` lives: its kill drops
-    /// it ([`SandboxEngine::kill`]).
-    fn park_forward(&self, launch_id: &str, forward: fletch_box::Forward) {
-        self.forwards
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(launch_id.to_string(), forward);
     }
 
     /// Launch `launch_id` is a Run with its copy-on-write stores at `stores`:
@@ -706,6 +697,8 @@ struct ConfinedView {
     /// Files inside them the launch sees as a private copy, each with that
     /// copy under the launch's own root.
     cow_files: Vec<(PathBuf, PathBuf)>,
+    /// Paths the launch cannot open at all.
+    hidden: Vec<PathBuf>,
 }
 
 impl ConfinedView {
@@ -727,6 +720,19 @@ impl ConfinedView {
     /// Every `--cow-file` pair: the shared file, then its copy.
     fn cow_files(&self) -> Vec<(&Path, &Path)> {
         borrowed(&self.cow_files)
+    }
+
+    /// `--hide <path>` for every path the view hides, unquoted.
+    fn hide_options(&self) -> Vec<String> {
+        self.hidden
+            .iter()
+            .flat_map(|path| {
+                [
+                    fletch_box::guest::EXEC_HIDE.to_string(),
+                    path.to_string_lossy().into_owned(),
+                ]
+            })
+            .collect()
     }
 
     /// The scope the host's own operations for a launch confined to this
@@ -766,6 +772,7 @@ impl ConfinedView {
                 words.push(private.to_string_lossy().into_owned());
             }
         }
+        words.extend(self.hide_options());
         let rest = ["--env-file", "/dev/null", "--"];
         words.extend(rest.map(String::from));
         words
@@ -840,6 +847,8 @@ fn borrowed(pairs: &[(PathBuf, PathBuf)]) -> Vec<(&Path, &Path)> {
 ///   that holds a mount (one of the box's shares or binds, or one of the
 ///   reviewer's writable paths) stays read-only instead, since an overlay's
 ///   lower layer shows one filesystem and would hide the mount.
+/// - Docker's socket is hidden: the daemon runs as root, so a container the
+///   reviewer started could mount and write the coder's files.
 ///
 /// Seatbelt's other grants have no counterpart in a guest: claude's login is
 /// a token in the env file, not a credentials file, and runs with no
@@ -919,6 +928,7 @@ fn confined_view(
         writable_dirs: writable,
         cow_dirs,
         cow_files,
+        hidden: vec![PathBuf::from(fletch_box::guest::DOCKER_SOCKET)],
     })
 }
 
@@ -1161,6 +1171,7 @@ fn read_only_probe_answer(success: bool, stderr: &str) -> Option<bool> {
         fletch_box::guest::EXEC_WRITABLE,
         fletch_box::guest::EXEC_COW,
         fletch_box::guest::EXEC_COW_FILE,
+        fletch_box::guest::EXEC_HIDE,
     ];
     if success {
         Some(true)
@@ -1216,6 +1227,7 @@ fn agent_remote_command(
         &view.cow_dirs(),
         &view.cow_files(),
     );
+    tail.extend(view.hide_options());
     tail.extend(["--".to_string(), agent_bin.to_string()]);
     AgentCommand {
         head: head.map(quote).to_vec(),
@@ -1545,7 +1557,8 @@ impl SandboxEngine for BoxEngine {
     /// the session's processes are doing: none of them writes those files.
     /// The CLI's credential changes were written back as each process exited
     /// (`after_exit`), never here, where the process may still be running.
-    /// A Run launch's port forward ends here too ([`run::GuestRun`]).
+    /// A Run launch's command is ended in the guest here too
+    /// ([`run::GuestRun`]), and the guest gives back the memory it used.
     fn kill(&self, plan: &KillPlan) -> Result<()> {
         let KillPlan::Box {
             agent_id,
@@ -1555,13 +1568,6 @@ impl SandboxEngine for BoxEngine {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(launch_id);
-        // Dropped: ssh is killed, and the host port is free again.
-        drop(
-            self.forwards
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(launch_id),
-        );
         let files = self
             .files
             .lock()
@@ -1580,6 +1586,7 @@ impl SandboxEngine for BoxEngine {
             .remove(launch_id);
         if let (Some(stores), Some(channel)) = (run, &channel) {
             run::end_in_guest(channel, launch_id, Some(&stores));
+            reclaim_memory(agent_id);
         }
         files.close(|stem| {
             if let Some(channel) = &channel {
@@ -1857,9 +1864,44 @@ pub async fn discard_if_any(agent_id: &str) -> Result<()> {
 }
 
 /// A turn of `agent_id` ended, however it ended: a network opened for it
-/// (`box_egress_open_turn`) closes. A no-op for every other agent.
+/// (`box_egress_open_turn`) closes, and the box it ran in gives back the
+/// memory the turn used. A no-op for every other agent.
 pub fn turn_ended(agent_id: &str) {
-    BoxRegistry::global().set_turn_open(agent_id, false);
+    let registry = BoxRegistry::global();
+    registry.set_turn_open(agent_id, false);
+    match registry.tenant_of(agent_id) {
+        Some(tenant) => reclaim_memory(&tenant.host_agent_id),
+        None => reclaim_memory(agent_id),
+    }
+}
+
+/// Have `agent_id`'s box give the memory its guest caches back to the host
+/// (`fletch-guest reclaim`), in the background and only while it runs: a
+/// stopped box is never booted for it. Best-effort: a guest that predates it
+/// refuses, which changes nothing.
+fn reclaim_memory(agent_id: &str) {
+    let Ok(channel) = BoxRegistry::global().channel_for_running(agent_id) else {
+        return;
+    };
+    let agent_id = agent_id.to_string();
+    crate::host::spawn(async move {
+        let words = [
+            "sudo",
+            "-n",
+            fletch_box::guest::GUEST_AGENT,
+            fletch_box::guest::RECLAIM,
+        ];
+        match channel.exec(None, None, &words).await {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => tracing::debug!(
+                agent_id,
+                status = %out.status,
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "the guest did not reclaim its memory"
+            ),
+            Err(e) => tracing::debug!(agent_id, error = %e, "the guest did not reclaim its memory"),
+        }
+    });
 }
 
 /// `agent_id`'s pull request merged into its repository's default branch:

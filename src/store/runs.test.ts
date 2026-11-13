@@ -29,6 +29,7 @@ const event = (over: Partial<RunStateEvent>): RunStateEvent => ({
   last_error: null,
   port: null,
   guest_port: null,
+  ports: [],
   revision: 1,
   ...over,
 });
@@ -38,6 +39,7 @@ const snapshot = (over: Partial<RunStateSnapshot>): RunStateSnapshot => ({
   last_error: null,
   port: null,
   guest_port: null,
+  ports: [],
   revision: 1,
   log: [],
   log_seq: 0,
@@ -48,6 +50,7 @@ const held = (over: Partial<RunStatus>): RunStatus => ({
   phase: "running",
   port: null,
   guest_port: null,
+  ports: [],
   last_error: null,
   revision: 1,
   ...over,
@@ -102,6 +105,40 @@ describe("applyRunState", () => {
     expect(store.getState().runs.a?.phase).toBe("stopped");
     store.getState().applyRunState("a", event({ phase: "running", revision: 2 }));
     expect(store.getState().runs.a?.phase).toBe("running");
+  });
+});
+
+describe("applyRunState's forwarded ports", () => {
+  const postgres = { guest_port: 5432, port: 5433 };
+  const redis = { guest_port: 6379, port: 6379 };
+
+  it("takes the ports a state brings, in any phase", () => {
+    const store = makeStore();
+    store.getState().applyRunState("a", event({ phase: "idle", ports: [postgres], revision: 2 }));
+    expect(store.getState().runs.a).toEqual(
+      held({ phase: "idle", ports: [postgres], revision: 2 }),
+    );
+  });
+
+  it("replaces them with a newer revision's", () => {
+    const store = makeStore();
+    store.getState().applyRunState("a", event({ ports: [postgres, redis], revision: 2 }));
+    store.getState().applyRunState("a", event({ ports: [redis], revision: 3 }));
+    expect(store.getState().runs.a?.ports).toEqual([redis]);
+  });
+
+  it("keeps them when an older snapshot resolves later", () => {
+    const store = makeStore();
+    store.getState().applyRunState("a", event({ ports: [postgres], revision: 7 }));
+    store.getState().applyRunState("a", snapshot({ ports: [], revision: 6 }));
+    expect(store.getState().runs.a?.ports).toEqual([postgres]);
+  });
+
+  it("reads a state without the field as no ports", () => {
+    const store = makeStore();
+    store.getState().applyRunState("a", event({ ports: [postgres], revision: 2 }));
+    store.getState().applyRunState("a", event({ ports: undefined, revision: 3 }));
+    expect(store.getState().runs.a?.ports).toEqual([]);
   });
 });
 

@@ -3,7 +3,8 @@
 //! Each ecosystem has a [`RunDetector`] that reads a few files at a
 //! checkout root and, if it recognizes the project, returns a
 //! [`DetectedConfig`] with a confidence score. [`detect_all`] runs every
-//! detector and returns the surviving configs ranked by confidence.
+//! detector and returns the surviving configs ranked by confidence. A compose
+//! file at the root then folds into each config's run command (`compose`).
 //!
 //! Detectors are pure (`&Tree -> Option<DetectedConfig>`) so they can be
 //! unit-tested against fixture directories with no Tauri/DB setup. A [`Tree`]
@@ -26,6 +27,7 @@ use std::path::{Path, PathBuf};
 use crate::exec::Executor;
 
 pub(crate) mod command;
+mod compose;
 mod go;
 mod node;
 mod php;
@@ -73,7 +75,8 @@ impl DetectedRow {
 /// One ecosystem's worth of detected configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DetectedConfig {
-    /// "node" | "python" | "ruby" | "rust" | "go" | "php".
+    /// "node" | "python" | "ruby" | "rust" | "go" | "php", or "compose" for
+    /// a compose file with no ecosystem beside it.
     pub ecosystem: String,
     /// 0–100. Lockfile present → high; manifest only → medium;
     /// bare source files → low.
@@ -168,6 +171,7 @@ pub fn detect_all_in(tree: &Tree) -> Vec<DetectedConfig> {
     // Stable sort by confidence desc so ties keep detector registration
     // order (node before python before … — a deterministic primary).
     configs.sort_by_key(|c| std::cmp::Reverse(c.confidence));
+    compose::apply(tree, &mut configs);
     configs
 }
 

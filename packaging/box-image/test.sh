@@ -61,22 +61,26 @@ for l in $layers; do
 done
 pass T-mount "every image mounts and each layer carries its marker ($(mount | grep -c "$MNT/.* type erofs") erofs mounts; kernel $(uname -r))"
 
-teardown() { umount -R "$M" 2>/dev/null || true; }
+teardown() { umount -R "$M" 2>/dev/null || true; umount "$MNT/sys" 2>/dev/null || true; }
 # assemble LAYER...: the merged root as the guest init builds it: the base
-# bound at $M, an overlay per top-level directory the layers carry, first
-# argument on top.
+# bound at $M, and on /usr, /etc and /var an overlay of the layers' directories
+# (first argument on top) on the base's, under an empty upper layer of the
+# box's own changes (a tmpfs here, the data disk in a box).
 assemble() {
   teardown
   mount --bind "$MNT/base" "$M"
   mount -o remount,bind,ro "$M"
+  mkdir -p "$MNT/sys"
+  mount -t tmpfs tmpfs "$MNT/sys"
   local d lower l
   for d in usr etc var; do
     lower=""
     for l in "$@"; do
       [ -d "$MNT/$l/$d" ] && lower="$lower$MNT/$l/$d:"
     done
-    [ -n "$lower" ] || continue
-    mount -t overlay overlay -o "ro,lowerdir=${lower}$MNT/base/$d" "$M/$d" \
+    mkdir -p "$MNT/sys/$d/upper" "$MNT/sys/$d/work"
+    mount -t overlay overlay \
+      -o "lowerdir=${lower}$MNT/base/$d,upperdir=$MNT/sys/$d/upper,workdir=$MNT/sys/$d/work" "$M/$d" \
       || fail T-overlay "overlay on /$d with $*: $(dmesg | tail -1)"
   done
   mount -t proc proc "$M/proc"
@@ -98,6 +102,30 @@ ENVI=(/usr/bin/env -i HOME=/data/home USER=agent LOGNAME=agent PATH=/usr/local/b
 run() { chroot --userspec=1000:1000 --groups=1000 "$M" "${ENVI[@]}" "$@"; }
 runroot() { chroot "$M" /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 "$@"; }
 agent_sh() { run bash -c "$1"; }
+# forgets BEFORE AFTER: forget-0.5.0-docker-proxies, run as init runs it, turns
+# the agent's docker config BEFORE into AFTER and keeps its mode.
+forgets() {
+  local config=$M/data/home/.docker/config.json
+  mkdir -p "${config%/*}"
+  printf '%s' "$1" > "$config"
+  chmod 600 "$config"
+  chown -R 1000:1000 "${config%/*}"
+  run /opt/fletch/forget-0.5.0-docker-proxies /data/home/.docker/config.json || return 1
+  [ "$(jq -c . "$config")" = "$2" ] && [ "$(stat -c %a "$config")" = 600 ] && [ ! -e "$config.new" ] ||
+    { echo "$1 became $(jq -c . "$config"), mode $(stat -c %a "$config")"; return 1; }
+}
+forgets_only_what_0_5_0_wrote() {
+  local written='"httpProxy":"http://172.17.0.1:8899","httpsProxy":"http://172.17.0.1:8899","noProxy":"localhost,127.0.0.0/8,::1,172.16.0.0/12,192.168.0.0/16"'
+  local other_daemon='"tcp://other:2375":{"httpProxy":"http://corp:3128"}'
+  local own='{"proxies":{"default":{"httpProxy":"http://corp:3128"}}}'
+  forgets "{\"auths\":{\"r\":{}},\"proxies\":{\"default\":{$written}}}" '{"auths":{"r":{}}}' &&
+    forgets "{\"proxies\":{\"default\":{$written},$other_daemon}}" "{\"proxies\":{$other_daemon}}" &&
+    forgets "{\"proxies\":{\"default\":{$written,\"ftpProxy\":\"http://corp:3128\"}}}" '{"proxies":{"default":{"ftpProxy":"http://corp:3128"}}}' &&
+    forgets '{"proxies":{"default":{"httpProxy":"http://172.17.0.1:8899","httpsProxy":"http://corp:3128","noProxy":"internal"}}}' '{"proxies":{"default":{"httpsProxy":"http://corp:3128","noProxy":"internal"}}}' &&
+    forgets "$own" "$own" &&
+    run /opt/fletch/forget-0.5.0-docker-proxies /data/home/.docker/absent.json &&
+    echo "its own values go, alone or beside an added daemon, an added key or changed keys; the agent's own proxy and a missing file are left"
+}
 PAGE='<body style="font:32px sans-serif">Hello 你好 Привет 😀 <canvas id=c width=80 height=40></canvas><script>c.getContext("2d").fillStyle="red";c.getContext("2d").fillRect(0,0,80,40)</script></body>'
 
 # ------------------------------------------------------------ base + devtools (the default)
@@ -127,6 +155,19 @@ check T-guest-args "fletch-guest exec hands the command the arguments in --args-
   agent_sh 'd=$(mktemp -d); printf "PATH=/usr/bin:/bin\n" > "$d/e"; for c in a b c; do head -c 100000 /dev/zero | tr "\0" "$c"; printf "\0"; done > "$d/a"; got=$(/opt/fletch/bin/fletch-guest exec --env-file "$d/e" --args-file "$d/a" -- /bin/sh -c "for x; do printf \"%s \" \"\${#x}\"; done" sh) && [ "$got" = "100000 100000 100000 " ] && [ ! -e "$d/a" ] && echo "3 arguments of 100000 bytes each arrive whole; the file is gone"'
 check T-mkfs "mkfs.ext4 and e2fsck for the data disk" -- \
   runroot sh -c 'mkfs.ext4 -V 2>&1 | head -1 && e2fsck -V 2>&1 | head -1'
+# sudo is setuid: what makes it root is the overlay honouring that bit.
+check T-sudo "agent runs sudo -n without a password, and as root writes the system through its overlay" -- \
+  agent_sh 'set -e; test "$(sudo -n id -u 2>/dev/null)" = 0; sudo -n sh -c "echo x > /usr/local/share/t && rm /usr/local/share/t"; echo "sudo -n is root; /usr is writable"'
+check T-docker-proxies "forget-0.5.0-docker-proxies takes back the docker client proxies image 0.5.0 wrote, and only those" -- \
+  forgets_only_what_0_5_0_wrote
+check T-apt "apt reaches its https sources through the egress proxy" -- \
+  runroot sh -c 'set -e; apt-config dump | grep -qF "Acquire::https::Proxy \"http://127.0.0.1:8899\";"; apt-config dump | grep -qF "Acquire::http::Proxy \"http://127.0.0.1:8899\";"
+schemes=$(apt-get update --print-uris | cut -c2-9 | sort -u); test "$schemes" = https://; echo "proxy 127.0.0.1:8899; every source $schemes"'
+check T-guest-listeners "fletch-guest listeners prints a loopback server when it starts and again when it stops" -- \
+  agent_sh 'node -e "setTimeout(() => { const s = require(\"net\").createServer().listen(39123, \"127.0.0.1\"); setTimeout(() => s.close(), 1500); }, 1200)" &
+out=$(timeout 5 /opt/fletch/bin/fletch-guest listeners); echo $out; echo "$out" | grep -q 39123 && ! echo "$out" | tail -1 | grep -q 39123'
+check T-guest-reclaim "sudo -n fletch-guest reclaim, as the host runs it, exits 0" -- \
+  agent_sh 'sudo -n /opt/fletch/bin/fletch-guest reclaim 2>&1 && echo reclaimed'
 check T-nollvm-files "Mesa/LLVM files are excluded; libgbm stays" -- \
   sh -c "! ls $LIB/libLLVM* $LIB/libgallium* $LIB/libz3* 2>/dev/null && ls $LIB/libgbm.so.1 && echo 'libgbm present, backend absent'"
 check T-locale "no /usr/share/locale; C.UTF-8 works" -- \
@@ -177,8 +218,8 @@ else
   fail T-overlay-perf "cold find over /usr: base ${base_ms} ms, overlay ${merged_ms} ms (more than 4x)"
 fi
 
-# ------------------------------------------------------------ base + devtools + browser
-say "configuration: base + devtools + browser"
+# ------------------------------------------------------------ every layer
+say "configuration: every layer"
 check T-browser "browser layer: chromium-headless-shell screenshots text, emoji and a canvas; no Mesa/LLVM loaded" -- \
   agent_sh "set -e; cd \$(mktemp -d); cat > p.html <<'EOF'
 $PAGE
@@ -193,12 +234,36 @@ check T-fonts-noto "browser layer adds fonts-noto-core (Devanagari resolves to N
   agent_sh 'm=$(fc-match "sans-serif:lang=hi"); echo "lang=hi -> $m"; echo "$m" | grep -i -E "noto|devanagari"'
 check T-ldd-browser "the browser resolves every library through the overlay" -- \
   runroot sh -c 'b=$(readlink -f /usr/bin/chromium-headless-shell); ldd "$b" | grep "not found" && exit 1; echo "all resolve"'
+check T-containers "containers layer: docker, compose, buildx, containerd, runc, nft; dockerd takes daemon.json" -- \
+  runroot sh -c 'set -e; export HOME=/tmp; docker --version; docker compose version; docker buildx version; containerd --version; runc --version | head -1; nft --version
+dockerd --validate --config-file /etc/docker/daemon.json'
+check T-containers-wiring "agent is in the docker group; containers resolve names at the bridge gateway daemon.json sets" -- \
+  runroot sh -c 'set -e; id -nG agent | grep -qw docker
+gw=$(jq -r .bip /etc/docker/daemon.json | cut -d/ -f1); test "$(jq -c .dns /etc/docker/daemon.json)" = "[\"$gw\"]"
+echo "docker group: $(id -nG agent); dns $gw"'
+# The image's sentinel-dns as a resolver asks it; what containers do with the
+# answer is boot-check.sh's.
+check T-containers-dns "sentinel-dns: a dotted name is the sentinel and has no AAAA; a single-label name is NXDOMAIN" -- \
+  sh -c 'set -e; "$1" sentinel-dns 127.0.0.1:5353 198.18.0.1 >/dev/null & trap "kill $!" EXIT; sleep 0.3
+q() { dig +time=2 +tries=1 -p 5353 @127.0.0.1 "$@"; }
+a=$(q +short registry.npmjs.org A); test "$a" = 198.18.0.1; test -z "$(q +short registry.npmjs.org AAAA)"
+q web A | grep -q "status: NXDOMAIN"; echo "registry.npmjs.org A $a, no AAAA; web NXDOMAIN"' sh "$MNT/base/opt/fletch/bin/fletch-guest"
+# A package two layers both pull in puts the same file in each, which is harmless.
+layers_agree() {
+  local l differ
+  differ=$(for l in $layers; do
+    (cd "$MNT/$l" && find . -type f ! -name .fletch-layer -exec sha256sum {} +)
+  done | sort -u | awk '{ print $2 }' | sort | uniq -d)
+  [ -z "$differ" ] || { echo "$differ"; return 1; }
+  echo "no file differs between layers"
+}
+check T-layers-disjoint "no file is in two layers with different content, where the one on top would hide the other's" -- layers_agree
 
 # ------------------------------------------------------------ base only: the agent CLIs
 say "configuration: base only"
 assemble
-check T-base-only-no-dev "gcc, python3 and bun are absent on the base alone" -- \
-  sh -c "! test -e $M/usr/bin/gcc && ! test -e $M/usr/bin/python3 && ! test -e $M/usr/local/bin/bun && echo absent"
+check T-base-only-no-dev "gcc, python3, bun and docker are absent on the base alone" -- \
+  sh -c "! test -e $M/usr/bin/gcc && ! test -e $M/usr/bin/python3 && ! test -e $M/usr/local/bin/bun && ! test -e $M/usr/bin/dockerd && echo absent"
 if [ "$WITH_AGENTS" = 1 ]; then
   check T-agents-claude "Claude Code installs and starts on the base" -- \
     agent_sh 'set -e; P=/tmp/t/claude; mkdir -p $P; npm install -g --prefix $P --cache /tmp/npm-cache --no-fund --no-audit --silent @anthropic-ai/claude-code@latest; $P/bin/claude --version'

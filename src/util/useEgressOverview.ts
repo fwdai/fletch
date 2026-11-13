@@ -7,6 +7,7 @@ import { useAppStore } from "@/store";
 export const EGRESS_CATEGORIES: { key: string; label: string }[] = [
   { key: "providers", label: "Agent providers" },
   { key: "registries", label: "Package registries" },
+  { key: "container_registries", label: "Container registries" },
   { key: "toolchains", label: "Toolchains and CDNs" },
   { key: "source_hosting", label: "Source hosting" },
   { key: "os_packages", label: "OS packages" },

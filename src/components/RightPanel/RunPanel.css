@@ -114,6 +114,9 @@
 .run-bar.v2 .run-link .port {
   color: var(--fg-0);
 }
+.run-bar.v2 .run-link .mac-port {
+  color: var(--fg-2);
+}
 .run-bar.v2 .run-link svg {
   opacity: 0.55;
   margin-left: 2px;
@@ -160,6 +163,12 @@
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 1.5px var(--bg-1);
+}
+
+/* The VM's other forwarded ports: a second bar, so its links are the bar's. */
+.run-bar.v2.run-ports {
+  flex-wrap: wrap;
+  padding: 6px 12px;
 }
 
 /* One muted line under the bar, e.g. why detection came back empty. */

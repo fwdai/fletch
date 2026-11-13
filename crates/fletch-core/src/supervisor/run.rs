@@ -179,11 +179,27 @@ impl Supervisor {
                 last_error: None,
                 port: None,
                 guest_port: None,
+                ports: Vec::new(),
                 revision: run_session::clock_revision(),
                 log: Vec::new(),
                 log_seq: 0,
             },
         }
+    }
+
+    /// Keep each agent's run state's `ports` what the sandbox forwards to
+    /// this host for it (`sandbox::on_forwarded_ports`), every change told on
+    /// `run:state` like any other. Once, at boot.
+    pub fn follow_forwarded_ports(self: &Arc<Self>, ctx: Arc<EngineCtx>) {
+        let sup = self.clone();
+        crate::sandbox::on_forwarded_ports(move |agent_id, ports| {
+            let session = sup.run_session(agent_id);
+            let before = session.state().port;
+            if session.set_forwarded(ports) {
+                announce_forward(&ctx, agent_id, &session, before);
+                emit_run_state(ctx.sink.as_ref(), agent_id, &session);
+            }
+        });
     }
 
     /// The agent's run session, made on first use.
@@ -354,6 +370,31 @@ fn settle_stopped(
         emit_run_state(ctx.sink.as_ref(), agent_id, session);
     } else {
         tracing::debug!(agent_id, "ignoring a stale run's outcome");
+    }
+}
+
+/// Tell where the run's server in a box became reachable on this host, when
+/// the box's forward for its guest port is new: on `run:port`, for clients
+/// from before `run:state` carried the port, who read nothing else and
+/// cannot order it; and in the log when the port here is not the guest's.
+/// `before` is the run's port on this host before the change.
+fn announce_forward(
+    ctx: &Arc<EngineCtx>,
+    agent_id: &str,
+    session: &Arc<RunSession>,
+    before: Option<u16>,
+) {
+    let state = session.state();
+    let (Some(port), Some(guest_port)) = (state.port, state.guest_port) else {
+        return;
+    };
+    if before == Some(port) {
+        return;
+    }
+    emit_run_port(ctx.sink.as_ref(), agent_id, port, Some(guest_port));
+    if port != guest_port {
+        let note = format!("Port {guest_port} in use on this Mac — reachable at localhost:{port}");
+        write_note(ctx, agent_id, session, &note);
     }
 }
 
@@ -601,14 +642,13 @@ fn spawn_run_phase(
 
 /// [`spawn_run_phase`] for a checkout the engine keeps off the host: the
 /// command runs in the guest that holds it (`sandbox::guest_run`), held
-/// against the box's idle stop for as long as it runs, and a run phase has
-/// its dev server's port forwarded to a free port on this host, which the
-/// panel's link opens. The port is settled here rather than before the phase
-/// began, as the host's is: finding a free port in the guest, and forwarding
-/// it, both need the box, which a stopped one must first boot — under a
-/// phase the panel already shows, so the wait is visible. `run:state` thus
-/// goes `running` with no port, and `run:port` follows, carrying the host
-/// port once the forward is up.
+/// against the box's idle stop for as long as it runs. The port is settled
+/// here rather than before the phase began, as the host's is: finding a free
+/// port in the guest needs the box, which a stopped one must first boot —
+/// under a phase the panel already shows, so the wait is visible. The panel's
+/// link opens the box's forward for that port, which comes up once the
+/// server listens ([`Supervisor::follow_forwarded_ports`]): `run:state` thus
+/// goes `running` with no port, and the port on this host follows.
 ///
 /// The env the command gets is the guest's own (`guest_env`, the project's
 /// toolchain cache in the guest) plus the project's shared Run env and the
@@ -627,17 +667,17 @@ fn spawn_guest_run_phase(
     chain_run_cmd: Option<String>,
 ) -> Result<()> {
     let record = sup.workspace.agent(&agent_id)?;
-    let Some(mut guest) = crate::sandbox::guest_run(&cwd)? else {
+    let Some(guest) = crate::sandbox::guest_run(&cwd)? else {
         return Err(Error::Other(format!(
             "{} is not in a sandbox this host runs commands in",
             cwd.display()
         )));
     };
     // This runs off the UI thread, so Stop can land at any point of it: after
-    // each step that takes long (the boot above, the forward below) the
+    // each step that takes long (the boot above, the port probe below) the
     // generation says whether the run is still wanted. A stopped run spawns
     // nothing and reports nothing — `run_stop` already announced Stopped —
-    // and dropping `guest` releases the box and the forward.
+    // and dropping `guest` releases the box.
     if !session.is_current_generation(gen) {
         return Ok(());
     }
@@ -657,32 +697,12 @@ fn spawn_guest_run_phase(
     }
     env.extend(prepared.extra_env);
 
-    let host_port = match prepared.port {
-        Some(port) => Some(guest.forward(port, PORT_SCAN_CAP)?),
-        None => None,
-    };
-    if !session.set_ports(gen, host_port, prepared.port) {
+    if !session.set_ports(gen, None, prepared.port) {
         return Ok(());
-    }
-    // The port is a state change like any other, told on `run:state` with
-    // its revision; `run:port` stays beside it for clients from before the
-    // field, who read nothing else and cannot order it.
-    if let (Some(port), Some(host_port)) = (prepared.port, host_port) {
-        emit_run_port(ctx.sink.as_ref(), &agent_id, host_port, Some(port));
     }
     emit_run_state(ctx.sink.as_ref(), &agent_id, &session);
     if let Some(note) = &prepared.note {
         write_note(&ctx, &agent_id, &session, note);
-    }
-    if let (Some(port), Some(host_port)) = (prepared.port, host_port) {
-        if host_port != port {
-            write_note(
-                &ctx,
-                &agent_id,
-                &session,
-                &format!("Port {port} in use on this Mac — reachable at localhost:{host_port}"),
-            );
-        }
     }
 
     let (program, args, kill) = guest.launch(&cwd, &prepared.cmd, &env)?;
@@ -697,8 +717,8 @@ fn spawn_guest_run_phase(
         phase,
         chain_run_cmd,
     );
-    // The guard runs the kill — the box released, the forward dropped — if
-    // the spawn fails; a spawned session owns it from then on, and the attach
+    // The guard runs the kill — the command ended, the box released — if the
+    // spawn fails; a spawned session owns it from then on, and the attach
     // kills it when a stop came while the command was launching.
     let pty = KillGuard::new(kill).start(|kill| {
         run_session::spawn_command(&program, &args, &cwd, &[], kill, on_output, on_exit)

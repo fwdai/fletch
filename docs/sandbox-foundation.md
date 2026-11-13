@@ -119,8 +119,9 @@ engine enforces) and `docs/box.md` is the box runtime.
    checkout, and in the guest for a box's (`sandbox::guest_run`): the same
    `fletch-guest exec --env-file` entry an agent launch takes, a launch of the
    box held against its idle stop for as long as the command runs, and the
-   dev server's port forwarded over an ssh connection of its own to a free
-   port on the host, which the panel's link opens (`docs/box.md`). The
+   dev server reached through the box's forward for its port, which the
+   panel's link opens: a box forwards every port something listens on in it
+   (`docs/box.md`). The
    supervisor asks `sandbox::checkout_is_remote` and the facade; it names no
    engine. Detection reads the checkout through the executor
    (`run_detect::Tree`), one listing then the files it needs, and the panel's
@@ -202,8 +203,10 @@ box. The handoff summary is not a row either: nothing reads such a fact yet.
   and none of it reaches the coder's; the provider adapter names what is
   shared at the guest's own paths (`ProviderHome::shared_state`), which hold
   every seeded path and credential file outside the writable root. `/data`
-  is hidden, `/proc` is private and every
-  capability is dropped (`boxes::confined_view`). Enforced, with no
+  is hidden, so is Docker's socket (`exec --hide`: through Docker it could
+  write the coder's files), `/proc` is private and every
+  capability is dropped (`boxes::confined_view`), which also leaves it no
+  `sudo`. Enforced, with no
   fallback: a guest that predates the options or cannot set them up refuses
   the launch. What it does not cover: scratch outside every bind (`/tmp` and
   the other tmpfs mounts), and the network namespace, which is the guest's.

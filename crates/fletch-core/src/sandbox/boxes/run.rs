@@ -1,23 +1,22 @@
 //! The Run panel's process in a box: the project's setup and dev commands
-//! run in the guest, where the checkout is, and the dev server's port is
-//! forwarded to a port on this host, where the browser is.
+//! run in the guest, where the checkout is.
 //!
 //! A run is a launch of the box like an agent's session or the workspace
 //! terminal: it holds the box against its idle stop from before it reaches
 //! it ([`super::Hold`], booting a stopped box) until the session ends, and
 //! one [`BoxEngine::kill`](super::BoxEngine) — run by the session's own kill,
 //! by its drop when the process exits on its own, and at app exit — removes
-//! the env file, drops the forward and detaches the launch, which arms the
-//! idle timer. The command gets exactly the environment an agent launch gets
-//! (`fletch-guest exec --env-file`), plus what the panel adds (the project's
-//! shared env, the pinned `PORT`), and runs under a tty so the dev server
-//! prints as it does on the host.
+//! the env file and detaches the launch, which arms the idle timer. The
+//! command gets exactly the environment an agent launch gets (`fletch-guest
+//! exec --env-file`), plus what the panel adds (the project's shared env, the
+//! pinned `PORT`), and runs under a tty so the dev server prints as it does
+//! on the host.
 //!
 //! Ports: the dev server binds its own port in the guest, whose loopback is
-//! the VM's alone, so two workspaces on port 3000 never clash there. Each
-//! guest port is forwarded to a free host port — the same number when it is
-//! free on this host, else the next one, as the host's own Run bumps a taken
-//! port — on an ssh connection of its own, which ends with the launch.
+//! the VM's alone, so two workspaces on port 3000 never clash there. The
+//! browser reaches it through the box's forward for that port, which comes
+//! up once the server listens, as for anything else listening in the guest
+//! ([`super::ports`]).
 //!
 //! The command is project code run the moment the user clicks ▶, so it gets
 //! the view the host's Run profile gives such code, in the guest
@@ -45,9 +44,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
-use fletch_box::channel::Forward;
 use fletch_box::Channel;
 
 use super::registry::{BoxIdentity, BoxRegistry, RunningBox};
@@ -77,10 +74,6 @@ const RUN_WRITABLE_HOME_DIRS: &[&str] = &[
     ".rbenv",  // rbenv: shims + installed Ruby versions
     ".rvm",    // rvm: alternative Ruby version manager
 ];
-
-/// How long a forward's host listener may take to come up: one ssh
-/// connection through the proxy helper, handshake included.
-const FORWARD_READY: Duration = Duration::from_secs(20);
 
 /// The first free TCP port in the guest at or after `$1`, up to `$1 + $2`:
 /// a port something accepts a connection on is taken, as the host's own
@@ -142,14 +135,13 @@ pub(super) fn end_in_guest(channel: &Channel, launch_id: &str, stores: Option<&P
 
 /// A Run in a box, from the hold on the box to the command's launch. What the
 /// launch has made in the guest goes with this value when it fails before
-/// the engine owns the launch ([`Drop`]), as the hold and the forward do.
+/// the engine owns the launch ([`Drop`]), as the hold does.
 pub struct GuestRun {
     identity: BoxIdentity,
     launch_id: String,
     hold: Option<Hold>,
     running: Arc<RunningBox>,
     channel: Arc<Channel>,
-    forward: Option<Forward>,
     /// The launch's copy-on-write stores, from when the guest made them to
     /// when the engine took the launch ([`BoxEngine::note_run`]).
     stores: Option<PathBuf>,
@@ -203,7 +195,6 @@ impl GuestRun {
             hold: Some(hold),
             running,
             channel,
-            forward: None,
             stores: None,
             env_file_written: false,
         }))
@@ -233,39 +224,11 @@ impl GuestRun {
         }
     }
 
-    /// Forward `guest_port` of the box to a free port on this host — the same
-    /// number when it is free here, else the next free one up to `cap` past
-    /// it — and wait for the listener to come up. Returns the host port. The
-    /// forward lives with the launch from [`Self::launch`] on; before that it
-    /// drops with this run.
-    pub fn forward(&mut self, guest_port: u16, cap: u16) -> Result<u16> {
-        let host_port =
-            crate::run_detect::port::find_free_port(guest_port, cap).ok_or_else(|| {
-                Error::Other(format!(
-                    "No free port available on this Mac in {guest_port}\u{2013}{}",
-                    guest_port.saturating_add(cap)
-                ))
-            })?;
-        let channel = self.channel.clone();
-        let forward = super::block_on(async move {
-            let mut forward = channel.forward(host_port, guest_port)?;
-            forward.wait_ready(FORWARD_READY).await?;
-            Ok::<_, fletch_box::Error>(forward)
-        })
-        .map_err(|e| {
-            Error::Other(format!(
-                "forward port {guest_port} of the box to port {host_port} on this Mac: {e}"
-            ))
-        })?;
-        self.forward = Some(forward);
-        Ok(host_port)
-    }
-
     /// The host program and arguments that run the shell command `cmd` in
     /// `cwd` of the guest, under a tty, confined to the Run's view of the
     /// guest ([`run_view`]), with `env` on top of what every guest process
     /// gets (`guest_env`, the project's toolchain cache), and the kill handle
-    /// that ends the launch: the env file removed, the forward dropped, the
+    /// that ends the launch: the command ended, the env file removed, the
     /// box released. The session the caller spawns must own the handle, or
     /// run it (`sandbox::KillGuard`). A guest that cannot confine the command
     /// refuses the run rather than run it with the agent's whole view, and a
@@ -352,9 +315,6 @@ impl GuestRun {
             &view,
             &["bash", "-c", &script],
         );
-        if let Some(forward) = self.forward.take() {
-            BoxEngine::shared().park_forward(&self.launch_id, forward);
-        }
         // The engine owns the launch from here: its kill ends the command,
         // removes the stores (made or not) and the env file, and detaches.
         self.stores = None;
@@ -491,6 +451,9 @@ fn run_view(host: &BoxIdentity, cwd: &Path, cache_root: &Path, stores: &Path) ->
         writable_dirs,
         cow_dirs,
         cow_files,
+        // Docker stays in sight: the Run command is what starts a project's
+        // containers.
+        hidden: Vec::new(),
     }
 }
 
@@ -611,6 +574,7 @@ mod tests {
             "no provider keeps a state file inside a carve-out: {:?}",
             view.cow_files
         );
+        assert!(view.hidden.is_empty(), "the Run reaches Docker");
 
         // A checkout outside every held tree is not held, so not listed
         // either.

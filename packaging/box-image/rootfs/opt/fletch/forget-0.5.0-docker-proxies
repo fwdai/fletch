@@ -1,0 +1,34 @@
+#!/bin/sh
+# forget-0.5.0-docker-proxies CONFIG
+#
+# Image 0.5.0 copied proxy settings into the docker client's config in the
+# agent's home. They point containers at a port nothing listens on any more.
+# This takes back each value that image wrote and leaves every other one.
+set -eu
+
+config=$1
+[ -f "$config" ] || exit 0
+
+jq '
+  {
+    httpProxy: "http://172.17.0.1:8899",
+    httpsProxy: "http://172.17.0.1:8899",
+    noProxy: "localhost,127.0.0.0/8,::1,172.16.0.0/12,192.168.0.0/16"
+  } as $written
+  | (try .proxies.default catch null) as $default
+  | if ($default | type) != "object" then empty else
+      ($default | with_entries(select(.value != $written[.key]))) as $kept
+      | if $kept == $default then empty
+        elif $kept != {} then .proxies.default = $kept
+        elif (.proxies | length) > 1 then del(.proxies.default)
+        else del(.proxies)
+        end
+    end
+' "$config" > "$config.new"
+
+if [ -s "$config.new" ]; then
+  chmod --reference="$config" "$config.new"
+  mv "$config.new" "$config"
+else
+  rm "$config.new"
+fi

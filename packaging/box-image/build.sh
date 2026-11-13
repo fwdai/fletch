@@ -13,9 +13,10 @@
 #
 # Writes to OUT_DIR:
 #   base.erofs             the root every box boots, read-only
-#   layer-<name>.erofs     one per packages/<name>.txt but base: the files that
-#                          installing those packages adds to the base, overlaid
-#                          by init on /usr, /etc and /var (rootfs/opt/fletch/init)
+#   layer-<name>.erofs     one per packages/<name>.txt but base (devtools,
+#                          browser, containers): the files that installing
+#                          those packages adds to the base, overlaid by init on
+#                          /usr, /etc and /var (rootfs/opt/fletch/init)
 #   manifest.json          version, arch, and per image: file, size, sha256,
 #                          dirs, tree_bytes, packages (what the app verifies
 #                          downloads against; `fletch-box image chunk` adds the
@@ -23,10 +24,12 @@
 #   sizes.md               tree and packed sizes, for the release notes
 #
 # Reproducible inputs: packages come from a snapshot.debian.org timestamp
-# (DEBIAN_SNAPSHOT), Node from one nodejs.org tarball checked against its
-# SHASUMS256 entry, Bun from one GitHub release zip checked against its
-# SHASUMS256 entry, every inode gets SOURCE_DATE_EPOCH, each image has a fixed
-# UUID. The same inputs and the same fletch-guest give the same images.
+# (DEBIAN_SNAPSHOT), Docker's at the versions packages/containers.txt pins
+# from Docker's repository, signed by the key DOCKER_KEY_SHA256 pins, Node
+# from one nodejs.org tarball checked against its SHASUMS256 entry, Bun from
+# one GitHub release zip checked against its SHASUMS256 entry, every inode
+# gets SOURCE_DATE_EPOCH, each image has a fixed UUID. The same inputs and the
+# same fletch-guest give the same images.
 #
 # Package managers: the base enables Node's corepack, so `pnpm` and `yarn` (and
 # `pnpx`, `yarnpkg`) are shims that run the version a project's package.json
@@ -54,6 +57,10 @@ BUN_VERSION=1.4.4
 BUN_SHA256_ARM64=baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e
 BUN_SHA256_X64=e0446eb55995772eb9894bebae9a6be368d985a8b9271ee124486f9946eedd76
 # --- end pins ---
+# Docker's apt repository, for the containers layer, and the key it signs with
+# (fingerprint 9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88).
+DOCKER_REPO=https://download.docker.com/linux/debian
+DOCKER_KEY_SHA256=1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570
 # Debian's, Node's and Bun's names for $ARCH. Bun's x64 build is the baseline
 # one: the plain build needs AVX2, which a VM is not guaranteed to show.
 case "$ARCH" in
@@ -67,11 +74,12 @@ SECURITY=https://snapshot.debian.org/archive/debian-security/$DEBIAN_SNAPSHOT
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1767225600} # 2026-01-01
 export SOURCE_DATE_EPOCH
 # The layers, in the order init stacks them (later on top; they are disjoint).
-LAYERS="devtools browser"
+LAYERS="devtools browser containers"
 # Fixed filesystem UUIDs, one per image.
 UUID_BASE=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c0d
 UUID_DEVTOOLS=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c11
 UUID_BROWSER=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c12
+UUID_CONTAINERS=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c13
 # lz4hc is the one codec the guest kernel (libkrunfw) decodes. 64 KiB clusters,
 # dedupe, fragments and tail packing: 24% smaller than the 4 KiB default on the
 # same tree. -x -1: no xattrs. -T/--all-time: every inode gets SOURCE_DATE_EPOCH.
@@ -146,8 +154,9 @@ done
 
 echo "== adding Fletch files"
 cp -R "$HERE/rootfs/." "$ROOT/"
-chmod 755 "$ROOT/opt/fletch/init"
+chmod 755 "$ROOT/opt/fletch/init" "$ROOT/opt/fletch/forget-0.5.0-docker-proxies"
 chmod 644 "$ROOT/etc/ssh/sshd_config.fletch"
+chmod 440 "$ROOT/etc/sudoers.d/agent"
 install -D -m 755 "$GUEST" "$ROOT/opt/fletch/bin/fletch-guest"
 # `ssh box fletch-guest exec ...` runs through the login shell's default PATH.
 ln -s /opt/fletch/bin/fletch-guest "$ROOT/usr/local/bin/fletch-guest"
@@ -174,9 +183,12 @@ echo "== cleaning the base"
 clean_tree "$ROOT"
 # Reproducible: fontconfig caches record their directories' mtimes. Pin every
 # mtime to the one the image carries (mkfs.erofs -T) and build the caches after,
-# so they match and a browser never rebuilds them into the agent's home.
+# so they match and a browser never rebuilds them into the agent's home. The
+# caches' own mtimes are pinned too, so a layer carries only the caches its
+# fonts changed: another one's would hide them from the layers below.
 pin_times "$ROOT"
 chroot "$ROOT" /usr/bin/fc-cache -s -f
+pin_times "$ROOT/var/cache/fontconfig"
 {
   chroot "$ROOT" dpkg-query -W -f '${binary:Package}=${Version}\n'
   echo "node=$NODE_VERSION"
@@ -194,13 +206,32 @@ for layer in $LAYERS; do
   cp -a "$ROOT" "$LR"
   mount -t proc proc "$LR/proc"
   # The image's resolv.conf is empty (a box has no DNS), so apt in the chroot
-  # borrows the build host's resolver for the install.
+  # borrows the build host's resolver for the install, and goes direct rather
+  # than through the box's egress proxy. No package starts a service here.
   cp /etc/resolv.conf "$LR/etc/resolv.conf"
+  rm "$LR/etc/apt/apt.conf.d/90fletch-proxy"
+  printf '#!/bin/sh\nexit 101\n' > "$LR/usr/sbin/policy-rc.d"
+  chmod 755 "$LR/usr/sbin/policy-rc.d"
+  if [ "$layer" = containers ]; then
+    echo "== adding Docker's apt repository (containers layer)"
+    key="$WORK/docker.asc"
+    [ -f "$key" ] || curl -fsSL -o "$key" "$DOCKER_REPO/gpg"
+    echo "$DOCKER_KEY_SHA256  $key" | sha256sum -c - >/dev/null
+    install -D -m 644 "$key" "$LR/etc/apt/keyrings/docker.asc"
+    echo "deb [signed-by=/etc/apt/keyrings/docker.asc] $DOCKER_REPO $SUITE stable" > "$LR/etc/apt/sources.list.d/docker.list"
+  fi
   chroot "$LR" sh -c "apt-get -qq -o Acquire::Check-Valid-Until=false -o Acquire::Retries=5 update \
     && apt-get -qq -o Acquire::Check-Valid-Until=false install -y --no-install-recommends $(pkgs "$layer" | tr , ' ')" \
     </dev/null
   umount "$LR/proc"
   : > "$LR/etc/resolv.conf"
+  rm "$LR/usr/sbin/policy-rc.d"
+  if [ "$layer" = containers ]; then
+    # The repository served this install only: a box's egress does not reach it.
+    rm "$LR/etc/apt/sources.list.d/docker.list" "$LR/etc/apt/keyrings/docker.asc"
+    # init gives /run/docker.sock to the docker group.
+    chroot "$LR" usermod -aG docker agent
+  fi
   if [ "$layer" = devtools ]; then
     cp -a "$WORK/node-include" "$LR/usr/local/include"
     echo "== installing Bun $BUN_VERSION (devtools layer)"
@@ -215,18 +246,20 @@ for layer in $LAYERS; do
   clean_tree "$LR"
   pin_times "$LR"
   chroot "$LR" /usr/bin/fc-cache -s -f
+  pin_times "$LR/var/cache/fontconfig"
   chroot "$LR" dpkg-query -W -f '${binary:Package}=${Version}\n' | LC_ALL=C sort > "$WORK/$layer.allpkgs"
   LC_ALL=C comm -13 "$WORK/base.pkgs" "$WORK/$layer.allpkgs" > "$WORK/$layer.pkgs"
   [ "$layer" = devtools ] && echo "bun=$BUN_VERSION" >> "$WORK/$layer.pkgs"
 
   # The delta: what the layer tree has that the base has not, byte for byte
   # (-c). The package databases, apt state and logs stay with the base; the
-  # loader cache too, since the loader's default search path covers the
-  # multiarch directories and two layers could not share one cache.
+  # loader cache and ldconfig's own too, since the loader's default search
+  # path covers the multiarch directories and two layers could not share one
+  # cache.
   mkdir "$D"
   rsync -a -c --compare-dest="$ROOT/" \
     --exclude=/proc --exclude=/dev --exclude=/sys --exclude=/run --exclude=/tmp \
-    --exclude=/etc/ld.so.cache \
+    --exclude=/etc/ld.so.cache --exclude=/var/cache/ldconfig \
     --exclude=/var/lib/dpkg --exclude=/var/lib/apt --exclude=/var/cache/apt \
     --exclude=/var/cache/debconf --exclude=/var/log --exclude=/var/backups \
     "$LR/" "$D/"
