@@ -20,6 +20,9 @@
 set -eu
 
 SSH_VSOCK=22 EGRESS_VSOCK=6000 CONTROL_VSOCK=5000 EGRESS_PORT=8899
+# Containers' egress: every outside name resolves to SENTINEL (RFC 2544's
+# benchmarking range, never a real host), whose ports 80 and 443 lead to these.
+SENTINEL=198.18.0.1 SENTINEL_HTTP_PORT=8898 SENTINEL_TLS_PORT=8897
 GUEST=/opt/fletch/bin/fletch-guest
 DATA_DEV=/dev/vdb
 
@@ -263,13 +266,31 @@ if [ -x /usr/bin/dockerd ]; then
   start "$GUEST" socket-activate /run/docker.sock -- /usr/bin/dockerd -H fd:// 2>>/var/log/docker.log
   chgrp docker /run/docker.sock
   chmod 660 /run/docker.sock
-  step="pointing containers at the egress proxy"
-  # The docker CLI hands these settings to every container and image build.
-  # Copied as the agent and only into a home that has none: what it changes
-  # there later is its own.
-  setpriv --reuid=agent --regid=agent --clear-groups sh -c \
-    '[ -e /data/home/.docker/config.json ] || { mkdir -p /data/home/.docker && cp /etc/skel/.docker/config.json /data/home/.docker/; }' ||
-    echo "fletch-init: no docker client settings in the agent's home" >&2
+
+  # Containers and image builds get out with no proxy settings: the daemon's
+  # `dns` is the bridge's address, where sentinel-dns answers every outside
+  # name with SENTINEL, and what they open to SENTINEL on 80 and 443 is
+  # DNAT'd to transparent-egress, which tunnels it through the egress proxy
+  # to the host it names. Both listen on the bridge's address only, so the
+  # guest's own lookups (its empty resolv.conf means 127.0.0.1) never get the
+  # sentinel and `fletch-guest listeners` leaves their ports out; that address
+  # exists once dockerd has made the bridge, hence nonlocal binds.
+  step="starting the containers' egress"
+  bridge=$(jq -r .bip /etc/docker/daemon.json)
+  bridge=${bridge%/*}
+  echo 1 > /proc/sys/net/ipv4/ip_nonlocal_bind
+  start "$GUEST" sentinel-dns "$bridge:53" "$SENTINEL"
+  start "$GUEST" transparent-egress "$bridge:$SENTINEL_HTTP_PORT" "$bridge:$SENTINEL_TLS_PORT" "$EGRESS_VSOCK"
+  # Ahead of Docker's own NAT chains (priority dstnat).
+  nft -f - <<EOF
+table ip fletch-egress {
+  chain prerouting {
+    type nat hook prerouting priority dstnat - 10;
+    ip daddr $SENTINEL tcp dport 80 dnat to $bridge:$SENTINEL_HTTP_PORT
+    ip daddr $SENTINEL tcp dport 443 dnat to $bridge:$SENTINEL_TLS_PORT
+  }
+}
+EOF
 fi
 
 step="starting the control listener"

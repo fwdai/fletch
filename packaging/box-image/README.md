@@ -9,7 +9,7 @@ is the pipeline.
 | `VERSION` | The image version; `bump.sh` moves it, the release is `box-image-v<VERSION>` |
 | `packages/base.txt`, `devtools.txt`, `browser.txt`, `containers.txt` | The package split: the base and one file per layer |
 | `dpkg-excludes.cfg` | dpkg path rules for every install: docs, man, locales, Mesa/LLVM |
-| `rootfs/` | Files copied over the base: `opt/fletch/init`, `etc/ssh/sshd_config.fletch`, `etc/sudoers.d/agent`, `etc/apt/apt.conf.d/90fletch-proxy`, `etc/docker/daemon.json`, `etc/skel/.docker/config.json` |
+| `rootfs/` | Files copied over the base: `opt/fletch/init`, `etc/ssh/sshd_config.fletch`, `etc/sudoers.d/agent`, `etc/apt/apt.conf.d/90fletch-proxy`, `etc/docker/daemon.json` |
 | `build.sh` | Root, Debian arm64 or amd64 (the images are the build machine's architecture), privileged: mmdebstrap the base, apt the layers into copies of it (the containers layer from Docker's apt repository, its key pinned), rsync the deltas, `mkfs.erofs` each, `manifest.json`, `sizes.md` |
 | `test.sh` | Mounts the output as init would and runs the checks (chroot as `agent`); `report.md` |
 | `build-docker.sh` | The one way to build, on a Mac (Docker Desktop) or in CI: fletch-guest, `build.sh` in a container, `test.sh` with `--test`, the delta manifests, an install with the app's installer |
@@ -63,7 +63,9 @@ from the kernel environment (`krun_set_env`), never from argv:
 | `/run/docker.sock` | with the containers layer: `root:docker` 0660, held by `fletch-guest socket-activate` until the first connection starts `dockerd` on it |
 | `/data/docker` | Docker's data root: images, containers, volumes |
 | vsock 22 | `fletch-guest vsock-listen 22 -- sshd -i`: one sshd per connection, no TCP listener |
-| vsock 6000 | the host's egress proxy, exposed on TCP 8899 on every address: `http://127.0.0.1:8899` in the guest, `http://172.17.0.1:8899` from a container |
+| vsock 6000 | the host's egress proxy, exposed as `http://127.0.0.1:8899` |
+| `172.17.0.1:53` UDP | with the containers layer: `fletch-guest sentinel-dns`, the containers' DNS (daemon.json `dns`) |
+| `172.17.0.1:8898`, `:8897` | with the containers layer: `fletch-guest transparent-egress`, where nftables sends containers' connections to `198.18.0.1` on 80 and 443 (table `ip fletch-egress`) |
 | vsock 5000 | control: the host sends the line `stop` |
 
 Console markers, in order: `FLETCH_HOSTKEY <type> <base64>`, `FLETCH_READY`,
@@ -87,16 +89,28 @@ systemd's protocol), so that connection is the daemon's first. Its log is
 next boot. `/etc/docker/daemon.json`: data root `/data/docker`, the nftables
 firewall backend (the guest kernel has no xtables; init sets
 `net.ipv4.ip_forward`, which dockerd leaves alone with it), the default
-bridge at `172.17.0.1/16`, and the egress proxy for pulls. Containers reach the
-proxy at the bridge's gateway: init copies `/etc/skel/.docker/config.json`
-(`proxies.default`: `http://172.17.0.1:8899`, `noProxy` the loopback and
-Docker's private ranges) into the agent's home when it has no
-`.docker/config.json`, and the docker CLI hands those settings to every
-container it creates and every image build. A service reached by its compose
-name is not in `noProxy`. The CLI's own requests take the proxy from its
-environment, which every launch's env file sets (`HTTPS_PROXY`): a build
-fetches its registry token in the client, so `docker build` in a session
-without it cannot resolve the base image.
+bridge at `172.17.0.1/16`, the egress proxy for pulls, and the bridge's
+address as every container's and image build's DNS server. The CLI's own
+requests take the proxy from its environment, which every launch's env file
+sets (`HTTPS_PROXY`): a build fetches its registry token in the client, so
+`docker build` in a session without it cannot resolve the base image.
+
+Containers and builds get out with no proxy settings, on ports 80 and 443,
+under the same policy as the guest. Docker's own resolver answers compose
+service names, so one service reaches another directly; every other name it
+asks `fletch-guest sentinel-dns` about, on the bridge's address, which answers
+any name with a dot with `198.18.0.1` (`A`; no `AAAA`) and a single-label name
+with NXDOMAIN. Init's nftables rule (table `ip fletch-egress`, ahead of
+Docker's NAT) DNATs `198.18.0.1:80` and `:443` to `fletch-guest
+transparent-egress` on `172.17.0.1:8898` and `:8897`; it reads the host from
+the request's `Host` header or the TLS server name and opens `CONNECT
+<host>:<port>` through the egress proxy, so the host's egress log names the
+real host. A connection that names no host (no `Host` header, no server
+name) or that the proxy refuses is closed at once; other ports, and IP
+addresses a container uses as such, are unreachable. Both services bind the bridge's
+address only (`ip_nonlocal_bind`, since the bridge comes with dockerd), so
+the guest's own lookups (its `resolv.conf` is empty) never get the sentinel
+and `listeners` does not report their ports.
 
 At stop every process is killed after 0.2 s, containers included; a
 database in a container recovers as after a crash.

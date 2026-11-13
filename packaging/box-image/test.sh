@@ -211,10 +211,17 @@ check T-ldd-browser "the browser resolves every library through the overlay" -- 
 check T-containers "containers layer: docker, compose, buildx, containerd, runc, nft; dockerd takes daemon.json" -- \
   runroot sh -c 'set -e; export HOME=/tmp; docker --version; docker compose version; docker buildx version; containerd --version; runc --version | head -1; nft --version
 dockerd --validate --config-file /etc/docker/daemon.json'
-check T-containers-wiring "agent is in the docker group; containers get the proxy at the bridge gateway daemon.json sets" -- \
+check T-containers-wiring "agent is in the docker group; containers resolve names at the bridge gateway daemon.json sets" -- \
   runroot sh -c 'set -e; id -nG agent | grep -qw docker
-gw=$(jq -r .bip /etc/docker/daemon.json | cut -d/ -f1); p=$(jq -r .proxies.default.httpsProxy /etc/skel/.docker/config.json)
-test "$p" = "http://$gw:8899"; test "$(jq -r .proxies.default.httpProxy /etc/skel/.docker/config.json)" = "$p"; echo "docker group: $(id -nG agent); proxy $p"'
+gw=$(jq -r .bip /etc/docker/daemon.json | cut -d/ -f1); test "$(jq -c .dns /etc/docker/daemon.json)" = "[\"$gw\"]"
+echo "docker group: $(id -nG agent); dns $gw"'
+# The image's sentinel-dns as a resolver asks it; what containers do with the
+# answer is boot-check.sh's.
+check T-containers-dns "sentinel-dns: a dotted name is the sentinel and has no AAAA; a single-label name is NXDOMAIN" -- \
+  sh -c 'set -e; "$1" sentinel-dns 127.0.0.1:5353 198.18.0.1 >/dev/null & trap "kill $!" EXIT; sleep 0.3
+q() { dig +time=2 +tries=1 -p 5353 @127.0.0.1 "$@"; }
+a=$(q +short registry.npmjs.org A); test "$a" = 198.18.0.1; test -z "$(q +short registry.npmjs.org AAAA)"
+q web A | grep -q "status: NXDOMAIN"; echo "registry.npmjs.org A $a, no AAAA; web NXDOMAIN"' sh "$MNT/base/opt/fletch/bin/fletch-guest"
 # A package two layers both pull in puts the same file in each, which is harmless.
 layers_agree() {
   local l differ

@@ -1,7 +1,7 @@
 [package]
 name = "fletch-guest"
 version = "0.1.0"
-description = "The box guest agent: vsock inetd for sshd, egress loopback, env-file exec, mailbox relay and transcript tail"
+description = "The box guest agent: vsock inetd for sshd, egress loopback, containers' DNS and transparent egress, env-file exec, mailbox relay and transcript tail"
 authors = ["Alex Chaplinsky", "fwdai.org"]
 license = "AGPL-3.0-only"
 edition = "2021"
