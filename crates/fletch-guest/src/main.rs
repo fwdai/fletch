@@ -5,7 +5,8 @@
 //! its launch.
 //!
 //! One static binary, one subcommand per job. Init starts the long-running ones
-//! (`vsock-listen`, `egress-loopback`, `socket-activate`, `wait-stop`); the
+//! (`vsock-listen`, `egress-loopback`, `socket-activate`, `sentinel-dns`,
+//! `transparent-egress`, `wait-stop`); the
 //! host starts the rest over ssh (`exec`, `relay`, `tail`, `listeners`,
 //! `reclaim`). Nothing here knows about Fletch beyond the vsock ports and the
 //! JSON line shapes in `protocol`.
@@ -15,14 +16,19 @@ mod egress_loopback;
 mod exec;
 mod listeners;
 mod protocol;
+mod pump;
 mod ready;
 mod reclaim;
 mod relay;
+mod sentinel_dns;
+mod sniff;
 mod socket_activate;
 mod tail;
+mod transparent_egress;
 mod vsock;
 mod vsock_listen;
 mod wait_stop;
+mod wire;
 
 use std::process::ExitCode;
 
@@ -31,9 +37,14 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const USAGE: &str = "\
 usage: fletch-guest <subcommand> ...
   vsock-listen <port> -- <cmd...>            inetd: one <cmd> per connection, socket as stdin/stdout
-  egress-loopback <tcp port> <vsock port>    <tcp port> on every address -> host vsock <vsock port>
+  egress-loopback <tcp port> <vsock port>    127.0.0.1:<tcp port> -> host vsock <vsock port>
   socket-activate <path> -- <cmd...>         listen on the unix socket <path>; on the first
                                              connection exec <cmd> with it as fd 3 (LISTEN_FDS=1)
+  sentinel-dns <udp address> <ip>            DNS: a name with a dot is <ip> (A) with no other
+                                             records, a single-label name does not exist
+  transparent-egress <http address> <tls address> <vsock port>
+                                             each connection -> CONNECT <its Host or TLS server
+                                             name>:<80 or 443> on host vsock <vsock port>
   exec --env-file <path> [--args-file <file>] [--cwd <dir>] [--read-only <dir>]...
        [--writable <path>]... [--cow <dir> <store>]... [--cow-file <file> <copy>]...
        [--hide <path>]... -- <cmd...>
@@ -64,6 +75,8 @@ fn main() -> ExitCode {
         Some("vsock-listen") => vsock_listen::run(rest),
         Some("egress-loopback") => egress_loopback::run(rest),
         Some("socket-activate") => socket_activate::run(rest),
+        Some("sentinel-dns") => sentinel_dns::run(rest),
+        Some("transparent-egress") => transparent_egress::run(rest),
         Some("exec") => exec::run(rest),
         Some("relay") => relay::run(rest),
         Some("tail") => tail::run(rest),

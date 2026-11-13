@@ -2,6 +2,7 @@
   "data-root": "/data/docker",
   "firewall-backend": "nftables",
   "bip": "172.17.0.1/16",
+  "dns": ["172.17.0.1"],
   "proxies": {
     "http-proxy": "http://127.0.0.1:8899",
     "https-proxy": "http://127.0.0.1:8899"
