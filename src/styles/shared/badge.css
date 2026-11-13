@@ -171,28 +171,21 @@
 .agent-sub .a-sandbox:hover {
   background: var(--hover);
 }
-/* the onboarding exhibit's byline: an agent chip beside the age */
-.agent-sub .a-byline {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  padding: 1px 3px;
-}
-.agent-sub .a-byline .a-time {
-  padding: 0;
-}
 
 /* the agent row's details card (`AgentDetailsPopover`), hung off the sandbox
- * glyph. An `AnchoredPopover` positions it, at body level, so the sidebar's
- * scroller cannot clip it. */
+ * glyph: a few lines, as wide as they need. An `AnchoredPopover` positions it,
+ * at body level, so the sidebar's scroller cannot clip it. */
 .ag-details-pop {
-  width: 248px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: max-content;
+  max-width: 248px;
   background: var(--bg-2);
   border: 1px solid var(--bd);
   border-radius: var(--r-md);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.35);
-  padding: 10px 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  padding: 8px 10px;
   z-index: 220;
   font-family: var(--font-sans);
   animation: ddIn 0.12s var(--ease);
@@ -206,48 +199,41 @@
   inset: -6px 0;
   z-index: -1;
 }
-.ag-details-pop .ws-pop-div {
-  margin: 9px 0;
+/* the sandbox and the agent: a glyph and one line each, the two glyphs in one
+ * column */
+.ag-details-pop .ws-pop-iso {
+  gap: 7px;
 }
-/* the chip sits on its title's line, as the sandbox glyph above it does */
+.ag-details-pop .ws-pop-iso .ws-iso,
 .ag-details-pop .ag-prov-chip {
-  margin-top: 1px;
-}
-/* the facts under each part, in its text column */
-.ag-details-pop .st-rows {
   margin-top: 2px;
+}
+.ag-details-pop .ws-pop-iso-title {
+  font-weight: 500;
+}
+/* what the agent has used, set off from the two lines that say what it is */
+.ag-details-pop .st-rows {
+  margin-top: 1px;
+  padding-top: 5px;
+  border-top: 1px solid var(--bd-soft);
 }
 .ag-details-pop .st-row {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 12px;
-  padding: 3px 0;
-  font-size: var(--fs-sm);
+  gap: 16px;
+  padding: 1px 0;
+  font-size: var(--fs-xs);
 }
 .ag-details-pop .st-row .st-k {
   color: var(--fg-2);
   flex-shrink: 0;
 }
 .ag-details-pop .st-row .st-v {
-  color: var(--fg-0);
+  color: var(--fg-1);
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   text-align: right;
-}
-.ag-details-pop .st-bar {
-  margin-top: 6px;
-  height: 3px;
-  background: var(--hover);
-  border-radius: 2px;
-  overflow: hidden;
-}
-.ag-details-pop .st-bar-fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
-  transition: width 0.25s var(--ease);
 }
 
 .side-foot {

@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import type { AgentRecord } from "@/api";
 import { useAppStore } from "@/store";
 import { IsolationIcon } from "./IsolationIcon";
@@ -6,9 +5,16 @@ import { boxPhaseLabel, shownIsolation } from "./isolation";
 
 /** Where a workspace runs, spelled out: the isolation in two lines at most
  *  and, for a box, its live phase and why it failed. While the workspace
- *  moves, everything here is about where it's going. `children` follow the
- *  hint in the same column, for a surface with more to say about the place. */
-export function IsolationDetail({ agent, children }: { agent: AgentRecord; children?: ReactNode }) {
+ *  moves, everything here is about where it's going. `compact` leaves the
+ *  explanation out and draws the glyph at text size, for a hover card that
+ *  only names the place and its state. */
+export function IsolationDetail({
+  agent,
+  compact = false,
+}: {
+  agent: AgentRecord;
+  compact?: boolean;
+}) {
   const boxState = useAppStore((s) => s.boxStates[agent.id]);
   const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
   const isolation = shownIsolation(agent.sandbox_engine, movingTo);
@@ -21,7 +27,7 @@ export function IsolationDetail({ agent, children }: { agent: AgentRecord; child
         isolation={isolation}
         boxPhase={boxState?.phase}
         moving={movingTo !== null}
-        size={14}
+        size={compact ? 12 : 14}
       />
       <div className="ws-pop-iso-text">
         <div className="ws-pop-iso-title">
@@ -32,8 +38,7 @@ export function IsolationDetail({ agent, children }: { agent: AgentRecord; child
           )}
         </div>
         {failure && <div className="ws-pop-iso-fail">{failure}</div>}
-        <div className="ws-pop-iso-hint">{isolation.hint}</div>
-        {children}
+        {!compact && <div className="ws-pop-iso-hint">{isolation.hint}</div>}
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 import type { KeyboardEvent, MouseEvent } from "react";
 import { useRef, useState } from "react";
 import { contextPercent, resolveContextWindow } from "@/adapters/usage";
-import type { AgentRecord, AgentStatus, ShortStats } from "@/api";
+import type { AgentRecord, ShortStats } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { IsolationIcon } from "@/components/TitleBar/WorkspaceStatus/IsolationIcon";
@@ -142,8 +142,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const contextWindow = resolveContextWindow(usage, catalog);
   const pct = contextPercent(usage, contextWindow);
   const stats: AgentStats = {
-    launched: age || "just now",
-    runtime: liveRuntime(agent.created_at, now, agent.status),
     contextTokens: pct == null ? null : usage?.context.tokens,
     contextWindow,
     contextPct: pct,
@@ -279,7 +277,8 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
         {/* Where it lives (sandbox + codename, as in the title bar; the glyph
             is the row's one hover target for the details: the sandbox, the
             agent in it and what it has used), what came of it (PR / diff and
-            the conditional hints), then since when. */}
+            the conditional hints), then since when. The glyph is 11.5px: 12
+            outweighs the codename's small text, 11 gets lost beside it. */}
         <div className="agent-sub flex-center">
           <span
             ref={sandboxRef}
@@ -291,7 +290,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
               isolation={shownIsolation(agent.sandbox_engine, movingTo)}
               boxPhase={boxPhase}
               moving={movingTo !== null}
-              size={11}
+              size={11.5}
             />
             {detailsOpen && (
               <AgentDetailsPopover agent={agent} stats={stats} anchorRef={sandboxRef} />
@@ -437,14 +436,4 @@ function firstShort(s: string | null | undefined, max = 36): string {
   const nl = s.indexOf("\n");
   const head = nl === -1 ? s : s.slice(0, nl);
   return head.length > max ? `${head.slice(0, max - 1)}…` : head;
-}
-
-function liveRuntime(iso: string, now: number, status: AgentStatus): string {
-  if (status === "stopped" || status === "error") return "—";
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return "—";
-  const sec = Math.max(0, Math.floor((now - t) / 1000));
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m}m ${s}s`;
 }
