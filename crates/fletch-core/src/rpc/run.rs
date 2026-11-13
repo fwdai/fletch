@@ -97,6 +97,7 @@ impl RunDispatcher {
                 "phase": after.phase,
                 "port": after.guest_port.or(after.port),
                 "host_port": after.port,
+                "ports": after.ports,
                 "already_running": already_running,
                 "exited": exited,
                 "last_error": after.last_error,
@@ -127,9 +128,11 @@ impl RunDispatcher {
                 "phase": state.phase,
                 // Where the server listens, which is where the agent is: in
                 // a box, the guest. `host_port` is the user's port on the
-                // Mac — what to tell them to open, not what to curl.
+                // Mac — what to tell them to open, not what to curl — and
+                // `ports` the same for everything listening in the box.
                 "port": state.guest_port.or(state.port),
                 "host_port": state.port,
+                "ports": state.ports,
                 "last_error": state.last_error,
                 "log_bytes": state.log.len(),
             }),
@@ -372,6 +375,7 @@ mod tests {
                     last_error: None,
                     port: None,
                     guest_port: None,
+                    ports: Vec::new(),
                     revision: 0,
                     log: Vec::new(),
                     log_seq: 0,
@@ -478,6 +482,48 @@ mod tests {
         let out = stdout(&resp);
         assert_eq!(out["phase"], "stopped");
         assert_eq!(out["port"], Value::Null);
+        assert_eq!(
+            out["ports"],
+            json!([]),
+            "a checkout on the host forwards nothing"
+        );
+    }
+
+    /// In a box the agent hears where the server listens, in the guest; the
+    /// port the user opens on this host; and every port the box forwards.
+    #[tokio::test]
+    async fn app_status_names_the_guest_port_the_host_port_and_every_forward() {
+        use crate::sandbox::ForwardedPort;
+        let run = FakeRun::new(RunPhase::Running, None);
+        {
+            let mut s = run.state.lock();
+            s.phase = RunPhase::Running;
+            s.port = Some(3001);
+            s.guest_port = Some(3000);
+            s.ports = vec![
+                ForwardedPort {
+                    guest_port: 3000,
+                    port: 3001,
+                },
+                ForwardedPort {
+                    guest_port: 5432,
+                    port: 5432,
+                },
+            ];
+        }
+        let (resp, _) = dispatcher(run)
+            .dispatch("u", "app_status", &Value::Null)
+            .await;
+        let out = stdout(&resp);
+        assert_eq!(out["port"], 3000);
+        assert_eq!(out["host_port"], 3001);
+        assert_eq!(
+            out["ports"],
+            json!([
+                { "guest_port": 3000, "port": 3001 },
+                { "guest_port": 5432, "port": 5432 }
+            ])
+        );
     }
 
     /// `start` is a no-op for a project with no run command; the agent is

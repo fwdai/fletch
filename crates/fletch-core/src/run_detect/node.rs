@@ -82,7 +82,7 @@ impl RunDetector for NodeDetector {
 
         // dev: scripts.dev → scripts.start.
         let dev_value = if script("dev").is_some() {
-            Some(("dev", format!("{pm} dev")))
+            Some(("dev", format!("{pm} run dev")))
         } else if script("start").is_some() {
             Some(("start", format!("{pm} start")))
         } else {
@@ -243,13 +243,19 @@ mod tests {
     }
 
     #[test]
+    fn the_dev_script_runs_through_run_which_npm_requires() {
+        let cfg = detect(&[("package.json", r#"{"scripts":{"dev":"astro dev"}}"#)]).unwrap();
+        assert_eq!(val(&cfg, "dev"), "npm run dev");
+    }
+
+    #[test]
     fn scripts_become_rows() {
         let cfg = detect(&[(
             "package.json",
             r#"{"packageManager":"pnpm@9","scripts":{"dev":"next dev","build":"next build","test":"vitest"}}"#,
         )])
         .unwrap();
-        assert_eq!(val(&cfg, "dev"), "pnpm dev");
+        assert_eq!(val(&cfg, "dev"), "pnpm run dev");
         assert_eq!(val(&cfg, "build"), "pnpm run build");
         assert_eq!(val(&cfg, "test"), "pnpm run test");
     }

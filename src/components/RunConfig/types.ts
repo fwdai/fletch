@@ -67,6 +67,7 @@ export const ECOSYSTEM_LABEL: Record<string, string> = {
   rust: "Rust",
   go: "Go",
   php: "PHP",
+  compose: "Docker Compose",
 };
 
 /** Map detected rows from the backend to the display rows the editor renders,

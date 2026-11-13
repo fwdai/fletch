@@ -1,0 +1,13 @@
+# containers layer: Docker Engine, its CLI, containerd and the compose and
+# buildx plugins, from Docker's apt repository (build.sh adds it, its key
+# checked against a pin, for this layer's install only). Pinned here because
+# that repository is no snapshot: the same inputs must give the same image.
+# docker-ce brings nftables: the guest kernel has nf_tables and no xtables, so
+# the daemon runs with its nftables firewall backend. It starts on the first
+# connection to /run/docker.sock (rootfs/opt/fletch/init); its settings are
+# rootfs/etc/docker/daemon.json.
+docker-ce=5:29.9.3-1~debian.13~trixie
+docker-ce-cli=5:29.9.3-1~debian.13~trixie
+containerd.io=2.4.2-4~debian.13~trixie
+docker-compose-plugin=5.7.1-1~debian.13~trixie
+docker-buildx-plugin=0.39.0-1~debian.13~trixie

@@ -42,54 +42,12 @@ esac
 echo "fletch-init: box ${FLETCH_BOX_ID:-?}"
 
 step="mounting tmpfs"
-# /var/tmp comes after the layers: a layer overlay on /var would hide it.
+# /var/tmp comes after the system overlays: the one on /var would hide it.
 for dir in /tmp /run; do
   mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs "$dir"
 done
 mkdir -m 755 /run/sshd   # sshd's privilege separation directory, needed even with -i
 echo fletch-box > /proc/sys/kernel/hostname
-
-step="mounting layers"
-# Every disk after the data disk is told apart by content, not by its letter:
-# an erofs with a /.fletch-layer marker is a layer (devtools, browser, ...),
-# an ext4 is a tools disk (one provider's CLI each; a box may carry several),
-# a disk with no filesystem (a test's script disk) is left alone. Layers are
-# mounted read-only under /run/layers and each top-level directory they carry
-# (usr, etc, var) becomes a read-only overlay on the root, later disks on top.
-# Binaries already running keep their inodes; every later lookup goes through
-# the overlay.
-layers=""
-tools_devs=""
-n=0
-for dev in /dev/vd[c-z]; do
-  [ -b "$dev" ] || continue
-  type=$(blkid -o value -s TYPE "$dev" 2>/dev/null || true)
-  case "$type" in
-    erofs)
-      mnt=/run/layers/$n
-      mkdir -p "$mnt"
-      mount -t erofs -o ro,nosuid,nodev "$dev" "$mnt" || fail "the layer disk $dev does not mount"
-      [ -f "$mnt/.fletch-layer" ] || fail "$dev is an erofs disk without a /.fletch-layer marker"
-      layers="$mnt $layers"
-      n=$((n + 1))
-      ;;
-    ext4)
-      tools_devs="$tools_devs $dev"
-      ;;
-    "") ;;
-    *) fail "$dev holds a $type filesystem, which is neither a layer (erofs) nor a tools disk (ext4)";;
-  esac
-done
-for dir in usr etc var; do
-  lower=""
-  for mnt in $layers; do
-    [ -d "$mnt/$dir" ] && lower="$lower$mnt/$dir:"
-  done
-  [ -n "$lower" ] || continue
-  mount -t overlay overlay -o "ro,lowerdir=${lower}/$dir" "/$dir" || fail "the layer overlay on /$dir does not mount"
-done
-[ "$n" -eq 0 ] || echo "fletch-init: $n layer(s): $(cat /run/layers/*/.fletch-layer | tr -d '\n')"
-mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /var/tmp
 
 step="mounting /data"
 [ -b "$DATA_DEV" ] || fail "no data disk at $DATA_DEV"
@@ -131,6 +89,64 @@ fi
 mkdir -p /data/ws /data/rpc /data/home /data/ssh /data/run /data/tools
 chown agent:agent /data/ws /data/rpc /data/home /data/run /data/tools
 chmod 700 /data/run   # env files, 0600 and owned by agent, land here
+
+step="mounting layers"
+# Every disk after the data disk is told apart by content, not by its letter:
+# an erofs with a /.fletch-layer marker is a layer (devtools, browser,
+# containers, ...), an ext4 is a tools disk (one provider's CLI each; a box may
+# carry several), a disk with no filesystem (a test's script disk) is left
+# alone. Layers are mounted read-only under /run/layers.
+layers=""
+tools_devs=""
+n=0
+for dev in /dev/vd[c-z]; do
+  [ -b "$dev" ] || continue
+  type=$(blkid -o value -s TYPE "$dev" 2>/dev/null || true)
+  case "$type" in
+    erofs)
+      mnt=/run/layers/$n
+      mkdir -p "$mnt"
+      mount -t erofs -o ro,nosuid,nodev "$dev" "$mnt" || fail "the layer disk $dev does not mount"
+      [ -f "$mnt/.fletch-layer" ] || fail "$dev is an erofs disk without a /.fletch-layer marker"
+      layers="$mnt $layers"
+      n=$((n + 1))
+      ;;
+    ext4)
+      tools_devs="$tools_devs $dev"
+      ;;
+    "") ;;
+    *) fail "$dev holds a $type filesystem, which is neither a layer (erofs) nor a tools disk (ext4)";;
+  esac
+done
+[ "$n" -eq 0 ] || echo "fletch-init: $n layer(s): $(cat /run/layers/*/.fletch-layer | tr -d '\n')"
+
+step="mounting the system"
+# /usr, /etc and /var are each one overlay: the base's directory, the layers'
+# on it (later disks on top), and above them the box's own changes (`sudo
+# apt-get install`), kept on the data disk. Those belong to the image they
+# were made on: over another image's files they are how a system breaks, so
+# a box that boots another image drops them. Binaries already running keep
+# their inodes; every later lookup goes through the overlay.
+image=$(cat /etc/fletch-image)
+if [ "$(cat /data/sys/image 2>/dev/null)" != "$image" ]; then
+  if [ -d /data/sys ]; then
+    echo "fletch-init: dropping the system changes made on another image"
+  fi
+  rm -rf /data/sys
+  mkdir -m 700 /data/sys
+  echo "$image" > /data/sys/image
+fi
+for dir in usr etc var; do
+  lower=""
+  for mnt in $layers; do
+    [ -d "$mnt/$dir" ] && lower="$lower$mnt/$dir:"
+  done
+  mkdir -p "/data/sys/$dir/upper" "/data/sys/$dir/work"
+  mount -t overlay overlay \
+    -o "lowerdir=$lower/$dir,upperdir=/data/sys/$dir/upper,workdir=/data/sys/$dir/work" "/$dir" ||
+    fail "the system overlay on /$dir does not mount"
+done
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /var/tmp
 
 step="binding the host paths"
 # Path identity (§6.2): the host's absolute paths exist in the guest, bound from
@@ -235,6 +251,27 @@ step="starting sshd on vsock $SSH_VSOCK"
 start "$GUEST" vsock-listen "$SSH_VSOCK" -- /usr/sbin/sshd -i -e -f /etc/ssh/sshd_config.fletch
 step="starting the egress loopback"
 start "$GUEST" egress-loopback "$EGRESS_PORT" "$EGRESS_VSOCK"
+
+# The container runtime, when the containers layer is aboard. No docker process
+# runs until something connects to /run/docker.sock, which the docker group
+# (the agent is in it) may open; the first connection starts dockerd on it.
+if [ -x /usr/bin/dockerd ]; then
+  step="enabling forwarding for containers"
+  # dockerd leaves it to whoever starts it under its nftables firewall.
+  echo 1 > /proc/sys/net/ipv4/ip_forward
+  step="listening on the docker socket"
+  start "$GUEST" socket-activate /run/docker.sock -- /usr/bin/dockerd -H fd:// 2>>/var/log/docker.log
+  chgrp docker /run/docker.sock
+  chmod 660 /run/docker.sock
+  step="pointing containers at the egress proxy"
+  # The docker CLI hands these settings to every container and image build.
+  # Copied as the agent and only into a home that has none: what it changes
+  # there later is its own.
+  setpriv --reuid=agent --regid=agent --clear-groups sh -c \
+    '[ -e /data/home/.docker/config.json ] || { mkdir -p /data/home/.docker && cp /etc/skel/.docker/config.json /data/home/.docker/; }' ||
+    echo "fletch-init: no docker client settings in the agent's home" >&2
+fi
+
 step="starting the control listener"
 start "$GUEST" wait-stop "$CONTROL_VSOCK"
 control=$!
@@ -249,17 +286,17 @@ kill -TERM -1 2>/dev/null || true
 sleep 0.2
 kill -KILL -1 2>/dev/null || true
 sync
-# Shared folders first, the last mounted first: one inside HOME pins its bind.
+# Shared folders, the last mounted first: one may lie inside another.
 i=$shares
 while [ "$i" -gt 0 ]; do
   i=$((i - 1))
   eval "share=\${FLETCH_BOX_SHARE_$i}"
   umount "${share#*:}" || echo "fletch-init: could not unmount ${share#*:}" >&2
 done
-# The binds hold the data filesystem open; drop them (children before HOME) so
-# /data really unmounts and the journal is clean for the next boot.
-umount "$FLETCH_BOX_WRITABLE_ROOT" "$FLETCH_BOX_RPC_DIR" "$FLETCH_BOX_HOME"
-umount /data
-echo "fletch-init: /data unmounted, powering off"
+# /data cannot be unmounted: the system overlays, whose binaries this very
+# step runs, keep it in use (and the containers' mounts may). Made read-only
+# instead, its journal is flushed and it is marked clean for the next boot.
+mount -o remount,ro /data
+echo "fletch-init: /data read-only, powering off"
 # libkrun's init powers the VM off when its workload exits.
 exit 0

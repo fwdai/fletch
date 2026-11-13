@@ -766,7 +766,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       if (current?.revision != null && revision != null && revision <= current.revision) {
         return state;
       }
-      // A current host says the ports on every state (null when none); a host
+      // A current host says the run's port on every state (null when none); a host
       // from before the field says nothing, and the port it told on
       // `run:port` stands.
       const legacy = revision === null;
@@ -780,6 +780,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
               ? (current?.guest_port ?? null)
               : null
             : s.guest_port,
+        ports: s.ports ?? [],
         revision,
       };
       return { runs: { ...state.runs, [id]: next } };
@@ -794,6 +795,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         last_error: current?.last_error ?? null,
         port: e.port,
         guest_port: e.guest_port ?? null,
+        ports: current?.ports ?? [],
         revision: null,
       };
       return { runs: { ...state.runs, [id]: next } };

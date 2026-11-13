@@ -19,10 +19,11 @@ use parking_lot::RwLock;
 use crate::error::{Error, Result};
 use crate::workspace::AgentRecord;
 
+pub use boxes::ports::ForwardedPort;
+pub use boxes::run::GuestRun;
 // The name in an agent's writable root where a confined box tenant keeps its
 // private copies of what it shares with its host: Fletch's own, which no
 // checkout may take (`workspace::allocate_repo_subdir`).
-pub use boxes::run::GuestRun;
 pub(crate) use boxes::COW_DIR;
 pub use engine::{
     AgentLaunchCtx, EngineCaps, EngineKind, EnvDelivery, KillGuard, KillHandle, LaunchPlan,
@@ -581,8 +582,9 @@ pub fn turn_start_reverted(record: &AgentRecord) {
 }
 
 /// A turn of `agent_id` ended, however it ended: whatever the engine opened
-/// for that turn closes (a box's network opened from the composer), and a
-/// workspace on this Mac, at rest now, is offered as its project's seed. An
+/// for that turn closes (a box's network opened from the composer), a box
+/// gives back the memory the turn used, and a workspace on this Mac, at rest
+/// now, is offered as its project's seed. An
 /// agent whose `record` could not be read is closed as a box is, which is a
 /// no-op for one without a box.
 pub fn turn_ended(agent_id: &str, record: Option<&AgentRecord>) {
@@ -729,13 +731,21 @@ pub fn shell_program(tree: &Path) -> Result<Option<(PathBuf, Vec<String>, KillHa
 
 /// The Run panel's process for the checkout `tree` when the engine keeps the
 /// tree where the host's shell cannot run a command in it: a box's, run in
-/// its guest over the box's channel, the dev server's port forwarded to this
-/// host ([`GuestRun`]). `None` for a host tree, which the Run profile runs on
-/// the host. The box is held against its idle stop from here (booting a
-/// stopped one) until the session the launch starts ends; a `GuestRun`
-/// dropped before its launch releases it.
+/// its guest over the box's channel, the dev server reached through the
+/// box's forward for its port ([`on_forwarded_ports`]). `None` for a host
+/// tree, which the Run profile runs on the host. The box is held against its
+/// idle stop from here (booting a stopped one) until the session the launch
+/// starts ends; a `GuestRun` dropped before its launch releases it.
 pub fn guest_run(tree: &Path) -> Result<Option<GuestRun>> {
     GuestRun::open(tree)
+}
+
+/// Have `on_change` hear an agent's ports forwarded to this host on every
+/// change: each TCP port something listens on in its box, with the port on
+/// this host that reaches it, and none once the box stops. A checkout on this
+/// host needs nothing forwarded, so it is never heard of.
+pub fn on_forwarded_ports(on_change: impl Fn(&str, &[ForwardedPort]) + Send + Sync + 'static) {
+    boxes::ports::on_change(on_change);
 }
 
 /// Whether `path` is a checkout whose engine is not running, so work there

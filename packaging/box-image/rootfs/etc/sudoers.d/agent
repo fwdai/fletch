@@ -1,0 +1,4 @@
+# The agent installs what its box lacks: the box is its own machine. A
+# confined tenant (`fletch-guest exec --read-only`) runs with no_new_privs,
+# which sudo cannot get past.
+agent ALL=(ALL:ALL) NOPASSWD: ALL

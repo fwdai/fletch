@@ -12,6 +12,7 @@ import {
 } from "@/components/RunConfig";
 import { useAppStore } from "@/store";
 import { useXterm } from "@/util/useXterm";
+import { RunPorts } from "./RunPorts";
 import { RunSettingsSheet } from "./RunSettingsSheet";
 
 // Detected run config replaces the old hardcoded defaults. The backend
@@ -303,6 +304,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
           {hasOverrides && <span className="dot" />}
         </button>
       </div>
+      <RunPorts ports={status?.ports ?? []} runGuestPort={status?.guest_port ?? null} />
       {vmAsleep && (
         <div className="run-hint text-sm">
           The Linux VM is stopped — Start wakes it and detects the run command.

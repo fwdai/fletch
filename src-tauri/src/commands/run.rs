@@ -14,7 +14,7 @@ use super::files::expand_tilde;
 /// Start the Run-panel process for an agent.
 /// Runs setup-then-run on first start, then run only on subsequent.
 /// Async + `spawn_blocking` because a box workspace's start boots a stopped
-/// box and waits on the port forward.
+/// box.
 #[tauri::command]
 pub async fn run_start(
     supervisor: State<'_, Arc<Supervisor>>,

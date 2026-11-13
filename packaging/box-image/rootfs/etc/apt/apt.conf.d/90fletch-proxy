@@ -1,0 +1,5 @@
+// A box reaches the network only through the host's egress proxy, which init
+// relays on this port (/opt/fletch/init, EGRESS_PORT). The build's own apt
+// goes direct: build.sh removes this file from the trees it installs into.
+Acquire::http::Proxy "http://127.0.0.1:8899";
+Acquire::https::Proxy "http://127.0.0.1:8899";

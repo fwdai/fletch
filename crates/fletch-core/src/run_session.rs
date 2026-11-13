@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::error::Result;
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::run_detect::DetectedConfig;
+use crate::sandbox::ForwardedPort;
 
 /// How much PTY output we keep around for panel rehydration.
 /// 5 MB is enough for ~50k lines of average-width terminal output and
@@ -39,16 +40,22 @@ pub struct RunStateSnapshot {
     pub last_error: Option<String>,
     /// The port on this host that reaches the dev server, once the run phase
     /// spawned: the port-safe one it was launched on, which may differ from
-    /// the configured port, or for a box's guest the host end of the forward
-    /// to it. What the panel's link opens and the sidebar shows, as the field
-    /// has always meant (`run:port` carries the same value). `None` before
-    /// the run phase, after a stop, and for a command with no port.
+    /// the configured port, or for a box's guest the box's forward for
+    /// `guest_port`, once the server listens there. What the panel's link
+    /// opens and the sidebar shows, as the field has always meant
+    /// (`run:port` carries the same value). `None` before the run phase,
+    /// after a stop, and for a command with no port.
     pub port: Option<u16>,
     /// The port the server binds inside a box's guest, which the forward from
     /// `port` reaches: where the agent of a box workspace is, so what its
     /// `app_status` names. `None` for a server on the host, where `port` is
-    /// that port. Set and cleared with `port`.
+    /// that port. Set and cleared with the run's port.
     pub guest_port: Option<u16>,
+    /// Every port something listens on in the box that holds the checkout,
+    /// with the port on this host that reaches it: the box's, whatever
+    /// started it, so kept across the run's starts and stops. Empty for a
+    /// checkout on this host, where nothing needs forwarding.
+    pub ports: Vec<ForwardedPort>,
     /// Which state this is: moved on by every change to the phase, the error
     /// or the ports, never back. `run:state` carries it too, so a client takes
     /// a snapshot and the events in one order — whichever of them arrives
@@ -81,6 +88,7 @@ pub struct RunState {
     pub last_error: Option<String>,
     pub port: Option<u16>,
     pub guest_port: Option<u16>,
+    pub ports: Vec<ForwardedPort>,
     pub revision: u64,
 }
 
@@ -94,8 +102,10 @@ pub struct RunSession {
 struct RunSessionInner {
     phase: RunPhase,
     last_error: Option<String>,
+    /// The port a server on this host binds.
     port: Option<u16>,
     guest_port: Option<u16>,
+    ports: Vec<ForwardedPort>,
     log: LogBuffer,
     pty: Option<PtySession>,
     /// The run configs last detected in the checkout (`run_detect`), served
@@ -120,6 +130,19 @@ impl RunSessionInner {
     fn touched(&mut self) {
         self.revision = (self.revision + 1).max(clock_revision());
     }
+
+    /// The port on this host that reaches the run's server: its own on this
+    /// host, or the box's forward for the one it binds in the guest.
+    fn host_port(&self) -> Option<u16> {
+        match self.guest_port {
+            Some(guest_port) => self
+                .ports
+                .iter()
+                .find(|forwarded| forwarded.guest_port == guest_port)
+                .map(|forwarded| forwarded.port),
+            None => self.port,
+        }
+    }
 }
 
 /// The clock's milliseconds since the epoch: the revision of a state made
@@ -142,6 +165,7 @@ impl Default for RunSession {
                 last_error: None,
                 port: None,
                 guest_port: None,
+                ports: Vec::new(),
                 log: LogBuffer::new(LOG_BUFFER_CAP),
                 pty: None,
                 detected: None,
@@ -162,8 +186,9 @@ impl RunSession {
         RunStateSnapshot {
             phase: inner.phase,
             last_error: inner.last_error.clone(),
-            port: inner.port,
+            port: inner.host_port(),
             guest_port: inner.guest_port,
+            ports: inner.ports.clone(),
             revision: inner.revision,
             log: inner.log.bytes().to_vec(),
             log_seq: inner.log.total(),
@@ -177,8 +202,9 @@ impl RunSession {
         RunState {
             phase: inner.phase,
             last_error: inner.last_error.clone(),
-            port: inner.port,
+            port: inner.host_port(),
             guest_port: inner.guest_port,
+            ports: inner.ports.clone(),
             revision: inner.revision,
         }
     }
@@ -201,14 +227,15 @@ impl RunSession {
         self.inner.lock().detected.clone()
     }
 
-    /// The port on this host that reaches the run phase's server, and the one
-    /// it binds in a box's guest (see [`RunStateSnapshot`]), recorded as the
-    /// phase spawns so the agent's `app_status` can name them; the panel
-    /// hears them on `run:port` and in each `run:state` that follows.
+    /// The port the run phase's server binds, recorded as the phase spawns
+    /// so the agent's `app_status` can name it: `port` on this host, or
+    /// `guest_port` in a box's guest, which this host reaches through the
+    /// box's forward for it (see [`RunStateSnapshot`]); the panel hears the
+    /// host's port on `run:port` and in each `run:state` that follows.
     /// Cleared by every start and stop. Refused, as `false`, when `gen` is no
     /// longer the current generation: a stop came while the start was still
-    /// settling the port (a box boots and forwards before its command runs),
-    /// and a stopped session must not advertise one.
+    /// settling the port (a box boots and probes the guest before its command
+    /// runs), and a stopped session must not advertise one.
     pub fn set_ports(&self, gen: u64, port: Option<u16>, guest_port: Option<u16>) -> bool {
         let mut inner = self.inner.lock();
         if inner.generation != gen {
@@ -216,6 +243,19 @@ impl RunSession {
         }
         inner.port = port;
         inner.guest_port = guest_port;
+        inner.touched();
+        true
+    }
+
+    /// The ports the box that holds the checkout forwards to this host now
+    /// (`sandbox::on_forwarded_ports`). `false`, and nothing moves, when they
+    /// are the ones the session holds.
+    pub fn set_forwarded(&self, ports: &[ForwardedPort]) -> bool {
+        let mut inner = self.inner.lock();
+        if inner.ports == ports {
+            return false;
+        }
+        inner.ports = ports.to_vec();
         inner.touched();
         true
     }
@@ -321,7 +361,7 @@ impl RunSession {
     /// Attach a freshly spawned PTY, if `gen` is still the current generation
     /// and the phase still active; else kill it and answer `false`. The start
     /// that spawned it runs off the UI thread, so a stop can land while a box
-    /// boots, forwards its port and launches the command: `stop` has then
+    /// boots, probes its port and launches the command: `stop` has then
     /// bumped the generation and found no PTY to kill, so the one arriving
     /// here is ended in its place — its exit hook sees the stale generation
     /// and changes nothing. One lock covers the check and the attach, so a
@@ -523,19 +563,27 @@ mod tests {
         assert!(!s.is_current_generation(g1));
     }
 
+    fn forwarded(pairs: &[(u16, u16)]) -> Vec<ForwardedPort> {
+        pairs
+            .iter()
+            .map(|&(guest_port, port)| ForwardedPort { guest_port, port })
+            .collect()
+    }
+
     #[test]
     fn the_port_lives_with_the_running_phase() {
         let s = RunSession::new();
         assert_eq!(s.snapshot().port, None);
         let gen = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
-        assert!(s.set_ports(gen, Some(3001), Some(3000)));
+        assert!(s.set_ports(gen, None, Some(3000)));
+        assert!(s.set_forwarded(&forwarded(&[(3000, 3001)])));
         assert_eq!(s.snapshot().port, Some(3001));
         assert_eq!(s.snapshot().guest_port, Some(3000));
         s.stop();
         assert_eq!(s.snapshot().port, None, "a stopped run binds no port");
         assert_eq!(s.snapshot().guest_port, None);
         // A start still settling its port when the stop came is refused.
-        assert!(!s.set_ports(gen, Some(3001), Some(3000)));
+        assert!(!s.set_ports(gen, None, Some(3000)));
         assert_eq!(s.snapshot().port, None, "a stale start sets no port");
         let gen = s.begin_phase(s.generation(), RunPhase::Setup).unwrap();
         assert!(s.set_ports(gen, Some(3001), None));
@@ -549,6 +597,44 @@ mod tests {
             "a fresh start forgets the old port"
         );
         assert_eq!(s.snapshot().guest_port, None);
+    }
+
+    /// The ports a box forwards are the box's, whatever listens on them: each
+    /// change moves the revision on and a repeat does not, the run's starts
+    /// and stops leave them, and the run's own port on this host is the
+    /// forward for the port it binds in the guest, once the server listens.
+    #[test]
+    fn the_boxs_forwarded_ports_ride_the_run_state() {
+        let s = RunSession::new();
+        let fresh = s.state().revision;
+        assert!(s.set_forwarded(&forwarded(&[(5432, 5432)])));
+        let with_db = s.state().revision;
+        assert!(with_db > fresh);
+        assert!(!s.set_forwarded(&forwarded(&[(5432, 5432)])));
+        assert_eq!(s.state().revision, with_db, "a repeat moves nothing");
+
+        let gen = s.begin_phase(s.generation(), RunPhase::Running).unwrap();
+        assert!(s.set_ports(gen, None, Some(3000)));
+        let state = s.state();
+        assert_eq!(state.port, None, "the server does not listen yet");
+        assert_eq!(state.guest_port, Some(3000));
+        assert_eq!(
+            state.ports,
+            forwarded(&[(5432, 5432)]),
+            "a start keeps them"
+        );
+        assert!(s.set_forwarded(&forwarded(&[(3000, 3001), (5432, 5432)])));
+        let snap = s.snapshot();
+        assert_eq!(snap.port, Some(3001));
+        assert_eq!(snap.ports, forwarded(&[(3000, 3001), (5432, 5432)]));
+        assert!(snap.revision > state.revision);
+
+        s.stop();
+        let state = s.state();
+        assert_eq!(state.port, None);
+        assert_eq!(state.ports.len(), 2, "the box's ports outlive the run");
+        assert!(s.set_forwarded(&[]), "the box stopped");
+        assert!(s.snapshot().ports.is_empty());
     }
 
     /// A stop that lands while a start is still launching its command finds
@@ -668,7 +754,7 @@ mod tests {
         assert!(s.transition_phase(gen, RunPhase::Running));
         let transitioned = s.state().revision;
         assert!(transitioned > begun);
-        assert!(s.set_ports(gen, Some(3001), Some(3000)));
+        assert!(s.set_ports(gen, None, Some(3000)));
         let with_port = s.state().revision;
         assert!(with_port > transitioned);
         assert_eq!(

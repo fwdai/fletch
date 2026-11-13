@@ -23,6 +23,10 @@ openssh-sftp-server
 openssh-client
 systemd-standalone-sysusers
 
+# The agent installs what is missing (`sudo apt-get install`, rootfs/etc/sudoers.d/agent),
+# and the host runs `sudo -n fletch-guest reclaim`.
+sudo
+
 # Version control
 git
 

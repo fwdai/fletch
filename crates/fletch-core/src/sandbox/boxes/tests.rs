@@ -475,21 +475,42 @@ async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
 /// The Run panel in a box, end to end, twice over on the same guest port:
 /// a tiny HTTP server bound to `127.0.0.1:3000` in each of two boxes'
 /// checkouts, launched the way the panel launches a run ([`super::run`])
-/// under a host PTY, reaches the browser on a host port of its own — the
-/// first on 3000, the second bumped past it; Stop ends the guest process,
-/// frees the host port and releases the box, whose idle timer may then stop
-/// it.
+/// under a host PTY, reaches the browser through its box's forward for the
+/// port ([`super::ports`]) — the first on the first free port on the host from 3000, the second
+/// bumped past it. A server started outside the Run is forwarded the same
+/// way. Stop ends the guest process, whose forward goes with it, and
+/// releases the box, whose idle timer may then stop it; a box that stops
+/// takes its forwards along.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "boots two real boxes; see the module docs"]
 async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
     use super::run::GuestRun;
     use crate::pty_session::{PtySession, PtySpawn};
-    use crate::sandbox::KillGuard;
+    use crate::sandbox::{ForwardedPort, KillGuard};
+    use std::collections::HashMap;
     use std::io::{Read, Write};
+    use std::sync::Arc;
 
     let _data = setup().await;
     let registry = BoxRegistry::global();
     let pid = std::process::id() % 10_000;
+    // What the supervisor follows: each box's forwards, as they change.
+    let forwarded: Arc<parking_lot::Mutex<HashMap<String, Vec<ForwardedPort>>>> = Arc::default();
+    {
+        let forwarded = forwarded.clone();
+        super::ports::on_change(move |agent_id, ports| {
+            eprintln!("[{agent_id}] forwarded: {ports:?}");
+            forwarded
+                .lock()
+                .insert(agent_id.to_string(), ports.to_vec());
+        });
+    }
+    let host_port_of = |agent_id: &str, guest_port: u16| -> Option<u16> {
+        let forwarded = forwarded.lock();
+        let ports = forwarded.get(agent_id)?;
+        let port = ports.iter().find(|p| p.guest_port == guest_port)?;
+        Some(port.port)
+    };
     // Both bind the guest's own 3000: each VM's loopback is its own. Each
     // answer also reports the Run's view of the guest: whether `/data` (the
     // launch env files, the agent's token among them) is in sight, and
@@ -515,6 +536,7 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
         host_port: u16,
         pty: PtySession,
     }
+    let free_on_host = crate::run_detect::port::find_free_port(GUEST_PORT, 30).unwrap();
     let mut ups: Vec<Up> = Vec::new();
     for (n, name) in ["first", "second"].into_iter().enumerate() {
         let agent_id = format!("e2e-run-{name}-{pid}");
@@ -535,24 +557,14 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
         assert!(out.status.success());
 
         // What the supervisor does for a run phase: hold and reach the box,
-        // settle the guest port, forward it, launch under a PTY.
-        let mut guest = GuestRun::open(&tree)
+        // settle the guest port, launch under a PTY. The box forwards the
+        // port once the server listens.
+        let guest = GuestRun::open(&tree)
             .unwrap()
             .expect("the tree is in a box");
         let port = guest.free_port(GUEST_PORT, 30).unwrap().unwrap();
         assert_eq!(port, GUEST_PORT, "[{name}] the guest's own 3000 is free");
-        let host_port = guest.forward(port, 30).unwrap();
-        if n == 0 {
-            assert_eq!(
-                host_port, GUEST_PORT,
-                "the first forward takes 3000 on the host"
-            );
-        } else {
-            assert_ne!(
-                host_port, ups[0].host_port,
-                "the second forward is bumped past it"
-            );
-        }
+        assert_eq!(host_port_of(&agent_id, port), None, "nothing listens yet");
         let env = [
             ("PORT".to_string(), port.to_string()),
             ("APP_NAME".to_string(), name.to_string()),
@@ -588,6 +600,23 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
             if let Ok(bytes) = out_rx.recv_timeout(Duration::from_millis(200)) {
                 seen.extend(bytes);
             }
+        }
+        wait_for(
+            || host_port_of(&agent_id, port).is_some(),
+            Duration::from_secs(30),
+        )
+        .await;
+        let host_port = host_port_of(&agent_id, port).unwrap();
+        if n == 0 {
+            assert_eq!(
+                host_port, free_on_host,
+                "the first forward takes the first port free on the host"
+            );
+        } else {
+            assert_ne!(
+                host_port, ups[0].host_port,
+                "the second forward is bumped past it"
+            );
         }
         ups.push(Up {
             agent_id,
@@ -658,8 +687,29 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
         );
     }
 
-    // Stop: the guest process is gone, the host port is free, the box
-    // released (its forward dropped with the launch, the other's kept).
+    // Anything else that listens in a box is forwarded the same way — here a
+    // server the agent could have started, on every address — and stays up
+    // until the box stops.
+    const OTHER_PORT: u16 = 4567;
+    let other = &ups[1];
+    let channel = registry.channel_for_running(&other.agent_id).unwrap();
+    let serve = format!(
+        "setsid nohup node -e \"require('http').createServer((q, s) => s.end('other server'))\
+         .listen({OTHER_PORT}, '0.0.0.0')\" </dev/null >/dev/null 2>&1 &"
+    );
+    let started = super::executor::run(&channel, &["sh", "-c", &serve], None).unwrap();
+    assert!(started.status.success());
+    wait_for(
+        || host_port_of(&other.agent_id, OTHER_PORT).is_some(),
+        Duration::from_secs(30),
+    )
+    .await;
+    let other_host_port = host_port_of(&other.agent_id, OTHER_PORT).unwrap();
+    let body = fetch(other_host_port);
+    assert!(body.contains("other server"), "{body}");
+
+    // Stop: the guest process is gone, its forward with it and the host port
+    // free, the box released; the other box's forward stays.
     for (n, (name, up)) in ["first", "second"].iter().zip(ups.iter()).enumerate() {
         let channel = registry.channel_for_running(&up.agent_id).unwrap();
         // The guest's process table, for a stop that leaves something behind.
@@ -690,6 +740,11 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        wait_for(
+            || host_port_of(&up.agent_id, GUEST_PORT).is_none(),
+            Duration::from_secs(30),
+        )
+        .await;
         let deadline = Instant::now() + Duration::from_secs(10);
         while std::net::TcpListener::bind(("127.0.0.1", up.host_port)).is_err() {
             assert!(
@@ -699,10 +754,17 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        if let Some(next) = ups.get(n + 1) {
+            assert_eq!(
+                host_port_of(&next.agent_id, GUEST_PORT),
+                Some(next.host_port),
+                "no other box's forward goes with it"
+            );
+        }
         assert_eq!(
-            super::BoxEngine::shared().forwards.lock().unwrap().len(),
-            ups.len() - (n + 1),
-            "no forward outlives its launch, and no other's goes with it"
+            host_port_of(&other.agent_id, OTHER_PORT),
+            Some(other_host_port),
+            "a stopped Run leaves what else listens forwarded"
         );
         assert!(
             registry.nothing_attached(&up.agent_id),
@@ -798,9 +860,8 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
         0o644,
     )
     .unwrap();
-    let mut guest = GuestRun::open(tree).unwrap().unwrap();
+    let guest = GuestRun::open(tree).unwrap().unwrap();
     let port = guest.free_port(GUEST_PORT, 30).unwrap().unwrap();
-    let host_port = guest.forward(port, 30).unwrap();
     let env = [("PORT".to_string(), port.to_string())];
     match guest.launch(tree, "pnpm dev", &env) {
         Err(e) if !has_pnpm => {
@@ -846,10 +907,21 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
                 }
             }
             eprintln!("pnpm dev listening after {:.2?}", t0.elapsed());
+            wait_for(
+                || host_port_of(&up.agent_id, port).is_some(),
+                Duration::from_secs(30),
+            )
+            .await;
+            let host_port = host_port_of(&up.agent_id, port).unwrap();
             let body = fetch(host_port);
             eprintln!("pnpm dev answered on localhost:{host_port}: {body:?}");
             assert!(body.contains("ua=pnpm/10.0.0"), "{body}");
             pty.kill().unwrap();
+            wait_for(
+                || host_port_of(&up.agent_id, port).is_none(),
+                Duration::from_secs(30),
+            )
+            .await;
             let deadline = Instant::now() + Duration::from_secs(10);
             while std::net::TcpListener::bind(("127.0.0.1", host_port)).is_err() {
                 assert!(
@@ -866,12 +938,19 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
         }
     }
 
+    // A box that stops takes its forwards along: the other server's too.
     for up in ups {
         registry.discard(&up.agent_id).await.unwrap();
+        assert_eq!(host_port_of(&up.agent_id, OTHER_PORT), None);
         let _ = std::fs::remove_dir_all(&up.identity.writable_root);
         let _ = std::fs::remove_dir_all(&up.identity.rpc_dir);
         drop(up.tree);
     }
+    wait_for(
+        || std::net::TcpListener::bind(("127.0.0.1", other_host_port)).is_ok(),
+        Duration::from_secs(10),
+    )
+    .await;
 }
 
 /// A project pinned to boxes must not make providers boxes cannot run
@@ -967,6 +1046,7 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
                 {"name": "base", "file": "base.erofs", "size": 5, "sha256": "0".repeat(64)},
                 {"name": "devtools", "file": "layer-devtools.erofs", "size": 5, "sha256": "1".repeat(64)},
                 {"name": "browser", "file": "layer-browser.erofs", "size": 5, "sha256": "2".repeat(64)},
+                {"name": "containers", "file": "layer-containers.erofs", "size": 5, "sha256": "3".repeat(64)},
             ],
         })
         .to_string()
@@ -995,9 +1075,10 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
         "a layer still on its way holds the image back"
     );
     std::fs::write(dir.join("layer-browser.erofs"), b"layer").unwrap();
+    std::fs::write(dir.join("layer-containers.erofs"), b"layer").unwrap();
     let installed = super::installed_image().unwrap().expect("the pinned image");
     assert_eq!(installed.version, pin.version);
-    assert_eq!(installed.layers.len(), 2);
+    assert_eq!(installed.layers.len(), 3);
     assert_eq!(super::setup::image_status().phase, "installed");
 }
 
@@ -1266,6 +1347,9 @@ fn a_reviewer_tenant_writes_only_its_own_paths() {
             dir.display()
         );
     }
+
+    // Docker would start a container that writes the coder's files.
+    assert_eq!(view.hidden, [PathBuf::from("/run/docker.sock")]);
 }
 
 /// A Cursor reviewer cannot plant an MCP config the coder's next launch
@@ -1439,6 +1523,7 @@ fn a_confined_launch_renders_the_view_it_was_given() {
         ],
         cow_dirs: vec![(support, own_copy("Library%2FApplication Support"))],
         cow_files: vec![(home.join(".claude.json"), own_copy(".claude.json"))],
+        hidden: vec![PathBuf::from("/run/docker.sock")],
     };
     let tree = Path::new(CODER_ROOT).join("repo");
     let env_file = Path::new("/data/run/1.env");
@@ -1469,12 +1554,14 @@ fn a_confined_launch_renders_the_view_it_was_given() {
             &format!("{stores}/.claude.json"),
             "--cwd",
             "/Users/u/.fletch/workspaces/coder/repo",
+            "--hide",
+            "/run/docker.sock",
             "--",
             "claude"
         ]
     );
     let plain = super::agent_remote_command(&tree, env_file, None, "claude");
-    let options = ["--read-only", "--writable", "--cow", "--cow-file"].map(String::from);
+    let options = ["--read-only", "--writable", "--cow", "--cow-file", "--hide"].map(String::from);
     assert!(!plain.tail.iter().any(|w| options.contains(w)), "{plain:?}");
     assert_eq!(plain.head, remote.head);
 
@@ -1497,6 +1584,8 @@ fn a_confined_launch_renders_the_view_it_was_given() {
             "--cow-file",
             "/Users/u/.claude.json",
             &format!("{stores}/.claude.json"),
+            "--hide",
+            "/run/docker.sock",
             "--env-file",
             "/dev/null",
             "--",
@@ -1617,7 +1706,7 @@ fn the_hosts_operations_for_a_launch_run_in_its_view() {
         read_only: vec![home.to_path_buf()],
         writable_dirs: vec![PathBuf::from(OWN_ROOT)],
         cow_dirs: vec![(home.join(".pi"), own_copy(".pi"))],
-        cow_files: Vec::new(),
+        ..Default::default()
     };
     let rm = ["rm", "-f", "--", "/Users/u/.pi/agent/auth.json"];
     let mut confined = view.exec_words();
@@ -1760,7 +1849,7 @@ fn copy_on_write_names_are_flat_and_distinct() {
 #[test]
 fn the_read_only_probe_tells_an_old_guest_from_a_failed_one() {
     assert_eq!(super::read_only_probe_answer(true, ""), Some(true));
-    for option in ["--read-only", "--writable", "--cow", "--cow-file"] {
+    for option in ["--read-only", "--writable", "--cow", "--cow-file", "--hide"] {
         let old = format!("fletch-guest: exec: unknown option {option}\n");
         assert_eq!(super::read_only_probe_answer(false, &old), Some(false));
     }

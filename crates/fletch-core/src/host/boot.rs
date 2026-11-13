@@ -559,6 +559,8 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
 
     let supervisor = Arc::new(Supervisor::new(workspace.clone()));
     ctx.set_supervisor(supervisor.clone());
+    // Before any box boots: each one's forwarded ports reach its run state.
+    supervisor.follow_forwarded_ports(ctx.clone());
 
     // Seeded before the hook can arm the monitor, so a stored opt-out never
     // takes the assertion (and holds it through the release debounce) when

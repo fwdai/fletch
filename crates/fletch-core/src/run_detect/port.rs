@@ -82,20 +82,25 @@ pub fn rewrite_explicit_port(cmd: &str, new_port: u16) -> Option<String> {
     Some(tokens.join(" "))
 }
 
-/// Find the first free TCP port at or after `start`, scanning `start`,
-/// `start + 1`, … up to and including `start + cap`. "Free" means we can bind
-/// `127.0.0.1:<port>` right now (the listener is dropped immediately, releasing
-/// it for the dev server to claim). Returns `None` if every port in the range
-/// is taken. Binding-to-test is the standard technique; there is no lighter
-/// primitive that also honors the "your port, then +1, +2, …" order.
+/// The first free TCP port at or after `start`, up to and including
+/// `start + cap`; `None` when every port in the range is taken.
 pub fn find_free_port(start: u16, cap: u16) -> Option<u16> {
-    for offset in 0..=cap {
-        let port = start.checked_add(offset)?;
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return Some(port);
-        }
-    }
-    None
+    (0..=cap)
+        .map_while(|offset| start.checked_add(offset))
+        .find(|&port| is_free(port))
+}
+
+/// Nothing answers on `localhost:<port>` and loopback can bind it. The bind
+/// alone is not enough: macOS lets it succeed beside a listener on every
+/// address, which is what `localhost` in a browser may then reach.
+fn is_free(port: u16) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
+    let answers = |addr: SocketAddr| {
+        TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok()
+    };
+    !answers((Ipv4Addr::LOCALHOST, port).into())
+        && !answers((Ipv6Addr::LOCALHOST, port).into())
+        && TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
 }
 
 /// Map a known framework dependency to its conventional dev-server port.
@@ -258,5 +263,12 @@ mod tests {
         let found = find_free_port(port, 30).unwrap();
         assert_ne!(found, port);
         assert!(found > port);
+    }
+
+    #[test]
+    fn a_port_held_on_every_address_is_taken() {
+        let held = std::net::TcpListener::bind(("::", 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        assert_ne!(find_free_port(port, 0), Some(port));
     }
 }

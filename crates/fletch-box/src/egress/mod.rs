@@ -1,5 +1,6 @@
-//! The box's only way out: an HTTP `CONNECT` proxy on a unix socket that
-//! libkrun maps to the guest's vsock port 6000. DNS resolves on the host, the
+//! The box's only way out: an HTTP proxy on a unix socket that libkrun maps to
+//! the guest's vsock port 6000. It tunnels `CONNECT` and forwards a plain
+//! `http://` request, one per connection. DNS resolves on the host, the
 //! allow-list is checked before anything is connected, and every decision is an
 //! [`EgressEvent`] for the engine to surface.
 //!
@@ -81,7 +82,7 @@ pub enum Admission {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EgressEvent {
-    /// A tunnel that was opened and has now closed.
+    /// A tunnel or forwarded request that was let through and has now closed.
     Allowed {
         host: String,
         port: u16,
@@ -407,7 +408,7 @@ fn decide(shared: &Shared, host: &str, port: u16) -> Verdict {
 }
 
 async fn serve(mut client: UnixStream, shared: Arc<Shared>, on_event: OnEvent) {
-    let (head, mut leftover) =
+    let (head, leftover) =
         match tokio::time::timeout(HEADER_TIMEOUT, read_header(&mut client)).await {
             Ok(Ok(parts)) => parts,
             Ok(Err(e)) => {
@@ -421,29 +422,21 @@ async fn serve(mut client: UnixStream, shared: Arc<Shared>, on_event: OnEvent) {
             Err(_) => return,
         };
 
-    let request_line = head.lines().next().unwrap_or("");
-    let mut words = request_line.split_whitespace();
-    let (method, target) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
-    if method != "CONNECT" {
-        on_event(EgressEvent::Error {
-            host: None,
-            message: format!("refused {method} {target}: only CONNECT is supported"),
-        });
-        let _ = respond(
-            &mut client,
-            "405 Method Not Allowed",
-            "only CONNECT is supported by the box egress proxy",
-        )
-        .await;
-        return;
-    }
-    let Some((host, port)) = parse_target(target) else {
-        on_event(EgressEvent::Error {
-            host: None,
-            message: format!("bad CONNECT target {target:?}"),
-        });
-        let _ = respond(&mut client, "400 Bad Request", "CONNECT needs host:port").await;
-        return;
+    let Request {
+        host,
+        port,
+        forward,
+    } = match parse_request(&head) {
+        Ok(request) => request,
+        Err(Rejected { status, reason }) => {
+            let request_line = head.lines().next().unwrap_or("");
+            on_event(EgressEvent::Error {
+                host: None,
+                message: format!("refused {request_line:?}: {reason}"),
+            });
+            let _ = respond(&mut client, status, reason).await;
+            return;
+        }
     };
 
     let admission = match decide(&shared, &host, port) {
@@ -472,18 +465,24 @@ async fn serve(mut client: UnixStream, shared: Arc<Shared>, on_event: OnEvent) {
             .await
         }
     };
-    if client
-        .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
-        .await
-        .is_err()
-    {
+    // Whatever the client sent together with its header follows: a tunnel's
+    // first bytes, or the start of a forwarded request's body.
+    let ahead = match forward {
+        Some(origin_head) => [origin_head.into_bytes(), leftover].concat(),
+        None => {
+            if client
+                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .await
+                .is_err()
+            {
+                return;
+            }
+            leftover
+        }
+    };
+    if upstream.write_all(&ahead).await.is_err() {
         return;
     }
-    // A client that sent its first bytes together with the header gets them delivered.
-    if !leftover.is_empty() && upstream.write_all(&leftover).await.is_err() {
-        return;
-    }
-    leftover.clear();
     let (bytes_up, bytes_down) = tokio::io::copy_bidirectional(&mut client, &mut upstream)
         .await
         .unwrap_or((0, 0));
@@ -491,9 +490,99 @@ async fn serve(mut client: UnixStream, shared: Arc<Shared>, on_event: OnEvent) {
         host,
         port,
         admission,
-        bytes_up,
+        bytes_up: ahead.len() as u64 + bytes_up,
         bytes_down,
     });
+}
+
+/// What a request head asks the proxy for.
+#[derive(Debug, PartialEq)]
+struct Request {
+    host: String,
+    port: u16,
+    /// For a plain HTTP request, the head the origin gets in its place;
+    /// `None` for a `CONNECT` tunnel.
+    forward: Option<String>,
+}
+
+/// How a request head the proxy does not serve is answered.
+#[derive(Debug, PartialEq)]
+struct Rejected {
+    status: &'static str,
+    reason: &'static str,
+}
+
+const UNSUPPORTED: Rejected = Rejected {
+    status: "405 Method Not Allowed",
+    reason: "only CONNECT and plain http:// requests are supported by the box egress proxy",
+};
+
+const NO_TARGET: Rejected = Rejected {
+    status: "400 Bad Request",
+    reason: "the request names no host and port the proxy can reach",
+};
+
+/// `CONNECT host:port`, or a request in absolute form, `<METHOD>
+/// http://host[:port]/path`, which goes to that host and port as a `CONNECT`
+/// would.
+fn parse_request(head: &str) -> Result<Request, Rejected> {
+    let mut lines = head.lines();
+    let mut words = lines.next().unwrap_or("").split_whitespace();
+    let (method, target, version) = (
+        words.next().unwrap_or(""),
+        words.next().unwrap_or(""),
+        words.next().unwrap_or(""),
+    );
+    if method == "CONNECT" {
+        let (host, port) = parse_target(target).ok_or(NO_TARGET)?;
+        return Ok(Request {
+            host,
+            port,
+            forward: None,
+        });
+    }
+    let url = target.strip_prefix("http://").ok_or(UNSUPPORTED)?;
+    let (authority, path) = url.split_at(url.find(['/', '?']).unwrap_or(url.len()));
+    let (host, port) = parse_target(authority)
+        .or_else(|| parse_target(&format!("{authority}:80")))
+        .ok_or(NO_TARGET)?;
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    let mut origin_head = format!("{method} {path} {version}\r\nHost: {authority}\r\n");
+    for header in lines.filter(|line| !line.is_empty() && !is_dropped(line)) {
+        origin_head.push_str(header);
+        origin_head.push_str("\r\n");
+    }
+    // One request per connection: the origin closes after its response,
+    // which ends the relay.
+    origin_head.push_str("Connection: close\r\n\r\n");
+    Ok(Request {
+        host,
+        port,
+        forward: Some(origin_head),
+    })
+}
+
+/// A header the origin must not get from the client: one that concerns the
+/// hop to the proxy, or `Host`, which the request's URL replaces.
+/// `Transfer-Encoding` is not one of them: the body is relayed as the client
+/// framed it.
+fn is_dropped(header: &str) -> bool {
+    let name = header.split(':').next().unwrap_or("").trim();
+    [
+        "host",
+        "connection",
+        "proxy-connection",
+        "keep-alive",
+        "proxy-authorization",
+        "te",
+        "upgrade",
+    ]
+    .iter()
+    .any(|hop| name.eq_ignore_ascii_case(hop))
 }
 
 /// Wait for the policy to admit `host`: `Some` with how it was admitted,
@@ -723,6 +812,50 @@ mod tests {
         }
     }
 
+    const HELLO: &str = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+
+    /// A local origin that takes one request, answers it with [`HELLO`] and
+    /// closes; the handle gives back the request as it arrived.
+    async fn origin() -> (u16, JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut got = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !is_whole_request(&got) {
+                let n = s.read(&mut chunk).await.unwrap();
+                assert!(n > 0, "the request ended early: {got:?}");
+                got.extend_from_slice(&chunk[..n]);
+            }
+            s.write_all(HELLO.as_bytes()).await.unwrap();
+            String::from_utf8(got).unwrap()
+        });
+        (port, received)
+    }
+
+    /// A header and as much body as its `Content-Length` says.
+    fn is_whole_request(got: &[u8]) -> bool {
+        let Some(end) = find_header_end(got) else {
+            return false;
+        };
+        let head = String::from_utf8_lossy(&got[..end]).to_ascii_lowercase();
+        let body = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .map_or(0, |n| n.trim().parse::<usize>().unwrap());
+        got.len() >= end + body
+    }
+
+    /// Sends `request` and reads the reply until the proxy closes it.
+    async fn exchange(sock: &Path, request: &str) -> String {
+        let mut client = UnixStream::connect(sock).await.unwrap();
+        client.write_all(request.as_bytes()).await.unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).await.unwrap();
+        reply
+    }
+
     #[tokio::test]
     async fn allowed_hosts_are_tunnelled_and_counted() {
         let dir = tempfile::tempdir().unwrap();
@@ -780,17 +913,21 @@ mod tests {
             }
         );
 
-        let (_c, reply) =
-            request(proxy.socket(), "GET http://allowed.test/ HTTP/1.1\r\n\r\n").await;
-        assert!(reply.starts_with("HTTP/1.1 405"), "{reply}");
-        assert!(
-            reply.ends_with("only CONNECT is supported by the box egress proxy\n"),
-            "{reply}"
-        );
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            EgressEvent::Error { host: None, .. }
-        ));
+        for head in [
+            "GET https://allowed.test/ HTTP/1.1\r\n\r\n",
+            "GET / HTTP/1.1\r\nHost: allowed.test\r\n\r\n",
+        ] {
+            let reply = exchange(proxy.socket(), head).await;
+            assert!(reply.starts_with("HTTP/1.1 405"), "{reply}");
+            assert!(
+                reply.ends_with(&format!("{}\n", UNSUPPORTED.reason)),
+                "{reply}"
+            );
+            assert!(matches!(
+                events.recv().await.unwrap(),
+                EgressEvent::Error { host: None, .. }
+            ));
+        }
 
         proxy.update(EgressPolicy::new(["example.com"]).unwrap(), Mode::Refuse);
         assert_eq!(proxy.policy().check("example.com", 443), Ok(()));
@@ -1296,6 +1433,174 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A plain HTTP request takes the path a tunnel to its host and port
+    /// takes, a hold included. Admitted, it reaches the origin in origin form
+    /// without the proxy's headers, and the origin's reply comes back whole
+    /// and counted.
+    #[tokio::test]
+    async fn a_plain_http_request_is_held_like_a_tunnel_then_forwarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (port, received) = origin().await;
+        let mut policy = EgressPolicy::new(["other.test"]).unwrap();
+        policy.ports = vec![port];
+        let (proxy, mut events) = start(dir.path(), policy.clone(), Mode::Hold).await;
+
+        let sock = proxy.socket().to_path_buf();
+        let reply = tokio::spawn(async move {
+            let request = format!(
+                "GET http://localhost:{port}/debian/InRelease?x=1 HTTP/1.1\r\n\
+                 Host: localhost:{port}\r\nUser-Agent: apt\r\n\
+                 Proxy-Connection: keep-alive\r\nConnection: keep-alive\r\n\r\n"
+            );
+            exchange(&sock, &request).await
+        });
+        let hold = next_held(&mut events).await;
+        policy.allow.push("localhost".parse().unwrap());
+        proxy.update(policy, Mode::Hold);
+
+        assert_eq!(reply.await.unwrap(), HELLO);
+        let sent = received.await.unwrap();
+        assert_eq!(
+            sent,
+            format!(
+                "GET /debian/InRelease?x=1 HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                 User-Agent: apt\r\nConnection: close\r\n\r\n"
+            )
+        );
+        assert_eq!(
+            events.recv().await.unwrap(),
+            EgressEvent::HoldEnded {
+                hold,
+                host: "localhost".into(),
+                port,
+                admitted: true
+            }
+        );
+        assert_eq!(
+            events.recv().await.unwrap(),
+            EgressEvent::Allowed {
+                host: "localhost".into(),
+                port,
+                admission: Admission::Listed,
+                bytes_up: sent.len() as u64,
+                bytes_down: HELLO.len() as u64
+            }
+        );
+    }
+
+    /// A request's body reaches the origin intact, what was sent with the
+    /// header and what was sent after it alike.
+    #[tokio::test]
+    async fn a_post_body_is_forwarded_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let (port, received) = origin().await;
+        let mut policy = EgressPolicy::new(["localhost"]).unwrap();
+        policy.ports = vec![port];
+        let (proxy, mut events) = start(dir.path(), policy, Mode::Refuse).await;
+
+        let mut client = UnixStream::connect(proxy.socket()).await.unwrap();
+        let head = format!(
+            "POST http://localhost:{port}/upload HTTP/1.1\r\n\
+             Content-Type: text/plain\r\nContent-Length: 11\r\n\r\n"
+        );
+        client
+            .write_all(format!("{head}hello").as_bytes())
+            .await
+            .unwrap();
+        client.write_all(b" world").await.unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).await.unwrap();
+        drop(client);
+
+        assert_eq!(reply, HELLO);
+        assert_eq!(
+            received.await.unwrap(),
+            format!(
+                "POST /upload HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                 Content-Type: text/plain\r\nContent-Length: 11\r\nConnection: close\r\n\r\n\
+                 hello world"
+            )
+        );
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            EgressEvent::Allowed {
+                admission: Admission::Listed,
+                ..
+            }
+        ));
+    }
+
+    /// A plain HTTP request to a host or a port the policy refuses is
+    /// answered and reported exactly as a `CONNECT` there is.
+    #[tokio::test]
+    async fn plain_http_is_refused_as_connect_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let (proxy, mut events) = start(
+            dir.path(),
+            EgressPolicy::new(["allowed.test"]).unwrap(),
+            Mode::Refuse,
+        )
+        .await;
+        for (target, url) in [
+            ("example.com:80", "http://Example.com/"),
+            ("allowed.test:8080", "http://allowed.test:8080/x"),
+        ] {
+            let by_connect = exchange(
+                proxy.socket(),
+                &format!("CONNECT {target} HTTP/1.1\r\n\r\n"),
+            )
+            .await;
+            assert!(by_connect.starts_with("HTTP/1.1 403"), "{by_connect}");
+            let denied = events.recv().await.unwrap();
+            assert!(matches!(denied, EgressEvent::Denied { .. }), "{denied:?}");
+
+            let by_get = exchange(proxy.socket(), &format!("GET {url} HTTP/1.1\r\n\r\n")).await;
+            assert_eq!(by_get, by_connect);
+            assert_eq!(events.recv().await.unwrap(), denied);
+        }
+    }
+
+    #[test]
+    fn requests_parse() {
+        assert_eq!(
+            parse_request("CONNECT Example.com:443 HTTP/1.1\r\n\r\n"),
+            Ok(Request {
+                host: "example.com".into(),
+                port: 443,
+                forward: None
+            })
+        );
+        assert_eq!(
+            parse_request(
+                "GET http://Example.com HTTP/1.0\r\nHost: elsewhere\r\nAccept: */*\r\n\
+                 Proxy-Authorization: Basic eA==\r\nKeep-Alive: 5\r\n\r\n"
+            ),
+            Ok(Request {
+                host: "example.com".into(),
+                port: 80,
+                forward: Some(
+                    "GET / HTTP/1.0\r\nHost: Example.com\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+                        .into()
+                )
+            })
+        );
+        let v6 = parse_request("GET http://[::1]:8080?q HTTP/1.1\r\n\r\n").unwrap();
+        assert_eq!((v6.host.as_str(), v6.port), ("::1", 8080));
+        assert!(v6
+            .forward
+            .unwrap()
+            .starts_with("GET /?q HTTP/1.1\r\nHost: [::1]:8080\r\n"));
+        for (head, rejected) in [
+            ("GET https://example.com/ HTTP/1.1\r\n\r\n", UNSUPPORTED),
+            ("GET /path HTTP/1.1\r\n\r\n", UNSUPPORTED),
+            ("CONNECT example.com HTTP/1.1\r\n\r\n", NO_TARGET),
+            ("GET http://user@example.com/ HTTP/1.1\r\n\r\n", NO_TARGET),
+            ("GET http:///path HTTP/1.1\r\n\r\n", NO_TARGET),
+        ] {
+            assert_eq!(parse_request(head), Err(rejected), "{head}");
+        }
     }
 
     #[test]

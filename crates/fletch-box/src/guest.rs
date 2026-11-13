@@ -115,11 +115,25 @@ pub const EXEC_ARGS_FILE: &str = "--args-file";
 /// wrote under `<dir>`, at the same relative paths (the overlay's upper
 /// layer; `work` beside it is the overlay's own).
 pub const EXEC_COW_UPPER: &str = "upper";
+/// `exec --hide <path>`, repeatable: in the confined view the command cannot
+/// open `<path>`.
+pub const EXEC_HIDE: &str = "--hide";
 /// What `exec` exits with when it cannot set up `--read-only`: the command
 /// never ran. Apart from 126 (could not run) and 127 (not found).
 pub const EXEC_CONFINE_FAILED: i32 = 125;
 pub const RELAY: &str = "relay";
 pub const TAIL: &str = "tail";
+/// `fletch-guest listeners`: prints the TCP ports something listens on in the
+/// guest on a loopback or wildcard address as one JSON line, a sorted array
+/// (`[3000,5432]`), at once and again whenever the set changes, until its
+/// session ends. The guest's own egress port is not among them.
+pub const LISTENERS: &str = "listeners";
+/// `sudo -n fletch-guest reclaim`: the guest drops its file cache and compacts
+/// its memory, so the host gets the memory back. A guest that predates it
+/// fails it, which changes nothing.
+pub const RECLAIM: &str = "reclaim";
+/// The Docker Engine's socket in the guest.
+pub const DOCKER_SOCKET: &str = "/run/docker.sock";
 
 /// The ssh `Host` alias in every generated `ssh_config`, and the name in
 /// `known_hosts`.

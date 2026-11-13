@@ -12,6 +12,7 @@ use crate::host::EventSink;
 // so the base64 wire format is defined once next to the sessions producing it.
 use crate::pty_session::serialize_bytes_b64;
 use crate::run_session::{RunPhase, RunSession, RunState};
+use crate::sandbox::ForwardedPort;
 use crate::workspace::{AgentStatus, AgentView, TrackedRepo};
 
 /// Emit one event, logging (not propagating) failure — the shared tail of
@@ -646,10 +647,12 @@ struct RunStatePayload {
     phase: RunPhase,
     last_error: Option<String>,
     /// As on `RunStateSnapshot`. `None` until the port is settled: a box's
-    /// run is `running` before its forward is up, and the `run:state` that
-    /// follows the forward carries it.
+    /// run is `running` before its server listens and the box forwards its
+    /// port, and the `run:state` that follows the forward carries it.
     port: Option<u16>,
     guest_port: Option<u16>,
+    /// As on `RunStateSnapshot`: what the box forwards, a run or no run.
+    ports: Vec<ForwardedPort>,
     /// As on `RunStateSnapshot`: which state this is, so a client drops an
     /// event or a snapshot that describes an older state than one it has.
     revision: u64,
@@ -663,6 +666,7 @@ pub(super) fn emit_run_state(sink: &dyn EventSink, agent_id: &str, session: &Run
         last_error,
         port,
         guest_port,
+        ports,
         revision,
     } = session.state();
     emit(
@@ -674,6 +678,7 @@ pub(super) fn emit_run_state(sink: &dyn EventSink, agent_id: &str, session: &Run
             last_error,
             port,
             guest_port,
+            ports,
             revision,
         },
     );
@@ -687,7 +692,8 @@ struct RunPortPayload {
 }
 
 /// The port on this host that reaches the dev server, emitted as the Run
-/// panel's dev phase spawns: `port`, what the frontend's `localhost:<port>`
+/// panel's dev phase spawns, or for a box's as the box forwards the port it
+/// binds in the guest: `port`, what the frontend's `localhost:<port>`
 /// link and sidebar indicator show, as the field has meant since the event
 /// was added (a client from before boxes reads nothing else). It may differ
 /// from the configured port when port-safety bumped it to the next free one,
@@ -808,8 +814,9 @@ mod tests {
     }
 
     /// `run:state` carries the session's ports as they stand: the host's run
-    /// has its port before it goes `running`, a box's does not until its
-    /// forward is up, and a stop clears them.
+    /// has its port before it goes `running`, a box's does not until the box
+    /// forwards the port its server binds in the guest, and a stop clears
+    /// the run's while the box's forwards stay.
     #[test]
     fn a_run_state_event_carries_the_sessions_ports() {
         let sink = RecordingSink::new();
@@ -823,10 +830,17 @@ mod tests {
         let gen = session
             .begin_phase(session.generation(), RunPhase::Running)
             .unwrap();
+        session.set_ports(gen, None, Some(3000));
+        emit_run_state(&sink, "fuji", &session);
+        session.set_forwarded(&[ForwardedPort {
+            guest_port: 3000,
+            port: 3002,
+        }]);
         emit_run_state(&sink, "fuji", &session);
         session.mark_stopped(gen, Some("Run exited: 1".to_string()));
         emit_run_state(&sink, "fuji", &session);
-        let state = |phase: &str, last_error: Value, port: Value| {
+        let forwarded = json!([{ "guest_port": 3000, "port": 3002 }]);
+        let state = |phase: &str, last_error: Value, port: Value, guest_port: Value, ports| {
             (
                 "run:state".to_string(),
                 json!({
@@ -834,7 +848,8 @@ mod tests {
                     "phase": phase,
                     "last_error": last_error,
                     "port": port,
-                    "guest_port": null,
+                    "guest_port": guest_port,
+                    "ports": ports,
                 }),
             )
         };
@@ -857,9 +872,22 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                state("running", Value::Null, json!(3001)),
-                state("running", Value::Null, Value::Null),
-                state("stopped", json!("Run exited: 1"), Value::Null),
+                state("running", Value::Null, json!(3001), Value::Null, json!([])),
+                state("running", Value::Null, Value::Null, json!(3000), json!([])),
+                state(
+                    "running",
+                    Value::Null,
+                    json!(3002),
+                    json!(3000),
+                    forwarded.clone()
+                ),
+                state(
+                    "stopped",
+                    json!("Run exited: 1"),
+                    Value::Null,
+                    Value::Null,
+                    forwarded
+                ),
             ]
         );
         assert!(

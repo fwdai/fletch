@@ -41,8 +41,9 @@ the disk is aboard at the box's next start.
 | `base.erofs` | Debian trixie minbase, bash, git, ssh, curl/jq/rg, Node 22 with corepack enabled (`pnpm` and `yarn` run the version a project's `packageManager` names, fetched on first use), the shared libraries any Chromium needs, a small font set, `fletch-guest` | ~160 MB |
 | `layer-devtools.erofs` | build-essential, pkg-config, python3 + pip + venv, Node headers, Bun | ~170 MB |
 | `layer-browser.erofs` | Debian `chromium-headless-shell`, `fonts-noto-core`. Playwright projects download their own browser and need only the base; Puppeteer's download is off the allow-list (`storage.googleapis.com`) | ~165 MB |
+| `layer-containers.erofs` | Docker Engine, its CLI, containerd, the compose and buildx plugins, from Docker's apt repository at pinned versions. Nothing of it runs until something connects to `/run/docker.sock` ("Containers", below) | ~130 MB |
 
-Every box gets both layers, with no setting. A layer is a read-only file the
+Every box gets every layer, with no setting. A layer is a read-only file the
 boxes share: it costs disk once and no guest memory until something reads it,
 and with block devices fixed at boot, one left out could not be added to a
 running box.
@@ -129,7 +130,9 @@ user:
   not a whole directory (`.env`, a local database); ignored directories
   under 1 MiB (certificates, local settings), which save nothing and are a
   workspace's own; the paths the project excludes; Fletch's own index
-  (`.codegraph`); the rest of the home, the mailbox and the launch env files.
+  (`.codegraph`); the rest of the home, the mailbox and the launch env files;
+  Docker's store (`/data/docker`: a workspace's containers, volumes and the
+  images it built hold its work) and the system changes (`/data/sys`).
 
 A candidate the script did not finish on, or whose bench had to be killed, is
 discarded, and one that keeps under 1 MiB is not made the seed; the seed
@@ -236,14 +239,53 @@ scales. Memory and CPUs stop at what the host has (`box_runtime_probe`'s
 `host_cpus` and `host_memory_mib`), and disk reaches new boxes only, since a
 data disk is sized when it is created. The image URL is on Settings › Developer.
 
+## Containers and the writable system
+
+A box is a dev machine, not a model of a project's setup: what a project
+needs beyond its own toolchain it gets the way it would on a developer's
+Linux machine, and nothing of it costs anything until it is used.
+
+- **Docker on first use.** Init has `fletch-guest socket-activate` listen on
+  `/run/docker.sock` (group `docker`, which `agent` is in). The first
+  connection, from `docker compose up` in the Run panel or typed by the
+  agent, execs `dockerd` on that socket (`LISTEN_FDS`, `-H fd://`); a box
+  nobody runs a container in never has a Docker process. The daemon keeps its
+  store on the data disk (`/data/docker`) and uses the nftables firewall
+  backend: the guest kernel has nf_tables and no iptables. Podman is not
+  used: its healthchecks need systemd timers, so `compose up --wait` never
+  returns in a box.
+- **Containers and builds reach the egress proxy.** The egress loopback binds
+  every address (the guest has no network device, so that reaches nothing
+  else), and the Docker client config init puts in the agent's home
+  (`~/.docker/config.json`, only when it has none) hands
+  `http://172.17.0.1:8899` to every container and image build as its proxy.
+  A container has no DNS for outside names; what does not honour the proxy
+  variables does not get out. Known gap: a client that does honour them also
+  sends plain-HTTP requests to another compose service by name through the
+  proxy, which cannot resolve it.
+- **`sudo` and a writable system.** `/usr`, `/etc` and `/var` are each one
+  overlay: the base, the layers, and above them the box's own changes on the
+  data disk (`/data/sys`), so `sudo apt-get install` works and survives a
+  restart. Those changes belong to the image version they were made on; a box
+  that boots another version drops them. Since the overlays keep `/data` in
+  use, a stop makes it read-only (journal flushed, marked clean) instead of
+  unmounting it.
+- **Confined tenants.** `sudo` does not work under `no_new_privs`, so not in
+  the reviewer's view nor the Run's. The reviewer's view also hides the
+  Docker socket (`exec --hide`), which would otherwise let it write the
+  coder's files; the Run's does not, since the Run command is what starts a
+  project's containers, so through Docker a Run command can reach what its
+  view otherwise hides.
+
 ## Network
 
 A box has no network device. Every connection leaves through the host's
-HTTP `CONNECT` proxy (`crates/fletch-box/src/egress`), on ports 80 and 443
-only, against an allow-list built from layers that each store only their own
+HTTP proxy (`crates/fletch-box/src/egress`), which tunnels `CONNECT` and
+forwards a plain `http://` request (one per connection, under the same
+policy path as a tunnel), on ports 80 and 443 only, against an allow-list built from layers that each store only their own
 changes (`sandbox/boxes/allowlist.rs`): the template Fletch maintains in code
 (`egress::TEMPLATE`: the providers' APIs, the registries, the toolchains,
-source hosting, the guest's packages), the user's global additions
+source hosting, the container registries and their layer hosts, the guest's packages), the user's global additions
 (`box_egress_global`), the project's `.fletch/settings.json` and
 `.fletch/settings.local.json` (`egress.allow`, approved by the user;
 `egress.disable` turns an inherited entry off), and the project's in-app
@@ -303,7 +345,8 @@ the idle stop from before it reaches it (booting a stopped one, under a
 launch's kill — Stop, the command's own exit, app exit — ends the command's
 process group in the guest by name (`TERM`, then `KILL`; the tty hangup
 that follows reaches only the confining init, which passes no kernel-raised
-signal on), removes its env file, drops its port forward and detaches it,
+signal on), removes its env file, has the guest give its file cache back
+(`fletch-guest reclaim`, as the end of a turn does) and detaches it,
 which arms the idle timer. The
 command is `fletch-guest exec --env-file /data/run/<launch>.env --read-only
 <home> --writable … --cwd <checkout> -- bash -c 'set +m; <cmd>'` over `ssh
@@ -346,14 +389,19 @@ that does not exist yet.
 Ports: the dev server binds its own port inside the guest, whose loopback is
 the VM's alone, so two workspaces on port 3000 never clash there; a port
 something in the guest already listens on is bumped to the next free one, as
-on the host. Each guest port is forwarded to a free port on the host — the
-same number when it is free there, else the next free one, noted in the
-panel — over `ssh -N -L 127.0.0.1:<host>:localhost:<guest>` on a connection
-of its own (`Channel::forward`): a forward requested through the box's
-shared master would outlive the client that asked for it, while this one
-ends with the launch, and with the guest. sshd connects to `localhost` in
-the guest, so a server bound to `127.0.0.1`, `::1` or every address is
-reached. The panel's link and the sidebar show the host port: `port` on
+on the host. The Run forwards nothing itself: every TCP port something
+listens on in a running box is forwarded by the box (`boxes::ports`), whoever
+started the listener — the Run's dev server, a container's published port,
+a server the agent started. `fletch-guest listeners` names the listening
+ports (loopback or every address) once and on each change; each gets a free
+port on the host — the same number when it is free there, else the next free
+one, noted in the panel — over `ssh -N -L 127.0.0.1:<host>:localhost:<guest>`
+on a connection of its own (`Channel::forward`), and loses it when it stops
+listening or the box stops; at most 16 per box. The watcher is not a launch:
+it never boots a box nor holds one against its idle stop. `run:state`, the
+run snapshot and the agent's `app_status` carry them all as `ports`
+(`{guest_port, port}`), in any phase; the panel lists those besides the
+Run's own. The panel's link and the sidebar show the host port: `port` on
 `run:state` and the run snapshot, the port this Mac reaches as the field has
 always meant, with the guest's beside it as `guest_port`; the agent's
 `app_status` reports the guest port as `port`, which is where the agent is,
@@ -365,8 +413,9 @@ newer and drops the other, whatever order they arrive in. Revisions are at
 least the clock, so a host that restarted under a connected client (its
 sessions gone, every agent Idle as of now) still outranks the run the
 client remembers, and Stop always answers with the state. A box's run goes
-`running` with no port before its forward is up, so the panel keeps the link
-pending until the event with the port follows. `run:port` is still emitted
+`running` with no port until its server listens and the box has forwarded
+it, so the panel keeps the link pending until the event with the port
+follows. `run:port` is still emitted
 beside it for clients from before the field, who read nothing else and
 cannot order it. A VM stopped or killed under a running
 command ends its ssh session, which the panel reports as the command's

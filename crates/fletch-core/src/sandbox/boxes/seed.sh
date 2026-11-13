@@ -17,7 +17,8 @@
 # directory (.env, a local database) and ignored directories under the given
 # size (certificates, local settings), since those are a workspace's own. The
 # paths the project excludes, whatever is there. The rest of the home, the
-# mailbox and the launch env files.
+# mailbox and the launch env files. Docker's store (a workspace's containers,
+# volumes and built images) and the system changes the workspace made.
 #
 # Prints the KiB kept on its last line. Any failure exits non-zero, and the
 # host then discards the disk.
@@ -59,6 +60,9 @@ rmdir "$KEPT"
 for dir in /data/home /data/rpc /data/run /data/tools; do
   find "$dir" -mindepth 1 -delete
 done
+sudo -n rm -rf /data/docker
+# Init drops system changes whose image stamp does not match.
+sudo -n rm -f /data/sys/image
 if [ -d "$KEPT_CACHE" ]; then
   mkdir -p "$(dirname "$CACHE")"
   mv "$KEPT_CACHE" "$CACHE"
