@@ -227,6 +227,15 @@
   right: auto;
   width: 248px;
 }
+/* An invisible bridge across the 6px gap to the glyph, on whichever side the
+ * card opened, so the pointer can travel into the card (to select a failure
+ * reason) without dropping the hover. Behind the card's own content. */
+.ag-runtime-pop::before {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+  z-index: -1;
+}
 .ag-runtime-pop .ws-pop-div {
   margin: 9px 0;
 }

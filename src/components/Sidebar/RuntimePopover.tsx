@@ -7,8 +7,8 @@ import { providerLabel } from "@/data/providers";
 
 /** Floats off the agent row's sandbox glyph (`anchorRef`) on hover: where the
  *  workspace runs, then which agent runs in it. The two read as one fact about
- *  the workspace, so the agent's line borrows the sandbox's layout. Pure
- *  display, no actions. */
+ *  the workspace, so the agent's line borrows the sandbox's layout. Display
+ *  only, but the pointer can move into it to select text. */
 export function RuntimePopover({
   agent,
   anchorRef,
