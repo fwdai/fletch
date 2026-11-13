@@ -9,7 +9,7 @@ is the pipeline.
 | `VERSION` | The image version; `bump.sh` moves it, the release is `box-image-v<VERSION>` |
 | `packages/base.txt`, `devtools.txt`, `browser.txt`, `containers.txt` | The package split: the base and one file per layer |
 | `dpkg-excludes.cfg` | dpkg path rules for every install: docs, man, locales, Mesa/LLVM |
-| `rootfs/` | Files copied over the base: `opt/fletch/init`, `etc/ssh/sshd_config.fletch`, `etc/sudoers.d/agent`, `etc/apt/apt.conf.d/90fletch-proxy`, `etc/docker/daemon.json` |
+| `rootfs/` | Files copied over the base: `opt/fletch/init`, `opt/fletch/forget-0.5.0-docker-proxies` (init runs it on the agent's docker client config: image 0.5.0 copied proxy settings there), `etc/ssh/sshd_config.fletch`, `etc/sudoers.d/agent`, `etc/apt/apt.conf.d/90fletch-proxy`, `etc/docker/daemon.json` |
 | `build.sh` | Root, Debian arm64 or amd64 (the images are the build machine's architecture), privileged: mmdebstrap the base, apt the layers into copies of it (the containers layer from Docker's apt repository, its key pinned), rsync the deltas, `mkfs.erofs` each, `manifest.json`, `sizes.md` |
 | `test.sh` | Mounts the output as init would and runs the checks (chroot as `agent`); `report.md` |
 | `build-docker.sh` | The one way to build, on a Mac (Docker Desktop) or in CI: fletch-guest, `build.sh` in a container, `test.sh` with `--test`, the delta manifests, an install with the app's installer |

@@ -154,7 +154,7 @@ done
 
 echo "== adding Fletch files"
 cp -R "$HERE/rootfs/." "$ROOT/"
-chmod 755 "$ROOT/opt/fletch/init"
+chmod 755 "$ROOT/opt/fletch/init" "$ROOT/opt/fletch/forget-0.5.0-docker-proxies"
 chmod 644 "$ROOT/etc/ssh/sshd_config.fletch"
 chmod 440 "$ROOT/etc/sudoers.d/agent"
 install -D -m 755 "$GUEST" "$ROOT/opt/fletch/bin/fletch-guest"

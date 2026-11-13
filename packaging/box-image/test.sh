@@ -102,6 +102,30 @@ ENVI=(/usr/bin/env -i HOME=/data/home USER=agent LOGNAME=agent PATH=/usr/local/b
 run() { chroot --userspec=1000:1000 --groups=1000 "$M" "${ENVI[@]}" "$@"; }
 runroot() { chroot "$M" /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 "$@"; }
 agent_sh() { run bash -c "$1"; }
+# forgets BEFORE AFTER: forget-0.5.0-docker-proxies, run as init runs it, turns
+# the agent's docker config BEFORE into AFTER and keeps its mode.
+forgets() {
+  local config=$M/data/home/.docker/config.json
+  mkdir -p "${config%/*}"
+  printf '%s' "$1" > "$config"
+  chmod 600 "$config"
+  chown -R 1000:1000 "${config%/*}"
+  run /opt/fletch/forget-0.5.0-docker-proxies /data/home/.docker/config.json || return 1
+  [ "$(jq -c . "$config")" = "$2" ] && [ "$(stat -c %a "$config")" = 600 ] && [ ! -e "$config.new" ] ||
+    { echo "$1 became $(jq -c . "$config"), mode $(stat -c %a "$config")"; return 1; }
+}
+forgets_only_what_0_5_0_wrote() {
+  local written='"httpProxy":"http://172.17.0.1:8899","httpsProxy":"http://172.17.0.1:8899","noProxy":"localhost,127.0.0.0/8,::1,172.16.0.0/12,192.168.0.0/16"'
+  local other_daemon='"tcp://other:2375":{"httpProxy":"http://corp:3128"}'
+  local own='{"proxies":{"default":{"httpProxy":"http://corp:3128"}}}'
+  forgets "{\"auths\":{\"r\":{}},\"proxies\":{\"default\":{$written}}}" '{"auths":{"r":{}}}' &&
+    forgets "{\"proxies\":{\"default\":{$written},$other_daemon}}" "{\"proxies\":{$other_daemon}}" &&
+    forgets "{\"proxies\":{\"default\":{$written,\"ftpProxy\":\"http://corp:3128\"}}}" '{"proxies":{"default":{"ftpProxy":"http://corp:3128"}}}' &&
+    forgets '{"proxies":{"default":{"httpProxy":"http://172.17.0.1:8899","httpsProxy":"http://corp:3128","noProxy":"internal"}}}' '{"proxies":{"default":{"httpsProxy":"http://corp:3128","noProxy":"internal"}}}' &&
+    forgets "$own" "$own" &&
+    run /opt/fletch/forget-0.5.0-docker-proxies /data/home/.docker/absent.json &&
+    echo "its own values go, alone or beside an added daemon, an added key or changed keys; the agent's own proxy and a missing file are left"
+}
 PAGE='<body style="font:32px sans-serif">Hello 你好 Привет 😀 <canvas id=c width=80 height=40></canvas><script>c.getContext("2d").fillStyle="red";c.getContext("2d").fillRect(0,0,80,40)</script></body>'
 
 # ------------------------------------------------------------ base + devtools (the default)
@@ -134,6 +158,8 @@ check T-mkfs "mkfs.ext4 and e2fsck for the data disk" -- \
 # sudo is setuid: what makes it root is the overlay honouring that bit.
 check T-sudo "agent runs sudo -n without a password, and as root writes the system through its overlay" -- \
   agent_sh 'set -e; test "$(sudo -n id -u 2>/dev/null)" = 0; sudo -n sh -c "echo x > /usr/local/share/t && rm /usr/local/share/t"; echo "sudo -n is root; /usr is writable"'
+check T-docker-proxies "forget-0.5.0-docker-proxies takes back the docker client proxies image 0.5.0 wrote, and only those" -- \
+  forgets_only_what_0_5_0_wrote
 check T-apt "apt reaches its https sources through the egress proxy" -- \
   runroot sh -c 'set -e; apt-config dump | grep -qF "Acquire::https::Proxy \"http://127.0.0.1:8899\";"; apt-config dump | grep -qF "Acquire::http::Proxy \"http://127.0.0.1:8899\";"
 schemes=$(apt-get update --print-uris | cut -c2-9 | sort -u); test "$schemes" = https://; echo "proxy 127.0.0.1:8899; every source $schemes"'
