@@ -4,9 +4,12 @@ import type { AgentRecord } from "@/api";
 import { AgentIdentityChip, useAgentIdentityLabel } from "@/components/AgentIdentityChip";
 import { IsolationDetail } from "@/components/TitleBar/WorkspaceStatus/IsolationDetail";
 import { AnchoredPopover } from "@/components/ui";
+import { providerLabel } from "@/data/providers";
 import { formatCost, formatTokens } from "@/util/format";
 
 export interface AgentStats {
+  launched: string;
+  runtime: string;
   /** Context-window fill in tokens, or null when it isn't known. */
   contextTokens: number | null;
   /** Context window size in tokens (provider-reported or default). */
@@ -23,10 +26,10 @@ export interface AgentStats {
 }
 
 /** The agent row's one details card, floated off its sandbox glyph
- *  (`anchorRef`) on hover, and kept to a glance: the sandbox and its state,
- *  the agent in it, then what that has used. A usage line is there only once
- *  there is a number to put in it. Display only, but the pointer can move
- *  into it to select text. */
+ *  (`anchorRef`) on hover. Dense, in two parts, each fact under what it is
+ *  about: the sandbox, its state and since when the workspace has run, then
+ *  the agent in it and what that has used. Display only, but the pointer can
+ *  move into it to select text. */
 export function AgentDetailsPopover({
   agent,
   stats,
@@ -36,20 +39,26 @@ export function AgentDetailsPopover({
   stats: AgentStats;
   anchorRef: RefObject<HTMLElement | null>;
 }) {
-  // The custom agent's name, the model and the effort; the provider's name
-  // until a model is known.
+  const provider = providerLabel(agent.provider);
+  // The custom agent's name, the model and the effort; just the provider's
+  // name again until a model is known.
   const identity = useAgentIdentityLabel(agent);
-  const context =
-    stats.contextTokens != null && stats.contextPct != null
-      ? `${formatTokens(stats.contextTokens)} / ${formatTokens(stats.contextWindow)} · ${stats.contextPct}%`
+  // The fill and its share of the window on one line; the bar draws the share.
+  const contextLabel =
+    stats.contextTokens != null
+      ? [
+          `${formatTokens(stats.contextTokens)} / ${formatTokens(stats.contextWindow)}`,
+          stats.contextPct != null && `${stats.contextPct}%`,
+        ]
+          .filter(Boolean)
+          .join(" · ")
       : stats.contextState === "reset"
         ? "compacted"
-        : null;
-  const tokens =
+        : "—";
+  const ioLabel =
     stats.totalInput != null && stats.totalOutput != null
       ? `${formatTokens(stats.totalInput)} in · ${formatTokens(stats.totalOutput)} out`
-      : null;
-  const cost = stats.costUsd != null && stats.costUsd > 0 ? formatCost(stats.costUsd) : null;
+      : "—";
 
   return (
     <AnchoredPopover
@@ -59,20 +68,30 @@ export function AgentDetailsPopover({
       // here would otherwise select the row.
       onClick={(e) => e.stopPropagation()}
     >
-      <IsolationDetail agent={agent} compact />
+      <IsolationDetail agent={agent} compact>
+        <div className="st-rows">
+          <Row label="Launched" value={stats.launched} />
+          <Row label="Runtime" value={stats.runtime} />
+        </div>
+      </IsolationDetail>
+      <div className="ws-pop-div" />
       <div className="ws-pop-iso">
         <AgentIdentityChip agent={agent} size={12} tip={false} />
         <div className="ws-pop-iso-text">
-          <div className="ws-pop-iso-title">{identity}</div>
+          <div className="ws-pop-iso-title">{provider}</div>
+          {identity !== provider && <div className="ws-pop-iso-hint">{identity}</div>}
+          <div className="st-rows">
+            <Row label="Context" value={contextLabel} />
+            <div className="st-bar">
+              <div className="st-bar-fill" style={{ width: `${stats.contextPct ?? 0}%` }} />
+            </div>
+            <Row label="Tokens" value={ioLabel} />
+            {stats.costUsd != null && stats.costUsd > 0 && (
+              <Row label="Cost" value={formatCost(stats.costUsd)} />
+            )}
+          </div>
         </div>
       </div>
-      {(context || tokens || cost) && (
-        <div className="st-rows">
-          {context && <Row label="Context" value={context} />}
-          {tokens && <Row label="Tokens" value={tokens} />}
-          {cost && <Row label="Cost" value={cost} />}
-        </div>
-      )}
     </AnchoredPopover>
   );
 }

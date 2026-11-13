@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { AgentRecord } from "@/api";
 import { useAppStore } from "@/store";
 import { IsolationIcon } from "./IsolationIcon";
@@ -6,14 +7,16 @@ import { boxPhaseLabel, shownIsolation } from "./isolation";
 /** Where a workspace runs, spelled out: the isolation in two lines at most
  *  and, for a box, its live phase and why it failed. While the workspace
  *  moves, everything here is about where it's going. `compact` leaves the
- *  explanation out and draws the glyph at text size, for a hover card that
- *  only names the place and its state. */
+ *  explanation out and draws the glyph at text size, for a dense hover card;
+ *  `children` follow in the same column, for more facts about the place. */
 export function IsolationDetail({
   agent,
   compact = false,
+  children,
 }: {
   agent: AgentRecord;
   compact?: boolean;
+  children?: ReactNode;
 }) {
   const boxState = useAppStore((s) => s.boxStates[agent.id]);
   const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
@@ -39,6 +42,7 @@ export function IsolationDetail({
         </div>
         {failure && <div className="ws-pop-iso-fail">{failure}</div>}
         {!compact && <div className="ws-pop-iso-hint">{isolation.hint}</div>}
+        {children}
       </div>
     </div>
   );
