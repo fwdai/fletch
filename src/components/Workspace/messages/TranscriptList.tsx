@@ -22,12 +22,9 @@ interface Props {
   /** Lifted bottom-pin flag, so a parent that sends a message can re-pin the
    *  log to the bottom the way an in-list scroll would. */
   pinRef?: MutableRefObject<boolean>;
-  /** Suppress the turn navigator — in the native rail, which is too narrow
-   *  for it. */
+  /** Suppress the turn navigator — while find-in-conversation is open (it owns
+   *  that corner), or in the native rail, which is too narrow for it. */
   hideNav?: boolean;
-  /** Where the turn navigator renders instead of floating over the log: the
-   *  conversation header's slot, null until that header has mounted. */
-  navSlot?: HTMLElement | null;
   /** The find-in-conversation query while the find bar is open. Folded rows
    *  holding a match open for as long as it stands. */
   revealQuery?: string;
@@ -41,7 +38,6 @@ export function TranscriptList({
   scrollRef,
   pinRef,
   hideNav,
-  navSlot,
   revealQuery = "",
 }: Props) {
   const { turns, transcriptLoading, log } = transcript;
@@ -94,7 +90,7 @@ export function TranscriptList({
           </RevealQuery.Provider>
         </div>
       </div>
-      {!hideNav && <ChatNav scrollRef={ref} turns={turns} slot={navSlot} />}
+      {!hideNav && <ChatNav scrollRef={ref} turns={turns} />}
     </div>
   );
 }

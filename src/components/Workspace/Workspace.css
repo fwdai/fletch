@@ -57,15 +57,6 @@
   flex-shrink: 0;
   max-width: 50%;
 }
-/* Where the chat's turn navigator docks (ChatNav renders into it). */
-.center-h-slot {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-.center-h-slot:empty {
-  display: none;
-}
 
 /* The failed turn's "Switch account" menu anchor. */
 .acct-pick {

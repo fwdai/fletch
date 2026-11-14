@@ -187,6 +187,8 @@
   flex: 1;
   min-height: 0;
   display: flex;
+  /* the turn navigator's rule below asks how wide the log is */
+  container: chat-log / inline-size;
 }
 
 /* Find-in-conversation bar (⌘F) — floats over the top-right of the log so it
@@ -291,9 +293,14 @@
   }
 }
 
-/* Turn navigator — a compact pill. Floating over the top-right of the
-   transcript by default; `.docked` (further down) lays it out as one row in
-   the conversation header. */
+/* Turn navigator — a compact pill floating at the top-right of the transcript.
+   A wide pane has room for it beside the 860px text column. In a narrower one
+   the column gives up its right edge to it, so the pill never sits on text. */
+@container chat-log (max-width: 1000px) {
+  .chat-scroll-wrap:has(> .chat-nav) .chat-inner {
+    padding-right: 80px;
+  }
+}
 .chat-nav {
   position: absolute;
   right: 18px;
@@ -314,12 +321,6 @@
   border-radius: 10px;
   box-shadow: var(--shadow-2);
   overflow: hidden;
-  opacity: 0.55;
-  transition: opacity 0.18s var(--ease);
-}
-.chat-nav:hover .chat-nav-bar,
-.chat-nav:focus-within .chat-nav-bar {
-  opacity: 1;
 }
 .chat-nav-btn,
 .chat-nav-count {
@@ -453,46 +454,6 @@
 }
 .chat-nav-row-t {
   line-height: var(--lh-snug);
-}
-
-/* Docked in the conversation header: one row at the context badge's height,
-   always at full strength, with the outline dropping below it. */
-.chat-nav.docked {
-  position: relative;
-  right: auto;
-  top: auto;
-  z-index: 30;
-}
-.chat-nav.docked .chat-nav-bar {
-  flex-direction: row;
-  align-items: stretch;
-  height: 24px;
-  border-radius: var(--r-sm);
-  background: color-mix(in oklch, var(--bg-2), transparent 30%);
-  box-shadow: none;
-  opacity: 1;
-}
-.chat-nav.docked .chat-nav-btn {
-  width: 24px;
-  min-width: 24px;
-  height: auto;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-}
-.chat-nav.docked .chat-nav-count {
-  min-height: 0;
-  padding: 0 8px;
-  border-top: 0;
-  border-bottom: 0;
-  border-left: 1px solid var(--bd-soft);
-  border-right: 1px solid var(--bd-soft);
-}
-.chat-nav.docked .chat-nav-list {
-  position: absolute;
-  /* clears the header's bottom rule, which sits 10px under the pill */
-  top: calc(100% + 14px);
-  right: 0;
 }
 
 /* Groups a message bubble/response with its hover-revealed action row (copy).

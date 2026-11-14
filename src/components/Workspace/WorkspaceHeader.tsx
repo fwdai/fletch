@@ -10,20 +10,17 @@ import { ViewToggle } from "./ViewToggle";
 
 /** Header strip above the workspace body: the conversation's own line. Houses
  *  the left-sidebar toggle, the conversation's title, and what belongs to the
- *  conversation as a whole — the turn navigator (`navSlot`), the Custom/Native
- *  view switcher, the context badge — then the right-panel toggle. Where the
+ *  conversation as a whole — the Custom/Native view switcher, the context
+ *  badge — then the right-panel toggle. Where the
  *  conversation runs (project, workspace, git) is the title bar's to say. A
  *  sub-agent thread's header (SubagentThread/ThreadHeader) keeps this exact
  *  skeleton — dot, then one line — so stepping into and out of a thread moves
  *  nothing but the words. */
 interface Props {
   agent: AgentRecord;
-  /** Receives the element the chat's turn navigator renders into (see
-   *  `ChatNav`); omitted where no transcript drives one. */
-  navSlot?: (el: HTMLDivElement | null) => void;
 }
 
-export function WorkspaceHeader({ agent, navSlot }: Props) {
+export function WorkspaceHeader({ agent }: Props) {
   const nativeGate = useGate("nativeView");
   const switchView = useAppStore((s) => s.switchView);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id]);
@@ -44,8 +41,6 @@ export function WorkspaceHeader({ agent, navSlot }: Props) {
           <span title={agentTitle(agent)}>{agentTitle(agent)}</span>
         </div>
       </div>
-
-      {navSlot && <div className="center-h-slot" ref={navSlot} />}
 
       {nativeView && (
         <ViewToggle
