@@ -1,8 +1,7 @@
 import type { KeyboardEvent, MouseEvent } from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { contextPercent, resolveContextWindow } from "@/adapters/usage";
 import type { AgentRecord, AgentStatus, ShortStats } from "@/api";
-import { AgentIdentityChip, useAgentIdentityLabel } from "@/components/AgentIdentityChip";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { IsolationIcon } from "@/components/TitleBar/WorkspaceStatus/IsolationIcon";
@@ -12,10 +11,10 @@ import { providerChip, providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { formatAge } from "@/util/format";
+import { formatAge, formatElapsed } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import { useAgentPrs } from "@/util/prState";
-import { type AgentStats, AgentStatsPopover } from "./AgentStatsPopover";
+import { AgentDetailsPopover, type AgentStats } from "./AgentDetailsPopover";
 import { type AutopilotSignal, autopilotSignal, autopilotTip } from "./autopilotSignal";
 import { PrPill } from "./PrPill";
 import { SubagentRow } from "./SubagentRow";
@@ -92,14 +91,14 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // where it is going.
   const boxPhase = useAppStore((s) => s.boxStates[agent.id]?.phase);
   const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
-  const identity = useAgentIdentityLabel(agent);
   // Which step a fresh spawn is on, from `agent:spawn-progress` — the loader's
   // tooltip. Absent for anything but a spawn this client watched.
   const spawnStage = useAppStore((s) => s.spawnStage[agent.id]);
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
   const now = useMinuteClock();
-  const [statsOpen, setStatsOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const sandboxRef = useRef<HTMLSpanElement>(null);
   // Backgrounded sub-agents outlive the main turn: the agent reads `idle` while
   // they keep working, and a failure among them is otherwise invisible from
   // here. Same read pattern as autopilot — the per-agent map is selected whole
@@ -143,7 +142,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const contextWindow = resolveContextWindow(usage, catalog);
   const pct = contextPercent(usage, contextWindow);
   const stats: AgentStats = {
-    agent: identity,
     launched: age || "just now",
     runtime: liveRuntime(agent.created_at, now, agent.status),
     contextTokens: pct == null ? null : usage?.context.tokens,
@@ -278,17 +276,28 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             </span>
           </span>
         </div>
-        {/* Where it lives (sandbox + codename, as in the title bar), what came
-            of it (PR / diff and the conditional hints), then the byline: who
-            is doing it and since when — the hover target for the details. */}
+        {/* Where it lives (sandbox + codename, as in the title bar; the glyph
+            is the row's one hover target for the details: the sandbox, the
+            agent in it and what it has used), what came of it (PR / diff and
+            the conditional hints), then since when. The glyph is 11.5px: 12
+            outweighs the codename's small text, 11 gets lost beside it. */}
         <div className="agent-sub flex-center">
-          <IsolationIcon
-            isolation={shownIsolation(agent.sandbox_engine, movingTo)}
-            boxPhase={boxPhase}
-            moving={movingTo !== null}
-            size={12}
-            tip
-          />
+          <span
+            ref={sandboxRef}
+            className="a-sandbox"
+            onMouseEnter={() => setDetailsOpen(true)}
+            onMouseLeave={() => setDetailsOpen(false)}
+          >
+            <IsolationIcon
+              isolation={shownIsolation(agent.sandbox_engine, movingTo)}
+              boxPhase={boxPhase}
+              moving={movingTo !== null}
+              size={11.5}
+            />
+            {detailsOpen && (
+              <AgentDetailsPopover agent={agent} stats={stats} anchorRef={sandboxRef} />
+            )}
+          </span>
           <span className="a-task a-codename">{agent.name}</span>
           {agentPrs.length > 0 ? (
             <PrPill prs={agentPrs} />
@@ -316,15 +325,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
               {subFailed}
             </Badge>
           )}
-          <span
-            className="a-byline"
-            onMouseEnter={() => setStatsOpen(true)}
-            onMouseLeave={() => setStatsOpen(false)}
-          >
-            <AgentIdentityChip agent={agent} size={12} tip={false} />
-            <span className="a-time">{age}</span>
-            {statsOpen && <AgentStatsPopover stats={stats} />}
-          </span>
+          <span className="a-time">{age}</span>
         </div>
       </div>
       {subagents.length > 0 && (
@@ -443,8 +444,5 @@ function liveRuntime(iso: string, now: number, status: AgentStatus): string {
   if (status === "stopped" || status === "error") return "—";
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return "—";
-  const sec = Math.max(0, Math.floor((now - t) / 1000));
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m}m ${s}s`;
+  return formatElapsed(now - t);
 }

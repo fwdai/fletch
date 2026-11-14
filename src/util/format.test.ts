@@ -3,6 +3,7 @@ import {
   dayKeysBetween,
   formatClockTime,
   formatCost,
+  formatElapsed,
   formatPercent,
   formatTokens,
   formatTokensK,
@@ -119,5 +120,30 @@ describe("formatCost", () => {
     expect(formatCost(0.004)).toBe("<$0.01");
     expect(formatCost(0.034)).toBe("$0.034");
     expect(formatCost(5)).toBe("$5.00");
+  });
+});
+
+describe("formatElapsed", () => {
+  const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+
+  it("reads in whole numbers of the two largest units", () => {
+    expect(formatElapsed(12 * MIN)).toBe("12m");
+    expect(formatElapsed(4 * HOUR + 12 * MIN)).toBe("4h 12m");
+    expect(formatElapsed(3 * DAY + 4 * HOUR + 44 * MIN)).toBe("3d 4h");
+    // 4604m 11s, the span that used to print as just that
+    expect(formatElapsed(4604 * MIN + 11_000)).toBe("3d 4h");
+  });
+
+  it("leaves a zero second unit out", () => {
+    expect(formatElapsed(2 * HOUR)).toBe("2h");
+    expect(formatElapsed(3 * DAY + 20 * MIN)).toBe("3d");
+  });
+
+  it("does not print zero minutes", () => {
+    expect(formatElapsed(0)).toBe("<1m");
+    expect(formatElapsed(59_000)).toBe("<1m");
+    expect(formatElapsed(-5)).toBe("<1m");
   });
 });

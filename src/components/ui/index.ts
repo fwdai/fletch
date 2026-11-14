@@ -2,6 +2,7 @@
 // classes (.ag-badge, .btn-i, .c-chip, …) so styling stays consistent.
 // See ./README.md.
 
+export { AnchoredPopover } from "./AnchoredPopover";
 export type { BadgeVariant } from "./Badge";
 export { Badge } from "./Badge";
 export type { ButtonVariant } from "./Button";

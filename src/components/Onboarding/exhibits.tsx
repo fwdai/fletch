@@ -3,12 +3,9 @@
 // visual language as the app so onboarding previews the actual product.
 
 import { Icon } from "@/components/Icon";
-import { ProviderIcon } from "@/components/ProviderIcon";
 import { IsolationIcon } from "@/components/TitleBar/WorkspaceStatus/IsolationIcon";
 import { isolationOf } from "@/components/TitleBar/WorkspaceStatus/isolation";
 import { Badge } from "@/components/ui/Badge";
-import type { ProviderId } from "@/data/providers";
-import { providerChip } from "@/data/providers";
 
 // ── tiny faux window chrome for an exhibit ──────────────────────────
 // Exported: the agents panel frames its live install grid with the same chrome.
@@ -30,7 +27,6 @@ export function ExBar({ title }: { title: string }) {
 // app.css) against mock data, so the preview matches the product exactly.
 interface ParallelAgent {
   name: string;
-  provider: ProviderId;
   task: string;
   status: "running" | "idle" | "error";
   add: number;
@@ -47,7 +43,6 @@ const DEFAULT_ISOLATION = isolationOf(null);
 const PARALLEL_AGENTS: ParallelAgent[] = [
   {
     name: "dolomites",
-    provider: "claude",
     task: "Stripe portal sync",
     status: "running",
     add: 187,
@@ -57,7 +52,6 @@ const PARALLEL_AGENTS: ParallelAgent[] = [
   },
   {
     name: "andes",
-    provider: "codex",
     task: "Zero-copy decoder",
     status: "running",
     add: 624,
@@ -66,7 +60,6 @@ const PARALLEL_AGENTS: ParallelAgent[] = [
   },
   {
     name: "caspian",
-    provider: "cursor",
     task: "Diff repaint jitter",
     status: "idle",
     add: 14,
@@ -76,7 +69,6 @@ const PARALLEL_AGENTS: ParallelAgent[] = [
   },
   {
     name: "sierra",
-    provider: "opencode",
     task: "v3 migration guide",
     status: "running",
     add: 240,
@@ -114,17 +106,14 @@ function ExhibitAgentRow({ a, i }: { a: ParallelAgent; i: number }) {
         </span>
       </div>
       <div className="agent-sub flex-center">
-        <IsolationIcon isolation={DEFAULT_ISOLATION} size={12} />
+        <span className="a-sandbox">
+          <IsolationIcon isolation={DEFAULT_ISOLATION} size={11.5} />
+        </span>
         <span className="a-task a-codename">{a.name}</span>
         <span className="a-diff">
           <span className="add">+{a.add}</span> <span className="del">−{a.rem}</span>
         </span>
-        <span className="a-byline">
-          <span className="ag-prov-chip">
-            <ProviderIcon slug={a.provider} {...providerChip(a.provider)} size={12} />
-          </span>
-          <span className="a-time">{a.age}</span>
-        </span>
+        <span className="a-time">{a.age}</span>
       </div>
     </div>
   );
