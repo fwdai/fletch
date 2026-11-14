@@ -1,4 +1,4 @@
-import type { AgentRecord, AgentStatus } from "@/api";
+import type { AgentRecord } from "@/api";
 import { ContextBadge } from "@/components/ContextBadge";
 import { Icon } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
@@ -11,10 +11,11 @@ import { ViewToggle } from "./ViewToggle";
 /** Header strip above the workspace body: the conversation's own line. Houses
  *  the left-sidebar toggle, the conversation's title, and what belongs to the
  *  conversation as a whole — the Custom/Native view switcher, the context
- *  badge — then the right-panel toggle. Where the
- *  conversation runs (project, workspace, git) is the title bar's to say. A
- *  sub-agent thread's header (SubagentThread/ThreadHeader) keeps this exact
- *  skeleton — dot, then one line — so stepping into and out of a thread moves
+ *  badge — then the right-panel toggle. Where the conversation runs (project,
+ *  workspace, git) is the title bar's to say, and whether the agent is working
+ *  is said by the sidebar row, the title bar and the composer. A sub-agent
+ *  thread's header (SubagentThread/ThreadHeader) keeps this exact skeleton —
+ *  one line, led by the title — so stepping into and out of a thread moves
  *  nothing but the words. */
 interface Props {
   agent: AgentRecord;
@@ -37,7 +38,6 @@ export function WorkspaceHeader({ agent }: Props) {
 
       <div className="task">
         <div className="t-name">
-          <StatusDot tone={dotTone(agent.status)} />
           <span title={agentTitle(agent)}>{agentTitle(agent)}</span>
         </div>
       </div>
@@ -77,41 +77,5 @@ export function WorkspaceHeader({ agent }: Props) {
 
       <PanelToggle side="right" />
     </div>
-  );
-}
-
-/** The header dot's vocabulary: live green, starting amber, failed red, else
- *  quiet grey. Shared with the thread header, which maps a thread's state
- *  onto the same four. */
-export type DotTone = "running" | "spawning" | "error" | "idle";
-
-function dotTone(status: AgentStatus): DotTone {
-  return status === "running" || status === "spawning" || status === "error" ? status : "idle";
-}
-
-export function StatusDot({ tone }: { tone: DotTone }) {
-  const bg =
-    tone === "running"
-      ? "var(--success)"
-      : tone === "spawning"
-        ? "var(--warn)"
-        : tone === "error"
-          ? "var(--danger)"
-          : "var(--fg-3)";
-  return (
-    <span
-      aria-hidden="true"
-      style={{
-        width: 7,
-        height: 7,
-        borderRadius: "50%",
-        background: bg,
-        boxShadow:
-          tone === "running"
-            ? "0 0 0 2px color-mix(in oklch, var(--success), transparent 78%)"
-            : "none",
-        flexShrink: 0,
-      }}
-    />
   );
 }
