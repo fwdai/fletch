@@ -251,6 +251,17 @@ export function Sidebar() {
     [filtered, searching, activeFirst, projectTurns, now],
   );
 
+  // An empty project has no workspace to scan for, so in the computed order
+  // the empty ones settle at the tail, where they stack as one compact block
+  // (see `.proj.empty`). The manual order, and a search's, stay as they are.
+  const ordered = useMemo(() => {
+    const list = [...active, ...rest];
+    if (!activeFirst || searching) return list;
+    const isEmpty = (g: ProjectGroupData) =>
+      g.agents.length + g.drafts.length + g.runs.length === 0;
+    return [...list.filter((g) => !isEmpty(g)), ...list.filter(isEmpty)];
+  }, [active, rest, activeFirst, searching]);
+
   // Dragging is the manual mode. With active-first on the top of the list is
   // computed, so nothing drags, and the quiet tail keeps the order last saved.
   // Off while searching too: a reorder only means something over the full,
@@ -401,7 +412,7 @@ export function Sidebar() {
               <div>{query ? "Try a different search." : "Add a repo to get started."}</div>
             </div>
           ) : (
-            [...active, ...rest].map((g) => renderGroup(g))
+            ordered.map((g) => renderGroup(g))
           )}
         </div>
       </div>

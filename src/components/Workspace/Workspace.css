@@ -2,7 +2,7 @@
 .center-h {
   gap: 10px;
   padding: 0 16px;
-  height: 48px;
+  height: 44px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--bd-soft);
   background: var(--bg-1);
@@ -42,14 +42,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.center-h .t-diff {
-  color: var(--fg-3);
+/* One line: the title, then its meta trailing it (a thread's type and
+   status). The title gives way first. */
+.center-h .task.line {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
 }
-.center-h .t-diff.has-changes .t-diff-add {
-  color: var(--success);
+.center-h .task.line .t-name {
+  flex: 0 1 auto;
 }
-.center-h .t-diff.has-changes .t-diff-del {
-  color: var(--danger);
+.center-h .task.line .t-meta {
+  flex-shrink: 0;
+  max-width: 50%;
 }
 
 /* The failed turn's "Switch account" menu anchor. */

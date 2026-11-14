@@ -82,14 +82,20 @@
   min-height: 0;
 }
 
+/* The totals and the row's controls share a line while the pane has room for
+   them, and wrap — controls under the totals, then one per line — as it
+   narrows, down to the pane's 220px floor. */
 .code-h {
-  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--bd-soft);
   background: var(--bg-1);
 }
 .code-h .code-h-l {
-  flex: 1;
+  /* its own width is what the wrap measures, so it never slides under them */
+  flex: 1 0 auto;
   min-width: 0;
   display: inline-flex;
   align-items: center;

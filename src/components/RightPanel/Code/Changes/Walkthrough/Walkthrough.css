@@ -1,7 +1,8 @@
 /* ─── walkthrough: one quiet strip at the top of the Changes view ───
-   The start card over the file list, the step being read over the diff. It
-   wears the Code panel header's colours (.code-h in Code.css): bg-1 on a soft
-   rule, muted labels, pill controls — chrome, not content. */
+   The step being read, over the diff or the list. It wears the Code panel
+   header's colours (.code-h in Code.css): bg-1 on a soft rule, muted labels,
+   pill controls — chrome, not content. The way in is not a strip: it is a
+   pill (.wt-start) on the Changes header's own row. */
 .wt {
   flex-shrink: 0;
   padding: 7px 12px;
@@ -28,11 +29,6 @@
 .wt-icon {
   flex-shrink: 0;
   color: var(--fg-3);
-}
-.wt-label {
-  color: var(--fg-1);
-  font-weight: 500;
-  white-space: nowrap;
 }
 .wt-hint {
   flex: 1;
@@ -73,6 +69,10 @@
 .wt-btn:disabled {
   opacity: 0.4;
   cursor: default;
+}
+.wt-start {
+  gap: 5px;
+  color: var(--fg-1);
 }
 
 .wt-title {

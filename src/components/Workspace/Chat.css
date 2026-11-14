@@ -187,6 +187,8 @@
   flex: 1;
   min-height: 0;
   display: flex;
+  /* the turn navigator's rule below asks how wide the log is */
+  container: chat-log / inline-size;
 }
 
 /* Find-in-conversation bar (⌘F) — floats over the top-right of the log so it
@@ -291,7 +293,14 @@
   }
 }
 
-/* Turn navigator — compact pill docked bottom-right of the transcript. */
+/* Turn navigator — a compact pill floating at the top-right of the transcript.
+   A wide pane has room for it beside the 860px text column. In a narrower one
+   the column gives up its right edge to it, so the pill never sits on text. */
+@container chat-log (max-width: 1000px) {
+  .chat-scroll-wrap:has(> .chat-nav) .chat-inner {
+    padding-right: 80px;
+  }
+}
 .chat-nav {
   position: absolute;
   right: 18px;
@@ -312,12 +321,6 @@
   border-radius: 10px;
   box-shadow: var(--shadow-2);
   overflow: hidden;
-  opacity: 0.55;
-  transition: opacity 0.18s var(--ease);
-}
-.chat-nav:hover .chat-nav-bar,
-.chat-nav:focus-within .chat-nav-bar {
-  opacity: 1;
 }
 .chat-nav-btn,
 .chat-nav-count {

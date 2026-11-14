@@ -8,7 +8,9 @@ export interface ChatTurn {
   text: string;
 }
 
-/** Sleek turn navigator docked to the top-right of the transcript.
+/** Sleek turn navigator floating at the top-right of the transcript. Where the
+ *  pane is too narrow for it to sit beside the text column, the column makes
+ *  room for it (see `.chat-nav` in Chat.css).
  *
  *  - `▲ / ▼` (and Alt+↑ / Alt+↓) step one user turn at a time for sequential
  *    reading.
