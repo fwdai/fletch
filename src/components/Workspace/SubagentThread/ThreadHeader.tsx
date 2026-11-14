@@ -1,9 +1,9 @@
-// The thread's header strip: the workspace header's skeleton (dot, title
-// line, meta line) with the title line grown into a breadcrumb. The agent's
-// title — in exactly the place it sits on the conversation's header, so it
-// does not move when a thread opens — is the way back (hover says so); every
-// deeper crumb is a jump to that thread. The meta line carries
-// the thread's type and status where the conversation shows branch and diff.
+// The thread's header strip: the workspace header's skeleton (dot, then one
+// line) with the title grown into a breadcrumb. The agent's title — in exactly
+// the place it sits on the conversation's header, so it does not move when a
+// thread opens — is the way back (hover says so); every deeper crumb is a jump
+// to that thread. The thread's type and status trail the crumbs on the same
+// line.
 // When the launching log holds more than one sub-agent, a stepper on the
 // right moves through its siblings.
 
@@ -62,7 +62,7 @@ export function ThreadHeader({
     <div className="center-h flex-center thread-h">
       <PanelToggle side="left" />
 
-      <div className="task">
+      <div className="task line">
         <div className="t-name">
           <StatusDot tone={DOT_TONE[state]} />
           <nav className="thread-crumbs" aria-label="Thread path">

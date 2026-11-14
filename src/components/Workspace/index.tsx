@@ -32,6 +32,9 @@ export function Workspace() {
   const activeDraftId = useAppStore((s) => s.activeDraftId);
   const nativeView = useAppStore((s) => s.features.nativeView);
   const openThread = useAppStore((s) => s.openThread);
+  // The header's slot for the chat's turn navigator: the header owns the
+  // place, the transcript below it owns the control (see `ChatNav`).
+  const [navSlot, setNavSlot] = useState<HTMLDivElement | null>(null);
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
   // Only surface the draft while its repo is still pinned; a draft stranded on a
@@ -83,7 +86,7 @@ export function Workspace() {
 
   return (
     <div className="pane center fade-in" key={agent.id}>
-      <WorkspaceHeader agent={agent} />
+      <WorkspaceHeader agent={agent} navSlot={setNavSlot} />
       {agent.status === "error" && <CrashBanner agent={agent} />}
       <SyncHealthBanner agentId={agent.id} />
       {/* The flag gates the *presentation*, not the record: an agent left in
@@ -94,7 +97,7 @@ export function Workspace() {
       {agent.view === "native" && nativeView ? (
         <NativeBody agent={agent} />
       ) : (
-        <ChatView agent={agent} />
+        <ChatView agent={agent} navSlot={navSlot} />
       )}
     </div>
   );

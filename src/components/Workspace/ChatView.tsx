@@ -15,7 +15,14 @@ import { useLiveBusy } from "./useLiveBusy";
 /** Custom-view body: scrolling chat log + composer at the bottom.
  *  The composer here dispatches the user's message via the store; it
  *  doesn't care about provider routing yet. */
-export function ChatView({ agent }: { agent: AgentRecord }) {
+export function ChatView({
+  agent,
+  navSlot,
+}: {
+  agent: AgentRecord;
+  /** The conversation header's slot for the turn navigator. */
+  navSlot: HTMLElement | null;
+}) {
   const turnStartedAt = useAppStore((s) => s.turnStartedAt[agent.id]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -99,7 +106,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         pending={turnPending}
         scrollRef={scrollRef}
         pinRef={pinnedToBottom}
-        hideNav={searchOpen}
+        navSlot={navSlot}
         revealQuery={searchOpen ? searchQuery : ""}
       />
       <CodeUndoBar agentId={agent.id} />

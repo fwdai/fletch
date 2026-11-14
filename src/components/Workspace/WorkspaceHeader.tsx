@@ -1,4 +1,4 @@
-import type { AgentRecord, AgentStatus, DiffStats } from "@/api";
+import type { AgentRecord, AgentStatus } from "@/api";
 import { ContextBadge } from "@/components/ContextBadge";
 import { Icon } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
@@ -6,20 +6,24 @@ import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { agentTitle } from "@/util/agentTitle";
-import { formatAge } from "@/util/format";
-import { useMinuteClock } from "@/util/hooks";
 import { ViewToggle } from "./ViewToggle";
 
-/** Header strip above the workspace body. Houses the left-sidebar toggle, the
- *  agent's title over its codename + branch + diff + age, the Custom/Native
- *  view switcher, the context badge, and the right-panel toggle. A sub-agent
- *  thread's header (SubagentThread/ThreadHeader) keeps this exact skeleton — dot, title line, meta line — so stepping into
- *  and out of a thread moves nothing but the words. */
+/** Header strip above the workspace body: the conversation's own line. Houses
+ *  the left-sidebar toggle, the conversation's title, and what belongs to the
+ *  conversation as a whole — the turn navigator (`navSlot`), the Custom/Native
+ *  view switcher, the context badge — then the right-panel toggle. Where the
+ *  conversation runs (project, workspace, git) is the title bar's to say. A
+ *  sub-agent thread's header (SubagentThread/ThreadHeader) keeps this exact
+ *  skeleton — dot, then one line — so stepping into and out of a thread moves
+ *  nothing but the words. */
 interface Props {
   agent: AgentRecord;
+  /** Receives the element the chat's turn navigator renders into (see
+   *  `ChatNav`); omitted where no transcript drives one. */
+  navSlot?: (el: HTMLDivElement | null) => void;
 }
 
-export function WorkspaceHeader({ agent }: Props) {
+export function WorkspaceHeader({ agent, navSlot }: Props) {
   const nativeGate = useGate("nativeView");
   const switchView = useAppStore((s) => s.switchView);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id]);
@@ -29,17 +33,6 @@ export function WorkspaceHeader({ agent }: Props) {
   const nativeView = useAppStore((s) => s.features.nativeView);
   const railOpen = useAppStore((s) => s.transcriptRailOpen);
   const toggleRail = useAppStore((s) => s.toggleTranscriptRail);
-  const now = useMinuteClock();
-  // Use shortstats (5s app-wide poll) rather than full git state, since
-  // the header shows shortstats regardless of which right-rail tab is
-  // open — and `gitStates` only refreshes while the Git tab is mounted.
-  const shortstats = useAppStore((s) => s.gitShortstats[agent.id] ?? null);
-
-  // No branch until the first push (deferred branching) — drop the branch
-  // segment entirely rather than showing a placeholder, leaving just the
-  // diffstat and age (`+0 -0 · now`).
-  const branch = agent.repos[0]?.branch ?? null;
-  const age = formatAge(agent.created_at, now);
 
   return (
     <div className="center-h flex-center">
@@ -50,12 +43,9 @@ export function WorkspaceHeader({ agent }: Props) {
           <StatusDot tone={dotTone(agent.status)} />
           <span title={agentTitle(agent)}>{agentTitle(agent)}</span>
         </div>
-        <div className="t-meta">
-          {agent.name}
-          {branch && <> · {branch}</>} · <DiffLabel stats={shortstats} />
-          {age && <> · {age}</>}
-        </div>
       </div>
+
+      {navSlot && <div className="center-h-slot" ref={navSlot} />}
 
       {nativeView && (
         <ViewToggle
@@ -92,19 +82,6 @@ export function WorkspaceHeader({ agent }: Props) {
 
       <PanelToggle side="right" />
     </div>
-  );
-}
-
-function DiffLabel({ stats }: { stats: DiffStats | null }) {
-  const additions = stats ? String(stats.additions) : "--";
-  const deletions = stats ? String(stats.deletions) : "--";
-  const changed = Boolean(stats && (stats.additions > 0 || stats.deletions > 0));
-
-  return (
-    <span className={`t-diff ${changed ? "has-changes" : ""}`}>
-      <span className="t-diff-add">+{additions}</span>{" "}
-      <span className="t-diff-del">-{deletions}</span>
-    </span>
   );
 }
 

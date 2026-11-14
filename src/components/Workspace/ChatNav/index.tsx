@@ -1,4 +1,5 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useDismiss } from "@/util/hooks";
 
 /** One navigable turn: `id` matches the `data-chat-turn` attribute on the
@@ -8,7 +9,9 @@ export interface ChatTurn {
   text: string;
 }
 
-/** Sleek turn navigator docked to the top-right of the transcript.
+/** Sleek turn navigator. Given a `slot` it renders there — the conversation
+ *  header, where it never covers the text — and without one it floats over the
+ *  top-right of the transcript it navigates.
  *
  *  - `▲ / ▼` (and Alt+↑ / Alt+↓) step one user turn at a time for sequential
  *    reading.
@@ -21,9 +24,13 @@ export interface ChatTurn {
 export function ChatNav({
   scrollRef,
   turns,
+  slot,
 }: {
   scrollRef: RefObject<HTMLDivElement | null>;
   turns: ChatTurn[];
+  /** The element to render into; null while it has not mounted yet (nothing
+   *  is drawn), undefined to float over the transcript. */
+  slot?: HTMLElement | null;
 }) {
   const [activeId, setActiveId] = useState(0);
   const [open, setOpen] = useState(false);
@@ -111,10 +118,10 @@ export function ChatNav({
   // Dismiss the outline on outside click or Escape.
   useDismiss(rootRef, open, () => setOpen(false));
 
-  if (turns.length < 2) return null;
+  if (turns.length < 2 || slot === null) return null;
 
-  return (
-    <div className="chat-nav" ref={rootRef}>
+  const nav = (
+    <div className={`chat-nav${slot ? " docked" : ""}`} ref={rootRef}>
       <div className="chat-nav-bar">
         <button
           type="button"
@@ -172,6 +179,7 @@ export function ChatNav({
       )}
     </div>
   );
+  return slot ? createPortal(nav, slot) : nav;
 }
 
 function preview(text: string): string {
