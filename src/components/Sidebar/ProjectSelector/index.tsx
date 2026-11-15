@@ -19,7 +19,7 @@ interface Props {
 }
 
 /** Which projects the sidebar lists: all of them, one, or a chosen few. The
- *  leading segment of the list filter's field (`ListFilter`), which its menu
+ *  trailing segment of the list filter's field (`ListFilter`), which its menu
  *  spans.
  *
  *  The trigger says what the focus is — "All projects", or "2 of 6

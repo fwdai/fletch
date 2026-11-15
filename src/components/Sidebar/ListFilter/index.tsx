@@ -17,10 +17,12 @@ interface Props {
   compact: boolean;
 }
 
-/** What the sidebar lists, as one field read left to right: which projects,
- *  then the text that narrows their workspaces — "in these projects, matching
- *  this". Both answer the same question, so they share one box rather than a
- *  row each.
+/** What the sidebar lists, as one field: the text that narrows the
+ *  workspaces, then which projects it looks in. Both answer the same question,
+ *  so they share one box rather than a row each. The text leads, so the field
+ *  reads as a search box at a glance and typing always starts at the same
+ *  place; the scope trails it, beside the header's other project control, the
+ *  "+".
  *
  *  A scope over fewer than two projects has nothing to choose between, so
  *  until there is a second one the field is the text filter alone. */
@@ -36,25 +38,24 @@ export function ListFilter({
   const scoped = projects.length > 1;
   return (
     <div className="side-filter flex-center">
-      {scoped ? (
-        <>
-          <ProjectSelector
-            projects={projects}
-            focus={focus}
-            onChange={onFocusChange}
-            compact={compact}
-          />
-          <span className="side-filter-sep" aria-hidden="true" />
-        </>
-      ) : (
-        <Icon name="search" size={12} className="side-filter-icon" />
-      )}
+      <Icon name="search" size={12} className="side-filter-icon" />
       <FilterInput
         query={query}
         onChange={onQueryChange}
         onArrowDown={onArrowDown}
         compact={compact}
       />
+      {scoped && (
+        <>
+          <span className="side-filter-sep" aria-hidden="true" />
+          <ProjectSelector
+            projects={projects}
+            focus={focus}
+            onChange={onFocusChange}
+            compact={compact}
+          />
+        </>
+      )}
     </div>
   );
 }

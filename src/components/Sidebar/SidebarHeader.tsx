@@ -19,8 +19,8 @@ interface Props {
   onArrowDown: () => void;
 }
 
-/** The sidebar's header, one line: what the list shows (`ListFilter`: which
- *  projects, narrowed by what text) and the way to add a project. With no
+/** The sidebar's header, one line: what the list shows (`ListFilter`: the
+ *  text it is narrowed by, in which projects) and the way to add a project. With no
  *  project yet there is nothing to filter, and the line is the "Add project"
  *  button alone — which is also what a first launch needs to see. Once a host
  *  is paired, the environment switcher takes a line of its own above it. */

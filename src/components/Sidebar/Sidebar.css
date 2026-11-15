@@ -98,9 +98,9 @@
   color: var(--fg-3);
 }
 /* ── list filter ──────────────────────────────────────────────────────────
-   One field, read left to right: which projects (the scope, a menu), then the
-   text that narrows their workspaces. One border around both, so the header
-   is a single box beside the "+". */
+   One field: the text that narrows the workspaces, then which projects it
+   looks in (the scope, a menu). One border around both, so the header is a
+   single box beside the "+". */
 .side-filter {
   position: relative;
   flex: 1;
@@ -126,8 +126,8 @@
   gap: 5px;
   min-width: 0;
   height: 100%;
-  padding: 0 8px 0 10px;
-  border-radius: calc(var(--r-md) - 1px) 0 0 calc(var(--r-md) - 1px);
+  padding: 0 8px 0 9px;
+  border-radius: 0 calc(var(--r-md) - 1px) calc(var(--r-md) - 1px) 0;
   color: var(--fg-2);
   white-space: nowrap;
   transition:
@@ -168,7 +168,7 @@
   flex: 1 1 0;
   min-width: 0;
   height: 100%;
-  padding: 0 9px;
+  padding: 0 8px;
   color: var(--fg-0);
 }
 .side-filter-input::placeholder {
@@ -176,7 +176,7 @@
 }
 .side-filter .kbd {
   flex-shrink: 0;
-  margin-right: 6px;
+  margin-right: 8px;
 }
 .side-filter-clear {
   flex-shrink: 0;
