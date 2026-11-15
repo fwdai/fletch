@@ -115,6 +115,24 @@ export function formatDuration(ms: number): string {
   return `${days.toFixed(days < 10 ? 1 : 0)}d`;
 }
 
+/** A span of elapsed time the way it is said aloud: whole numbers of its two
+ *  largest units, "3d 4h", "4h 12m", "12m". A second unit of zero is left out
+ *  ("3d"), and anything under a minute is "<1m". `formatDuration` is the
+ *  one-number form for where there is only room for that. */
+export function formatElapsed(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000);
+  if (minutes < 1) return "<1m";
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  const [big, small] =
+    days > 0
+      ? [`${days}d`, `${hours % 24}h`]
+      : hours > 0
+        ? [`${hours}h`, `${minutes % 60}m`]
+        : [`${minutes}m`, "0"];
+  return small.startsWith("0") ? big : `${big} ${small}`;
+}
+
 /** A token count at one scale: raw under 1k, then k / M / B with one decimal.
  *  Billions matter for the all-sessions usage view, where a 90-day window
  *  across every local transcript runs to ten figures. */

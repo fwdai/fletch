@@ -40,4 +40,37 @@ describe("placeTooltip", () => {
       placeTooltip({ top: top - 1, left: 400, width: 40, height: 20 }, bubble, viewport).side,
     ).toBe("below");
   });
+
+  it("opens below with left edges aligned when asked to", () => {
+    const p = placeTooltip({ top: 300, left: 400, width: 40, height: 20 }, bubble, viewport, {
+      prefer: "below",
+      align: "start",
+    });
+    expect(p.side).toBe("below");
+    expect(p.top).toBe(300 + 20 + TIP_GAP);
+    expect(p.left).toBe(400);
+  });
+
+  it("goes above a trigger near the bottom edge even when below is preferred", () => {
+    const p = placeTooltip({ top: 770, left: 400, width: 40, height: 20 }, bubble, viewport, {
+      prefer: "below",
+    });
+    expect(p.side).toBe("above");
+    expect(p.top).toBe(770 - TIP_GAP - bubble.height);
+  });
+
+  it("stays below when preferred and neither side has room", () => {
+    const short = { width: 1000, height: 60 };
+    const p = placeTooltip({ top: 20, left: 400, width: 40, height: 20 }, bubble, short, {
+      prefer: "below",
+    });
+    expect(p.side).toBe("below");
+  });
+
+  it("slides a start-aligned bubble back inside the right edge", () => {
+    const p = placeTooltip({ top: 300, left: 950, width: 20, height: 20 }, bubble, viewport, {
+      align: "start",
+    });
+    expect(p.left).toBe(viewport.width - TIP_MARGIN - bubble.width);
+  });
 });

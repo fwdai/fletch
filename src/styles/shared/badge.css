@@ -149,94 +149,113 @@
   color: var(--fg-3);
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
-  position: relative;
-  cursor: default;
   padding: 1px 3px;
-  border-radius: 3px;
   flex-shrink: 0;
-  transition:
-    background 0.1s,
-    color 0.1s;
-}
-.agent-sub .a-time:hover {
-  background: var(--hover);
-  color: var(--fg-1);
 }
 /* where the workspace runs, in front of its codename as in the title bar and
  * in the title bar's own tints (`.ws-iso`). The glyph and the codename are one
- * unit, so they sit 4px apart rather than at the row's 8px gap. */
-.agent-sub .ws-iso {
-  margin-right: -4px;
-}
-/* the byline — who is doing the work and since when — closes the row and is
- * one hover target for the details popover */
-.agent-sub .a-byline {
+ * unit, so they sit 6px apart rather than at the row's 8px gap. The glyph is
+ * the row's hover target for its details card: the padding is its hit area,
+ * and the negative margins keep the glyph itself on the title's left edge. */
+.agent-sub .a-sandbox {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
   position: relative;
   flex-shrink: 0;
-  padding: 1px 3px;
+  padding: 2px 3px;
+  margin: -2px -5px -2px -3px;
   border-radius: 3px;
   cursor: default;
   transition: background 0.1s;
 }
-.agent-sub .a-byline:hover {
+.agent-sub .a-sandbox:hover {
   background: var(--hover);
 }
-.agent-sub .a-byline .a-time {
-  position: static;
-  padding: 0;
-  background: none;
-}
-.agent-sub .a-byline:hover .a-time {
-  color: var(--fg-1);
-}
 
-.ag-stats-pop {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  width: 220px;
+/* the agent row's details card (`AgentDetailsPopover`), hung off the sandbox
+ * glyph: every fact on a tight line of its own. An `AnchoredPopover` positions
+ * it, at body level, so the sidebar's scroller cannot clip it. */
+.ag-details-pop {
+  width: 232px;
   background: var(--bg-2);
   border: 1px solid var(--bd);
   border-radius: var(--r-md);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.35);
-  padding: 10px 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  padding: 8px 10px;
   z-index: 220;
   font-family: var(--font-sans);
   animation: ddIn 0.12s var(--ease);
 }
-.ag-stats-pop .st-row {
+/* An invisible bridge across the 6px gap to the glyph, on whichever side the
+ * card opened, so the pointer can travel into the card (to select a failure
+ * reason) without dropping the hover. Behind the card's own content. */
+.ag-details-pop::before {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+  z-index: -1;
+}
+/* Vertical rhythm: every line of text in the card is 16px tall and lines
+ * stack with nothing between them, so the whole card sits on one 16px pitch.
+ * The only other measures are 2px (a heading to its facts, around the bar)
+ * and 6px (either side of the divider). */
+.ag-details-pop .ws-pop-iso {
+  gap: 7px;
+}
+.ag-details-pop .ws-pop-iso-text {
+  gap: 0;
+}
+.ag-details-pop .ws-pop-iso-title,
+.ag-details-pop .ws-pop-iso-hint,
+.ag-details-pop .ws-pop-iso-fail,
+.ag-details-pop .st-row {
+  line-height: 16px;
+}
+/* a 12px glyph centred on its heading's 16px line */
+.ag-details-pop .ws-pop-iso .ws-iso,
+.ag-details-pop .ag-prov-chip {
+  margin-top: 2px;
+}
+.ag-details-pop .ws-pop-div {
+  margin: 6px 0;
+}
+/* the facts under each part, in its text column */
+.ag-details-pop .st-rows {
+  margin-top: 2px;
+}
+/* A fixed height: the label and the mono value share a baseline, and their
+ * differing font metrics would otherwise stretch the row a pixel past 16. */
+.ag-details-pop .st-row {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   gap: 12px;
-  padding: 3px 0;
-  font-size: var(--fs-sm);
+  height: 16px;
+  font-size: var(--fs-xs);
 }
-.ag-stats-pop .st-row .st-k {
+.ag-details-pop .st-row .st-k {
   color: var(--fg-2);
   flex-shrink: 0;
 }
-.ag-stats-pop .st-row .st-v {
+.ag-details-pop .st-row .st-v {
   color: var(--fg-0);
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
-.ag-stats-pop .st-bar {
-  margin-top: 6px;
-  height: 3px;
-  background: var(--hover);
-  border-radius: 2px;
+/* The context bar belongs to the row above it, the one break in the pitch.
+ * Its track is clearly visible, so the space it takes reads as a bar. */
+.ag-details-pop .st-bar {
+  margin: 2px 0;
+  height: 2px;
+  background: var(--bd);
+  border-radius: 1px;
   overflow: hidden;
 }
-.ag-stats-pop .st-bar-fill {
+.ag-details-pop .st-bar-fill {
   height: 100%;
   background: var(--accent);
-  border-radius: 2px;
+  border-radius: 1px;
   transition: width 0.25s var(--ease);
 }
 
