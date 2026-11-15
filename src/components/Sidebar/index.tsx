@@ -231,6 +231,11 @@ export function Sidebar() {
     () => applySearch(applyFocus(groups, focus), query),
     [groups, focus, query],
   );
+  // An empty list is the filter's doing only while there are projects to
+  // filter. With none, the header has no filter field (see `SidebarHeader`),
+  // so text left in it — typed before the last project went, or in another
+  // environment — must not be blamed for the empty list.
+  const unmatched = query.trim().length > 0 && groups.length > 0;
   // What the text matches in the projects the focus leaves out. A search that
   // comes back short, or empty, because of the focus says so and offers the
   // way to them, rather than reading as "there is no such workspace".
@@ -430,9 +435,9 @@ export function Sidebar() {
         <div className="side-section">
           {filtered.length === 0 ? (
             <div className="empty-msg" style={{ padding: "28px 12px" }}>
-              <div className="et">{query ? "No matches" : "No projects yet"}</div>
+              <div className="et">{unmatched ? "No matches" : "No projects yet"}</div>
               <div>
-                {!query
+                {!unmatched
                   ? "Add a repo to get started."
                   : beyondFocus
                     ? "Nothing in the projects shown."
