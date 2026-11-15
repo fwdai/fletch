@@ -300,7 +300,7 @@
    air). A pane wider than the 860px column already leaves a margin beside it,
    so the column gives up only what that margin doesn't cover — nothing at
    all once the margin is as wide as the strip. */
-.chat-scroll-wrap:has(> .chat-nav) .chat-inner {
+:where(.chat-scroll-wrap:has(> .chat-nav)) .chat-inner {
   --nav-strip: 62px;
   padding-right: clamp(
     var(--chat-pad),
