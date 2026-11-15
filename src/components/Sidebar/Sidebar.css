@@ -1,5 +1,9 @@
 /* sidebar */
+/* The header is one line: the list filter and the way to add a project. Once
+   a host is paired, the environment switcher takes a line of its own above
+   it (the wrap). */
 .side-head {
+  flex-wrap: wrap;
   padding: 14px 12px 10px;
   gap: 8px;
   flex-shrink: 0;
@@ -7,16 +11,16 @@
 
 /* ── environment switcher ─────────────────────────────────────────────────
    Only rendered when at least one host is paired, so with no hosts the header
-   is the search box alone, exactly as it was. `max-width` keeps a long host
-   name from squeezing the search box out. */
+   is the list filter's line alone. It takes the header's whole first line. */
 .env-switch {
   position: relative;
-  flex-shrink: 0;
+  flex: 0 0 100%;
+  min-width: 0;
 }
 .env-btn {
   gap: 6px;
   height: 30px;
-  max-width: 132px;
+  max-width: 100%;
   padding: 0 8px;
   border: 1px solid var(--bd-soft);
   border-radius: var(--r-md);
@@ -93,39 +97,114 @@
 .env-item-sub {
   color: var(--fg-3);
 }
-.search {
+/* ── list filter ──────────────────────────────────────────────────────────
+   One field, read left to right: which projects (the scope, a menu), then the
+   text that narrows their workspaces. One border around both, so the header
+   is a single box beside the "+". */
+.side-filter {
+  position: relative;
   flex: 1;
-  gap: 8px;
+  min-width: 0;
   height: 30px;
-  padding: 0 10px;
   border: 1px solid var(--bd-soft);
   border-radius: var(--r-md);
   color: var(--fg-2);
-  transition:
-    border-color 0.12s,
-    background 0.12s;
+  transition: border-color 0.12s;
 }
-.search:hover {
-  background: var(--hover);
-}
-.search:focus-within {
+.side-filter:focus-within {
   border-color: var(--accent-line);
 }
-.search svg {
-  width: 12px;
-  height: 12px;
-  opacity: 0.8;
-}
-.search input {
-  flex: 1;
+/* The scope's anchor steps out of the way so its menu hangs off the field and
+   spans it, rather than the narrow segment that opens it. */
+.side-filter > .proj-select {
+  position: static;
+  align-self: stretch;
+  flex: 0 1 auto;
   min-width: 0;
+}
+.side-scope {
+  gap: 5px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px 0 10px;
+  border-radius: calc(var(--r-md) - 1px) 0 0 calc(var(--r-md) - 1px);
+  color: var(--fg-2);
+  white-space: nowrap;
+  transition:
+    color 0.12s,
+    background 0.12s;
+}
+.side-scope:hover,
+.side-scope[aria-expanded="true"] {
+  background: var(--hover);
   color: var(--fg-0);
 }
-.search input::placeholder {
+.side-scope:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: -1px;
+}
+/* A focus is on. The label carries that ("2 of 6 projects"); the scope only
+   steps up a shade, staying quieter than the list it narrows. */
+.side-scope.on {
+  color: var(--fg-0);
+}
+.side-scope > svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.side-filter-sep {
+  flex-shrink: 0;
+  align-self: stretch;
+  width: 1px;
+  margin: 6px 0;
+  background: var(--bd-soft);
+}
+.side-filter-icon {
+  flex-shrink: 0;
+  margin-left: 10px;
+  opacity: 0.8;
+}
+.side-filter-input {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  padding: 0 9px;
+  color: var(--fg-0);
+}
+.side-filter-input::placeholder {
   color: var(--fg-3);
 }
-.search .kbd {
-  margin-left: auto;
+.side-filter .kbd {
+  flex-shrink: 0;
+  margin-right: 6px;
+}
+.side-filter-clear {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-right: 5px;
+  border-radius: var(--r-xs);
+  color: var(--fg-3);
+  transition: var(--transition-ui);
+}
+.side-filter-clear:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+/* Under a search the focus cut short: what it left out, and the way to it. */
+.side-beyond {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 13px;
+  border-radius: var(--r-sm);
+  color: var(--fg-3);
+  text-align: left;
+  transition: var(--transition-ui);
+}
+.side-beyond:hover {
+  background: var(--hover);
+  color: var(--fg-1);
 }
 
 .side-scroll {
@@ -159,65 +238,19 @@
   padding: 4px;
 }
 
-/* ── projects bar ─────────────────────────────────────────────────────────
-   Pinned between the header and the list, on the header's 12px inset and its
-   30px control height: the project selector with a compact "+" beside it, or
-   the full-width "Add project" button until there are two projects. */
-.side-projects {
-  gap: 8px;
-  flex-shrink: 0;
-  padding: 0 12px 8px;
-}
+/* The way to add a project: a bare "+" at the field's height, or the whole
+   line while there is no project to filter. */
 .side-add {
   display: flex;
   flex-shrink: 0;
 }
-.side-add:only-child {
+.side-add.full {
   flex: 1;
 }
 .side-add-btn {
   width: 30px;
   height: 30px;
   border-radius: var(--r-md);
-}
-.proj-select {
-  flex: 1;
-  min-width: 0;
-}
-.proj-select-btn {
-  gap: 8px;
-  width: 100%;
-  height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-md);
-  color: var(--fg-2);
-  text-align: left;
-  transition:
-    border-color 0.12s,
-    color 0.12s,
-    background 0.12s;
-}
-.proj-select-btn:hover,
-.proj-select-btn[aria-expanded="true"] {
-  background: var(--hover);
-  color: var(--fg-1);
-}
-.proj-select-btn:focus-visible {
-  outline: 1px solid var(--accent-line);
-  outline-offset: -1px;
-}
-/* A focus is on. The label carries that ("2 of 6 projects"); the trigger only
-   steps up from placeholder grey, staying quieter than the list it narrows. */
-.proj-select-btn.on {
-  color: var(--fg-1);
-}
-.proj-select-label {
-  flex: 1;
-  min-width: 0;
-}
-.proj-select-btn > svg:last-child {
-  opacity: 0.7;
 }
 /* What the agents of a project are up to, in the colours their rows use: on
    the trigger for the projects a focus hides, in the menu for each one. */
@@ -236,8 +269,8 @@
 .proj-signal[data-signal="running"] {
   background: var(--success);
 }
-/* The menu spans the trigger instead of hanging off its right edge, and
-   scrolls once the project list outgrows it. */
+/* The menu spans the field instead of hanging off the trigger's right edge,
+   and scrolls once the project list outgrows it. */
 .proj-select > .dd {
   left: 0;
   min-width: 0;

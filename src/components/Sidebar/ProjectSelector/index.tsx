@@ -14,9 +14,13 @@ interface Props {
   /** The keys the sidebar is narrowed to; empty for all projects. */
   focus: ProjectFocus;
   onChange: (focus: string[]) => void;
+  /** The short label ("All", "2 of 6"), for a narrow sidebar. */
+  compact?: boolean;
 }
 
-/** Which projects the sidebar lists: all of them, one, or a chosen few.
+/** Which projects the sidebar lists: all of them, one, or a chosen few. The
+ *  leading segment of the list filter's field (`ListFilter`), which its menu
+ *  spans.
  *
  *  The trigger says what the focus is — "All projects", or "2 of 6
  *  projects" — so a narrowed list never looks like projects went missing. It
@@ -26,14 +30,14 @@ interface Props {
  *  What a focus hides can still need the user, so the trigger wears a dot
  *  while an agent in a hidden project is waiting, has unopened results or is
  *  working; the menu marks which project it is. */
-export function ProjectSelector({ projects, focus, onChange }: Props) {
+export function ProjectSelector({ projects, focus, onChange, compact = false }: Props) {
   // With no focus on nothing is hidden: every project's rows are in the list.
   const hiddenSignal =
     focus.length === 0
       ? null
       : strongestSignal(projects.filter((p) => !focus.includes(p.key)).map((p) => p.signal));
-  const label =
-    focus.length === 0 ? "All projects" : `${focus.length} of ${projects.length} projects`;
+  const count = focus.length === 0 ? "All" : `${focus.length} of ${projects.length}`;
+  const label = compact ? count : `${count} projects`;
 
   return (
     <MenuButton
@@ -41,13 +45,14 @@ export function ProjectSelector({ projects, focus, onChange }: Props) {
       trigger={(trigger) => (
         <button
           type="button"
-          className={`proj-select-btn flex-center text-base ${focus.length > 0 ? "on" : ""}`}
+          className={`side-scope flex-center text-base tip ${focus.length > 0 ? "on" : ""}`}
+          data-tip="Choose the projects to show"
+          aria-label={`Projects shown: ${count === "All" ? "all" : count}`}
           {...trigger}
         >
-          <Icon name="layers" size={13} />
-          <span className="proj-select-label truncate">{label}</span>
+          <span className="side-scope-label truncate">{label}</span>
           {hiddenSignal && <SignalDot signal={hiddenSignal} where="in a hidden project" />}
-          <Icon name="chevD" size={12} />
+          <Icon name="chevD" size={11} />
         </button>
       )}
     >

@@ -4,7 +4,7 @@ import { NewProject, type NewProjectMode } from "@/components/NewProject";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { arrowTarget } from "@/util/arrowNav";
-import { basename } from "@/util/format";
+import { basename, plural } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import { groupProjectRefs, projectKeyResolver } from "@/util/projects";
 import { useRuns } from "@/workflows/run/useRuns";
@@ -13,7 +13,6 @@ import { NewProjectPopover } from "./NewProjectPopover";
 import { PaletteHint } from "./PaletteHint";
 import { ProjectGroup } from "./ProjectGroup";
 import type { ProjectOption } from "./ProjectSelector";
-import { ProjectsBar } from "./ProjectsBar";
 import { applyFocus } from "./projectFocus";
 import { projectSignal } from "./projectSignal";
 import { bubbleActive } from "./recentProjects";
@@ -121,6 +120,7 @@ function applySearch(groups: ProjectGroupData[], q: string): ProjectGroupData[] 
       agents: g.agents.filter(
         (a) =>
           a.name.toLowerCase().includes(needle) ||
+          a.title?.toLowerCase().includes(needle) ||
           a.task.toLowerCase().includes(needle) ||
           a.repos[0]?.branch?.toLowerCase().includes(needle),
       ),
@@ -231,6 +231,22 @@ export function Sidebar() {
     () => applySearch(applyFocus(groups, focus), query),
     [groups, focus, query],
   );
+  // What the text matches in the projects the focus leaves out. A search that
+  // comes back short, or empty, because of the focus says so and offers the
+  // way to them, rather than reading as "there is no such workspace".
+  const beyondFocus = useMemo(() => {
+    if (!query.trim() || focus.length === 0) return null;
+    const shown = new Set(focus);
+    const hidden = applySearch(
+      groups.filter((g) => !shown.has(g.key)),
+      query,
+    );
+    if (hidden.length === 0) return null;
+    const rows = hidden.reduce((n, g) => n + g.agents.length + g.drafts.length + g.runs.length, 0);
+    return rows > 0
+      ? `${plural(rows, "more match", "more matches")} in other projects`
+      : `${plural(hidden.length, "other project matches", "other projects match")}`;
+  }, [groups, focus, query]);
 
   // Projects the user is working in float to the top (see `bubbleActive`);
   // the quiet ones keep the manual order beneath them. This is what the user
@@ -402,17 +418,34 @@ export function Sidebar() {
 
   return (
     <>
-      <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
-      <ProjectsBar projects={projectOptions} focus={focus} onFocusChange={setFocus} />
+      <SidebarHeader
+        projects={projectOptions}
+        focus={focus}
+        onFocusChange={setFocus}
+        query={query}
+        onQueryChange={onQueryChange}
+        onArrowDown={enterList}
+      />
       <div id={SIDEBAR_LIST_ID} className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">
           {filtered.length === 0 ? (
             <div className="empty-msg" style={{ padding: "28px 12px" }}>
               <div className="et">{query ? "No matches" : "No projects yet"}</div>
-              <div>{query ? "Try a different search." : "Add a repo to get started."}</div>
+              <div>
+                {!query
+                  ? "Add a repo to get started."
+                  : beyondFocus
+                    ? "Nothing in the projects shown."
+                    : "Try a different search."}
+              </div>
             </div>
           ) : (
             ordered.map((g) => renderGroup(g))
+          )}
+          {beyondFocus && (
+            <button type="button" className="side-beyond text-sm" onClick={() => setFocus([])}>
+              {beyondFocus} · Show all projects
+            </button>
           )}
         </div>
       </div>

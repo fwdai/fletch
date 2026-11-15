@@ -1,49 +1,55 @@
-import { useState } from "react";
-import { Icon } from "@/components/Icon";
-import { useShortcutKeys } from "@/util/shortcuts";
+import { useAppStore } from "@/store";
+import { AddProject } from "./AddProject";
 import { EnvironmentSwitcher } from "./EnvironmentSwitcher";
+import { ListFilter } from "./ListFilter";
+import type { ProjectOption } from "./ProjectSelector";
+import type { ProjectFocus } from "./projectFocus";
 
-/** Filter input that narrows the agent list, and — once a host is paired — the
- *  environment switcher beside it. The filter itself is applied in `Sidebar`;
- *  this component only owns the input. Finding one thing to jump to is the
- *  command palette's job (⌘K); this is for keeping the list narrowed. */
+/** Below this the header drops what it can spare: the scope's long label and
+ *  the filter's keycap. */
+const COMPACT_BELOW = 300;
+
 interface Props {
+  projects: readonly ProjectOption[];
+  focus: ProjectFocus;
+  onFocusChange: (focus: string[]) => void;
   query: string;
-  onChange: (q: string) => void;
-  /** ↓ pressed in the input: hand focus to the agent list below. */
+  onQueryChange: (q: string) => void;
+  /** ↓ pressed in the filter: hand focus to the list below. */
   onArrowDown: () => void;
 }
 
-export function SidebarHeader({ query, onChange, onArrowDown }: Props) {
-  const [focused, setFocused] = useState(false);
-  const keys = useShortcutKeys("search");
+/** The sidebar's header, one line: what the list shows (`ListFilter`: which
+ *  projects, narrowed by what text) and the way to add a project. With no
+ *  project yet there is nothing to filter, and the line is the "Add project"
+ *  button alone — which is also what a first launch needs to see. Once a host
+ *  is paired, the environment switcher takes a line of its own above it. */
+export function SidebarHeader({
+  projects,
+  focus,
+  onFocusChange,
+  query,
+  onQueryChange,
+  onArrowDown,
+}: Props) {
+  const compact = useAppStore((s) => s.leftWidth < COMPACT_BELOW);
+  const empty = projects.length === 0;
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      onArrowDown();
-    } else if (e.key === "Escape") {
-      // First Escape clears the filter, a second one leaves the box.
-      if (query) onChange("");
-      else e.currentTarget.blur();
-    }
-  }
   return (
     <div className="side-head flex-center">
       <EnvironmentSwitcher />
-      <div className="search flex-center text-base">
-        <Icon name="search" size={12} />
-        <input
-          id="sidebar-search"
-          placeholder="Filter agents, branches…"
-          value={query}
-          onChange={(e) => onChange(e.target.value)}
-          onKeyDown={onKeyDown}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
+      {!empty && (
+        <ListFilter
+          projects={projects}
+          focus={focus}
+          onFocusChange={onFocusChange}
+          query={query}
+          onQueryChange={onQueryChange}
+          onArrowDown={onArrowDown}
+          compact={compact}
         />
-        {!focused && <span className="kbd">{keys}</span>}
-      </div>
+      )}
+      <AddProject full={empty} />
     </div>
   );
 }
