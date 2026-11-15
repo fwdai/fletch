@@ -6,12 +6,12 @@
 // before the edit. Nothing here blocks or accepts a change — it only moves the
 // diff pane and remembers what has been read.
 import "./Walkthrough.css";
-import { useCallback, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import type { AgentRecord, FileStatus } from "@/api";
 import { useBareKeys } from "@/util/hooks";
 import { presentAnchor, presentPaths, type StepAnchor, stepIndexFor } from "./model";
 import { ResumeStrip } from "./ResumeStrip";
-import { StartCard } from "./StartCard";
+import type { WalkthroughStart } from "./StartButton";
 import { StepStrip } from "./StepStrip";
 import { useWalkthrough } from "./useWalkthrough";
 
@@ -44,7 +44,17 @@ interface Shown {
   path: string | null;
 }
 
-export function Walkthrough({ agent, files, currentPath, onGo, onViewed }: WalkthroughProps) {
+/** The walkthrough as the Changes view places it: `strip` sits above the view
+ *  while a step is being read (or, over a diff no step points at, offers the
+ *  way back), and `start` is the way in while the file list is showing — the
+ *  Changes header draws it on its own row (`StartButton`). */
+export function useWalkthroughView({
+  agent,
+  files,
+  currentPath,
+  onGo,
+  onViewed,
+}: WalkthroughProps): { strip: ReactNode; start: WalkthroughStart | null } {
   const { steps, source, index, setIndex } = useWalkthrough(agent, files);
   const [shown, setShown] = useState<Shown | null>(null);
 
@@ -95,28 +105,35 @@ export function Walkthrough({ agent, files, currentPath, onGo, onViewed }: Walkt
   const onStrip = current !== -1;
   useBareKeys(steps.length > 0 && (onStrip || currentPath !== null) ? { j: next, k: prev } : null);
 
-  if (steps.length === 0) return null;
+  if (steps.length === 0) return { strip: null, start: null };
 
   if (onStrip) {
-    return (
-      <StepStrip
-        step={steps[current]}
-        index={current}
-        total={steps.length}
-        files={files}
-        currentPath={currentPath}
-        onOpen={open}
-        onPrev={prev}
-        onNext={next}
-      />
-    );
+    return {
+      strip: (
+        <StepStrip
+          step={steps[current]}
+          index={current}
+          total={steps.length}
+          files={files}
+          currentPath={currentPath}
+          onOpen={open}
+          onPrev={prev}
+          onNext={next}
+        />
+      ),
+      start: null,
+    };
   }
 
   if (currentPath === null) {
-    return (
-      <StartCard count={steps.length} source={source} started={started} onStart={() => go(index)} />
-    );
+    return {
+      strip: null,
+      start: { count: steps.length, source, started, onStart: () => go(index) },
+    };
   }
 
-  return <ResumeStrip step={index + 1} started={started} onResume={() => go(index)} />;
+  return {
+    strip: <ResumeStrip step={index + 1} started={started} onResume={() => go(index)} />,
+    start: null,
+  };
 }

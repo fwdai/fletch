@@ -1,5 +1,7 @@
 import type { GitState, PrChecks, PrSetEntry, PrState, ShortStats } from "@/api";
 import { Icon } from "@/components/Icon";
+import { detectBlockers } from "@/readiness";
+import { plural } from "@/util/format";
 import { type PrTint, prTint, summarizePrSet } from "@/util/prSummary";
 
 interface Props {
@@ -29,9 +31,12 @@ function badgeClass(tint: PrTint["variant"], localConflict: boolean): string {
 }
 
 /** The one badge that summarizes the checkout: PR (state-tinted, with number)
- *  once one exists, else the uncommitted diff, else a clean-tree check. With
- *  several PRs it keeps the focused `#N`, adds a quiet `+K` for the rest, and
- *  takes the set's worst tint — the popover lists them all. */
+ *  once one exists, else the uncommitted diff, else the commits that have not
+ *  left the checkout or have no PR yet, else a clean-tree check. The commits
+ *  are read off the Git panel's own classification (`detectBlockers`), so the
+ *  badge and the panel's ladder name the same step. With several PRs it keeps
+ *  the focused `#N`, adds a quiet `+K` for the rest, and takes the set's worst
+ *  tint — the popover lists them all. */
 export function GitBadge({ pr, git, checks, stats, prs }: Props) {
   if (pr) {
     const localConflict = git?.files.some((f) => f.kind === "conflicted") ?? false;
@@ -60,6 +65,28 @@ export function GitBadge({ pr, git, checks, stats, prs }: Props) {
       <span className="ws-badge diff">
         <span className="add">+{add}</span>
         <span className="rem">−{rem}</span>
+      </span>
+    );
+  }
+  // Committed work is not a clean checkout until it is pushed and proposed.
+  const blockers = detectBlockers({ git, pr: null, checks: null, comments: null });
+  const unpushed = blockers.find((b) => b.kind === "unpushed");
+  if (unpushed?.kind === "unpushed") {
+    return (
+      <span className="ws-badge commits" title={`${plural(unpushed.commits, "commit")} not pushed`}>
+        <Icon name="arrowUp" size={11} />
+        <span className="mono">{unpushed.commits}</span> unpushed
+      </span>
+    );
+  }
+  if (git && blockers.some((b) => b.kind === "unsubmitted")) {
+    return (
+      <span
+        className="ws-badge commits"
+        title={`${plural(git.ahead, "commit")} ahead of ${git.parent_branch}, no pull request yet`}
+      >
+        <Icon name="commit" size={11} />
+        <span className="mono">{git.ahead}</span> ahead
       </span>
     );
   }

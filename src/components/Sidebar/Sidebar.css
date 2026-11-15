@@ -345,6 +345,20 @@
 .proj.drop-after::after {
   bottom: -8px;
 }
+/* A project with nothing in it: one quiet line, stacked tight against its
+ * neighbours. */
+.proj.empty {
+  margin-bottom: 0;
+}
+.proj.empty:last-child {
+  margin-bottom: 16px;
+}
+.proj.empty.drop-before::before {
+  top: -1px;
+}
+.proj.empty.drop-after::after {
+  bottom: -1px;
+}
 .proj-h {
   gap: 6px;
   /* name sits at 19px, aligned with the indented agent names; the chevron
@@ -431,11 +445,9 @@ button.pname:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-/* count sits next to the name (middot-separated) and its auto margin pushes
- * the action buttons to the far right. */
+/* count sits next to the name (middot-separated), on a folded group only. */
 .proj-h .pcount {
   flex-shrink: 0;
-  margin-right: auto;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   color: var(--fg-3);
@@ -444,10 +456,9 @@ button.pname:focus-visible {
   content: "·";
   margin-right: 4px;
 }
-/* Ghost affordance: always visible so "add an agent" is discoverable without
- * hovering. Borderless (no filled chip) but at --fg-2 — a step brighter than
- * the --fg-3 meta text, so it clearly reads as an action. Earns the accent
- * fill on hover. */
+/* Ghost affordance. Borderless (no filled chip) but at --fg-2 — a step
+ * brighter than the --fg-3 meta text, so it clearly reads as an action. Earns
+ * the accent fill on hover. */
 .proj-h .padd {
   width: 22px;
   height: 22px;
@@ -463,21 +474,31 @@ button.pname:focus-visible {
   background: var(--accent-soft);
   color: var(--accent);
 }
-/* The quiet action (the settings gear) is revealed only when the row is
- * engaged, so it doesn't compete with the label or shift the always-visible
- * "add agent" button. */
+/* The actions are revealed when the row is engaged, so a list of projects is
+ * not a column of buttons. The gear leads them and its auto margin pushes the
+ * pair to the far right. */
 .proj-h .padd-quiet {
+  margin-left: auto;
+}
+.proj-h .padd {
   opacity: 0;
   pointer-events: none;
 }
-.proj-h:hover .padd-quiet {
+.proj-h:hover .padd {
   opacity: 1;
   pointer-events: auto;
 }
-/* Keyboard focus reveals it too — a focused button at opacity:0 would make
+/* Keyboard focus reveals them too — a focused button at opacity:0 would make
  * the focus ring vanish and hide the action from keyboard users. */
-.proj-h:hover .padd-quiet:hover,
-.proj-h .padd-quiet:focus-visible {
+.proj-h .padd:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* "New agent" stays on show where it is most likely wanted: on the project
+ * the selection is in, and on a lone project, where a first launch looks
+ * for it. */
+.proj.current .proj-h .padd-add,
+.proj:only-child .proj-h .padd-add {
   opacity: 1;
   pointer-events: auto;
 }
@@ -492,6 +513,18 @@ button.pname:focus-visible {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
+}
+
+/* An empty project's header steps back, and has no chevron: there is nothing
+ * to fold. */
+.proj.empty .proj-h {
+  color: var(--fg-3);
+}
+.proj.empty .proj-h:hover {
+  color: var(--fg-2);
+}
+.proj.empty .proj-h .chev {
+  visibility: hidden;
 }
 
 .agents {
@@ -514,6 +547,9 @@ button.pname:focus-visible {
   opacity: 0;
   padding: 0;
   overflow: hidden;
+}
+.proj.empty .agents {
+  display: none;
 }
 
 /* The fold row under a project's recent workspaces: the rest of the list,

@@ -187,6 +187,8 @@
   flex: 1;
   min-height: 0;
   display: flex;
+  /* the turn navigator's rule below asks how wide the log is */
+  container: chat-log / inline-size;
 }
 
 /* Find-in-conversation bar (⌘F) — floats over the top-right of the log so it
@@ -269,14 +271,15 @@
   /* Bottom gap so the last message clears the working strip's glass overlay. */
   margin: 0 auto 24px;
   width: 100%;
-  padding: 0 20px;
+  --chat-pad: 20px;
+  padding: 0 var(--chat-pad);
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 @media (max-width: 1100px) {
   .chat-inner {
-    padding: 0 24px;
+    --chat-pad: 24px;
   }
   .composer-wrap {
     padding: 0 24px 16px;
@@ -284,17 +287,30 @@
 }
 @media (max-width: 900px) {
   .chat-inner {
-    padding: 0 16px;
+    --chat-pad: 16px;
   }
   .composer-wrap {
     padding: 0 16px 14px;
   }
 }
 
-/* Turn navigator — compact pill docked bottom-right of the transcript. */
+/* Turn navigator — a compact pill floating at the top-right of the transcript.
+   It never sits on text: the text column keeps clear of the strip the pill
+   stands in (--nav-strip: its inset from the edge, its width, and a little
+   air). A pane wider than the 860px column already leaves a margin beside it,
+   so the column gives up only what that margin doesn't cover — nothing at
+   all once the margin is as wide as the strip. */
+:where(.chat-scroll-wrap:has(> .chat-nav)) .chat-inner {
+  --nav-strip: 62px;
+  padding-right: clamp(
+    var(--chat-pad),
+    calc(var(--nav-strip) - (100cqw - 860px) / 2),
+    var(--nav-strip)
+  );
+}
 .chat-nav {
   position: absolute;
-  right: 18px;
+  right: 12px;
   top: 16px;
   z-index: 5;
   display: flex;
@@ -312,12 +328,6 @@
   border-radius: 10px;
   box-shadow: var(--shadow-2);
   overflow: hidden;
-  opacity: 0.55;
-  transition: opacity 0.18s var(--ease);
-}
-.chat-nav:hover .chat-nav-bar,
-.chat-nav:focus-within .chat-nav-bar {
-  opacity: 1;
 }
 .chat-nav-btn,
 .chat-nav-count {

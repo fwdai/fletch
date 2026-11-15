@@ -220,6 +220,10 @@
   gap: 4px;
   color: color-mix(in oklch, var(--success), var(--fg-2) 48%);
 }
+/* committed work still in the checkout: a step waiting, not a fault */
+.ws-badge.commits {
+  color: var(--fg-1);
+}
 .ws-badge.pr-open {
   color: var(--success);
   border-color: color-mix(in oklch, var(--success), transparent 65%);

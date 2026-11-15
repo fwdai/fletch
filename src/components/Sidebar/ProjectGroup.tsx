@@ -78,6 +78,15 @@ export function ProjectGroup({
   const roadmapGate = useGate("roadmap");
 
   const count = agents.length + drafts.length + runs.length;
+  // A project with nothing in it has nothing to fold: it draws as one quiet
+  // line (see `.proj.empty`).
+  const empty = count === 0;
+  // The group the selection is in keeps its "+" on show; the others reveal
+  // theirs on hover.
+  const current =
+    agents.some((a) => a.id === selectedAgentId) ||
+    drafts.some((d) => d.id === activeDraftId) ||
+    runs.some((r) => r.id === selectedRunId);
 
   // "Show N older" unfolds the group until it is folded again; the choice is
   // per group and per mount, so a fresh launch starts tidy. The rows above the
@@ -114,7 +123,18 @@ export function ProjectGroup({
   };
 
   return (
-    <div className={`proj ${dragging ? "dragging" : ""} ${dropClass}`} data-repo-path={repoPath}>
+    <div
+      className={[
+        "proj",
+        empty ? "empty" : "",
+        current ? "current" : "",
+        dragging ? "dragging" : "",
+        dropClass,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      data-repo-path={repoPath}
+    >
       {/* The header is the project's own row. Its name opens the Roadmap — the
           project's home — and the rest of the row folds the agents, the way a
           file tree's arrow expands while its name opens. The hover action at
@@ -152,7 +172,9 @@ export function ProjectGroup({
             {label}
           </button>
         )}
-        <span className="pcount">{count}</span>
+        {/* The rows say how many while they show; the count stands in for
+            them once the group is folded. */}
+        {!open && !empty && <span className="pcount">{count}</span>}
         {/* The settings panes gate themselves on the host's project-settings
             ops (docs/remote-protocol.md, "Settings"). */}
         <button

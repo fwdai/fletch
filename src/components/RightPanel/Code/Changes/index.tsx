@@ -14,7 +14,7 @@ import { EmptyChanges } from "./EmptyChanges";
 import { useChangedFiles } from "./useChangedFiles";
 import { useLiveFile } from "./useLiveFile";
 import { useViewed } from "./viewed";
-import { Walkthrough, type WalkthroughRange } from "./Walkthrough";
+import { useWalkthroughView, type WalkthroughRange } from "./Walkthrough";
 
 interface ChangesProps {
   agent: AgentRecord;
@@ -108,20 +108,18 @@ export function Changes({
   // Uncommitted the fallback is the exact list, so there is nothing to say.
   const partial = degraded && diffBase === "fork";
 
-  const walkthrough = (
-    <Walkthrough
-      agent={agent}
-      files={files}
-      currentPath={showDiff ? selectedPath : null}
-      onGo={open}
-      onViewed={viewed.markViewed}
-    />
-  );
+  const walkthrough = useWalkthroughView({
+    agent,
+    files,
+    currentPath: showDiff ? selectedPath : null,
+    onGo: open,
+    onViewed: viewed.markViewed,
+  });
 
   if (showDiff) {
     return (
       <div className="code-wrap">
-        {walkthrough}
+        {walkthrough.strip}
         <ChangedFileDiff
           agentId={agent.id}
           files={files}
@@ -146,13 +144,18 @@ export function Changes({
 
   return (
     <div className="code-wrap">
-      {walkthrough}
+      {walkthrough.strip}
       {!loaded ? (
         <div className="empty-msg" style={{ margin: "auto" }}>
           <div className="et">Loading…</div>
         </div>
       ) : files.length === 0 ? (
         <>
+          {/* A tour can outlive the list it was written over (everything
+              committed, under Uncommitted): the way in stays. */}
+          {walkthrough.start && (
+            <ChangesHeader totals={null} walkthrough={walkthrough.start} degraded={false} />
+          )}
           {partial && <DegradedHint />}
           {blockedHint || (
             <EmptyChanges
@@ -165,12 +168,9 @@ export function Changes({
       ) : (
         <>
           <ChangesHeader
-            count={files.length}
-            additions={additions}
-            deletions={deletions}
-            follow={follow}
-            busy={busy}
-            onToggleFollow={toggleFollow}
+            totals={{ count: files.length, additions, deletions }}
+            follow={{ on: follow, busy, onToggle: toggleFollow }}
+            walkthrough={walkthrough.start}
             degraded={partial}
           />
           {blockedHint}
