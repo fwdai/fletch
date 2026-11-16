@@ -1,8 +1,13 @@
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { DirListing, FolderGrant, IssueComment, PrSummary, TrackerIssue } from "@/api";
-import { Icon } from "@/components/Icon";
-import { IconButton } from "@/components/ui/IconButton";
+import type {
+  DirListing,
+  FolderGrant,
+  IssueComment,
+  PrSummary,
+  RoadmapItem,
+  TrackerIssue,
+} from "@/api";
 import { lookupModel, lookupModelInList } from "@/data/modelCatalog";
 import {
   PROVIDER_DETAIL,
@@ -12,13 +17,16 @@ import {
 import { DEFAULT_PROVIDER_ID } from "@/data/providers";
 import type { LocalCommandAction } from "@/data/slashCommands";
 import { useAppStore } from "@/store";
+import { activeEntry } from "@/store/capabilities";
 import { composeIssueBrief } from "@/util/issueBrief";
+import { roadmapItemBrief } from "@/util/roadmapBrief";
+import { AddMenu, type CommandChoice } from "./AddMenu";
+import { slashName, useSlashEntries } from "./autocomplete/sources/commands";
 import { blockedSentence, useAgentAvailability } from "./availability";
 import { ComposerFrame } from "./ComposerFrame";
 import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
 import { EffortPicker } from "./EffortPicker";
 import { FolderAccess } from "./FolderAccess";
-import { IssuePicker } from "./IssuePicker";
 import { type AccountControl, ModelPicker } from "./ModelPicker";
 import { NetworkTurn } from "./NetworkTurn";
 import { PrimaryControl, primaryState } from "./PrimaryControl";
@@ -101,13 +109,14 @@ interface Props {
    *  user types (e.g. `@~/Downloads/`), attaching files outside the checkout
    *  by absolute path. Omit to restrict "@" to checkout files. */
   listDir?: (path: string) => Promise<DirListing>;
-  /** Lists the repo's open PRs for the "#" mention autocomplete, which
-   *  inserts a `#<number>` reference. Omit to disable "#" mentions. */
+  /** Lists the repo's open PRs for the "#" mention autocomplete and the add
+   *  menu's list, which both insert a `#<number>` reference. Omit to disable
+   *  both. */
   listPrs?: () => Promise<PrSummary[]>;
   /** Folders can be attached — from the `@` listing or a drop — and are given
    *  to the agent live, at their own paths, through `onSend`'s `folders`. */
   folders?: boolean;
-  /** The folders the agent can already use, listed beside the attach button
+  /** The folders the agent can already use, listed beside the add menu
    *  (`FolderAccess`) with their mode and a way to take each back. Omit for
    *  a new agent (none yet). */
   grantedFolders?: FolderGrant[];
@@ -115,13 +124,14 @@ interface Props {
   onChangeGrantedFolder?: (path: string, writable: boolean) => void;
   /** Take a granted folder back. */
   onRevokeFolder?: (path: string) => void;
-  /** The workspace's VM network for this turn (`NetworkTurn`), beside the
-   *  folders: whether it is open, and the switch. Omit where there is nothing
-   *  to open — the macOS sandbox, an open posture, a host that cannot. */
+  /** The workspace's VM network for this turn: whether it is open, and the
+   *  switch — a row of the add menu, and a lit globe (`NetworkTurn`) while it
+   *  is open. Omit where there is nothing to open — the macOS sandbox, an open
+   *  posture, a host that cannot. */
   network?: { open: boolean; onToggle: (open: boolean) => void };
-  /** Lists open tracker issues (GitHub, Linear) for the footer issue picker;
-   *  picking one appends its brief to the prompt so the agent works that
-   *  exact issue. Omit to hide the picker. */
+  /** Lists open tracker issues (GitHub, Linear) for the add menu's issue
+   *  list; picking one appends its brief to the prompt so the agent works that
+   *  exact issue. Omit to hide the row. */
   listIssues?: () => Promise<TrackerIssue[]>;
   /** Fetches the picked issue's discussion so the brief carries the thread,
    *  not just the body. Optional and best-effort: absent or failing, the
@@ -130,6 +140,13 @@ interface Props {
   /** Fired after an issue pick (in addition to the brief insert), so parents
    *  with a draft can tag it (`issueRef`) for the PR closing trailer. */
   onPickIssue?: (issue: TrackerIssue) => void;
+  /** Lists the project's roadmap for the add menu, which offers the items an
+   *  agent can pick up; picking one appends its brief to the prompt. Omit to
+   *  hide the row. */
+  listRoadmapItems?: () => Promise<RoadmapItem[]>;
+  /** Fired after a roadmap pick (in addition to the brief insert), so the
+   *  parent can record who is working the item. */
+  onPickRoadmapItem?: (item: RoadmapItem) => void;
   /** Text to inject into the input from elsewhere (e.g. the Git panel's
    *  "→ chat" review-comment action). Appended to whatever is already typed,
    *  then `onSeedConsumed` fires so the parent can clear it. */
@@ -218,6 +235,8 @@ export function Composer({
   listIssues,
   listIssueComments,
   onPickIssue,
+  listRoadmapItems,
+  onPickRoadmapItem,
   seed,
   onSeedConsumed,
   draftKey,
@@ -230,6 +249,7 @@ export function Composer({
   const modelCatalog = useAppStore((s) => s.modelCatalog);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const customAgents = useAppStore((s) => s.customAgents);
+  const environment = useAppStore(activeEntry);
   // The listening tooltip promises one of two things — "stops when you pause"
   // or "stop it yourself" — and which is true is the user's setting, not the
   // engine's doing: both engines honour it.
@@ -273,6 +293,23 @@ export function Composer({
     const modelLevels = thinkingLevelsFromModel(modelReasoningLevels);
     return modelLevels.length > 0 ? modelLevels : (providerLevels ?? []);
   }, [modelReasoningLevels, providerLevels]);
+
+  // What the add menu's command list offers: exactly what `/` completes,
+  // skills included only where one can still be attached — at spawn.
+  const slashEntries = useSlashEntries({
+    provider,
+    projectDir,
+    includeSkills: !existingSession,
+  });
+  const commandChoices = useMemo<CommandChoice[]>(
+    () =>
+      slashEntries.map((entry) =>
+        entry.kind === "command"
+          ? { command: entry.cmd.name, description: entry.cmd.description, group: "Commands" }
+          : { command: entry.command, description: entry.description || "Skill", group: "Skills" },
+      ),
+    [slashEntries],
+  );
 
   // Why this draft cannot be sent, in the words the send button shows — or
   // null when it can. The *single* rule: the same `useAgentAvailability` the
@@ -507,11 +544,12 @@ export function Composer({
             )}
           </RunRail>
           <span style={{ flex: 1 }} />
-          {/* Insert actions live on the right, beside the primary control: what
-           *  runs (agent/model/effort) reads left, what goes into this message
-           *  reads right. The mic is not among them — it belongs beside send,
-           *  one step left, inside the control. The folders the agent can
-           *  already use sit beside attach: what it has been given so far. */}
+          {/* What goes into this message reads right, beside the primary
+           *  control, as what runs (agent/model/effort) reads left. One `+`
+           *  holds every way of adding to it; the mic is not among them — it
+           *  belongs beside send, inside the control. Left of the `+` is only
+           *  state worth seeing at a glance: the folders the agent can already
+           *  use, and the network while it is open for this turn. */}
           {grantedFolders && (
             <FolderAccess
               folders={grantedFolders}
@@ -519,25 +557,64 @@ export function Composer({
               onRevoke={(path) => onRevokeFolder?.(path)}
             />
           )}
-          {network && <NetworkTurn open={network.open} onToggle={network.onToggle} />}
-          <IconButton className="composer-action" tip="Attach files" onClick={input.browse}>
-            <Icon name="attach" size={15} />
-          </IconButton>
-          {listIssues && (
-            <IssuePicker
-              listIssues={listIssues}
-              onPick={(issue) => {
-                // The brief lands in the prompt for the user to review/edit;
-                // the parent additionally tags its draft so the eventual PR
-                // closes the issue. The discussion is fetched first so the
-                // brief appends once, as one reviewable block — on a failed
-                // fetch it composes without the discussion section.
-                onPickIssue?.(issue);
-                const comments = listIssueComments?.(issue).catch(() => []) ?? Promise.resolve([]);
-                void comments.then((thread) => input.append(composeIssueBrief(issue, thread)));
-              }}
-            />
-          )}
+          {network?.open && <NetworkTurn onClose={() => network.onToggle(false)} />}
+          <AddMenu
+            onAttachFiles={() => void input.browse()}
+            // A folder is granted at its own path, so only to an agent on this Mac.
+            onAttachFolders={
+              input.acceptsFolders && environment.kind === "local"
+                ? () => void input.browseFolders()
+                : undefined
+            }
+            issues={
+              listIssues && {
+                list: listIssues,
+                onPick: (issue) => {
+                  // The brief lands in the prompt for the user to review/edit;
+                  // the parent additionally tags its draft so the eventual PR
+                  // closes the issue. The discussion is fetched first so the
+                  // brief appends once, as one reviewable block — on a failed
+                  // fetch it composes without the discussion section.
+                  onPickIssue?.(issue);
+                  const comments =
+                    listIssueComments?.(issue).catch(() => []) ?? Promise.resolve([]);
+                  void comments.then((thread) => input.append(composeIssueBrief(issue, thread)));
+                },
+              }
+            }
+            roadmap={
+              listRoadmapItems && {
+                list: listRoadmapItems,
+                onPick: (item) => {
+                  onPickRoadmapItem?.(item);
+                  input.append(roadmapItemBrief(item));
+                },
+              }
+            }
+            prs={listPrs && { list: listPrs, onPick: (pr) => input.insert(`#${pr.number}`) }}
+            commands={
+              commandChoices.length > 0
+                ? {
+                    choices: commandChoices,
+                    onPick: (command) => {
+                      const entry = slashEntries.find((e) => slashName(e) === command);
+                      // An app-handled command acts at once, as it does picked
+                      // from the `/` menu; the rest are invoked by the
+                      // `/command` that opens the message.
+                      if (entry?.kind === "command" && entry.cmd.kind === "local") {
+                        onLocalCommand?.(entry.cmd.action);
+                      } else {
+                        input.insert(`/${command}`, "start");
+                      }
+                    },
+                  }
+                : undefined
+            }
+            network={network}
+            // The same rule the `@` source goes by (`useFileSource`).
+            fileMentions={!!(mentionSource || listDir)}
+            onClose={() => input.ta.current?.focus()}
+          />
           <span className="composer-foot-sep" aria-hidden />
           <PrimaryControl
             state={state}

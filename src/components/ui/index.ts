@@ -12,7 +12,15 @@ export { CopyButton } from "./CopyButton";
 export { DeviceCode } from "./DeviceCode";
 export { DocsLink } from "./DocsLink";
 export { DropdownItem, DropdownMenu, DropdownSection, DropdownSeparator } from "./Dropdown";
-export { FlyoutMenu, FlyoutOption, FlyoutRow, FlyoutSection, SideFlyout } from "./FlyoutMenu";
+export {
+  FlyoutFoot,
+  FlyoutGlyph,
+  FlyoutMenu,
+  FlyoutOption,
+  FlyoutRow,
+  FlyoutSection,
+  SideFlyout,
+} from "./FlyoutMenu";
 export { IconButton } from "./IconButton";
 export type { LoaderSize, LoaderVariant } from "./Loader";
 export { Loader } from "./Loader";

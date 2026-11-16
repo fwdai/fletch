@@ -26,24 +26,26 @@ interface Args {
   onLocalCommand?: (action: LocalCommandAction) => void;
 }
 
-/** One matched menu entry: a provider slash command, or a library skill
+/** One thing `/` invokes: a provider slash command, or a library skill
  *  offered under its slugged invocation token. */
-type Entry =
+export type SlashEntry =
   | { kind: "command"; cmd: SlashCommand }
   | { kind: "skill"; command: string; description: string };
 
-/** The "/" source: provider-specific slash commands (built-ins + commands
- *  discovered from disk), then — for new-agent composers — library skills.
- *  Picking a passthrough command or a skill inserts `/<name> ` for the user to
- *  send; a local command fires its action instead. Only fires at the start of
- *  a line. */
-export function useCommandSource({
-  query,
+/** The token an entry is invoked by, without the slash. */
+export function slashName(entry: SlashEntry): string {
+  return entry.kind === "command" ? entry.cmd.name : entry.command;
+}
+
+/** Everything `/` offers for a provider, in menu order: its slash commands
+ *  (built-ins + commands discovered from disk), then — where `includeSkills` —
+ *  the library skills. Shared by the `/` autocomplete and the add menu's
+ *  command list, so both offer exactly the same set. */
+export function useSlashEntries({
   provider,
   projectDir,
   includeSkills,
-  onLocalCommand,
-}: Args): AcSource {
+}: Pick<Args, "provider" | "projectDir" | "includeSkills">): SlashEntry[] {
   // Seed synchronously (built-ins + anything already cached) so the list is
   // never empty on mount, then refresh from disk. discoverCommands also
   // populates the module cache that the store's passthroughSlashName reads.
@@ -70,23 +72,42 @@ export function useCommandSource({
     [includeSkills, skills, provider],
   );
 
-  const matched = useMemo<Entry[]>(() => {
-    if (query === null) return [];
-    const q = query.toLowerCase();
+  return useMemo<SlashEntry[]>(() => {
     // Skill tokens never equal a built-in name (those skills were dropped), so
     // this filter can only ever hide discovered commands.
     const claimed = new Set(skillEntries.map((s) => s.command));
     return [
       ...commands
-        .filter((c) => !claimed.has(c.name) && c.name.toLowerCase().startsWith(q))
-        .map((cmd): Entry => ({ kind: "command", cmd })),
-      ...skillEntries
-        .filter((s) => s.command.startsWith(q))
-        .map(
-          (s): Entry => ({ kind: "skill", command: s.command, description: s.skill.description }),
-        ),
+        .filter((c) => !claimed.has(c.name))
+        .map((cmd): SlashEntry => ({ kind: "command", cmd })),
+      ...skillEntries.map(
+        (s): SlashEntry => ({
+          kind: "skill",
+          command: s.command,
+          description: s.skill.description,
+        }),
+      ),
     ];
-  }, [commands, skillEntries, query]);
+  }, [commands, skillEntries]);
+}
+
+/** The "/" source: every slash entry whose name starts with what was typed.
+ *  Picking a passthrough command or a skill inserts `/<name> ` for the user to
+ *  send; a local command fires its action instead. Only fires at the start of
+ *  a line. */
+export function useCommandSource({
+  query,
+  provider,
+  projectDir,
+  includeSkills,
+  onLocalCommand,
+}: Args): AcSource {
+  const entries = useSlashEntries({ provider, projectDir, includeSkills });
+  const matched = useMemo<SlashEntry[]>(() => {
+    if (query === null) return [];
+    const q = query.toLowerCase();
+    return entries.filter((e) => slashName(e).toLowerCase().startsWith(q));
+  }, [entries, query]);
 
   const rows: AcSource["rows"] = matched.map((m) =>
     m.kind === "command"

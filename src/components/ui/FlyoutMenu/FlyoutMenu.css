@@ -10,6 +10,12 @@
   /* The side panel is absolute, so it must not be clipped by the wrapper. */
   overflow: visible;
 }
+/* The card's right edge on its trigger's, for a trigger near the right end of
+ * its row. */
+.fly-menu.is-end {
+  left: auto;
+  right: 0;
+}
 .fly-menu-card {
   position: relative;
   z-index: 2;
@@ -26,6 +32,29 @@
   overflow-y: auto;
   transform-origin: bottom left;
   animation: flyMenuIn 0.17s var(--ease);
+}
+.fly-menu.is-end .fly-menu-card {
+  transform-origin: bottom right;
+}
+/* A card with a least height (`minHeight`): a short menu beside a long list,
+ * held to one height so the two read as a single surface. Its rows keep to
+ * the top, and a `FlyoutFoot` to the bottom. */
+.fly-menu.has-min .fly-menu-card {
+  display: flex;
+  flex-direction: column;
+  min-height: min(var(--fly-min-h), calc(100vh - 96px));
+}
+.fly-menu.has-min .fly-menu-card > * {
+  flex-shrink: 0;
+}
+/* The card's closing line: a hint, set under a rule at its bottom edge. */
+.fly-foot {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: auto 5px 0;
+  padding: 8px 5px 5px;
+  border-top: 1px solid var(--bd-soft);
+  color: var(--fg-3);
 }
 @keyframes flyMenuIn {
   from {
@@ -102,6 +131,31 @@
   opacity: 1;
   transform: translateX(2px);
 }
+/* A boxed glyph, for a row with no avatar or logo of its own. Lights with its
+ * row. */
+.fly-glyph {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--bd);
+  border-radius: 7px;
+  color: var(--fg-2);
+  transition:
+    border-color 0.12s var(--ease),
+    color 0.12s var(--ease);
+}
+.fly-row.hot .fly-glyph,
+.fly-row:not(.is-disabled):hover .fly-glyph {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.fly-glyph.is-head {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+}
 /* Side panel — full height of the main card, tucked ~16px under its right
  *  edge (z-index below the card, no left border/radius) so it reads as sliding
  *  out from underneath rather than floating beside it. */
@@ -113,7 +167,7 @@
   /* Cap against the viewport so the panel can't run off-screen on a narrow
    *  window. 280px = the main card's 296px width minus the 16px tuck-under;
    *  44px leaves a small right margin. */
-  width: min(252px, calc(100vw - 280px - 44px));
+  width: min(var(--fly-side-w, 252px), calc(100vw - 280px - 44px));
   z-index: 1;
   animation: flySideIn 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -142,6 +196,40 @@
   box-shadow:
     5px 0 16px -7px rgba(0, 0, 0, 0.55),
     0 18px 48px -12px rgba(0, 0, 0, 0.55);
+}
+/* The same panel on the card's left, where the right has no room for it. */
+.fly-menu.is-flipped .fly-side {
+  left: auto;
+  right: calc(100% - 16px);
+  animation-name: flySideInLeft;
+}
+@keyframes flySideInLeft {
+  from {
+    transform: translateX(30px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.fly-menu.is-flipped .fly-side-card {
+  padding-left: 0;
+  padding-right: 16px;
+  border-left: 1px solid var(--bd);
+  border-right: 0;
+  border-radius: 13px 0 0 13px;
+  box-shadow:
+    -5px 0 16px -7px rgba(0, 0, 0, 0.55),
+    0 18px 48px -12px rgba(0, 0, 0, 0.55);
+}
+/* The chevrons of the card's rows point at the panel. */
+.fly-menu.is-flipped .fly-row > svg:last-child {
+  transform: scaleX(-1);
+}
+.fly-menu.is-flipped .fly-row.hot > svg:last-child,
+.fly-menu.is-flipped .fly-row:not(.is-disabled):hover > svg:last-child {
+  transform: translateX(-2px) scaleX(-1);
 }
 .fly-side-inner {
   display: flex;
@@ -181,6 +269,13 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 5px;
+}
+/* A panel whose content scrolls a part of itself (a filter over its list)
+ * rather than as a whole (`fill`). */
+.fly-side-list.is-fill {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .fly-list {
   min-height: 0;

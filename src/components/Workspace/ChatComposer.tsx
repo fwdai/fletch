@@ -99,6 +99,13 @@ export function ChatComposer({
     };
   }, [projectId]);
 
+  // The roadmap item picked into the draft is handed to this agent once the
+  // message that carries its brief has reached the host — the board's "Send
+  // to an agent" rule: a pick the user abandons stamps nothing. It is kept in
+  // the store beside the draft text, so it outlives what the text outlives.
+  const setRoadmapPick = useAppStore((s) => s.setComposerRoadmapPick);
+  const clearRoadmapPick = useAppStore((s) => s.clearComposerRoadmapPick);
+
   // Mid-turn follow-ups are allowed: a busy (running) agent still accepts a
   // message — delivered live (claude) or queued for the next turn boundary
   // (per-turn agents). So `canSend` no longer gates on `busy`; the Composer
@@ -209,6 +216,8 @@ export function ChatComposer({
                 console.error("set_agent_issue_ref failed", e);
               });
             }}
+            listRoadmapItems={projectId ? () => api.roadmapListItems(projectId) : undefined}
+            onPickRoadmapItem={(item) => setRoadmapPick(agent.id, { id: item.id, code: item.code })}
             seed={composerSeed}
             onSeedConsumed={onSeedConsumed}
             draftKey={agent.id}
@@ -224,7 +233,29 @@ export function ChatComposer({
               // waits for the turn's end (or "Apply now" in the working
               // strip). A refused folder is in the error banner, and false
               // puts the draft back to fix.
-              return send(agent.id, text, attachments, folders);
+              // Read at send rather than subscribed to: nothing draws from it.
+              const pick = useAppStore.getState().composerRoadmapPicks[agent.id];
+              // The message still names the item, so it is what is going out.
+              const carried = pick && text.includes(pick.code) ? pick : undefined;
+              const sent = send(agent.id, text, attachments, folders, {
+                onDelivered: carried
+                  ? () => {
+                      // Best-effort: a failure only loses the board's link.
+                      api.roadmapHandOffItem(carried.id, agent.id).catch((e) => {
+                        console.error("roadmap_hand_off_item failed", e);
+                      });
+                    }
+                  : undefined,
+              });
+              if (pick) {
+                // A refused send puts the draft back, and the pick stays with
+                // it; any other outcome has spent the draft. Only this send's
+                // own pick goes: one made since belongs to the next draft.
+                void sent.then((ok) => {
+                  if (ok !== false) clearRoadmapPick(agent.id, pick.id);
+                });
+              }
+              return sent;
             }}
             onStop={() => stop(agent.id)}
           />

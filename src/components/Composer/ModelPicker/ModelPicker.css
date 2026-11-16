@@ -36,33 +36,10 @@
 }
 
 /* Custom agents row: a card row whose flyout lists the custom agents.
-   Set a little apart from the coding agents above it. Its glyph is a boxed
-   shapes icon (the Customize pane's), swapped for the active agent's mono. */
+   Set a little apart from the coding agents above it. Its glyph is the
+   Customize pane's shapes icon, swapped for the active agent's mono. */
 .model-custom-sum {
   margin-top: 4px;
-}
-.model-custom-sum-icon {
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--bd);
-  border-radius: 7px;
-  color: var(--fg-2);
-  transition:
-    border-color 0.12s var(--ease),
-    color 0.12s var(--ease);
-}
-.model-custom-sum:hover .model-custom-sum-icon,
-.model-custom-sum.hot .model-custom-sum-icon {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.model-custom-sum-icon.is-head {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
 }
 
 /* branch picker scroll buttons */

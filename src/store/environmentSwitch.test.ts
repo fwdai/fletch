@@ -133,6 +133,7 @@ describe("switchEnvironment", () => {
       workspace: ws("local"),
       selectedAgentId: "fuji",
       composerDrafts: { fuji: "half-typed" },
+      composerRoadmapPicks: { fuji: { id: "item-1", code: "FLT-1" } },
     });
 
     await store.getState().switchEnvironment(HOST);
@@ -142,6 +143,7 @@ describe("switchEnvironment", () => {
     expect(store.getState().workspace).toBeNull();
     expect(store.getState().selectedAgentId).toBeNull();
     expect(store.getState().composerDrafts).toEqual({});
+    expect(store.getState().composerRoadmapPicks).toEqual({});
     // …and it is all parked on the entry it belongs to.
     const local = store.getState().environments[LOCAL_ENVIRONMENT_ID];
     expect(local.lastSelectedAgentId).toBe("fuji");
@@ -152,12 +154,17 @@ describe("switchEnvironment", () => {
       workspace: ws("remote"),
       selectedAgentId: "fuji",
       composerDrafts: { fuji: "typed on the host" },
+      composerRoadmapPicks: { fuji: { id: "item-9", code: "HST-9" } },
     });
     await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
 
     expect(store.getState().workspace).toEqual(ws("local"));
     expect(store.getState().selectedAgentId).toBe("fuji");
     expect(store.getState().composerDrafts).toEqual({ fuji: "half-typed" });
+    // The pick comes back with its draft, not the host's same-named agent's.
+    expect(store.getState().composerRoadmapPicks).toEqual({
+      fuji: { id: "item-1", code: "FLT-1" },
+    });
     // The host's own view is parked in its turn, not lost.
     expect(store.getState().environments[HOST].stash?.composerDrafts).toEqual({
       fuji: "typed on the host",

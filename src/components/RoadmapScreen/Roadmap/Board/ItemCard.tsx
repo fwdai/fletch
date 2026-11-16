@@ -12,6 +12,7 @@ import { Icon, type IconName } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { formatAge } from "@/util/format";
+import { roadmapItemBrief } from "@/util/roadmapBrief";
 import { EVENT_LABEL, eventDetailUrl, eventLine } from "../itemHistory";
 import { buildProposalDiff, isEmptyDiff } from "../proposalDiff";
 import { cardRuling } from "../ruling";
@@ -155,15 +156,6 @@ interface Props {
   onEdit?: () => void;
   /** Lets the board scroll a focused row into view. */
   cardRef?: (el: HTMLDivElement | null) => void;
-}
-
-/** The item as a starting prompt for an agent: what to build, why, and what
- *  "done" means. Prefills the new draft's composer so the user reviews and
- *  launches rather than retyping the row. */
-function briefFor(item: BoardItem): string {
-  const lines = [`${item.code}: ${item.title}`, "", item.why];
-  if (item.accept?.length) lines.push("", "Done when:", ...item.accept.map((a) => `- ${a}`));
-  return lines.join("\n").trim();
 }
 
 /** One roadmap row: a click-to-expand header line (code, title, source)
@@ -463,7 +455,7 @@ export function ItemCard({
                     // spawns one (see `spawnFromDraft`). A draft the user
                     // abandons therefore stamps nothing.
                     const draftId = await createDraft(repoPath, {
-                      seedPrompt: briefFor(item),
+                      seedPrompt: roadmapItemBrief(item),
                       roadmapItemId: item.item.id,
                     });
                     // The draft lives in the workspace, which this page covers —
