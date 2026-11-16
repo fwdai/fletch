@@ -1,14 +1,16 @@
 // @vitest-environment happy-dom
 import { useRef } from "react";
 import { afterEach, describe, expect, it } from "vitest";
-import { fireEvent, render } from "@/test/render";
+import { useAppStore } from "@/store";
+import { fireEvent, render, renderHook } from "@/test/render";
+import { useGlobalShortcuts } from "@/util/shortcuts";
 import { useFocusScope } from "./useFocusScope";
 
-function Dialog({ autoFocus }: { autoFocus?: boolean }) {
+function Dialog({ autoFocus, label = "dialog" }: { autoFocus?: boolean; label?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useFocusScope(ref);
   return (
-    <div ref={ref} role="dialog">
+    <div ref={ref} role="dialog" aria-label={label}>
       <button type="button">first</button>
       <input aria-label="field" autoFocus={autoFocus} />
       <button type="button">last</button>
@@ -25,6 +27,9 @@ function focusedOutside(): HTMLInputElement {
 }
 
 const tab = (el: Element, shiftKey = false) => fireEvent.keyDown(el, { key: "Tab", shiftKey });
+
+/** Past the microtask the focus check waits in. */
+const settled = () => Promise.resolve();
 
 describe("useFocusScope", () => {
   afterEach(() => {
@@ -73,5 +78,56 @@ describe("useFocusScope", () => {
     unmount();
     expect(document.activeElement).toBe(elsewhere);
     expect(document.activeElement).not.toBe(outside);
+  });
+
+  it("takes focus back from anything outside while it is open", async () => {
+    const outside = focusedOutside();
+    const { getByText } = render(<Dialog />);
+    const first = getByText("first");
+    first.focus();
+    await settled();
+
+    outside.focus();
+    await settled();
+    // Back to where it was inside, not to the top of the dialog.
+    expect(document.activeElement).toBe(first);
+  });
+
+  it("leaves focus alone inside a dialog opened over it", async () => {
+    const { getByRole } = render(
+      <>
+        <Dialog label="under" />
+        <Dialog label="over" autoFocus />
+      </>,
+    );
+    await settled();
+    const over = getByRole("dialog", { name: "over" });
+    expect(over.contains(document.activeElement)).toBe(true);
+
+    // The one underneath does not answer Tab while it is covered.
+    const last = over.querySelector("button:last-of-type") as HTMLElement;
+    last.focus();
+    tab(last);
+    expect(over.contains(document.activeElement)).toBe(true);
+  });
+
+  it("keeps the keyboard when a global shortcut focuses the composer behind it", async () => {
+    const composer = document.createElement("textarea");
+    composer.className = "composer-input";
+    document.body.append(composer);
+    useAppStore.setState({ paletteOpen: false });
+    renderHook(() => useGlobalShortcuts());
+    const { getByRole } = render(<Dialog />);
+    const dialog = getByRole("dialog");
+
+    // ⌘L / Ctrl+L: "Focus the composer".
+    fireEvent.keyDown(dialog, { key: "l", metaKey: true });
+    fireEvent.keyDown(dialog, { key: "l", ctrlKey: true });
+    await settled();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    // And Tab stays inside rather than walking the page behind.
+    tab(document.activeElement as Element, true);
+    expect(dialog.contains(document.activeElement)).toBe(true);
   });
 });

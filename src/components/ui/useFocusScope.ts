@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useRef } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -8,10 +8,37 @@ function tabStops(scope: HTMLElement): HTMLElement[] {
   return Array.from(scope.querySelectorAll<HTMLElement>(FOCUSABLE));
 }
 
+interface Scope {
+  el: HTMLElement;
+  /** Where focus last was inside it, to go back to rather than to the top. */
+  last: HTMLElement | null;
+}
+
+/** Every mounted dialog that holds the keyboard, in mount order. They stack —
+ *  the palette over a modal, a folder picker over New Project — and only the
+ *  topmost holds it. */
+const scopes: Scope[] = [];
+
+/** Focus belongs inside the topmost dialog. Whatever moved it out — a global
+ *  shortcut focusing the composer, a field behind the scrim focusing itself —
+ *  it is handed back, so nothing behind a dialog can be typed into or tabbed
+ *  through. Checked a microtask later: a dialog mounting in this same commit
+ *  focuses its own field before it has joined the stack. */
+function onFocusIn() {
+  queueMicrotask(() => {
+    const top = scopes.at(-1);
+    const at = document.activeElement;
+    if (!top || !(at instanceof HTMLElement) || at === document.body) return;
+    if (top.el.contains(at)) top.last = at;
+    else (top.last?.isConnected ? top.last : top.el).focus();
+  });
+}
+
 /** Keep the keyboard inside a dialog for as long as it is mounted: focus moves
- *  into `ref`'s element as it opens, Tab cycles within it, and focus goes back
- *  to where it was when it closes. Without it a dialog opened by a chord
- *  leaves the caret in the field behind its scrim.
+ *  into `ref`'s element as it opens, stays there (Tab cycles within it, and
+ *  focus sent anywhere else comes back), and returns to where it was when the
+ *  dialog closes. Without it a dialog opened by a chord leaves the caret in
+ *  the field behind its scrim.
  *
  *  Focus lands on the dialog itself, not its first control: a focused Close
  *  button would turn the next Enter into a dismissal. Content that focuses a
@@ -23,24 +50,28 @@ export function useFocusScope(ref: RefObject<HTMLElement | null>) {
   // dialog has already moved it.
   const returnTo = useRef<Element | null>(document.activeElement);
 
-  useEffect(() => {
-    const scope = ref.current;
-    if (!scope) return;
-    scope.dataset.focusScope = "";
-    if (!scope.hasAttribute("tabindex")) scope.tabIndex = -1;
-    if (!scope.contains(document.activeElement)) scope.focus();
+  // Joined in the layout phase, so the stack is right before the microtask
+  // that checks where this commit left focus; left in it too, so the focus
+  // handed back below is not taken for an escape.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const scope: Scope = { el, last: null };
+    scopes.push(scope);
+    if (scopes.length === 1) document.addEventListener("focusin", onFocusIn);
 
+    // On the document, after the dialog's own handlers have had the key.
     const onKey = (e: KeyboardEvent) => {
-      // A control that uses Tab itself (a terminal) or a dialog nested in
-      // this one has already answered.
-      if (e.key !== "Tab" || e.defaultPrevented) return;
-      const stops = tabStops(scope);
+      // Not this dialog's while another is open over it; and a control that
+      // uses Tab itself (a terminal, the palette's input) has already answered.
+      if (e.key !== "Tab" || e.defaultPrevented || scopes.at(-1) !== scope) return;
+      const stops = tabStops(el);
       const first = stops[0];
       const last = stops.at(-1);
       const at = document.activeElement;
       if (!first || !last) {
         e.preventDefault();
-      } else if (e.shiftKey && (at === first || at === scope)) {
+      } else if (e.shiftKey && (at === first || at === el)) {
         e.preventDefault();
         last.focus();
       } else if (!e.shiftKey && at === last) {
@@ -48,14 +79,26 @@ export function useFocusScope(ref: RefObject<HTMLElement | null>) {
         first.focus();
       }
     };
-    scope.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey);
 
     return () => {
-      scope.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey);
+      scopes.splice(scopes.indexOf(scope), 1);
+      if (scopes.length === 0) document.removeEventListener("focusin", onFocusIn);
+    };
+  }, [ref]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.dataset.focusScope = "";
+    if (!el.hasAttribute("tabindex")) el.tabIndex = -1;
+    if (!el.contains(document.activeElement)) el.focus();
+    return () => {
       const at = document.activeElement;
-      const untouched = !at || at === document.body || scope.contains(at);
-      const el = returnTo.current;
-      if (untouched && el instanceof HTMLElement && el.isConnected) el.focus();
+      const untouched = !at || at === document.body || el.contains(at);
+      const back = returnTo.current;
+      if (untouched && back instanceof HTMLElement && back.isConnected) back.focus();
     };
   }, [ref]);
 }

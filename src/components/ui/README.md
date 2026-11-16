@@ -52,8 +52,9 @@ call sites never choose a side. No JS tooltip library.
   `IconButton` — see `components/PanelToggle` for the two side rails.
 - **A dialog holds the keyboard.** `Modal` and `ModalSheet` do it themselves;
   a popover built on a bare `Scrim` with `role="dialog"` calls `useFocusScope`
-  on its card: focus moves in as it opens, Tab stays inside, and focus returns
-  to where it was on close. Escape is the topmost surface's alone (`Scrim`,
+  on its card: focus moves in as it opens, stays inside (Tab cycles, and focus
+  sent anywhere else by a shortcut or a field behind the scrim comes back to
+  the topmost dialog), and returns to where it was on close. Escape is the topmost surface's alone (`Scrim`,
   `useEscape`); the global Escape action runs only when none is up.
 - Import directly (`import { Badge } from "../ui/Badge"`) or via the barrel
   (`import { Badge } from "../ui"`).
