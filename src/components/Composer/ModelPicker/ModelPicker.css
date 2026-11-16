@@ -1,226 +1,6 @@
-/* Transparent positioning wrapper. Holds the main card (above) and the model
- *  side panel (below it) so the panel slides out from underneath the dropdown. */
-.model-dd-wrap {
-  position: absolute;
-  left: 0;
-  /* Grows upward: this picker only ever mounts in the composer, which sits on
-   * the bottom edge of the window. */
-  bottom: calc(100% + 6px);
-  z-index: var(--z-dropdown);
-  /* The side panel is absolute, so it must not be clipped by the wrapper. */
-  overflow: visible;
-}
-.model-dd-main {
-  position: relative;
-  z-index: 2;
-  width: min(296px, calc(100vw - 28px));
-  padding: 5px;
-  background: var(--bg-2);
-  border: 1px solid var(--bd);
-  border-radius: 13px;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.04) inset,
-    0 18px 48px -12px rgba(0, 0, 0, 0.55),
-    0 4px 12px rgba(0, 0, 0, 0.3);
-  max-height: calc(100vh - 96px);
-  overflow-y: auto;
-  transform-origin: bottom left;
-  animation: modelDdIn 0.17s var(--ease);
-}
-@keyframes modelDdIn {
-  from {
-    opacity: 0;
-    transform: translateY(7px) scale(0.975);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-/* Section header with trailing rule, mirroring the prototype's dividers. */
-.model-sect {
-  gap: 7px;
-  padding: 9px 10px 5px;
-  color: var(--fg-3);
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-.model-sect-line {
-  flex: 1;
-  height: 1px;
-  background: var(--bd-soft);
-}
-/* Coding agent row: name, version, chevron. Hovering opens the side panel. */
-.model-agent-row {
-  width: 100%;
-  min-width: 0;
-  gap: 10px;
-  padding: 7px 9px;
-  border-radius: 9px;
-  color: var(--fg-1);
-  text-align: left;
-  transition: background 0.12s var(--ease);
-}
-.model-agent-row:not(.is-disabled):hover,
-.model-agent-row.hot {
-  background: var(--hover);
-}
-.model-agent-row.active {
-  background: var(--selected);
-}
-/* .is-disabled, not :disabled — the row uses aria-disabled so it stays
- * hover-capable and can surface its tooltip (see AgentList.tsx). */
-.model-agent-row.is-disabled {
-  opacity: 0.42;
-  cursor: default;
-}
-.model-agent-name {
-  flex: 1;
-  min-width: 0;
-  font-weight: 500;
-  color: var(--fg-0);
-}
-.model-agent-ver {
-  flex-shrink: 0;
-  color: var(--fg-3);
-  font-family: var(--font-mono);
-}
-.model-agent-row > svg:last-child {
-  flex-shrink: 0;
-  color: var(--fg-3);
-  opacity: 0.65;
-  transition:
-    transform 0.16s var(--ease),
-    color 0.16s,
-    opacity 0.16s;
-}
-.model-agent-row:not(.is-disabled):hover > svg:last-child,
-.model-agent-row.hot > svg:last-child {
-  color: var(--accent);
-  opacity: 1;
-  transform: translateX(2px);
-}
-/* Model side panel — full height of the main card, tucked ~16px under its right
- *  edge (z-index below the main, no left border/radius) so it reads as sliding
- *  out from underneath rather than floating beside it. */
-.model-side-fly {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc(100% - 16px);
-  /* Cap against the viewport so the panel can't run off-screen on a narrow
-   *  window. 280px = the main card's 296px width minus the 16px tuck-under;
-   *  44px leaves a small right margin. */
-  width: min(252px, calc(100vw - 280px - 44px));
-  z-index: 1;
-  animation: modelSideFly 0.28s cubic-bezier(0.22, 1, 0.36, 1);
-}
-@keyframes modelSideFly {
-  from {
-    transform: translateX(-30px);
-    opacity: 0;
-  }
-  to {
-    transform: none;
-    opacity: 1;
-  }
-}
-.model-side-fly-card {
-  height: 100%;
-  /* Left padding clears the tucked-under strip so content starts at the
-   *  main card's visible right edge. */
-  padding-left: 16px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--bg-2);
-  border: 1px solid var(--bd);
-  border-left: 0;
-  border-radius: 0 13px 13px 0;
-  box-shadow:
-    5px 0 16px -7px rgba(0, 0, 0, 0.55),
-    0 18px 48px -12px rgba(0, 0, 0, 0.55);
-}
-.model-side-fly-inner {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  height: 100%;
-  animation: modelFadeSwap 0.2s var(--ease);
-}
-@keyframes modelFadeSwap {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-.model-side-fly-head {
-  flex-shrink: 0;
-  gap: 9px;
-  padding: 9px 11px;
-  border-bottom: 1px solid var(--bd-soft);
-}
-.model-side-fly-name {
-  flex: 1;
-  min-width: 0;
-  font-weight: 600;
-  color: var(--fg-0);
-}
-.model-side-fly-tag {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  color: var(--fg-3);
-}
-.model-side-fly-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 5px;
-}
-.model-list {
-  min-height: 0;
-}
-.model-option {
-  width: 100%;
-  min-width: 0;
-  gap: 9px;
-  padding: 6px 9px;
-  border-radius: 8px;
-  color: var(--fg-1);
-  text-align: left;
-  transition: background 0.1s var(--ease);
-}
-.model-option:hover {
-  background: var(--hover);
-}
-.model-option.active {
-  background: var(--selected);
-}
-.model-option > svg {
-  flex-shrink: 0;
-  color: var(--accent);
-}
-.model-option-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.model-option-name {
-  font-weight: 500;
-  color: var(--fg-0);
-}
-.model-option-name.def {
-  font-weight: 600;
-}
-.model-option-desc {
-  color: var(--fg-3);
-}
+/* The model picker's own dressing of the shared flyout menu
+ *  (ui/FlyoutMenu/FlyoutMenu.css): what a model, an account and the custom
+ *  agents add to its rows. */
 .model-ctx {
   flex-shrink: 0;
   padding: 2px 5px;
@@ -230,64 +10,32 @@
   color: var(--fg-2);
   white-space: nowrap;
 }
-.model-option.active .model-ctx {
+.fly-option.active .model-ctx {
   border-color: var(--accent);
   color: var(--accent);
 }
-.model-empty {
-  margin: 8px;
-  padding: 16px 14px;
-  border: 1px dashed var(--bd);
-  border-radius: 9px;
-  color: var(--fg-3);
-  text-align: center;
-}
 /* Account row and flyout. The row is a model row led by the account's avatar,
    with a chevron bright enough to say a list opens beside it. */
-.model-acct-row.hot {
-  background: var(--hover);
-}
-.model-option.model-acct-row > .model-acct-chev {
+.fly-option.model-acct-row > .model-acct-chev {
   color: var(--fg-1);
   transition:
     transform 0.16s var(--ease),
     color 0.16s;
 }
-.model-option.model-acct-row:hover > .model-acct-chev,
-.model-option.model-acct-row.hot > .model-acct-chev {
+.fly-option.model-acct-row:hover > .model-acct-chev,
+.fly-option.model-acct-row.hot > .model-acct-chev {
   color: var(--accent);
   transform: translateX(2px);
 }
-.model-acct-spent,
-.model-option-desc.is-spent {
+.model-acct-spent {
   color: var(--warn);
 }
 .model-acct-note {
   padding: 4px 9px 6px;
   color: var(--fg-3);
 }
-.model-option.is-disabled {
-  opacity: 0.42;
-  cursor: default;
-}
-.model-option.is-disabled:hover {
-  background: none;
-}
-/* A flyout's closing row to its settings pane (accounts, custom agents). */
-.model-fly-manage {
-  margin-top: 4px;
-  border-top: 1px solid var(--bd-soft);
-  border-radius: 0 0 8px 8px;
-}
-.model-fly-manage .model-option-name {
-  font-weight: 400;
-  color: var(--fg-2);
-}
-.model-option.model-fly-manage > svg {
-  color: var(--fg-3);
-}
 
-/* Custom agents row: an agent row whose flyout lists the custom agents.
+/* Custom agents row: a card row whose flyout lists the custom agents.
    Set a little apart from the coding agents above it. Its glyph is a boxed
    shapes icon (the Customize pane's), swapped for the active agent's mono. */
 .model-custom-sum {

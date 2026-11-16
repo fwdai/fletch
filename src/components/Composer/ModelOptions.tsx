@@ -1,4 +1,4 @@
-import { Icon } from "@/components/Icon";
+import { FlyoutOption } from "@/components/ui/FlyoutMenu";
 import type { Provider } from "@/data/providers";
 import { useAppStore } from "@/store";
 
@@ -36,53 +36,41 @@ export function ModelOptions({
   const models = modelsByAgent[provider.id] ?? [];
 
   return (
-    <div className="model-list">
-      <button
-        type="button"
-        className={`model-option flex-center ${isCurrent && !model ? "active" : ""}`}
+    <div className="fly-list">
+      <FlyoutOption
+        strong
+        name="Default model"
+        desc={`Use ${provider.label}'s configured default`}
+        active={isCurrent && !model}
         onClick={(e) => {
           e.stopPropagation();
           onPick(provider.id, undefined);
         }}
-      >
-        <span className="model-option-main">
-          <span className="model-option-name truncate def text-base">Default model</span>
-          <span className="model-option-desc truncate text-xs">
-            Use {provider.label}'s configured default
-          </span>
-        </span>
-        {isCurrent && !model && <Icon name="check" size={13} />}
-      </button>
+      />
 
       {models.length === 0 ? (
-        <div className="model-empty text-sm">
+        <div className="fly-empty text-sm">
           {provider.fixedModel
             ? `${provider.label} manages its own model — no selection needed.`
             : `Model catalog unavailable for ${provider.label}.`}
         </div>
       ) : (
-        models.map((m) => {
-          const active = isCurrent && m.id === model;
-          return (
-            <button
-              key={m.id}
-              type="button"
-              className={`model-option flex-center ${active ? "active" : ""}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onPick(provider.id, m.id);
-              }}
-            >
-              <span className="model-option-main">
-                <span className="model-option-name truncate text-base">{m.name}</span>
-              </span>
-              {m.contextWindow > 0 && (
+        models.map((m) => (
+          <FlyoutOption
+            key={m.id}
+            name={m.name}
+            trail={
+              m.contextWindow > 0 && (
                 <span className="model-ctx text-xs">{formatContext(m.contextWindow)}</span>
-              )}
-              {active && <Icon name="check" size={13} />}
-            </button>
-          );
-        })
+              )
+            }
+            active={isCurrent && m.id === model}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPick(provider.id, m.id);
+            }}
+          />
+        ))
       )}
     </div>
   );
