@@ -3,24 +3,28 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { LimitsPanel } from "@/components/SettingsScreen/ProvidersPane/AccountsSection/LimitsPanel";
 import { agoLabel } from "@/components/SettingsScreen/ProvidersPane/AccountsSection/limitsFormat";
 import { Badge } from "@/components/ui/Badge";
+import { Spinner } from "@/components/ui/Spinner";
 import { accountLabel } from "@/data/providerAccounts";
 import { type ProviderId, providerChip, providerLabel } from "@/data/providers";
 
-/** One account in the popover: whose it is and how old its reading is, over
- *  the same limits panel Settings › Providers shows, in its compact form.
- *  `solo` is a provider's only account, which the provider's name alone
- *  already identifies. */
+/** One account in the popover: whose it is and how old its reading is (or
+ *  that a newer one is being fetched), over the same limits panel Settings ›
+ *  Providers shows, in its compact form. `solo` is a provider's only account,
+ *  which the provider's name alone already identifies. */
 export function AccountBlock({
   providerId,
   account,
   solo,
   row,
+  refreshing,
   nowMs,
 }: {
   providerId: ProviderId;
   account: ProviderAccount;
   solo: boolean;
   row: AccountLimits | undefined;
+  /** A fresh reading is on its way: the age gives way to a spinner. */
+  refreshing: boolean;
   nowMs: number;
 }) {
   const asOf = row?.limits?.as_of;
@@ -35,8 +39,12 @@ export function AccountBlock({
             active
           </Badge>
         )}
-        {asOf !== undefined && (
-          <span className="lim-acct-age text-xs">{agoLabel(asOf, nowMs)}</span>
+        {refreshing ? (
+          <Spinner size={11} className="lim-acct-age" />
+        ) : (
+          asOf !== undefined && (
+            <span className="lim-acct-age text-xs">{agoLabel(asOf, nowMs)}</span>
+          )
         )}
       </div>
       <LimitsPanel providerId={providerId} account={account} row={row} nowMs={nowMs} compact />

@@ -3,12 +3,19 @@ import type { ProviderAccount } from "@/api/types/providers";
 import { accountLabel } from "@/data/providerAccounts";
 import { useAppStore } from "@/store";
 
+const NONE: ReadonlySet<string> = new Set();
+
+/** What `pending` holds for one account. */
+export const limitsKey = (provider: string, account: string) => `${provider}/${account}`;
+
 /** Asking the vendors for accounts' plan limits, for a surface that shows
  *  them (Settings › Providers, the plan-limits popover): `refresh` on demand,
- *  `refreshOnOpen` for the reading a surface wants as it appears. */
+ *  `refreshOnOpen` for the reading Settings wants as it appears. `pending`
+ *  names the accounts still waiting for an answer (`limitsKey`), so each can
+ *  show that its numbers are about to change. */
 export function useLimitsRefresh() {
   const refreshLimits = useAppStore((s) => s.refreshProviderLimits);
-  const [refreshing, setRefreshing] = useState(false);
+  const [pending, setPending] = useState(NONE);
   const [error, setError] = useState<string | null>(null);
 
   // Every account of `providers` (or those `only` keeps), the default
@@ -24,7 +31,7 @@ export function useLimitsRefresh() {
         .map((p) => (known[p] ?? []).filter((a) => a.status !== "signed_out" && (!only || only(a))))
         .filter((accounts) => accounts.length > 0);
       if (asked.length === 0) return;
-      setRefreshing(true);
+      setPending(new Set(asked.flat().map((a) => limitsKey(a.provider, a.id))));
       setError(null);
       const errors: string[] = [];
       await Promise.all(
@@ -35,10 +42,15 @@ export function useLimitsRefresh() {
             } catch (err) {
               errors.push(`${accountLabel(account)}: ${String(err)}`);
             }
+            setPending((left) => {
+              const next = new Set(left);
+              next.delete(limitsKey(account.provider, account.id));
+              return next;
+            });
           }
         }),
       );
-      setRefreshing(false);
+      setPending(NONE);
       if (errors.length > 0) setError(errors.join(" "));
     },
     [refreshLimits],
@@ -58,5 +70,5 @@ export function useLimitsRefresh() {
     [refresh],
   );
 
-  return { refreshing, error, refresh, refreshOnOpen };
+  return { refreshing: pending.size > 0, pending, error, refresh, refreshOnOpen };
 }

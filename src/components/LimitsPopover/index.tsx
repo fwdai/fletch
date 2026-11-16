@@ -9,14 +9,15 @@ import { useFocusScope } from "@/components/ui/useFocusScope";
 import { supportsAccounts } from "@/data/providerDetail";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { useLimitsRefresh } from "@/util/useLimitsRefresh";
+import { limitsKey, useLimitsRefresh } from "@/util/useLimitsRefresh";
 import { AccountBlock } from "./AccountBlock";
 import { UsageReportRow } from "./UsageReportRow";
 
 export { LimitsButton } from "./LimitsButton";
 
 /** Every account's plan limits at a glance: one click (or ⌘U) from anywhere,
- *  where Settings › Providers is a screen, a row and an expand away. Mounted
+ *  where Settings › Providers is a screen, a row and an expand away. It reads
+ *  every account afresh as it opens, so what it shows is current. Mounted
  *  at app root and pinned bottom-left, above the sidebar footer's gauge that
  *  opens it, so the chord works with the sidebar hidden too. An outside click
  *  or Escape dismisses it. */
@@ -40,7 +41,7 @@ function LimitsCard() {
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
   // Accounts and their limits are this Mac's, whichever host is active.
   const availability = useAgentAvailability("local");
-  const { refreshing, error, refresh, refreshOnOpen } = useLimitsRefresh();
+  const { refreshing, pending, error, refresh } = useLimitsRefresh();
   const nowMs = useNow();
   const cardRef = useRef<HTMLDivElement>(null);
   useFocusScope(cardRef);
@@ -54,13 +55,15 @@ function LimitsCard() {
     .filter((p) => p.accounts.length > 0);
   const ids = listed.map((p) => p.id);
 
-  // The accounts are whatever boot or the last Settings visit left, so they
-  // are listed again as the card opens, and then asked for a reading.
+  // The card opens on the stored readings and asks for fresh ones behind
+  // them: the accounts are listed again (they are whatever boot or the last
+  // Settings visit left), then every signed-in one is read. Opening it again
+  // within the engine's refresh floor costs the vendor nothing.
   const idsRef = useRef(ids);
   idsRef.current = ids;
   useEffect(() => {
-    void refreshAccounts().then(() => refreshOnOpen(idsRef.current));
-  }, [refreshAccounts, refreshOnOpen]);
+    void refreshAccounts().then(() => refresh(idsRef.current));
+  }, [refreshAccounts, refresh]);
 
   return (
     <div ref={cardRef} className="lim-pop" role="dialog" aria-label="Plan limits">
@@ -89,6 +92,7 @@ function LimitsCard() {
                 account={account}
                 solo={p.accounts.length === 1}
                 row={providerLimits[p.id]?.[account.id]}
+                refreshing={pending.has(limitsKey(p.id, account.id))}
                 nowMs={nowMs}
               />
             )),
