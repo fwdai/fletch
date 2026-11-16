@@ -573,6 +573,8 @@ export function Composer({
                 : undefined
             }
             network={network}
+            // The same rule the `@` source goes by (`useFileSource`).
+            fileMentions={!!(mentionSource || listDir)}
             onClose={() => input.ta.current?.focus()}
           />
           <span className="composer-foot-sep" aria-hidden />

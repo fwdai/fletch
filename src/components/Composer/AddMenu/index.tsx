@@ -38,6 +38,8 @@ interface Props {
   /** The workspace's VM network for this turn: whether it is open, and the
    *  switch. Omit where there is nothing to open. */
   network?: { open: boolean; onToggle: (open: boolean) => void };
+  /** Typing `@` completes a file here, so the card's hint may say so. */
+  fileMentions?: boolean;
   /** The menu closed, with or without a pick: the composer takes the focus
    *  back from the filter. */
   onClose?: () => void;
@@ -59,6 +61,7 @@ export function AddMenu({
   prs,
   skills,
   network,
+  fileMentions,
   onClose,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -264,9 +267,11 @@ export function AddMenu({
           )}
           <FlyoutFoot>
             <span>Or type</span>
-            <span>
-              <kbd className="add-key">@</kbd> file
-            </span>
+            {fileMentions && (
+              <span>
+                <kbd className="add-key">@</kbd> file
+              </span>
+            )}
             {prs && (
               <span>
                 <kbd className="add-key">#</kbd> pull request
