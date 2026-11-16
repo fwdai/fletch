@@ -198,6 +198,10 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   api.issueComments(draft.repoPath, issue.source, issue.key)
                 }
                 onPickIssue={(issue) => updateDraft(draft.id, { issueRef: issue.key })}
+                listRoadmapItems={projectId ? () => api.roadmapListItems(projectId) : undefined}
+                // The item rides the draft: it is handed to the agent the
+                // first send spawns (`spawnFromDraft`).
+                onPickRoadmapItem={(item) => updateDraft(draft.id, { roadmapItemId: item.id })}
                 defaultModel={draft.model}
                 defaultCustomAgentId={draft.customAgentId}
                 onChangeSelection={(provider, model, customAgentId) => {

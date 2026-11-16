@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { type IssueSource, issueDisplayKey, type PrSummary, type TrackerIssue } from "@/api";
+import type { PrSummary, RoadmapItem, TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
 import {
   FlyoutFoot,
@@ -7,21 +7,22 @@ import {
   FlyoutMenu,
   FlyoutRow,
   FlyoutSection,
-  SideFlyout,
 } from "@/components/ui/FlyoutMenu";
 import { IconButton } from "@/components/ui/IconButton";
 import { useCachedList } from "../useCachedList";
-import { type RefEntry, RefList } from "./RefList";
+import { issueEntries, issueId, prEntries, roadmapEntries } from "./entries";
+import type { RefEntry } from "./RefList";
+import { RefPanel } from "./RefPanel";
 
 /** The row whose side panel is showing. */
-type Fly = "issues" | "prs" | "skills";
+type Fly = "issues" | "roadmap" | "prs" | "commands";
 
-const SOURCE_LABEL: Record<IssueSource, string> = { github: "GitHub", linear: "Linear" };
-
-/** A skill the `/` menu offers, under the token that invokes it. */
-export interface SkillChoice {
+/** Something `/` invokes, under the token that invokes it. */
+export interface CommandChoice {
   command: string;
   description: string;
+  /** The heading it is listed under, where the list has several kinds. */
+  group?: string;
 }
 
 interface Props {
@@ -31,10 +32,14 @@ interface Props {
   onAttachFolders?: () => void;
   /** Open tracker issues (GitHub, Linear) to work on. Omit to hide the row. */
   issues?: { list: () => Promise<TrackerIssue[]>; onPick: (issue: TrackerIssue) => void };
+  /** The project's roadmap, of which the items an agent can pick up are
+   *  offered. Omit to hide the row. */
+  roadmap?: { list: () => Promise<RoadmapItem[]>; onPick: (item: RoadmapItem) => void };
   /** The repo's open pull requests to reference. Omit to hide the row. */
   prs?: { list: () => Promise<PrSummary[]>; onPick: (pr: PrSummary) => void };
-  /** Library skills to invoke. Omit to hide the row. */
-  skills?: { choices: SkillChoice[]; onPick: (command: string) => void };
+  /** What `/` completes here: slash commands, and skills where they can be
+   *  invoked. Omit to hide the row. */
+  commands?: { choices: CommandChoice[]; onPick: (command: string) => void };
   /** The workspace's VM network for this turn: whether it is open, and the
    *  switch. Omit where there is nothing to open. */
   network?: { open: boolean; onToggle: (open: boolean) => void };
@@ -46,10 +51,11 @@ interface Props {
 }
 
 /** The composer's one "add to the prompt" control: a `+` that opens every way
- *  of putting something into this message besides typing it. Files and folders
- *  attach; an issue, a pull request or a skill is picked from a list beside
- *  the card (what `#` and `/` complete inline, for a user who hasn't met
- *  them); and the turn's network opens from here.
+ *  of putting something into this message besides typing it. Files attach and
+ *  folders are referenced; an issue, a roadmap item, a pull request or a
+ *  command is picked from a list beside the card (what `#` and `/` complete
+ *  inline, for a user who hasn't met them); and the turn's network opens from
+ *  here.
  *
  *  It sits at the right of the footer, so the card lines its right edge up
  *  with the button and its lists open over whatever is to the right of the
@@ -58,8 +64,9 @@ export function AddMenu({
   onAttachFiles,
   onAttachFolders,
   issues,
+  roadmap,
   prs,
-  skills,
+  commands,
   network,
   fileMentions,
   onClose,
@@ -68,42 +75,28 @@ export function AddMenu({
   const [fly, setFly] = useState<Fly | null>(null);
 
   // Fetched as its panel first shows, then kept briefly: the lists are remote
-  // (`gh`, Linear) and a pointer crossing the rows must not refetch them.
+  // (`gh`, Linear) or the backend's, and a pointer crossing the rows must not
+  // refetch them.
   const issueList = useCachedList(issues?.list, fly === "issues");
+  const roadmapList = useCachedList(roadmap?.list, fly === "roadmap");
   const prList = useCachedList(prs?.list, fly === "prs");
 
-  const issueEntries = useMemo<RefEntry[] | null>(
+  const issueRows = useMemo(() => issueList && issueEntries(issueList), [issueList]);
+  const roadmapRows = useMemo(() => roadmapList && roadmapEntries(roadmapList), [roadmapList]);
+  const prRows = useMemo(() => prList && prEntries(prList), [prList]);
+  const commandRows = useMemo<RefEntry[]>(
     () =>
-      issueList &&
-      // By tracker, so each heading shows once; the sort is stable, so each
-      // tracker keeps the order it answered in.
-      [...issueList]
-        .sort((a, b) => a.source.localeCompare(b.source))
-        .map((issue) => ({
-          id: issueId(issue),
-          tag: issueDisplayKey(issue),
-          title: issue.title,
-          group: SOURCE_LABEL[issue.source],
-        })),
-    [issueList],
-  );
-  const prEntries = useMemo<RefEntry[] | null>(
-    () =>
-      prList &&
-      [...prList]
-        .sort((a, b) => b.number - a.number)
-        .map((pr) => ({ id: String(pr.number), tag: `#${pr.number}`, title: pr.title })),
-    [prList],
-  );
-  const skillEntries = useMemo<RefEntry[]>(
-    () =>
-      (skills?.choices ?? []).map((s) => ({
-        id: s.command,
-        tag: `/${s.command}`,
-        title: s.description || "Skill",
+      (commands?.choices ?? []).map((c) => ({
+        id: c.command,
+        tag: `/${c.command}`,
+        title: c.description,
+        group: c.group,
       })),
-    [skills?.choices],
+    [commands?.choices],
   );
+  // Named for what its list holds: skills join the commands only where they
+  // can be invoked.
+  const hasSkills = commands?.choices.some((c) => c.group === "Skills") ?? false;
 
   function close() {
     setOpen(false);
@@ -119,57 +112,69 @@ export function AddMenu({
 
   const flyout =
     fly === "issues" && issues ? (
-      <SideFlyout
-        flyKey="issues"
-        icon={<FlyoutGlyph name="issue" head />}
+      <RefPanel
+        kind="issues"
+        icon="issue"
         title="Open issues"
         tag="issue"
-        fill
-      >
-        <RefList
-          entries={issueEntries}
-          placeholder="Filter issues"
-          empty="No open issues"
-          onPick={(id) => {
-            const issue = issueList?.find((i) => issueId(i) === id);
-            if (issue) choose(() => issues.onPick(issue));
-          }}
-        />
-      </SideFlyout>
+        entries={issueRows}
+        placeholder="Filter issues"
+        empty="No open issues"
+        onPick={(id) => {
+          const issue = issueList?.find((i) => issueId(i) === id);
+          if (issue) choose(() => issues.onPick(issue));
+        }}
+      />
+    ) : fly === "roadmap" && roadmap ? (
+      <RefPanel
+        kind="roadmap"
+        icon="map"
+        title="Roadmap"
+        tag="item"
+        entries={roadmapRows}
+        placeholder="Filter roadmap items"
+        empty="Nothing on the roadmap to pick up"
+        onPick={(id) => {
+          const item = roadmapList?.find((i) => i.id === id);
+          if (item) choose(() => roadmap.onPick(item));
+        }}
+      />
     ) : fly === "prs" && prs ? (
-      <SideFlyout
-        flyKey="prs"
-        icon={<FlyoutGlyph name="pr" head />}
+      <RefPanel
+        kind="prs"
+        icon="pr"
         title="Pull requests"
         tag="pr"
-        fill
-      >
-        <RefList
-          entries={prEntries}
-          placeholder="Filter pull requests"
-          empty="No open pull requests"
-          onPick={(id) => {
-            const pr = prList?.find((p) => String(p.number) === id);
-            if (pr) choose(() => prs.onPick(pr));
-          }}
-        />
-      </SideFlyout>
-    ) : fly === "skills" && skills ? (
-      <SideFlyout
-        flyKey="skills"
-        icon={<FlyoutGlyph name="notebookPen" head />}
-        title="Skills"
-        tag="skill"
-        fill
-      >
-        <RefList
-          entries={skillEntries}
-          placeholder="Filter skills"
-          empty="No skills in the library"
-          onPick={(command) => choose(() => skills.onPick(command))}
-        />
-      </SideFlyout>
+        entries={prRows}
+        placeholder="Filter pull requests"
+        empty="No open pull requests"
+        onPick={(id) => {
+          const pr = prList?.find((p) => String(p.number) === id);
+          if (pr) choose(() => prs.onPick(pr));
+        }}
+      />
+    ) : fly === "commands" && commands ? (
+      <RefPanel
+        kind="commands"
+        icon="terminal"
+        title={hasSkills ? "Commands and skills" : "Commands"}
+        tag="/"
+        entries={commandRows}
+        placeholder={hasSkills ? "Filter commands and skills" : "Filter commands"}
+        empty="No commands for this agent"
+        onPick={(command) => choose(() => commands.onPick(command))}
+      />
     ) : null;
+
+  /** A row that opens a side panel: lit while its panel shows. */
+  const opener = (kind: Fly) => ({
+    "aria-haspopup": "menu" as const,
+    "aria-expanded": fly === kind,
+    hot: fly === kind,
+    chevron: true,
+    onMouseEnter: () => setFly(kind),
+    onClick: () => setFly(kind),
+  });
 
   return (
     <span className="add-menu">
@@ -205,8 +210,9 @@ export function AddMenu({
           {onAttachFolders && (
             <FlyoutRow
               icon={<FlyoutGlyph name="folder" />}
-              label="Attach a folder"
-              title="Give the agent a folder on this Mac, read-only until you say otherwise"
+              // "Reference", not "attach": nothing is copied or sent.
+              label="Reference a folder"
+              title="The agent reads the folder where it is, read-only until you say otherwise. Nothing is copied."
               onMouseEnter={() => setFly(null)}
               onClick={() => choose(onAttachFolders)}
             />
@@ -215,36 +221,28 @@ export function AddMenu({
             <FlyoutRow
               icon={<FlyoutGlyph name="issue" />}
               label="Work on an issue"
-              aria-haspopup="menu"
-              aria-expanded={fly === "issues"}
-              hot={fly === "issues"}
-              chevron
-              onMouseEnter={() => setFly("issues")}
-              onClick={() => setFly("issues")}
+              {...opener("issues")}
+            />
+          )}
+          {roadmap && (
+            <FlyoutRow
+              icon={<FlyoutGlyph name="map" />}
+              label="Work on a roadmap item"
+              {...opener("roadmap")}
             />
           )}
           {prs && (
             <FlyoutRow
               icon={<FlyoutGlyph name="pr" />}
               label="Reference a pull request"
-              aria-haspopup="menu"
-              aria-expanded={fly === "prs"}
-              hot={fly === "prs"}
-              chevron
-              onMouseEnter={() => setFly("prs")}
-              onClick={() => setFly("prs")}
+              {...opener("prs")}
             />
           )}
-          {skills && (
+          {commands && (
             <FlyoutRow
-              icon={<FlyoutGlyph name="notebookPen" />}
-              label="Use a skill"
-              aria-haspopup="menu"
-              aria-expanded={fly === "skills"}
-              hot={fly === "skills"}
-              chevron
-              onMouseEnter={() => setFly("skills")}
-              onClick={() => setFly("skills")}
+              icon={<FlyoutGlyph name="terminal" />}
+              label={hasSkills ? "Run a command or skill" : "Run a command"}
+              {...opener("commands")}
             />
           )}
           {network && (
@@ -285,8 +283,4 @@ export function AddMenu({
       )}
     </span>
   );
-}
-
-function issueId(issue: TrackerIssue): string {
-  return `${issue.source}:${issue.key}`;
 }

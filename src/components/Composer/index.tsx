@@ -1,6 +1,13 @@
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { DirListing, FolderGrant, IssueComment, PrSummary, TrackerIssue } from "@/api";
+import type {
+  DirListing,
+  FolderGrant,
+  IssueComment,
+  PrSummary,
+  RoadmapItem,
+  TrackerIssue,
+} from "@/api";
 import { lookupModel, lookupModelInList } from "@/data/modelCatalog";
 import {
   PROVIDER_DETAIL,
@@ -9,11 +16,12 @@ import {
 } from "@/data/providerDetail";
 import { DEFAULT_PROVIDER_ID } from "@/data/providers";
 import type { LocalCommandAction } from "@/data/slashCommands";
-import { invocableSkills } from "@/helpers";
 import { useAppStore } from "@/store";
 import { activeEntry } from "@/store/capabilities";
 import { composeIssueBrief } from "@/util/issueBrief";
-import { AddMenu, type SkillChoice } from "./AddMenu";
+import { roadmapItemBrief } from "@/util/roadmapBrief";
+import { AddMenu, type CommandChoice } from "./AddMenu";
+import { slashName, useSlashEntries } from "./autocomplete/sources/commands";
 import { blockedSentence, useAgentAvailability } from "./availability";
 import { ComposerFrame } from "./ComposerFrame";
 import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
@@ -132,6 +140,13 @@ interface Props {
   /** Fired after an issue pick (in addition to the brief insert), so parents
    *  with a draft can tag it (`issueRef`) for the PR closing trailer. */
   onPickIssue?: (issue: TrackerIssue) => void;
+  /** Lists the project's roadmap for the add menu, which offers the items an
+   *  agent can pick up; picking one appends its brief to the prompt. Omit to
+   *  hide the row. */
+  listRoadmapItems?: () => Promise<RoadmapItem[]>;
+  /** Fired after a roadmap pick (in addition to the brief insert), so the
+   *  parent can record who is working the item. */
+  onPickRoadmapItem?: (item: RoadmapItem) => void;
   /** Text to inject into the input from elsewhere (e.g. the Git panel's
    *  "→ chat" review-comment action). Appended to whatever is already typed,
    *  then `onSeedConsumed` fires so the parent can clear it. */
@@ -220,6 +235,8 @@ export function Composer({
   listIssues,
   listIssueComments,
   onPickIssue,
+  listRoadmapItems,
+  onPickRoadmapItem,
   seed,
   onSeedConsumed,
   draftKey,
@@ -232,7 +249,6 @@ export function Composer({
   const modelCatalog = useAppStore((s) => s.modelCatalog);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const customAgents = useAppStore((s) => s.customAgents);
-  const skills = useAppStore((s) => s.skills);
   const environment = useAppStore(activeEntry);
   // The listening tooltip promises one of two things — "stops when you pause"
   // or "stop it yourself" — and which is true is the user's setting, not the
@@ -278,17 +294,21 @@ export function Composer({
     return modelLevels.length > 0 ? modelLevels : (providerLevels ?? []);
   }, [modelReasoningLevels, providerLevels]);
 
-  // The skills the add menu offers: the ones `/` completes, and like it only
-  // where a skill can still be attached — at spawn.
-  const skillChoices = useMemo<SkillChoice[]>(
+  // What the add menu's command list offers: exactly what `/` completes,
+  // skills included only where one can still be attached — at spawn.
+  const slashEntries = useSlashEntries({
+    provider,
+    projectDir,
+    includeSkills: !existingSession,
+  });
+  const commandChoices = useMemo<CommandChoice[]>(
     () =>
-      existingSession
-        ? []
-        : invocableSkills(skills, provider).map(({ command, skill }) => ({
-            command,
-            description: skill.description,
-          })),
-    [existingSession, skills, provider],
+      slashEntries.map((entry) =>
+        entry.kind === "command"
+          ? { command: entry.cmd.name, description: entry.cmd.description, group: "Commands" }
+          : { command: entry.command, description: entry.description || "Skill", group: "Skills" },
+      ),
+    [slashEntries],
   );
 
   // Why this draft cannot be sent, in the words the send button shows — or
@@ -562,13 +582,31 @@ export function Composer({
                 },
               }
             }
+            roadmap={
+              listRoadmapItems && {
+                list: listRoadmapItems,
+                onPick: (item) => {
+                  onPickRoadmapItem?.(item);
+                  input.append(roadmapItemBrief(item));
+                },
+              }
+            }
             prs={listPrs && { list: listPrs, onPick: (pr) => input.insert(`#${pr.number}`) }}
-            // A skill is invoked by the `/command` that opens the message.
-            skills={
-              skillChoices.length > 0
+            commands={
+              commandChoices.length > 0
                 ? {
-                    choices: skillChoices,
-                    onPick: (command) => input.insert(`/${command}`, "start"),
+                    choices: commandChoices,
+                    onPick: (command) => {
+                      const entry = slashEntries.find((e) => slashName(e) === command);
+                      // An app-handled command acts at once, as it does picked
+                      // from the `/` menu; the rest are invoked by the
+                      // `/command` that opens the message.
+                      if (entry?.kind === "command" && entry.cmd.kind === "local") {
+                        onLocalCommand?.(entry.cmd.action);
+                      } else {
+                        input.insert(`/${command}`, "start");
+                      }
+                    },
                   }
                 : undefined
             }
