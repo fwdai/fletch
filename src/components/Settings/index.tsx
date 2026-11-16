@@ -1,6 +1,8 @@
+import { useRef } from "react";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { Scrim } from "@/components/ui/Scrim";
+import { useFocusScope } from "@/components/ui/useFocusScope";
 import { modelSummary } from "@/data/modelCatalog";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { ACCENTS, PROVIDERS } from "@/data/providers";
@@ -66,9 +68,11 @@ function Popover({ onClose }: { onClose: () => void }) {
   const providerVersions = useAppStore((s) => s.providerVersions);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useFocusScope(cardRef);
 
   return (
-    <div className="settings-pop">
+    <div ref={cardRef} className="settings-pop" role="dialog" aria-label="Settings">
       <div className="sp-h flex-center text-base">
         <span>Settings</span>
         <span className="grow" />

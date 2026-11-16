@@ -5,6 +5,7 @@ import { useNow } from "@/components/SettingsScreen/ProvidersPane/AccountsSectio
 import { IconButton } from "@/components/ui/IconButton";
 import { Scrim } from "@/components/ui/Scrim";
 import { Spinner } from "@/components/ui/Spinner";
+import { useFocusScope } from "@/components/ui/useFocusScope";
 import { supportsAccounts } from "@/data/providerDetail";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
@@ -41,6 +42,8 @@ function LimitsCard() {
   const availability = useAgentAvailability("local");
   const { refreshing, error, refresh, refreshOnOpen } = useLimitsRefresh();
   const nowMs = useNow();
+  const cardRef = useRef<HTMLDivElement>(null);
+  useFocusScope(cardRef);
 
   // The providers that keep accounts, installed here and switched on, each
   // with the accounts Settings lists for it.
@@ -60,7 +63,7 @@ function LimitsCard() {
   }, [refreshAccounts, refreshOnOpen]);
 
   return (
-    <div className="lim-pop" role="dialog" aria-label="Plan limits">
+    <div ref={cardRef} className="lim-pop" role="dialog" aria-label="Plan limits">
       <div className="lim-pop-head flex-center">
         <span className="lim-pop-title text-base">Plan limits</span>
         <IconButton size="sm" tip="Manage accounts" onClick={() => openSettingsScreen("providers")}>

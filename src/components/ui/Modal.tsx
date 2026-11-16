@@ -1,9 +1,10 @@
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
-import { forwardRef } from "react";
+import { forwardRef, useImperativeHandle, useRef } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { IconButton } from "./IconButton";
 import { Scrim } from "./Scrim";
 import { useEscape } from "./useEscape";
+import { useFocusScope } from "./useFocusScope";
 
 /** Card width — `sm` 380px · `md` 460px · `lg` 520px. */
 export type ModalSize = "sm" | "md" | "lg";
@@ -29,8 +30,9 @@ interface ModalProps {
 }
 
 /** Centered modal dialog: dimmed scrim + card + the standard icon/title/close
- *  header. Closes on scrim click and on Escape (both via `Scrim`). The caller
- *  owns whether it's mounted at all — this renders unconditionally.
+ *  header. Closes on scrim click and on Escape (both via `Scrim`), and holds
+ *  keyboard focus while it is up (`useFocusScope`). The caller owns whether
+ *  it's mounted at all — this renders unconditionally.
  *
  *  The backdrop always dims: a modal blocks the app behind it, and saying so is
  *  the point. Something that shouldn't dim isn't a modal — that's a popover, so
@@ -45,10 +47,13 @@ export function Modal({
   children,
 }: ModalProps) {
   const z = LAYER_Z[layer];
+  const cardRef = useRef<HTMLDivElement>(null);
+  useFocusScope(cardRef);
   return (
     <>
       <Scrim onClose={onClose} zIndex={z} blur />
       <div
+        ref={cardRef}
         className={["modal", size === "md" ? "" : size, className].filter(Boolean).join(" ")}
         // The card sits one step above its own scrim.
         style={{ zIndex: z + 1 }}
@@ -116,10 +121,13 @@ export const ModalSheet = forwardRef<HTMLDivElement, ModalSheetProps>(function M
   ref,
 ) {
   useEscape(onClose);
+  const sheetRef = useRef<HTMLDivElement>(null);
+  useImperativeHandle(ref, () => sheetRef.current as HTMLDivElement);
+  useFocusScope(sheetRef);
   return (
     <div className="modal-overlay ui-scrim" onClick={onClose}>
       <div
-        ref={ref}
+        ref={sheetRef}
         className={["modal-sheet", fill ? "fill" : "", className].filter(Boolean).join(" ")}
         role="dialog"
         aria-modal="true"

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { api } from "@/api";
 import { stepSelection } from "@/components/Sidebar/rowNav";
 import { openInPreferredEditor } from "@/components/TitleBar/OpenInEditor/editors";
+import { escapeTaken } from "@/components/ui/useEscape";
 import type { FeatureFlags } from "@/storage/preferences";
 import type { AppState } from "@/store";
 import { useAppStore } from "@/store";
@@ -254,6 +255,9 @@ export function useGlobalShortcuts() {
         if (paletteOpen && shortcut.id !== "palette") return;
         const action = ACTIONS[shortcut.id];
         if (!action || (typing && !action.whileTyping)) return;
+        // A popover, menu or modal on top owns Escape: it closes, and the
+        // screen underneath stays for the next press.
+        if (shortcut.id === "escape" && escapeTaken(e)) return;
         // Escape is a signal other layers (menus, search) also listen for;
         // claiming it would stop theirs.
         if (shortcut.id !== "escape") e.preventDefault();

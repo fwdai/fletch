@@ -7,6 +7,11 @@
   display: inline-flex;
   align-items: center;
 }
+/* A dialog holding focus for its controls (`useFocusScope`) is not itself a
+ * control: no ring around the card. */
+[data-focus-scope] {
+  outline: none;
+}
 .truncate {
   overflow: hidden;
   text-overflow: ellipsis;
