@@ -66,3 +66,9 @@ export function listedAccountId(accounts: ProviderAccount[], id: string): string
   if (id !== DEFAULT_ACCOUNT_ID || accounts.some((a) => a.id === id)) return id;
   return accounts.find((a) => a.cli)?.id ?? id;
 }
+
+/** The account new agents run under, by the id the folded list shows: the one
+ *  marked active, else the terminal's login. */
+export function activeAccountId(accounts: ProviderAccount[]): string {
+  return listedAccountId(accounts, accounts.find((a) => a.active)?.id ?? DEFAULT_ACCOUNT_ID);
+}

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { AccountLimits } from "@/api/types/providers";
 import {
   limitsKeyParts,
+  liveWindows,
   parseAccountLimits,
   spentWindow,
+  tightestWindow,
   withLimitsChange,
 } from "./providerLimits";
 
@@ -98,5 +100,70 @@ describe("spentWindow", () => {
 
   it("prefers the window that frees the account last", () => {
     expect(spentWindow(both(100, 100), at(500))?.resets_at).toBe(5_000);
+  });
+});
+
+describe("liveWindows", () => {
+  const at = (s: number) => s * 1000;
+  const reading: AccountLimits = {
+    limits: {
+      five_hour: { percent: 80, resets_at: 1_000 },
+      seven_day: { percent: 30, resets_at: null },
+      as_of: 0,
+      source: "oauth_usage",
+      models: [{ model: "Fable", percent: 60, resets_at: 5_000, as_of: 0 }],
+    },
+    refresh: null,
+  };
+
+  it("names every reported window that has not reset since the reading", () => {
+    expect(liveWindows(reading, at(500)).map((w) => w.name)).toEqual(["5h", "7d", "7d Fable"]);
+  });
+
+  it("drops a window once it resets, and has nothing without a reading", () => {
+    expect(liveWindows(reading, at(1_000)).map((w) => w.name)).toEqual(["7d", "7d Fable"]);
+    expect(liveWindows(undefined, at(0))).toEqual([]);
+    expect(liveWindows({ limits: null, refresh: null }, at(0))).toEqual([]);
+  });
+});
+
+describe("tightestWindow", () => {
+  const at = (s: number) => s * 1000;
+  const windows = (fiveHour: number, sevenDay: number): AccountLimits => ({
+    limits: {
+      five_hour: { percent: fiveHour, resets_at: 1_000 },
+      seven_day: { percent: sevenDay, resets_at: 5_000 },
+      as_of: 0,
+      source: "stream",
+    },
+    refresh: null,
+  });
+
+  it("picks the live window closest to its limit across providers", () => {
+    const tightest = tightestWindow(
+      [
+        { provider: "claude", row: windows(40, 55) },
+        { provider: "codex", row: windows(72, 10) },
+      ],
+      at(500),
+    );
+    expect(tightest).toMatchObject({ provider: "codex", name: "5h", window: { percent: 72 } });
+  });
+
+  it("passes over a window that has reset since its reading", () => {
+    const tightest = tightestWindow(
+      [
+        { provider: "claude", row: windows(40, 55) },
+        { provider: "codex", row: windows(72, 10) },
+      ],
+      at(2_000),
+    );
+    expect(tightest).toMatchObject({ provider: "claude", name: "7d", window: { percent: 55 } });
+  });
+
+  it("is null when no account has a live window", () => {
+    expect(tightestWindow([], at(0))).toBeNull();
+    expect(tightestWindow([{ provider: "claude", row: undefined }], at(0))).toBeNull();
+    expect(tightestWindow([{ provider: "claude", row: windows(90, 90) }], at(6_000))).toBeNull();
   });
 });

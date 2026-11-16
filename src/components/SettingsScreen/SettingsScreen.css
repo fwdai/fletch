@@ -1097,7 +1097,7 @@
   margin: 6px 0 0 21px;
   color: var(--fg-3);
 }
-/* The compact panel (the plan-limits popover): the same meters as one column
+/* The compact panel (the usage popover): the same meters as one column
    of single lines — name, bar, share, time left. */
 .set-prov-limits.compact {
   margin-top: 8px;

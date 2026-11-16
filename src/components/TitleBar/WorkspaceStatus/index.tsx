@@ -28,7 +28,7 @@ export function WorkspaceStatus() {
   const projectName = (repoPath: string) => projectRef(repoPath)?.name ?? basename(repoPath);
 
   if (settingsScreenOpen) return <ScreenCrumb label="Settings" />;
-  if (usageScreenOpen) return <ScreenCrumb label="Usage" />;
+  if (usageScreenOpen) return <ScreenCrumb label="Usage report" />;
   // A project view sits a level above any workspace: the same crumb, with
   // the project's mark and the view's name.
   if (projectRepoPath && view) {

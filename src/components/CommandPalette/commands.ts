@@ -168,17 +168,17 @@ const SHORTCUT_ROWS: ShortcutRow[] = [
   },
   {
     id: "usage",
-    icon: "activity",
+    icon: "chart",
     section: SEC.goto,
     hint: "Tokens and spend",
-    keywords: "tokens  cost  spend  report",
+    keywords: "tokens  cost  spend",
   },
   {
     id: "limits",
-    icon: "gauge",
+    icon: "activity",
     section: SEC.goto,
     hint: "Each account's plan, used and resetting",
-    keywords: "usage  quota  accounts  5-hour  weekly  rate limit  reset",
+    keywords: "plan limits  quota  accounts  5-hour  weekly  rate limit  reset",
   },
   // The project views. Their chords toggle the view; from the palette a row
   // only ever opens it, for the project in front.

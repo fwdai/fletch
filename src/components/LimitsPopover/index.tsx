@@ -1,27 +1,25 @@
 import { useCallback, useEffect, useRef } from "react";
-import { useAgentAvailability } from "@/components/Composer/availability";
 import { Icon } from "@/components/Icon";
 import { useNow } from "@/components/SettingsScreen/ProvidersPane/AccountsSection/useNow";
 import { IconButton } from "@/components/ui/IconButton";
 import { APP_POPOVER_SCRIM_Z, Scrim } from "@/components/ui/Scrim";
 import { Spinner } from "@/components/ui/Spinner";
 import { useFocusScope } from "@/components/ui/useFocusScope";
-import { supportsAccounts } from "@/data/providerDetail";
 import { limitsRefreshKey } from "@/data/providerLimits";
-import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { useLimitsRefresh } from "@/util/useLimitsRefresh";
 import { AccountBlock } from "./AccountBlock";
 import { UsageReportRow } from "./UsageReportRow";
+import { useListedAccounts } from "./useListedAccounts";
 
 export { LimitsButton } from "./LimitsButton";
 
 /** Every account's plan limits at a glance: one click (or ⌘U) from anywhere,
  *  where Settings › Providers is a screen, a row and an expand away. It reads
  *  every account afresh as it opens, so what it shows is current. Mounted
- *  at app root and pinned bottom-left, above the sidebar footer's gauge that
- *  opens it, so the chord works with the sidebar hidden too. An outside click,
- *  Escape or any dialog opened after it dismisses it. */
+ *  at app root and pinned bottom-left, above the sidebar footer's usage chip
+ *  that opens it, so the chord works with the sidebar hidden too. An outside
+ *  click, Escape or any dialog opened after it dismisses it. */
 export function LimitsPopover() {
   const open = useAppStore((s) => s.limitsPopoverOpen);
   const toggle = useAppStore((s) => s.toggleLimitsPopover);
@@ -36,26 +34,16 @@ export function LimitsPopover() {
 }
 
 function LimitsCard({ onGiveWay }: { onGiveWay: () => void }) {
-  const providerAccounts = useAppStore((s) => s.providerAccounts);
   const providerLimits = useAppStore((s) => s.providerLimits);
   const inFlight = useAppStore((s) => s.providerLimitsRefreshing);
-  const providerFlags = useAppStore((s) => s.providerFlags);
   const refreshAccounts = useAppStore((s) => s.refreshProviderAccounts);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
-  // Accounts and their limits are this Mac's, whichever host is active.
-  const availability = useAgentAvailability("local");
+  const listed = useListedAccounts();
   const { refreshing, error, refresh } = useLimitsRefresh();
   const nowMs = useNow();
   const cardRef = useRef<HTMLDivElement>(null);
   useFocusScope(cardRef, onGiveWay);
 
-  // The providers that keep accounts, installed here and switched on, each
-  // with the accounts Settings lists for it.
-  const listed = PROVIDERS.filter(
-    (p) => supportsAccounts(p.id) && availability(p.id).installed && providerFlags[p.id] !== false,
-  )
-    .map((p) => ({ id: p.id, accounts: providerAccounts[p.id] ?? [] }))
-    .filter((p) => p.accounts.length > 0);
   const ids = listed.map((p) => p.id);
 
   // The card opens on the stored readings and asks for fresh ones behind
@@ -69,9 +57,9 @@ function LimitsCard({ onGiveWay }: { onGiveWay: () => void }) {
   }, [refreshAccounts, refresh]);
 
   return (
-    <div ref={cardRef} className="lim-pop" role="dialog" aria-label="Plan limits">
+    <div ref={cardRef} className="lim-pop" role="dialog" aria-label="Usage">
       <div className="lim-pop-head flex-center">
-        <span className="lim-pop-title text-base">Plan limits</span>
+        <span className="lim-pop-title text-base">Usage</span>
         <IconButton size="sm" tip="Manage accounts" onClick={() => openSettingsScreen("providers")}>
           <Icon name="settings" />
         </IconButton>

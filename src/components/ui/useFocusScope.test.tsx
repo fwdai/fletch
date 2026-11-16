@@ -149,7 +149,7 @@ describe("useFocusScope", () => {
 
   it("closes a popover when a dialog opens after it, whatever layer each is on", () => {
     const close = vi.fn();
-    // Plan limits is up, drawn above overlays; History opens from the palette.
+    // Usage is up, drawn above overlays; History opens from the palette.
     const { rerender } = render(<Dialog label="popover" layer={420} onGiveWay={close} />);
     expect(close).not.toHaveBeenCalled();
     rerender(
@@ -162,7 +162,7 @@ describe("useFocusScope", () => {
   });
 
   it("returns focus past a popover it replaced, to where the popover was opened from", () => {
-    // The composer, then Plan limits over it, then the palette from there.
+    // The composer, then Usage over it, then the palette from there.
     const composer = focusedOutside();
     function App({ palette }: { palette: boolean }) {
       const [popover, setPopover] = useState(true);

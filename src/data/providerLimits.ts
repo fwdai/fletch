@@ -66,3 +66,45 @@ export function spentWindow(row: AccountLimits | undefined, nowMs: number): Limi
   );
   return spent.sort((a, b) => resetsMs(b) - resetsMs(a))[0] ?? null;
 }
+
+/** A plan window under the short name the compact meters give it: "5h", "7d",
+ *  "7d Fable". */
+export interface NamedWindow {
+  name: string;
+  window: LimitWindow;
+}
+
+/** An account's windows whose numbers still hold: reported, and not reset
+ *  since the reading. A window without a reset time is untouched, so it holds
+ *  too. */
+export function liveWindows(row: AccountLimits | undefined, nowMs: number): NamedWindow[] {
+  const limits = row?.limits;
+  if (!limits) return [];
+  const named: { name: string; window: LimitWindow | null }[] = [
+    { name: "5h", window: limits.five_hour },
+    { name: "7d", window: limits.seven_day },
+    ...(limits.models ?? []).map((m) => ({ name: `7d ${m.model}`, window: m })),
+  ];
+  return named.filter(
+    (n): n is NamedWindow =>
+      n.window !== null && (n.window.resets_at === null || n.window.resets_at * 1000 > nowMs),
+  );
+}
+
+/** The live window closest to its limit across several accounts, each row
+ *  tagged with its provider: the one that will hold an agent up first. The
+ *  first wins a tie. Null when no row has a live window. */
+export function tightestWindow(
+  rows: readonly { provider: string; row: AccountLimits | undefined }[],
+  nowMs: number,
+): (NamedWindow & { provider: string }) | null {
+  let tightest: (NamedWindow & { provider: string }) | null = null;
+  for (const { provider, row } of rows) {
+    for (const named of liveWindows(row, nowMs)) {
+      if (!tightest || named.window.percent > tightest.window.percent) {
+        tightest = { ...named, provider };
+      }
+    }
+  }
+  return tightest;
+}

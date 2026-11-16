@@ -1,7 +1,34 @@
-/* The plan-limits popover (LimitsPopover): a card pinned bottom-left, just
- * above the sidebar footer whose gauge opens it. A head, one block per
+/* The footer chip that opens the popover (LimitsButton). Composes on `.c-chip`
+ * (bordered), with a raised surface and a trailing caret so it reads as a
+ * control that opens something, not as a stat printed in the footer. Past a
+ * meter's warning line its figure takes the meter's tint. */
+.side-foot .lim-chip {
+  padding: 0 6px 0 8px;
+  background: var(--bg-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.side-foot .lim-chip:hover,
+.side-foot .lim-chip.active {
+  border-color: var(--fg-3);
+  color: var(--fg-0);
+}
+.side-foot .lim-chip .lim-chip-caret {
+  width: 10px;
+  height: 10px;
+  color: var(--fg-3);
+}
+.side-foot .lim-chip.warn .lim-chip-fig {
+  color: var(--warn);
+}
+.side-foot .lim-chip.full .lim-chip-fig {
+  color: var(--danger);
+}
+
+/* The usage popover (LimitsPopover): a card pinned bottom-left, just
+ * above the sidebar footer whose usage chip opens it. A head, one block per
  * account (its limits are the compact `.set-prov-limits` panel), and a foot
- * row into the Usage screen. */
+ * row into the usage report. */
 .lim-pop {
   position: fixed;
   left: 8px;
