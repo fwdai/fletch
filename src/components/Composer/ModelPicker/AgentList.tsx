@@ -1,7 +1,7 @@
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
-import { FlyoutRow, FlyoutSection } from "@/components/ui/FlyoutMenu";
+import { FlyoutGlyph, FlyoutRow, FlyoutSection } from "@/components/ui/FlyoutMenu";
 import type { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { activeEntry } from "@/store/capabilities";
@@ -114,9 +114,7 @@ export function AgentList({
           activeCustom ? (
             <Mono name={activeCustom.name} hue={activeCustom.color} size={26} />
           ) : (
-            <span className="model-custom-sum-icon">
-              <Icon name="shapes" size={15} />
-            </span>
+            <FlyoutGlyph name="shapes" />
           )
         }
         label="Custom agents"

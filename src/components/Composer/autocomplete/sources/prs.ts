@@ -1,11 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import type { PrSummary } from "@/api";
 import type { AcPick, AcSource } from "@/components/Composer/autocomplete/types";
-
-/** How long a fetched PR list stays fresh before the next open refetches —
- *  long enough to absorb rapid open/close cycling, short enough to pick up
- *  newly-opened PRs within a session. */
-const PR_CACHE_MS = 15_000;
+import { useCachedList } from "@/components/Composer/useCachedList";
 
 /** Rank PRs against a numeric query: empty → most recent first; otherwise PRs
  *  whose number contains the digits, with prefix matches first. */
@@ -32,36 +28,15 @@ interface Args {
  *  agent can resolve with `gh pr view`. Only fires on a digit query (empty
  *  allowed) so a "#" used in prose or a markdown heading doesn't pop the menu. */
 export function usePrSource({ query, listPrs }: Args): AcSource {
-  const [prs, setPrs] = useState<PrSummary[]>([]);
-
   const active = listPrs && query !== null && /^\d*$/.test(query) ? query : null;
+  // Fetched when the menu opens, cached briefly: retyping `#` must not queue
+  // a burst of `gh pr list` processes.
+  const prs = useCachedList(listPrs, active !== null);
 
-  const matched = useMemo(() => (active === null ? [] : filterPrs(prs, active)), [active, prs]);
-
-  // Fetch when the menu opens, but cache for a short window so rapid
-  // open/close cycles (type `#`, delete, retype) don't queue a burst of
-  // `gh pr list` processes. `lastFetch` is stamped before the call so even
-  // in-flight reopens skip. Held in refs so an inline `listPrs` prop and the
-  // timestamp don't refire the effect.
-  const open = active !== null;
-  const ref = useRef(listPrs);
-  ref.current = listPrs;
-  const lastFetch = useRef(0);
-  useEffect(() => {
-    if (!open || !ref.current) return;
-    if (Date.now() - lastFetch.current < PR_CACHE_MS) return;
-    lastFetch.current = Date.now();
-    let alive = true;
-    ref
-      .current()
-      .then((p) => {
-        if (alive) setPrs(p);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [open]);
+  const matched = useMemo(
+    () => (active === null || !prs ? [] : filterPrs(prs, active)),
+    [active, prs],
+  );
 
   const rows: AcSource["rows"] = matched.map((p) => ({
     title: `#${p.number}`,

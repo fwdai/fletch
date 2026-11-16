@@ -8,7 +8,7 @@ import { Scrim } from "@/components/ui/Scrim";
 import { baseName } from "@/util/paths";
 
 /** The folders the workspace's agent can already use (`AgentRecord.folder_grants`),
- *  beside the attach button: standing access, not chips for the next message.
+ *  beside the add menu: standing access, not chips for the next message.
  *  A folder icon with how many; a click lists them, where each one's mode
  *  flips and its access is taken back. Nothing shows while none is granted. */
 export function FolderAccess({
@@ -52,8 +52,7 @@ export function FolderAccess({
         <>
           <Scrim onClose={() => setOpen(false)} />
           <DropdownMenu
-            // Right-anchored, like the issue picker beside it: the trigger sits
-            // near the composer's right edge.
+            // Right-anchored: the trigger sits near the composer's right edge.
             style={{ bottom: "calc(100% + 6px)", right: 0, minWidth: 280, maxWidth: 420 }}
           >
             <DropdownSection>Folders the agent can use</DropdownSection>

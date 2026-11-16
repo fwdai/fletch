@@ -174,13 +174,21 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   const attachPaths = async (paths: string[]) => {
     const dirs = cfg.folders ? await droppedFolders(paths) : [];
     const files = paths.filter((p) => !dirs.includes(p));
-    if (dirs.length && activeEnvironment().kind !== "local") {
-      setLastError("A folder on this Mac can't be given to an agent running on another machine.");
-    } else {
-      for (const dir of dirs) addFolder(dir);
-    }
+    addLocalFolders(dirs);
     if (files.length) await stageAll("file", files.map(stageAttachmentPath)).catch(() => {});
   };
+
+  /** Folders on this Mac, from a drop or the picker, as chips for the next
+   *  send. Refused when the agent runs elsewhere: a grant names a path on the
+   *  machine the agent is on. */
+  function addLocalFolders(dirs: string[]) {
+    if (dirs.length === 0) return;
+    if (activeEnvironment().kind !== "local") {
+      setLastError("A folder on this Mac can't be given to an agent running on another machine.");
+      return;
+    }
+    for (const dir of dirs) addFolder(dir);
+  }
 
   const isDropTarget = useFileDrop((paths) => void attachPaths(paths));
 
@@ -188,6 +196,14 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     const sel = await open({ multiple: true });
     if (!sel) return;
     await attachPaths(Array.isArray(sel) ? sel : [sel]);
+  }
+
+  /** The folder picker: what it returns is granted, never copied. Only
+   *  offered where folders can be attached (`acceptsFolders`). */
+  async function browseFolders() {
+    const sel = await open({ directory: true, multiple: true });
+    if (!sel) return;
+    addLocalFolders(Array.isArray(sel) ? sel : [sel]);
   }
 
   /** Files on the clipboard — a screenshot's image data, or files copied in
@@ -281,6 +297,24 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     });
   }
 
+  /** Put `piece` into the draft as its own word, then focus and land the
+   *  caret after it: at the caret, or at the very start for what only counts
+   *  there (a `/command`), where the caret goes to the end so the rest reads
+   *  as its arguments. Used by in-composer inserts that reference something
+   *  inline (a PR, a skill). */
+  function insert(piece: string, where: "caret" | "start" = "caret") {
+    const at = where === "start" ? 0 : Math.min(caret, text.length);
+    const before = text.slice(0, at);
+    const after = text.slice(at);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const trail = /^\s/.test(after) ? "" : " ";
+    const next = `${before}${lead}${piece}${trail}${after}`;
+    const pos = where === "start" ? next.length : at + lead.length + piece.length + 1;
+    setText(next);
+    setCaret(pos);
+    placeCaret(pos);
+  }
+
   // Apply an externally-supplied seed, and notify the parent to clear it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs only when a new seed arrives, not on append identity
   useEffect(() => {
@@ -310,6 +344,7 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     text,
     setText,
     append,
+    insert,
     caret,
     /** For a caller that writes text itself (dictation's commit) and has to
      *  tell the input where the caret ended up; `placeCaret` moves the DOM's. */
@@ -327,6 +362,7 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     autocomplete,
     isDropTarget,
     browse,
+    browseFolders,
     clear,
     restore,
     /** Spread onto the `<textarea>` — Enter-to-submit defers to the menu first. */

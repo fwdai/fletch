@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
-import { FlyoutMenu, FlyoutSection, SideFlyout } from "@/components/ui/FlyoutMenu";
+import { FlyoutGlyph, FlyoutMenu, FlyoutSection, SideFlyout } from "@/components/ui/FlyoutMenu";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS, providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
@@ -237,11 +236,7 @@ export function ModelPicker({
               {hovered === CUSTOM_FLY && (
                 <SideFlyout
                   flyKey={CUSTOM_FLY}
-                  icon={
-                    <span className="model-custom-sum-icon is-head">
-                      <Icon name="shapes" size={13} />
-                    </span>
-                  }
+                  icon={<FlyoutGlyph name="shapes" head />}
                   title="Custom agents"
                   tag="agent"
                 >
