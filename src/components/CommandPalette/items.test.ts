@@ -63,6 +63,7 @@ function state(over: Partial<AppState> = {}): AppState {
     setProjectFocus: vi.fn(),
     toggleHistory: vi.fn(),
     toggleSettings: vi.fn(),
+    toggleLimitsPopover: vi.fn(),
     closeSettingsScreen: vi.fn(),
     closeProjectScreen: vi.fn(),
     closeUsageScreen: vi.fn(),

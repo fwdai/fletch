@@ -41,6 +41,25 @@ export function resetLabel(resetsAt: number | null, nowMs: number): string | nul
   return `resets ${when} · in ${formatCountdown(left)}`;
 }
 
+/** The reset in a column too narrow for a sentence: the time left ("2h 13m"),
+ *  or "reset" once it has passed. Null when the source gave no reset time. */
+export function resetShort(resetsAt: number | null, nowMs: number): string | null {
+  if (resetsAt === null) return null;
+  const left = resetsAt * 1000 - nowMs;
+  return left <= 0 ? "reset" : formatCountdown(left);
+}
+
+/** Past this share of a window a meter warns; at the top it reads as spent. */
+const WARN_PERCENT = 75;
+const FULL_PERCENT = 95;
+
+/** How a meter at `percent` reads; "" below the warning line, or with nothing
+ *  known. */
+export function limitTone(percent: number | null): "" | "warn" | "full" {
+  if (percent === null || percent < WARN_PERCENT) return "";
+  return percent >= FULL_PERCENT ? "full" : "warn";
+}
+
 /** Where a reading came from, in the muted freshness line. */
 export const SOURCE_LABEL: Record<LimitSource, string> = {
   stream: "agent session",

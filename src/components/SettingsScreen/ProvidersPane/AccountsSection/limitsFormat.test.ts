@@ -5,9 +5,11 @@ import {
   asOfLabel,
   formatCountdown,
   inBackoff,
+  limitTone,
   olderModelsLabel,
   refreshHint,
   resetLabel,
+  resetShort,
 } from "./limitsFormat";
 
 const MIN = 60_000;
@@ -145,5 +147,29 @@ describe("refreshHint and inBackoff", () => {
     expect(refreshHint(state({}), NOW)).toBeNull();
     expect(refreshHint(null, NOW)).toBeNull();
     expect(inBackoff(null, NOW)).toBe(false);
+  });
+});
+
+describe("resetShort", () => {
+  it("is just the time left", () => {
+    expect(resetShort(secs(NOW + 2 * HOUR + 13 * MIN), NOW)).toBe("2h 13m");
+  });
+
+  it("says a passed reset has happened, and nothing without one", () => {
+    expect(resetShort(secs(NOW - MIN), NOW)).toBe("reset");
+    expect(resetShort(null, NOW)).toBeNull();
+  });
+});
+
+describe("limitTone", () => {
+  it("warns from three quarters and reads as spent at the top", () => {
+    expect(limitTone(74)).toBe("");
+    expect(limitTone(75)).toBe("warn");
+    expect(limitTone(94)).toBe("warn");
+    expect(limitTone(95)).toBe("full");
+  });
+
+  it("claims nothing about a window that wasn't reported", () => {
+    expect(limitTone(null)).toBe("");
   });
 });

@@ -1097,6 +1097,44 @@
   margin: 6px 0 0 21px;
   color: var(--fg-3);
 }
+/* The compact panel (the plan-limits popover): the same meters as one column
+   of single lines — name, bar, share, time left. */
+.set-prov-limits.compact {
+  margin-top: 8px;
+}
+.set-prov-limits.compact .set-prov-limits-meters,
+.set-prov-limits.compact .set-prov-limits-weekly {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+}
+.set-prov-limit.compact {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 32px 48px;
+  align-items: center;
+  column-gap: 8px;
+  line-height: 16px;
+  color: var(--fg-2);
+}
+.set-prov-limit.compact .set-prov-limit-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-prov-limit.compact .set-prov-limit-pct,
+.set-prov-limit.compact .set-prov-limit-left {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.set-prov-limit.compact .set-prov-limit-bar {
+  height: 4px;
+}
+/* Reset since the reading: the number is no longer true. */
+.set-prov-limit.compact.passed {
+  opacity: 0.5;
+}
 .set-prov-acct-add {
   display: flex;
   flex-direction: column;

@@ -69,6 +69,8 @@
    settings shell (`.set-screen`, `.set-group`) and on the shared chart + stat
    primitives. */
 @import "./components/UsageScreen/Usage.css";
+/* After SettingsScreen.css: its account blocks hold the compact limits panel. */
+@import "./components/LimitsPopover/LimitsPopover.css";
 @import "./components/ui/Loader.css";
 @import "./components/ui/Select.css";
 @import "./components/ui/Scrim.css";

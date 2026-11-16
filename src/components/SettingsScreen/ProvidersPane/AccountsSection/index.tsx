@@ -9,12 +9,11 @@
 // which account's is open, so two logins can't race each other for the
 // browser.
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { ProviderAccount } from "@/api/types/providers";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { accountLabel } from "@/data/providerAccounts";
 import type { ProviderId } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { useLimitsRefresh } from "@/util/useLimitsRefresh";
 import { AccountRow } from "./AccountRow";
 import { AddAccountForm } from "./AddAccountForm";
 import { useNow } from "./useNow";
@@ -28,59 +27,18 @@ export function AccountsSection({
 }) {
   const accounts = useAppStore((s) => s.providerAccounts[providerId]);
   const limits = useAppStore((s) => s.providerLimits[providerId]);
-  const refreshLimits = useAppStore((s) => s.refreshProviderLimits);
   const [signingIn, setSigningIn] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [limitsError, setLimitsError] = useState<string | null>(null);
+  const { refreshing, error: limitsError, refresh, refreshOnOpen } = useLimitsRefresh();
   const nowMs = useNow();
 
-  // Every account in turn (or those `only` keeps), the default included — it
-  // is an account too. A signed-out one is skipped: its limits can only be
-  // read with its own login. The engine holds back an account inside its
-  // refresh floor or a 429 back-off and answers with the stored row, so
-  // pressing again is harmless.
-  const refreshAll = useCallback(
-    async (only?: (account: ProviderAccount) => boolean) => {
-      const list = useAppStore.getState().providerAccounts[providerId] ?? [];
-      setRefreshing(true);
-      setLimitsError(null);
-      const errors: string[] = [];
-      for (const account of list) {
-        if (account.status === "signed_out" || (only && !only(account))) continue;
-        try {
-          await refreshLimits(providerId, account.id);
-        } catch (err) {
-          errors.push(`${accountLabel(account)}: ${String(err)}`);
-        }
-      }
-      setRefreshing(false);
-      if (errors.length > 0) setLimitsError(errors.join(" "));
-    },
-    [providerId, refreshLimits],
-  );
-
-  // Asked once when the section first has accounts and their stored rows.
-  // Codex answers from the app-server without spending quota, so every
-  // account is asked. Claude's endpoint rate-limits hard, so only accounts
-  // never read are: otherwise an account no agent runs under would sit at
-  // "No limits read yet" until the button is found. The rest wait for it.
+  // Asked once, when the section first has accounts and their stored rows.
   const askedOnOpen = useRef(false);
   const ready = accounts !== undefined && limits !== undefined;
   useEffect(() => {
     if (!ready || askedOnOpen.current) return;
     askedOnOpen.current = true;
-    if (providerId === "codex") {
-      void refreshAll();
-    } else {
-      const stored = useAppStore.getState().providerLimits[providerId] ?? {};
-      const neverRead = (account: ProviderAccount) => {
-        const row = stored[account.id];
-        return !row?.limits && !row?.refresh;
-      };
-      const list = useAppStore.getState().providerAccounts[providerId] ?? [];
-      if (list.some((a) => a.status !== "signed_out" && neverRead(a))) void refreshAll(neverRead);
-    }
-  }, [providerId, ready, refreshAll]);
+    void refreshOnOpen([providerId]);
+  }, [providerId, ready, refreshOnOpen]);
 
   // Not listed yet (first probe in flight): nothing to show rather than an
   // empty section that then jumps.
@@ -95,7 +53,7 @@ export function AccountsSection({
           variant="outline"
           size="sm"
           disabled={refreshing}
-          onClick={() => void refreshAll()}
+          onClick={() => void refresh([providerId])}
           tip={`Read each account's ${providerLabel} limits now`}
         >
           {refreshing ? "Refreshing…" : "Refresh limits"}

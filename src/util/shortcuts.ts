@@ -75,6 +75,7 @@ export function closeScreens(s: AppState) {
   s.togglePalette(false);
   s.toggleHistory(false);
   s.toggleSettings(false);
+  s.toggleLimitsPopover(false);
   s.closeSettingsScreen();
   s.closeProjectScreen();
   s.closeUsageScreen();
@@ -141,6 +142,7 @@ const ACTIONS: Record<string, Action> = {
       else s.openUsageScreen();
     },
   },
+  limits: { whileTyping: true, run: () => useAppStore.getState().toggleLimitsPopover() },
   quickSettings: { whileTyping: true, run: () => useAppStore.getState().toggleSettings() },
   roadmap: { whileTyping: true, run: () => toggleProjectView("roadmap") },
   projectSettings: { whileTyping: true, run: () => toggleProjectView("settings") },

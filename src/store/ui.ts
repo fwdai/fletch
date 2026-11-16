@@ -48,6 +48,11 @@ export interface UiSlice {
   /** Full-screen usage report. Replaces the workspace panes while open, like
    *  the settings screen; the two never show at once. */
   usageScreenOpen: boolean;
+  /** The plan-limits popover (the sidebar footer's gauge / ⌘U): each account's
+   *  plan windows at a glance. In the store so the chord can open it from
+   *  anywhere; it mounts at app root and sits bottom-left whether or not the
+   *  sidebar is showing. */
+  limitsPopoverOpen: boolean;
   /** GitHub connect modal: a small app-level overlay that runs the OAuth
    *  device flow inline, so any "Connect GitHub" affordance (e.g. the Git
    *  panel) can start signing in on the first click instead of detouring
@@ -162,6 +167,7 @@ export interface UiSlice {
   clearSettingsIntent: () => void;
   openUsageScreen: () => void;
   closeUsageScreen: () => void;
+  toggleLimitsPopover: (open?: boolean) => void;
   /** Open / close the GitHub connect modal (the device flow starts on open). */
   openGithubConnect: () => void;
   closeGithubConnect: () => void;
@@ -236,6 +242,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   settingsSection: "general" as SettingsSection,
   settingsIntent: null,
   usageScreenOpen: false,
+  limitsPopoverOpen: false,
   githubConnectOpen: false,
   feedbackOpen: false,
   feedbackNudgeOpen: false,
@@ -276,10 +283,11 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       settingsScreenOpen: true,
       settingsSection: section ?? s.settingsSection,
       settingsIntent: intent ?? null,
-      // The full screen takes over — dismiss the quick popover behind it, any
+      // The full screen takes over — dismiss the popovers behind it, any
       // selected workflow run (its main view would be hidden anyway), and the
       // project and usage screens (only one full-screen surface at a time).
       settingsOpen: false,
+      limitsPopoverOpen: false,
       selectedRunId: null,
       projectScreen: null,
       usageScreenOpen: false,
@@ -293,10 +301,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       // Same takeover rules as the settings screen.
       settingsScreenOpen: false,
       settingsOpen: false,
+      limitsPopoverOpen: false,
       selectedRunId: null,
       projectScreen: null,
     }),
   closeUsageScreen: () => set({ usageScreenOpen: false }),
+  toggleLimitsPopover: (open) => set((s) => ({ limitsPopoverOpen: open ?? !s.limitsPopoverOpen })),
   openGithubConnect: () => set({ githubConnectOpen: true }),
   closeGithubConnect: () => set({ githubConnectOpen: false }),
   openFeedback: () => set({ feedbackOpen: true }),
