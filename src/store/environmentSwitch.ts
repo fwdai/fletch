@@ -122,10 +122,13 @@ const STASH_KEYS = [
   // back shows the last known answer while `refreshGithub` re-probes, rather
   // than blanking the push/PR affordances for a moment.
   "github",
-  // What the user typed but did not send, per agent or per draft, and the
-  // drafts themselves (grouped by repo path, which is the engine's).
+  // What the user typed but did not send, per agent or per draft — with the
+  // roadmap item picked into an agent's draft, which is keyed by the same
+  // agent id another host may also have — and the drafts themselves (grouped
+  // by repo path, which is the engine's).
   "composerSeeds",
   "composerDrafts",
+  "composerRoadmapPicks",
   "drafts",
   // Remembered right-rail tab per agent.
   "rightPanelTabs",
@@ -194,6 +197,7 @@ const BLANK: Pick<AppState, StashKey> = {
   github: null,
   composerSeeds: {},
   composerDrafts: {},
+  composerRoadmapPicks: {},
   drafts: [],
   rightPanelTabs: {},
   codeUndo: {},

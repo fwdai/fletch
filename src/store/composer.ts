@@ -25,8 +25,12 @@ export interface ComposerSlice {
   seedComposer: (agentId: string, text: string) => void;
   consumeComposerSeed: (agentId: string) => void;
   setComposerDraft: (key: string, text: string) => void;
-  /** Remember the roadmap item picked into `agentId`'s draft; null forgets it. */
-  setComposerRoadmapPick: (agentId: string, pick: RoadmapPick | null) => void;
+  /** Remember the roadmap item picked into `agentId`'s draft. */
+  setComposerRoadmapPick: (agentId: string, pick: RoadmapPick) => void;
+  /** Forget `agentId`'s pick if it is still item `pickId`: the send that
+   *  carried it is done. A pick made since, into the next draft while that
+   *  send was in flight, is another item's and stays. */
+  clearComposerRoadmapPick: (agentId: string, pickId: string) => void;
 }
 
 export const createComposerSlice: SliceCreator<ComposerSlice> = (set) => ({
@@ -63,11 +67,12 @@ export const createComposerSlice: SliceCreator<ComposerSlice> = (set) => ({
   },
 
   setComposerRoadmapPick: (agentId, pick) => {
+    set((s) => ({ composerRoadmapPicks: { ...s.composerRoadmapPicks, [agentId]: pick } }));
+  },
+
+  clearComposerRoadmapPick: (agentId, pickId) => {
     set((s) => {
-      if (pick) {
-        return { composerRoadmapPicks: { ...s.composerRoadmapPicks, [agentId]: pick } };
-      }
-      if (!(agentId in s.composerRoadmapPicks)) return s;
+      if (s.composerRoadmapPicks[agentId]?.id !== pickId) return s;
       const { [agentId]: _dropped, ...rest } = s.composerRoadmapPicks;
       return { composerRoadmapPicks: rest };
     });

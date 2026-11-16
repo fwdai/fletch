@@ -104,6 +104,7 @@ export function ChatComposer({
   // to an agent" rule: a pick the user abandons stamps nothing. It is kept in
   // the store beside the draft text, so it outlives what the text outlives.
   const setRoadmapPick = useAppStore((s) => s.setComposerRoadmapPick);
+  const clearRoadmapPick = useAppStore((s) => s.clearComposerRoadmapPick);
 
   // Mid-turn follow-ups are allowed: a busy (running) agent still accepts a
   // message — delivered live (claude) or queued for the next turn boundary
@@ -248,9 +249,10 @@ export function ChatComposer({
               });
               if (pick) {
                 // A refused send puts the draft back, and the pick stays with
-                // it; any other outcome has spent the draft.
+                // it; any other outcome has spent the draft. Only this send's
+                // own pick goes: one made since belongs to the next draft.
                 void sent.then((ok) => {
-                  if (ok !== false) setRoadmapPick(agent.id, null);
+                  if (ok !== false) clearRoadmapPick(agent.id, pick.id);
                 });
               }
               return sent;
