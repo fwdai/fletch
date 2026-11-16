@@ -238,8 +238,8 @@
   padding: 4px;
 }
 
-/* The way to add a project: a bare "+" at the field's height, or the whole
-   line while there is no project to filter. */
+/* The way to add a project: an outlined "+" the height of the field beside
+   it, or the whole line while there is no project to filter. */
 .side-add {
   display: flex;
   flex-shrink: 0;

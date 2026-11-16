@@ -31,13 +31,14 @@ export function AddProject({ full }: { full: boolean }) {
         </button>
       ) : (
         <IconButton
+          variant="outline"
           className="side-add-btn"
           tip={gate ? undefined : `Add project  ${addKeys}`}
           aria-label="Add project"
           onClick={openAddProject}
           disabled={gate !== null}
         >
-          <Icon name="plus" size={14} />
+          <Icon name="plus" size={13} />
         </IconButton>
       )}
     </span>
