@@ -187,8 +187,6 @@
   flex: 1;
   min-height: 0;
   display: flex;
-  /* the turn navigator's rule below asks how wide the log is */
-  container: chat-log / inline-size;
 }
 
 /* Find-in-conversation bar (⌘F) — floats over the top-right of the log so it
@@ -299,12 +297,15 @@
    stands in (--nav-strip: its inset from the edge, its width, and a little
    air). A pane wider than the 860px column already leaves a margin beside it,
    so the column gives up only what that margin doesn't cover — nothing at
-   all once the margin is as wide as the strip. */
+   all once the margin is as wide as the strip. The pane's width is read as
+   the padding's own percentage base (100% is the scroller's width), not
+   through a size container: containment would turn the log into the
+   containing block of the fixed scrims its menus dismiss through. */
 :where(.chat-scroll-wrap:has(> .chat-nav)) .chat-inner {
   --nav-strip: 62px;
   padding-right: clamp(
     var(--chat-pad),
-    calc(var(--nav-strip) - (100cqw - 860px) / 2),
+    calc(var(--nav-strip) - (100% - 860px) / 2),
     var(--nav-strip)
   );
 }
