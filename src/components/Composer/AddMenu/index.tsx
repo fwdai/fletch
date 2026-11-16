@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { type IssueSource, issueDisplayKey, type PrSummary, type TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
 import {
+  FlyoutFoot,
   FlyoutGlyph,
   FlyoutMenu,
   FlyoutRow,
@@ -120,6 +121,7 @@ export function AddMenu({
         icon={<FlyoutGlyph name="issue" head />}
         title="Open issues"
         tag="issue"
+        fill
       >
         <RefList
           entries={issueEntries}
@@ -132,7 +134,13 @@ export function AddMenu({
         />
       </SideFlyout>
     ) : fly === "prs" && prs ? (
-      <SideFlyout flyKey="prs" icon={<FlyoutGlyph name="pr" head />} title="Pull requests" tag="pr">
+      <SideFlyout
+        flyKey="prs"
+        icon={<FlyoutGlyph name="pr" head />}
+        title="Pull requests"
+        tag="pr"
+        fill
+      >
         <RefList
           entries={prEntries}
           placeholder="Filter pull requests"
@@ -149,6 +157,7 @@ export function AddMenu({
         icon={<FlyoutGlyph name="notebookPen" head />}
         title="Skills"
         tag="skill"
+        fill
       >
         <RefList
           entries={skillEntries}
@@ -177,8 +186,9 @@ export function AddMenu({
         <FlyoutMenu
           align="end"
           sideWidth={300}
-          // The card is a handful of rows; its lists are not.
-          sideMinHeight={340}
+          // One height for the card and its lists, whichever rows this
+          // composer has: the card is a handful of rows, a list is not.
+          minHeight={300}
           onClose={close}
           flyout={flyout}
         >
@@ -252,6 +262,20 @@ export function AddMenu({
               />
             </>
           )}
+          <FlyoutFoot>
+            <span>Or type</span>
+            <span>
+              <kbd className="add-key">@</kbd> file
+            </span>
+            {prs && (
+              <span>
+                <kbd className="add-key">#</kbd> pull request
+              </span>
+            )}
+            <span>
+              <kbd className="add-key">/</kbd> command
+            </span>
+          </FlyoutFoot>
         </FlyoutMenu>
       )}
     </span>

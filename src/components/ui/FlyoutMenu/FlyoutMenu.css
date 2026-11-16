@@ -36,6 +36,26 @@
 .fly-menu.is-end .fly-menu-card {
   transform-origin: bottom right;
 }
+/* A card with a least height (`minHeight`): a short menu beside a long list,
+ * held to one height so the two read as a single surface. Its rows keep to
+ * the top, and a `FlyoutFoot` to the bottom. */
+.fly-menu.has-min .fly-menu-card {
+  display: flex;
+  flex-direction: column;
+  min-height: min(var(--fly-min-h), calc(100vh - 96px));
+}
+.fly-menu.has-min .fly-menu-card > * {
+  flex-shrink: 0;
+}
+/* The card's closing line: a hint, set under a rule at its bottom edge. */
+.fly-foot {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: auto 5px 0;
+  padding: 8px 5px 5px;
+  border-top: 1px solid var(--bd-soft);
+  color: var(--fg-3);
+}
 @keyframes flyMenuIn {
   from {
     opacity: 0;
@@ -211,21 +231,6 @@
 .fly-menu.is-flipped .fly-row:not(.is-disabled):hover > svg:last-child {
   transform: translateX(-2px) scaleX(-1);
 }
-/* A panel with a least height of its own (`sideMinHeight`), for a long list
- * beside a short card: it keeps the card's bottom edge and rises past its top,
- * where the edge the card would have covered needs its border and corner. */
-.fly-menu.is-tall .fly-side {
-  top: auto;
-  height: min(max(100%, var(--fly-side-min-h)), calc(100vh - 96px));
-}
-.fly-menu.is-tall .fly-side-card {
-  border-left: 1px solid var(--bd);
-  border-top-left-radius: 13px;
-}
-.fly-menu.is-tall.is-flipped .fly-side-card {
-  border-right: 1px solid var(--bd);
-  border-top-right-radius: 13px;
-}
 .fly-side-inner {
   display: flex;
   flex-direction: column;
@@ -264,6 +269,13 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 5px;
+}
+/* A panel whose content scrolls a part of itself (a filter over its list)
+ * rather than as a whole (`fill`). */
+.fly-side-list.is-fill {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .fly-list {
   min-height: 0;

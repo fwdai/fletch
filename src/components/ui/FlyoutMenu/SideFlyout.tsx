@@ -8,6 +8,7 @@ export function SideFlyout({
   icon,
   title,
   tag,
+  fill = false,
   children,
 }: {
   flyKey: string;
@@ -15,6 +16,10 @@ export function SideFlyout({
   title: string;
   /** What kind of thing the list picks, in a word, at the head's far end. */
   tag: string;
+  /** The content lays itself out in the panel's height and scrolls what it
+   *  chooses to (a list under a filter that stays put). Without it the whole
+   *  content scrolls. */
+  fill?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -26,7 +31,7 @@ export function SideFlyout({
             <span className="fly-side-name truncate text-base">{title}</span>
             <span className="fly-side-tag text-xs">{tag}</span>
           </div>
-          <div className="fly-side-list">{children}</div>
+          <div className={`fly-side-list ${fill ? "is-fill" : ""}`}>{children}</div>
         </div>
       </div>
     </div>

@@ -28,7 +28,7 @@ export function FlyoutMenu({
   onLeave,
   align = "start",
   sideWidth = 252,
-  sideMinHeight,
+  minHeight,
   flyout,
   children,
 }: {
@@ -40,9 +40,9 @@ export function FlyoutMenu({
   align?: "start" | "end";
   /** The side panel's width in px, before the window caps it. */
   sideWidth?: number;
-  /** The least height of the side panel in px, for a long list beside a short
-   *  card. Without it the panel is exactly as tall as the card. */
-  sideMinHeight?: number;
+  /** The least height of the card in px, and so of the side panel, which is
+   *  always as tall as the card: room for a long list beside a short menu. */
+  minHeight?: number;
   /** The side panel showing, if any. */
   flyout?: ReactNode;
   /** The main card's rows. */
@@ -63,13 +63,13 @@ export function FlyoutMenu({
     "fly-menu",
     align === "end" ? "is-end" : "",
     flipped ? "is-flipped" : "",
-    sideMinHeight ? "is-tall" : "",
+    minHeight ? "has-min" : "",
   ]
     .filter(Boolean)
     .join(" ");
   const vars = {
     "--fly-side-w": `${sideWidth}px`,
-    "--fly-side-min-h": sideMinHeight ? `${sideMinHeight}px` : undefined,
+    "--fly-min-h": minHeight ? `${minHeight}px` : undefined,
   } as CSSProperties;
   return (
     <>
@@ -104,4 +104,10 @@ export function FlyoutGlyph({ name, head = false }: { name: IconName; head?: boo
       <Icon name={name} size={head ? 13 : 15} />
     </span>
   );
+}
+
+/** The card's closing line, at its bottom edge: a hint about the menu, not a
+ *  row of it. */
+export function FlyoutFoot({ children }: { children: ReactNode }) {
+  return <div className="fly-foot flex-center text-xs">{children}</div>;
 }

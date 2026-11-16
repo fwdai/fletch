@@ -13,6 +13,7 @@ export { DeviceCode } from "./DeviceCode";
 export { DocsLink } from "./DocsLink";
 export { DropdownItem, DropdownMenu, DropdownSection, DropdownSeparator } from "./Dropdown";
 export {
+  FlyoutFoot,
   FlyoutGlyph,
   FlyoutMenu,
   FlyoutOption,

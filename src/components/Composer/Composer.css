@@ -318,7 +318,22 @@
 .composer-anchor .composer:has(.fly-menu) {
   z-index: var(--z-dropdown);
 }
+/* A side panel's list under its filter: the panel's height, of which only
+ * the entries scroll. */
+.add-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.add-list-rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .add-filter {
+  flex-shrink: 0;
   display: block;
   width: calc(100% - 8px);
   height: 28px;
@@ -353,6 +368,18 @@
   white-space: nowrap;
   font-family: var(--font-mono);
   color: var(--fg-2);
+}
+/* A character the composer completes as it is typed, in the menu's hint. */
+.add-key {
+  display: inline-block;
+  min-width: 16px;
+  margin-right: 2px;
+  padding: 0 4px;
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  color: var(--fg-2);
+  text-align: center;
 }
 .add-note {
   padding: 14px 9px;
