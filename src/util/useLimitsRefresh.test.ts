@@ -163,6 +163,15 @@ describe("useLimitsRefresh", () => {
       useAppStore.setState((s) => ({ providerAccounts: { ...s.providerAccounts, claude: [] } }));
     });
     expect(result.current.error).toBeNull();
+
+    // Signing back in is a fresh start: what it ran into before is not said
+    // again until a refresh fails again.
+    act(() => {
+      useAppStore.setState((s) => ({
+        providerAccounts: { ...s.providerAccounts, codex: [account("codex", "default")] },
+      }));
+    });
+    expect(result.current.error).toBeNull();
   });
 
   it("on Settings' open asks Codex always and Claude only where nothing was ever read", () => {

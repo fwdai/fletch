@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ProviderAccount } from "@/api/types/providers";
 import { accountLabel } from "@/data/providerAccounts";
 import { accountLimits, limitsRefreshKey } from "@/data/providerLimits";
@@ -79,8 +79,16 @@ export function useLimitsRefresh() {
     [refresh],
   );
 
-  // Only what still stands: an account deleted or signed out since can't be
-  // refreshed again, so nothing would ever replace what it last ran into.
+  // A failure lasts as long as its account can be refreshed again: one
+  // deleted or signed out since has nothing left to replace it, and must not
+  // come back when the same id signs in again. Dropped as the list changes;
+  // the filter covers the render before that lands.
+  useEffect(() => {
+    setErrors((all) => {
+      const kept = Object.entries(all).filter(([key]) => refreshable.has(key));
+      return kept.length === Object.keys(all).length ? all : Object.fromEntries(kept);
+    });
+  }, [refreshable]);
   const error =
     Object.entries(errors)
       .filter(([key]) => refreshable.has(key))
