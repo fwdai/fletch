@@ -5,13 +5,18 @@ import { useAppStore } from "@/store";
 import { render, screen } from "@/test/render";
 import { LimitsButton } from "./LimitsButton";
 
-const account = (provider: string, id: string, active = false): ProviderAccount => ({
+const account = (
+  provider: string,
+  id: string,
+  over: Partial<ProviderAccount> = {},
+): ProviderAccount => ({
   provider,
   id,
   managed: id !== "default",
-  active,
+  active: false,
   status: "signed_in",
   detail: null,
+  ...over,
 });
 
 // A reset well past the test's clock, so every window still holds.
@@ -38,15 +43,20 @@ describe("LimitsButton", () => {
     expect(chip().getAttribute("data-tip")).toMatch(/^Usage \(.+\)$/);
   });
 
-  it("carries the weekly allowance used across every listed account", () => {
+  it("carries the weekly allowance used across the signed-in accounts", () => {
     useAppStore.setState({
       providerAccounts: {
-        claude: [account("claude", "default"), account("claude", "work", true)],
+        claude: [
+          account("claude", "default"),
+          account("claude", "work", { active: true }),
+          account("claude", "old", { status: "signed_out" }),
+        ],
         codex: [account("codex", "default")],
       },
       providerLimits: {
-        // A spent five-hour window on one account doesn't move the figure.
-        claude: { default: reading(99, 70), work: reading(20, 2) },
+        // A spent five-hour window on one account doesn't move the figure, and
+        // a signed-out account's last reading isn't counted.
+        claude: { default: reading(99, 70), work: reading(20, 2), old: reading(0, 100) },
         codex: { default: reading(41, 60) },
       },
     });

@@ -121,11 +121,12 @@ describe("weeklyUsage", () => {
     });
   });
 
-  it("counts a week that has reset since its reading as unused", () => {
+  it("leaves out a week that has reset since its reading", () => {
     expect(weeklyUsage([weekly(80), weekly(40, 1_000)], at(2_000))).toEqual({
-      percent: 40,
-      accounts: 2,
+      percent: 80,
+      accounts: 1,
     });
+    expect(weeklyUsage([weekly(40, 1_000)], at(2_000))).toBeNull();
   });
 
   it("leaves out accounts without a weekly reading, and is null with none", () => {

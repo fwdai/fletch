@@ -8,8 +8,8 @@ import { useShortcutKeys } from "@/util/shortcuts";
 import { useListedAccounts } from "./useListedAccounts";
 
 /** The sidebar footer's way into the usage popover: a chip carrying how much
- *  of the weekly allowance is used across every account the popover lists
- *  (see `weeklyUsage`). The tip says what the figure covers, and the figure
+ *  of the weekly allowance is used across the signed-in accounts the popover
+ *  lists (see `weeklyUsage`). The tip says what the figure covers, and the figure
  *  takes the meters' tint past their warning line. With no weekly reading, the
  *  chip carries no figure. */
 export function LimitsButton() {
@@ -20,8 +20,12 @@ export function LimitsButton() {
   const listed = useListedAccounts();
   const nowMs = useNow(60_000);
 
+  // A signed-out account's allowance can't be used, and its reading is no
+  // longer refreshed, so it stays out of the figure.
   const weekly = weeklyUsage(
-    listed.flatMap((p) => p.accounts.map((a) => providerLimits[p.id]?.[a.id])),
+    listed.flatMap((p) =>
+      p.accounts.filter((a) => a.status !== "signed_out").map((a) => providerLimits[p.id]?.[a.id]),
+    ),
     nowMs,
   );
   const percent = weekly ? Math.round(weekly.percent) : null;
