@@ -103,6 +103,11 @@ export interface ProviderAccount {
   /** Never on the wire: set by `foldTerminalLogin` on the managed account the
    *  terminal's login was folded into. It answers for the default as well. */
   cli?: boolean;
+  /** With `cli`: `active` is true because the terminal's directory is the
+   *  selected one, not this account's own. The engine's selection still names
+   *  the default, so whatever it allows for a managed account that isn't
+   *  selected (deleting it) still holds. */
+  selected_as_terminal?: boolean;
 }
 
 /** One plan window of an account: how much of it is used and when it starts

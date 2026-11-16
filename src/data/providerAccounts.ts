@@ -38,16 +38,23 @@ export function accountHue(id: string): number {
 /** One provider's accounts as a list shows them. When the terminal's login is
  *  the same one a managed account holds (`same_as`), they are one account in
  *  two directories: the default is dropped and the managed account stands for
- *  both, marked `cli` and active when either was. Anything the engine could
- *  not tell stays two rows. Sign-out and delete act on the managed account
- *  alone, after which the next listing shows the terminal's login again. */
+ *  both, marked `cli` and shown active when either was. Which directory the
+ *  selection really names is kept (`selected_as_terminal`): the list hides the
+ *  difference, what may be done to the managed directory does not. Anything
+ *  the engine could not tell stays two rows. Sign-out and delete act on the
+ *  managed account alone, after which the next listing shows the terminal's
+ *  login again. */
 export function foldTerminalLogin(accounts: ProviderAccount[]): ProviderAccount[] {
   const terminal = accounts.find((a) => !a.managed && a.same_as);
   const twin = terminal && accounts.find((a) => a.managed && a.id === terminal.same_as);
   if (!terminal || !twin) return accounts;
-  return accounts
-    .filter((a) => a !== terminal)
-    .map((a) => (a === twin ? { ...a, cli: true, active: a.active || terminal.active } : a));
+  const folded: ProviderAccount = {
+    ...twin,
+    cli: true,
+    active: twin.active || terminal.active,
+    ...(terminal.active && !twin.active ? { selected_as_terminal: true } : {}),
+  };
+  return accounts.filter((a) => a !== terminal).map((a) => (a === twin ? folded : a));
 }
 
 /** The id `id` goes by in a folded list: an agent still stamped with the

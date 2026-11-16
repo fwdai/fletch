@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderAccount } from "@/api/types/providers";
+import { foldTerminalLogin } from "@/data/providerAccounts";
 import { accountActions } from "./accountActions";
 
 const account = (over: Partial<ProviderAccount>): ProviderAccount => ({
@@ -50,5 +51,33 @@ describe("accountActions", () => {
     );
     const [managed] = accountActions(account({}), "Claude Code");
     expect(managed.confirm).toBe("Sign this account out? Its sessions stay.");
+  });
+
+  describe("an account the terminal's login was folded into", () => {
+    const terminal = (over: Partial<ProviderAccount>) =>
+      account({ id: "default", managed: false, same_as: "work", ...over });
+
+    it("can be deleted while the terminal's directory is the one selected", () => {
+      // The row reads as active, but the engine's selection names the default,
+      // and it lets an unselected managed account go.
+      const [folded] = foldTerminalLogin([terminal({ active: true }), account({})]);
+      expect(folded.active).toBe(true);
+      expect(ids(folded)).toEqual(["sign_out", "delete"]);
+    });
+
+    it("cannot be deleted while its own directory is the one selected", () => {
+      const [folded] = foldTerminalLogin([terminal({}), account({ active: true })]);
+      expect(ids(folded)).toEqual(["sign_out"]);
+    });
+
+    it("says the terminal keeps its login", () => {
+      const [folded] = foldTerminalLogin([terminal({ active: true }), account({})]);
+      for (const action of accountActions(folded, "Claude Code")) {
+        expect(action.confirm).toContain("Your terminal stays signed in.");
+      }
+      // Not on an account that has nothing to do with the terminal.
+      const [signOut] = accountActions(account({}), "Claude Code");
+      expect(signOut.confirm).not.toContain("terminal");
+    });
   });
 });

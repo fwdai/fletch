@@ -67,8 +67,15 @@ describe("foldTerminalLogin", () => {
     ];
     const folded = foldTerminalLogin(listed);
     expect(folded.map((a) => a.id)).toEqual(["personal", "work"]);
-    // It stands for both: marked, and active because the default was.
-    expect(folded[1]).toMatchObject({ id: "work", managed: true, cli: true, active: true });
+    // It stands for both: marked, and active because the default was — which
+    // it remembers, since the engine's selection still names the default.
+    expect(folded[1]).toMatchObject({
+      id: "work",
+      managed: true,
+      cli: true,
+      active: true,
+      selected_as_terminal: true,
+    });
     expect(folded[0].cli).toBeUndefined();
   });
 

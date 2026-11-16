@@ -10,6 +10,7 @@ import {
   LIMITS_SETTING_PREFIX,
   type LimitWindow,
   type ProviderAccount,
+  type ProviderLimits,
 } from "@/api/types/providers";
 
 export type LimitsByProvider = Record<string, Record<string, AccountLimits>>;
@@ -58,17 +59,36 @@ export function withLimitsChange(
 }
 
 /** An account's limits row. A `cli` account is read through two directories,
- *  its own and the terminal's, each with a row of the same plan: the fresher
- *  reading, under what the account's own last Refresh ran into. */
+ *  its own and the terminal's, each with a row of the same plan, so the two
+ *  are read as one: the windows of the fresher reading, the model windows of
+ *  whichever directory was refreshed last, and what the account's own last
+ *  Refresh ran into. The model windows are chosen apart from the reading
+ *  because only a refresh lists them: a newer reading from an agent's session
+ *  carries its own directory's old ones, and must not hide the other's. */
 export function accountLimits(
   rows: Record<string, AccountLimits> | undefined,
   account: Pick<ProviderAccount, "id" | "cli">,
 ): AccountLimits | undefined {
   const own = rows?.[account.id];
   const terminal = account.cli ? rows?.[DEFAULT_ACCOUNT_ID] : undefined;
-  const asOf = (row: AccountLimits | undefined) => row?.limits?.as_of ?? -1;
-  if (asOf(terminal) <= asOf(own)) return own;
-  return { limits: terminal?.limits ?? null, refresh: own?.refresh ?? null };
+  if (!terminal?.limits) return own;
+  const newest = own?.limits && own.limits.as_of >= terminal.limits.as_of ? own : terminal;
+  const reading = newest.limits as ProviderLimits;
+  // Settled at the same moment (or never, in either): the reading's own.
+  const settled = modelsAsOf(own) - modelsAsOf(terminal);
+  const models = settled === 0 ? newest : settled > 0 ? own : terminal;
+  const limits = models === newest ? reading : { ...reading, models: models?.limits?.models ?? [] };
+  return limits === own?.limits ? own : { limits, refresh: own?.refresh ?? null };
+}
+
+/** When a row's model windows were last settled: the refresh that listed
+ *  them, or, for a row with none, its last refresh if that one succeeded (a
+ *  refresh that lists no model clears them). -1 when that can't be told, so
+ *  a row never refreshed doesn't clear another's. */
+function modelsAsOf(row: AccountLimits | undefined): number {
+  const models = row?.limits?.models ?? [];
+  if (models.length > 0) return Math.max(...models.map((m) => m.as_of));
+  return row?.refresh?.status === "ok" ? row.refresh.at : -1;
 }
 
 /** The plan window an account has used up and that hasn't reset since the

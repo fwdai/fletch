@@ -131,4 +131,42 @@ describe("accountLimits", () => {
     const rows = { default: at(20, 9) };
     expect(accountLimits(rows, { id: "work", cli: true })?.limits).toBe(rows.default.limits);
   });
+
+  describe("model windows of a folded account", () => {
+    const fable = (asOf: number) => ({ model: "Fable", percent: 80, resets_at: null, as_of: asOf });
+    const reading = (asOf: number, models: ReturnType<typeof fable>[]): AccountLimits => {
+      const base = at(asOf, 40);
+      return { ...base, limits: base.limits && { ...base.limits, models } };
+    };
+    const refreshedOk = (when: number) =>
+      ({ status: "ok", at: when, next_allowed_at: null, failures: 0 }) as const;
+    const folded = { id: "work", cli: true };
+
+    it("survive a newer reading from a session in the terminal's directory", () => {
+      // The account was refreshed at 10; an agent under the terminal's login
+      // read the plan at 20, carrying that directory's older model window.
+      const rows = { work: reading(10, [fable(10)]), default: reading(20, [fable(3)]) };
+      const merged = accountLimits(rows, folded);
+      expect(merged?.limits?.as_of).toBe(20);
+      expect(merged?.limits?.models).toEqual([fable(10)]);
+    });
+
+    it("survive one that carries none at all", () => {
+      const rows = { work: reading(10, [fable(10)]), default: reading(20, []) };
+      expect(accountLimits(rows, folded)?.limits?.models).toEqual([fable(10)]);
+    });
+
+    it("are cleared by a later refresh that listed none", () => {
+      const cleared = { ...reading(30, []), refresh: refreshedOk(30) };
+      const rows = { work: cleared, default: reading(20, [fable(20)]) };
+      expect(accountLimits(rows, folded)).toBe(cleared);
+    });
+
+    it("come from the terminal's directory when that was refreshed last", () => {
+      const rows = { work: reading(30, [fable(5)]), default: reading(20, [fable(20)]) };
+      const merged = accountLimits(rows, folded);
+      expect(merged?.limits?.as_of).toBe(30);
+      expect(merged?.limits?.models).toEqual([fable(20)]);
+    });
+  });
 });
