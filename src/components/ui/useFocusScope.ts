@@ -12,6 +12,8 @@ interface Scope {
   el: HTMLElement;
   /** Where focus last was inside it, to go back to rather than to the top. */
   last: HTMLElement | null;
+  /** A popover's way out, called when a dialog opens after it. */
+  dismiss?: () => void;
 }
 
 /** Every mounted dialog that holds the keyboard, in mount order. They stack —
@@ -72,11 +74,20 @@ function onFocusIn() {
  *  button would turn the next Enter into a dismissal. Content that focuses a
  *  field of its own (`autoFocus`, an effect) keeps it. On close, focus is
  *  returned only when nothing else has taken it since — an action that moved
- *  it on purpose (a new draft's composer) wins. */
-export function useFocusScope(ref: RefObject<HTMLElement | null>) {
+ *  it on purpose (a new draft's composer) wins.
+ *
+ *  `onGiveWay` makes the dialog a popover: pass how to close it, and it is
+ *  closed when any other dialog opens after it. A popover is a glance, drawn
+ *  over whatever was up; left open under (or over) a dialog opened since, it
+ *  would sit between the user and the thing they just asked for. */
+export function useFocusScope(ref: RefObject<HTMLElement | null>, onGiveWay?: () => void) {
   // Read while rendering: by the time an effect runs, `autoFocus` inside the
   // dialog has already moved it.
   const returnTo = useRef<Element | null>(document.activeElement);
+  const giveWay = useRef(onGiveWay);
+  useEffect(() => {
+    giveWay.current = onGiveWay;
+  }, [onGiveWay]);
 
   // Joined in the layout phase, so the stack is right before the microtask
   // that checks where this commit left focus; left in it too, so the focus
@@ -84,7 +95,14 @@ export function useFocusScope(ref: RefObject<HTMLElement | null>) {
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const scope: Scope = { el, last: null };
+    // The popovers already up make room: whatever layer each is drawn on, the
+    // dialog the user just opened is the one they mean to use.
+    for (const open of scopes) open.dismiss?.();
+    const scope: Scope = {
+      el,
+      last: null,
+      dismiss: giveWay.current && (() => giveWay.current?.()),
+    };
     scopes.push(scope);
     if (scopes.length === 1) document.addEventListener("focusin", onFocusIn);
 

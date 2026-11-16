@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useAgentAvailability } from "@/components/Composer/availability";
 import { Icon } from "@/components/Icon";
 import { useNow } from "@/components/SettingsScreen/ProvidersPane/AccountsSection/useNow";
@@ -20,21 +20,22 @@ export { LimitsButton } from "./LimitsButton";
  *  where Settings › Providers is a screen, a row and an expand away. It reads
  *  every account afresh as it opens, so what it shows is current. Mounted
  *  at app root and pinned bottom-left, above the sidebar footer's gauge that
- *  opens it, so the chord works with the sidebar hidden too. An outside click
- *  or Escape dismisses it. */
+ *  opens it, so the chord works with the sidebar hidden too. An outside click,
+ *  Escape or any dialog opened after it dismisses it. */
 export function LimitsPopover() {
   const open = useAppStore((s) => s.limitsPopoverOpen);
   const toggle = useAppStore((s) => s.toggleLimitsPopover);
+  const close = useCallback(() => toggle(false), [toggle]);
   if (!open) return null;
   return (
     <>
-      <Scrim onClose={() => toggle(false)} zIndex={APP_POPOVER_SCRIM_Z} />
-      <LimitsCard />
+      <Scrim onClose={close} zIndex={APP_POPOVER_SCRIM_Z} />
+      <LimitsCard onGiveWay={close} />
     </>
   );
 }
 
-function LimitsCard() {
+function LimitsCard({ onGiveWay }: { onGiveWay: () => void }) {
   const providerAccounts = useAppStore((s) => s.providerAccounts);
   const providerLimits = useAppStore((s) => s.providerLimits);
   const inFlight = useAppStore((s) => s.providerLimitsRefreshing);
@@ -46,7 +47,7 @@ function LimitsCard() {
   const { refreshing, error, refresh } = useLimitsRefresh();
   const nowMs = useNow();
   const cardRef = useRef<HTMLDivElement>(null);
-  useFocusScope(cardRef);
+  useFocusScope(cardRef, onGiveWay);
 
   // The providers that keep accounts, installed here and switched on, each
   // with the accounts Settings lists for it.

@@ -131,6 +131,40 @@ describe("useLimitsRefresh", () => {
     expect(result.current.error).toBeNull();
   });
 
+  it("forgets what an account ran into once it is deleted or signed out", async () => {
+    const { result } = renderHook(() => useLimitsRefresh());
+    const failBoth = async () => {
+      let done: Promise<void> = Promise.resolve();
+      act(() => {
+        done = result.current.refresh(["codex", "claude"], (a) => a.id !== "work");
+      });
+      await act(async () => {
+        settle["codex/default"].fail("offline");
+        settle["claude/default"].fail("refused");
+        await done;
+      });
+    };
+    await failBoth();
+    expect(result.current.error).toBe("Terminal login: offline Terminal login: refused");
+
+    // Codex's account is signed out; Claude's is still there to be refreshed.
+    act(() => {
+      useAppStore.setState((s) => ({
+        providerAccounts: {
+          ...s.providerAccounts,
+          codex: [account("codex", "default", "signed_out")],
+        },
+      }));
+    });
+    expect(result.current.error).toBe("Terminal login: refused");
+
+    // And then deleted outright.
+    act(() => {
+      useAppStore.setState((s) => ({ providerAccounts: { ...s.providerAccounts, claude: [] } }));
+    });
+    expect(result.current.error).toBeNull();
+  });
+
   it("on Settings' open asks Codex always and Claude only where nothing was ever read", () => {
     const { result } = renderHook(() => useLimitsRefresh());
     act(() => {

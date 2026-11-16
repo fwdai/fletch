@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { ProviderAccount } from "@/api/types/providers";
 import { accountLabel } from "@/data/providerAccounts";
 import { accountLimits, limitsRefreshKey } from "@/data/providerLimits";
@@ -13,6 +13,17 @@ import { useAppStore } from "@/store";
  *  is the store's `providerLimitsRefreshing`. */
 export function useLimitsRefresh() {
   const refreshLimits = useAppStore((s) => s.refreshProviderLimits);
+  const accounts = useAppStore((s) => s.providerAccounts);
+  const refreshable = useMemo(
+    () =>
+      new Set(
+        Object.values(accounts)
+          .flat()
+          .filter((a) => a.status !== "signed_out")
+          .map((a) => limitsRefreshKey(a.provider, a.id)),
+      ),
+    [accounts],
+  );
   // Calls of `refresh` still running, queued accounts included.
   const [running, setRunning] = useState(0);
   // What the last attempt at each account ran into, by `limitsRefreshKey`.
@@ -68,6 +79,12 @@ export function useLimitsRefresh() {
     [refresh],
   );
 
-  const error = Object.values(errors).join(" ") || null;
+  // Only what still stands: an account deleted or signed out since can't be
+  // refreshed again, so nothing would ever replace what it last ran into.
+  const error =
+    Object.entries(errors)
+      .filter(([key]) => refreshable.has(key))
+      .map(([, failure]) => failure)
+      .join(" ") || null;
   return { refreshing: running > 0, error, refresh, refreshOnOpen };
 }

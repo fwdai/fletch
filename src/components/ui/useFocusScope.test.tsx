@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { useRef } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "@/store";
 import { fireEvent, render, renderHook } from "@/test/render";
 import { useGlobalShortcuts } from "@/util/shortcuts";
@@ -10,14 +10,17 @@ function Dialog({
   autoFocus,
   label = "dialog",
   layer,
+  onGiveWay,
 }: {
   autoFocus?: boolean;
   label?: string;
   /** The z-index the dialog is drawn at. */
   layer?: number;
+  /** Makes it a popover: how to close it. */
+  onGiveWay?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  useFocusScope(ref);
+  useFocusScope(ref, onGiveWay);
   return (
     <div ref={ref} role="dialog" aria-label={label} style={{ zIndex: layer }}>
       <button type="button">first</button>
@@ -142,6 +145,32 @@ describe("useFocusScope", () => {
     expect(document.activeElement).toBe(last);
     tab(last);
     expect(sheet.contains(document.activeElement)).toBe(true);
+  });
+
+  it("closes a popover when a dialog opens after it, whatever layer each is on", () => {
+    const close = vi.fn();
+    // Plan limits is up, drawn above overlays; History opens from the palette.
+    const { rerender } = render(<Dialog label="popover" layer={420} onGiveWay={close} />);
+    expect(close).not.toHaveBeenCalled();
+    rerender(
+      <>
+        <Dialog label="popover" layer={420} onGiveWay={close} />
+        <Dialog label="sheet" layer={400} />
+      </>,
+    );
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a dialog alone when a popover opens over it", () => {
+    const close = vi.fn();
+    const { rerender } = render(<Dialog label="sheet" layer={400} />);
+    rerender(
+      <>
+        <Dialog label="sheet" layer={400} />
+        <Dialog label="popover" layer={420} onGiveWay={close} />
+      </>,
+    );
+    expect(close).not.toHaveBeenCalled();
   });
 
   it("keeps the keyboard when a global shortcut focuses the composer behind it", async () => {
