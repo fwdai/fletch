@@ -40,7 +40,9 @@ export function accountHue(id: string): number {
  *  two directories: the default is dropped and the managed account stands for
  *  both, marked `cli` and shown active when either was. Which directory the
  *  selection really names is kept (`selected_as_terminal`): the list hides the
- *  difference, what may be done to the managed directory does not. Anything
+ *  difference, what may be done to the managed directory does not. Its limits
+ *  are the managed account's own row: the engine keeps the rows of accounts
+ *  on one login identical. Anything
  *  the engine could not tell stays two rows. Sign-out and delete act on the
  *  managed account alone, after which the next listing shows the terminal's
  *  login again. */

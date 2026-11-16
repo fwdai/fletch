@@ -478,26 +478,22 @@ pub fn list_accounts(active_id: impl Fn(&str) -> Option<String>) -> Vec<Provider
 }
 
 /// The managed account among `listed` (one provider's, the default first)
-/// that the default's login duplicates. Only between stored logins that are
-/// signed in: a key in the shell signs the default in as whoever the key is,
-/// whatever its files say.
+/// that the default's login duplicates. Only between accounts probed as signed
+/// in.
 fn terminal_duplicate(provider: &str, listed: &[ProviderAccount]) -> Option<String> {
     let signed_in = |a: &&ProviderAccount| a.status == AuthStatus::SignedIn;
-    let default = listed.first().filter(|a| !a.managed).filter(signed_in)?;
-    if !shell_credential_vars(&default.provider).is_empty() {
-        return None;
-    }
-    let home = dirs::home_dir()?;
-    let identity = |dir: Option<&Path>| account_identity::of_account(provider, dir, &home);
+    listed.first().filter(|a| !a.managed).filter(signed_in)?;
     account_identity::duplicate_of(
-        identity(None).as_deref(),
+        account_identity::login_of(provider, None).as_deref(),
         listed
             .iter()
             .filter(|a| a.managed)
             .filter(signed_in)
             .map(|a| {
-                let dir = account_dir(provider, &a.id).ok();
-                (a.id.as_str(), dir.and_then(|d| identity(Some(&d))))
+                (
+                    a.id.as_str(),
+                    account_identity::login_of(provider, Some(&a.id)),
+                )
             }),
     )
 }

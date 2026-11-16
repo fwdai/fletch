@@ -11,7 +11,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { accountLimits } from "@/data/providerLimits";
 import type { ProviderId } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { useLimitsRefresh } from "@/util/useLimitsRefresh";
@@ -71,7 +70,7 @@ export function AccountsSection({
           refreshingAll={refreshing}
           onSignIn={() => setSigningIn(account.id)}
           onCloseSignIn={() => setSigningIn(null)}
-          limits={accountLimits(limits, account)}
+          limits={limits?.[account.id]}
           nowMs={nowMs}
         />
       ))}

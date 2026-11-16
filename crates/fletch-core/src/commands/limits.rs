@@ -14,13 +14,14 @@ use crate::host::EngineCtx;
 
 /// Every account of `provider` with its stored limits, keyed by account id
 /// (`default` first in id order, then the managed ones). A read of the
-/// settings rows only — nothing is asked of the vendor.
+/// settings rows only — nothing is asked of the vendor — and only of rows
+/// read under the login each account is signed in as now.
 pub fn get_provider_limits_impl(
     ctx: &EngineCtx,
     provider: &str,
 ) -> Result<BTreeMap<String, AccountLimits>> {
     require_account_provider(provider)?;
-    Ok(limits::load_provider(&ctx.db.lock(), provider))
+    Ok(limits::load_provider(ctx, provider))
 }
 
 /// Ask the vendor for `account`'s limits now and store the answer. Refused
@@ -38,7 +39,7 @@ pub async fn refresh_provider_limits_impl(
     let dir: Option<PathBuf> = accounts::existing_account_dir(provider, account)?;
 
     let now = limits::now_secs();
-    let stored = limits::load(&ctx.db.lock(), provider, account);
+    let stored = limits::load(ctx, provider, account);
     if !limits::refresh_allowed(stored.refresh.as_ref(), now) {
         return Ok(stored);
     }

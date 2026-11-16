@@ -1,12 +1,15 @@
 //! Whose login an account directory holds: enough to tell that two
-//! directories are signed in as the same person on the same plan. That is the
-//! case where the CLI's own login and a Fletch-managed account are one account
-//! listed twice, and the listing folds them (`accounts::list_accounts`).
+//! directories are signed in as the same person on the same plan, and that a
+//! directory is no longer signed in as who it was. Two things rest on it: the
+//! listing folds the CLI's own login into a Fletch-managed account that is the
+//! same login (`accounts::list_accounts`), and a plan-limits reading belongs
+//! to the login it was read under, not to the directory (`limits`).
 //!
 //! Read from the files each CLI keeps beside its login, never from the
 //! credential itself: claude's state file names the OAuth account, and codex's
-//! `auth.json` carries an id token whose claims do. The value is only ever
-//! compared here in the engine; it is not listed, logged or sent anywhere.
+//! `auth.json` carries an id token whose claims do. What leaves this module is
+//! a fingerprint ([`login_of`]), only ever compared and kept inside the
+//! engine; neither it nor what it was made from is listed, logged or sent.
 
 use std::path::Path;
 
@@ -15,11 +18,82 @@ use serde_json::Value;
 use super::accounts;
 use super::host_login::codex::jwt_claims;
 
+/// The login `provider`'s `account` is signed in as (`None` or the default
+/// id: the CLI's own directory), as an opaque fingerprint: equal for two
+/// accounts exactly when they are the same person on the same plan, and
+/// different for one account once its login changes. `None` when that can't
+/// be told: signed out, an API-key login, or a key in the shell signing the
+/// default in as whoever the key is, whatever its files say.
+pub(crate) fn login_of(provider: &str, account: Option<&str>) -> Option<String> {
+    // A test never reads the developer's own logins: only what it set.
+    #[cfg(test)]
+    return test_logins::get(provider, account);
+    #[cfg(not(test))]
+    {
+        let home = dirs::home_dir()?;
+        let dir = match account.filter(|id| !accounts::is_default(id)) {
+            Some(id) => Some(accounts::account_dir(provider, id).ok()?),
+            None if accounts::shell_credential_vars(provider).is_empty() => None,
+            None => return None,
+        };
+        of_account(provider, dir.as_deref(), &home).map(|identity| fingerprint(&identity))
+    }
+}
+
+/// A fixed-length stand-in for an identity, so nothing that names a person
+/// or an account is kept where the fingerprint is.
+#[cfg_attr(test, allow(dead_code))]
+fn fingerprint(identity: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(identity.as_bytes())
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// What [`login_of`] answers in a test: nothing, unless the test says who an
+/// account is signed in as.
+#[cfg(test)]
+pub(crate) mod test_logins {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use super::accounts;
+
+    thread_local! {
+        static LOGINS: RefCell<HashMap<(String, String), String>> = RefCell::default();
+    }
+
+    fn key(provider: &str, account: Option<&str>) -> (String, String) {
+        let account = account
+            .filter(|id| !accounts::is_default(id))
+            .unwrap_or(accounts::DEFAULT_ACCOUNT);
+        (provider.to_string(), account.to_string())
+    }
+
+    pub(crate) fn get(provider: &str, account: Option<&str>) -> Option<String> {
+        LOGINS.with(|logins| logins.borrow().get(&key(provider, account)).cloned())
+    }
+
+    /// Sign `account` in as `login` (or out, with `None`) on this thread.
+    pub(crate) fn set(provider: &str, account: Option<&str>, login: Option<&str>) {
+        LOGINS.with(|logins| {
+            let mut logins = logins.borrow_mut();
+            match login {
+                Some(login) => logins.insert(key(provider, account), login.to_string()),
+                None => logins.remove(&key(provider, account)),
+            };
+        });
+    }
+}
+
 /// The identity of `provider`'s login in `dir` (a managed account), or in the
 /// CLI's own directory when `dir` is `None`. `None` when the files don't say:
 /// signed out, an API-key login, a shape this doesn't know. Unknown never
 /// matches anything, so the worst a miss costs is two rows where one would do.
-pub(crate) fn of_account(provider: &str, dir: Option<&Path>, home: &Path) -> Option<String> {
+#[cfg_attr(test, allow(dead_code))]
+fn of_account(provider: &str, dir: Option<&Path>, home: &Path) -> Option<String> {
     match provider {
         "claude" => {
             let state = accounts::claude_state_file(dir, home);

@@ -14,6 +14,14 @@
 //! Settings pane follows without polling. The row also carries the manual
 //! refresh's outcome and back-off, so a restart can't reset a 429 back-off.
 //!
+//! A reading is of a login's plan, not of a directory. Rows are kept per
+//! account because that is what a client lists, so the engine remembers,
+//! privately, which login each row was read under ([`login_setting_key`]) and
+//! holds two rules over them ([`reconcile`]): a row read under a login its
+//! account is no longer signed in as is dropped, and accounts signed in as one
+//! login (the CLI's own and a managed twin) share one row. A client never has
+//! to wonder whose numbers a row holds, or which of two rows to believe.
+//!
 //! Mirrored in `src/api/types/providers.ts` (`AccountLimits`); keep the two in
 //! step.
 
@@ -26,6 +34,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::account_identity::login_of;
 use super::accounts;
 use crate::error::Result;
 use crate::host::EngineCtx;
@@ -52,11 +61,26 @@ const MAX_BACKOFF_SECS: i64 = 3600;
 /// reordering of primary/secondary can't swap the meters.
 const DAY_MINUTES: i64 = 24 * 60;
 
-pub fn limits_setting_key(provider: &str, account: Option<&str>) -> String {
-    let account = account
+/// `settings` key prefix of the login each limits row was read under, a
+/// fingerprint (`account_identity::login_of`): `limits_login_<provider>_<account>`.
+/// The engine's own bookkeeping: not a host setting a client may read
+/// (`commands::settings::is_host_setting_key`) and never announced.
+const LOGIN_SETTING_PREFIX: &str = "limits_login_";
+
+fn account_or_default(account: Option<&str>) -> &str {
+    account
         .filter(|a| !accounts::is_default(a))
-        .unwrap_or(accounts::DEFAULT_ACCOUNT);
+        .unwrap_or(accounts::DEFAULT_ACCOUNT)
+}
+
+pub fn limits_setting_key(provider: &str, account: Option<&str>) -> String {
+    let account = account_or_default(account);
     format!("{LIMITS_SETTING_PREFIX}{provider}_{account}")
+}
+
+fn login_setting_key(provider: &str, account: Option<&str>) -> String {
+    let account = account_or_default(account);
+    format!("{LOGIN_SETTING_PREFIX}{provider}_{account}")
 }
 
 /// One window: how much of it is used, and when it starts over.
@@ -85,6 +109,15 @@ pub enum LimitSource {
     OauthUsage,
     /// The `rate_limits` of the last `token_count` in a codex rollout.
     Rollout,
+}
+
+impl LimitSource {
+    /// Read off an agent's own session rather than asked of the vendor. Only
+    /// a query lists model windows, so a passive reading's lack of them says
+    /// nothing about whether there are any.
+    fn is_passive(self) -> bool {
+        matches!(self, Self::Stream | Self::Statusline | Self::Rollout)
+    }
 }
 
 /// A reading of both windows at one instant.
@@ -418,48 +451,204 @@ pub fn next_refresh_state(
 
 // ── storage ─────────────────────────────────────────────────────────────────
 
-/// The stored row of one account; absent or unreadable reads as empty, so a
-/// row from a future shape degrades to "no data" rather than an error.
-pub fn load(conn: &Connection, provider: &str, account: Option<&str>) -> AccountLimits {
+/// One account's row as it sits in the settings table, whoever it was read
+/// under; absent or unreadable reads as empty, so a row from a future shape
+/// degrades to "no data" rather than an error.
+fn stored(conn: &Connection, provider: &str, account: Option<&str>) -> AccountLimits {
     crate::database::get_setting(conn, &limits_setting_key(provider, account))
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default()
 }
 
+fn stored_login(conn: &Connection, provider: &str, account: Option<&str>) -> Option<String> {
+    crate::database::get_setting(conn, &login_setting_key(provider, account))
+}
+
+/// A row is its account's only while the account is signed in as the login
+/// the row was read under. When both are known and differ, the numbers are
+/// someone else's plan and read as nothing. A row from before logins were
+/// kept, or an account whose login can't be told, is given the benefit of the
+/// doubt.
+fn own_row(row: AccountLimits, read_under: Option<&str>, login: Option<&str>) -> AccountLimits {
+    match (read_under, login) {
+        (Some(read_under), Some(login)) if read_under != login => AccountLimits::default(),
+        _ => row,
+    }
+}
+
+/// The row of one account (`None` = the default) as its current login's.
+pub fn load(ctx: &EngineCtx, provider: &str, account: Option<&str>) -> AccountLimits {
+    let login = login_of(provider, account);
+    let conn = ctx.db.lock();
+    own_row(
+        stored(&conn, provider, account),
+        stored_login(&conn, provider, account).as_deref(),
+        login.as_deref(),
+    )
+}
+
 /// Every account of `provider` — the default and each managed one on disk —
 /// keyed by account id, with an empty entry for an account never read.
-pub fn load_provider(conn: &Connection, provider: &str) -> BTreeMap<String, AccountLimits> {
-    std::iter::once(accounts::DEFAULT_ACCOUNT.to_string())
-        .chain(accounts::list_account_ids(provider))
+pub fn load_provider(ctx: &EngineCtx, provider: &str) -> BTreeMap<String, AccountLimits> {
+    account_ids(provider)
+        .into_iter()
         .map(|id| {
-            let row = load(conn, provider, Some(&id));
+            let row = load(ctx, provider, Some(&id));
             (id, row)
         })
         .collect()
 }
 
+fn account_ids(provider: &str) -> Vec<String> {
+    std::iter::once(accounts::DEFAULT_ACCOUNT.to_string())
+        .chain(accounts::list_account_ids(provider))
+        .collect()
+}
+
 /// Read-modify-write one row; `change` returns whether it changed anything.
-/// The lock is held for the read and the write only, and the announcement goes
-/// out after it is released.
+/// `change` sees the row as its current login's ([`own_row`]), so a reading
+/// is never compared with, or carried over from, another login's. The lock is
+/// held for the read and the write only, and the announcement goes out after
+/// it is released; then the accounts sharing the login are brought in line.
 fn update(
     ctx: &EngineCtx,
     provider: &str,
     account: Option<&str>,
     change: impl FnOnce(&mut AccountLimits) -> bool,
 ) -> Result<Option<AccountLimits>> {
+    let login = login_of(provider, account);
     let key = limits_setting_key(provider, account);
     let (row, raw) = {
         let conn = ctx.db.lock();
-        let mut row = load(&conn, provider, account);
+        let mut row = own_row(
+            stored(&conn, provider, account),
+            stored_login(&conn, provider, account).as_deref(),
+            login.as_deref(),
+        );
         if !change(&mut row) {
             return Ok(None);
         }
         let raw = serde_json::to_string(&row)?;
         crate::database::set_setting(&conn, &key, &raw)?;
+        if let Some(login) = &login {
+            crate::database::set_setting(&conn, &login_setting_key(provider, account), login)?;
+        }
         (row, raw)
     };
     crate::commands::settings::announce(ctx, &key, Some(&raw));
+    if let Err(e) = reconcile(ctx, provider) {
+        tracing::warn!(provider, error = %e, "could not reconcile limits rows with their logins");
+    }
     Ok(Some(row))
+}
+
+// ── rows and logins ─────────────────────────────────────────────────────────
+
+/// One account as [`reconciled`] sees it.
+struct Held {
+    /// The login the account is signed in as now, when it can be told.
+    login: Option<String>,
+    /// The login its row was read under.
+    read_under: Option<String>,
+    row: AccountLimits,
+}
+
+/// Every account's row and the login it now counts as read under, with the
+/// two rules applied: a row read under a login its account has left is
+/// dropped ([`own_row`]), and the accounts signed in as one login hold the
+/// same row ([`shared_row`]), since they are one plan. An account whose login
+/// can't be told keeps what it has.
+fn reconciled(held: &[Held]) -> Vec<(AccountLimits, Option<String>)> {
+    let own: Vec<AccountLimits> = held
+        .iter()
+        .map(|h| own_row(h.row.clone(), h.read_under.as_deref(), h.login.as_deref()))
+        .collect();
+    held.iter()
+        .zip(&own)
+        .map(|(h, row)| match &h.login {
+            None => (row.clone(), h.read_under.clone()),
+            Some(login) => {
+                let same_login = held
+                    .iter()
+                    .zip(&own)
+                    .filter(|(other, _)| other.login.as_ref() == Some(login))
+                    .map(|(_, row)| row);
+                (shared_row(same_login), Some(login.clone()))
+            }
+        })
+        .collect()
+}
+
+/// The one row of several accounts on the same login: the newest reading and
+/// the newest refresh state. A passive reading lists no model windows, so the
+/// newest ones among the rows ride along, exactly as [`record_limits`] carries
+/// them over within a row; a refresh's own list stands, an empty one included.
+fn shared_row<'a>(rows: impl Iterator<Item = &'a AccountLimits> + Clone) -> AccountLimits {
+    let mut limits = rows
+        .clone()
+        .filter_map(|row| row.limits.as_ref())
+        .max_by_key(|l| l.as_of)
+        .cloned();
+    if let Some(limits) = limits
+        .as_mut()
+        .filter(|l| l.models.is_empty() && l.source.is_passive())
+    {
+        limits.models = rows
+            .clone()
+            .filter_map(|row| row.limits.as_ref())
+            .filter(|l| !l.models.is_empty())
+            .max_by_key(|l| l.models.iter().map(|m| m.as_of).max())
+            .map(|l| l.models.clone())
+            .unwrap_or_default();
+    }
+    let refresh = rows
+        .filter_map(|row| row.refresh.as_ref())
+        .max_by_key(|r| r.at)
+        .cloned();
+    AccountLimits { limits, refresh }
+}
+
+/// Bring `provider`'s rows in line with who its accounts are signed in as now
+/// ([`reconciled`]), writing and announcing only the rows that change. Run
+/// after every write, so a reading reaches each account on its login, and
+/// whenever the accounts are listed, which is when a login changed outside the
+/// engine (the terminal's own sign-in) is first seen.
+pub fn reconcile(ctx: &EngineCtx, provider: &str) -> Result<()> {
+    let ids = account_ids(provider);
+    // Before the lock: a login is read off the account's files.
+    let logins: Vec<Option<String>> = ids.iter().map(|id| login_of(provider, Some(id))).collect();
+    let mut changed = Vec::new();
+    {
+        let conn = ctx.db.lock();
+        let held: Vec<Held> = ids
+            .iter()
+            .zip(logins)
+            .map(|(id, login)| Held {
+                login,
+                read_under: stored_login(&conn, provider, Some(id)),
+                row: stored(&conn, provider, Some(id)),
+            })
+            .collect();
+        for ((id, was), (row, read_under)) in ids.iter().zip(&held).zip(reconciled(&held)) {
+            if let Some(login) = read_under.filter(|login| was.read_under.as_ref() != Some(login)) {
+                crate::database::set_setting(
+                    &conn,
+                    &login_setting_key(provider, Some(id)),
+                    &login,
+                )?;
+            }
+            if row != was.row {
+                let key = limits_setting_key(provider, Some(id));
+                let raw = serde_json::to_string(&row)?;
+                crate::database::set_setting(&conn, &key, &raw)?;
+                changed.push((key, raw));
+            }
+        }
+    }
+    for (key, raw) in changed {
+        crate::commands::settings::announce(ctx, &key, Some(&raw));
+    }
+    Ok(())
 }
 
 /// Store a passive reading (stream, rollout) for `account` (`None` = default)
@@ -824,7 +1013,7 @@ mod tests {
         record_refresh(&ctx, "claude", None, RefreshOutcome::Limits(refreshed), 10).unwrap();
 
         record_limits(&ctx, "claude", None, reading(20, 2.0)).unwrap();
-        let stored = load(&ctx.db.lock(), "claude", None).limits.unwrap();
+        let stored = load(&ctx, "claude", None).limits.unwrap();
         assert_eq!(stored.as_of, 20);
         assert_eq!(stored.models, vec![model_window("Fable", 30.0, 10)]);
 
@@ -837,7 +1026,7 @@ mod tests {
             30,
         )
         .unwrap();
-        let stored = load(&ctx.db.lock(), "claude", None).limits.unwrap();
+        let stored = load(&ctx, "claude", None).limits.unwrap();
         assert_eq!(stored.models, Vec::new());
     }
 
@@ -849,7 +1038,7 @@ mod tests {
         assert!(!record_limits(&ctx, "codex", Some("work"), reading(9, 3.0)).unwrap());
         assert!(record_limits(&ctx, "codex", Some("work"), reading(11, 4.0)).unwrap());
 
-        let row = load(&ctx.db.lock(), "codex", Some("work"));
+        let row = load(&ctx, "codex", Some("work"));
         assert_eq!(row.limits, Some(reading(11, 4.0)));
         let announced: Vec<_> = sink
             .events()
@@ -873,7 +1062,7 @@ mod tests {
             Some(RefreshStatus::RateLimited)
         );
         // Persisted: a restart keeps the back-off.
-        let stored = load(&ctx.db.lock(), "claude", Some(accounts::DEFAULT_ACCOUNT));
+        let stored = load(&ctx, "claude", Some(accounts::DEFAULT_ACCOUNT));
         assert_eq!(stored, row);
     }
 
@@ -889,12 +1078,12 @@ mod tests {
         observe_stream_event(&ctx, Some("work"), &event);
         observe_stream_event(&ctx, Some("work"), &json!({ "type": "assistant" }));
 
-        let row = load(&ctx.db.lock(), "claude", Some("work"));
+        let row = load(&ctx, "claude", Some("work"));
         let limits = row.limits.expect("recorded");
         assert_eq!(limits.source, LimitSource::Stream);
         assert_eq!(limits.five_hour, window(25.0, 1_788_265_323));
         assert_eq!(
-            load(&ctx.db.lock(), "claude", None),
+            load(&ctx, "claude", None),
             AccountLimits::default(),
             "the default account is untouched"
         );
@@ -905,9 +1094,212 @@ mod tests {
         let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
         crate::database::set_setting(&ctx.db.lock(), "provider_limits_claude_default", "{nope")
             .unwrap();
+        assert_eq!(load(&ctx, "claude", None), AccountLimits::default());
+    }
+
+    // ── rows and logins ─────────────────────────────────────────────────────
+
+    fn held(login: Option<&str>, read_under: Option<&str>, row: AccountLimits) -> Held {
+        Held {
+            login: login.map(str::to_string),
+            read_under: read_under.map(str::to_string),
+            row,
+        }
+    }
+
+    fn row_of(limits: ProviderLimits) -> AccountLimits {
+        AccountLimits {
+            limits: Some(limits),
+            refresh: None,
+        }
+    }
+
+    fn refreshed(as_of: i64, models: Vec<ModelWindow>) -> ProviderLimits {
+        ProviderLimits {
+            source: LimitSource::OauthUsage,
+            models,
+            ..reading(as_of, 1.0)
+        }
+    }
+
+    #[test]
+    fn a_row_read_under_a_login_the_account_has_left_is_dropped() {
+        let out = reconciled(&[held(Some("b"), Some("a"), row_of(reading(20, 9.0)))]);
+        assert_eq!(out, vec![(AccountLimits::default(), Some("b".to_string()))]);
+    }
+
+    #[test]
+    fn a_row_keeps_to_an_account_still_on_its_login_or_one_that_cant_be_told() {
+        let row = row_of(reading(20, 9.0));
+        // Same login: kept.
+        let out = reconciled(&[held(Some("a"), Some("a"), row.clone())]);
+        assert_eq!(out, vec![(row.clone(), Some("a".to_string()))]);
+        // From before logins were kept: kept, and counted as this login's from now on.
+        let out = reconciled(&[held(Some("a"), None, row.clone())]);
+        assert_eq!(out, vec![(row.clone(), Some("a".to_string()))]);
+        // Signed out, or a login the files don't name: left exactly as it is.
+        let out = reconciled(&[held(None, Some("a"), row.clone())]);
+        assert_eq!(out, vec![(row, Some("a".to_string()))]);
+    }
+
+    #[test]
+    fn accounts_on_one_login_hold_one_row_and_others_keep_theirs() {
+        let newest = AccountLimits {
+            limits: Some(reading(20, 2.0)),
+            refresh: Some(state(RefreshStatus::Ok, 5)),
+        };
+        let older = AccountLimits {
+            limits: Some(reading(10, 1.0)),
+            refresh: Some(state(RefreshStatus::RateLimited, 30)),
+        };
+        let other = row_of(reading(40, 4.0));
+        let out = reconciled(&[
+            held(Some("a"), Some("a"), newest),
+            held(Some("a"), Some("a"), older),
+            held(Some("b"), Some("b"), other.clone()),
+        ]);
+        // The newest reading, and what the newest refresh ran into.
+        let shared = AccountLimits {
+            limits: Some(reading(20, 2.0)),
+            refresh: Some(state(RefreshStatus::RateLimited, 30)),
+        };
+        assert_eq!(out[0].0, shared);
+        assert_eq!(out[1].0, shared);
+        assert_eq!(out[2].0, other);
+    }
+
+    /// The terminal read login A's plan, then signed in as login B, which a
+    /// managed account already holds with an older reading of its own.
+    #[test]
+    fn another_logins_newer_reading_never_lands_on_an_account() {
+        let out = reconciled(&[
+            held(Some("b"), Some("a"), row_of(reading(20, 99.0))),
+            held(Some("b"), Some("b"), row_of(reading(10, 5.0))),
+        ]);
+        let b = row_of(reading(10, 5.0));
         assert_eq!(
-            load(&ctx.db.lock(), "claude", None),
+            out,
+            vec![
+                (b.clone(), Some("b".to_string())),
+                (b, Some("b".to_string()))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_shared_passive_reading_carries_the_newest_model_windows() {
+        let fable = vec![model_window("Fable", 30.0, 10)];
+        let rows = [
+            row_of(refreshed(10, fable.clone())),
+            row_of(reading(20, 2.0)),
+        ];
+        let shared = shared_row(rows.iter()).limits.unwrap();
+        assert_eq!(shared.as_of, 20);
+        assert_eq!(shared.models, fable);
+    }
+
+    #[test]
+    fn a_shared_refresh_that_lists_no_model_window_clears_them() {
+        let fable = vec![model_window("Fable", 30.0, 10)];
+        let rows = [
+            row_of(refreshed(10, fable)),
+            row_of(refreshed(20, Vec::new())),
+        ];
+        assert_eq!(shared_row(rows.iter()).limits.unwrap().models, Vec::new());
+    }
+
+    /// Sign `account` in as `login` for this test's thread, and out when dropped.
+    struct SignedIn(&'static str, Option<&'static str>);
+    impl SignedIn {
+        fn as_login(provider: &'static str, account: Option<&'static str>, login: &str) -> Self {
+            crate::agent::account_identity::test_logins::set(provider, account, Some(login));
+            Self(provider, account)
+        }
+    }
+    impl Drop for SignedIn {
+        fn drop(&mut self) {
+            crate::agent::account_identity::test_logins::set(self.0, self.1, None);
+        }
+    }
+
+    fn announced(sink: &crate::host::sink::RecordingSink, key: &str) -> usize {
+        sink.events()
+            .into_iter()
+            .filter(|(name, p)| {
+                name == crate::commands::settings::SETTINGS_CHANGED && p["key"] == key
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_reading_is_gone_once_the_account_signs_in_as_someone_else() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let login = SignedIn::as_login("claude", None, "a");
+        record_limits(&ctx, "claude", None, reading(20, 99.0)).unwrap();
+        assert_eq!(load(&ctx, "claude", None).limits, Some(reading(20, 99.0)));
+
+        // The terminal signs in as another login; nothing is written yet.
+        drop(login);
+        let _login = SignedIn::as_login("claude", None, "b");
+        assert_eq!(load(&ctx, "claude", None), AccountLimits::default());
+
+        // Looking at the accounts drops the row for good, and says so.
+        let before = announced(&sink, "provider_limits_claude_default");
+        reconcile(&ctx, "claude").unwrap();
+        assert_eq!(
+            stored(&ctx.db.lock(), "claude", None),
             AccountLimits::default()
         );
+        assert_eq!(
+            announced(&sink, "provider_limits_claude_default"),
+            before + 1
+        );
+
+        // An older reading of the new login is taken: there is none of its
+        // own to be older than.
+        assert!(record_limits(&ctx, "claude", None, reading(5, 1.0)).unwrap());
+        assert_eq!(load(&ctx, "claude", None).limits, Some(reading(5, 1.0)));
+    }
+
+    #[test]
+    fn a_reading_reaches_every_account_on_its_login() {
+        accounts::with_test_root(|root| {
+            std::fs::create_dir_all(root.join("claude").join("work")).unwrap();
+            std::fs::create_dir_all(root.join("claude").join("personal")).unwrap();
+            let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+            let _terminal = SignedIn::as_login("claude", None, "a");
+            let _work = SignedIn::as_login("claude", Some("work"), "a");
+            let _personal = SignedIn::as_login("claude", Some("personal"), "b");
+
+            let fable = vec![model_window("Fable", 30.0, 10)];
+            let outcome = RefreshOutcome::Limits(refreshed(10, fable.clone()));
+            record_refresh(&ctx, "claude", Some("work"), outcome, 10).unwrap();
+            // A session under the terminal's login reads the plan later.
+            record_limits(&ctx, "claude", None, reading(20, 2.0)).unwrap();
+
+            let terminal = load(&ctx, "claude", None);
+            assert_eq!(terminal, load(&ctx, "claude", Some("work")));
+            let limits = terminal.limits.unwrap();
+            assert_eq!(limits.as_of, 20);
+            assert_eq!(limits.models, fable);
+            assert_eq!(terminal.refresh.map(|r| r.status), Some(RefreshStatus::Ok));
+            // The other login's account heard nothing.
+            assert_eq!(
+                load(&ctx, "claude", Some("personal")),
+                AccountLimits::default()
+            );
+            assert_eq!(announced(&sink, "provider_limits_claude_personal"), 0);
+            assert!(announced(&sink, "provider_limits_claude_default") >= 1);
+        });
+    }
+
+    #[test]
+    fn the_login_a_row_was_read_under_is_not_a_setting_a_client_may_read() {
+        let key = login_setting_key("claude", Some("work"));
+        assert_eq!(key, "limits_login_claude_work");
+        assert!(!crate::commands::settings::is_host_setting_key(&key));
+        assert!(crate::commands::settings::is_host_setting_key(
+            &limits_setting_key("claude", Some("work"))
+        ));
     }
 }

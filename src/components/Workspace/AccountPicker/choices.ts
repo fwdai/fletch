@@ -24,8 +24,6 @@ export interface AccountChoice {
   label: string;
   status: ProviderAuthStatus;
   detail: string | null;
-  /** Also the terminal's login (`foldTerminalLogin`). */
-  cli: boolean;
   current: boolean;
   /** Not pickable: the current account, or one known to be signed out. An
    *  `unknown` probe stays pickable; the host has the final word. */
@@ -40,7 +38,6 @@ export function accountChoices(accounts: ProviderAccount[], current: string): Ac
       label: accountLabel(a),
       status: a.status,
       detail: a.detail,
-      cli: a.cli === true,
       current: isCurrent,
       disabled: isCurrent || a.status === "signed_out",
     };

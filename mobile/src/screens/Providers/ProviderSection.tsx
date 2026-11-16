@@ -1,7 +1,6 @@
 import type { ProviderAccount } from "@desktop/api/types/providers";
 import { Icon } from "@desktop/components/Icon";
 import { accountLabel, foldTerminalLogin } from "@desktop/data/providerAccounts";
-import { accountLimits } from "@desktop/data/providerLimits";
 import { useState } from "react";
 import { ProviderMark } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
@@ -74,7 +73,7 @@ export function ProviderSection({
           <AccountCard
             key={account.id}
             account={account}
-            limits={accountLimits(limits, account)}
+            limits={limits?.[account.id]}
             nowMs={nowMs}
           />
         ))}

@@ -9,7 +9,7 @@ import {
 } from "@/components/Workspace/AccountPicker/choices";
 import { useCanSwitchAccount } from "@/components/Workspace/AccountPicker/useCanSwitchAccount";
 import { listedAccountId } from "@/data/providerAccounts";
-import { accountLimits, spentWindow } from "@/data/providerLimits";
+import { spentWindow } from "@/data/providerLimits";
 import { useAppStore } from "@/store";
 
 /** The composer's hold on the agent's account: which one it runs under and how
@@ -72,7 +72,7 @@ export function useAccountView(
   );
   const nowMs = Date.now();
   const options = accountChoices(accounts, current).map((choice) => {
-    const window = spentWindow(accountLimits(limits, choice), nowMs);
+    const window = spentWindow(limits?.[choice.id], nowMs);
     const reset = window ? resetLabel(window.resets_at, nowMs) : null;
     return { ...choice, spent: window ? `Limit reached${reset ? ` · ${reset}` : ""}` : null };
   });
