@@ -206,13 +206,18 @@ export interface WorkspaceSlice {
    *  comes, the agent is busy — for a control command (`/compact`) that must
    *  open a turn of its own, never ride a running one as a follow-up. Checked
    *  at dispatch, because an earlier send can still be waiting in line, not yet
-   *  busy, when this one is made. */
+   *  busy, when this one is made.
+   *
+   *  `onDelivered` fires once the host has taken the message (delivered, or
+   *  held for the next turn boundary) — for what must follow a message that
+   *  really went out. The resolved `true` is not that: it also covers a send
+   *  the host refused, which only raises `lastError`. */
   sendUserMessage: (
     id: string,
     text: string,
     attachments?: string[],
     folders?: FolderGrant[] | Promise<FolderGrant[]>,
-    opts?: { idleOnly?: boolean },
+    opts?: { idleOnly?: boolean; onDelivered?: () => void },
   ) => Promise<boolean>;
   /** Persist a mid-session reasoning-effort change and (for claude) restart to
    *  apply it. Serialized per agent so a subsequent send waits for it to land —
@@ -708,6 +713,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
             },
           }));
         }
+        opts.onDelivered?.();
       } catch (e) {
         set((state) => ({
           lastError: String(e),

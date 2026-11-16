@@ -6,8 +6,8 @@
 // several step agents — routes its single composer to whichever agent is live
 // through the identical send machinery instead of a second copy of it.
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { type AgentRecord, api, type RoadmapItem } from "@/api";
+import { useCallback, useEffect, useState } from "react";
+import { type AgentRecord, api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
@@ -99,10 +99,11 @@ export function ChatComposer({
     };
   }, [projectId]);
 
-  // The roadmap item picked into the draft, handed to this agent once the
-  // message that carries its brief is sent — the board's "Send to an agent"
-  // rule: a pick the user abandons stamps nothing.
-  const pickedRoadmapItem = useRef<RoadmapItem | null>(null);
+  // The roadmap item picked into the draft is handed to this agent once the
+  // message that carries its brief has reached the host — the board's "Send
+  // to an agent" rule: a pick the user abandons stamps nothing. It is kept in
+  // the store beside the draft text, so it outlives what the text outlives.
+  const setRoadmapPick = useAppStore((s) => s.setComposerRoadmapPick);
 
   // Mid-turn follow-ups are allowed: a busy (running) agent still accepts a
   // message — delivered live (claude) or queued for the next turn boundary
@@ -215,9 +216,7 @@ export function ChatComposer({
               });
             }}
             listRoadmapItems={projectId ? () => api.roadmapListItems(projectId) : undefined}
-            onPickRoadmapItem={(item) => {
-              pickedRoadmapItem.current = item;
-            }}
+            onPickRoadmapItem={(item) => setRoadmapPick(agent.id, { id: item.id, code: item.code })}
             seed={composerSeed}
             onSeedConsumed={onSeedConsumed}
             draftKey={agent.id}
@@ -233,17 +232,25 @@ export function ChatComposer({
               // waits for the turn's end (or "Apply now" in the working
               // strip). A refused folder is in the error banner, and false
               // puts the draft back to fix.
-              const sent = send(agent.id, text, attachments, folders);
-              const item = pickedRoadmapItem.current;
-              pickedRoadmapItem.current = null;
-              // The message still names the item, so it is what went out.
-              if (item && text.includes(item.code)) {
+              // Read at send rather than subscribed to: nothing draws from it.
+              const pick = useAppStore.getState().composerRoadmapPicks[agent.id];
+              // The message still names the item, so it is what is going out.
+              const carried = pick && text.includes(pick.code) ? pick : undefined;
+              const sent = send(agent.id, text, attachments, folders, {
+                onDelivered: carried
+                  ? () => {
+                      // Best-effort: a failure only loses the board's link.
+                      api.roadmapHandOffItem(carried.id, agent.id).catch((e) => {
+                        console.error("roadmap_hand_off_item failed", e);
+                      });
+                    }
+                  : undefined,
+              });
+              if (pick) {
+                // A refused send puts the draft back, and the pick stays with
+                // it; any other outcome has spent the draft.
                 void sent.then((ok) => {
-                  if (ok === false) return;
-                  // Best-effort: a failure only loses the board's link.
-                  api.roadmapHandOffItem(item.id, agent.id).catch((e) => {
-                    console.error("roadmap_hand_off_item failed", e);
-                  });
+                  if (ok !== false) setRoadmapPick(agent.id, null);
                 });
               }
               return sent;
