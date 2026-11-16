@@ -48,6 +48,41 @@ describe("useCachedList", () => {
     expect(hook.result.current).toEqual(["a"]);
   });
 
+  it("ignores an answer that a newer fetch has replaced", async () => {
+    vi.useFakeTimers();
+    try {
+      const slow = deferred<string>();
+      const hook = renderHook(({ list, open }) => useCachedList(list, open), {
+        initialProps: { list: slow.list, open: true },
+      });
+      // The first fetch outlasts the cache window, so a reopen starts another.
+      const fresh = deferred<string>();
+      hook.rerender({ list: fresh.list, open: false });
+      vi.advanceTimersByTime(16_000);
+      hook.rerender({ list: fresh.list, open: true });
+      expect(fresh.list).toHaveBeenCalledTimes(1);
+
+      await act(async () => fresh.resolve(["new"]));
+      await act(async () => slow.resolve(["old"]));
+      expect(hook.result.current).toEqual(["new"]);
+
+      // A late failure of the replaced fetch changes nothing either.
+      const failing = deferred<string>();
+      const last = deferred<string>();
+      hook.rerender({ list: failing.list, open: false });
+      vi.advanceTimersByTime(16_000);
+      hook.rerender({ list: failing.list, open: true });
+      hook.rerender({ list: last.list, open: false });
+      vi.advanceTimersByTime(16_000);
+      hook.rerender({ list: last.list, open: true });
+      await act(async () => last.resolve(["newest"]));
+      await act(async () => failing.reject(new Error("offline")));
+      expect(hook.result.current).toEqual(["newest"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reads a failed first fetch as empty, and keeps the list through a failed refresh", async () => {
     vi.useFakeTimers();
     try {

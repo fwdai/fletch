@@ -12,7 +12,10 @@ const CACHE_MS = 15_000;
  *
  *  An answer lands whether or not the menu is still open: the fetch that
  *  stamped the cache window is the only one made inside it, so dropping its
- *  answer when the menu closed would leave a quick reopen with nothing.
+ *  answer when the menu closed would leave a quick reopen with nothing. Only
+ *  the newest fetch's answer counts, though: one slow enough to outlast the
+ *  window is replaced by the reopen's, and must not overwrite it when it
+ *  finally arrives.
  *
  *  `list` is read through a ref, so an inline function doesn't refetch; omit
  *  it where there is nothing to list. */
@@ -25,13 +28,20 @@ export function useCachedList<T>(
   ref.current = list;
   // Stamped before the call, so a reopen while one is in flight skips too.
   const lastFetch = useRef(0);
+  // Counts fetches, so an answer can tell whether a later one has replaced it.
+  const newest = useRef(0);
   useEffect(() => {
     if (!open || !ref.current) return;
     if (Date.now() - lastFetch.current < CACHE_MS) return;
     lastFetch.current = Date.now();
+    const request = ++newest.current;
     ref.current().then(
-      (next) => setItems(next),
-      () => setItems((cur) => cur ?? []),
+      (next) => {
+        if (request === newest.current) setItems(next);
+      },
+      () => {
+        if (request === newest.current) setItems((cur) => cur ?? []);
+      },
     );
   }, [open]);
   return items;
