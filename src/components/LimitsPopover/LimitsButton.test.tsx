@@ -38,32 +38,39 @@ describe("LimitsButton", () => {
     expect(chip().getAttribute("data-tip")).toMatch(/^Usage \(.+\)$/);
   });
 
-  it("carries the tightest window among each provider's active account", () => {
+  it("carries the weekly allowance used across every listed account", () => {
     useAppStore.setState({
       providerAccounts: {
         claude: [account("claude", "default"), account("claude", "work", true)],
         codex: [account("codex", "default")],
       },
       providerLimits: {
-        // The idle account is nearly spent, but no new agent runs under it.
-        claude: { default: reading(99, 99), work: reading(20, 64) },
-        codex: { default: reading(41, 12) },
+        // A spent five-hour window on one account doesn't move the figure.
+        claude: { default: reading(99, 70), work: reading(20, 2) },
+        codex: { default: reading(41, 60) },
       },
     });
     render(<LimitsButton />);
-    expect(chip().textContent).toBe("64%");
-    expect(chip().getAttribute("aria-label")).toBe("Usage · Claude Code 7d at 64%");
-    expect(chip().getAttribute("data-tip")).toMatch(/^Usage \(.+\) · Claude Code 7d at 64%$/);
+    expect(chip().textContent).toBe("44%");
+    expect(chip().getAttribute("aria-label")).toBe(
+      "Usage · 44% of the weekly allowance used across 3 accounts",
+    );
+    expect(chip().getAttribute("data-tip")).toMatch(
+      /^Usage \(.+\) · 44% of the weekly allowance used across 3 accounts$/,
+    );
     expect(chip().className).not.toMatch(/\b(warn|full)\b/);
   });
 
   it("takes the meters' tint past their warning line", () => {
     useAppStore.setState({
       providerAccounts: { codex: [account("codex", "default")] },
-      providerLimits: { codex: { default: reading(96, 12) } },
+      providerLimits: { codex: { default: reading(12, 96) } },
     });
     render(<LimitsButton />);
     expect(chip().textContent).toBe("96%");
+    expect(chip().getAttribute("aria-label")).toBe(
+      "Usage · 96% of the weekly allowance used across 1 account",
+    );
     expect(chip().className).toMatch(/\bfull\b/);
   });
 });

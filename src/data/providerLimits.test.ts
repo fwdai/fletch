@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { AccountLimits } from "@/api/types/providers";
 import {
   limitsKeyParts,
-  liveWindows,
   parseAccountLimits,
   spentWindow,
-  tightestWindow,
+  weeklyUsage,
   withLimitsChange,
 } from "./providerLimits";
 
@@ -103,67 +102,42 @@ describe("spentWindow", () => {
   });
 });
 
-describe("liveWindows", () => {
+describe("weeklyUsage", () => {
   const at = (s: number) => s * 1000;
-  const reading: AccountLimits = {
+  const weekly = (percent: number, resetsAt: number | null = 5_000): AccountLimits => ({
     limits: {
-      five_hour: { percent: 80, resets_at: 1_000 },
-      seven_day: { percent: 30, resets_at: null },
-      as_of: 0,
-      source: "oauth_usage",
-      models: [{ model: "Fable", percent: 60, resets_at: 5_000, as_of: 0 }],
-    },
-    refresh: null,
-  };
-
-  it("names every reported window that has not reset since the reading", () => {
-    expect(liveWindows(reading, at(500)).map((w) => w.name)).toEqual(["5h", "7d", "7d Fable"]);
-  });
-
-  it("drops a window once it resets, and has nothing without a reading", () => {
-    expect(liveWindows(reading, at(1_000)).map((w) => w.name)).toEqual(["7d", "7d Fable"]);
-    expect(liveWindows(undefined, at(0))).toEqual([]);
-    expect(liveWindows({ limits: null, refresh: null }, at(0))).toEqual([]);
-  });
-});
-
-describe("tightestWindow", () => {
-  const at = (s: number) => s * 1000;
-  const windows = (fiveHour: number, sevenDay: number): AccountLimits => ({
-    limits: {
-      five_hour: { percent: fiveHour, resets_at: 1_000 },
-      seven_day: { percent: sevenDay, resets_at: 5_000 },
+      five_hour: { percent: 99, resets_at: 1_000 },
+      seven_day: { percent, resets_at: resetsAt },
       as_of: 0,
       source: "stream",
     },
     refresh: null,
   });
 
-  it("picks the live window closest to its limit across providers", () => {
-    const tightest = tightestWindow(
-      [
-        { provider: "claude", row: windows(40, 55) },
-        { provider: "codex", row: windows(72, 10) },
-      ],
-      at(500),
-    );
-    expect(tightest).toMatchObject({ provider: "codex", name: "5h", window: { percent: 72 } });
+  it("averages the weekly share across accounts, each counting equally", () => {
+    expect(weeklyUsage([weekly(70), weekly(2), weekly(60)], at(0))).toEqual({
+      percent: 44,
+      accounts: 3,
+    });
   });
 
-  it("passes over a window that has reset since its reading", () => {
-    const tightest = tightestWindow(
-      [
-        { provider: "claude", row: windows(40, 55) },
-        { provider: "codex", row: windows(72, 10) },
-      ],
-      at(2_000),
-    );
-    expect(tightest).toMatchObject({ provider: "claude", name: "7d", window: { percent: 55 } });
+  it("counts a week that has reset since its reading as unused", () => {
+    expect(weeklyUsage([weekly(80), weekly(40, 1_000)], at(2_000))).toEqual({
+      percent: 40,
+      accounts: 2,
+    });
   });
 
-  it("is null when no account has a live window", () => {
-    expect(tightestWindow([], at(0))).toBeNull();
-    expect(tightestWindow([{ provider: "claude", row: undefined }], at(0))).toBeNull();
-    expect(tightestWindow([{ provider: "claude", row: windows(90, 90) }], at(6_000))).toBeNull();
+  it("leaves out accounts without a weekly reading, and is null with none", () => {
+    const noWeek: AccountLimits = {
+      limits: { five_hour: null, seven_day: null, as_of: 0, source: "stream" },
+      refresh: null,
+    };
+    expect(weeklyUsage([weekly(50), noWeek, undefined], at(0))).toEqual({
+      percent: 50,
+      accounts: 1,
+    });
+    expect(weeklyUsage([noWeek, { limits: null, refresh: null }, undefined], at(0))).toBeNull();
+    expect(weeklyUsage([], at(0))).toBeNull();
   });
 });

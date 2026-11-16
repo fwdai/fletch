@@ -2,18 +2,15 @@ import { Icon } from "@/components/Icon";
 import { limitTone } from "@/components/SettingsScreen/ProvidersPane/AccountsSection/limitsFormat";
 import { useNow } from "@/components/SettingsScreen/ProvidersPane/AccountsSection/useNow";
 import { Chip } from "@/components/ui/Chip";
-import { activeAccountId } from "@/data/providerAccounts";
-import { tightestWindow } from "@/data/providerLimits";
-import { providerLabel } from "@/data/providers";
+import { weeklyUsage } from "@/data/providerLimits";
 import { useAppStore } from "@/store";
 import { useShortcutKeys } from "@/util/shortcuts";
 import { useListedAccounts } from "./useListedAccounts";
 
-/** The sidebar footer's way into the usage popover: a chip carrying the share
- *  used of the plan window closest to its limit, among the accounts each
- *  provider's new agents run under — the one that will hold an agent up
- *  first, whichever provider it is. The tip names it, and the figure takes the
- *  meters' tint past their warning line. With no reading still holding, the
+/** The sidebar footer's way into the usage popover: a chip carrying how much
+ *  of the weekly allowance is used across every account the popover lists
+ *  (see `weeklyUsage`). The tip says what the figure covers, and the figure
+ *  takes the meters' tint past their warning line. With no weekly reading, the
  *  chip carries no figure. */
 export function LimitsButton() {
   const open = useAppStore((s) => s.limitsPopoverOpen);
@@ -23,16 +20,15 @@ export function LimitsButton() {
   const listed = useListedAccounts();
   const nowMs = useNow(60_000);
 
-  const tightest = tightestWindow(
-    listed.map((p) => ({
-      provider: p.id,
-      row: providerLimits[p.id]?.[activeAccountId(p.accounts)],
-    })),
+  const weekly = weeklyUsage(
+    listed.flatMap((p) => p.accounts.map((a) => providerLimits[p.id]?.[a.id])),
     nowMs,
   );
-  const percent = tightest ? Math.round(tightest.window.percent) : null;
-  const detail = tightest
-    ? `${providerLabel(tightest.provider)} ${tightest.name} at ${percent}%`
+  const percent = weekly ? Math.round(weekly.percent) : null;
+  const detail = weekly
+    ? `${percent}% of the weekly allowance used across ${weekly.accounts} ${
+        weekly.accounts === 1 ? "account" : "accounts"
+      }`
     : null;
   const usage = keys ? `Usage (${keys})` : "Usage";
 
