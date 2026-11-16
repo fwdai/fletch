@@ -8,7 +8,7 @@
   border: 1px solid var(--bd);
   border-radius: var(--r-lg);
   box-shadow: 0 28px 72px rgba(0, 0, 0, 0.45);
-  z-index: var(--z-popover);
+  z-index: var(--z-app-popover);
   padding: 14px;
   animation: ddIn 0.2s var(--ease);
   max-height: calc(100vh - 80px);

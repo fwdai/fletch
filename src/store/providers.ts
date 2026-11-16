@@ -6,7 +6,8 @@ import {
   refreshCatalog,
   type SlimCatalog,
 } from "@/data/modelCatalog";
-import { type LimitsByProvider, withLimitsChange } from "@/data/providerLimits";
+import { foldTerminalLogin } from "@/data/providerAccounts";
+import { type LimitsByProvider, limitsRefreshKey, withLimitsChange } from "@/data/providerLimits";
 import { setSetting } from "@/storage/settings";
 import type { SliceCreator } from "./types";
 
@@ -40,7 +41,8 @@ export interface ProvidersSlice {
   providerAuth: Record<string, ProviderAuthStatus>;
   /** Every sign-in Fletch knows per account-capable provider, the default
    *  (the CLI's own login) first, each with its probe and whether it is the
-   *  one new agents use. Absent until the first list resolves. Refreshed with
+   *  one new agents use. A default that is the same login as a managed
+   *  account is folded into it (`foldTerminalLogin`). Absent until the first list resolves. Refreshed with
    *  `providerAuth`, so the accounts list and the row badge never disagree. */
   providerAccounts: Record<string, ProviderAccount[]>;
   /** Each account's last known plan limits (five-hour and weekly windows),
@@ -48,6 +50,11 @@ export interface ProvidersSlice {
    *  and kept current by `settings:changed`, which every engine write of a
    *  row announces — a reading from an agent's stream lands without a poll. */
   providerLimits: LimitsByProvider;
+  /** The accounts a limits refresh is out for right now, by `limitsRefreshKey`.
+   *  Kept here, with the request itself, so every surface that shows an
+   *  account spins for it whoever asked, and overlapping askers can't
+   *  disagree about what is still running. */
+  providerLimitsRefreshing: Record<string, true>;
   /** Strip agents' commit/PR attribution regardless of their own settings.
    *  Mirrors the backend-owned `agent_attribution_removed`; false (the default)
    *  leaves each agent's own settings in charge. */
@@ -114,6 +121,7 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
   providerAuth: {},
   providerAccounts: {},
   providerLimits: {},
+  providerLimitsRefreshing: {},
   agentAttributionRemoved: false,
 
   setProviderEnabled: (id, enabled) =>
@@ -172,6 +180,11 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
         list.push(account);
         byProvider[account.provider] = list;
       }
+      // Folded here, once, so every surface that lists accounts sees the
+      // terminal's login and its managed twin as the one account they are.
+      for (const provider of Object.keys(byProvider)) {
+        byProvider[provider] = foldTerminalLogin(byProvider[provider]);
+      }
       set({ providerAccounts: byProvider });
       await Promise.all(Object.keys(byProvider).map((p) => get().loadProviderLimits(p)));
     } catch {
@@ -192,10 +205,11 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
     // in flight rather than asking the vendor twice. The engine's refresh
     // floor is checked before it awaits the vendor, so it wouldn't catch the
     // overlap itself.
-    const key = `${provider}/${account}`;
+    const key = limitsRefreshKey(provider, account);
     const inFlight = limitsRefreshes.get(key);
     if (inFlight) return inFlight;
     const request = (async () => {
+      set((s) => ({ providerLimitsRefreshing: { ...s.providerLimitsRefreshing, [key]: true } }));
       try {
         const row = await api.refreshProviderLimits(provider, account);
         set((s) => ({
@@ -206,6 +220,10 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
         }));
       } finally {
         limitsRefreshes.delete(key);
+        set((s) => {
+          const { [key]: _done, ...rest } = s.providerLimitsRefreshing;
+          return { providerLimitsRefreshing: rest };
+        });
       }
     })();
     limitsRefreshes.set(key, request);

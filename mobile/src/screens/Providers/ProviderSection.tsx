@@ -1,6 +1,6 @@
 import type { ProviderAccount } from "@desktop/api/types/providers";
 import { Icon } from "@desktop/components/Icon";
-import { accountLabel } from "@desktop/data/providerAccounts";
+import { accountLabel, foldTerminalLogin } from "@desktop/data/providerAccounts";
 import { useState } from "react";
 import { ProviderMark } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
@@ -12,13 +12,16 @@ import { AccountCard } from "./AccountCard";
  *  account's limits again, and a card per account. */
 export function ProviderSection({
   providerId,
-  accounts,
+  accounts: listedByHost,
   nowMs,
 }: {
   providerId: string;
   accounts: ProviderAccount[];
   nowMs: number;
 }) {
+  // As the desktop lists them: the terminal's login and a managed account
+  // that is the same login are one card.
+  const accounts = foldTerminalLogin(listedByHost);
   const limits = useStore((s) => s.providerLimits[providerId]);
   const refreshLimits = useStore((s) => s.refreshProviderLimits);
   const [refreshing, setRefreshing] = useState(false);

@@ -91,6 +91,13 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
         description: "Open or close the token usage report.",
       },
       {
+        id: "limits",
+        combos: ["Mod+U"],
+        label: "Plan limits",
+        description:
+          "How much of each account's plan is used and when it resets, in a popover; the usage report from there.",
+      },
+      {
         id: "quickSettings",
         combos: ["Mod+,"],
         label: "Quick settings",

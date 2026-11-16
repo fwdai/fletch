@@ -1,11 +1,12 @@
 import { Avatar } from "@/components/Avatar";
+import { LimitsButton } from "@/components/LimitsPopover";
 import { useAppStore } from "@/store";
 import { displayIdentity } from "@/util/identity";
-import { SidebarUsage } from "./SidebarUsage";
 
 /** The user, bottom-left, as a button into Settings › Account. No sign-in is
  *  required to use Fletch, so this is whatever is known: the saved profile,
- *  else the global git identity, else an invitation to fill the profile in. */
+ *  else the global git identity, else an invitation to fill the profile in.
+ *  Beside it, the gauge that opens the plan-limits popover. */
 export function SidebarFooter() {
   const account = useAppStore((s) => s.account);
   const gitIdentity = useAppStore((s) => s.gitIdentity);
@@ -35,7 +36,7 @@ export function SidebarFooter() {
           <div className="ue">{secondary}</div>
         </div>
       </button>
-      <SidebarUsage />
+      <LimitsButton />
     </div>
   );
 }

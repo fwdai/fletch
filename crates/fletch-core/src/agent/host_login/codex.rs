@@ -354,15 +354,19 @@ fn refresh_token(auth: &Value) -> Option<&str> {
         .filter(|t| !t.is_empty())
 }
 
-/// `(iat, exp)` of the access token, from its unverified payload; `iat` is 0
-/// when absent.
-fn access_expiry(auth: &Value) -> Option<(i64, i64)> {
-    let token = auth.pointer("/tokens/access_token")?.as_str()?;
+/// A JWT's payload, unverified: read for what it says, never trusted as proof.
+pub(crate) fn jwt_claims(token: &str) -> Option<Value> {
     let payload = token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload.trim_end_matches('='))
         .ok()?;
-    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// `(iat, exp)` of the access token, from its unverified payload; `iat` is 0
+/// when absent.
+fn access_expiry(auth: &Value) -> Option<(i64, i64)> {
+    let claims = jwt_claims(auth.pointer("/tokens/access_token")?.as_str()?)?;
     let exp = claims.get("exp")?.as_i64()?;
     let iat = claims.get("iat").and_then(Value::as_i64).unwrap_or(0);
     Some((iat, exp))

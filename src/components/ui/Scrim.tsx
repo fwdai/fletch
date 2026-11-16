@@ -1,5 +1,10 @@
 import { useEscape } from "./useEscape";
 
+/** The scrim layer of a popover a chord opens from anywhere (quick settings,
+ *  plan limits): one under the card's `--z-app-popover`, so the pair sits over
+ *  an overlay that was already up. */
+export const APP_POPOVER_SCRIM_Z = 419;
+
 /** Full-viewport scrim that closes a popover on click or Escape. Used for
  *  new-project, settings, model-picker, etc. — and, through `Modal`, by every
  *  centered modal dialog.

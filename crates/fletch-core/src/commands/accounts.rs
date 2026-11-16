@@ -30,7 +30,16 @@ pub async fn list_provider_accounts_impl(ctx: &Arc<EngineCtx>) -> Result<Vec<Pro
             })
             .collect()
     };
+    let ctx = ctx.clone();
     tokio::task::spawn_blocking(move || {
+        // Listing is when a login changed outside the engine (the terminal's
+        // own sign-in) is first looked at, so it is also when the limits rows
+        // are brought in line with who each account is signed in as.
+        for provider in accounts::ACCOUNT_PROVIDERS {
+            if let Err(e) = crate::agent::limits::reconcile(&ctx, provider) {
+                tracing::warn!(provider, error = %e, "could not reconcile limits rows with their logins");
+            }
+        }
         accounts::list_accounts(|provider| {
             active
                 .iter()

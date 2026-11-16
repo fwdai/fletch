@@ -9,6 +9,7 @@ import { FeedbackNudge } from "./components/FeedbackNudge";
 import { FolderPickerHost } from "./components/FolderPicker";
 import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
+import { LimitsPopover } from "./components/LimitsPopover";
 import { Onboarding } from "./components/Onboarding";
 import { PairBackNotice } from "./components/PairBackNotice";
 import { PairBackPrompt } from "./components/PairBackPrompt";
@@ -183,6 +184,7 @@ function AppShell() {
       {historyOpen && <History />}
       <CommandPalette />
       <Settings />
+      <LimitsPopover />
       {onboardingOpen && <Onboarding />}
       <GithubConnectModal />
       {/* Answers `pickFolder` on a remote environment, from wherever it was

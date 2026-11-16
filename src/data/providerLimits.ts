@@ -1,5 +1,8 @@
 // Provider accounts' plan limits as the store keeps them: provider → account
-// id → the stored row. The engine owns the rows (`agent::limits`) and writes
+// id → the stored row. A row is its account's current login's: the engine
+// drops one read under a login the account has left, and keeps the rows of
+// accounts on one login identical, so an account's own row is the whole truth
+// and nothing here has to choose between two. The engine owns the rows (`agent::limits`) and writes
 // each one as the host setting `provider_limits_<provider>_<account>`, then
 // announces it on `settings:changed`; these helpers fold such an announcement
 // into the map so the Settings pane follows without asking again.
@@ -7,6 +10,9 @@
 import { type AccountLimits, LIMITS_SETTING_PREFIX, type LimitWindow } from "@/api/types/providers";
 
 export type LimitsByProvider = Record<string, Record<string, AccountLimits>>;
+
+/** One account among all providers', as the store keys a refresh in flight. */
+export const limitsRefreshKey = (provider: string, account: string) => `${provider}/${account}`;
 
 /** The provider and account a limits key names, or null for any other key.
  *  Neither part can hold an underscore (provider ids and account slugs don't),

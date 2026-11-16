@@ -3,11 +3,13 @@ import type { AccountLimits, ProviderAccount } from "@/api/types/providers";
 import { Icon } from "@/components/Icon";
 import { ProviderAuthBadge } from "@/components/SettingsScreen/ProviderAuthBadge";
 import { ProviderLoginTerminal } from "@/components/SettingsScreen/ProviderLogin";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { accountLabel } from "@/data/providerAccounts";
 import { loginCommand } from "@/data/providerDetail";
+import { limitsRefreshKey } from "@/data/providerLimits";
 import type { ProviderId } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { AccountMenu } from "./AccountMenu";
@@ -17,7 +19,8 @@ import { agoLabel } from "./limitsFormat";
 
 /** One account: the radio that makes it the one every agent runs under, its
  *  name, a Refresh for its own limits and how old the reading is, Sign in when
- *  it needs one, and a corner menu for the rest (re-authenticate, sign out,
+ *  it needs one, a CLI badge when the terminal's login is this same account
+ *  (`foldTerminalLogin`), and a corner menu for the rest (re-authenticate, sign out,
  *  delete — see `accountActions`), the destructive ones confirmed inline. An
  *  account listed here is signed in unless it says otherwise: only a
  *  signed-out one wears a badge. Sign in and re-authenticate open the same
@@ -55,7 +58,9 @@ export function AccountRow({
   const refreshAccounts = useAppStore((s) => s.refreshProviderAccounts);
   const [confirming, setConfirming] = useState<AccountAction | null>(null);
   const [busy, setBusy] = useState(false);
-  const [refreshingOwn, setRefreshingOwn] = useState(false);
+  const refreshingNow = useAppStore(
+    (s) => limitsRefreshKey(providerId, account.id) in s.providerLimitsRefreshing,
+  );
   const [error, setError] = useState<string | null>(null);
 
   const command = loginCommand(providerId);
@@ -95,17 +100,10 @@ export function AccountRow({
   // come with its own login), so the button waits for Sign in. The engine
   // holds back an account inside its refresh floor or a 429 back-off and
   // answers with the stored row, so pressing again is harmless.
-  const refreshing = refreshingAll || refreshingOwn;
-  const refreshOwn = async () => {
+  const refreshing = refreshingAll || refreshingNow;
+  const refreshOwn = () => {
     setError(null);
-    setRefreshingOwn(true);
-    try {
-      await refreshLimits(providerId, account.id);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setRefreshingOwn(false);
-    }
+    refreshLimits(providerId, account.id).catch((err) => setError(String(err)));
   };
   // Beside the name: what the default account is, and how old the reading
   // the meters show is — the thing Refresh changes, next to the button.
@@ -138,11 +136,14 @@ export function AccountRow({
         <label htmlFor={inputId} className="set-prov-acct-name text-base">
           {accountLabel(account)}
         </label>
+        {account.cli && (
+          <Badge tip="Your terminal's CLI is signed in to this account too">CLI</Badge>
+        )}
         <IconButton
           size="xs"
           tip="Refresh usage"
           disabled={refreshing || signingIn || account.status === "signed_out"}
-          onClick={() => void refreshOwn()}
+          onClick={refreshOwn}
         >
           {refreshing ? <Spinner size={12} /> : <Icon name="refresh" size={12} />}
         </IconButton>

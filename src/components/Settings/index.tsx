@@ -1,6 +1,8 @@
+import { useRef } from "react";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { Scrim } from "@/components/ui/Scrim";
+import { APP_POPOVER_SCRIM_Z, Scrim } from "@/components/ui/Scrim";
+import { useFocusScope } from "@/components/ui/useFocusScope";
 import { modelSummary } from "@/data/modelCatalog";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { ACCENTS, PROVIDERS } from "@/data/providers";
@@ -48,7 +50,7 @@ export function Settings() {
   if (!open) return null;
   return (
     <>
-      <Scrim onClose={() => close(false)} zIndex={250} />
+      <Scrim onClose={() => close(false)} zIndex={APP_POPOVER_SCRIM_Z} />
       <Popover onClose={() => close(false)} />
     </>
   );
@@ -66,9 +68,12 @@ function Popover({ onClose }: { onClose: () => void }) {
   const providerVersions = useAppStore((s) => s.providerVersions);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
+  const cardRef = useRef<HTMLDivElement>(null);
+  // A popover: it gives way to any dialog opened after it.
+  useFocusScope(cardRef, onClose);
 
   return (
-    <div className="settings-pop">
+    <div ref={cardRef} className="settings-pop" role="dialog" aria-label="Settings">
       <div className="sp-h flex-center text-base">
         <span>Settings</span>
         <span className="grow" />

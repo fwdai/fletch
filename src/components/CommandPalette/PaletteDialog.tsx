@@ -6,6 +6,7 @@ import { Icon } from "@/components/Icon";
 import { developerUnlocked } from "@/components/SettingsScreen/nav";
 import { detectEditors } from "@/components/TitleBar/OpenInEditor/editors";
 import { Scrim } from "@/components/ui/Scrim";
+import { useFocusScope } from "@/components/ui/useFocusScope";
 import { useAppStore } from "@/store";
 import { arrowTarget } from "@/util/arrowNav";
 import { effectiveCombos, matchesCombo, SHORTCUT_BY_ID } from "@/util/keymap";
@@ -56,17 +57,11 @@ export function PaletteDialog() {
     };
   }, []);
 
-  // Focus returns to where it was when the palette is dismissed — not when a
-  // row ran, since the row may have put it somewhere on purpose (the composer).
-  const ran = useRef(false);
-  const returnTo = useRef<Element | null>(document.activeElement);
-  useEffect(
-    () => () => {
-      const el = returnTo.current;
-      if (!ran.current && el instanceof HTMLElement && el.isConnected) el.focus();
-    },
-    [],
-  );
+  // The palette holds the keyboard over whatever it was opened from, another
+  // dialog included, and hands focus back on the way out unless the row that
+  // ran put it somewhere on purpose (the composer).
+  const cardRef = useRef<HTMLDivElement>(null);
+  useFocusScope(cardRef);
 
   // The rows are rebuilt when anything they read changes. The picked fields
   // are the re-render trigger; the context itself is read whole, since the
@@ -163,7 +158,6 @@ export function PaletteDialog() {
         setQuery("");
         return;
       }
-      ran.current = true;
       if (item.remember) noteRecent(item.id);
       close();
       item.run?.();
@@ -220,6 +214,7 @@ export function PaletteDialog() {
     <>
       <Scrim onClose={close} zIndex={Z} blur />
       <div
+        ref={cardRef}
         className="cp"
         style={{ zIndex: Z + 1 }}
         role="dialog"

@@ -147,6 +147,22 @@ describe("provider accounts in the store", () => {
     expect(accounts.cursor).toBeUndefined();
   });
 
+  it("lists the terminal's login and the managed account it duplicates as one", async () => {
+    listProviderAccounts.mockResolvedValueOnce([
+      account("claude", "default", { active: true, status: "signed_in", same_as: "work" }),
+      account("claude", "work", { status: "signed_in" }),
+      account("codex", "default", { active: true }),
+    ]);
+    const store = makeStore();
+    await store.getState().refreshProviderAccounts();
+    const { claude, codex } = store.getState().providerAccounts;
+    expect(claude).toHaveLength(1);
+    expect(claude?.[0]).toMatchObject({ id: "work", cli: true, active: true });
+    // Its limits are still read: the rows are per directory, and both stay.
+    expect(getProviderLimits).toHaveBeenCalledWith("claude");
+    expect(codex?.map((a) => a.id)).toEqual(["default"]);
+  });
+
   it("keeps the last good list when the re-list fails", async () => {
     listProviderAccounts.mockResolvedValueOnce([account("claude", "default", { active: true })]);
     const store = makeStore();
@@ -251,5 +267,28 @@ describe("provider limits in the store", () => {
     await expect(store.getState().refreshProviderLimits("codex", "default")).rejects.toThrow(
       "codex",
     );
+  });
+
+  it("names an account as being refreshed for as long as its request is out", async () => {
+    let answer: (row: AccountLimits) => void = () => {};
+    refreshProviderLimits.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    const store = makeStore();
+    const asked = refreshProviderLimits.mock.calls.length;
+    const first = store.getState().refreshProviderLimits("codex", "work");
+    // A second asker joins the request rather than starting another.
+    const second = store.getState().refreshProviderLimits("codex", "work");
+    expect(store.getState().providerLimitsRefreshing).toEqual({ "codex/work": true });
+
+    answer(limitsRow(12));
+    await Promise.all([first, second]);
+    expect(refreshProviderLimits.mock.calls.length).toBe(asked + 1);
+    expect(store.getState().providerLimitsRefreshing).toEqual({});
+  });
+
+  it("stops naming it when the request fails", async () => {
+    refreshProviderLimits.mockRejectedValueOnce(new Error("offline"));
+    const store = makeStore();
+    await expect(store.getState().refreshProviderLimits("codex", "work")).rejects.toThrow();
+    expect(store.getState().providerLimitsRefreshing).toEqual({});
   });
 });

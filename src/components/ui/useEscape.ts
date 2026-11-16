@@ -6,9 +6,24 @@ import { useEffect, useRef } from "react";
  *  pile at once. */
 const stack: { fire: () => void }[] = [];
 
+/** The Escape presses a surface has answered. */
+const answered = new WeakSet<KeyboardEvent>();
+
 function onKey(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
-  stack.at(-1)?.fire();
+  const top = stack.at(-1);
+  if (!top) return;
+  answered.add(e);
+  top.fire();
+}
+
+/** Whether the Escape press `e` belongs to a dismissible surface: one is
+ *  mounted to answer it, or already has. The global Escape action
+ *  (`util/shortcuts.ts`) asks before it closes the screen underneath, so one
+ *  press closes one layer. True on either side of the surface's own listener,
+ *  so the answer doesn't turn on which of the two was registered first. */
+export function escapeTaken(e: KeyboardEvent): boolean {
+  return stack.length > 0 || answered.has(e);
 }
 
 /** Call `onClose` when Escape is pressed, for as long as the caller is mounted

@@ -54,9 +54,11 @@ export function AccountCard({
         <span className="main">
           <span className="lbl">{accountLabel(account)}</span>
           <span className="sub">
-            {account.managed
-              ? "Managed by Fletch"
-              : "Your CLI's own login, shared with the terminal"}
+            {account.cli
+              ? "Managed by Fletch · also your terminal's login"
+              : account.managed
+                ? "Managed by Fletch"
+                : "Your CLI's own login, shared with the terminal"}
           </span>
         </span>
         <AuthBadge status={account.status} busy={busy} />

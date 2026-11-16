@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use super::account_identity;
 use super::auth_probe::{self, AuthStatus};
 use crate::error::{Error, Result};
 
@@ -310,16 +311,22 @@ pub fn claude_config_override() -> Option<PathBuf> {
     crate::bin_resolve::effective_env_var("CLAUDE_CONFIG_DIR").map(PathBuf::from)
 }
 
+/// Claude's state file (onboarding, theme, the signed-in OAuth account) for a
+/// managed account's `dir`, or for the CLI's own login when `None`: beside a
+/// relocated config dir, else at `~/.claude.json`.
+pub(crate) fn claude_state_file(dir: Option<&Path>, home: &Path) -> PathBuf {
+    match dir.map(Path::to_path_buf).or_else(claude_config_override) {
+        Some(dir) => dir.join(".claude.json"),
+        None => home.join(".claude.json"),
+    }
+}
+
 fn seed_claude_state(dir: &Path, home: &Path) {
     let state = dir.join(".claude.json");
     if state.exists() {
         return;
     }
-    // Claude keeps its state beside a relocated config dir, else at `~/.claude.json`.
-    let own = match claude_config_override() {
-        Some(dir) => dir.join(".claude.json"),
-        None => home.join(".claude.json"),
-    };
+    let own = claude_state_file(None, home);
     let seed = claude_state_seed(std::fs::read(&own).ok().as_deref());
     if let Err(e) = std::fs::write(&state, seed.to_string()) {
         tracing::warn!(error = %e, "could not seed the account's claude state file");
@@ -427,6 +434,12 @@ pub struct ProviderAccount {
     /// The probe's fixed reason for a non-signed-in status; see
     /// [`super::ProviderAuthProbe::detail`].
     pub detail: Option<String>,
+    /// On the default only: the managed account that holds the very same
+    /// login (the same person on the same plan), when there is one. The two
+    /// are then one account in two directories, and a list shows them as one
+    /// (the desktop's `foldTerminalLogin`). Absent whenever that can't be
+    /// told, which lists both as before.
+    pub same_as: Option<String>,
 }
 
 /// Every account of every account-capable provider, the default first, each
@@ -442,6 +455,7 @@ pub fn list_accounts(active_id: impl Fn(&str) -> Option<String>) -> Vec<Provider
             .filter(|id| ids.iter().any(|known| known == id))
             .unwrap_or_else(|| DEFAULT_ACCOUNT.to_string());
 
+        let first = out.len();
         for id in std::iter::once(DEFAULT_ACCOUNT.to_string()).chain(ids) {
             let Ok((status, detail)) = probe_account(provider, &id) else {
                 continue;
@@ -453,10 +467,35 @@ pub fn list_accounts(active_id: impl Fn(&str) -> Option<String>) -> Vec<Provider
                 id,
                 status,
                 detail,
+                same_as: None,
             });
+        }
+        if let Some(same_as) = terminal_duplicate(provider, &out[first..]) {
+            out[first].same_as = Some(same_as);
         }
     }
     out
+}
+
+/// The managed account among `listed` (one provider's, the default first)
+/// that the default's login duplicates. Only between accounts probed as signed
+/// in.
+fn terminal_duplicate(provider: &str, listed: &[ProviderAccount]) -> Option<String> {
+    let signed_in = |a: &&ProviderAccount| a.status == AuthStatus::SignedIn;
+    listed.first().filter(|a| !a.managed).filter(signed_in)?;
+    account_identity::duplicate_of(
+        account_identity::login_of(provider, None).as_deref(),
+        listed
+            .iter()
+            .filter(|a| a.managed)
+            .filter(signed_in)
+            .map(|a| {
+                (
+                    a.id.as_str(),
+                    account_identity::login_of(provider, Some(&a.id)),
+                )
+            }),
+    )
 }
 
 /// One account's login state and the probe's fixed reason when it isn't
