@@ -1,5 +1,6 @@
 import { Icon } from "@/components/Icon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
+import { FlyoutOption } from "@/components/ui/FlyoutMenu";
 import { providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
 import type { useAgentAvailability } from "../availability";
@@ -50,51 +51,39 @@ export function CustomAgentOptions({
   }
 
   return (
-    <div className="model-list">
+    <div className="fly-list">
       {agents.map((a) => {
         const active = a.id === customAgentId;
         // A custom agent inherits its base provider's availability exactly.
         const { reason } = availability(a.base);
         const blocked = reason !== null;
         return (
-          <button
+          <FlyoutOption
             key={a.id}
-            type="button"
             role="menuitemradio"
             aria-checked={active}
-            // aria-disabled, not the native attr: a disabled button swallows
-            // hover in the WebView, and the .tip/data-tip refusal must stay
-            // reachable.
-            aria-disabled={blocked}
+            // The refusal is the CSS `.tip`/`data-tip` one, shown on hover.
+            className={blocked ? "tip" : undefined}
             data-tip={reason ?? undefined}
             title={a.name}
-            className={`model-option flex-center ${blocked ? "is-disabled tip" : ""} ${active ? "active" : ""}`}
+            lead={<Mono name={a.name} hue={a.color} size={22} />}
+            name={a.name}
+            desc={a.description || providerLabel(a.base)}
+            active={active}
+            disabled={blocked}
             onClick={(e) => {
               e.stopPropagation();
               if (!blocked) onPick(a.id, a.base, a.model);
             }}
-          >
-            <Mono name={a.name} hue={a.color} size={22} />
-            <span className="model-option-main">
-              <span className="model-option-name truncate text-base">{a.name}</span>
-              <span className="model-option-desc truncate text-xs">
-                {a.description || providerLabel(a.base)}
-              </span>
-            </span>
-            {active && <Icon name="check" size={13} />}
-          </button>
+          />
         );
       })}
-      <button
-        type="button"
-        className="model-option model-fly-manage flex-center"
+      <FlyoutOption
+        className="fly-manage"
+        name="Manage custom agents…"
+        trail={<Icon name="settings" size={13} />}
         onClick={() => onOpenSettings("agents")}
-      >
-        <span className="model-option-main">
-          <span className="model-option-name text-base">Manage custom agents…</span>
-        </span>
-        <Icon name="settings" size={13} />
-      </button>
+      />
     </div>
   );
 }

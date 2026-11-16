@@ -29,6 +29,7 @@
 @import "./components/Composer/PrimaryControl/PrimaryControl.css";
 @import "./styles/shared/dropdown.css";
 @import "./components/AccountAvatar.css";
+@import "./components/ui/FlyoutMenu/FlyoutMenu.css";
 @import "./components/Composer/ModelPicker/ModelPicker.css";
 @import "./components/RightPanel/RightPanel.css";
 @import "./components/RightPanel/Code/Code.css";

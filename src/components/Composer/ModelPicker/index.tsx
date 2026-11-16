@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
-import { Scrim } from "@/components/ui/Scrim";
+import { FlyoutMenu, FlyoutSection, SideFlyout } from "@/components/ui/FlyoutMenu";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS, providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
@@ -14,7 +14,6 @@ import { AccountOptions } from "./AccountOptions";
 import { AccountRow } from "./AccountRow";
 import { AgentList, type OpenSettings } from "./AgentList";
 import { CUSTOM_FLY, CustomAgentOptions } from "./CustomAgentOptions";
-import { SideFlyout } from "./SideFlyout";
 import { type AccountControl, useAccountView } from "./useAccountView";
 
 export type { AccountControl } from "./useAccountView";
@@ -230,86 +229,75 @@ export function ModelPicker({
       </RailPiece>
 
       {open && !modelOnly && (
-        <>
-          <Scrim onClose={close} />
-          {/* Transparent wrapper: the main card sits above (z-index 2) the
-           *  model side panel (z-index 1) so the panel slides out from
-           *  underneath the dropdown rather than floating beside it. */}
-          <div className="model-dd-wrap" onMouseLeave={() => setHovered(null)}>
-            <div className="model-dd-main">
-              {accountRow}
-              <AgentList
-                provider={provider}
-                customAgentId={customAgentId}
-                enabled={enabled}
-                installedCount={installedProviders.length}
-                availability={availability}
-                hovered={hovered}
-                setHovered={setHovered}
-                onPickModel={pickModel}
-                onOpenSettings={openSettings}
-              />
-            </div>
-
-            {hovered === CUSTOM_FLY && (
-              <SideFlyout
-                flyKey={CUSTOM_FLY}
-                icon={
-                  <span className="model-custom-sum-icon is-head">
-                    <Icon name="shapes" size={13} />
-                  </span>
-                }
-                title="Custom agents"
-                tag="agent"
-              >
-                <CustomAgentOptions
-                  customAgentId={customAgentId}
-                  availability={availability}
-                  onPick={pickCustom}
-                  onOpenSettings={openSettings}
-                />
-              </SideFlyout>
-            )}
-            {hoveredAgent && (
-              <SideFlyout
-                flyKey={hoveredAgent.id}
-                icon={
-                  <ProviderIcon
-                    slug={hoveredAgent.id}
-                    short={hoveredAgent.short}
-                    hue={hoveredAgent.hue}
-                    size={20}
+        <FlyoutMenu
+          onClose={close}
+          onLeave={() => setHovered(null)}
+          flyout={
+            <>
+              {hovered === CUSTOM_FLY && (
+                <SideFlyout
+                  flyKey={CUSTOM_FLY}
+                  icon={
+                    <span className="model-custom-sum-icon is-head">
+                      <Icon name="shapes" size={13} />
+                    </span>
+                  }
+                  title="Custom agents"
+                  tag="agent"
+                >
+                  <CustomAgentOptions
+                    customAgentId={customAgentId}
+                    availability={availability}
+                    onPick={pickCustom}
+                    onOpenSettings={openSettings}
                   />
-                }
-                title={hoveredAgent.label}
-                tag="model"
-              >
-                {renderModelList(hoveredAgent)}
-              </SideFlyout>
-            )}
-            {accountFlyout}
-          </div>
-        </>
+                </SideFlyout>
+              )}
+              {hoveredAgent && (
+                <SideFlyout
+                  flyKey={hoveredAgent.id}
+                  icon={
+                    <ProviderIcon
+                      slug={hoveredAgent.id}
+                      short={hoveredAgent.short}
+                      hue={hoveredAgent.hue}
+                      size={20}
+                    />
+                  }
+                  title={hoveredAgent.label}
+                  tag="model"
+                >
+                  {renderModelList(hoveredAgent)}
+                </SideFlyout>
+              )}
+              {accountFlyout}
+            </>
+          }
+        >
+          {accountRow}
+          <AgentList
+            provider={provider}
+            customAgentId={customAgentId}
+            enabled={enabled}
+            installedCount={installedProviders.length}
+            availability={availability}
+            hovered={hovered}
+            setHovered={setHovered}
+            onPickModel={pickModel}
+            onOpenSettings={openSettings}
+          />
+        </FlyoutMenu>
       )}
 
       {open && modelOnly && (
-        <>
-          <Scrim onClose={close} />
-          <div className="model-dd-wrap" onMouseLeave={() => setHovered(null)}>
-            <div className="model-dd-main">
-              {accountRow}
-              {/* Leaving the account row for the models closes its flyout. */}
-              <div onMouseEnter={() => setHovered(null)}>
-                <div className="model-sect flex-center text-xs">
-                  <span>Model</span>
-                  <span className="model-sect-line" />
-                </div>
-                {renderModelList(selected)}
-              </div>
-            </div>
-            {accountFlyout}
+        <FlyoutMenu onClose={close} onLeave={() => setHovered(null)} flyout={accountFlyout}>
+          {accountRow}
+          {/* Leaving the account row for the models closes its flyout. */}
+          <div onMouseEnter={() => setHovered(null)}>
+            <FlyoutSection>Model</FlyoutSection>
+            {renderModelList(selected)}
           </div>
-        </>
+        </FlyoutMenu>
       )}
     </RailGroup>
   );

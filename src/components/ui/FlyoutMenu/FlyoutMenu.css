@@ -1,0 +1,254 @@
+/* Transparent positioning wrapper. Holds the main card (above) and the side
+ *  panel (below it) so the panel slides out from underneath the card. */
+.fly-menu {
+  position: absolute;
+  left: 0;
+  /* Grows upward: these menus hang off the composer, which sits on the bottom
+   * edge of the window. */
+  bottom: calc(100% + 6px);
+  z-index: var(--z-dropdown);
+  /* The side panel is absolute, so it must not be clipped by the wrapper. */
+  overflow: visible;
+}
+.fly-menu-card {
+  position: relative;
+  z-index: 2;
+  width: min(296px, calc(100vw - 28px));
+  padding: 5px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: 13px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 18px 48px -12px rgba(0, 0, 0, 0.55),
+    0 4px 12px rgba(0, 0, 0, 0.3);
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  transform-origin: bottom left;
+  animation: flyMenuIn 0.17s var(--ease);
+}
+@keyframes flyMenuIn {
+  from {
+    opacity: 0;
+    transform: translateY(7px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* Section header with a trailing rule. */
+.fly-sect {
+  gap: 7px;
+  padding: 9px 10px 5px;
+  color: var(--fg-3);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.fly-sect-line {
+  flex: 1;
+  height: 1px;
+  background: var(--bd-soft);
+}
+/* A main-card row: icon, name, note, chevron. Hovering one that opens a side
+ *  panel lights it (`.hot`) for as long as its panel shows. */
+.fly-row {
+  width: 100%;
+  min-width: 0;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  color: var(--fg-1);
+  text-align: left;
+  transition: background 0.12s var(--ease);
+}
+.fly-row:not(.is-disabled):hover,
+.fly-row.hot {
+  background: var(--hover);
+}
+.fly-row.active {
+  background: var(--selected);
+}
+/* .is-disabled, not :disabled — the row uses aria-disabled so it stays
+ * hover-capable and can surface its tooltip (see FlyoutRow.tsx). */
+.fly-row.is-disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+.fly-row-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--fg-0);
+}
+.fly-row-note {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+}
+.fly-row > svg:last-child {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  opacity: 0.65;
+  transition:
+    transform 0.16s var(--ease),
+    color 0.16s,
+    opacity 0.16s;
+}
+.fly-row:not(.is-disabled):hover > svg:last-child,
+.fly-row.hot > svg:last-child {
+  color: var(--accent);
+  opacity: 1;
+  transform: translateX(2px);
+}
+/* Side panel — full height of the main card, tucked ~16px under its right
+ *  edge (z-index below the card, no left border/radius) so it reads as sliding
+ *  out from underneath rather than floating beside it. */
+.fly-side {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(100% - 16px);
+  /* Cap against the viewport so the panel can't run off-screen on a narrow
+   *  window. 280px = the main card's 296px width minus the 16px tuck-under;
+   *  44px leaves a small right margin. */
+  width: min(252px, calc(100vw - 280px - 44px));
+  z-index: 1;
+  animation: flySideIn 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes flySideIn {
+  from {
+    transform: translateX(-30px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.fly-side-card {
+  height: 100%;
+  /* Left padding clears the tucked-under strip so content starts at the
+   *  main card's visible right edge. */
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-left: 0;
+  border-radius: 0 13px 13px 0;
+  box-shadow:
+    5px 0 16px -7px rgba(0, 0, 0, 0.55),
+    0 18px 48px -12px rgba(0, 0, 0, 0.55);
+}
+.fly-side-inner {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  animation: flyFadeSwap 0.2s var(--ease);
+}
+@keyframes flyFadeSwap {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.fly-side-head {
+  flex-shrink: 0;
+  gap: 9px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.fly-side-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.fly-side-tag {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  color: var(--fg-3);
+}
+.fly-side-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+}
+.fly-list {
+  min-height: 0;
+}
+/* A pickable row: a side panel's choices, or a compact row of the card. */
+.fly-option {
+  width: 100%;
+  min-width: 0;
+  gap: 9px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  color: var(--fg-1);
+  text-align: left;
+  transition: background 0.1s var(--ease);
+}
+.fly-option:hover,
+.fly-option.hot {
+  background: var(--hover);
+}
+.fly-option.active {
+  background: var(--selected);
+}
+.fly-option > svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.fly-option-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.fly-option-name {
+  font-weight: 500;
+  color: var(--fg-0);
+}
+.fly-option-name.strong {
+  font-weight: 600;
+}
+.fly-option-desc {
+  color: var(--fg-3);
+}
+.fly-option.is-disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+.fly-option.is-disabled:hover {
+  background: none;
+}
+/* A list's closing row to wherever its entries are managed (a settings pane). */
+.fly-manage {
+  margin-top: 4px;
+  border-top: 1px solid var(--bd-soft);
+  border-radius: 0 0 8px 8px;
+}
+.fly-manage .fly-option-name {
+  font-weight: 400;
+  color: var(--fg-2);
+}
+.fly-option.fly-manage > svg {
+  color: var(--fg-3);
+}
+.fly-empty {
+  margin: 8px;
+  padding: 16px 14px;
+  border: 1px dashed var(--bd);
+  border-radius: 9px;
+  color: var(--fg-3);
+  text-align: center;
+}

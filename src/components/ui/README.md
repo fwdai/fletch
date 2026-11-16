@@ -16,6 +16,7 @@ and is the path of least resistance for new UI.
 | `Chip` | Composer footer chip with a text label (model picker, base branch, attach). | `.c-chip` |
 | `Select` | Custom `<select>` replacement (keyboard-operable dropdown of string options). | `.ui-select-*` |
 | `DropdownMenu` / `DropdownItem` / `DropdownSection` / `DropdownSeparator` | Presentational menu shell + rows. Owns structure + state classes (`active`/`disabled`/`danger`); **caller owns behavior** (open/close, positioning via `style`, dismissal, keyboard). | `.dd` / `.dd-item` |
+| `FlyoutMenu` / `FlyoutSection` / `FlyoutRow` / `FlyoutOption` / `SideFlyout` | Upward-opening menu card whose rows act or, hovered, slide a panel of choices out from under it (the composer's model picker). Dismissed by an outside click or Escape (`Scrim`); **caller owns** which rows there are and which panel shows. | `.fly-menu` / `.fly-row` / `.fly-option` / `.fly-side` |
 | `MenuButton` | Icon button (or a labelled `trigger` render prop) that opens a `DropdownMenu` anchored to it, flipping up near the bottom of its scroller (`usePlacement`); outside click or Escape dismisses (`Scrim`). The rows get a `close` to dismiss it with. | `.dd-anchor` |
 | `CopyButton` | Copy-to-clipboard affordance with copied-state feedback. | — |
 | `Modal` / `ModalBody` / `ModalFooter` | Centered modal dialog — dimmed scrim + card + the standard icon/title/close header. Sizes `sm` / `md` / `lg`; `layer` picks the stacking level. The backdrop always dims; if it shouldn't, you want a popover (bare `Scrim`), not a modal. | `.modal` / `.modal-body` |
@@ -52,7 +53,7 @@ call sites never choose a side. No JS tooltip library.
 - Import directly (`import { Badge } from "../ui/Badge"`) or via the barrel
   (`import { Badge } from "../ui"`).
 
-Some menus stay bespoke on purpose — `Select` (own keyboard/focus), `ModelPicker`
-(own `model-dd-*` classes + side panel), and the `@`/`#`/`/` autocomplete
-(parent-controlled highlight + per-item scroll). The `Dropdown*` primitives
-cover the simpler click-to-pick menus.
+Some menus stay bespoke on purpose — `Select` (own keyboard/focus) and the
+`@`/`#`/`/` autocomplete (parent-controlled highlight + per-item scroll). The
+`Dropdown*` primitives cover the simpler click-to-pick menus; a menu whose rows
+open a list beside it is a `FlyoutMenu`.
