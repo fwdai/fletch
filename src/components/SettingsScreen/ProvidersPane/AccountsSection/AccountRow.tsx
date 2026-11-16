@@ -3,6 +3,7 @@ import type { AccountLimits, ProviderAccount } from "@/api/types/providers";
 import { Icon } from "@/components/Icon";
 import { ProviderAuthBadge } from "@/components/SettingsScreen/ProviderAuthBadge";
 import { ProviderLoginTerminal } from "@/components/SettingsScreen/ProviderLogin";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Spinner } from "@/components/ui/Spinner";
@@ -18,7 +19,8 @@ import { agoLabel } from "./limitsFormat";
 
 /** One account: the radio that makes it the one every agent runs under, its
  *  name, a Refresh for its own limits and how old the reading is, Sign in when
- *  it needs one, and a corner menu for the rest (re-authenticate, sign out,
+ *  it needs one, a CLI badge when the terminal's login is this same account
+ *  (`foldTerminalLogin`), and a corner menu for the rest (re-authenticate, sign out,
  *  delete — see `accountActions`), the destructive ones confirmed inline. An
  *  account listed here is signed in unless it says otherwise: only a
  *  signed-out one wears a badge. Sign in and re-authenticate open the same
@@ -134,6 +136,9 @@ export function AccountRow({
         <label htmlFor={inputId} className="set-prov-acct-name text-base">
           {accountLabel(account)}
         </label>
+        {account.cli && (
+          <Badge tip="Your terminal's CLI is signed in to this account too">CLI</Badge>
+        )}
         <IconButton
           size="xs"
           tip="Refresh usage"

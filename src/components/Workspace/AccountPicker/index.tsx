@@ -2,6 +2,7 @@ import type { AgentRecord } from "@/api";
 import type { ProviderAccount } from "@/api/types/providers";
 import { Button } from "@/components/ui/Button";
 import { MenuButton } from "@/components/ui/MenuButton";
+import { listedAccountId } from "@/data/providerAccounts";
 import { isAgentBusy } from "@/helpers";
 import { useAppStore } from "@/store";
 import { AccountMenu } from "./AccountMenu";
@@ -24,7 +25,7 @@ export function AccountPicker({ agent }: { agent: AgentRecord }) {
   const switchAccount = useAppStore((s) => s.switchAgentAccount);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
 
-  const current = currentAccountId(agent);
+  const current = listedAccountId(accounts, currentAccountId(agent));
   const state = pickerState(canSwitch, accounts, busy || switching, current);
   const manage = () => openSettingsScreen("providers");
 

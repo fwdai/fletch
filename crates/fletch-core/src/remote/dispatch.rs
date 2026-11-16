@@ -2438,7 +2438,7 @@ mod provider_tests {
             keys.sort_unstable();
             assert_eq!(
                 keys,
-                ["active", "detail", "id", "managed", "provider", "status"],
+                ["active", "detail", "id", "managed", "provider", "same_as", "status"],
                 "the wire shape changed"
             );
             assert!(matches!(

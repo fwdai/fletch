@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import type { ProviderAccount } from "@/api/types/providers";
 import { accountLabel } from "@/data/providerAccounts";
-import { limitsRefreshKey } from "@/data/providerLimits";
+import { accountLimits, limitsRefreshKey } from "@/data/providerLimits";
 import { useAppStore } from "@/store";
 
 /** Asking the vendors for accounts' plan limits, for a surface that shows
@@ -62,7 +62,7 @@ export function useLimitsRefresh() {
     (providers: readonly string[]) =>
       refresh(providers, (account) => {
         if (account.provider === "codex") return true;
-        const row = useAppStore.getState().providerLimits[account.provider]?.[account.id];
+        const row = accountLimits(useAppStore.getState().providerLimits[account.provider], account);
         return !row?.limits && !row?.refresh;
       }),
     [refresh],

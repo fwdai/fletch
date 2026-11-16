@@ -6,6 +6,7 @@ import {
   refreshCatalog,
   type SlimCatalog,
 } from "@/data/modelCatalog";
+import { foldTerminalLogin } from "@/data/providerAccounts";
 import { type LimitsByProvider, limitsRefreshKey, withLimitsChange } from "@/data/providerLimits";
 import { setSetting } from "@/storage/settings";
 import type { SliceCreator } from "./types";
@@ -40,7 +41,8 @@ export interface ProvidersSlice {
   providerAuth: Record<string, ProviderAuthStatus>;
   /** Every sign-in Fletch knows per account-capable provider, the default
    *  (the CLI's own login) first, each with its probe and whether it is the
-   *  one new agents use. Absent until the first list resolves. Refreshed with
+   *  one new agents use. A default that is the same login as a managed
+   *  account is folded into it (`foldTerminalLogin`). Absent until the first list resolves. Refreshed with
    *  `providerAuth`, so the accounts list and the row badge never disagree. */
   providerAccounts: Record<string, ProviderAccount[]>;
   /** Each account's last known plan limits (five-hour and weekly windows),
@@ -177,6 +179,11 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
         const list = byProvider[account.provider] ?? [];
         list.push(account);
         byProvider[account.provider] = list;
+      }
+      // Folded here, once, so every surface that lists accounts sees the
+      // terminal's login and its managed twin as the one account they are.
+      for (const provider of Object.keys(byProvider)) {
+        byProvider[provider] = foldTerminalLogin(byProvider[provider]);
       }
       set({ providerAccounts: byProvider });
       await Promise.all(Object.keys(byProvider).map((p) => get().loadProviderLimits(p)));

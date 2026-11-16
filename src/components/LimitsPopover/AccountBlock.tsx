@@ -34,6 +34,9 @@ export function AccountBlock({
         <ProviderIcon slug={providerId} {...providerChip(providerId)} size={16} />
         <span className="lim-acct-title truncate">{providerLabel(providerId)}</span>
         {!solo && <span className="lim-acct-name truncate">{accountLabel(account)}</span>}
+        {!solo && account.cli && (
+          <Badge tip="Your terminal's CLI is signed in to this account too">CLI</Badge>
+        )}
         {!solo && account.active && (
           <Badge variant="new" tip="New agents run under this account">
             active

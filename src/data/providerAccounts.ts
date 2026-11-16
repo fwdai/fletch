@@ -34,3 +34,26 @@ export function accountHue(id: string): number {
   // Golden-angle steps spread neighbouring hashes around the wheel.
   return Math.round((hash * 137.508) % 360);
 }
+
+/** One provider's accounts as a list shows them. When the terminal's login is
+ *  the same one a managed account holds (`same_as`), they are one account in
+ *  two directories: the default is dropped and the managed account stands for
+ *  both, marked `cli` and active when either was. Anything the engine could
+ *  not tell stays two rows. Sign-out and delete act on the managed account
+ *  alone, after which the next listing shows the terminal's login again. */
+export function foldTerminalLogin(accounts: ProviderAccount[]): ProviderAccount[] {
+  const terminal = accounts.find((a) => !a.managed && a.same_as);
+  const twin = terminal && accounts.find((a) => a.managed && a.id === terminal.same_as);
+  if (!terminal || !twin) return accounts;
+  return accounts
+    .filter((a) => a !== terminal)
+    .map((a) => (a === twin ? { ...a, cli: true, active: a.active || terminal.active } : a));
+}
+
+/** The id `id` goes by in a folded list: an agent still stamped with the
+ *  default (or with nothing) runs under the terminal's login, which the list
+ *  shows as the `cli` account. Any other id is itself. */
+export function listedAccountId(accounts: ProviderAccount[], id: string): string {
+  if (id !== DEFAULT_ACCOUNT_ID || accounts.some((a) => a.id === id)) return id;
+  return accounts.find((a) => a.cli)?.id ?? id;
+}

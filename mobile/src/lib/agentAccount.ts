@@ -11,6 +11,7 @@ import {
   type PickerState,
   pickerState,
 } from "@desktop/components/Workspace/AccountPicker/choices";
+import { foldTerminalLogin, listedAccountId } from "@desktop/data/providerAccounts";
 import { supportsAccounts } from "@desktop/data/providerDetail";
 import { useStore } from "../store";
 import { canSwitchAgentAccount } from "../store/providerAccounts";
@@ -34,7 +35,7 @@ export interface AgentAccountView {
  *  accounts, or a host that can't both list and switch them. */
 export function useAgentAccount(agent: AgentRecord | undefined): AgentAccountView | null {
   const supported = useStore(canSwitchAgentAccount);
-  const accounts = useStore((s) =>
+  const listedByHost = useStore((s) =>
     agent ? (s.providerAccounts[agent.provider] ?? NO_ACCOUNTS) : NO_ACCOUNTS,
   );
   const busy = useStore((s) => !!agent && isAgentBusy(s, agent));
@@ -42,7 +43,10 @@ export function useAgentAccount(agent: AgentRecord | undefined): AgentAccountVie
   if (!agent || !supported || !supportsAccounts(agent.provider)) return null;
   // No stamp is the CLI's own login, as the host reads it: the radio restamps
   // every agent when it moves, so an unstamped agent is on the default.
-  const current = currentAccountId(agent);
+  // The terminal's login and a managed account that is the same login are
+  // one account, as on the desktop; an agent on the default goes by it.
+  const accounts = foldTerminalLogin(listedByHost);
+  const current = listedAccountId(accounts, currentAccountId(agent));
   return {
     state: pickerState(true, accounts, busy || switching, current),
     accounts,

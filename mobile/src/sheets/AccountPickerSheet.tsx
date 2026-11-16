@@ -1,5 +1,5 @@
 import { accountChoices } from "@desktop/components/Workspace/AccountPicker/choices";
-import { spentWindow } from "@desktop/data/providerLimits";
+import { accountLimits, spentWindow } from "@desktop/data/providerLimits";
 import { useEffect, useState } from "react";
 import { PickerSheet } from "../components/ui";
 import { Notice } from "../components/ui/Notice";
@@ -59,7 +59,7 @@ export function AccountPickerSheet({
     right:
       c.status === "signed_out"
         ? "not signed in"
-        : spentWindow(limits?.[c.id], nowMs)
+        : spentWindow(accountLimits(limits, c), nowMs)
           ? "limit reached"
           : null,
     // The current row stays tappable, as a way back out.

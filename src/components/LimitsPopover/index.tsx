@@ -7,7 +7,7 @@ import { APP_POPOVER_SCRIM_Z, Scrim } from "@/components/ui/Scrim";
 import { Spinner } from "@/components/ui/Spinner";
 import { useFocusScope } from "@/components/ui/useFocusScope";
 import { supportsAccounts } from "@/data/providerDetail";
-import { limitsRefreshKey } from "@/data/providerLimits";
+import { accountLimits, limitsRefreshKey } from "@/data/providerLimits";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { useLimitsRefresh } from "@/util/useLimitsRefresh";
@@ -93,7 +93,7 @@ function LimitsCard() {
                 providerId={p.id}
                 account={account}
                 solo={p.accounts.length === 1}
-                row={providerLimits[p.id]?.[account.id]}
+                row={accountLimits(providerLimits[p.id], account)}
                 refreshing={limitsRefreshKey(p.id, account.id) in inFlight}
                 nowMs={nowMs}
               />

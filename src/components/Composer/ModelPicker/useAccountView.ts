@@ -8,7 +8,8 @@ import {
   pickerState,
 } from "@/components/Workspace/AccountPicker/choices";
 import { useCanSwitchAccount } from "@/components/Workspace/AccountPicker/useCanSwitchAccount";
-import { spentWindow } from "@/data/providerLimits";
+import { listedAccountId } from "@/data/providerAccounts";
+import { accountLimits, spentWindow } from "@/data/providerLimits";
 import { useAppStore } from "@/store";
 
 /** The composer's hold on the agent's account: which one it runs under and how
@@ -61,13 +62,17 @@ export function useAccountView(
   const locked = control?.locked ?? false;
   // A pick that is no longer usable keeps the strip up, so a draft holding
   // one can still move off it rather than fail every spawn.
-  const state = pickerState(canSwitch, accounts, locked, control?.current || undefined);
+  const picked = control?.current ? listedAccountId(accounts, control.current) : undefined;
+  const state = pickerState(canSwitch, accounts, locked, picked);
   if (state === "hidden" || state === "single") return null;
 
-  const current = control?.current || (accounts.find((a) => a.active)?.id ?? DEFAULT_ACCOUNT_ID);
+  const current = listedAccountId(
+    accounts,
+    control?.current || (accounts.find((a) => a.active)?.id ?? DEFAULT_ACCOUNT_ID),
+  );
   const nowMs = Date.now();
   const options = accountChoices(accounts, current).map((choice) => {
-    const window = spentWindow(limits?.[choice.id], nowMs);
+    const window = spentWindow(accountLimits(limits, choice), nowMs);
     const reset = window ? resetLabel(window.resets_at, nowMs) : null;
     return { ...choice, spent: window ? `Limit reached${reset ? ` · ${reset}` : ""}` : null };
   });

@@ -96,6 +96,13 @@ export interface ProviderAccount {
   active: boolean;
   status: ProviderAuthStatus;
   detail: string | null;
+  /** On the default only, from the engine: the managed account that holds the
+   *  very same login (the same person on the same plan), when it can tell.
+   *  Absent from a host older than the field. */
+  same_as?: string | null;
+  /** Never on the wire: set by `foldTerminalLogin` on the managed account the
+   *  terminal's login was folded into. It answers for the default as well. */
+  cli?: boolean;
 }
 
 /** One plan window of an account: how much of it is used and when it starts

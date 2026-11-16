@@ -4,7 +4,13 @@
 // announces it on `settings:changed`; these helpers fold such an announcement
 // into the map so the Settings pane follows without asking again.
 
-import { type AccountLimits, LIMITS_SETTING_PREFIX, type LimitWindow } from "@/api/types/providers";
+import {
+  type AccountLimits,
+  DEFAULT_ACCOUNT_ID,
+  LIMITS_SETTING_PREFIX,
+  type LimitWindow,
+  type ProviderAccount,
+} from "@/api/types/providers";
 
 export type LimitsByProvider = Record<string, Record<string, AccountLimits>>;
 
@@ -49,6 +55,20 @@ export function withLimitsChange(
   if (row) forProvider[parts.account] = row;
   else delete forProvider[parts.account];
   return { ...current, [parts.provider]: forProvider };
+}
+
+/** An account's limits row. A `cli` account is read through two directories,
+ *  its own and the terminal's, each with a row of the same plan: the fresher
+ *  reading, under what the account's own last Refresh ran into. */
+export function accountLimits(
+  rows: Record<string, AccountLimits> | undefined,
+  account: Pick<ProviderAccount, "id" | "cli">,
+): AccountLimits | undefined {
+  const own = rows?.[account.id];
+  const terminal = account.cli ? rows?.[DEFAULT_ACCOUNT_ID] : undefined;
+  const asOf = (row: AccountLimits | undefined) => row?.limits?.as_of ?? -1;
+  if (asOf(terminal) <= asOf(own)) return own;
+  return { limits: terminal?.limits ?? null, refresh: own?.refresh ?? null };
 }
 
 /** The plan window an account has used up and that hasn't reset since the
