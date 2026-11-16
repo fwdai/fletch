@@ -69,7 +69,8 @@ function Popover({ onClose }: { onClose: () => void }) {
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
   const cardRef = useRef<HTMLDivElement>(null);
-  useFocusScope(cardRef);
+  // A popover: it gives way to any dialog opened after it.
+  useFocusScope(cardRef, onClose);
 
   return (
     <div ref={cardRef} className="settings-pop" role="dialog" aria-label="Settings">
