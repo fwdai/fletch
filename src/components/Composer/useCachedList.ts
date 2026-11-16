@@ -10,6 +10,10 @@ const CACHE_MS = 15_000;
  *  queue a burst of fetches. Null until the first answer; a failed first
  *  fetch reads as empty, a failed refresh keeps what was there.
  *
+ *  An answer lands whether or not the menu is still open: the fetch that
+ *  stamped the cache window is the only one made inside it, so dropping its
+ *  answer when the menu closed would leave a quick reopen with nothing.
+ *
  *  `list` is read through a ref, so an inline function doesn't refetch; omit
  *  it where there is nothing to list. */
 export function useCachedList<T>(
@@ -25,18 +29,10 @@ export function useCachedList<T>(
     if (!open || !ref.current) return;
     if (Date.now() - lastFetch.current < CACHE_MS) return;
     lastFetch.current = Date.now();
-    let alive = true;
-    ref
-      .current()
-      .then((next) => {
-        if (alive) setItems(next);
-      })
-      .catch(() => {
-        if (alive) setItems((cur) => cur ?? []);
-      });
-    return () => {
-      alive = false;
-    };
+    ref.current().then(
+      (next) => setItems(next),
+      () => setItems((cur) => cur ?? []),
+    );
   }, [open]);
   return items;
 }
