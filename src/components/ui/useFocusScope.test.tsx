@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "@/store";
 import { fireEvent, render, renderHook } from "@/test/render";
@@ -159,6 +159,29 @@ describe("useFocusScope", () => {
       </>,
     );
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns focus past a popover it replaced, to where the popover was opened from", () => {
+    // The composer, then Plan limits over it, then the palette from there.
+    const composer = focusedOutside();
+    function App({ palette }: { palette: boolean }) {
+      const [popover, setPopover] = useState(true);
+      return (
+        <>
+          {popover && <Dialog label="popover" onGiveWay={() => setPopover(false)} />}
+          {palette && <Dialog label="palette" autoFocus />}
+        </>
+      );
+    }
+    const { rerender, queryByRole } = render(<App palette={false} />);
+    expect(document.activeElement).toBe(queryByRole("dialog", { name: "popover" }));
+
+    rerender(<App palette />);
+    expect(queryByRole("dialog", { name: "popover" })).toBeNull();
+    expect(queryByRole("dialog", { name: "palette" })?.contains(document.activeElement)).toBe(true);
+
+    rerender(<App palette={false} />);
+    expect(document.activeElement).toBe(composer);
   });
 
   it("leaves a dialog alone when a popover opens over it", () => {

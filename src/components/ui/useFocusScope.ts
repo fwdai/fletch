@@ -14,6 +14,8 @@ interface Scope {
   last: HTMLElement | null;
   /** A popover's way out, called when a dialog opens after it. */
   dismiss?: () => void;
+  /** Where focus was when it opened, to go back to when it closes. */
+  returnTo: { current: Element | null };
 }
 
 /** Every mounted dialog that holds the keyboard, in mount order. They stack —
@@ -97,11 +99,19 @@ export function useFocusScope(ref: RefObject<HTMLElement | null>, onGiveWay?: ()
     if (!el) return;
     // The popovers already up make room: whatever layer each is drawn on, the
     // dialog the user just opened is the one they mean to use.
-    for (const open of scopes) open.dismiss?.();
+    for (const open of scopes) {
+      if (!open.dismiss) continue;
+      // Opened from inside the popover it replaces: when this one closes,
+      // focus goes back to where the popover would have sent it, since the
+      // popover itself will be gone.
+      if (open.el.contains(returnTo.current)) returnTo.current = open.returnTo.current;
+      open.dismiss();
+    }
     const scope: Scope = {
       el,
       last: null,
       dismiss: giveWay.current && (() => giveWay.current?.()),
+      returnTo,
     };
     scopes.push(scope);
     if (scopes.length === 1) document.addEventListener("focusin", onFocusIn);
