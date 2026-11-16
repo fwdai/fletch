@@ -8,6 +8,9 @@ import { type AccountLimits, LIMITS_SETTING_PREFIX, type LimitWindow } from "@/a
 
 export type LimitsByProvider = Record<string, Record<string, AccountLimits>>;
 
+/** One account among all providers', as the store keys a refresh in flight. */
+export const limitsRefreshKey = (provider: string, account: string) => `${provider}/${account}`;
+
 /** The provider and account a limits key names, or null for any other key.
  *  Neither part can hold an underscore (provider ids and account slugs don't),
  *  so the first one after the prefix is the split. */

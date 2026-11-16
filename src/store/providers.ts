@@ -6,7 +6,7 @@ import {
   refreshCatalog,
   type SlimCatalog,
 } from "@/data/modelCatalog";
-import { type LimitsByProvider, withLimitsChange } from "@/data/providerLimits";
+import { type LimitsByProvider, limitsRefreshKey, withLimitsChange } from "@/data/providerLimits";
 import { setSetting } from "@/storage/settings";
 import type { SliceCreator } from "./types";
 
@@ -48,6 +48,11 @@ export interface ProvidersSlice {
    *  and kept current by `settings:changed`, which every engine write of a
    *  row announces — a reading from an agent's stream lands without a poll. */
   providerLimits: LimitsByProvider;
+  /** The accounts a limits refresh is out for right now, by `limitsRefreshKey`.
+   *  Kept here, with the request itself, so every surface that shows an
+   *  account spins for it whoever asked, and overlapping askers can't
+   *  disagree about what is still running. */
+  providerLimitsRefreshing: Record<string, true>;
   /** Strip agents' commit/PR attribution regardless of their own settings.
    *  Mirrors the backend-owned `agent_attribution_removed`; false (the default)
    *  leaves each agent's own settings in charge. */
@@ -114,6 +119,7 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
   providerAuth: {},
   providerAccounts: {},
   providerLimits: {},
+  providerLimitsRefreshing: {},
   agentAttributionRemoved: false,
 
   setProviderEnabled: (id, enabled) =>
@@ -192,10 +198,11 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
     // in flight rather than asking the vendor twice. The engine's refresh
     // floor is checked before it awaits the vendor, so it wouldn't catch the
     // overlap itself.
-    const key = `${provider}/${account}`;
+    const key = limitsRefreshKey(provider, account);
     const inFlight = limitsRefreshes.get(key);
     if (inFlight) return inFlight;
     const request = (async () => {
+      set((s) => ({ providerLimitsRefreshing: { ...s.providerLimitsRefreshing, [key]: true } }));
       try {
         const row = await api.refreshProviderLimits(provider, account);
         set((s) => ({
@@ -206,6 +213,10 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
         }));
       } finally {
         limitsRefreshes.delete(key);
+        set((s) => {
+          const { [key]: _done, ...rest } = s.providerLimitsRefreshing;
+          return { providerLimitsRefreshing: rest };
+        });
       }
     })();
     limitsRefreshes.set(key, request);

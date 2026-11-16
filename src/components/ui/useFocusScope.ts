@@ -16,17 +16,45 @@ interface Scope {
 
 /** Every mounted dialog that holds the keyboard, in mount order. They stack —
  *  the palette over a modal, a folder picker over New Project — and only the
- *  topmost holds it. */
+ *  one on top holds it (`owner`). */
 const scopes: Scope[] = [];
 
-/** Focus belongs inside the topmost dialog. Whatever moved it out — a global
+/** Where a dialog sits in the stacking order: the z-index it, or the overlay
+ *  it is drawn in, was given. Dialogs are all top-level layers, so theirs
+ *  compare directly. */
+function layerOf(el: HTMLElement): number {
+  for (let node: HTMLElement | null = el; node; node = node.parentElement) {
+    const z = Number.parseInt(getComputedStyle(node).zIndex, 10);
+    if (!Number.isNaN(z)) return z;
+  }
+  return 0;
+}
+
+/** The dialog the user can see on top: the highest layer, and among equals
+ *  the one opened last. Not simply the last one mounted — a popover opened by
+ *  a chord under a taller overlay is covered by it, and a covered dialog must
+ *  not take the keyboard from the one in front. */
+function owner(): Scope | undefined {
+  let top: Scope | undefined;
+  let topLayer = Number.NEGATIVE_INFINITY;
+  for (const scope of scopes) {
+    const layer = layerOf(scope.el);
+    if (layer >= topLayer) {
+      top = scope;
+      topLayer = layer;
+    }
+  }
+  return top;
+}
+
+/** Focus belongs inside the dialog on top. Whatever moved it out — a global
  *  shortcut focusing the composer, a field behind the scrim focusing itself —
  *  it is handed back, so nothing behind a dialog can be typed into or tabbed
  *  through. Checked a microtask later: a dialog mounting in this same commit
  *  focuses its own field before it has joined the stack. */
 function onFocusIn() {
   queueMicrotask(() => {
-    const top = scopes.at(-1);
+    const top = owner();
     const at = document.activeElement;
     if (!top || !(at instanceof HTMLElement) || at === document.body) return;
     if (top.el.contains(at)) top.last = at;
@@ -62,9 +90,9 @@ export function useFocusScope(ref: RefObject<HTMLElement | null>) {
 
     // On the document, after the dialog's own handlers have had the key.
     const onKey = (e: KeyboardEvent) => {
-      // Not this dialog's while another is open over it; and a control that
+      // Not this dialog's while another is on top of it; and a control that
       // uses Tab itself (a terminal, the palette's input) has already answered.
-      if (e.key !== "Tab" || e.defaultPrevented || scopes.at(-1) !== scope) return;
+      if (e.key !== "Tab" || e.defaultPrevented || owner() !== scope) return;
       const stops = tabStops(el);
       const first = stops[0];
       const last = stops.at(-1);
@@ -93,7 +121,9 @@ export function useFocusScope(ref: RefObject<HTMLElement | null>) {
     if (!el) return;
     el.dataset.focusScope = "";
     if (!el.hasAttribute("tabindex")) el.tabIndex = -1;
-    if (!el.contains(document.activeElement)) el.focus();
+    // Only as the dialog on top: one opened under another leaves focus where
+    // the user can see it.
+    if (owner()?.el === el && !el.contains(document.activeElement)) el.focus();
     return () => {
       const at = document.activeElement;
       const untouched = !at || at === document.body || el.contains(at);

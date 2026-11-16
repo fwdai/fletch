@@ -252,4 +252,27 @@ describe("provider limits in the store", () => {
       "codex",
     );
   });
+
+  it("names an account as being refreshed for as long as its request is out", async () => {
+    let answer: (row: AccountLimits) => void = () => {};
+    refreshProviderLimits.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    const store = makeStore();
+    const asked = refreshProviderLimits.mock.calls.length;
+    const first = store.getState().refreshProviderLimits("codex", "work");
+    // A second asker joins the request rather than starting another.
+    const second = store.getState().refreshProviderLimits("codex", "work");
+    expect(store.getState().providerLimitsRefreshing).toEqual({ "codex/work": true });
+
+    answer(limitsRow(12));
+    await Promise.all([first, second]);
+    expect(refreshProviderLimits.mock.calls.length).toBe(asked + 1);
+    expect(store.getState().providerLimitsRefreshing).toEqual({});
+  });
+
+  it("stops naming it when the request fails", async () => {
+    refreshProviderLimits.mockRejectedValueOnce(new Error("offline"));
+    const store = makeStore();
+    await expect(store.getState().refreshProviderLimits("codex", "work")).rejects.toThrow();
+    expect(store.getState().providerLimitsRefreshing).toEqual({});
+  });
 });

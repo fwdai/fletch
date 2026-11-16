@@ -8,6 +8,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { accountLabel } from "@/data/providerAccounts";
 import { loginCommand } from "@/data/providerDetail";
+import { limitsRefreshKey } from "@/data/providerLimits";
 import type { ProviderId } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { AccountMenu } from "./AccountMenu";
@@ -55,7 +56,9 @@ export function AccountRow({
   const refreshAccounts = useAppStore((s) => s.refreshProviderAccounts);
   const [confirming, setConfirming] = useState<AccountAction | null>(null);
   const [busy, setBusy] = useState(false);
-  const [refreshingOwn, setRefreshingOwn] = useState(false);
+  const refreshingNow = useAppStore(
+    (s) => limitsRefreshKey(providerId, account.id) in s.providerLimitsRefreshing,
+  );
   const [error, setError] = useState<string | null>(null);
 
   const command = loginCommand(providerId);
@@ -95,17 +98,10 @@ export function AccountRow({
   // come with its own login), so the button waits for Sign in. The engine
   // holds back an account inside its refresh floor or a 429 back-off and
   // answers with the stored row, so pressing again is harmless.
-  const refreshing = refreshingAll || refreshingOwn;
-  const refreshOwn = async () => {
+  const refreshing = refreshingAll || refreshingNow;
+  const refreshOwn = () => {
     setError(null);
-    setRefreshingOwn(true);
-    try {
-      await refreshLimits(providerId, account.id);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setRefreshingOwn(false);
-    }
+    refreshLimits(providerId, account.id).catch((err) => setError(String(err)));
   };
   // Beside the name: what the default account is, and how old the reading
   // the meters show is — the thing Refresh changes, next to the button.
@@ -142,7 +138,7 @@ export function AccountRow({
           size="xs"
           tip="Refresh usage"
           disabled={refreshing || signingIn || account.status === "signed_out"}
-          onClick={() => void refreshOwn()}
+          onClick={refreshOwn}
         >
           {refreshing ? <Spinner size={12} /> : <Icon name="refresh" size={12} />}
         </IconButton>

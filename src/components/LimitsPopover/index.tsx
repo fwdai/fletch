@@ -3,13 +3,14 @@ import { useAgentAvailability } from "@/components/Composer/availability";
 import { Icon } from "@/components/Icon";
 import { useNow } from "@/components/SettingsScreen/ProvidersPane/AccountsSection/useNow";
 import { IconButton } from "@/components/ui/IconButton";
-import { Scrim } from "@/components/ui/Scrim";
+import { APP_POPOVER_SCRIM_Z, Scrim } from "@/components/ui/Scrim";
 import { Spinner } from "@/components/ui/Spinner";
 import { useFocusScope } from "@/components/ui/useFocusScope";
 import { supportsAccounts } from "@/data/providerDetail";
+import { limitsRefreshKey } from "@/data/providerLimits";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { limitsKey, useLimitsRefresh } from "@/util/useLimitsRefresh";
+import { useLimitsRefresh } from "@/util/useLimitsRefresh";
 import { AccountBlock } from "./AccountBlock";
 import { UsageReportRow } from "./UsageReportRow";
 
@@ -27,7 +28,7 @@ export function LimitsPopover() {
   if (!open) return null;
   return (
     <>
-      <Scrim onClose={() => toggle(false)} zIndex={250} />
+      <Scrim onClose={() => toggle(false)} zIndex={APP_POPOVER_SCRIM_Z} />
       <LimitsCard />
     </>
   );
@@ -36,12 +37,13 @@ export function LimitsPopover() {
 function LimitsCard() {
   const providerAccounts = useAppStore((s) => s.providerAccounts);
   const providerLimits = useAppStore((s) => s.providerLimits);
+  const inFlight = useAppStore((s) => s.providerLimitsRefreshing);
   const providerFlags = useAppStore((s) => s.providerFlags);
   const refreshAccounts = useAppStore((s) => s.refreshProviderAccounts);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
   // Accounts and their limits are this Mac's, whichever host is active.
   const availability = useAgentAvailability("local");
-  const { refreshing, pending, error, refresh } = useLimitsRefresh();
+  const { refreshing, error, refresh } = useLimitsRefresh();
   const nowMs = useNow();
   const cardRef = useRef<HTMLDivElement>(null);
   useFocusScope(cardRef);
@@ -92,7 +94,7 @@ function LimitsCard() {
                 account={account}
                 solo={p.accounts.length === 1}
                 row={providerLimits[p.id]?.[account.id]}
-                refreshing={pending.has(limitsKey(p.id, account.id))}
+                refreshing={limitsRefreshKey(p.id, account.id) in inFlight}
                 nowMs={nowMs}
               />
             )),

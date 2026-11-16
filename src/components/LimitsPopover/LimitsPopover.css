@@ -16,7 +16,7 @@
   border: 1px solid var(--bd);
   border-radius: var(--r-lg);
   box-shadow: 0 28px 72px rgba(0, 0, 0, 0.45);
-  z-index: var(--z-popover);
+  z-index: var(--z-app-popover);
   animation: ddIn 0.16s var(--ease);
 }
 .lim-pop-head {

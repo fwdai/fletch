@@ -6,11 +6,20 @@ import { fireEvent, render, renderHook } from "@/test/render";
 import { useGlobalShortcuts } from "@/util/shortcuts";
 import { useFocusScope } from "./useFocusScope";
 
-function Dialog({ autoFocus, label = "dialog" }: { autoFocus?: boolean; label?: string }) {
+function Dialog({
+  autoFocus,
+  label = "dialog",
+  layer,
+}: {
+  autoFocus?: boolean;
+  label?: string;
+  /** The z-index the dialog is drawn at. */
+  layer?: number;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useFocusScope(ref);
   return (
-    <div ref={ref} role="dialog" aria-label={label}>
+    <div ref={ref} role="dialog" aria-label={label} style={{ zIndex: layer }}>
       <button type="button">first</button>
       <input aria-label="field" autoFocus={autoFocus} />
       <button type="button">last</button>
@@ -109,6 +118,30 @@ describe("useFocusScope", () => {
     last.focus();
     tab(last);
     expect(over.contains(document.activeElement)).toBe(true);
+  });
+
+  it("leaves the keyboard with a dialog drawn over one opened after it", async () => {
+    // History's sheet is up; a chord opens a popover on a lower layer.
+    const { getByRole, rerender } = render(<Dialog label="sheet" layer={400} />);
+    const sheet = getByRole("dialog", { name: "sheet" });
+    const field = sheet.querySelector("input") as HTMLElement;
+    field.focus();
+    rerender(
+      <>
+        <Dialog label="sheet" layer={400} />
+        <Dialog label="covered" layer={300} />
+      </>,
+    );
+    await settled();
+    expect(document.activeElement).toBe(field);
+
+    // Clicking back into the sheet keeps focus there, and Tab stays in it.
+    const last = sheet.querySelector("button:last-of-type") as HTMLElement;
+    last.focus();
+    await settled();
+    expect(document.activeElement).toBe(last);
+    tab(last);
+    expect(sheet.contains(document.activeElement)).toBe(true);
   });
 
   it("keeps the keyboard when a global shortcut focuses the composer behind it", async () => {
