@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 // The one rule that decides whether an agent can be spawned. Two things are
 // being pinned here: that the machine the agent would run on is what picks
 // which facts apply, and that a refusal reaches an acting control as a whole
@@ -6,8 +7,15 @@
 
 import { describe, expect, it } from "vitest";
 import type { HostProvider } from "@/remote/types";
+import { useAppStore } from "@/store";
 import type { EnvironmentEntry } from "@/store/environments";
-import { type AvailabilityFacts, agentAvailability, blockedSentence } from "./availability";
+import { renderHook } from "@/test/render";
+import {
+  type AvailabilityFacts,
+  agentAvailability,
+  blockedSentence,
+  useAgentAvailability,
+} from "./availability";
 
 const local: EnvironmentEntry = {
   id: "local",
@@ -130,5 +138,40 @@ describe("blockedSentence", () => {
     expect(blockedSentence(agentAvailability(facts({ env }), "claude"))).toBe(
       "Not signed in on Cloud box — run `fletch-host provider login claude` there",
     );
+  });
+});
+
+describe("useAgentAvailability", () => {
+  // A host that has only codex, driven from a Mac that has only claude.
+  const seed = () => {
+    const before = useAppStore.getState();
+    useAppStore.setState({
+      environments: { local, [remote.id]: remote },
+      activeEnvironmentId: remote.id,
+      providerPaths: { claude: "/usr/local/bin/claude" },
+      providerVersions: { claude: "1.0.0" },
+      providersProbed: true,
+    });
+    return () => useAppStore.setState(before, true);
+  };
+  const remote = host([
+    provider({ id: "codex" }),
+    provider({ id: "claude", installed: false, version: null }),
+  ]);
+
+  it("answers for the active environment by default", () => {
+    const restore = seed();
+    const { result } = renderHook(() => useAgentAvailability());
+    expect(result.current("claude").installed).toBe(false);
+    expect(result.current("codex").installed).toBe(true);
+    restore();
+  });
+
+  it("answers for This Mac when asked, whichever host is active", () => {
+    const restore = seed();
+    const { result } = renderHook(() => useAgentAvailability("local"));
+    expect(result.current("claude").installed).toBe(true);
+    expect(result.current("codex").installed).toBe(false);
+    restore();
   });
 });

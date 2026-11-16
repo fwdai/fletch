@@ -37,12 +37,13 @@ function LimitsCard() {
   const providerFlags = useAppStore((s) => s.providerFlags);
   const refreshAccounts = useAppStore((s) => s.refreshProviderAccounts);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
-  const availability = useAgentAvailability();
+  // Accounts and their limits are this Mac's, whichever host is active.
+  const availability = useAgentAvailability("local");
   const { refreshing, error, refresh, refreshOnOpen } = useLimitsRefresh();
   const nowMs = useNow();
 
-  // The providers the model picker offers that keep accounts: installed and
-  // switched on, each with the accounts Settings lists for it.
+  // The providers that keep accounts, installed here and switched on, each
+  // with the accounts Settings lists for it.
   const listed = PROVIDERS.filter(
     (p) => supportsAccounts(p.id) && availability(p.id).installed && providerFlags[p.id] !== false,
   )
