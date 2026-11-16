@@ -174,6 +174,41 @@ describe("useLimitsRefresh", () => {
     expect(result.current.error).toBeNull();
   });
 
+  it("ignores a failure that lands after its account was signed out", async () => {
+    const { result } = renderHook(() => useLimitsRefresh());
+    const signedIn = (status: ProviderAccount["status"]) =>
+      act(() => {
+        useAppStore.setState((s) => ({
+          providerAccounts: { ...s.providerAccounts, codex: [account("codex", "default", status)] },
+        }));
+      });
+    let done: Promise<void> = Promise.resolve();
+    act(() => {
+      done = result.current.refresh(["codex"]);
+    });
+    // Signed out, and back in, while the request is still out.
+    signedIn("signed_out");
+    signedIn("signed_in");
+    await act(async () => {
+      settle["codex/default"].fail("offline");
+      await done;
+    });
+    // It was about the login that is gone, not the one there now.
+    expect(result.current.error).toBeNull();
+
+    // Nor does it surface later, when only the sign-out came first.
+    act(() => {
+      done = result.current.refresh(["codex"]);
+    });
+    signedIn("signed_out");
+    await act(async () => {
+      settle["codex/default"].fail("offline");
+      await done;
+    });
+    signedIn("signed_in");
+    expect(result.current.error).toBeNull();
+  });
+
   it("on Settings' open asks Codex always and Claude only where nothing was ever read", () => {
     const { result } = renderHook(() => useLimitsRefresh());
     act(() => {
