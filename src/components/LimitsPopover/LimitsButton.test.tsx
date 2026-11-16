@@ -26,13 +26,14 @@ const reading = (fiveHour: number, sevenDay: number): AccountLimits => ({
   refresh: null,
 });
 
-const chip = () => screen.getByRole("button", { name: "Usage" });
+const chip = () => screen.getByRole("button", { name: /^Usage/ });
 
 describe("LimitsButton", () => {
   beforeEach(() => useAppStore.setState(useAppStore.getInitialState(), true));
 
   it("is a bare chip until a reading lands", () => {
     render(<LimitsButton />);
+    expect(chip().getAttribute("aria-label")).toBe("Usage");
     expect(chip().textContent).toBe("");
     expect(chip().getAttribute("data-tip")).toMatch(/^Usage \(.+\)$/);
   });
@@ -51,6 +52,7 @@ describe("LimitsButton", () => {
     });
     render(<LimitsButton />);
     expect(chip().textContent).toBe("64%");
+    expect(chip().getAttribute("aria-label")).toBe("Usage · Claude Code 7d at 64%");
     expect(chip().getAttribute("data-tip")).toMatch(/^Usage \(.+\) · Claude Code 7d at 64%$/);
     expect(chip().className).not.toMatch(/\b(warn|full)\b/);
   });

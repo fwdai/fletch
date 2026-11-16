@@ -31,17 +31,19 @@ export function LimitsButton() {
     nowMs,
   );
   const percent = tightest ? Math.round(tightest.window.percent) : null;
+  const detail = tightest
+    ? `${providerLabel(tightest.provider)} ${tightest.name} at ${percent}%`
+    : null;
   const usage = keys ? `Usage (${keys})` : "Usage";
-  const tip = tightest
-    ? `${usage} · ${providerLabel(tightest.provider)} ${tightest.name} at ${percent}%`
-    : usage;
 
   return (
     <Chip
       bordered
       className={`lim-chip ${limitTone(percent)}${open ? " active" : ""}`}
-      tip={tip}
-      aria-label="Usage"
+      tip={detail ? `${usage} · ${detail}` : usage}
+      // The label replaces the chip's text as its accessible name, so it
+      // carries the figure the chip shows.
+      aria-label={detail ? `Usage · ${detail}` : "Usage"}
       aria-expanded={open}
       onClick={() => toggle()}
     >
