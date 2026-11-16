@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { DEFAULT_ACCOUNT_ID, type ProviderAccount } from "@/api/types/providers";
+import type { ProviderAccount } from "@/api/types/providers";
 import { resetLabel } from "@/components/SettingsScreen/ProvidersPane/AccountsSection/limitsFormat";
 import {
   type AccountChoice,
@@ -8,7 +8,7 @@ import {
   pickerState,
 } from "@/components/Workspace/AccountPicker/choices";
 import { useCanSwitchAccount } from "@/components/Workspace/AccountPicker/useCanSwitchAccount";
-import { listedAccountId } from "@/data/providerAccounts";
+import { activeAccountId, listedAccountId } from "@/data/providerAccounts";
 import { spentWindow } from "@/data/providerLimits";
 import { useAppStore } from "@/store";
 
@@ -66,10 +66,9 @@ export function useAccountView(
   const state = pickerState(canSwitch, accounts, locked, picked);
   if (state === "hidden" || state === "single") return null;
 
-  const current = listedAccountId(
-    accounts,
-    control?.current || (accounts.find((a) => a.active)?.id ?? DEFAULT_ACCOUNT_ID),
-  );
+  const current = control?.current
+    ? listedAccountId(accounts, control.current)
+    : activeAccountId(accounts);
   const nowMs = Date.now();
   const options = accountChoices(accounts, current).map((choice) => {
     const window = spentWindow(limits?.[choice.id], nowMs);

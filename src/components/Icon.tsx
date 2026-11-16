@@ -9,6 +9,7 @@ import {
   Bot,
   Box,
   CalendarDays,
+  ChartColumn,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -227,7 +228,9 @@ const ICON_COMPONENTS = {
   calendar: CalendarDays,
   mail: Mail,
   image: Image,
+  // Usage: the popover at a glance, and the full report behind it.
   activity: Activity,
+  chart: ChartColumn,
 } satisfies Record<string, ComponentType<IconComponentProps>>;
 
 // Originally rendered with fill="currentColor". Setting fill on the root SVG

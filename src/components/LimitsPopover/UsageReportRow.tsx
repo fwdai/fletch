@@ -26,7 +26,7 @@ export function UsageReportRow() {
       data-tip={tip}
       onClick={openUsageScreen}
     >
-      <Icon name="activity" size={13} />
+      <Icon name="chart" size={13} />
       {stats ? (
         <span className="lim-report-fig">
           <span className="mono">{formatTokens(stats.totalTokens)}</span> tokens

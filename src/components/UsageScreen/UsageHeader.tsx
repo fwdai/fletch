@@ -131,7 +131,7 @@ export function UsageHeader({
           </IconButton>
         </div>
       }
-      title="Usage"
+      title="Usage report"
       desc={
         <>
           <span className="usg-range mono">{rangeText(range, bounds)}</span> · every Claude Code and

@@ -49,7 +49,7 @@
   --z-dropdown: 200; /* menus, model picker */
   --z-popover: 300; /* popovers (usage, settings, new-project) */
   --z-overlay: 400; /* full-screen overlays (history) */
-  /* popovers a chord opens from anywhere (quick settings, plan limits): over
+  /* popovers a chord opens from anywhere (quick settings, usage): over
      an overlay that is already up, under the palette (450) */
   --z-app-popover: 420;
   --z-toast: 500; /* tooltips, error banners, toasts */

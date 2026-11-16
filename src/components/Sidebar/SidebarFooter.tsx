@@ -6,7 +6,7 @@ import { displayIdentity } from "@/util/identity";
 /** The user, bottom-left, as a button into Settings › Account. No sign-in is
  *  required to use Fletch, so this is whatever is known: the saved profile,
  *  else the global git identity, else an invitation to fill the profile in.
- *  Beside it, the gauge that opens the plan-limits popover. */
+ *  Beside it, the chip that opens the usage popover. */
 export function SidebarFooter() {
   const account = useAppStore((s) => s.account);
   const gitIdentity = useAppStore((s) => s.gitIdentity);

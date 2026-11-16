@@ -66,3 +66,24 @@ export function spentWindow(row: AccountLimits | undefined, nowMs: number): Limi
   );
   return spent.sort((a, b) => resetsMs(b) - resetsMs(a))[0] ?? null;
 }
+
+/** How much of the weekly allowance is used across `rows`, one per account,
+ *  each counting equally: the vendors report a share, not the size of the
+ *  plan, so a bigger plan can't weigh more. Only a week still known counts:
+ *  one that has reset since its reading says nothing of what was used after
+ *  (a terminal or another machine may have), so it is left out like an
+ *  account with no weekly reading. Null when none is known. */
+export function weeklyUsage(
+  rows: readonly (AccountLimits | undefined)[],
+  nowMs: number,
+): { percent: number; accounts: number } | null {
+  const shares = rows.flatMap((row) => {
+    const week = row?.limits?.seven_day;
+    if (!week) return [];
+    const reset = week.resets_at !== null && week.resets_at * 1000 <= nowMs;
+    return reset ? [] : [Math.min(100, week.percent)];
+  });
+  if (shares.length === 0) return null;
+  const total = shares.reduce((sum, share) => sum + share, 0);
+  return { percent: total / shares.length, accounts: shares.length };
+}

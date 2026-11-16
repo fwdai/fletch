@@ -5,7 +5,7 @@ import { limitsRefreshKey } from "@/data/providerLimits";
 import { useAppStore } from "@/store";
 
 /** Asking the vendors for accounts' plan limits, for a surface that shows
- *  them (Settings › Providers, the plan-limits popover): `refresh` on demand,
+ *  them (Settings › Providers, the usage popover): `refresh` on demand,
  *  `refreshOnOpen` for the reading Settings wants as it appears. Calls may
  *  overlap (a Refresh pressed while the opening one is still listing): each
  *  only ever adds to and removes its own share of the state, and the store

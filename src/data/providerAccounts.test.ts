@@ -4,6 +4,7 @@ import {
   accountHue,
   accountLabel,
   accountSlug,
+  activeAccountId,
   foldTerminalLogin,
   listedAccountId,
 } from "./providerAccounts";
@@ -106,5 +107,17 @@ describe("listedAccountId", () => {
     expect(listedAccountId(folded, "work")).toBe("work");
     expect(listedAccountId(folded, "removed")).toBe("removed");
     expect(listedAccountId([account("default"), account("work")], "default")).toBe("default");
+  });
+});
+
+describe("activeAccountId", () => {
+  it("is the account marked active", () => {
+    expect(activeAccountId([account("default"), account("work", { active: true })])).toBe("work");
+  });
+
+  it("falls back to the terminal's login, by the id the folded list shows", () => {
+    expect(activeAccountId([account("default"), account("work")])).toBe("default");
+    const folded = foldTerminalLogin([account("default", { same_as: "work" }), account("work")]);
+    expect(activeAccountId(folded)).toBe("work");
   });
 });

@@ -48,7 +48,7 @@ export interface UiSlice {
   /** Full-screen usage report. Replaces the workspace panes while open, like
    *  the settings screen; the two never show at once. */
   usageScreenOpen: boolean;
-  /** The plan-limits popover (the sidebar footer's gauge / ⌘U): each account's
+  /** The usage popover (the sidebar footer's usage chip / ⌘U): each account's
    *  plan windows at a glance. In the store so the chord can open it from
    *  anywhere; it mounts at app root and sits bottom-left whether or not the
    *  sidebar is showing. */

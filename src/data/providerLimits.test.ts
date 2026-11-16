@@ -4,6 +4,7 @@ import {
   limitsKeyParts,
   parseAccountLimits,
   spentWindow,
+  weeklyUsage,
   withLimitsChange,
 } from "./providerLimits";
 
@@ -98,5 +99,46 @@ describe("spentWindow", () => {
 
   it("prefers the window that frees the account last", () => {
     expect(spentWindow(both(100, 100), at(500))?.resets_at).toBe(5_000);
+  });
+});
+
+describe("weeklyUsage", () => {
+  const at = (s: number) => s * 1000;
+  const weekly = (percent: number, resetsAt: number | null = 5_000): AccountLimits => ({
+    limits: {
+      five_hour: { percent: 99, resets_at: 1_000 },
+      seven_day: { percent, resets_at: resetsAt },
+      as_of: 0,
+      source: "stream",
+    },
+    refresh: null,
+  });
+
+  it("averages the weekly share across accounts, each counting equally", () => {
+    expect(weeklyUsage([weekly(70), weekly(2), weekly(60)], at(0))).toEqual({
+      percent: 44,
+      accounts: 3,
+    });
+  });
+
+  it("leaves out a week that has reset since its reading", () => {
+    expect(weeklyUsage([weekly(80), weekly(40, 1_000)], at(2_000))).toEqual({
+      percent: 80,
+      accounts: 1,
+    });
+    expect(weeklyUsage([weekly(40, 1_000)], at(2_000))).toBeNull();
+  });
+
+  it("leaves out accounts without a weekly reading, and is null with none", () => {
+    const noWeek: AccountLimits = {
+      limits: { five_hour: null, seven_day: null, as_of: 0, source: "stream" },
+      refresh: null,
+    };
+    expect(weeklyUsage([weekly(50), noWeek, undefined], at(0))).toEqual({
+      percent: 50,
+      accounts: 1,
+    });
+    expect(weeklyUsage([noWeek, { limits: null, refresh: null }, undefined], at(0))).toBeNull();
+    expect(weeklyUsage([], at(0))).toBeNull();
   });
 });
