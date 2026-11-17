@@ -33,6 +33,7 @@ import { useHost } from "../host/useHost";
 import { isBusy } from "../lib/agents";
 import { ignore } from "../lib/ignore";
 import { projectById } from "../lib/projects";
+import { withTimeout } from "../lib/timeout";
 import {
   type ConnectionState,
   type HelloResult,
@@ -163,6 +164,21 @@ export interface HostState extends ChatsSlice, ProposalsSlice, ProviderAccountsS
    *  screens open on this host included. Every handshake of the link, whichever
    *  host is on screen. */
   applyHandshake(snapshot: HelloResult): void;
+  /** Re-read what the socket may have missed that a workspace snapshot does
+   *  not carry: the rows' working-tree stats and PR state, the planning chats,
+   *  and whatever is open on this host's screens. After every handshake, and
+   *  on return to the foreground (`wake`). */
+  resync(): void;
+  /** Back in the foreground: refresh what the background missed — once the
+   *  socket has shown it is still alive. iOS freezes a suspended app's
+   *  sockets, and when the app returns one can read as connected for a while
+   *  longer with every request on it hanging. So the workspace read doubles as
+   *  the probe: answered in time, the rest is re-read (`resync`); not answered
+   *  in time, or refused outright, the socket is dead, and the reconnect it
+   *  triggers does the refreshing instead, through the handshake. The
+   *  transport's own pings catch the same death for an idle foreground app,
+   *  more slowly. A retry waiting out its backoff is dialled at once. */
+  wake(): Promise<void>;
 
   /** Re-read the workspace snapshot. Resolves to whether the host answered:
    *  the foreground probe reads that, everything else ignores it. Never
@@ -313,7 +329,7 @@ export const projectOf = (s: AgentSource, agentId: string) =>
 
 /** Every project whose planning chats are loaded re-reads them: a status those
  *  records missed off-socket has no other way back. */
-export function refreshChats(s: HostState): void {
+function refreshChats(s: HostState): void {
   for (const projectId of Object.keys(s.chats)) {
     void s.loadChats(projectId).catch(ignore);
   }
@@ -323,7 +339,7 @@ export function refreshChats(s: HostState): void {
  *  socket or a backgrounded webview silently misses — so every reconnect and
  *  every return to the foreground re-reads it from the host. The top-most
  *  agent screen open on `hostKey`'s host, if any. */
-export function refreshOpenAgent(hostKey: string | null, s: HostState): void {
+function refreshOpenAgent(hostKey: string | null, s: HostState): void {
   const agentId = openAgentOf(hostKey);
   if (agentId) void s.loadAgent(agentId).catch(ignore);
 }
@@ -331,9 +347,16 @@ export function refreshOpenAgent(hostKey: string | null, s: HostState): void {
 /** The Providers screen of `hostKey`'s host, when it is up: its selection and
  *  meters follow `settings:changed`, which a dropped socket or a suspended app
  *  misses like any other event, and the handshake carries none of it. */
-export function refreshProviders(hostKey: string | null, s: HostState): void {
+function refreshProviders(hostKey: string | null, s: HostState): void {
   if (isScreenOpen(hostKey, "providers")) void s.loadProviderAccounts().catch(ignore);
 }
+
+/** How long a foregrounded app waits for a host to answer the workspace read
+ *  before treating the socket as dead and reconnecting (`wake`).
+ *  `get_workspace` is one database read and answers in well under a second
+ *  even over the relay, so a miss this long is the socket, not the host being
+ *  busy. */
+export const RESUME_PROBE_TIMEOUT_MS = 6_000;
 
 const newId = () =>
   globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36)}`;
@@ -555,9 +578,6 @@ export function createHostStore(link: HostLink): HostStore {
       // of them may land. The reads below are issued after the fence and
       // outrank it.
       prWrites.fence();
-      // Planning chats are absent from that snapshot; their records, and their
-      // flags, settle through their own list.
-      refreshChats(get());
       // Task events missed while the socket was down are gone for good — a
       // task held as running could never be seen ending — so the maps start
       // over on every handshake and refill from whatever the host emits next.
@@ -574,11 +594,7 @@ export function createHostStore(link: HostLink): HostStore {
         autopilotSwitches: null,
         prComments: {},
       });
-      // The snapshot carries no stats or PR state, so the rows get both on
-      // every handshake: stats from the first tick of their poll, PR state
-      // from the one seed the watcher's events then keep current.
-      void get().loadShortstats();
-      void get().loadPrStatus();
+      get().resync();
       // The publishes this host is blocked on. Every handshake, because the
       // request event only reached the devices connected when it fired — and so
       // did the resolution, whoever gave it.
@@ -589,9 +605,32 @@ export function createHostStore(link: HostLink): HostStore {
       // …and its autopilot, for the same reason: state and log are host facts,
       // and the events are only the deltas.
       void get().loadAutopilot().catch(ignore);
+    },
+
+    resync() {
+      const s = get();
+      // The snapshot carries no stats or PR state, so the rows get both: stats
+      // from the first tick of their poll, PR state from the one seed the
+      // watcher's events then keep current — and a `pr:*` event that reached a
+      // suspended app may never have been read.
+      void s.loadShortstats();
+      void s.loadPrStatus();
+      // Planning chats are absent from the snapshot; their records, and their
+      // flags, settle through their own list.
+      refreshChats(s);
       // …and whatever is open on this host's screens.
-      refreshOpenAgent(link.hostKey, get());
-      refreshProviders(link.hostKey, get());
+      refreshOpenAgent(link.hostKey, s);
+      refreshProviders(link.hostKey, s);
+    },
+
+    async wake() {
+      // A retry waiting out its backoff was scheduled while the phone was
+      // away; the user looking at the app is reason enough to dial now.
+      if (client.retrying) return get().reconnect();
+      if (client.state !== "connected") return;
+      const alive = await withTimeout(get().refreshWorkspace(), RESUME_PROBE_TIMEOUT_MS, false);
+      if (alive) get().resync();
+      else await get().reconnect();
     },
 
     async refreshWorkspace() {

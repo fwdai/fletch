@@ -10,7 +10,6 @@ import type { RawEvent } from "../adapters";
 import { dropLink, type HostLink, linkOf, pairingLink } from "../host";
 import { useHost } from "../host/useHost";
 import { ignore } from "../lib/ignore";
-import { withTimeout } from "../lib/timeout";
 import {
   DEFAULT_PORT,
   type HostInfo,
@@ -19,14 +18,7 @@ import {
   type PairStep,
 } from "../remote";
 import type { PushFletch } from "../remote/push";
-import {
-  hostStoreOf,
-  refreshChats,
-  refreshOpenAgent,
-  refreshProviders,
-  storeOfLink,
-  useHostStore,
-} from "./host";
+import { hostStoreOf, storeOfLink, useHostStore } from "./host";
 import {
   forgetHost as forgetSavedHost,
   loadDestParent,
@@ -47,6 +39,7 @@ export {
   type HostStore,
   hostStoreOf,
   projectOf,
+  RESUME_PROBE_TIMEOUT_MS,
   type SpawnInput,
   storeOfLink,
   useHostStore,
@@ -178,12 +171,6 @@ let initialized = false;
 /** The links the app watches (`watch`). Each is watched once, however often it
  *  is dialled: a second registration would act on every handshake twice. */
 const watched = new WeakSet<HostLink>();
-
-/** How long a foregrounded app waits for a host to answer the workspace read
- *  before treating the socket as dead and reconnecting. `get_workspace` is one
- *  database read and answers in well under a second even over the relay, so a
- *  miss this long is the socket, not the host being busy. */
-export const RESUME_PROBE_TIMEOUT_MS = 6_000;
 
 /** A tapped alert that arrived before `init` finished. It cannot be acted on
  *  yet: which screen it opens depends on the paired hosts, which are still
@@ -355,45 +342,6 @@ function callOffPairing(get: Get): void {
   if (link && !get().hosts.some((h) => h.hostKey === link.hostKey)) link.client.disconnect();
 }
 
-/** Back in the foreground: refresh what the background missed on `link`'s
- *  host — once its socket has shown it is still alive. iOS freezes a suspended
- *  app's sockets, and when the app returns one can read as connected for a
- *  while longer with every request on it hanging. So the refresh doubles as
- *  the probe: a workspace read the host does not answer in time, or that the
- *  socket refuses outright, means the socket is dead, and the reconnect it
- *  triggers does the refreshing instead, through the handshake's snapshot. The
- *  transport's own pings catch the same death for an idle foreground app, more
- *  slowly. */
-function wake(link: HostLink): void {
-  const { client } = link;
-  // A retry waiting out its backoff was scheduled while the phone was away;
-  // the user looking at the app is reason enough to dial now.
-  if (client.retrying) {
-    void storeOfLink(link).getState().reconnect().catch(ignore);
-    return;
-  }
-  if (client.state !== "connected") return;
-  const store = storeOfLink(link);
-  void (async () => {
-    const alive = await withTimeout(
-      store.getState().refreshWorkspace(),
-      RESUME_PROBE_TIMEOUT_MS,
-      false,
-    );
-    const host = store.getState();
-    if (!alive) {
-      void host.reconnect().catch(ignore);
-      return;
-    }
-    void host.loadShortstats();
-    // A `pr:*` event that reached a suspended app may never have been read.
-    void host.loadPrStatus();
-    refreshOpenAgent(link.hostKey, host);
-    refreshProviders(link.hostKey, host);
-    refreshChats(host);
-  })();
-}
-
 export const appStore = createStore<AppState>()((set, get) => {
   return {
     ready: false,
@@ -425,10 +373,10 @@ export const appStore = createStore<AppState>()((set, get) => {
         document.addEventListener("visibilitychange", () => {
           if (document.hidden) return;
           // Every paired host, and a pairing the Pair screen is still waiting
-          // on.
+          // on, each refreshing what it missed (store/host).
           const links = new Set<HostLink>(get().hosts.map((h) => linkOf(h.hostKey)));
           if (pairing) links.add(pairing);
-          for (const link of links) wake(link);
+          for (const link of links) void storeOfLink(link).getState().wake().catch(ignore);
         });
       }
       const saved = await loadSettings();
