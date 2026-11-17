@@ -56,6 +56,7 @@ fn fast() -> RelayTiming {
     RelayTiming {
         backoff_initial: Duration::from_millis(100),
         backoff_max: Duration::from_millis(100),
+        dial_timeout: Duration::from_secs(1),
         auth_timeout: Duration::from_secs(2),
         // Longer than any test: the host↔relay keepalive is not what these
         // exercise, and a stray ping would only add noise to the frame stream.
@@ -483,6 +484,42 @@ async fn a_dropped_link_reconnects() {
         s.relay.state == RelayState::Connected
     })
     .await;
+}
+
+/// A relay that takes the connection and never answers the upgrade, which is
+/// what a stalled TLS handshake looks like from here, costs one bounded
+/// attempt: the host gives up on it, says so, and dials again.
+#[tokio::test]
+async fn a_dial_that_never_completes_is_given_up_and_retried() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let attempts = Arc::new(AtomicU32::new(0));
+    let counted = attempts.clone();
+    tokio::spawn(async move {
+        // Held open, never read and never answered.
+        let mut held = Vec::new();
+        while let Ok((tcp, _)) = listener.accept().await {
+            counted.fetch_add(1, Ordering::SeqCst);
+            held.push(tcp);
+        }
+    });
+    let host = boot(&url);
+
+    until(&host.state, "the stalled dial surfaces", |s| {
+        s.relay.state == RelayState::Error
+            && s.relay
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("no answer within"))
+    })
+    .await;
+    for _ in 0..300 {
+        if attempts.load(Ordering::SeqCst) >= 2 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the host stopped after one stalled dial");
 }
 
 // ---------------------------------------------------------------------------
