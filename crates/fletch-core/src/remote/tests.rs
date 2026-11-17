@@ -2079,6 +2079,61 @@ async fn the_event_tap_forwards_only_whitelisted_names() {
     );
 }
 
+/// Holds the `hello` snapshot read open until the test lets it go, so an event
+/// can be emitted while the host is reading it.
+#[derive(Default)]
+struct GatedSnapshot {
+    reading: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl Dispatch for GatedSnapshot {
+    fn dispatch<'a>(&'a self, op: &'a str, _args: Value) -> DispatchFuture<'a> {
+        Box::pin(async move {
+            match op {
+                "get_workspace" => {
+                    self.reading.notify_one();
+                    self.release.notified().await;
+                    Ok(json!({ "projects": [], "agents": [] }))
+                }
+                _ => Err(UNKNOWN_OP.to_string()),
+            }
+        })
+    }
+}
+
+/// An event emitted while the host reads the `hello` snapshot is not in it, so
+/// it has to follow the reply: a phone that missed it would render a snapshot
+/// it never sees the next change to.
+#[tokio::test]
+async fn an_event_during_the_hello_snapshot_follows_the_reply() {
+    let gate = Arc::new(GatedSnapshot::default());
+    let host = boot_with(gate.clone());
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public, &Scope::ALL)
+        .unwrap();
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("1", "hello", json!({})).await;
+
+    gate.reading.notified().await;
+    host.state.forward_event(
+        "agent:status",
+        &json!({ "agentId": "arabia", "status": "running" }),
+    );
+    gate.release.notify_one();
+
+    let hello = ws.next_json().await;
+    assert_eq!(hello["id"], "1");
+    assert_eq!(hello["ok"], true);
+    let event = tokio::time::timeout(Duration::from_secs(2), ws.next_json())
+        .await
+        .expect("the event fell between the snapshot and the stream");
+    assert_eq!(event["event"], "agent:status");
+    assert_eq!(event["payload"]["agentId"], "arabia");
+}
+
 /// A second `pair` on the same device key is the same device, not a new row —
 /// a phone whose code lapsed mid-pairing must not leave two records behind.
 #[tokio::test]

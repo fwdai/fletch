@@ -503,7 +503,8 @@ async fn read_loop<S: WsTransport>(
                         continue;
                     }
                 };
-                if !admit(state, out, session, secured, &record, &pending.frame_id, result, &mut event_task) {
+                let events = state.subscribe();
+                if !admit(state, out, session, secured, &record, &pending.frame_id, result, events, &mut event_task) {
                     out.send(close_frame(CLOSE_UNAUTHENTICATED, "bad credential"));
                     break;
                 }
@@ -657,9 +658,14 @@ async fn read_loop<S: WsTransport>(
                                 }
                                 _ => {}
                             }
+                            // On the fan-out before `authenticate` reads the
+                            // `hello` snapshot: an event emitted while it does
+                            // waits here for `admit` to forward, rather than
+                            // falling between the snapshot and the stream.
+                            let events = state.subscribe();
                             match authenticate(state, &frame, &secured.remote_static).await {
                                 Some((record, result)) => {
-                                    if !admit(state, out, session, secured, &record, &frame.id, result, &mut event_task) {
+                                    if !admit(state, out, session, secured, &record, &frame.id, result, events, &mut event_task) {
                                         out.send(close_frame(CLOSE_UNAUTHENTICATED, "bad credential"));
                                         break;
                                     }
@@ -790,6 +796,9 @@ async fn read_loop<S: WsTransport>(
 /// Bring an authenticated device onto this connection: frame limit raised, the
 /// session bound to the device, event forwarding on, and only then the reply.
 /// `false` when the device was revoked in the gap — the caller closes.
+///
+/// `events` is the connection's subscription, taken before any snapshot
+/// `result` carries was read, so it holds every event since.
 #[allow(clippy::too_many_arguments)]
 fn admit(
     state: &Arc<RemoteState>,
@@ -799,6 +808,7 @@ fn admit(
     record: &DeviceRecord,
     frame_id: &str,
     result: Value,
+    events: broadcast::Receiver<Arc<str>>,
     event_task: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> bool {
     // Before the reply: the phone may send a fragmented frame the moment it
@@ -815,11 +825,11 @@ fn admit(
     if !state.devices().contains(&record.device_id) {
         return false;
     }
-    // Subscribe before the reply goes out: an event emitted in the gap would
+    // Forwarding before the reply goes out: an event emitted in the gap would
     // otherwise be lost, and the phone would render a snapshot it can't see the
     // next change to. After the check above, so a device revoked in the gap is
     // never forwarded an event ahead of its close.
-    *event_task = Some(spawn_event_forwarder(state, out.clone()));
+    *event_task = Some(spawn_event_forwarder(events, out.clone()));
     state.devices().touch(&record.device_id);
     // Reply last: the phone must not be able to observe itself as
     // authenticated before it is on the fan-out and in the registry.
@@ -958,12 +968,13 @@ fn accept_confirmed(
     Ok((record, result))
 }
 
-/// Forward the shared event stream to one connection. Owned by a task rather
-/// than the reader's `select!` so a lagging phone can't stall request handling.
-fn spawn_event_forwarder(state: &Arc<RemoteState>, out: Outbox) -> tokio::task::JoinHandle<()> {
-    // Subscribed here, not inside the task, so the connection is on the
-    // fan-out the instant this returns.
-    let mut rx = state.subscribe();
+/// Forward the shared event stream to one connection, from wherever `rx` was
+/// subscribed. Owned by a task rather than the reader's `select!` so a lagging
+/// phone can't stall request handling.
+fn spawn_event_forwarder(
+    mut rx: broadcast::Receiver<Arc<str>>,
+    out: Outbox,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -1293,6 +1304,7 @@ mod tests {
             &record,
             "1",
             Value::Null,
+            state.subscribe(),
             &mut event_task,
         );
         assert!(!admitted);
