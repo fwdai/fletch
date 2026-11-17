@@ -47,8 +47,11 @@ function fakeSocket(hostKey = HOST_KEY, unreachable: Record<string, "reject" | "
   const urls: string[] = [];
   const budgets: (number | undefined)[] = [];
   let handlers: SocketHandlers | null = null;
+  let closes = 0;
   return {
     sent,
+    /** How many times the client closed a socket it opened. */
+    closes: () => closes,
     /** The expected host key handed to the factory on each attempt. */
     asked,
     /** Every URL dialled, in order. */
@@ -86,7 +89,9 @@ function fakeSocket(hostKey = HOST_KEY, unreachable: Record<string, "reject" | "
         send: (text) => {
           sent.push(JSON.parse(text));
         },
-        close: () => {},
+        close: () => {
+          closes += 1;
+        },
         // The Rust transport draws and keeps the nonce; this stands in for it.
         pairCommit: async () => "commit-1",
         pairCode: async (hostNonce: string) => ({
@@ -96,6 +101,8 @@ function fakeSocket(hostKey = HOST_KEY, unreachable: Record<string, "reject" | "
       };
     },
     reply: (frame: unknown) => handlers?.onMessage(JSON.stringify(frame)),
+    /** Deliver `text` as one decrypted frame, whatever it holds. */
+    replyText: (text: string) => handlers?.onMessage(text),
     hangup: (code: number) => handlers?.onClose(code),
   };
 }
@@ -816,6 +823,38 @@ describe("reconnect", () => {
     const pending = client.call("get_workspace");
     fake.hangup(1006);
     await expect(pending).rejects.toThrow();
+  });
+
+  it("drops a link that delivers a frame it cannot parse, and reconnects", async () => {
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply(helloOk(fake.sent[0].id as string));
+    await connected;
+    const pending = client.call("get_workspace");
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(2));
+
+    // Two encrypted messages merged on the way: the result decrypts, and both
+    // frames in it are lost. Carrying on would miss them for good.
+    fake.replyText(`{"id":"${fake.sent[1].id}","ok":true,"result":null}{"event":"agent:status"}`);
+    expect(client.state).toBe("error");
+    expect(fake.closes()).toBe(1);
+    await expect(pending).rejects.toThrow();
+    expect(timers.map((t) => t.ms)).toEqual([1000]);
+
+    // The reconnect's handshake is what catches up.
+    timers[0].fn();
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(3));
+    expect(fake.sent[2].op).toBe("hello");
+    fake.reply(helloOk(fake.sent[2].id as string));
+    await vi.waitFor(() => expect(client.state).toBe("connected"));
   });
 
   it("dials at once when asked to reconnect while a retry is scheduled", async () => {

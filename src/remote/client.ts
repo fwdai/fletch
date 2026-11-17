@@ -8,6 +8,7 @@ import { type Candidate, candidatesFor } from "./candidates";
 import type { Socket, SocketFactory, SocketHandlers } from "./socket";
 import {
   type CallOptions,
+  CLOSE_BAD_FIRST_FRAME,
   CLOSE_REASONS,
   CLOSE_UNAUTHENTICATED,
   CONNECTION_LOST,
@@ -583,7 +584,13 @@ export class ProtocolClient implements RemoteClient {
     try {
       frame = JSON.parse(text) as HostFrame;
     } catch {
-      return; // A frame we can't parse is not worth tearing the link down for.
+      // It decrypted, so it is whole as far as the channel can tell: two of the
+      // host's messages merged on the way, perhaps, and whatever they held is
+      // lost. The link is dropped as the transport drops one whose frame does
+      // not decrypt (4001), so the reconnect's handshake catches up on it
+      // rather than this side carrying on without it.
+      this.onClose(CLOSE_BAD_FIRST_FRAME);
+      return;
     }
     if (isEventFrame(frame)) {
       this.dispatchEvent(frame);
