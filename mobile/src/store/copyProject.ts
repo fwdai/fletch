@@ -6,7 +6,7 @@
 // target's workspace is read again so every list sees the copy. Whatever asked
 // moves only once all of it is done, so a failure leaves it where it was.
 
-import { travelReason } from "@desktop/components/Composer/RunTargetPicker/options";
+import { travelReason } from "@desktop/components/Composer/RunTargetPicker/copyWords";
 import { linkOf } from "../host";
 import { type ProjectEntry, projectById } from "../lib/projects";
 import { definitionSource } from "../lib/runsOn";

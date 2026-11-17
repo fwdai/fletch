@@ -10,6 +10,9 @@
 import type { ProjectDefinition, ProjectHome } from "@/api";
 import { type EnvironmentEntry, type EnvironmentId, hostOrder } from "@/store/environments";
 import { connectionLabel, gateReason } from "@/store/gates";
+import { travelReason } from "./copyWords";
+
+export { preparingLabel, pushedNote, travelReason } from "./copyWords";
 
 export type RunTargetKind = "local" | "host";
 
@@ -33,13 +36,6 @@ export interface RunTargetFacts {
   /** The draft's project as its host describes it, once read; null until
    *  then, which blocks nothing. */
   definition: ProjectDefinition | null;
-}
-
-/** Why the draft's project can't run on any device but its own, or null when
- *  it can: every repository has to be cloned there, so each needs a remote. */
-export function travelReason(definition: ProjectDefinition | null): string | null {
-  const stuck = definition?.repos.find((r) => r.origin === null);
-  return stuck ? `${stuck.label || stuck.dir} has no remote. Publish it first.` : null;
 }
 
 /** Why the draft can't move to a host other than its own, or null. Which
@@ -87,15 +83,4 @@ export function homeName(
   home: ProjectHome,
 ): string {
   return environments[home.device]?.name ?? home.name;
-}
-
-/** The note under the row of a draft on a host that runs the project from a
- *  copy: the copy is cloned from the remote. */
-export function pushedNote(home: string): string {
-  return `Starts from the branch as pushed. Commits not pushed from ${home} are not included.`;
-}
-
-/** What the new-workspace screen says while a draft is moved to `host`. */
-export function preparingLabel(host: string): string {
-  return `Preparing the project on ${host}…`;
 }
