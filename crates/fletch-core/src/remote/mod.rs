@@ -52,7 +52,7 @@ use tokio::sync::broadcast;
 
 use self::auth::DeviceRecord;
 use self::relay::{RelayLink, RelayTiming};
-use self::session::{Sessions, CLOSE_DISABLED, CLOSE_REPAIRED, CLOSE_RESTARTING, CLOSE_REVOKED};
+use self::session::{Sessions, CLOSE_REPAIRED, CLOSE_RESTARTING, CLOSE_REVOKED};
 use crate::error::{Error, Result};
 // How deep the per-connection fan-out buffers, shared with the engine channel
 // that feeds it: one number for the whole path (see `host::sink`).
@@ -375,6 +375,9 @@ impl RemoteState {
         let bound = listener.local_addr()?.port();
 
         let (shutdown, stop) = broadcast::channel(1);
+        // Before anything can register: `stop` left the registry closing
+        // every session that does.
+        self.sessions.resume();
         tokio::spawn(server::accept_loop(self.clone(), listener, stop));
         inner.enabled = true;
         inner.port = port;
@@ -434,11 +437,12 @@ impl RemoteState {
         Ok(bound)
     }
 
-    /// Stop listening, close every live connection with 4004, and drop the
-    /// relay link.
+    /// Stop listening, close every live connection with 4004 (and any that
+    /// registers until the next `start`), drop the relay link, and forget the
+    /// outstanding pairing codes.
     ///
-    /// Order matters. `close_all` only *queues* a close on each session, and a
-    /// relayed session's close frame travels out over the link — so the
+    /// Order matters. `Sessions::stop` only *queues* a close on each session,
+    /// and a relayed session's close frame travels out over the link — so the
     /// sessions are asked to close while the link is still up, and the link
     /// handle is dropped after, which asks the link task to flush what those
     /// sessions queued (bounded by `RelayTiming::shutdown_grace`) before it
@@ -458,8 +462,9 @@ impl RemoteState {
         let advertiser = inner.advertiser.take();
         drop(inner);
         drop(advertiser);
-        self.sessions.close_all(CLOSE_DISABLED);
+        self.sessions.stop();
         drop(link);
+        self.pairing.clear();
         crate::power::ActivityMonitor::global().set_remote_enabled(false);
     }
 

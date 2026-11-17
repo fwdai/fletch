@@ -9,7 +9,7 @@
 //! rather than from a second census that could disagree with it.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -77,6 +77,11 @@ struct Session {
 pub(super) struct Sessions {
     next_id: AtomicU64,
     live: Mutex<HashMap<SessionId, Session>>,
+    /// Remote access is off: set by `stop`, cleared by `resume`. A socket can
+    /// still be in its WebSocket upgrade when the host stops, and registers
+    /// only once that finishes, after `stop` has swept the registry; this is
+    /// what closes it then.
+    stopped: AtomicBool,
 }
 
 impl Sessions {
@@ -84,24 +89,47 @@ impl Sessions {
         Self {
             next_id: AtomicU64::new(1),
             live: Mutex::new(HashMap::new()),
+            stopped: AtomicBool::new(false),
         }
     }
 
     /// Register a connection. The returned guard must be held for as long as
     /// the connection lives; dropping it deregisters the session.
+    ///
+    /// While the host is stopped the connection is told to close with
+    /// `CLOSE_DISABLED` as it registers. The flag is read under the registry
+    /// lock and `stop` raises it before taking that lock, so a session either
+    /// registered in time for `stop`'s sweep or sees the flag here.
     pub(super) fn register(self: &Arc<Self>, close: mpsc::Sender<CloseRequest>) -> SessionGuard {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.live.lock().insert(
+        let mut live = self.live.lock();
+        if self.stopped.load(Ordering::SeqCst) {
+            let _ = close.try_send(Some(CLOSE_DISABLED));
+        }
+        live.insert(
             id,
             Session {
                 device_id: None,
                 close,
             },
         );
+        drop(live);
         SessionGuard {
             sessions: self.clone(),
             id,
         }
+    }
+
+    /// The host stopped: ask every session to close with `CLOSE_DISABLED`,
+    /// and every one that registers until `resume` too.
+    pub(super) fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.close_all(CLOSE_DISABLED);
+    }
+
+    /// The host is serving again: sessions register as usual.
+    pub(super) fn resume(&self) {
+        self.stopped.store(false, Ordering::SeqCst);
     }
 
     /// Ask every session authenticated as `device_id` to close. Non-blocking:

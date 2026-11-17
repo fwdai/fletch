@@ -2534,6 +2534,49 @@ async fn disabling_remote_access_closes_live_connections_4004() {
     assert!(!host.state.status().listening);
 }
 
+/// A socket still in its WebSocket upgrade when remote access goes off
+/// registers only after `stop` has swept the registry. It is closed with 4004
+/// the moment it does, not served; starting again serves as usual.
+#[tokio::test]
+async fn a_connection_that_registers_after_stopping_closes_4004_at_once() {
+    let host = boot();
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public, &Scope::ALL)
+        .unwrap();
+    host.state.stop();
+
+    // The upgrade finishing now: `serve` is where a connection registers.
+    let mut ws = pipe_to(&host.state).await;
+    let code = tokio::time::timeout(Duration::from_secs(2), close_code(&mut ws))
+        .await
+        .expect("closed at once, not handshaken with");
+    assert_eq!(code, 4004);
+
+    let port = host.state.start(0).unwrap();
+    let mut ws = secure_connect(port, &phone).await;
+    ws.request("1", "hello", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+}
+
+/// Turning remote access off spends the pairing codes minted before it: one
+/// read off the screen earlier must not pair once the switch is back on, even
+/// inside its five minutes.
+#[tokio::test]
+async fn stopping_spends_the_outstanding_pairing_codes() {
+    let host = boot();
+    let minted = host.state.pairing().mint(&Scope::ALL);
+    host.state.stop();
+    let port = host.state.start(0).unwrap();
+
+    let mut ws = secure_connect(port, &device()).await;
+    ws.request("1", "pair", json!({ "token": minted.token }))
+        .await;
+    assert_eq!(ws.close_code().await, 4003);
+    assert!(host.state.pairing().window().is_none());
+}
+
 /// Moving the port is not a stop: live devices get the retryable 1012, not
 /// 4004, the new port answers a fresh handshake, and the status reports it.
 #[tokio::test]

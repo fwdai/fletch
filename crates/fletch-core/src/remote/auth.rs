@@ -152,6 +152,14 @@ impl PairingTokens {
         Some(pending.remove(i))
     }
 
+    /// Forget every outstanding token, and with them the pairing window and
+    /// its count of confirmed-pairing requests. Remote access going off ends
+    /// every code minted before it: one must not still pair after the switch
+    /// is turned back on.
+    pub fn clear(&self) {
+        self.pending.lock().clear();
+    }
+
     /// Put back a token that was redeemed for a pairing that then failed to
     /// be stored, so the "try again" the device is told to do has a window to
     /// land in. Taken first and restored on failure, rather than checked and

@@ -573,7 +573,8 @@ whenever none is live (none yet, or the last one lapsed, was redeemed, or
 granted another preset than the one chosen), but not after the host closed the
 window for too many requests (see "Confirmed pairing") — that takes a click on
 "New code". `remote_begin_pairing` mints a one-time pairing code (8 chars from
-`A-Z2-9`, no ambiguous glyphs), valid 5 minutes, single use. The code carries
+`A-Z2-9`, no ambiguous glyphs), valid 5 minutes, single use; turning remote
+access off spends every code still outstanding. The code carries
 the scope preset the pairing will grant (see "Scopes"); the link does not, so
 nothing a client says can widen it. Settings › Devices › Clients shows the code
 as text and as a QR code encoding:
