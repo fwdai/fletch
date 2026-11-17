@@ -1,7 +1,3 @@
-/* sidebar */
-/* The header is one line: the list filter and the way to add a project. Once
-   a host is paired, the environment switcher takes a line of its own above
-   it (the wrap). */
 .side-head {
   flex-wrap: wrap;
   padding: 14px 12px 10px;
@@ -9,9 +5,6 @@
   flex-shrink: 0;
 }
 
-/* ── environment switcher ─────────────────────────────────────────────────
-   Only rendered when at least one host is paired, so with no hosts the header
-   is the list filter's line alone. It takes the header's whole first line. */
 .env-switch {
   position: relative;
   flex: 0 0 100%;
@@ -97,10 +90,6 @@
 .env-item-sub {
   color: var(--fg-3);
 }
-/* ── list filter ──────────────────────────────────────────────────────────
-   One field: the text that narrows the workspaces, then which projects it
-   looks in (the scope, a menu). One border around both, so the header is a
-   single box beside the "+". */
 .side-filter {
   position: relative;
   flex: 1;
@@ -114,50 +103,21 @@
 .side-filter:focus-within {
   border-color: var(--accent-line);
 }
-/* The scope's anchor steps out of the way so its menu hangs off the field and
-   spans it, rather than the narrow segment that opens it. */
+/* Static, so the menu anchors to the field and spans it. */
 .side-filter > .proj-select {
   position: static;
-  align-self: stretch;
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: none;
+  margin-right: 3px;
 }
-.side-scope {
-  gap: 5px;
-  min-width: 0;
-  height: 100%;
-  padding: 0 8px 0 9px;
-  border-radius: 0 calc(var(--r-md) - 1px) calc(var(--r-md) - 1px) 0;
+.side-scope:not(.active) {
   color: var(--fg-2);
-  white-space: nowrap;
-  transition:
-    color 0.12s,
-    background 0.12s;
 }
-.side-scope:hover,
 .side-scope[aria-expanded="true"] {
   background: var(--hover);
-  color: var(--fg-0);
 }
 .side-scope:focus-visible {
   outline: 1px solid var(--accent-line);
   outline-offset: -1px;
-}
-/* A focus is on. The label carries that ("2 of 6 projects"); the scope only
-   steps up a shade, staying quieter than the list it narrows. */
-.side-scope.on {
-  color: var(--fg-0);
-}
-.side-scope > svg {
-  flex-shrink: 0;
-  opacity: 0.7;
-}
-.side-filter-sep {
-  flex-shrink: 0;
-  align-self: stretch;
-  width: 1px;
-  margin: 6px 0;
-  background: var(--bd-soft);
 }
 .side-filter-icon {
   flex-shrink: 0;
@@ -191,7 +151,9 @@
   background: var(--hover);
   color: var(--fg-0);
 }
-/* Under a search the focus cut short: what it left out, and the way to it. */
+.side-filter > :is(.kbd, .side-filter-clear):not(:last-child) {
+  margin-right: 3px;
+}
 .side-beyond {
   display: block;
   width: 100%;
@@ -213,7 +175,6 @@
   padding: 4px 8px 12px;
 }
 
-/* Reads as a line of small print, not a control, until it is hovered. */
 .side-palette-hint {
   gap: 8px;
   flex-shrink: 0;
@@ -238,8 +199,6 @@
   padding: 4px;
 }
 
-/* The way to add a project: an outlined "+" the height of the field beside
-   it, or the whole line while there is no project to filter. */
 .side-add {
   display: flex;
   flex-shrink: 0;
@@ -252,8 +211,6 @@
   height: 30px;
   border-radius: var(--r-md);
 }
-/* What the agents of a project are up to, in the colours their rows use: on
-   the trigger for the projects a focus hides, in the menu for each one. */
 .proj-signal {
   flex-shrink: 0;
   width: 6px;
@@ -269,8 +226,11 @@
 .proj-signal[data-signal="running"] {
   background: var(--success);
 }
-/* The menu spans the field instead of hanging off the trigger's right edge,
-   and scrolls once the project list outgrows it. */
+.side-scope > .proj-signal {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+}
 .proj-select > .dd {
   left: 0;
   min-width: 0;
@@ -289,9 +249,6 @@
   outline: 1px solid var(--accent-line);
   outline-offset: -1px;
 }
-/* A project row is two buttons, so the padding moves into them and each one
-   fills its part of the row. The checkbox column lines up with the icon of
-   the "All projects" row above. */
 .proj-select .proj-opt {
   gap: 0;
   padding: 0;
@@ -356,11 +313,9 @@
   margin-bottom: 16px;
   position: relative;
 }
-/* Dim the group while it's being dragged to a new position. */
 .proj.dragging {
   opacity: 0.4;
 }
-/* Insertion line shown on the group under the drag pointer. */
 .proj.drop-before::before,
 .proj.drop-after::after {
   content: "";
@@ -378,8 +333,6 @@
 .proj.drop-after::after {
   bottom: -8px;
 }
-/* A project with nothing in it: one quiet line, stacked tight against its
- * neighbours. */
 .proj.empty {
   margin-bottom: 0;
 }
@@ -394,9 +347,6 @@
 }
 .proj-h {
   gap: 6px;
-  /* name sits at 19px, aligned with the indented agent names; the chevron
-   * floats (absolute) on the rail line with ~7px left padding, and the right
-   * padding is trimmed so the "+" glyph balances the chevron's inset. */
   padding: 0 4px 0 19px;
   height: 28px;
   border-radius: var(--r-sm);
@@ -410,9 +360,6 @@
   user-select: none;
 }
 .proj-h:hover {
-  /* --hover as the base fallback; upgraded to the softer color-mix (matching
-   * .agent:hover) where the WebView supports it. Expressed via @supports rather
-   * than duplicate declarations, which biome's noDuplicateProperties forbids. */
   background: var(--hover);
 }
 @supports (background: color-mix(in oklch, red 50%, transparent)) {
@@ -420,8 +367,6 @@
     background: color-mix(in oklch, var(--bd-soft) 50%, transparent);
   }
 }
-/* The whole header is the drag target — cursor:grab is the only reorder
- * affordance (no grip glyph, so the name keeps the gutter's left rail). */
 .proj-h.reorderable {
   cursor: grab;
 }
@@ -430,8 +375,6 @@
 }
 .proj-h .chev {
   position: absolute;
-  /* centered (~9px) on the indented agent rail line, with ~7px of left padding
-   * to its ink and a clear gap before the name at 19px */
   left: 4px;
   top: 50%;
   width: 10px;
@@ -455,9 +398,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The name is the door to the project's Roadmap: a button in the row's own
- * type, brightening on hover so it reads as one, and still a grab point for
- * reordering. */
 button.pname {
   appearance: none;
   background: none;
@@ -478,7 +418,6 @@ button.pname:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-/* count sits next to the name (middot-separated), on a folded group only. */
 .proj-h .pcount {
   flex-shrink: 0;
   font-family: var(--font-mono);
@@ -489,9 +428,6 @@ button.pname:focus-visible {
   content: "·";
   margin-right: 4px;
 }
-/* Ghost affordance. Borderless (no filled chip) but at --fg-2 — a step
- * brighter than the --fg-3 meta text, so it clearly reads as an action. Earns
- * the accent fill on hover. */
 .proj-h .padd {
   width: 22px;
   height: 22px;
@@ -507,9 +443,6 @@ button.pname:focus-visible {
   background: var(--accent-soft);
   color: var(--accent);
 }
-/* The actions are revealed when the row is engaged, so a list of projects is
- * not a column of buttons. The gear leads them and its auto margin pushes the
- * pair to the far right. */
 .proj-h .padd-quiet {
   margin-left: auto;
 }
@@ -521,15 +454,10 @@ button.pname:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
-/* Keyboard focus reveals them too — a focused button at opacity:0 would make
- * the focus ring vanish and hide the action from keyboard users. */
 .proj-h .padd:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
-/* "New agent" stays on show where it is most likely wanted: on the project
- * the selection is in, and on a lone project, where a first launch looks
- * for it. */
 .proj.current .proj-h .padd-add,
 .proj:only-child .proj-h .padd-add {
   opacity: 1;
@@ -540,16 +468,12 @@ button.pname:focus-visible {
   height: 15px;
   flex-shrink: 0;
 }
-/* Icon size is driven by CSS here (like the + above), so it doesn't depend on
- * the size prop. The gear reads a touch larger than the +. */
 .proj-h .padd-quiet svg {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
 }
 
-/* An empty project's header steps back, and has no chevron: there is nothing
- * to fold. */
 .proj.empty .proj-h {
   color: var(--fg-3);
 }
@@ -565,9 +489,6 @@ button.pname:focus-visible {
   flex-direction: column;
   gap: 1px;
   margin-left: 0;
-  /* indent the agents so their status rail slides under the header chevron —
-   * nests the list inside the project and lets the chevron sit on the rail
-   * line while still keeping its own left padding */
   padding: 4px 0 4px 6px;
   overflow: visible;
   max-height: 1200px;
@@ -585,9 +506,6 @@ button.pname:focus-visible {
   display: none;
 }
 
-/* The fold row under a project's recent workspaces: the rest of the list,
- * one click away. Sits on the row grid (same left inset as `.agent`) but
- * stays muted, and is not a selectable row — the arrow keys step past it. */
 .agents-fold {
   display: flex;
   align-items: center;
@@ -628,13 +546,11 @@ button.pname:focus-visible {
   background: var(--bd-soft);
   color: var(--fg-0);
 }
-/* Keyboard focus only (arrow stepping, Tab) — mouse clicks don't draw a ring. */
 .agent:focus-visible {
   outline: 1px solid var(--accent-line);
   outline-offset: -1px;
 }
 
-/* status rail — the left spine; colored by status, faint grey when idle */
 .ag-rail {
   position: absolute;
   left: 1px;
@@ -654,11 +570,9 @@ button.pname:focus-visible {
 .ag-rail.run {
   background: var(--success);
 }
-/* paused on a question — amber says the turn is the user's */
 .ag-rail.wait {
   background: var(--warn);
 }
-/* a single lighter sheen sweeps the solid rail and resets off-screen (no blink) */
 .ag-rail.run::after {
   content: "";
   position: absolute;
@@ -692,8 +606,6 @@ button.pname:focus-visible {
   color: var(--fg-0);
   flex-shrink: 0;
 }
-/* the work's title leads the row and can run long, so unlike a codename it
- * takes the remaining width and truncates instead of pushing the slot out */
 .agent-row .ag-title {
   flex: 1;
   min-width: 0;
@@ -705,15 +617,9 @@ button.pname:focus-visible {
   color: var(--fg-1);
   font-weight: 500;
 }
-/* shimmer (base.css) + rail share one clock (--ag-sync) so their sweeps move
- * in tandem */
 .ag-name.shimmer {
   animation-duration: var(--ag-sync);
 }
-/* dev-server "running" indicator — a green play mark in a tinted, bordered
- * circle beside the identity chip. Signals the worktree's app is up, distinct
- * from the agent's turn status (rail / loader / shimmer). The slow breathing
- * halo reads as a live "heartbeat" — sleek, not an alarm. */
 .agent-row .ag-run {
   display: inline-flex;
   align-items: center;
@@ -727,7 +633,6 @@ button.pname:focus-visible {
   border: 1px solid color-mix(in oklch, var(--success), transparent 58%);
   animation: agRun 2.6s var(--ease) infinite;
 }
-/* optical-center the play triangle within its circle */
 .agent-row .ag-run svg {
   margin-left: 1px;
 }
@@ -743,21 +648,13 @@ button.pname:focus-visible {
   }
 }
 
-/* right slot — meta and actions share one fixed space, cross-fading on
- * hover so the row never reflows (no height jump). */
 .ag-slot {
   position: relative;
   margin-left: auto;
   flex-shrink: 0;
   min-height: 21px;
-  /* reserve exactly one action-button's width so meta and actions stack in
-   * the same footprint (see below) — the row never reflows on hover */
   min-width: 21px;
 }
-/* meta and actions occupy the SAME right-anchored 21px box and cross-fade in
- * place: a single indicator (loader / hand / unseen dot) is centered on the
- * exact spot the action-button icon lands, so any swap looks like a morph, not
- * a jump. Text badges (error, draft "new") opt out of the box via `.wide`. */
 .ag-slot .ag-meta,
 .ag-slot .ag-actions {
   position: absolute;
@@ -788,8 +685,6 @@ button.pname:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
-/* an agent paused on a question keeps its hand (and tooltip) on hover instead
- * of swapping to Stop — the turn is the user's, stopping isn't the next move */
 .agent.awaiting:hover .ag-slot .ag-meta {
   opacity: 1;
 }
@@ -814,16 +709,11 @@ button.pname:focus-visible {
 .ag-act:active {
   background: var(--selected);
 }
-/* An armed destructive action (a run row's delete after the first click):
- * stays red until the pointer leaves the row, so the confirming second click
- * is visibly different from the first. */
 .ag-act.confirm-del,
 .ag-act.confirm-del:hover {
   color: var(--danger);
 }
 
-/* waiting-for-input indicator — amber hand, a soft breathing pulse so it
- * reads as an ask, not a dead icon */
 .ag-waiting {
   display: inline-flex;
   align-items: center;
@@ -842,9 +732,6 @@ button.pname:focus-visible {
   }
 }
 
-/* sub-agent child rows (SubagentRow) — a run-step row whose name is a task
- * description rather than an agent name, so it can run long: clip it instead
- * of pushing the meta slot out of the row. */
 .agent.run-step.subagent .ag-name {
   flex-shrink: 1;
   min-width: 0;
@@ -852,22 +739,18 @@ button.pname:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* "quiet 4m" — a heuristic (a long step goes quiet too), so muted like a-time,
- * never a warning color */
 .ag-quiet {
   color: var(--fg-3);
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
   flex-shrink: 0;
 }
-/* failed sub-agent mark, in the meta slot where a loader would be */
 .ag-failed {
   display: inline-flex;
   align-items: center;
   color: var(--danger);
 }
 
-/* working indicator — three grey dots, smooth bounce + fade, synced */
 .ag-loader {
   --d: 3.5px;
   width: var(--d);
@@ -915,8 +798,6 @@ button.pname:focus-visible {
   }
 }
 
-/* unseen-results dot — a turn finished on an agent the user wasn't viewing.
-   Subtle accent dot with a soft halo; the only cue for research-only turns. */
 .ag-unseen {
   width: 6px;
   height: 6px;
