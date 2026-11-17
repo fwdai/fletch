@@ -44,7 +44,7 @@ afterEach(() => unmount());
 
 const open = () => act(async () => host.querySelector<HTMLButtonElement>(".host")?.click());
 
-test("the chip names the live host and opens a list of every paired one", async () => {
+test("the chip names the host on screen and opens a list of every paired one", async () => {
   const chip = host.querySelector(".host");
   expect(chip?.textContent).toContain("Mac mini");
   expect(chip?.querySelector(".dot.running")).not.toBeNull();
@@ -81,7 +81,7 @@ test("tapping another host switches to it and closes the list", async () => {
   expect(menu(host)).toBeNull();
 });
 
-test("switching still works while the live host cannot be reached", async () => {
+test("switching still works while the host on screen cannot be reached", async () => {
   await act(async () => hostOnScreen().setState({ connection: "error" }));
   expect(host.querySelector(".host .dot.error")).not.toBeNull();
   await open();

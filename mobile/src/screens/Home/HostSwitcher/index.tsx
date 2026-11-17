@@ -4,10 +4,10 @@ import { connectionDot } from "../../../lib/connection";
 import { useHostName, useHostStore } from "../../../store";
 import { HostMenu } from "./HostMenu";
 
-/** The Home header's host chip: the active host and whether it is reachable,
- *  opening a dropdown of every paired host to switch between. It works the
- *  same with the active host down — switching away is how the user gets past
- *  a Mac that is asleep. */
+/** The Home header's host chip: the host on screen and whether it is
+ *  reachable, opening a dropdown of every paired host to switch between. It
+ *  works the same with that host down — switching away is how the user gets
+ *  past a Mac that is asleep. */
 export function HostSwitcher() {
   const [open, setOpen] = useState(false);
   const name = useHostName();

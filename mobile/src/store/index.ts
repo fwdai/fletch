@@ -442,7 +442,10 @@ export const appStore = createStore<AppState>()((set, get) => {
       if (typeof document !== "undefined") {
         document.addEventListener("visibilitychange", () => {
           if (document.hidden) return;
-          for (const { hostKey } of get().hosts) wake(linkOf(hostKey));
+          // Every paired host, and a pairing the Pair screen is still waiting
+          // on — the same link once it has landed.
+          const links = new Set([...get().hosts.map((h) => linkOf(h.hostKey)), get().pairLink]);
+          for (const link of links) wake(link);
         });
       }
       const saved = await loadSettings();
@@ -466,17 +469,22 @@ export const appStore = createStore<AppState>()((set, get) => {
         hosts,
         hostKey,
       });
+      const link = queuedLink;
+      queuedLink = null;
+      // Every paired host at once, each on its own link: one that does not
+      // answer holds up none of the others, and its store says why. A host the
+      // queued link names is left to the link — see `queuedLink`. None of it is
+      // awaited here: the app is usable on whichever hosts answer first.
+      const dials = hosts.filter((h) => h.hostKey !== link?.hostKey).map((h) => dial(set, get, h));
+      // After the dials have started, so a tap from a host not on screen finds
+      // it connecting rather than dialling it a second time; and without
+      // waiting on any of them — its agent opens at once, and is read again
+      // when its host answers.
       if (queuedPush) {
         const fletch = queuedPush;
         queuedPush = null;
         get().openFromPush(fletch);
       }
-      const link = queuedLink;
-      queuedLink = null;
-      // Every paired host at once, each on its own link: one that does not
-      // answer holds up none of the others, and its store says why. A host the
-      // queued link names is left to the link — see `queuedLink`.
-      const dials = hosts.filter((h) => h.hostKey !== link?.hostKey).map((h) => dial(set, get, h));
       if (link) {
         // A scanned link says to pair with *this* Mac. Over a paired host the
         // Pair screen shows it as an addition, with a way back to that host if

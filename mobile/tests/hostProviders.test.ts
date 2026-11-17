@@ -32,9 +32,7 @@ it("never answers one host's rows for another", async () => {
   const node = document.createElement("div");
   const root = createRoot(node);
   const on = (hostKey: string) =>
-    act(async () =>
-      root.render(createElement(OnHost, { hostKey, children: createElement(Probe) })),
-    );
+    act(async () => root.render(createElement(OnHost, { hostKey }, createElement(Probe))));
 
   await on("providers-a");
   expect(seen.at(-1)).toEqual(onA);
