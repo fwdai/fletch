@@ -31,6 +31,27 @@ jobs:
       - name: Test
         run: bun run test
 
+      # The phone app is a package of its own, with its own lockfile, and none
+      # of the steps above reach it: the root tsconfig and vitest config leave
+      # `mobile/` out. It compiles the desktop's `src/` through path aliases,
+      # whose imports resolve from the root install — so it runs here, after
+      # that, rather than in a job of its own.
+      - name: Install dependencies (mobile)
+        working-directory: mobile
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck (mobile)
+        working-directory: mobile
+        run: bun run check
+
+      - name: Lint (mobile)
+        working-directory: mobile
+        run: bun run lint
+
+      - name: Test (mobile)
+        working-directory: mobile
+        run: bun run test
+
   rust-test:
     runs-on: ubuntu-latest
     steps:
