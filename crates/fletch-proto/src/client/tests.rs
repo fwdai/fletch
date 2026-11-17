@@ -305,6 +305,42 @@ async fn a_host_key_mismatch_surfaces_as_such_and_registers_nothing() {
     assert_eq!(dialer.send(1, "hello").await.unwrap_err(), "not connected");
 }
 
+/// Accept one upgrade and close it at once with `frame`, which is how the relay
+/// turns a device away before any handshake (`4404`, `4429`).
+async fn closing_host(frame: Option<CloseFrame>) -> String {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let url = format!("ws://{}/v1/device/k", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+        ws.send(Message::Close(frame)).await.unwrap();
+        while ws.next().await.is_some() {}
+    });
+    url
+}
+
+/// The relay's "your Mac is offline" has to survive as far as the caller: the
+/// close code rides on the handshake error in exactly this form, which the
+/// app matches, and the dialer passes it through untouched.
+#[tokio::test]
+async fn a_close_during_the_handshake_reports_its_code() {
+    let (dialer, _events, _dir) = dialer();
+
+    let offline = closing_host(Some(CloseFrame {
+        code: CloseCode::from(4404),
+        reason: "host offline".into(),
+    }))
+    .await;
+    let err = dialer.connect(target(&offline, None)).await.unwrap_err();
+    assert_eq!(err, "the peer closed during the handshake (code 4404)");
+
+    // No code to report, nothing added.
+    let bare = closing_host(None).await;
+    let err = dialer.connect(target(&bare, None)).await.unwrap_err();
+    assert_eq!(err, "the peer closed during the handshake");
+    assert!(dialer.conns.lock().await.is_empty());
+}
+
 #[tokio::test]
 async fn an_unreachable_url_fails_without_registering_a_connection() {
     let (dialer, _events, _dir) = dialer();
