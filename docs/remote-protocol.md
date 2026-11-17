@@ -151,9 +151,11 @@ ciphertext.
   megabytes for it. The client takes the full 64 MiB from the start: its peer
   is the pinned host. An ordinary message needs no such rule, since the 4 MiB
   message cap already bounds it.
-- A handshake that fails, a text frame at any point, or a frame that does not
-  decrypt (truncated header or body, a chunk shorter than a tag, a bad tag)
-  closes the connection with `4001`. So does a fragment that breaks the rules:
+- A handshake that fails, a text frame at any point, a frame that does not
+  decrypt (truncated header or body, a chunk shorter than a tag, a bad tag), or
+  one that decrypts to something that is not a request (two messages someone
+  on the path joined into one, say) closes the connection with `4001`. So does
+  a fragment that breaks the rules:
   a fragment message on a connection without the capability, an ordinary
   message in the middle of a run, a bad flag, a piece of the wrong size, or a
   run that passes 64 MiB, or 64 KiB before authentication (which, with the

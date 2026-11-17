@@ -2405,6 +2405,40 @@ async fn unparseable_first_frame_closes_4001() {
     assert_eq!(ws.close_code().await, 4001);
 }
 
+/// Someone on the path joins two requests into one message. Every chunk still
+/// decrypts in order, the JSON does not parse, and the connection must end
+/// rather than lose both requests while it carries on.
+#[tokio::test]
+async fn two_messages_joined_into_one_close_4001() {
+    let host = boot();
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public, &Scope::ALL)
+        .unwrap();
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("1", "hello", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+
+    let mut joined = ws
+        .channel
+        .encrypt_frame(br#"{"id":"2","op":"get_workspace","args":{}}"#)
+        .unwrap();
+    joined.extend(
+        ws.channel
+            .encrypt_frame(br#"{"id":"3","op":"stop_agent","args":{"agentId":"arabia"}}"#)
+            .unwrap(),
+    );
+    ws.ws
+        .send(Message::Binary(Bytes::from(joined)))
+        .await
+        .unwrap();
+    let code = tokio::time::timeout(Duration::from_secs(2), ws.close_code())
+        .await
+        .expect("closed, not carried on without an answer");
+    assert_eq!(code, 4001);
+}
+
 /// A key the host has never seen — never paired, or revoked — cannot say hello,
 /// and the handshake succeeding does not change that.
 #[tokio::test]

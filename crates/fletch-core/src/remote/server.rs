@@ -95,9 +95,9 @@ const OUTBOUND_BUFFER: usize = 64;
 /// call each.
 const MAX_IN_FLIGHT: usize = 8;
 
-/// A failed Noise handshake, a text frame, a first frame that was neither
-/// `pair` nor `hello`, or no authentication within `AUTH_TIMEOUT` — the things
-/// the doc gives 4001.
+/// A failed Noise handshake, a text frame, a frame that does not parse, a first
+/// frame that was neither `pair` nor `hello`, or no authentication within
+/// `AUTH_TIMEOUT` — the things the doc gives 4001.
 const CLOSE_BAD_FIRST_FRAME: CloseCode = CloseCode::Library(4001);
 /// Unauthenticated, or a bad/revoked credential.
 const CLOSE_UNAUTHENTICATED: CloseCode = CloseCode::Library(4003);
@@ -571,14 +571,15 @@ async fn read_loop<S: WsTransport>(
                         let frame: RequestFrame = match serde_json::from_slice(&plaintext) {
                             Ok(frame) => frame,
                             Err(e) => {
-                                if first_frame {
-                                    out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "expected pair or hello"));
-                                    break;
-                                }
-                                // No id to answer with; the client will time its
-                                // own request out.
+                                // As fatal as a frame that does not decrypt.
+                                // An ordinary message is a run of chunks, so
+                                // anyone on the path can join two messages into
+                                // one that still decrypts but no longer parses;
+                                // skipping it would lose both requests with the
+                                // channel still up and nothing said.
                                 tracing::debug!(error = %e, %peer, "remote: unparseable frame");
-                                continue;
+                                out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "frame did not parse"));
+                                break;
                             }
                         };
                         let handshake = matches!(frame.op.as_str(), "pair" | "hello" | PAIR_REQUEST);
