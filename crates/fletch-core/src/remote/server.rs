@@ -787,9 +787,9 @@ async fn read_loop<S: WsTransport>(
     stream
 }
 
-/// Bring an authenticated device onto this connection: frame limit raised,
-/// event forwarding on, the session bound to the device, and only then the
-/// reply. `false` when the device was revoked in the gap — the caller closes.
+/// Bring an authenticated device onto this connection: frame limit raised, the
+/// session bound to the device, event forwarding on, and only then the reply.
+/// `false` when the device was revoked in the gap — the caller closes.
 #[allow(clippy::too_many_arguments)]
 fn admit(
     state: &Arc<RemoteState>,
@@ -807,10 +807,6 @@ fn admit(
         .channel
         .lock()
         .set_frame_limit(secure::MAX_FRAME_PLAINTEXT);
-    // Subscribe before the reply goes out: an event emitted in the gap would
-    // otherwise be lost, and the phone would render a snapshot it can't see the
-    // next change to.
-    *event_task = Some(spawn_event_forwarder(state, out.clone()));
     // Makes this socket revocable and visible as `connected`.
     session.bind_device(&record.device_id);
     // The device could have been revoked between authenticating and the line
@@ -819,6 +815,11 @@ fn admit(
     if !state.devices().contains(&record.device_id) {
         return false;
     }
+    // Subscribe before the reply goes out: an event emitted in the gap would
+    // otherwise be lost, and the phone would render a snapshot it can't see the
+    // next change to. After the check above, so a device revoked in the gap is
+    // never forwarded an event ahead of its close.
+    *event_task = Some(spawn_event_forwarder(state, out.clone()));
     state.devices().touch(&record.device_id);
     // Reply last: the phone must not be able to observe itself as
     // authenticated before it is on the fan-out and in the registry.
@@ -1240,5 +1241,65 @@ impl ClientInfo {
         self.platform
             .clone()
             .unwrap_or_else(|| "unknown".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::dispatch::Scope;
+    use crate::remote::tests::{device, StubDispatch};
+
+    /// A device revoked between authenticating and `admit` is turned away
+    /// before it is put on the event fan-out, so no event can reach it ahead of
+    /// its close.
+    #[tokio::test]
+    async fn a_device_revoked_in_the_gap_is_never_forwarded_an_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
+        let phone = device();
+        let record = state
+            .devices()
+            .register("phone", "ios", &phone.public, &Scope::ALL)
+            .unwrap();
+        state.revoke_device(&record.device_id).unwrap();
+
+        // The host's end of a real handshake, which is all `admit` touches of it.
+        let host = secure::HostKey::generate().unwrap();
+        let mut ours = secure::Handshake::new(&phone.key, true).unwrap();
+        let mut theirs = secure::Handshake::new(&host, false).unwrap();
+        theirs.read(&ours.write().unwrap()).unwrap();
+        ours.read(&theirs.write().unwrap()).unwrap();
+        theirs.read(&ours.write().unwrap()).unwrap();
+        let secured = Secured {
+            channel: Arc::new(Mutex::new(theirs.finish().unwrap())),
+            remote_static: phone.public,
+        };
+        let (tx, mut queued) = mpsc::channel(OUTBOUND_BUFFER);
+        let (close, _close_rx) = mpsc::channel(1);
+        let session = state.sessions().register(close.clone());
+        let out = Outbox {
+            tx,
+            close,
+            frame_cap: MAX_OUTBOUND_FRAME_BYTES,
+        };
+
+        let mut event_task = None;
+        let admitted = admit(
+            &state,
+            &out,
+            &session,
+            &secured,
+            &record,
+            "1",
+            Value::Null,
+            &mut event_task,
+        );
+        assert!(!admitted);
+        assert!(event_task.is_none(), "no forwarder for a revoked device");
+
+        state.forward_event("agent:status", &json!({ "agentId": "arabia" }));
+        tokio::task::yield_now().await;
+        assert!(queued.try_recv().is_err(), "nothing was queued for it");
     }
 }
