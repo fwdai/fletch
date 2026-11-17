@@ -39,9 +39,9 @@ export function pageRows(ctx: PaletteContext, page: PageId): PaletteItem[] {
     case "root":
       return rootItems(ctx);
     case "new-agent":
-      return projectRows(s, (repo) => startDraft(s, repo, "agent"));
+      return projectRows(s, (repo) => startDraft(ctx, repo, "agent"));
     case "workflow":
-      return projectRows(s, (repo) => startDraft(s, repo, "workflow"));
+      return projectRows(s, (repo) => startDraft(ctx, repo, "workflow"));
     case "settings":
       return settingsRows(ctx, "");
     case "editor": {

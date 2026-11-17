@@ -20,7 +20,14 @@ import {
   environmentEntry,
   LOCAL_ENVIRONMENT_ID,
 } from "./environments";
-import { anyGateReason, type ClosedGate, closedGates, type GateName, gateReason } from "./gates";
+import {
+  anyGateReason,
+  type ClosedGate,
+  closedGates,
+  fixFor,
+  type GateName,
+  gateReason,
+} from "./gates";
 import type { AppState } from "./types";
 
 // The table and its pure predicates live in `./gates` (no store import, so
@@ -31,9 +38,11 @@ export {
   anyGateReason,
   type ClosedGate,
   closedGates,
+  connectionLabel,
   GATES,
   type GateName,
   gateReason,
+  providerReason,
   requiredOps,
 } from "./gates";
 
@@ -76,41 +85,8 @@ export function hostSkew(env: EnvironmentEntry, clientVersion: string): HostSkew
 
 // ── Which providers a host can run ──────────────────────────────────────────
 //
-// A gate above is about an *op* a host may not answer; this is about a provider
-// CLI a host may not have. Same shape of answer — a string a control shows
-// instead of working, or null — and the same rule for the local environment:
-// This Mac's providers are probed by this Mac (src/store/providers.ts) and
-// nothing here touches them.
-
-/** How the operator fixes a signed-out provider, on the host. The desktop
- *  cannot: installing and signing in are never on the wire, so the client
- *  quotes the command rather than offering a button (docs/remote-protocol.md,
- *  "Which providers a host can run"). */
-const fixFor = (p: HostProvider): string =>
-  p.loginCommand
-    ? `run \`fletch-host provider login ${p.id}\` there`
-    : // antigravity and pi have no login command: their credential is made
-      // elsewhere and only lands on the host, so pointing at `provider login`
-      // would be a dead end.
-      "sign it in there; its CLI has no login command";
-
-/** Why `providerId` can't be spawned in `env`, or null when it can.
- *
- *  Null is also the answer whenever the client does not *know*: the local
- *  environment, a host too old to answer `host_providers`, a host not greeted
- *  yet, a provider the host did not list, and an `unknown` login probe. A
- *  client that knows nothing blocks nothing — the spawn behaves exactly as it
- *  did before this op existed. */
-export function providerReason(env: EnvironmentEntry, providerId: string): string | null {
-  if (env.kind === "local") return null;
-  const row = env.providers?.find((p) => p.id === providerId);
-  if (!row) return null;
-  if (!row.installed) return `Not installed on ${env.name}`;
-  // `unknown` is a probe that could not tell, not a claim that it is signed
-  // out; blocking on it would send the user after a login they already have.
-  if (row.auth !== "signed_out") return null;
-  return `Not signed in on ${env.name} — ${fixFor(row)}`;
-}
+// `providerReason` (in ./gates, beside the gate predicates, so a store path
+// can use it) is the refusal; this is the note a host's row shows.
 
 /** The one line a host's row shows about its providers, and the tooltip that
  *  spells out the fix for each. Null when there is nothing wrong, and for every
@@ -155,27 +131,6 @@ export function hostAccountNote(environments: EnvironmentEntry[]): string | null
  *  greeted yet, or the handshake predates the field). */
 export function hostVersionLabel(env: EnvironmentEntry): string | null {
   return env.kind === "remote" && env.appVersion ? `v${env.appVersion}` : null;
-}
-
-/** How an environment's connection is doing, in words. Here beside the gate
- *  reasons because it is the same kind of thing — the short sentence a surface
- *  shows instead of the control it can't offer — and because several surfaces
- *  say it (a host's chip, Settings' host picker, and the main pane while a host
- *  has nothing to show).
- *
- *  `retrying` is what separates a host that will come back on its own from one
- *  only the user can fix: the client schedules no retry behind "this device is
- *  not paired any more" or "remote access is switched off". */
-export function connectionLabel(env: EnvironmentEntry): string {
-  if (env.kind === "local") return "this machine";
-  switch (env.connection) {
-    case "connected":
-      return "connected";
-    case "connecting":
-      return "connecting…";
-    default:
-      return env.retrying ? "reconnecting…" : (env.error ?? "offline");
-  }
 }
 
 /** The entry of the host on screen, falling back to the local one — the same

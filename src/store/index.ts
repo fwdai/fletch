@@ -25,6 +25,7 @@ import { createGitSlice } from "./git";
 import { createHostScope, type HostStore, type SlicesCreator, useHostId } from "./hostScope";
 import { createLocalCommandsSlice } from "./localCommands";
 import { createMcpServersSlice } from "./mcpServers";
+import { setOtherHosts } from "./otherHosts";
 import { createProvidersSlice } from "./providers";
 import { createReposSlice } from "./repos";
 import { createReviewSlice } from "./review";
@@ -173,6 +174,8 @@ export function useOnHost(): (act?: (s: AppState) => void) => void {
 // The engine lookup and the host settings read the environments straight off
 // the store, outside React (see ./environments).
 setEnvironmentsSource(store.getState);
+// A draft run on another host is spawned by that host's actions (./otherHosts).
+setOtherHosts({ hostStore, onHost });
 
 export type { ChatItem } from "@/adapters";
 export type { BackgroundTask, BackgroundTaskMap } from "@/adapters/shared/backgroundTasks";

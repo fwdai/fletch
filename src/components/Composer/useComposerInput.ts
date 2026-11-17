@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { stat } from "@tauri-apps/plugin-fs";
 import { useEffect, useRef, useState } from "react";
 import type { DirListing, FolderGrant, PrSummary } from "@/api";
-import { useEngine } from "@/api/engine";
+import { type Engine, useEngine } from "@/api/engine";
 import type { LocalCommandAction } from "@/data/slashCommands";
 import { useAppStore, useHostStore } from "@/store";
 import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
@@ -39,6 +39,10 @@ export interface ComposerInputConfig {
    *  from the `@` listing or a drop. Only where there is an agent to give
    *  them to; elsewhere a dropped folder is refused like any unreadable file. */
   folders?: boolean;
+  /** The engine of the host the agent will run on, when that is not the one
+   *  the composer is scoped to (a draft picked to run elsewhere): attached
+   *  files are staged there, as they are for a draft of that host's own. */
+  stagingEngine?: Pick<Engine, "api" | "hostId">;
   /** Persists unsent text across the remounts a view switch causes. */
   draftKey?: string;
   autoFocus?: boolean;
@@ -67,7 +71,9 @@ export function grow(el: HTMLTextAreaElement) {
  *  workflow composer build their own footer + submit on top of this, so the
  *  input behaves identically everywhere. */
 export function useComposerInput(cfg: ComposerInputConfig) {
-  const engine = useEngine();
+  const scoped = useEngine();
+  // Where attachments are staged: the host the agent will run on.
+  const engine = cfg.stagingEngine ?? scoped;
   const { api } = engine;
   const store = useHostStore();
   const { draftKey, autoFocus, seed, onSeedConsumed, onEnter, onKeyDown } = cfg;

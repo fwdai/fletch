@@ -3,6 +3,7 @@
 
 import type { AgentRecord, Api, DetectedEditor, WfRun } from "@/api";
 import { agentDotStatus } from "@/components/TitleBar/WorkspaceStatus/derive";
+import { newDraftHost } from "@/store/draftHosts";
 import { type EnvironmentId, LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import type { AppState } from "@/store/types";
 import { basename, firstLine } from "@/util/format";
@@ -107,10 +108,34 @@ export function go(s: AppState, fn: () => void): void {
   fn();
 }
 
-/** Start a draft where the user can see it. */
-export function startDraft(s: AppState, repoPath: string, kind: "agent" | "workflow"): void {
+/** Start a draft on `repoPath`, a repo of the host on screen, where the user
+ *  can see it. An agent's opens where ⌘N opens one (`newDraftHost`): in This
+ *  Mac's scope for a project This Mac has, the run-target picker then
+ *  deciding where it runs. A workflow run's opens on the host on screen,
+ *  which launches it. */
+export function startDraft(
+  ctx: PaletteContext,
+  repoPath: string,
+  kind: "agent" | "workflow",
+): void {
+  const { s } = ctx;
   go(s, () => {
-    if (kind === "workflow") void s.createDraft(repoPath, { kind });
-    else void s.createDraft(repoPath);
+    if (kind === "workflow") {
+      void s.createDraft(repoPath, { kind });
+      return;
+    }
+    const local = ctx.hosts.find((h) => h.id === LOCAL_ENVIRONMENT_ID)?.s;
+    const where = newDraftHost(
+      local?.workspace?.projects ?? [],
+      s.workspace?.projects ?? [],
+      s.activeEnvironmentId,
+      repoPath,
+    );
+    if (where.hostId === s.activeEnvironmentId) {
+      void s.createDraft(where.repoPath);
+      return;
+    }
+    ctx.show(where.hostId);
+    void ctx.hosts.find((h) => h.id === where.hostId)?.s.createDraft(where.repoPath);
   });
 }

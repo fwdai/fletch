@@ -1,6 +1,8 @@
-// The gate table and the pure predicates over it. Split from `capabilities.ts`
-// so store slices can apply a gate without importing the store: this module
-// imports no store, only the environment entry type and the op check.
+// The gate table and the pure predicates over it, with the two other refusals a
+// host's controls show (a provider it cannot run, a connection that is down).
+// Split from `capabilities.ts` so store slices can apply them without importing
+// the store: this module imports no store, only the environment entry type and
+// the op check.
 //
 // A paired host answers a subset of this app's commands — the rows of
 // docs/remote-protocol.md's op table — so a control whose op is not on it has
@@ -12,7 +14,7 @@
 // The local environment is never gated. That is the whole rule for it: with no
 // paired hosts every gate below answers `null` and the app is what it was.
 
-import { hostSupports } from "@/remote/types";
+import { type HostProvider, hostSupports } from "@/remote/types";
 import type { EnvironmentEntry } from "./environments";
 
 /** One thing the UI offers, and why a remote host may not be able to.
@@ -339,6 +341,15 @@ export const GATES = {
     label: "Deleting a branch",
     reason: "Delete the branch on the host — it lives in the project repo, not the session.",
   },
+  /** Running a workspace of a project that belongs to another device: the host
+   *  clones the project from its remotes, then spawns there
+   *  (docs/remote-protocol.md, "Projects on another device"). Closes only
+   *  against a host from before copies. */
+  projectCopy: {
+    op: "ensure_project",
+    label: "Running projects from other devices",
+    reason: "This host is too old to run a project from another device. Update it.",
+  },
   /** Choosing a project's icon: the scan's candidates and the choice. Drawing
    *  one needs no gate — a host sends an `icon_hash` only if it can answer. */
   projectIcon: {
@@ -409,4 +420,63 @@ export function closedGates(env: EnvironmentEntry): ClosedGate[] {
     const reason = gateReason(env, name);
     return reason ? [{ name, label: GATES[name].label, reason }] : [];
   });
+}
+
+// ── Which providers a host can run ──────────────────────────────────────────
+//
+// A gate above is about an *op* a host may not answer; this is about a provider
+// CLI a host may not have. Same shape of answer — a string a control shows
+// instead of working, or null — and the same rule for the local environment:
+// This Mac's providers are probed by this Mac (src/store/providers.ts) and
+// nothing here touches them.
+
+/** How the operator fixes a signed-out provider, on the host. The desktop
+ *  cannot: installing and signing in are never on the wire, so the client
+ *  quotes the command rather than offering a button (docs/remote-protocol.md,
+ *  "Which providers a host can run"). */
+export const fixFor = (p: HostProvider): string =>
+  p.loginCommand
+    ? `run \`fletch-host provider login ${p.id}\` there`
+    : // antigravity and pi have no login command: their credential is made
+      // elsewhere and only lands on the host, so pointing at `provider login`
+      // would be a dead end.
+      "sign it in there; its CLI has no login command";
+
+/** Why `providerId` can't be spawned in `env`, or null when it can.
+ *
+ *  Null is also the answer whenever the client does not *know*: the local
+ *  environment, a host too old to answer `host_providers`, a host not greeted
+ *  yet, a provider the host did not list, and an `unknown` login probe. A
+ *  client that knows nothing blocks nothing — the spawn behaves exactly as it
+ *  did before this op existed. */
+export function providerReason(env: EnvironmentEntry, providerId: string): string | null {
+  if (env.kind === "local") return null;
+  const row = env.providers?.find((p) => p.id === providerId);
+  if (!row) return null;
+  if (!row.installed) return `Not installed on ${env.name}`;
+  // `unknown` is a probe that could not tell, not a claim that it is signed
+  // out; blocking on it would send the user after a login they already have.
+  if (row.auth !== "signed_out") return null;
+  return `Not signed in on ${env.name} — ${fixFor(row)}`;
+}
+
+/** How an environment's connection is doing, in words. Here beside the gate
+ *  reasons because it is the same kind of thing — the short sentence a surface
+ *  shows instead of the control it can't offer — and because several surfaces
+ *  say it (a host's chip, Settings' host picker, the main pane while a host
+ *  has nothing to show, and the run-target picker's hosts).
+ *
+ *  `retrying` is what separates a host that will come back on its own from one
+ *  only the user can fix: the client schedules no retry behind "this device is
+ *  not paired any more" or "remote access is switched off". */
+export function connectionLabel(env: EnvironmentEntry): string {
+  if (env.kind === "local") return "this machine";
+  switch (env.connection) {
+    case "connected":
+      return "connected";
+    case "connecting":
+      return "connecting…";
+    default:
+      return env.retrying ? "reconnecting…" : (env.error ?? "offline");
+  }
 }

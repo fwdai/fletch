@@ -15,7 +15,9 @@ import {
 import { setSetting } from "@/storage/settings";
 import { track } from "@/util/track";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
-import { environmentEntry } from "./environments";
+import { carryDraft } from "./carryDraft";
+import { draftRunsOn } from "./draftHosts";
+import { type EnvironmentId, environmentEntry } from "./environments";
 import { refreshWorkspace } from "./refreshWorkspace";
 import { sendOrder, sendsInFlight } from "./sendOrder";
 import { activeSurface } from "./surface";
@@ -70,6 +72,22 @@ export interface DraftAgent {
    *  (`draftAfterProjectAdd`). `seeded` = its composer was prefilled with the
    *  suggested first task. Only read for telemetry at spawn. */
   afterProjectAdd?: { seeded: boolean };
+  /** The host picked on the new-workspace row for this draft's agent to run
+   *  on (the run-target picker); undefined runs it on the draft's own host.
+   *  Never remembered past the draft. Read through `draftRunsOn`. */
+  runsOn?: EnvironmentId;
+  /** Set while the draft's project is carried to the host it runs on, which
+   *  can take a while (`carryDraft`): what the composer says in place of
+   *  taking a message. */
+  preparing?: string;
+}
+
+/** A draft handed to this host to spawn from (`carryDraft`): the draft as this
+ *  host reads it, with no row in its drafts, and what to do the moment its
+ *  agent exists here. */
+export interface HandedDraft {
+  draft: DraftAgent;
+  onSpawned: (agentId: string) => void;
 }
 
 export interface DraftsSlice {
@@ -128,7 +146,9 @@ export interface DraftsSlice {
    *  resolve) are granted from the agent's first launch. Sent again while
    *  the spawn is in flight, the message goes to that agent after the first.
    *  Resolves false when the spawn failed (`lastError` says why), so the
-   *  composer can put the draft back. */
+   *  composer can put the draft back. A draft picked to run on another host
+   *  is carried there and spawned by that host (`carryDraft`), which hands it
+   *  back in as `handed`. */
   spawnFromDraft: (
     id: string,
     text: string,
@@ -138,6 +158,7 @@ export interface DraftsSlice {
     thinking?: string,
     customAgentId?: string,
     folders?: FolderGrant[] | Promise<FolderGrant[]>,
+    handed?: HandedDraft,
   ) => Promise<boolean>;
 }
 
@@ -373,6 +394,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
       thinking?,
       customAgentId?,
       folders = [],
+      handed?,
     ) => {
       // Sent again while this draft's agent is still being spawned: the message
       // follows the first prompt to that agent, in order, rather than spawning a
@@ -382,8 +404,16 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
         const agentId = await spawning;
         return agentId ? get().sendUserMessage(agentId, text, attachments, folders) : false;
       }
-      const draft = get().drafts.find((d) => d.id === id);
+      const draft = handed?.draft ?? get().drafts.find((d) => d.id === id);
       if (!draft) return false;
+      // Picked to run on another host: that host spawns it once it has the
+      // project (./carryDraft). The composer is shut while that is under way.
+      const target = handed ? hostId : draftRunsOn(draft, hostId, get().environments);
+      if (target !== hostId) {
+        if (draft.preparing) return false;
+        const message = { text, provider, model, attachments, thinking, customAgentId };
+        return carryDraft({ engine, get, set }, draft, target, message);
+      }
       let settle: (agentId: string | null) => void = () => {};
       draftSpawns.set(
         id,
@@ -391,7 +421,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
           settle = resolve;
         }),
       );
-      get().setLastRepoPath(draft.repoPath);
+      // A handed draft's path is this host's copy; the project was started in
+      // on the draft's own host, which has already recorded it.
+      if (!handed) get().setLastRepoPath(draft.repoPath);
       set({ busy: true, lastError: null });
       const turnId = crypto.randomUUID();
       try {
@@ -530,6 +562,8 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
           };
           return patches;
         });
+        // The agent exists: a draft handed over from another host can leave it.
+        handed?.onSpawned(rec.id);
         // The first prompt takes the new agent's first place in line before
         // anything sent meanwhile is let through to it (`draftSpawns`), so it is
         // the first message the agent gets.

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectRef } from "@/api";
-import { useEngine } from "@/api/engine";
+import { engineOf, useEngine } from "@/api/engine";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
-import { WorkspaceTypePicker } from "@/components/Composer/WorkspaceTypePicker";
+import { RunTargetPicker } from "@/components/Composer/RunTargetPicker";
+import { homeName, pushedNote } from "@/components/Composer/RunTargetPicker/options";
 import { declaredWorkspaceType } from "@/components/Composer/workspaceType";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
@@ -12,8 +13,9 @@ import { ProjectIcon } from "@/components/ProjectIcon";
 import { IconButton } from "@/components/ui/IconButton";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
-import { useAppStore } from "@/store";
+import { useAppStore, useHostId } from "@/store";
 import { useGate, useHostEntry } from "@/store/capabilities";
+import { draftRunsOn } from "@/store/draftHosts";
 import { workspaceTypeOptionsFor } from "@/store/workspaceTypes";
 import { WorkflowComposer, WorkflowHeading } from "@/workflows/run/WorkflowComposer";
 import { creationNote } from "./creationNote";
@@ -24,7 +26,8 @@ const NO_PROJECTS: ProjectRef[] = [];
  *  First message in the composer spawns the real agent and dispatches
  *  the message in one go. */
 export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
-  const { api } = useEngine();
+  const engine = useEngine();
+  const { api } = engine;
   const rerollDraftName = useAppStore((s) => s.rerollDraftName);
   const spawnFromDraft = useAppStore((s) => s.spawnFromDraft);
   const removeDraft = useAppStore((s) => s.removeDraft);
@@ -84,10 +87,20 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   // all a host can run.
   const workflowGate = useGate("workflows");
   const workflowMode = draft.kind === "workflow" && !workflowGate;
+  // Where the agent runs: the draft's own host, or the one picked for it on
+  // the row below. Picked elsewhere, nothing of this host's own goes with it
+  // (`carryDraft`): the account picker and folder grants are offered only
+  // here, and the composer offers the agents that host can run and stages
+  // files there, as it does for a draft of that host's own.
+  const hostId = useHostId();
+  const environments = useAppStore((s) => s.environments);
+  const runsOn = draftRunsOn(draft, hostId, environments);
+  const elsewhere = runsOn !== hostId;
+  const there = elsewhere ? engineOf(runsOn) : undefined;
   // The workspace type is offered only for an agent on this Mac: a paired
   // host's spawn carries no workspace type yet. `spawnFromDraft` sends what
   // the chip declares on the same rule.
-  const workspaceTypeShown = useHostEntry().kind !== "remote";
+  const workspaceTypeShown = useHostEntry().kind !== "remote" && !elsewhere;
   // What the page says will be created follows the sandbox the pill declares:
   // the same derivation the spawn sends, so the sentence can't promise one
   // sandbox while the agent lands in the other.
@@ -185,15 +198,20 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 // sources drop the previous repo's cached files/PRs (they only
                 // refetch on menu-open, not on a repoPath change under a live
                 // composer) — otherwise a wrong-repo file/PR could be inserted.
-                key={draft.repoPath}
+                // And when the host it runs on changes: the files attached so
+                // far were staged on the other one. The text stays (`draftKey`).
+                key={`${draft.repoPath}\u0000${runsOn}`}
                 autoFocus
                 minRows={2}
                 draftKey={draft.id}
                 defaultProvider={draft.provider}
                 projectDir={draft.repoPath}
                 onLocalCommand={(action) => runLocalCommand(action)}
+                disabled={!!draft.preparing}
                 mentionSource={() => api.listRepoTree(draft.repoPath)}
-                listDir={api.listDir}
+                // `@~/…` names a file on the host the agent runs on.
+                listDir={(there ?? engine).api.listDir}
+                runsOn={there}
                 listPrs={() => api.listRepoPrs(draft.repoPath)}
                 listIssues={() => api.listTrackerIssues(draft.repoPath, linearTeamId)}
                 listIssueComments={(issue) =>
@@ -213,13 +231,20 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   updateDraft(draft.id, { provider, model, customAgentId, account });
                   setNewDraftSelection(provider, model, customAgentId);
                 }}
-                // A per-draft pick, never remembered for the next draft.
-                account={{
-                  current: draft.account,
-                  onPick: (account) => updateDraft(draft.id, { account }),
-                }}
-                placeholder="Describe the task for the agent. ↵ to spawn."
-                folders
+                // A per-draft pick, never remembered for the next draft. The
+                // accounts listed are the draft's host's, so none is offered
+                // while the agent runs on another.
+                account={
+                  elsewhere
+                    ? undefined
+                    : {
+                        current: draft.account,
+                        onPick: (account) => updateDraft(draft.id, { account }),
+                      }
+                }
+                placeholder={draft.preparing ?? "Describe the task for the agent. ↵ to spawn."}
+                // A grant names a folder on the draft's host.
+                folders={!elsewhere}
                 onSend={({
                   text,
                   provider,
@@ -285,17 +310,30 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 }}
               />
               {/* Where the workspace runs, for a quick agent only: a box runs
-                  no workflow steps. Per draft, an explicit pick kept as
-                  made. */}
-              {!workflowMode && workspaceTypeShown && (
-                <WorkspaceTypePicker
+                  no workflow steps, and a run is launched where its draft
+                  is. Per draft, an explicit pick kept as made. */}
+              {!workflowMode && (
+                <RunTargetPicker
                   repoPath={draft.repoPath}
                   provider={draft.provider}
-                  current={draft.workspaceType}
-                  onPick={(workspaceType) => updateDraft(draft.id, { workspaceType })}
+                  projectId={projectId}
+                  workspaceType={draft.workspaceType}
+                  runsOn={runsOn}
+                  pinned={!!draft.roadmapItemId}
+                  onPick={(target, workspaceType) =>
+                    updateDraft(draft.id, {
+                      runsOn: target === hostId ? undefined : target,
+                      ...(workspaceType ? { workspaceType } : {}),
+                    })
+                  }
                 />
               )}
             </div>
+            {!workflowMode && elsewhere && (
+              <p className="empty-sub empty-meta-note text-sm">
+                {pushedNote(homeName(environments, hostId, project?.home))}
+              </p>
+            )}
           </div>
         </div>
       </div>

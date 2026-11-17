@@ -11,7 +11,9 @@ import { Badge } from "@/components/ui/Badge";
 import { providerChip, providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import type { DraftAgent } from "@/store";
-import { useAppStore } from "@/store";
+import { useAppStore, useHostId } from "@/store";
+import { draftRunsOn } from "@/store/draftHosts";
+import { EngineScope } from "@/store/EngineScope";
 import { formatAge, formatElapsed } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import { useAgentPrs } from "@/util/prState";
@@ -351,6 +353,8 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
 
 function DraftRow({ draft, active, onClick }: DraftRowProps) {
   const removeDraft = useAppStore((s) => s.removeDraft);
+  const hostId = useHostId();
+  const runsOn = useAppStore((s) => draftRunsOn(draft, hostId, s.environments));
   const workflow = draft.kind === "workflow";
 
   function onDiscard(e: React.MouseEvent) {
@@ -374,7 +378,13 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
         </span>
         <span className="ag-slot iflex-center">
           <span className="ag-meta wide">
-            <Badge variant="new">new</Badge>
+            {/* Its project being carried to the host it runs on: the spawn's
+                spinner, saying so. */}
+            {draft.preparing ? (
+              <span className="ag-loader" aria-label={draft.preparing} title={draft.preparing} />
+            ) : (
+              <Badge variant="new">new</Badge>
+            )}
           </span>
           <span className="ag-actions">
             <button
@@ -393,7 +403,9 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
           after the paired host it will spawn on, if any. */}
       <div className="agent-sub flex-center">
         <span className="a-task a-codename">{draft.name}</span>
-        <HostChip />
+        <EngineScope hostId={runsOn}>
+          <HostChip />
+        </EngineScope>
         {workflow ? (
           <span className="ag-prov-chip tip" data-tip="Workflow run">
             <Icon name="combine" size={12} />

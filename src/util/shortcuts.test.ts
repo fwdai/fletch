@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useAppStore } from "@/store";
+import { hostStore, useAppStore } from "@/store";
+import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { runShortcutAction } from "./shortcuts";
 
 vi.mock("@/util/platform", () => ({ IS_MAC: true, IS_WINDOWS: false }));
@@ -28,6 +29,27 @@ describe("global shortcut actions", () => {
     expect(s.settingsScreenOpen).toBe(false);
     expect(s.paletteOpen).toBe(false);
     expect(s.createDraft).toHaveBeenCalledWith(project.path);
+  });
+
+  it("⌘N over a paired host opens the draft in This Mac's scope for a project This Mac has", () => {
+    const copy = { ...project, path: "/copies/p1/fletch" };
+    useAppStore.getState().upsertEnvironment({
+      id: "studio",
+      name: "Studio",
+      kind: "remote",
+      connection: "connected",
+    });
+    hostStore("studio").setState({
+      workspace: { repos: [copy.path], projects: [copy], agents: [] },
+    });
+    useAppStore.setState({ activeEnvironmentId: "studio", lastRepoPath: copy.path });
+
+    runShortcutAction("newAgent");
+
+    const s = useAppStore.getState();
+    expect(s.activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
+    expect(s.createDraft).toHaveBeenCalledWith(project.path);
+    s.removeEnvironment("studio");
   });
 
   it("⌘⇧, and ⌘⇧R open their project view from the other, and leave it from its own", () => {

@@ -416,7 +416,7 @@ export function pageItems(ctx: PaletteContext): PaletteItem[] {
       keywords: "pipeline  chain  automate  steps",
       disabled: gateReason(activeEntry(s), "workflows"),
       ...(one
-        ? { run: () => startDraft(s, one, "workflow"), remember: true }
+        ? { run: () => startDraft(ctx, one, "workflow"), remember: true }
         : { page: "workflow" as const }),
     });
   }

@@ -5,6 +5,7 @@ import { FlyoutGlyph, FlyoutMenu, FlyoutSection, SideFlyout } from "@/components
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS, providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
+import type { EnvironmentId } from "@/store/environments";
 import { useAgentAvailability } from "../availability";
 import { ModelOptions } from "../ModelOptions";
 import { RailGroup, RailLink, RailPiece } from "../RunRail";
@@ -35,6 +36,9 @@ interface Props {
   /** The account the agent runs under, and how to move it. Shown only when
    *  `provider` has more than one account to choose from. */
   account?: AccountControl;
+  /** The host the agent will run on, when not the one the picker is scoped
+   *  to: the agents offered are the ones it can run. */
+  runsOn?: EnvironmentId;
 }
 
 /** The run rail's agent chain: provider › account › model as ONE piece. The
@@ -67,6 +71,7 @@ export function ModelPicker({
   onChange,
   modelOnly = false,
   account,
+  runsOn,
 }: Props) {
   const [open, setOpen] = useState(false);
   // Coding agent whose model flyout is currently expanded, ACCOUNT_FLY for
@@ -80,7 +85,7 @@ export function ModelPicker({
   // Whether each agent can actually be spawned right now — installed, and
   // runnable in the workspace type chosen. Matches the backend refusal in
   // supervisor/lifecycle.rs.
-  const availability = useAgentAvailability();
+  const availability = useAgentAvailability(runsOn);
   // A custom agent's `provider` is already its base, so this is always the
   // provider whose accounts apply.
   const accountView = useAccountView(provider, account);
@@ -276,6 +281,7 @@ export function ModelPicker({
             enabled={enabled}
             installedCount={installedProviders.length}
             availability={availability}
+            runsOn={runsOn}
             hovered={hovered}
             setHovered={setHovered}
             onPickModel={pickModel}
