@@ -710,16 +710,16 @@ impl WorkspaceManager {
 
     /// Where a copy's clones of the project `project_id` are recorded, the
     /// ones of repositories its home has dropped included: what
-    /// `commands::prune_copy` keeps on disk.
-    pub fn copy_clones(&self, project_id: &str) -> Vec<PathBuf> {
+    /// `commands::prune_copy` keeps on disk. An error rather than a short
+    /// list when any of it cannot be read: what is missing from the answer is
+    /// what gets removed.
+    pub fn copy_clones(&self, project_id: &str) -> Result<Vec<PathBuf>> {
         let conn = self.db.lock();
-        let Ok(mut stmt) = conn.prepare("SELECT path FROM repos WHERE project_id = ?1") else {
-            return Vec::new();
-        };
-        stmt.query_map([project_id], |row| row.get::<_, String>(0))
-            .ok()
-            .map(|rows| rows.filter_map(|r| r.ok()).map(PathBuf::from).collect())
-            .unwrap_or_default()
+        let mut stmt = conn.prepare("SELECT path FROM repos WHERE project_id = ?1")?;
+        let paths = stmt
+            .query_map([project_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(paths.into_iter().map(PathBuf::from).collect())
     }
 
     /// The repositories a new workspace of `project_id` is given, the first

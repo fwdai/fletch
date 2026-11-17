@@ -207,10 +207,13 @@ pub async fn prune_copy(workspace: &WorkspaceManager, project_id: &str) {
 /// [`ENSURING`]. A clone's row is kept for as long as anything borrows from
 /// the clone (`WorkspaceManager::reconcile_copy`), and deleting a project
 /// deletes its agents and workflow runs with it, so a clone with no row has
-/// nothing left that reads it.
+/// nothing left that reads it. Nothing is removed when the rows cannot be
+/// read: a clone is only known to be unrecorded by a list that is whole.
 async fn prune_copy_under(workspace: &WorkspaceManager, projects_root: &Path, project_id: &str) {
     let root = copy_root(projects_root, project_id);
-    let recorded = workspace.copy_clones(project_id);
+    let Ok(recorded) = workspace.copy_clones(project_id) else {
+        return;
+    };
     let Ok(mut slots) = tokio::fs::read_dir(&root).await else {
         return;
     };
@@ -851,6 +854,26 @@ mod tests {
 
         assert!(!copy_root(&root, &gone.project_id).exists());
         assert!(clone_of(&root, &kept, 0).is_dir());
+    }
+
+    #[tokio::test]
+    async fn clones_stay_when_their_records_cannot_be_read() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, root) = host(td.path());
+        let app = origin_repo(td.path(), "app");
+        let def = definition(vec![repo("app", Some(&app))]);
+        ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+        sup.workspace
+            .db()
+            .lock()
+            .execute_batch("ALTER TABLE repos RENAME TO repos_unreadable")
+            .unwrap();
+
+        prune_copy_under(&sup.workspace, &root, &def.project_id).await;
+
+        assert!(clone_of(&root, &def, 0).is_dir());
     }
 
     /// On the home a repository that joins a project keeps the date it was
