@@ -16,10 +16,15 @@ const { getAutopilotState, getAutopilotLog, setAutopilot } = vi.hoisted(() => ({
 vi.mock("@/api", () => ({ api: { getAutopilotState, getAutopilotLog, setAutopilot } }));
 
 import type { AutopilotCheckout, AutopilotLogEntry, AutopilotSnapshot } from "@/api";
-import { activeEngine } from "@/api/engine";
 import { dropAgentEntries } from "@/helpers/agentLookups";
+import { testEngine } from "@/test/engine";
 import { AUTOPILOT_LOG_LIMIT, autopilotProjectOn, createAutopilotSlice } from "./autopilot";
-import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
+import {
+  activeEnvironmentId,
+  type EnvironmentEntry,
+  LOCAL_ENVIRONMENT_ID,
+  setEnvironmentsSource,
+} from "./environments";
 import type { AppState } from "./types";
 
 const remote = (ops: string[]): EnvironmentEntry => ({
@@ -73,7 +78,10 @@ const makeStore = () => {
   const setLastError = vi.fn();
   const store = create<AppState>()(
     (set, get) =>
-      ({ ...createAutopilotSlice(set, get, activeEngine), setLastError }) as unknown as AppState,
+      ({
+        ...createAutopilotSlice(set, get, testEngine(activeEnvironmentId())),
+        setLastError,
+      }) as unknown as AppState,
   );
   return { store, setLastError };
 };

@@ -13,7 +13,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { activeEntry, useGate } from "@/store/capabilities";
+import { useGate, useHostEntry } from "@/store/capabilities";
 import { workspaceTypeOptionsFor } from "@/store/workspaceTypes";
 import { WorkflowComposer, WorkflowHeading } from "@/workflows/run/WorkflowComposer";
 import { creationNote } from "./creationNote";
@@ -87,7 +87,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   // The workspace type is offered only for an agent on this Mac: a paired
   // host's spawn carries no workspace type yet. `spawnFromDraft` sends what
   // the chip declares on the same rule.
-  const workspaceTypeShown = useAppStore((s) => activeEntry(s).kind !== "remote");
+  const workspaceTypeShown = useHostEntry().kind !== "remote";
   // What the page says will be created follows the sandbox the pill declares:
   // the same derivation the spawn sends, so the sentence can't promise one
   // sandbox while the agent lands in the other.

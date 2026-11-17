@@ -21,9 +21,10 @@ import { tourApi } from "./domains/tour";
 import { usageApi } from "./domains/usage";
 import { workflowsApi } from "./domains/workflows";
 import { workspaceApi } from "./domains/workspace";
-import { type Invoke, invoke } from "./invoke";
+import { type Invoke, invokeLocal } from "./invoke";
+import type { Transport } from "./transport";
 
-// Re-export `makeEvents` and the active environment's `on*` subscriptions.
+// Re-export `makeEvents` and this desktop's own `on*` subscriptions.
 export * from "./events";
 // Re-export every DTO/type so `import type { … } from "@/api"` keeps working.
 export * from "./types/agent";
@@ -51,8 +52,12 @@ export * from "./types/workflow";
  *  wrappers. Each domain contributes a disjoint set of method names, so the
  *  spread order never shadows a method. The routed domains are built over
  *  `invoke`; the ones that only ever address this desktop (see `invokeLocal`)
- *  take nothing and are spread as they are. */
-export function makeApi(invoke: Invoke) {
+ *  take nothing and are spread as they are.
+ *
+ *  `remote` is the transport of the paired host `invoke` reaches, absent for
+ *  this desktop's own engine: the one op whose body is not a record of
+ *  arguments (`savePastedAttachment`) goes a different way to each. */
+export function makeApi(invoke: Invoke, remote?: () => Transport) {
   return {
     ...workspaceApi(invoke),
     ...miscApi,
@@ -66,7 +71,7 @@ export function makeApi(invoke: Invoke) {
     ...gitApi(invoke),
     ...shellApi(invoke),
     ...runApi(invoke),
-    ...filesApi(invoke),
+    ...filesApi(invoke, remote),
     ...commandsApi(invoke),
     ...dictationApi,
     ...providersApi,
@@ -82,6 +87,5 @@ export function makeApi(invoke: Invoke) {
 
 export type Api = ReturnType<typeof makeApi>;
 
-/** The `api` of the environment the UI is driving: every routed op resolves the
- *  active transport at call time (see ./invoke). */
-export const api = makeApi(invoke);
+/** The `api` of this desktop's own engine, over Tauri IPC. */
+export const api = makeApi(invokeLocal);

@@ -6,8 +6,13 @@ vi.mock("@/api", () => ({ api: { setFocusedPr } }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
 import type { PrState } from "@/api";
-import { activeEngine } from "@/api/engine";
-import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
+import { testEngine } from "@/test/engine";
+import {
+  activeEnvironmentId,
+  type EnvironmentEntry,
+  LOCAL_ENVIRONMENT_ID,
+  setEnvironmentsSource,
+} from "./environments";
 import { GATES } from "./gates";
 import { createGitSlice } from "./git";
 import type { AppState } from "./types";
@@ -31,7 +36,7 @@ const makeStore = () => {
   const store = create<AppState>()(
     (set, get) =>
       ({
-        ...createGitSlice(set, get, activeEngine),
+        ...createGitSlice(set, get, testEngine(activeEnvironmentId())),
         setLastError,
         github: { authenticated: true },
       }) as unknown as AppState,

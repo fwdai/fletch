@@ -8,7 +8,7 @@ import { loadProjectFocus, saveProjectFocus } from "@/storage/projectFocus";
 import { setSetting } from "@/storage/settings";
 import { createKeyedQueue } from "@/util/keyedQueue";
 import { type Combo, resetProblem, type ShortcutOverrides } from "@/util/keymap";
-import { activeEnvironment } from "./environments";
+import { environmentEntry } from "./environments";
 import { ADD_PROJECT_GATES, anyGateReason, gateReason } from "./gates";
 import type { SliceCreator } from "./types";
 
@@ -176,8 +176,8 @@ export interface UiSlice {
   /** Open / close the one-time feedback prompt. */
   openFeedbackNudge: () => void;
   closeFeedbackNudge: () => void;
-  /** Raise the add-project popover. Refused when the active environment can
-   *  run none of its flows — the gate lives here, not in each caller, so the
+  /** Raise the add-project popover. Refused when the host can run none of its
+   *  flows — the gate lives here, not in each caller, so the
    *  sidebar button, ⌘O and anything later all get the same answer. */
   openAddProject: () => void;
   closeAddProject: () => void;
@@ -234,7 +234,7 @@ export interface UiSlice {
   resetAllShortcuts: () => void;
 }
 
-export const createUiSlice: SliceCreator<UiSlice> = (set, get, { api }) => ({
+export const createUiSlice: SliceCreator<UiSlice> = (set, get, { api, hostId }) => ({
   paletteOpen: false,
   settingsOpen: false,
   settingsScreenOpen: false,
@@ -313,7 +313,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get, { api }) => ({
   openFeedbackNudge: () => set({ feedbackNudgeOpen: true }),
   closeFeedbackNudge: () => set({ feedbackNudgeOpen: false }),
   openAddProject: () => {
-    if (anyGateReason(activeEnvironment(), ADD_PROJECT_GATES)) return;
+    if (anyGateReason(environmentEntry(hostId), ADD_PROJECT_GATES)) return;
     set({ addProjectOpen: true });
   },
   closeAddProject: () => set({ addProjectOpen: false }),
@@ -349,7 +349,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get, { api }) => ({
     // The roadmap needs a host that drives one. The sidebar hides its row
     // behind this gate; every other way in (the pill, ⌘⇧R, a roadmap chip) is
     // refused here so none can slip past it.
-    if (gateReason(activeEnvironment(), "roadmap")) return;
+    if (gateReason(environmentEntry(hostId), "roadmap")) return;
     set((s) => ({ ...projectTakeover(repoPath, "roadmap"), roadmapTab: tab ?? s.roadmapTab }));
   },
   // Settings gates its own panes (`projectSettings`).

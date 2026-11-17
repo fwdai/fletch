@@ -9,7 +9,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { getWorkspace } = vi.hoisted(() => ({ getWorkspace: vi.fn() }));
 vi.mock("@/api", () => ({ api: { getWorkspace } }));
 
-import { api } from "@/api";
+import type { Api } from "@/api";
+import { localEngine } from "@/api/engine";
 import { refreshWorkspace } from "./refreshWorkspace";
 
 interface Deferred<T> {
@@ -52,8 +53,8 @@ describe("refreshWorkspace generation guard", () => {
 
     // Two refreshes issued back-to-back; the second is the up-to-date snapshot
     // (agent "a" was deleted), the first still shows "a".
-    const stalePending = refreshWorkspace(api, set);
-    const freshPending = refreshWorkspace(api, set);
+    const stalePending = refreshWorkspace(localEngine, set);
+    const freshPending = refreshWorkspace(localEngine, set);
 
     // The newer (later-issued) fetch resolves first and applies...
     fresh.resolve(ws([]));
@@ -71,12 +72,31 @@ describe("refreshWorkspace generation guard", () => {
     const set = vi.fn();
 
     const [superseded, latest] = await Promise.all([
-      refreshWorkspace(api, set),
-      refreshWorkspace(api, set),
+      refreshWorkspace(localEngine, set),
+      refreshWorkspace(localEngine, set),
     ]);
 
     expect(superseded).toBeNull();
     expect(latest?.agents.map((a) => a.id)).toEqual(["b"]);
     expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  it("orders each host's refreshes on their own", async () => {
+    // A paired host's snapshot is not a newer version of this Mac's: one
+    // landing must not drop the other still in flight.
+    const local = defer<unknown>();
+    getWorkspace.mockReturnValueOnce(local.promise);
+    const host = {
+      hostId: "host-1",
+      api: { getWorkspace: vi.fn().mockResolvedValue(ws(["b"])) } as unknown as Api,
+    };
+    const set = vi.fn();
+
+    const localPending = refreshWorkspace(localEngine, set);
+    await refreshWorkspace(host, set);
+    local.resolve(ws(["a"]));
+
+    expect((await localPending)?.agents.map((a) => a.id)).toEqual(["a"]);
+    expect(set).toHaveBeenCalledTimes(2);
   });
 });

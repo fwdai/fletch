@@ -49,7 +49,7 @@ export function EnvironmentMenu({ onClose }: { onClose: () => void }) {
             className={`env-item flex-center ${env.id === activeId ? "active" : ""}`}
             onClick={() => {
               onClose();
-              void switchEnvironment(env.id);
+              switchEnvironment(env.id);
             }}
           >
             <EnvironmentDot env={env} />

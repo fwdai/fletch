@@ -53,9 +53,8 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
 
   // The store remembers the tab per agent, so switching back to an agent lands
   // on the tab it was on — and ⌘1–⌘4 can pick one from anywhere. A remembered
-  // tab may no longer be offered: its feature was switched off, or the panel
-  // was kept across an environment switch (it is keyed by agent id, and ids
-  // repeat across hosts). Fall back to the first tab rather than an empty body.
+  // tab may no longer be offered: its feature was switched off, or the host
+  // cannot run it. Fall back to the first tab rather than an empty body.
   const savedTab = useAppStore((s) => s.rightPanelTabs[agent.id]);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const selectTab = (id: TabId) => setRightPanelTab(agent.id, id);

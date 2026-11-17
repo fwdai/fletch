@@ -226,9 +226,7 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
         providers: undefined,
       });
       // Every handshake — the first and every reconnect — means this client has
-      // been out of touch, so whatever is on screen for this host is behind.
-      // The store decides whether that matters (it does only while this host is
-      // the active environment).
+      // been out of touch, so whatever it holds for this host is behind.
       writers.environmentReconnected(record.hostKey);
       // Which providers this host could actually spawn. Once per connection and
       // off the critical path: the entry is already published and usable, and a

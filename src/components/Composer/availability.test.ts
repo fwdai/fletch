@@ -5,9 +5,11 @@
 // sentence — the send button and ↵ share this rule, so a gap in it is a draft
 // that the button refuses and Enter sends anyway.
 
+import { createElement, type ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 import type { HostProvider } from "@/remote/types";
 import { useAppStore } from "@/store";
+import { EngineScope } from "@/store/EngineScope";
 import type { EnvironmentEntry } from "@/store/environments";
 import { renderHook } from "@/test/render";
 import {
@@ -159,17 +161,21 @@ describe("useAgentAvailability", () => {
     provider({ id: "claude", installed: false, version: null }),
   ]);
 
-  it("answers for the active environment by default", () => {
+  /** Rendered as the app renders it: scoped to the environment on screen. */
+  const inHostScope = ({ children }: { children: ReactNode }) =>
+    createElement(EngineScope, { hostId: remote.id, children });
+
+  it("answers for the host the component is scoped to by default", () => {
     const restore = seed();
-    const { result } = renderHook(() => useAgentAvailability());
+    const { result } = renderHook(() => useAgentAvailability(), { wrapper: inHostScope });
     expect(result.current("claude").installed).toBe(false);
     expect(result.current("codex").installed).toBe(true);
     restore();
   });
 
-  it("answers for This Mac when asked, whichever host is active", () => {
+  it("answers for This Mac when asked, whichever host is in scope", () => {
     const restore = seed();
-    const { result } = renderHook(() => useAgentAvailability("local"));
+    const { result } = renderHook(() => useAgentAvailability("local"), { wrapper: inHostScope });
     expect(result.current("claude").installed).toBe(true);
     expect(result.current("codex").installed).toBe(false);
     restore();

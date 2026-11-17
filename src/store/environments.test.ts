@@ -1,21 +1,22 @@
 // The environment dimension's guarantees: the local engine is there from the
-// first render with nothing to wait for, the transport lookup answers with the
-// local singleton for it and with the entry's own transport for a remote host,
-// and a routed read that lands after the user has switched away writes nothing.
+// first render with nothing to wait for, a paired host's entry comes with its
+// own partition of the store and leaves with it, and the lookups outside React
+// answer for the id they are asked about.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
-import { activeEngine } from "@/api/engine";
-import { activeTransport, localTransport, type Transport } from "@/api/transport";
+import type { Transport } from "@/api/transport";
+import { testEngine } from "@/test/engine";
 import { createAccountSlice } from "./account";
 import {
   activeEnvironment,
   activeEnvironmentId,
   createEnvironmentsSlice,
-  forActiveEnvironment,
+  environmentEntry,
   LOCAL_ENVIRONMENT_ID,
   setEnvironmentsSource,
 } from "./environments";
+import { BLANK_HOST_STATE } from "./hostState";
 import type { AppState } from "./types";
 
 const { ghStatusActive } = vi.hoisted(() => ({ ghStatusActive: vi.fn() }));
@@ -28,7 +29,7 @@ vi.mock("@/storage/accounts", () => ({
 
 const newStore = () => {
   const store = create<AppState>()(
-    (set, get) => ({ ...createEnvironmentsSlice(set, get, activeEngine) }) as AppState,
+    (set, get) => ({ ...createEnvironmentsSlice(set, get, testEngine()) }) as AppState,
   );
   setEnvironmentsSource(store.getState);
   return store;
@@ -51,7 +52,7 @@ const remoteEntry = {
 
 describe("the environments slice", () => {
   it("starts with the local environment, connected and active", () => {
-    const { environments, activeEnvironmentId: active } = newStore().getState();
+    const { environments, activeEnvironmentId: active, hostStates } = newStore().getState();
 
     expect(active).toBe(LOCAL_ENVIRONMENT_ID);
     expect(Object.keys(environments)).toEqual([LOCAL_ENVIRONMENT_ID]);
@@ -62,73 +63,86 @@ describe("the environments slice", () => {
     });
     // Nothing to dial: the local entry carries no transport of its own.
     expect(environments[LOCAL_ENVIRONMENT_ID].transport).toBeUndefined();
+    // This Mac's state is the store's own; no host has a partition yet.
+    expect(hostStates).toEqual({});
   });
 
-  it("routes the local environment down the Tauri singleton", () => {
-    newStore();
-
-    expect(activeEnvironmentId()).toBe(LOCAL_ENVIRONMENT_ID);
-    expect(activeTransport()).toBe(localTransport);
-  });
-
-  it("routes a remote environment down that entry's transport", () => {
+  it("publishes a paired host with a blank partition, and keeps it across a reconnect", () => {
     const store = newStore();
-    store.setState({
-      environments: { ...store.getState().environments, [HOST]: remoteEntry },
-      activeEnvironmentId: HOST,
-    });
 
-    expect(activeEnvironmentId()).toBe(HOST);
-    expect(activeEnvironment().name).toBe("Cloud box");
-    expect(activeTransport()).toBe(remoteTransport);
+    store.getState().upsertEnvironment(remoteEntry);
+    expect(store.getState().hostStates[HOST]).toEqual(BLANK_HOST_STATE);
+
+    // The host's own state moves on; a handshake re-publishing its entry must
+    // not wipe it.
+    store.setState((s) => ({
+      hostStates: {
+        ...s.hostStates,
+        [HOST]: { ...s.hostStates[HOST], selectedAgentId: "fuji" },
+      },
+    }));
+    store.getState().upsertEnvironment({ ...remoteEntry, name: "Renamed box" });
+
+    expect(store.getState().environments[HOST].name).toBe("Renamed box");
+    expect(store.getState().hostStates[HOST].selectedAgentId).toBe("fuji");
   });
 
-  it("falls back to the local environment when the active id is unknown", () => {
+  it("forgets a host's partition with its entry, and puts This Mac on screen", () => {
+    const store = newStore();
+    store.getState().upsertEnvironment(remoteEntry);
+    store.setState({ activeEnvironmentId: HOST });
+
+    store.getState().removeEnvironment(HOST);
+
+    expect(store.getState().environments[HOST]).toBeUndefined();
+    expect(store.getState().hostStates[HOST]).toBeUndefined();
+    expect(store.getState().activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
+  });
+
+  it("never forgets the local environment", () => {
+    const store = newStore();
+
+    store.getState().removeEnvironment(LOCAL_ENVIRONMENT_ID);
+
+    expect(store.getState().environments[LOCAL_ENVIRONMENT_ID]).toBeDefined();
+  });
+});
+
+describe("the lookups outside React", () => {
+  it("answer for the id they are asked about", () => {
+    const store = newStore();
+    store.getState().upsertEnvironment(remoteEntry);
+
+    expect(environmentEntry(HOST).name).toBe("Cloud box");
+    expect(environmentEntry(LOCAL_ENVIRONMENT_ID).kind).toBe("local");
+    // The one on screen is still This Mac.
+    expect(activeEnvironmentId()).toBe(LOCAL_ENVIRONMENT_ID);
+    expect(activeEnvironment().kind).toBe("local");
+
+    store.setState({ activeEnvironmentId: HOST });
+    expect(activeEnvironment().name).toBe("Cloud box");
+  });
+
+  it("fall back to the local environment for an id that is not there", () => {
     const store = newStore();
     store.setState({ activeEnvironmentId: "gone" });
 
+    expect(environmentEntry("gone").id).toBe(LOCAL_ENVIRONMENT_ID);
     expect(activeEnvironment().id).toBe(LOCAL_ENVIRONMENT_ID);
-    expect(activeTransport()).toBe(localTransport);
   });
 });
 
-// A switch is a click, so it lands in the middle of whatever is in flight. Every
-// routed read's answer belongs to the environment it was asked of, and writing
-// one blind puts a host's answer in another host's view.
-describe("forActiveEnvironment", () => {
-  it("hands back the answer when the environment did not change", async () => {
-    newStore();
-
-    await expect(forActiveEnvironment(async () => "This Mac's answer")).resolves.toBe(
-      "This Mac's answer",
-    );
-  });
-
-  it("withholds one for an environment the user has since left", async () => {
-    const store = newStore();
-    store.setState({ environments: { ...store.getState().environments, [HOST]: remoteEntry } });
-
-    const answer = await forActiveEnvironment(async () => {
-      store.setState({ activeEnvironmentId: HOST });
-      return "This Mac's answer";
-    });
-
-    expect(answer).toBeUndefined();
-  });
-});
-
-// The action this exists for: `github` is the ACTIVE environment's login and it
-// gates push / PR / clone app-wide, so a probe that lands late must not decide
-// what the host on screen may publish.
-describe("refreshGithub across a switch", () => {
+// `github` is a host's own login and gates push / PR / clone on it, so a probe
+// always answers for the host that ran it — whatever is on screen when it lands.
+describe("refreshGithub", () => {
   const SIGNED_IN = { installed: true, authenticated: true, login: "alex-on-this-mac" };
 
   const newAccountStore = () => {
     const store = create<AppState>()(
       (set, get) =>
         ({
-          ...createEnvironmentsSlice(set, get, activeEngine),
-          ...createAccountSlice(set, get, activeEngine),
+          ...createEnvironmentsSlice(set, get, testEngine()),
+          ...createAccountSlice(set, get, testEngine()),
         }) as unknown as AppState,
     );
     setEnvironmentsSource(store.getState);
@@ -143,7 +157,7 @@ describe("refreshGithub across a switch", () => {
     ghStatusActive.mockReset();
   });
 
-  it("writes the login when the environment is still the one that was asked", async () => {
+  it("writes the login of the host that was asked", async () => {
     ghStatusActive.mockResolvedValue(SIGNED_IN);
     const store = newAccountStore();
 
@@ -152,29 +166,28 @@ describe("refreshGithub across a switch", () => {
     expect(store.getState().github).toEqual(SIGNED_IN);
   });
 
-  it("does not write a login the user has already switched away from", async () => {
+  it("still writes it when another host was put on screen meanwhile", async () => {
     ghStatusActive.mockResolvedValue(SIGNED_IN);
     const store = newAccountStore();
 
-    // The click lands between the probe going out and its answer coming back,
-    // which is the whole window this guards.
+    // The click lands between the probe going out and its answer coming back.
     const probe = store.getState().refreshGithub();
     store.setState({ activeEnvironmentId: HOST });
     await probe;
 
-    expect(store.getState().github, "the host's own probe answers for the host").toBeNull();
+    expect(store.getState().github, "the probe answers for its own host").toEqual(SIGNED_IN);
   });
 
-  it("does not write a failed probe's answer either", async () => {
-    // The mirror case, and the damaging one: "not connected" written onto the
-    // host would shut gates it can still pass.
+  it("writes a failed probe as not connected", async () => {
     ghStatusActive.mockRejectedValue(new Error("not connected"));
     const store = newAccountStore();
 
-    const probe = store.getState().refreshGithub();
-    store.setState({ activeEnvironmentId: HOST });
-    await probe;
+    await store.getState().refreshGithub();
 
-    expect(store.getState().github).toBeNull();
+    expect(store.getState().github).toEqual({
+      installed: true,
+      authenticated: false,
+      login: null,
+    });
   });
 });

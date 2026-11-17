@@ -1,7 +1,8 @@
-// What a switch has to get right: the environment being left keeps its view,
-// the one being entered gets its own back (and nothing of its neighbour's),
-// and the engine-event subscriptions end up bound to the new transport rather
-// than still folding the old one.
+// What a switch and a handshake have to get right. Every host's state is live at
+// once, so a switch only changes which one is on screen — at once, touching
+// nothing else and asking no engine anything. A handshake is where a host's
+// state is re-read: through that host's own actions, whether or not it is on
+// screen, and never through anyone else's.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
@@ -9,34 +10,12 @@ import { create } from "zustand";
 const { getWorkspace } = vi.hoisted(() => ({ getWorkspace: vi.fn() }));
 vi.mock("@/api", () => ({ api: { getWorkspace } }));
 
-// The real registration pulls in the whole fold — adapters, notifications, the
-// tooltip layer's siblings — none of which this is about. The stand-in below
-// does the one thing the switch depends on: subscribe through whatever
-// transport is active AT REGISTRATION TIME, which is the entire reason a switch
-// has to re-register at all.
-const { detachEventListeners, registerEventListeners, order } = vi.hoisted(() => ({
-  detachEventListeners: vi.fn(),
-  registerEventListeners: vi.fn(),
-  order: [] as string[],
-}));
-vi.mock("./eventListeners", () => ({ detachEventListeners, registerEventListeners }));
-
-// `LocalTransport` goes straight to Tauri's `listen`, which wants a `window`.
-// Stubbed so the local environment records where a subscription landed exactly
-// as the remote fake below does, and the two are compared on equal terms.
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (event: string) => {
-    order.push(`local:${event}`);
-    return Promise.resolve(() => {});
-  },
-}));
-
-import { activeEngine } from "@/api/engine";
-import { activeTransport, localTransport, type Transport } from "@/api/transport";
+import { testEngine } from "@/test/engine";
 import { createEnvironmentSwitchSlice } from "./environmentSwitch";
 import {
   createEnvironmentsSlice,
   type EnvironmentEntry,
+  type EnvironmentId,
   LOCAL_ENVIRONMENT_ID,
   setEnvironmentsSource,
 } from "./environments";
@@ -44,53 +23,33 @@ import type { AppState } from "./types";
 
 const HOST = "host-key-1";
 
-/** A transport that records which environment's stream a subscription landed
- *  on, so the re-registration can be shown to follow the switch. */
-const fakeTransport = (label: string): Transport => ({
-  call: () => Promise.resolve(undefined as never),
-  on: (event) => {
-    order.push(`${label}:${event}`);
-    return Promise.resolve(() => {});
-  },
-});
-
-const remoteTransport = fakeTransport("remote");
-
 const remoteEntry = (over: Partial<EnvironmentEntry> = {}): EnvironmentEntry => ({
   id: HOST,
   name: "Cloud box",
   kind: "remote",
   connection: "connected",
-  transport: remoteTransport,
   ...over,
 });
 
-// Only the slices under test are real; the stashed keys are seeded as plain
-// state, which is all `switchEnvironment` ever does with them.
-const newStore = () => {
+/** The two slices under test, acting for `hostId`, over stand-ins for every
+ *  read a handshake makes. */
+const newStore = (hostId: EnvironmentId = LOCAL_ENVIRONMENT_ID) => {
   const store = create<AppState>()(
     (set, get) =>
       ({
-        ...createEnvironmentsSlice(set, get, activeEngine),
-        ...createEnvironmentSwitchSlice(set, get, activeEngine),
+        ...createEnvironmentsSlice(set, get, testEngine(hostId)),
+        ...createEnvironmentSwitchSlice(set, get, testEngine(hostId)),
         workspace: null,
         selectedAgentId: null,
-        composerDrafts: {},
+        offSidebarAgents: {},
         managedLogs: {},
         sending: {},
-        autopilot: {},
-        autopilotLog: {},
-        autopilotDisabledProjects: null,
-        autopilotPausedAgents: [],
-        loadHistoryTranscript: vi.fn(),
-        pendingPublishApprovals: [],
+        loadHistoryTranscript: vi.fn().mockResolvedValue(undefined),
         loadPendingPublishApprovals: vi.fn().mockResolvedValue(undefined),
         loadPendingEgressPrompts: vi.fn().mockResolvedValue(undefined),
         loadDelegations: vi.fn().mockResolvedValue(undefined),
         loadAutopilot: vi.fn().mockResolvedValue(undefined),
-        reviews: {},
         loadReviews: vi.fn().mockResolvedValue(undefined),
-        github: null,
         refreshGithub: vi.fn().mockResolvedValue(undefined),
         loadAllPrStatus: vi.fn().mockResolvedValue(undefined),
         loadBoxSetup: vi.fn().mockResolvedValue(undefined),
@@ -101,305 +60,127 @@ const newStore = () => {
   return store;
 };
 
+/** The handshake's reads, as the stand-ins recorded them. */
+const reads = (store: ReturnType<typeof newStore>) => {
+  const s = store.getState();
+  return [
+    s.loadPendingPublishApprovals,
+    s.loadPendingEgressPrompts,
+    s.loadDelegations,
+    s.loadAutopilot,
+    s.loadReviews,
+    s.refreshGithub,
+    s.loadAllPrStatus,
+  ].map((read) => vi.mocked(read).mock.calls.length);
+};
+
 // Minimal workspace shapes; nothing here reads past the identity and the (empty)
 // agent list the snapshot reconcile walks.
 const ws = (label: string) =>
   ({ label, agents: [] }) as unknown as NonNullable<AppState["workspace"]>;
 
-const gh = (login: string) =>
-  ({ installed: true, authenticated: true, login }) as NonNullable<AppState["github"]>;
-
 /** `environmentReconnected` is fire-and-forget; let its awaits land. */
-const settle = async () => {
-  for (let i = 0; i < 20; i++) await Promise.resolve();
-};
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+beforeEach(() => {
+  getWorkspace.mockReset();
+  getWorkspace.mockResolvedValue(null);
+});
 
 describe("switchEnvironment", () => {
-  beforeEach(() => {
-    order.length = 0;
-    detachEventListeners.mockReset();
-    registerEventListeners.mockReset();
-    // Whatever is active at registration time is what the listeners bind to —
-    // the behaviour a re-attach exists to correct.
-    registerEventListeners.mockImplementation(async () => {
-      await activeTransport().on("agent:status", () => {});
-    });
-    getWorkspace.mockReset();
-    getWorkspace.mockResolvedValue(null);
-  });
-
-  it("parks the view it leaves and gives back the one it enters", async () => {
+  it("puts another environment on screen at once, touching nothing else", async () => {
     const store = newStore();
-    store.setState({
-      workspace: ws("local"),
-      selectedAgentId: "fuji",
-      composerDrafts: { fuji: "half-typed" },
-      composerRoadmapPicks: { fuji: { id: "item-1", code: "FLT-1" } },
-    });
+    store.setState({ workspace: ws("local"), selectedAgentId: "fuji" });
+    const before = store.getState();
 
-    await store.getState().switchEnvironment(HOST);
+    const result = store.getState().switchEnvironment(HOST);
 
-    // Nothing of This Mac's is on screen any more, including the composer text
-    // keyed by an agent name the host may well also have.
-    expect(store.getState().workspace).toBeNull();
-    expect(store.getState().selectedAgentId).toBeNull();
-    expect(store.getState().composerDrafts).toEqual({});
-    expect(store.getState().composerRoadmapPicks).toEqual({});
-    // …and it is all parked on the entry it belongs to.
-    const local = store.getState().environments[LOCAL_ENVIRONMENT_ID];
-    expect(local.lastSelectedAgentId).toBe("fuji");
-    expect(local.stash?.workspace).toEqual(ws("local"));
-
-    // Work on the host, then go back.
-    store.setState({
-      workspace: ws("remote"),
-      selectedAgentId: "fuji",
-      composerDrafts: { fuji: "typed on the host" },
-      composerRoadmapPicks: { fuji: { id: "item-9", code: "HST-9" } },
-    });
-    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
-
-    expect(store.getState().workspace).toEqual(ws("local"));
-    expect(store.getState().selectedAgentId).toBe("fuji");
-    expect(store.getState().composerDrafts).toEqual({ fuji: "half-typed" });
-    // The pick comes back with its draft, not the host's same-named agent's.
-    expect(store.getState().composerRoadmapPicks).toEqual({
-      fuji: { id: "item-1", code: "FLT-1" },
-    });
-    // The host's own view is parked in its turn, not lost.
-    expect(store.getState().environments[HOST].stash?.composerDrafts).toEqual({
-      fuji: "typed on the host",
-    });
-  });
-
-  it("parks the add-project popover with the view it was raised over", async () => {
-    const store = newStore();
-    store.setState({ addProjectOpen: true });
-
-    await store.getState().switchEnvironment(HOST);
-    // The host starts without it, whatever it can or cannot offer; its own
-    // gate decides whether one can be raised there.
-    expect(store.getState().addProjectOpen).toBe(false);
-
-    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
-    expect(store.getState().addProjectOpen).toBe(true);
-  });
-
-  it("keeps one host's autopilot off the other's same-named agents, and re-reads it", async () => {
-    const store = newStore();
-    // Agent ids are recycled place names, so the host has a `fuji` too; this
-    // Mac's rows, history and opt-outs must not be on screen over there.
-    store.setState({
-      autopilot: { fuji: { enrolled: true } as never },
-      autopilotLog: { fuji: [{ at: 1 }] as never },
-      autopilotDisabledProjects: ["p1"],
-      autopilotPausedAgents: ["fuji"],
-    });
-
-    await store.getState().switchEnvironment(HOST);
-
-    expect(store.getState().autopilot).toEqual({});
-    expect(store.getState().autopilotLog).toEqual({});
-    // Unknown until the host answers, not this Mac's list held over.
-    expect(store.getState().autopilotDisabledProjects).toBeNull();
-    expect(store.getState().autopilotPausedAgents).toEqual([]);
-    expect(store.getState().loadAutopilot).toHaveBeenCalledOnce();
-
-    // Parked, not lost: switching back shows it while it is re-read.
-    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
-    expect(store.getState().autopilot.fuji).toEqual({ enrolled: true });
-    expect(store.getState().autopilotPausedAgents).toEqual(["fuji"]);
-    expect(store.getState().loadAutopilot).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps one host's VMs off the other's same-named agents", async () => {
-    const store = newStore();
-    // Stop acts on the host on screen, so a row held over from this Mac would
-    // aim it at whatever `fuji` happens to be over there.
-    const vms = [{ agent_id: "fuji" }] as never;
-    const states = { fuji: { agent_id: "fuji", phase: "running" } } as never;
-    store.setState({ boxVms: vms, boxStates: states });
-
-    await store.getState().switchEnvironment(HOST);
-
-    // Unknown until the host answers, not this Mac's list held over.
-    expect(store.getState().boxVms).toBeNull();
-    expect(store.getState().boxStates).toEqual({});
-
-    // Parked, not lost: switching back shows it while it is re-read.
-    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
-    expect(store.getState().boxVms).toBe(vms);
-    expect(store.getState().boxStates).toBe(states);
-  });
-
-  it("keeps one host's held and blocked hosts off the other", async () => {
-    const store = newStore();
-    // A prompt answered on the wrong host would send its id to an engine that
-    // never raised it, and leave the real hold unanswered; a blocked row names
-    // an agent of this Mac, not of the host.
-    const prompts = [{ id: "h1", agent_id: "fuji", host: "api.stripe.com" }] as never;
-    const prompted = new Set(["fuji\napi.stripe.com"]);
-    const blocked = [{ agent_id: "fuji", host: "evil.test", seen: false }] as never;
-    store.setState({
-      pendingEgressPrompts: prompts,
-      promptedHosts: prompted,
-      boxEgressBlocked: blocked,
-    });
-
-    await store.getState().switchEnvironment(HOST);
-
-    // Empty at once, before the host's own queue is read, not held over.
-    expect(store.getState().pendingEgressPrompts).toEqual([]);
-    expect(store.getState().promptedHosts.size).toBe(0);
-    expect(store.getState().boxEgressBlocked).toEqual([]);
-    expect(store.getState().loadPendingEgressPrompts).toHaveBeenCalled();
-
-    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
-    expect(store.getState().pendingEgressPrompts).toBe(prompts);
-    expect(store.getState().promptedHosts).toBe(prompted);
-    expect(store.getState().boxEgressBlocked).toBe(blocked);
-  });
-
-  it("re-registers the engine listeners against the new transport", async () => {
-    const store = newStore();
-
-    expect(activeTransport()).toBe(localTransport);
-
-    await store.getState().switchEnvironment(HOST);
-
-    expect(detachEventListeners).toHaveBeenCalledTimes(1);
-    expect(registerEventListeners).toHaveBeenCalledTimes(1);
-    expect(detachEventListeners.mock.invocationCallOrder[0]).toBeLessThan(
-      registerEventListeners.mock.invocationCallOrder[0],
-    );
-    // The point of the re-attach: the fresh subscription went to the host, not
-    // to the engine the app booted against.
-    expect(activeTransport()).toBe(remoteTransport);
-    expect(order).toEqual(["remote:agent:status"]);
-
-    // And back: the local environment carries no transport of its own, so this
-    // is the Tauri singleton being resolved again.
-    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
-
-    expect(activeTransport()).toBe(localTransport);
-    expect(order).toEqual(["remote:agent:status", "local:agent:status"]);
-  });
-
-  it("refreshes the workspace through the environment it switched to", async () => {
-    const store = newStore();
-    getWorkspace.mockResolvedValue(ws("from the host"));
-
-    await store.getState().switchEnvironment(HOST);
-
-    expect(getWorkspace).toHaveBeenCalledOnce();
-    expect(store.getState().workspace).toEqual(ws("from the host"));
-  });
-
-  it("re-probes the GitHub login, and parks the one it leaves", async () => {
-    // `store.github` is the ACTIVE environment's answer: it gates push, PR and
-    // clone app-wide, and those act where the checkout is. Left alone, this
-    // Mac's login would be gating buttons that publish from the host.
-    const store = newStore();
-    store.setState({ github: gh("alex-on-this-mac") });
-
-    await store.getState().switchEnvironment(HOST);
-
-    expect(store.getState().refreshGithub).toHaveBeenCalledOnce();
-    // Blank until the probe answers, rather than the Mac's login held over.
-    expect(store.getState().github).toBeNull();
-    // The PR seed waits for that login, since the read is GitHub-gated, and
-    // re-checks closed PRs immediately rather than waiting for the host's slow
-    // safety-net pass.
-    const seed = vi.mocked(store.getState().loadAllPrStatus);
-    expect(seed).toHaveBeenCalledOnce();
-    expect(seed).toHaveBeenCalledWith(true);
-    expect(vi.mocked(store.getState().refreshGithub).mock.invocationCallOrder[0]).toBeLessThan(
-      seed.mock.invocationCallOrder[0],
-    );
-
-    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
-    expect(store.getState().github).toEqual(gh("alex-on-this-mac"));
-  });
-
-  it("shows a disconnected host's parked view instead of blocking on it", async () => {
-    const store = newStore();
-    store.setState({
-      environments: {
-        ...store.getState().environments,
-        [HOST]: remoteEntry({
-          connection: "disconnected",
-          retrying: true,
-          stash: { workspace: ws("last seen") },
-          lastSelectedAgentId: "kyoto",
-        }),
-      },
-    });
-    // What a client with no socket does: rejects at once.
-    getWorkspace.mockRejectedValue(new Error("not connected"));
-
-    await store.getState().switchEnvironment(HOST);
-
+    // Synchronous: done by the time the call returns, with nothing to await.
+    expect(result).toBeUndefined();
     expect(store.getState().activeEnvironmentId).toBe(HOST);
-    expect(store.getState().workspace).toEqual(ws("last seen"));
-    expect(store.getState().selectedAgentId).toBe("kyoto");
+    // Nothing parked, restored or blanked: what was there is still there.
+    expect(store.getState().workspace).toBe(before.workspace);
+    expect(store.getState().selectedAgentId).toBe("fuji");
+    expect(store.getState().environments).toBe(before.environments);
+
+    await settle();
+    // And no engine is asked anything.
+    expect(getWorkspace).not.toHaveBeenCalled();
+    expect(reads(store)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(store.getState().loadBoxSetup).not.toHaveBeenCalled();
   });
 
-  it("ignores a switch to the active environment or to one that is gone", async () => {
+  it("ignores a switch to the active environment or to one that is gone", () => {
     const store = newStore();
+    const before = store.getState();
 
-    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
-    await store.getState().switchEnvironment("a host forgotten a moment ago");
+    store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
+    store.getState().switchEnvironment("a host forgotten a moment ago");
 
-    expect(store.getState().activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
-    expect(registerEventListeners).not.toHaveBeenCalled();
+    expect(store.getState()).toBe(before);
   });
 });
 
 describe("environmentReconnected", () => {
-  beforeEach(() => {
-    getWorkspace.mockReset();
-    getWorkspace.mockResolvedValue(null);
-    registerEventListeners.mockReset();
-    registerEventListeners.mockResolvedValue(undefined);
-    detachEventListeners.mockReset();
-  });
-
-  it("re-reads the workspace and the open agent's records for the active host", async () => {
-    const store = newStore();
-    await store.getState().switchEnvironment(HOST);
+  it("re-reads the host's own state, whether or not it is on screen", async () => {
+    // This Mac is on screen; the handshake is the paired host's, and its
+    // store is its own.
+    const store = newStore(HOST);
     store.setState({ selectedAgentId: "fuji" });
-    getWorkspace.mockClear();
+    getWorkspace.mockResolvedValue(ws("from the host"));
 
     store.getState().environmentReconnected(HOST);
     await settle();
 
+    expect(store.getState().activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
     expect(getWorkspace).toHaveBeenCalledOnce();
+    expect(store.getState().workspace).toEqual(ws("from the host"));
+    // What it is blocked on, what it runs, whose GitHub login it has and its
+    // PR badges: everything it owns the answer to.
+    expect(reads(store)).toEqual([1, 1, 1, 1, 1, 1, 1]);
+    // The open agent's log, whose live events a dropped socket missed.
     expect(store.getState().loadHistoryTranscript).toHaveBeenCalledWith("fuji");
-    // A reconnect means this client was out of touch, so the host's GitHub
-    // login is as much in doubt as its workspace.
-    expect(store.getState().refreshGithub).toHaveBeenCalledTimes(2);
-    // …and so are the delegations it runs: events missed while away are gone.
-    expect(store.getState().loadDelegations).toHaveBeenCalledTimes(2);
-    expect(store.getState().loadAutopilot).toHaveBeenCalledTimes(2);
-    // …and the local reviews it runs, mirrored the same way.
-    expect(store.getState().loadReviews).toHaveBeenCalledTimes(2);
-    // …and the PR badges, which only the watcher's events keep current.
-    expect(store.getState().loadAllPrStatus).toHaveBeenCalledTimes(2);
   });
 
-  it("leaves a background host's handshake alone", async () => {
-    const store = newStore();
-    getWorkspace.mockClear();
+  it("asks for the PR badges only once the GitHub login is known", async () => {
+    const store = newStore(HOST);
 
     store.getState().environmentReconnected(HOST);
-    await Promise.resolve();
+    await settle();
+
+    // The PR seed is GitHub-gated, and re-checks closed PRs at once rather
+    // than waiting for the host's slow safety-net pass.
+    const probe = vi.mocked(store.getState().refreshGithub);
+    const seed = vi.mocked(store.getState().loadAllPrStatus);
+    expect(seed).toHaveBeenCalledWith(true);
+    expect(probe.mock.invocationCallOrder[0]).toBeLessThan(seed.mock.invocationCallOrder[0]);
+  });
+
+  it("carries on past a host that cannot answer", async () => {
+    const store = newStore(HOST);
+    store.setState({ workspace: ws("last seen") });
+    // What a client with no socket does: rejects at once.
+    getWorkspace.mockRejectedValue(new Error("not connected"));
+
+    store.getState().environmentReconnected(HOST);
+    await settle();
+
+    expect(store.getState().workspace).toEqual(ws("last seen"));
+    expect(reads(store)).toEqual([1, 1, 1, 1, 1, 1, 1]);
+  });
+
+  it("leaves another host's handshake to that host", async () => {
+    const store = newStore(LOCAL_ENVIRONMENT_ID);
+
+    store.getState().environmentReconnected(HOST);
+    await settle();
 
     expect(getWorkspace).not.toHaveBeenCalled();
+    expect(reads(store)).toEqual([0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps a mid-turn log rather than replacing it with the prompt alone", async () => {
-    const store = newStore();
-    await store.getState().switchEnvironment(HOST);
+    const store = newStore(HOST);
     store.setState({
       selectedAgentId: "fuji",
       sending: { fuji: true },

@@ -2,7 +2,7 @@ import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
-import { activeEntry } from "@/store/capabilities";
+import { useHostEntry } from "@/store/capabilities";
 import { AccountPicker } from ".";
 import { useCanSwitchAccount } from "./useCanSwitchAccount";
 
@@ -14,7 +14,7 @@ import { useCanSwitchAccount } from "./useCanSwitchAccount";
  *  reach, so it gets the words and no button. */
 export function SwitchAccountHint({ agent }: { agent: AgentRecord }) {
   const canSwitch = useCanSwitchAccount(agent);
-  const remote = useAppStore((s) => activeEntry(s).kind === "remote");
+  const remote = useHostEntry().kind === "remote";
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
   return (
     <div className="acct-hint text-sm" role="status">

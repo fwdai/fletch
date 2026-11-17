@@ -1,4 +1,5 @@
-// What the UI may offer in the environment the user is driving.
+// What the UI may offer on a host: the one a component is scoped to
+// (`EngineScope`), or the one a store action runs against.
 //
 // A paired host answers a subset of this app's 212 commands — the rows of
 // docs/remote-protocol.md's op table — so a control whose op is not on it has
@@ -11,8 +12,14 @@
 // paired hosts every gate below answers `null` and the app is what it was.
 
 import type { HostProvider } from "@/remote/types";
-import { useAppStore } from "@/store";
-import { activeEnvironment, type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "./environments";
+import { useAppStore, useHostId } from "@/store";
+import {
+  activeEnvironment,
+  type EnvironmentEntry,
+  type EnvironmentId,
+  environmentEntry,
+  LOCAL_ENVIRONMENT_ID,
+} from "./environments";
 import { anyGateReason, type ClosedGate, closedGates, type GateName, gateReason } from "./gates";
 import type { AppState } from "./types";
 
@@ -173,25 +180,43 @@ export function connectionLabel(env: EnvironmentEntry): string {
 export const activeEntry = (s: AppState): EnvironmentEntry =>
   s.environments[s.activeEnvironmentId] ?? s.environments[LOCAL_ENVIRONMENT_ID];
 
-/** Why `gate` is closed in the active environment, or null when it is open —
- *  the one thing a component needs to decide between rendering a control,
- *  rendering it disabled, or leaving it out. */
+/** `hostId`'s entry, falling back to the local one, as a selector. */
+export const entryOf = (s: AppState, hostId: EnvironmentId): EnvironmentEntry =>
+  s.environments[hostId] ?? s.environments[LOCAL_ENVIRONMENT_ID];
+
+/** The entry of the host the calling component is scoped to (`EngineScope`). */
+export function useHostEntry(): EnvironmentEntry {
+  const hostId = useHostId();
+  return useAppStore((s) => entryOf(s, hostId));
+}
+
+/** Why `gate` is closed on the host the calling component is scoped to, or
+ *  null when it is open — the one thing a component needs to decide between
+ *  rendering a control, rendering it disabled, or leaving it out. */
 export function useGate(gate: GateName): string | null {
-  return useAppStore((s) => gateReason(activeEntry(s), gate));
+  const hostId = useHostId();
+  return useAppStore((s) => gateReason(entryOf(s, hostId), gate));
 }
 
 /** [`useGate`] for a control that leads to several flows: closed only when the
- *  active environment can run none of them. Pass a constant array — the value
- *  is a string, so a fresh one each render costs nothing, but it says what it
- *  means where a reader can see it. */
+ *  host can run none of them. Pass a constant array — the value is a string,
+ *  so a fresh one each render costs nothing, but it says what it means where a
+ *  reader can see it. */
 export function useAnyGate(gates: readonly GateName[]): string | null {
-  return useAppStore((s) => anyGateReason(activeEntry(s), gates));
+  const hostId = useHostId();
+  return useAppStore((s) => anyGateReason(entryOf(s, hostId), gates));
 }
 
-/** [`gateReason`] for the environment the user is driving, outside React — a
- *  store action refusing a write the button is already disabled for, so a
- *  keyboard path (Enter in a field, a blur that saves) cannot slip past the
- *  control. The same backstop `useGitActions.runAction` applies. */
+/** [`gateReason`] for `hostId`, outside React — a store action refusing a
+ *  write the button is already disabled for, so a keyboard path (Enter in a
+ *  field, a blur that saves) cannot slip past the control. The same backstop
+ *  `useGitActions.runAction` applies. */
+export function hostGateReason(hostId: EnvironmentId, gate: GateName): string | null {
+  return gateReason(environmentEntry(hostId), gate);
+}
+
+/** [`hostGateReason`] for the environment on screen — for a global keyboard
+ *  shortcut, which acts on whatever the user is looking at. */
 export function activeGateReason(gate: GateName): string | null {
   return gateReason(activeEnvironment(), gate);
 }
@@ -200,5 +225,6 @@ export function activeGateReason(gate: GateName): string | null {
  *  chooses one by the selected action's key. `undefined` means the control
  *  calls nothing a host could refuse, so it is never gated. */
 export function useGateFor(gate: GateName | undefined): string | null {
-  return useAppStore((s) => (gate ? gateReason(activeEntry(s), gate) : null));
+  const hostId = useHostId();
+  return useAppStore((s) => (gate ? gateReason(entryOf(s, hostId), gate) : null));
 }

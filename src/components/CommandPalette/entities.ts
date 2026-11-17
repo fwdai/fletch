@@ -51,7 +51,7 @@ export function environmentRow(s: AppState, e: EnvironmentEntry): PaletteItem {
     section: SEC.environments,
     keywords: "environment  host  switch  machine",
     disabled: current ? "Already here" : null,
-    run: () => void s.switchEnvironment(e.id),
+    run: () => s.switchEnvironment(e.id),
   };
 }
 

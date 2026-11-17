@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Api, UsageScan } from "@/api";
-import { useEngine } from "@/api/engine";
+import type { UsageScan } from "@/api";
+import { localEngine } from "@/api/engine";
 import { hostSupports } from "@/remote/types";
 import { useAppStore } from "@/store";
 import type { EnvironmentEntry, EnvironmentId } from "@/store/environments";
@@ -108,10 +108,11 @@ export function usageScanHosts(
     );
 }
 
-/** Scan one host over the widest window, writing the answer into the cache.
+/** Scan one host over the widest window, writing the answer into the cache:
+ *  this Mac through its own engine, a paired host down its own connection.
  *  Rejects with whatever the transport said; the caller decides what a single
  *  host's failure means. */
-function scanHost(api: Api, env: EnvironmentEntry): Promise<void> {
+function scanHost(env: EnvironmentEntry): Promise<void> {
   const existing = inFlight.get(env.id);
   if (existing) return existing;
   const { sinceMs, untilMs } = rangeBounds(WIDEST_RANGE, Date.now());
@@ -119,7 +120,7 @@ function scanHost(api: Api, env: EnvironmentEntry): Promise<void> {
   // store/environments.ts); `api` goes down Tauri IPC to this machine.
   const call = env.transport
     ? env.transport.call<UsageScan>(SCAN_OP, { sinceMs, untilMs })
-    : api.scanUsageTranscripts(sinceMs, untilMs);
+    : localEngine.api.scanUsageTranscripts(sinceMs, untilMs);
   const run = call
     .then((scan) => {
       cache.set(env.id, { envId: env.id, envName: env.name, scan, fetchedAt: Date.now() });
@@ -226,7 +227,6 @@ export function deriveUsageView(
  *
  *  `host` is an environment id, or `ALL_HOSTS` for the merged view. */
 export function useUsageStats(range: UsageRange, host: string = ALL_HOSTS): UsageStatsResult {
-  const { api } = useEngine();
   const catalog = useAppStore((s) => s.modelCatalog);
   const environments = useAppStore((s) => s.environments);
   const targets = useMemo(() => usageScanHosts(environments), [environments]);
@@ -241,54 +241,51 @@ export function useUsageStats(range: UsageRange, host: string = ALL_HOSTS): Usag
     };
   }, []);
 
-  const load = useCallback(
-    (current: readonly EnvironmentEntry[], force: boolean) => {
-      const now = Date.now();
-      const stale = current.filter((t) => {
+  const load = useCallback((current: readonly EnvironmentEntry[], force: boolean) => {
+    const now = Date.now();
+    const stale = current.filter((t) => {
+      const hit = cache.get(t.id);
+      return force || !hit || !isFresh(hit.fetchedAt, now);
+    });
+    const staleIds = new Set(stale.map((t) => t.id));
+    // One write for what this load knows: whoever is about to be scanned turns
+    // "loading" while keeping the scan it already has, and whoever the cache
+    // still answers for is settled from it (a host that just joined the set
+    // with a fresh entry included).
+    setStates((prev) => {
+      const next: HostScanStates = { ...prev };
+      for (const t of current) {
         const hit = cache.get(t.id);
-        return force || !hit || !isFresh(hit.fetchedAt, now);
-      });
-      const staleIds = new Set(stale.map((t) => t.id));
-      // One write for what this load knows: whoever is about to be scanned turns
-      // "loading" while keeping the scan it already has, and whoever the cache
-      // still answers for is settled from it (a host that just joined the set
-      // with a fresh entry included).
-      setStates((prev) => {
-        const next: HostScanStates = { ...prev };
-        for (const t of current) {
-          const hit = cache.get(t.id);
-          if (staleIds.has(t.id)) next[t.id] = { status: "loading", scan: hit };
-          else if (hit) next[t.id] = { status: "ok", scan: hit };
-        }
-        return next;
-      });
-      // Each host settles on its own and writes only its own entry, so one host's
-      // failure takes nothing off the screen and a slow host answering late
-      // cannot overwrite what a later load already settled.
-      for (const t of stale) {
-        scanHost(api, t).then(
-          () => {
-            const hit = cache.get(t.id);
-            if (!alive.current || !hit) return;
-            setStates((prev) => ({ ...prev, [t.id]: { status: "ok", scan: hit } }));
-          },
-          (err: unknown) => {
-            console.warn(`usage scan failed on ${t.name}`, err);
-            if (!alive.current) return;
-            setStates((prev) => ({
-              ...prev,
-              [t.id]: {
-                status: "error",
-                error: err instanceof Error ? err.message : String(err),
-                scan: cache.get(t.id),
-              },
-            }));
-          },
-        );
+        if (staleIds.has(t.id)) next[t.id] = { status: "loading", scan: hit };
+        else if (hit) next[t.id] = { status: "ok", scan: hit };
       }
-    },
-    [api],
-  );
+      return next;
+    });
+    // Each host settles on its own and writes only its own entry, so one host's
+    // failure takes nothing off the screen and a slow host answering late
+    // cannot overwrite what a later load already settled.
+    for (const t of stale) {
+      scanHost(t).then(
+        () => {
+          const hit = cache.get(t.id);
+          if (!alive.current || !hit) return;
+          setStates((prev) => ({ ...prev, [t.id]: { status: "ok", scan: hit } }));
+        },
+        (err: unknown) => {
+          console.warn(`usage scan failed on ${t.name}`, err);
+          if (!alive.current) return;
+          setStates((prev) => ({
+            ...prev,
+            [t.id]: {
+              status: "error",
+              error: err instanceof Error ? err.message : String(err),
+              scan: cache.get(t.id),
+            },
+          }));
+        },
+      );
+    }
+  }, []);
 
   // Mount, and whenever the scannable host set changes: a newly connected host
   // is scanned, a departed one just stops being asked, and an unchanged set

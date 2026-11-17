@@ -6,7 +6,7 @@ import {
   applyPrStateChanged,
   applyPrThreadsChanged,
 } from "./prEvents";
-import { acceptPrWrite, issuePrWrite, resetPrWriteOrder } from "./prWriteOrder";
+import { acceptPrWrite, issuePrWrite, resetPrWriteOrder, sharedPrWriteOrder } from "./prWriteOrder";
 
 const pr = (state: PrState["state"], number = 650): PrState => ({
   number,
@@ -51,7 +51,7 @@ describe("applyPrStateChanged", () => {
   it("lands a secondary repo's state under agentId::subdir and leaves the primary alone", () => {
     const primary = pr("open", 650);
     const s = { prStates: { arabia: primary, "arabia::api": pr("open", 12) }, ...none, prSets: {} };
-    const next = applyPrStateChanged(s, {
+    const next = applyPrStateChanged(sharedPrWriteOrder, s, {
       agent_id: "arabia",
       subdir: "api",
       state: pr("merged", 12),
@@ -63,9 +63,16 @@ describe("applyPrStateChanged", () => {
   it("writes the primary under the plain agent id, with subdir null or absent", () => {
     const s = { prStates: {}, ...none, prSets: {} };
     expect(
-      applyPrStateChanged(s, { agent_id: "arabia", subdir: null, state: pr("merged") }).prStates,
+      applyPrStateChanged(sharedPrWriteOrder, s, {
+        agent_id: "arabia",
+        subdir: null,
+        state: pr("merged"),
+      }).prStates,
     ).toEqual({ arabia: pr("merged") });
-    expect(applyPrStateChanged(s, { agent_id: "arabia", state: pr("open") }).prStates).toEqual({
+    expect(
+      applyPrStateChanged(sharedPrWriteOrder, s, { agent_id: "arabia", state: pr("open") })
+        .prStates,
+    ).toEqual({
       arabia: pr("open"),
     });
   });
@@ -76,6 +83,7 @@ describe("applyPrStateChanged", () => {
     const primaryRead = issuePrWrite();
     const secondaryRead = issuePrWrite();
     applyPrStateChanged(
+      sharedPrWriteOrder,
       { prStates: {}, ...none, prSets: {} },
       { agent_id: "arabia", subdir: "api", state: null },
     );
@@ -89,7 +97,10 @@ describe("applyPrStateChanged", () => {
       ...none,
       prSets: { arabia: [entry(pr("open", 651)), entry(pr("open", 650), checks("passing"))] },
     };
-    const next = applyPrStateChanged(s, { agent_id: "arabia", state: pr("merged", 650) });
+    const next = applyPrStateChanged(sharedPrWriteOrder, s, {
+      agent_id: "arabia",
+      state: pr("merged", 650),
+    });
     expect(next.prStates?.arabia?.state).toBe("merged");
     expect(next.prSets?.arabia).toEqual([
       entry(pr("open", 651)),
@@ -106,7 +117,10 @@ describe("applyPrStateChanged", () => {
       ...none,
       prSets: { arabia: [entry(pr("open", 650))] },
     };
-    const next = applyPrStateChanged(s, { agent_id: "arabia", state: pr("open", 651) });
+    const next = applyPrStateChanged(sharedPrWriteOrder, s, {
+      agent_id: "arabia",
+      state: pr("open", 651),
+    });
     expect(next.prStates?.arabia?.number).toBe(651);
     expect(next.prSets?.arabia.map((p) => p.state.number)).toEqual([651, 650]);
   });
@@ -119,9 +133,19 @@ describe("applyPrStateChanged", () => {
       ...none,
       prSets: { arabia: [entry(pr("open", 651), checks("passing")), entry(pr("merged", 650))] },
     };
-    const same = applyPrStateChanged(s, { agent_id: "arabia", state: pr("open", 651) }, true);
+    const same = applyPrStateChanged(
+      sharedPrWriteOrder,
+      s,
+      { agent_id: "arabia", state: pr("open", 651) },
+      true,
+    );
     expect(same.prSets?.arabia).toEqual([entry(pr("open", 651), checks("passing"))]);
-    const rebound = applyPrStateChanged(s, { agent_id: "arabia", state: pr("open", 652) }, true);
+    const rebound = applyPrStateChanged(
+      sharedPrWriteOrder,
+      s,
+      { agent_id: "arabia", state: pr("open", 652) },
+      true,
+    );
     expect(rebound.prSets?.arabia).toEqual([entry(pr("open", 652))]);
     expect(rebound.prStates?.arabia?.number).toBe(652);
   });
@@ -129,6 +153,7 @@ describe("applyPrStateChanged", () => {
   it("writes a null state to the legacy map and leaves the set alone", () => {
     const set = [entry(pr("open", 650))];
     const next = applyPrStateChanged(
+      sharedPrWriteOrder,
       { prStates: { arabia: pr("open", 650) }, ...none, prSets: { arabia: set } },
       { agent_id: "arabia", state: null },
     );
@@ -156,27 +181,38 @@ describe("applyPrStateChanged", () => {
       repos: [],
       projects: [],
       agents: [{ id: "arabia", repos: [repo("app", 651), repo("api", 12)] }],
-    } as unknown as NonNullable<Parameters<typeof applyPrStateChanged>[0]["workspace"]>;
+    } as unknown as NonNullable<Parameters<typeof applyPrStateChanged>[1]["workspace"]>;
     const s = { prStates: {}, ...none, prSets: {}, workspace };
 
     it("binds a newly focused merged PR on the primary", () => {
-      const next = applyPrStateChanged(s, { agent_id: "arabia", state: pr("merged", 650) });
+      const next = applyPrStateChanged(sharedPrWriteOrder, s, {
+        agent_id: "arabia",
+        state: pr("merged", 650),
+      });
       const [primary, secondary] = next.workspace?.agents[0].repos ?? [];
       expect(primary).toMatchObject({ pr_number: 650, pr_state: "merged" });
       expect(secondary).toMatchObject({ pr_number: 12 });
     });
 
     it("binds a secondary by subdir and unbinds on a confirmed no-PR", () => {
-      const next = applyPrStateChanged(s, { agent_id: "arabia", subdir: "api", state: null });
+      const next = applyPrStateChanged(sharedPrWriteOrder, s, {
+        agent_id: "arabia",
+        subdir: "api",
+        state: null,
+      });
       const [primary, secondary] = next.workspace?.agents[0].repos ?? [];
       expect(primary).toMatchObject({ pr_number: 651 });
       expect(secondary).toMatchObject({ pr_number: null, pr_state: null });
     });
 
     it("writes nothing when the record already says this, or isn't held", () => {
-      const same = applyPrStateChanged(s, { agent_id: "arabia", state: pr("open", 651) });
+      const same = applyPrStateChanged(sharedPrWriteOrder, s, {
+        agent_id: "arabia",
+        state: pr("open", 651),
+      });
       expect("workspace" in same).toBe(false);
       const unheld = applyPrStateChanged(
+        sharedPrWriteOrder,
         { prStates: {}, ...none, prSets: {} },
         { agent_id: "arabia", state: pr("open", 650) },
       );
@@ -193,7 +229,7 @@ describe("applyPrStateChanged", () => {
     });
 
     it("takes the set's checks for the new PR and drops the previous PR's threads", () => {
-      const next = applyPrStateChanged(focusedOn651(checks("passing")), {
+      const next = applyPrStateChanged(sharedPrWriteOrder, focusedOn651(checks("passing")), {
         agent_id: "arabia",
         state: pr("open", 650),
       });
@@ -203,7 +239,7 @@ describe("applyPrStateChanged", () => {
     });
 
     it("drops checks the set has nothing to say about rather than keep the last PR's", () => {
-      const next = applyPrStateChanged(focusedOn651(null), {
+      const next = applyPrStateChanged(sharedPrWriteOrder, focusedOn651(null), {
         agent_id: "arabia",
         state: pr("open", 650),
       });
@@ -212,7 +248,7 @@ describe("applyPrStateChanged", () => {
 
     it("outranks a read issued for the previous PR", () => {
       const before = issuePrWrite();
-      applyPrStateChanged(focusedOn651(null), {
+      applyPrStateChanged(sharedPrWriteOrder, focusedOn651(null), {
         agent_id: "arabia",
         state: pr("open", 650),
       });
@@ -221,13 +257,14 @@ describe("applyPrStateChanged", () => {
     });
 
     it("leaves checks and threads alone for the same PR, or a cold checkout", () => {
-      const same = applyPrStateChanged(focusedOn651(null), {
+      const same = applyPrStateChanged(sharedPrWriteOrder, focusedOn651(null), {
         agent_id: "arabia",
         state: pr("merged", 651),
       });
       expect(same.prChecks).toBeUndefined();
       expect(same.prComments).toBeUndefined();
       const cold = applyPrStateChanged(
+        sharedPrWriteOrder,
         { prStates: {}, ...none, prSets: {} },
         { agent_id: "arabia", state: pr("open", 650) },
       );
@@ -241,6 +278,7 @@ describe("applyPrChecksChanged", () => {
 
   it("keys checks by checkout too", () => {
     const next = applyPrChecksChanged(
+      sharedPrWriteOrder,
       { prChecks: { arabia: null }, prSets: {} },
       { agent_id: "arabia", subdir: "api", number: 12, checks: checks("passing") },
     );
@@ -249,7 +287,7 @@ describe("applyPrChecksChanged", () => {
 
   it("writes the focused PR's checks to both", () => {
     const s = { prChecks: {}, prSets: { arabia: [entry(pr("open", 650))] } };
-    const next = applyPrChecksChanged(s, {
+    const next = applyPrChecksChanged(sharedPrWriteOrder, s, {
       agent_id: "arabia",
       subdir: null,
       number: 650,
@@ -266,6 +304,7 @@ describe("applyPrThreadsChanged", () => {
   it("replaces the focused PR's threads and stamps them", () => {
     const read = issuePrWrite();
     const next = applyPrThreadsChanged(
+      sharedPrWriteOrder,
       { prComments: { arabia: threads("t1") } },
       { agent_id: "arabia", subdir: null, comments: threads("t1", "t2"), new_thread_ids: ["t2"] },
     );
@@ -284,7 +323,7 @@ describe("applyPrSetEntryChanged", () => {
    *  PR's) are not even in the result, and only the set is stamped. */
   it("upserts the sibling's entry and touches nothing else", () => {
     const read = issuePrWrite();
-    const next = applyPrSetEntryChanged(s, {
+    const next = applyPrSetEntryChanged(sharedPrWriteOrder, s, {
       agent_id: "arabia",
       subdir: null,
       entry: entry(pr("open", 651), checks("failing")),
@@ -300,13 +339,13 @@ describe("applyPrSetEntryChanged", () => {
   });
 
   it("keeps the entry's checks on a state-only change and files a new PR newest first", () => {
-    const merged = applyPrSetEntryChanged(s, {
+    const merged = applyPrSetEntryChanged(sharedPrWriteOrder, s, {
       agent_id: "arabia",
       subdir: null,
       entry: entry(pr("merged", 650)),
     });
     expect(merged.prSets.arabia[1]).toEqual(entry(pr("merged", 650), checks("passing")));
-    const added = applyPrSetEntryChanged(s, {
+    const added = applyPrSetEntryChanged(sharedPrWriteOrder, s, {
       agent_id: "arabia",
       subdir: "api",
       entry: entry(pr("open", 12)),

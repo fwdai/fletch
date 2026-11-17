@@ -17,9 +17,14 @@ vi.mock("@/api", () => ({ api: { delegateGit, getDelegations, getPrChecks } }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
 import type { DelegationEvent } from "@/api";
-import { activeEngine } from "@/api/engine";
 import { dropAgentEntries } from "@/helpers/agentLookups";
-import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
+import { testEngine } from "@/test/engine";
+import {
+  activeEnvironmentId,
+  type EnvironmentEntry,
+  LOCAL_ENVIRONMENT_ID,
+  setEnvironmentsSource,
+} from "./environments";
 import { checkoutKey, createGitSlice, splitCheckoutKey } from "./git";
 import type { AppState } from "./types";
 
@@ -51,7 +56,10 @@ const makeStore = () => {
   const setLastError = vi.fn();
   const store = create<AppState>()(
     (set, get) =>
-      ({ ...createGitSlice(set, get, activeEngine), setLastError }) as unknown as AppState,
+      ({
+        ...createGitSlice(set, get, testEngine(activeEnvironmentId())),
+        setLastError,
+      }) as unknown as AppState,
   );
   return { store, setLastError };
 };

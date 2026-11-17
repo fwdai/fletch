@@ -6,7 +6,8 @@ vi.mock("@/storage/settings", () => ({
   getAllSettings: () => new Promise<Record<string, string>>((resolve) => localReads.push(resolve)),
 }));
 
-import { api } from "@/api";
+import { localEngine } from "@/api/engine";
+import { LOCAL_ENVIRONMENT_ID } from "./environments";
 import {
   applyHostSettingChange,
   applyHostSettings,
@@ -42,14 +43,17 @@ describe("host settings", () => {
 
   it("folds a settings:changed over what was read, deletes included", () => {
     const store = recorder();
-    applyHostSettings(store.set, {
+    applyHostSettings(LOCAL_ENVIRONMENT_ID, store.set, {
       notify_turn_complete: "false",
       agent_bin_path_claude: "/opt/claude",
     });
     expect(store.get().notifyTurnComplete).toBe(false);
     expect(store.get().providerPathOverrides).toEqual({ claude: "/opt/claude" });
 
-    applyHostSettingChange(store.set, { key: "agent_bin_path_codex", value: "/opt/codex" });
+    applyHostSettingChange(LOCAL_ENVIRONMENT_ID, store.set, {
+      key: "agent_bin_path_codex",
+      value: "/opt/codex",
+    });
     expect(store.get().providerPathOverrides).toEqual({
       claude: "/opt/claude",
       codex: "/opt/codex",
@@ -57,18 +61,27 @@ describe("host settings", () => {
     // The rest of what was read survives a change to one key.
     expect(store.get().notifyTurnComplete).toBe(false);
 
-    applyHostSettingChange(store.set, { key: "agent_bin_path_claude", value: null });
+    applyHostSettingChange(LOCAL_ENVIRONMENT_ID, store.set, {
+      key: "agent_bin_path_claude",
+      value: null,
+    });
     expect(store.get().providerPathOverrides).toEqual({ codex: "/opt/codex" });
-    applyHostSettingChange(store.set, { key: "notify_turn_complete", value: null });
+    applyHostSettingChange(LOCAL_ENVIRONMENT_ID, store.set, {
+      key: "notify_turn_complete",
+      value: null,
+    });
     expect(store.get().notifyTurnComplete).toBe(true);
   });
 
   it("replays a settings:changed that raced the read over its stale answer", async () => {
     const store = recorder();
-    const hydrated = hydrateHostSettings(api, store.set);
+    const hydrated = hydrateHostSettings(localEngine, store.set);
     // Another client turns the alert off after the read was served; the event
     // lands first and is on screen at once.
-    applyHostSettingChange(store.set, { key: "notify_turn_complete", value: "false" });
+    applyHostSettingChange(LOCAL_ENVIRONMENT_ID, store.set, {
+      key: "notify_turn_complete",
+      value: "false",
+    });
     expect(store.get().notifyTurnComplete).toBe(false);
 
     localReads.shift()?.({ notify_turn_complete: "true", github_draft_prs: "true" });
@@ -79,8 +92,8 @@ describe("host settings", () => {
 
   it("drops a hydrate superseded by a newer one", async () => {
     const store = recorder();
-    const older = hydrateHostSettings(api, store.set);
-    const newer = hydrateHostSettings(api, store.set);
+    const older = hydrateHostSettings(localEngine, store.set);
+    const newer = hydrateHostSettings(localEngine, store.set);
     const [answerOlder, answerNewer] = localReads.splice(0);
 
     answerNewer({ git_branch_prefix: "new/" });

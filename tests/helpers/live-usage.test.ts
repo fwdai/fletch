@@ -13,6 +13,8 @@ import type { SessionRecord } from "@/api";
 import { beginUsageRead, foldLiveUsage, settleLiveUsage, type UsageRead } from "@/helpers/usage";
 import type { AppState } from "@/store";
 
+const HOST = "local";
+
 const call = (id: string, input: number, cacheRead: number): RawEvent =>
   ({
     type: "assistant",
@@ -50,13 +52,13 @@ function store(id: string, agent: { provider: string; model?: string; created_at
   };
   return {
     usage: () => state.usage[id],
-    fold: (ev: RawEvent) => foldLiveUsage(get, set, id, ev),
+    fold: (ev: RawEvent) => foldLiveUsage(HOST, get, set, id, ev),
     /** A records read starting. */
-    read: () => beginUsageRead(id),
+    read: () => beginUsageRead(HOST, id),
     /** That read landing with `bodies`: its snapshot settled, and stored unless
      *  it is to be left alone. */
     land: (read: UsageRead, ...bodies: RawEvent[]) => {
-      const settled = settleLiveUsage(id, recorded(...bodies), read);
+      const settled = settleLiveUsage(HOST, id, recorded(...bodies), read);
       if (settled) set({ usage: { [id]: settled } });
     },
   };
@@ -176,8 +178,8 @@ describe("settleLiveUsage", () => {
     const second = s.read();
     const newer = recorded(call("m1", 5, 8000), call("m2", 7, 9000));
 
-    expect(settleLiveUsage("records-only", newer, second)).toBe(newer);
-    expect(settleLiveUsage("records-only", recorded(call("m1", 5, 8000)), first)).toBeNull();
+    expect(settleLiveUsage(HOST, "records-only", newer, second)).toBe(newer);
+    expect(settleLiveUsage(HOST, "records-only", recorded(call("m1", 5, 8000)), first)).toBeNull();
     expect(s.usage()).toBeUndefined();
   });
 });

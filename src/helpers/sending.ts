@@ -35,18 +35,25 @@ export function dischargeSending(
 
 /** Sends still on the wire from this client. A flag set by one of these is
  *  younger than any snapshot the backend can answer with, so the snapshot rule
- *  leaves it alone. Module-wide: one client, one wire. */
+ *  leaves it alone. One set per engine: the phone drives one host, so this one
+ *  serves it; the desktop keeps a set per host (store/sendOrder), since agent
+ *  ids recur across hosts. */
 export const inFlightSends = new Set<string>();
 
-/** Run a send with its agent marked in-flight, so a snapshot landing in the
- *  optimistic window can't clear the flag the send just set. Covers the whole
- *  hand-off a caller passes, including any wait for the agent to come up. */
-export async function whileSending<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
-  inFlightSends.add(agentId);
+/** Run a send with its agent marked in-flight in `inFlight`, so a snapshot
+ *  landing in the optimistic window can't clear the flag the send just set.
+ *  Covers the whole hand-off a caller passes, including any wait for the agent
+ *  to come up. */
+export async function whileSending<T>(
+  agentId: string,
+  fn: () => Promise<T>,
+  inFlight: Set<string> = inFlightSends,
+): Promise<T> {
+  inFlight.add(agentId);
   try {
     return await fn();
   } finally {
-    inFlightSends.delete(agentId);
+    inFlight.delete(agentId);
   }
 }
 

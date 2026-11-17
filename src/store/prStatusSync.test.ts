@@ -1,4 +1,4 @@
-// Fleet PR seeds share one request per environment. A launch/reconnect may ask
+// Fleet PR seeds share one request per host. A launch/reconnect may ask
 // for the stronger closed-PR recheck while a cheap focus seed is still out; the
 // strong caller must wait for its own live read, never inherit the weak one.
 
@@ -9,8 +9,12 @@ const { getAllPrStatus } = vi.hoisted(() => ({ getAllPrStatus: vi.fn() }));
 vi.mock("@/api", () => ({ api: { getAllPrStatus } }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
-import { activeEngine } from "@/api/engine";
-import { createEnvironmentsSlice, setEnvironmentsSource } from "./environments";
+import { testEngine } from "@/test/engine";
+import {
+  createEnvironmentsSlice,
+  LOCAL_ENVIRONMENT_ID,
+  setEnvironmentsSource,
+} from "./environments";
 import { createGitSlice } from "./git";
 import type { AppState } from "./types";
 
@@ -22,12 +26,13 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
-const makeStore = () => {
+/** A store acting for `hostId`: this Mac's unless told otherwise. */
+const makeStore = (hostId = LOCAL_ENVIRONMENT_ID) => {
   const store = create<AppState>()(
     (set, get) =>
       ({
-        ...createEnvironmentsSlice(set, get, activeEngine),
-        ...createGitSlice(set, get, activeEngine),
+        ...createEnvironmentsSlice(set, get, testEngine(hostId)),
+        ...createGitSlice(set, get, testEngine(hostId)),
         github: { authenticated: true },
       }) as unknown as AppState,
   );
@@ -69,33 +74,23 @@ describe("fleet PR status synchronization", () => {
     await Promise.all([strong, weak]);
   });
 
-  it("does not retarget a queued upgrade after an environment switch", async () => {
-    const oldAnswer = deferred<Record<string, never>>();
-    const newAnswer = deferred<Record<string, never>>();
-    getAllPrStatus.mockReturnValueOnce(oldAnswer.promise).mockReturnValueOnce(newAnswer.promise);
-    const store = makeStore();
+  it("keeps each host's seeds apart", async () => {
+    // A seed in flight on one host is nothing to another's: neither joins the
+    // other's read, and a queued upgrade stays with the host that asked.
+    const localAnswer = deferred<Record<string, never>>();
+    getAllPrStatus.mockReturnValueOnce(localAnswer.promise).mockResolvedValue({});
+    const local = makeStore();
+    const host = makeStore("host-1");
 
-    const oldWeak = store.getState().loadAllPrStatus();
-    const oldStrong = store.getState().loadAllPrStatus(true);
-    store.setState((s) => ({
-      activeEnvironmentId: "other-local",
-      environments: {
-        ...s.environments,
-        "other-local": {
-          id: "other-local",
-          name: "Other local",
-          kind: "local",
-          connection: "connected",
-        },
-      },
-    }));
-    const newStrong = store.getState().loadAllPrStatus(true);
+    const weak = local.getState().loadAllPrStatus();
+    await host.getState().loadAllPrStatus();
     expect(getAllPrStatus).toHaveBeenCalledTimes(2);
 
-    oldAnswer.resolve({});
-    newAnswer.resolve({});
-    await Promise.all([oldWeak, oldStrong, newStrong]);
-    expect(getAllPrStatus).toHaveBeenCalledTimes(2);
+    const strong = local.getState().loadAllPrStatus(true);
+    localAnswer.resolve({});
+    await Promise.all([weak, strong]);
+    expect(getAllPrStatus).toHaveBeenCalledTimes(3);
+    expect(getAllPrStatus).toHaveBeenNthCalledWith(3, true);
   });
 
   it("coalesces equal requests and starts fresh after they settle", async () => {

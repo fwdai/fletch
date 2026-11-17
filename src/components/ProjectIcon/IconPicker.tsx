@@ -6,7 +6,7 @@ import type { ProjectIconCandidate, ProjectRef } from "@/api/types/agent";
 import { Button } from "@/components/ui/Button";
 import { Scrim } from "@/components/ui/Scrim";
 import { useAppStore } from "@/store";
-import { activeEntry, useGate } from "@/store/capabilities";
+import { useGate, useHostEntry } from "@/store/capabilities";
 import { bytesToBase64 } from "@/util/base64";
 import { useProjectSettings } from "@/util/useProjectSettings";
 import { PROJECT_GLYPHS } from "./glyphs";
@@ -29,7 +29,7 @@ export function IconPicker({ project }: { project: ProjectRef }) {
   const [found, setFound] = useState<ProjectIconCandidate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const setProjectIcon = useAppStore((s) => s.setProjectIcon);
-  const local = useAppStore((s) => activeEntry(s).kind === "local");
+  const local = useHostEntry().kind === "local";
   const gate = useGate("projectIcon");
   const current = useProjectSettings(open ? id : null).settings?.[ICON_SOURCE_KEY] ?? null;
 

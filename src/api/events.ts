@@ -1,4 +1,4 @@
-import { activeTransport, localTransport, type UnlistenFn } from "./transport";
+import { localTransport, type UnlistenFn } from "./transport";
 import type {
   AgentBranchEvent,
   AgentEffortEvent,
@@ -446,10 +446,10 @@ export function makeEvents(on: Subscribe, onLocal: Subscribe) {
 
 export type Events = ReturnType<typeof makeEvents>;
 
-/** The events of the environment the UI is driving: every routed subscription
- *  resolves the active transport when it is made. */
-const active = makeEvents(
-  (event, cb) => activeTransport().on(event, cb),
+/** The events of this desktop's own engine: routed and local-pinned alike, they
+ *  subscribe through the Tauri singleton. */
+const local = makeEvents(
+  (event, cb) => localTransport.on(event, cb),
   (event, cb) => localTransport.on(event, cb),
 );
 
@@ -526,4 +526,4 @@ export const {
   onContextChanged,
   onProviderLoginOutput,
   onProviderLoginExit,
-} = active;
+} = local;

@@ -1,7 +1,10 @@
 // Store-internal wiring for the app slice: settings/account hydration, the
 // backend event-listener registration layer (every `on*` subscription folded
 // into store state), and the foreground resync. Split out of app.ts so that
-// module stays just the slice (state + actions); these run once from `init`.
+// module stays just the slice (state + actions). The listeners and the resync
+// run once per host: this desktop's from `init`, each paired host's when its
+// client is created (`startHost` in ./hostScope), each over that host's own
+// engine and scoped `set` / `get`.
 
 import { getAdapter, type RawEvent } from "@/adapters";
 import { isTaskEvent } from "@/adapters/shared/backgroundTasks";
@@ -51,7 +54,7 @@ import { REVIEW_AGENT_KEY, REVIEW_ON_PR_OPEN_KEY } from "@/store/review";
 import { notify } from "@/util/notify";
 import { playSound, type SoundKind } from "@/util/sound";
 import { reduceInstallEvent } from "./agentInstall";
-import { activeEnvironment } from "./environments";
+import { type EnvironmentId, environmentEntry, LOCAL_ENVIRONMENT_ID } from "./environments";
 import { applyHostSettingChange, hydrateHostSettings } from "./hostSettings";
 import { erroredAgents, interruptedAgents } from "./interrupted";
 import {
@@ -59,6 +62,7 @@ import {
   applyPrSetEntryChanged,
   applyPrStateChanged,
   applyPrThreadsChanged,
+  prWriteOrderOf,
 } from "./prEvents";
 import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppSlice, SliceCreator } from "./types";
@@ -67,30 +71,40 @@ import { applyBoxSetupEvent } from "./workspaceTypes";
 type AppSet = Parameters<SliceCreator<AppSlice>>[0];
 type AppGet = Parameters<SliceCreator<AppSlice>>[1];
 
-// "Watching" an agent means its window holds focus AND its chat is on screen.
-// Out-of-app signals (chime + native notification) fire only when you're NOT
-// watching — otherwise you already see the update. A sidebar agent is on
-// screen when selected; an off-sidebar chat (a Roadmap PM chat) can never be
-// `selectedAgentId`, so its owning surface reports it via `attendedChatId`.
-const watchingChat = (get: AppGet, agentId: string) =>
-  document.hasFocus() && (get().selectedAgentId === agentId || get().attendedChatId === agentId);
+// "Watching" an agent means its window holds focus AND its chat is on screen:
+// its host is the one on screen, and in it the agent is selected — or, for an
+// off-sidebar chat (a Roadmap PM chat), which can never be `selectedAgentId`,
+// its owning surface reports it via `attendedChatId`. Out-of-app signals
+// (chime + native notification) fire only when you're NOT watching — otherwise
+// you already see the update.
+const watchingChat = (hostId: EnvironmentId, get: AppGet, agentId: string) =>
+  document.hasFocus() &&
+  get().activeEnvironmentId === hostId &&
+  (get().selectedAgentId === agentId || get().attendedChatId === agentId);
 
 const agentName = (get: AppGet, agentId: string) => agentRecord(get(), agentId)?.name ?? "Agent";
 
 // Signal an out-of-app event for an agent the user isn't watching: the event's
 // sound and a native notification, each unless muted in settings.
-const signalAway = (get: AppGet, agentId: string, title: string, sound: SoundKind) => {
-  if (watchingChat(get, agentId)) return;
+const signalAway = (
+  hostId: EnvironmentId,
+  get: AppGet,
+  agentId: string,
+  title: string,
+  sound: SoundKind,
+) => {
+  if (watchingChat(hostId, get, agentId)) return;
   if (get().soundEnabled) playSound(sound);
   if (get().notifyEnabled) notify(title, agentName(get, agentId));
 };
 
 // Errors always signal, like needed input — but once per failure (see
 // `erroredAgents`), however many ways the failure reports itself.
-const signalError = (get: AppGet, agentId: string, title: string) => {
-  if (erroredAgents.has(agentId)) return;
-  erroredAgents.add(agentId);
-  signalAway(get, agentId, title, "error");
+const signalError = (hostId: EnvironmentId, get: AppGet, agentId: string, title: string) => {
+  const errored = erroredAgents(hostId);
+  if (errored.has(agentId)) return;
+  errored.add(agentId);
+  signalAway(hostId, get, agentId, title, "error");
 };
 
 // Patch a single agent's record wherever the store holds it and commit it —
@@ -102,7 +116,7 @@ const patchAgent = (_get: AppGet, set: AppSet, agentId: string, patch: AgentPatc
 
 // Load persisted settings from the DB and hydrate the matching UI state.
 // First launch / DB-not-ready is non-fatal — defaults stand in.
-export const hydrateSettings = async (api: Api, set: AppSet) => {
+export const hydrateSettings = async (engine: Engine, set: AppSet) => {
   try {
     const s = await getAllSettings();
     const {
@@ -170,10 +184,10 @@ export const hydrateSettings = async (api: Api, set: AppSet) => {
     // First launch or DB not ready — defaults are fine.
   }
   // The host-owned keys (alerts, sweep, sandbox, publishing, provider binaries)
-  // belong to the engine the UI is driving, not to this client's table: read
-  // apart from the client's own preferences above, and again on every switch
-  // and reconnect (`resyncEnvironment`).
-  await hydrateHostSettings(api, set).catch(() => {});
+  // belong to the engine, not to this client's table: read apart from the
+  // client's own preferences above, and each paired host's again on every
+  // handshake (`environmentReconnected`).
+  await hydrateHostSettings(engine, set).catch(() => {});
 };
 
 // Load (or lazily create) the single local account profile. Non-fatal — the
@@ -194,34 +208,39 @@ export const hydrateAccount = async (api: Api, set: AppSet) => {
   }
 };
 
-// Every engine-event subscription this module holds, in the order it was made.
-// Each one binds to whichever transport was active when `on(...)` resolved it
-// (see api/events), so switching environments has to drop them and make them
-// again against the new one — `detachEventListeners` below.
+// Every engine-event subscription this module holds, per host, in the order it
+// was made — what `detachEventListeners` takes down when a host is forgotten.
 //
-// The `onLocal` subscription in here (`onAgentInstallState`) is deliberately
-// NOT collected: it is pinned to this desktop's own engine and is unaffected by
-// which environment the UI is driving.
-let attached: UnlistenFn[] = [];
+// The subscriptions pinned to this desktop that `registerLocalListeners` makes
+// are deliberately NOT collected: they are this machine's, and nothing about a
+// paired host coming or going changes them.
+const attached = new Map<EnvironmentId, UnlistenFn[]>();
 
-// Subscribe to every backend event stream, folding each into store state.
-export const registerEventListeners = async ({ api, events }: Engine, set: AppSet, get: AppGet) => {
+// Subscribe to every event stream of `engine`'s host, folding each into that
+// host's state through `set` / `get`.
+export const registerEventListeners = async (engine: Engine, set: AppSet, get: AppGet) => {
+  const { api, events, hostId } = engine;
+  const mine: UnlistenFn[] = [];
+  attached.set(hostId, mine);
   // Each subscription is still awaited in order — the transport's `on` resolves
   // once the stream is live, and an event arriving before the next listener is
-  // registered would otherwise be missed.
+  // registered would otherwise be missed. One that resolves after the host was
+  // detached is taken straight down again.
   const bind = async (subscribe: Promise<UnlistenFn>) => {
-    attached.push(await subscribe);
+    const off = await subscribe;
+    if (attached.get(hostId) === mine) mine.push(off);
+    else await Promise.resolve(off()).catch(() => {});
   };
 
   await bind(
     events.onAgentOutput((e) => {
-      pushAgentOutput(e.agent_id, decodeBase64(e.bytes));
+      pushAgentOutput(hostId, e.agent_id, decodeBase64(e.bytes));
     }),
   );
 
   await bind(
     events.onShellOutput((e) => {
-      pushShellOutput(e.agent_id, decodeBase64(e.bytes));
+      pushShellOutput(hostId, e.agent_id, decodeBase64(e.bytes));
     }),
   );
 
@@ -255,7 +274,7 @@ export const registerEventListeners = async ({ api, events }: Engine, set: AppSe
             },
           }));
           // The only out-of-app signal this widget has ever had.
-          if (wasIdle) signalAway(get, e.agent_id, "Needs your input", "alert");
+          if (wasIdle) signalAway(hostId, get, e.agent_id, "Needs your input", "alert");
         }
         return;
       }
@@ -284,7 +303,7 @@ export const registerEventListeners = async ({ api, events }: Engine, set: AppSe
       void persistLiveUsage(api, get, set, e.agent_id, e.event as RawEvent);
       // And the usage a stream reports ahead of its records (claude): fold it
       // in now, so the context badge moves during the turn.
-      foldLiveUsage(get, set, e.agent_id, e.event as RawEvent);
+      foldLiveUsage(hostId, get, set, e.agent_id, e.event as RawEvent);
       // Codex rollout files encrypt reasoning text, so retain the readable live
       // event as a compiled record and merge it back at its rollout item on replay.
       void persistLiveReasoning(api, get, e.agent_id, e.event as RawEvent);
@@ -303,14 +322,14 @@ export const registerEventListeners = async ({ api, events }: Engine, set: AppSe
         // `delete` returns true when the agent was interrupted; consume the
         // flag once and gate both the chime and the unseen-results marker on
         // a genuine completion (a manual stop is neither).
-        if (!interruptedAgents.delete(e.agent_id)) {
+        if (!interruptedAgents(hostId).delete(e.agent_id)) {
           // Notify (sound + native) when you're NOT watching this agent —
           // skipped when you already are, see signalAway. "Needs your input"
           // and failures always signal; a finished turn only if the user kept
           // that alert on.
-          if (turnFailed) signalError(get, e.agent_id, "Turn failed");
+          if (turnFailed) signalError(hostId, get, e.agent_id, "Turn failed");
           else if (get().notifyTurnComplete)
-            signalAway(get, e.agent_id, "Turn complete", "success");
+            signalAway(hostId, get, e.agent_id, "Turn complete", "success");
           // Flag results for review on any agent the user isn't currently
           // looking at — this is the only signal for research-only turns that
           // leave no diff behind. Cleared when the agent is selected. Never set
@@ -337,7 +356,7 @@ export const registerEventListeners = async ({ api, events }: Engine, set: AppSe
         try {
           // Before the read: it can land after a later one, and calls that stream
           // in while it runs are not in its records (see settleLiveUsage).
-          const read = beginUsageRead(id);
+          const read = beginUsageRead(hostId, id);
           const [records, turns] = await Promise.all([
             api.readSessionRecords(id),
             api.readUserTurns(id),
@@ -353,7 +372,7 @@ export const registerEventListeners = async ({ api, events }: Engine, set: AppSe
           const usage = usageFromRecords(provider, records);
           // Only overwrite when records carried usage — cursor folds usage
           // live, so an empty records result must not wipe it.
-          const settled = hasUsage(usage) ? settleLiveUsage(id, usage, read) : null;
+          const settled = hasUsage(usage) ? settleLiveUsage(hostId, id, usage, read) : null;
           set((state) => ({
             managedLogs: { ...state.managedLogs, [id]: items },
             usage: settled ? { ...state.usage, [id]: settled } : state.usage,
@@ -370,7 +389,7 @@ export const registerEventListeners = async ({ api, events }: Engine, set: AppSe
           // into the live workspace so the Native toggle unblocks without a
           // reload. Only when still missing locally — avoids per-turn re-fetch.
           if (needsSessionIdRefresh(get().workspace, id)) {
-            await refreshWorkspace(api, set);
+            await refreshWorkspace(engine, set);
           }
         } catch {
           // Non-critical refresh; the next load picks up the records.
@@ -499,7 +518,7 @@ export const registerEventListeners = async ({ api, events }: Engine, set: AppSe
       // A new turn starting clears any stale stop-suppression flag: if the
       // killed process never flushed a turn_end, this ensures the next genuine
       // completion still chimes.
-      if (e.status === "running") interruptedAgents.delete(e.agent_id);
+      if (e.status === "running") interruptedAgents(hostId).delete(e.agent_id);
       // A folder change held for the turn's end is being applied once the turn
       // is over (the relaunch follows at once): nothing is left to apply now.
       if (e.status !== "running" && get().folderChangeWaiting[e.agent_id]) {
@@ -517,9 +536,10 @@ export const registerEventListeners = async ({ api, events }: Engine, set: AppSe
       }
       // A spawn retry can fail again without ever reaching `running`, so a new
       // attempt re-arms the error signal too.
-      if (e.status === "running" || e.status === "spawning") erroredAgents.delete(e.agent_id);
+      if (e.status === "running" || e.status === "spawning")
+        erroredAgents(hostId).delete(e.agent_id);
       // A crash or failed spawn. A user stop is `stopped`, never `error`.
-      if (e.status === "error") signalError(get, e.agent_id, "Agent error");
+      if (e.status === "error") signalError(hostId, get, e.agent_id, "Agent error");
       // The process is gone, and its sub-agents with it: whatever tasks we held
       // as running can no longer report, so drop them rather than strand them.
       // `idle` is NOT a clear — background tasks outlive the main turn.
@@ -638,7 +658,7 @@ export const registerEventListeners = async ({ api, events }: Engine, set: AppSe
   // small ping after either operation; we reload the workspace.
   await bind(
     events.onWorkspaceChanged(async () => {
-      await refreshWorkspace(api, set);
+      await refreshWorkspace(engine, set);
     }),
   );
 
@@ -688,24 +708,39 @@ export const registerEventListeners = async ({ api, events }: Engine, set: AppSe
   // its set, and a host that does not advertise it predates PR sets.
   await bind(
     events.onPrStateChanged((e) => {
-      const env = activeEnvironment();
+      const env = environmentEntry(hostId);
       const wholeSet =
         env.kind === "remote" && !env.protocol?.events.includes("pr:set_entry_changed");
-      set((s) => applyPrStateChanged(s, e, wholeSet));
+      set((s) => applyPrStateChanged(prWriteOrderOf(hostId), s, e, wholeSet));
     }),
   );
-  await bind(events.onPrChecksChanged((e) => set((s) => applyPrChecksChanged(s, e))));
-  await bind(events.onPrThreadsChanged((e) => set((s) => applyPrThreadsChanged(s, e))));
-  await bind(events.onPrSetEntryChanged((e) => set((s) => applyPrSetEntryChanged(s, e))));
+  await bind(
+    events.onPrChecksChanged((e) => set((s) => applyPrChecksChanged(prWriteOrderOf(hostId), s, e))),
+  );
+  await bind(
+    events.onPrThreadsChanged((e) =>
+      set((s) => applyPrThreadsChanged(prWriteOrderOf(hostId), s, e)),
+    ),
+  );
+  await bind(
+    events.onPrSetEntryChanged((e) =>
+      set((s) => applyPrSetEntryChanged(prWriteOrderOf(hostId), s, e)),
+    ),
+  );
 
   // A host-owned setting was written — here, on another desktop, or from a
   // phone. Folded over what was read, so Settings follows without a refetch.
   // (Project settings are per page; each section subscribes for its project.)
-  await bind(events.onSettingsChanged((e) => applyHostSettingChange(set, e)));
+  await bind(events.onSettingsChanged((e) => applyHostSettingChange(hostId, set, e)));
   // Provider limits are rows about this Mac, written by its own engine (an
   // agent's stream, a usage scan, a Refresh), so they follow the local engine
-  // whichever environment is active.
-  await bind(events.onLocalSettingsChanged((e) => get().applyProviderLimitsChange(e.key, e.value)));
+  // whichever host's listeners these are — and only this desktop's own set
+  // subscribes, or a paired host's would fold every change a second time.
+  if (hostId === LOCAL_ENVIRONMENT_ID) {
+    await bind(
+      events.onLocalSettingsChanged((e) => get().applyProviderLimitsChange(e.key, e.value)),
+    );
+  }
 
   // App-wide run tracking. The RunPanel unmounts when its tab isn't active, so
   // its own subscription can't keep the Run tab's dot or the sidebar's chip
@@ -746,15 +781,14 @@ export const registerLocalListeners = async (events: Events, set: AppSet) => {
   });
 };
 
-/** Drop every engine-event subscription. The local-pinned ones stay: they are
- *  this desktop's mic, its provider CLIs and its own installs, and nothing
- *  about a switch changes which engine answers for them. */
-export const detachEventListeners = async () => {
-  const off = attached;
-  attached = [];
+/** Drop every engine-event subscription made for `hostId`. The local-pinned
+ *  ones `registerLocalListeners` made stay: they are this desktop's mic, its
+ *  provider CLIs and its own installs. */
+export const detachEventListeners = async (hostId: EnvironmentId) => {
+  const off = attached.get(hostId) ?? [];
+  attached.delete(hostId);
   // A transport's unsubscribe is synchronous for a remote client and a round
-  // trip for Tauri; awaiting them together keeps the re-subscribe below from
-  // racing a stream that is still being taken down.
+  // trip for Tauri; awaited together, so the host is quiet once this resolves.
   await Promise.all(off.map((fn) => Promise.resolve(fn()).catch(() => {})));
 };
 
@@ -765,7 +799,9 @@ export const detachEventListeners = async () => {
 // actually running) until its next transition. The refetch is cheap and
 // `get_workspace` overlays live in-memory status, so it's authoritative — and
 // every busy surface derives from that status, so one refetch corrects them all.
-export const setupResync = (api: Api, set: AppSet, get: AppGet) => {
+// Set up per host, over that host's engine; answers with what takes it down.
+export const setupResync = (engine: Engine, set: AppSet, get: AppGet): (() => void) => {
+  const { api } = engine;
   let resyncInFlight = false;
   // The records the snapshot omits — Roadmap chats — are re-read by project
   // from the same host, so a status they missed has a way back too. Each fresh
@@ -794,7 +830,7 @@ export const setupResync = (api: Api, set: AppSet, get: AppGet) => {
       // snapshot seed still recovers a reopen even if this client missed its
       // event; launch, reconnect and environment switch ask for a live look.
       await Promise.all([
-        refreshWorkspace(api, set),
+        refreshWorkspace(engine, set),
         refreshOffSidebarAgents(),
         get().loadAllPrStatus(),
       ]);
@@ -807,6 +843,11 @@ export const setupResync = (api: Api, set: AppSet, get: AppGet) => {
   const onVisible = () => {
     if (!document.hidden) void resyncWorkspace();
   };
+  const onFocus = () => void resyncWorkspace();
   document.addEventListener("visibilitychange", onVisible);
-  window.addEventListener("focus", () => void resyncWorkspace());
+  window.addEventListener("focus", onFocus);
+  return () => {
+    document.removeEventListener("visibilitychange", onVisible);
+    window.removeEventListener("focus", onFocus);
+  };
 };

@@ -5,7 +5,7 @@ import { PanelToggle } from "@/components/PanelToggle";
 import { Button } from "@/components/ui/Button";
 import { providerLabel } from "@/data/providers";
 import { EMPTY_AGENTS, useAppStore } from "@/store";
-import { activeEntry, connectionLabel } from "@/store/capabilities";
+import { connectionLabel, useHostEntry } from "@/store/capabilities";
 import { RunView } from "@/workflows/run/RunView";
 import { ChatView } from "./ChatView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
@@ -20,7 +20,7 @@ import { WorkspaceHeader } from "./WorkspaceHeader";
  *  placeholder. Listens to the global `viewMode` from the store. */
 export function Workspace() {
   const workspace = useAppStore((s) => s.workspace);
-  const environment = useAppStore(activeEntry);
+  const environment = useHostEntry();
   const agents = useAppStore((s) => s.workspace?.agents ?? EMPTY_AGENTS);
   const selectedId = useAppStore((s) => s.selectedAgentId);
   // A hidden, surface-owned chat opened on purpose (the local reviewer's

@@ -8,8 +8,7 @@
 
 import { remoteApi } from "@/api/domains/remote";
 import { forgetHost as forgetRecord, loadHosts, saveHost, updateHost } from "@/storage/remoteHosts";
-import { useAppStore } from "@/store";
-import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
+import { hostStore, startHost, stopHost, useAppStore } from "@/store";
 import { ProtocolClient } from "./client";
 import { thisDevice } from "./device";
 import { pairTargetFrom } from "./pairing";
@@ -22,13 +21,23 @@ export const hosts = createHostRegistry({
   // reaching for them through `getState` keeps this module from holding a
   // reference to the store's first state object.
   writers: {
-    upsertEnvironment: (entry) => useAppStore.getState().upsertEnvironment(entry),
+    // The entry that carries a transport is the one published as the host's
+    // client is created: from then on the host is live — its listeners fold
+    // into its partition whether or not it is on screen.
+    upsertEnvironment: (entry) => {
+      useAppStore.getState().upsertEnvironment(entry);
+      if (entry.transport) void startHost(entry.id);
+    },
     setEnvironmentConnection: (id, connection, error, retrying) =>
       useAppStore.getState().setEnvironmentConnection(id, connection, error, retrying),
     setEnvironmentProviders: (id, providers) =>
       useAppStore.getState().setEnvironmentProviders(id, providers),
-    removeEnvironment: (id) => useAppStore.getState().removeEnvironment(id),
-    environmentReconnected: (id) => useAppStore.getState().environmentReconnected(id),
+    removeEnvironment: (id) => {
+      void stopHost(id);
+      useAppStore.getState().removeEnvironment(id);
+    },
+    // The host's own actions re-read its own partition.
+    environmentReconnected: (id) => hostStore(id).getState().environmentReconnected(id),
   },
   device: thisDevice,
   newClient: (device) => new ProtocolClient({ openSocket: openWebSocket, device }),
@@ -105,18 +114,9 @@ export async function pairWithOfferedLink(url: string): Promise<void> {
   await addHost(parsed.target);
 }
 
-/** Close the connection and drop the record. Idempotent.
- *
- *  Driving the UI back to This Mac FIRST when the host being forgotten is the
- *  one on screen: `removeEnvironment` only refuses to strand `activeEnvironmentId`
- *  on a missing id, it cannot put the local view back — that is
- *  `switchEnvironment`'s job, and it needs the entry to still be there to park
- *  the forgotten host's state on. */
+/** Close the connection and drop the record. Idempotent. Forgetting the host
+ *  on screen puts This Mac on screen (`removeEnvironment`). */
 export async function removeHost(hostKey: string): Promise<void> {
-  const store = useAppStore.getState();
-  if (store.activeEnvironmentId === hostKey) {
-    await store.switchEnvironment(LOCAL_ENVIRONMENT_ID);
-  }
   hosts.forget(hostKey);
   await forgetRecord(hostKey);
 }

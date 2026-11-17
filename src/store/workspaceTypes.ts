@@ -84,10 +84,10 @@ export function applyBoxSetupEvent(get: () => AppState, e: BoxSetupEvent): void 
   if (moved) get().reloadWorkspaceTypes();
 }
 
-/** The latest read started; a response lands only while it is still this. */
-let latestRead = 0;
-
 export const createWorkspaceTypesSlice: SliceCreator<WorkspaceTypesSlice> = (set, get, { api }) => {
+  /** The latest read started; a response lands only while it is still this. */
+  let latestRead = 0;
+
   const currentKey = () => {
     const inputs = get().workspaceTypes.inputs;
     return inputs ? workspaceTypesKey(inputs.repoPath, inputs.provider) : null;

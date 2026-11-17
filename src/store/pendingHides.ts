@@ -13,12 +13,17 @@
 //
 // A pending hide is withdrawn (`clearPendingHide`) only when the backend
 // refuses the action — then nothing was archived and the row belongs back.
+//
+// Kept per host: the keys are agent ids, which recur across hosts, and only the
+// host's own snapshot can confirm one.
 
 import type { AgentRecord, ArchiveMetadata, Workspace } from "@/api";
+import type { EnvironmentId } from "./environments";
+import { perHost } from "./perHost";
 
 export type PendingHide = "archive" | "discard";
 
-const pending = new Map<string, PendingHide>();
+const pendingOf = perHost(() => new Map<string, PendingHide>());
 
 /** The `archive` stamped on a row hidden by a pending archive: the sidebar
  *  filters on `!a.archive`, so this drops the row immediately; the real
@@ -31,28 +36,21 @@ export const PENDING_ARCHIVE: ArchiveMetadata = {
   diff_stats: { additions: 0, deletions: 0 },
 };
 
-export const markPendingHide = (id: string, kind: PendingHide): void => {
-  pending.set(id, kind);
+export const markPendingHide = (hostId: EnvironmentId, id: string, kind: PendingHide): void => {
+  pendingOf(hostId).set(id, kind);
 };
 
-export const clearPendingHide = (id: string): void => {
-  pending.delete(id);
+export const clearPendingHide = (hostId: EnvironmentId, id: string): void => {
+  pendingOf(hostId).delete(id);
 };
 
-/** Forget every pending hide. Called when the UI switches environments: the
- *  keys are bare agent ids, which collide across hosts, and the snapshot that
- *  would have confirmed one is not coming while another environment is on
- *  screen. Safe because the action itself has already committed on its host —
- *  the row is hidden by the authoritative snapshot the switch back fetches. */
-export const clearPendingHides = (): void => {
-  pending.clear();
-};
-
-/** Confirm every pending hide `ws` already reflects (agent archived or gone),
- *  then re-apply the rest: a pending archive is stamped with `PENDING_ARCHIVE`,
- *  a pending discard is dropped from the list. Returns `ws` itself when there
- *  is nothing to do, so callers can pass snapshots through unconditionally. */
-export const applyPendingHides = (ws: Workspace): Workspace => {
+/** Confirm every pending hide of `hostId` that its snapshot `ws` already
+ *  reflects (agent archived or gone), then re-apply the rest: a pending archive
+ *  is stamped with `PENDING_ARCHIVE`, a pending discard is dropped from the
+ *  list. Returns `ws` itself when there is nothing to do, so callers can pass
+ *  snapshots through unconditionally. */
+export const applyPendingHides = (hostId: EnvironmentId, ws: Workspace): Workspace => {
+  const pending = pendingOf(hostId);
   if (pending.size === 0) return ws;
   const byId = new Map(ws.agents.map((a) => [a.id, a]));
   for (const id of [...pending.keys()]) {

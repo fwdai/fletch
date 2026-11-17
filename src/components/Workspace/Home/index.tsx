@@ -2,7 +2,7 @@ import { useState } from "react";
 import { pickFolder } from "@/components/FolderPicker";
 import { PanelToggle } from "@/components/PanelToggle";
 import { useAppStore } from "@/store";
-import { activeEntry, useGate } from "@/store/capabilities";
+import { useGate, useHostEntry } from "@/store/capabilities";
 import { useShortcutKeys } from "@/util/shortcuts";
 import { ActionCard } from "./ActionCard";
 import { greeting } from "./greeting";
@@ -32,7 +32,7 @@ export function Home() {
     sidebar: useShortcutKeys("toggleSidebar"),
     shortcuts: useShortcutKeys("shortcuts"),
   };
-  const remote = useAppStore((s) => activeEntry(s).kind === "remote");
+  const remote = useHostEntry().kind === "remote";
 
   const repos = workspace?.repos ?? [];
   const projects = workspace?.projects ?? [];

@@ -11,7 +11,7 @@ import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { activeEntry } from "@/store/capabilities";
+import { useHostEntry } from "@/store/capabilities";
 import { useProviderPoll } from "@/util/useProviderPoll";
 import { SetGroup, SetHead } from "../primitives";
 import { ProviderRow } from "./ProviderRow";
@@ -19,7 +19,7 @@ import { ProviderRow } from "./ProviderRow";
 export function ProvidersPane() {
   const providersProbed = useAppStore((s) => s.providersProbed);
   const refreshProviderVersions = useAppStore((s) => s.refreshProviderVersions);
-  const env = useAppStore(activeEntry);
+  const env = useHostEntry();
   const [scanning, setScanning] = useState(false);
 
   // Keep re-probing while the pane is open, so an install the user runs in

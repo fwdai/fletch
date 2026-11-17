@@ -1,8 +1,8 @@
 // Autopilot as the host runs it (docs/remote-protocol.md, "Autopilot"). Every
 // field here is a MIRROR: the host owns the loop, the switches and the history,
 // and this window renders them and asks the host to flip a switch. Seeded by
-// `autopilot_state {}` / `autopilot_log {}` on bootstrap, reconnect and
-// environment switch (`loadAutopilot`); kept current by `autopilot:state`,
+// `autopilot_state {}` / `autopilot_log {}` on bootstrap and every handshake
+// (`loadAutopilot`); kept current by `autopilot:state`,
 // `autopilot:switches` and `autopilot:event` in between — so every client
 // driving the host shows the same thing at the same moment.
 
@@ -14,7 +14,7 @@ import type {
 } from "@/api";
 import { hostSupports } from "@/remote/types";
 import { newestWins } from "@/util/newestWins";
-import { activeEnvironment, forActiveEnvironment } from "./environments";
+import { environmentEntry } from "./environments";
 import { gateReason } from "./gates";
 import { checkoutKey } from "./git";
 import type { SliceCreator } from "./types";
@@ -130,22 +130,22 @@ function withSwitch(m: Mirror, target: SwitchTarget, on: boolean): Partial<Mirro
   };
 }
 
-/** Every resync starts a load without waiting for the last, so the newest owns
- *  the mirror (util/newestWins). */
-const autopilotLoads = newestWins();
+export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get, { api, hostId }) => {
+  /** Every resync starts a load without waiting for the last, so the newest
+   *  owns the mirror (util/newestWins). */
+  const autopilotLoads = newestWins();
 
-/** Events seen while a load is in flight, replayed over its answer so a snapshot
- *  cannot undo what the host said after reading it — the mirror's (rows and
- *  switches) in arrival order. Null when no load is out. */
-let inFlight: { mirror: ((m: Mirror) => Mirror)[]; entries: AutopilotLogEntry[] } | null = null;
+  /** Events seen while a load is in flight, replayed over its answer so a
+   *  snapshot cannot undo what the host said after reading it — the mirror's
+   *  (rows and switches) in arrival order. Null when no load is out. */
+  let inFlight: { mirror: ((m: Mirror) => Mirror)[]; entries: AutopilotLogEntry[] } | null = null;
 
-/** Switch writes in click order: only the newest one's answer (or failure)
- *  touches the lists, so a slow earlier reply can't undo a later click. */
-const switchWrites = newestWins();
+  /** Switch writes in click order: only the newest one's answer (or failure)
+   *  touches the lists, so a slow earlier reply can't undo a later click. */
+  const switchWrites = newestWins();
 
-export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get, { api }) => {
   const writeSwitch = async (target: SwitchTarget, enabled: boolean) => {
-    const gated = gateReason(activeEnvironment(), "autopilot");
+    const gated = gateReason(environmentEntry(hostId), "autopilot");
     if (gated) {
       get().setLastError(gated);
       return;
@@ -155,8 +155,8 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get, { a
     // Optimistic, so the switch answers at once; the host's reply is the truth.
     set((s) => withSwitch(s, target, enabled));
     try {
-      const snapshot = await forActiveEnvironment(() => api.setAutopilot(target, enabled));
-      if (!snapshot || !claim.current()) return;
+      const snapshot = await api.setAutopilot(target, enabled);
+      if (!claim.current()) return;
       // Only the lists: the rows it changed arrive as `autopilot:state`, and a
       // row in this reply may be older than an event that beat it here.
       set({
@@ -176,17 +176,17 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get, { a
     autopilotPausedAgents: [],
 
     loadAutopilot: async () => {
-      const env = activeEnvironment();
+      const env = environmentEntry(hostId);
       if (env.kind === "remote" && !hostSupports(env.protocol, "autopilot_state")) return;
       const claim = autopilotLoads.claim();
       const buffer: NonNullable<typeof inFlight> = { mirror: [], entries: [] };
       inFlight = buffer;
       try {
-        const answer = await forActiveEnvironment(() =>
-          Promise.all([api.getAutopilotState(), api.getAutopilotLog()]),
-        );
-        if (!answer || !claim.current()) return;
-        const [snapshot, entries] = answer;
+        const [snapshot, entries] = await Promise.all([
+          api.getAutopilotState(),
+          api.getAutopilotLog(),
+        ]);
+        if (!claim.current()) return;
         // Each fold prepends, so fold oldest first: the host's history (newest
         // first) reversed, then what arrived while it was being read.
         const log = [...entries]

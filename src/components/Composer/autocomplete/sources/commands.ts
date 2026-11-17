@@ -47,21 +47,24 @@ export function useSlashEntries({
   projectDir,
   includeSkills,
 }: Pick<Args, "provider" | "projectDir" | "includeSkills">): SlashEntry[] {
-  const { api } = useEngine();
+  const engine = useEngine();
+  const { hostId } = engine;
   // Seed synchronously (built-ins + anything already cached) so the list is
   // never empty on mount, then refresh from disk. discoverCommands also
   // populates the module cache that the store's passthroughSlashName reads.
-  const [commands, setCommands] = useState<SlashCommand[]>(() => commandsFor(provider, projectDir));
+  const [commands, setCommands] = useState<SlashCommand[]>(() =>
+    commandsFor(hostId, provider, projectDir),
+  );
   useEffect(() => {
     let live = true;
-    setCommands(commandsFor(provider, projectDir));
-    discoverCommands(api, provider, projectDir).then((cmds) => {
+    setCommands(commandsFor(hostId, provider, projectDir));
+    discoverCommands(engine, provider, projectDir).then((cmds) => {
       if (live) setCommands(cmds);
     });
     return () => {
       live = false;
     };
-  }, [api, provider, projectDir]);
+  }, [engine, hostId, provider, projectDir]);
 
   const skills = useAppStore((s) => s.skills);
   // Precedence mirrors the send-time resolver exactly (see invocableSkills):

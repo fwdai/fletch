@@ -14,7 +14,7 @@ import { providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import { isAgentBusy } from "@/helpers";
 import { getLinearTeamId } from "@/storage/projectSettings";
-import { useAppStore } from "@/store";
+import { useAppStore, useHostStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { isCompacting } from "@/store/compaction";
 import { EGRESS_MODE_KEY, effectiveEgressMode } from "@/util/egressMode";
@@ -41,6 +41,7 @@ export function ChatComposer({
   onSend?: () => void;
 }) {
   const { api } = useEngine();
+  const store = useHostStore();
   const transcriptLoading = useAppStore((s) => s.transcriptLoading[agent.id] ?? false);
   // Raw busy (a paused question still counts) for the Stop affordance; the
   // strip gets the question-aware `liveBusy` from the owner.
@@ -236,7 +237,7 @@ export function ChatComposer({
               // strip). A refused folder is in the error banner, and false
               // puts the draft back to fix.
               // Read at send rather than subscribed to: nothing draws from it.
-              const pick = useAppStore.getState().composerRoadmapPicks[agent.id];
+              const pick = store.getState().composerRoadmapPicks[agent.id];
               // The message still names the item, so it is what is going out.
               const carried = pick && text.includes(pick.code) ? pick : undefined;
               const sent = send(agent.id, text, attachments, folders, {

@@ -30,7 +30,7 @@ import { useEngine } from "@/api/engine";
 import { resolveAgentSpawnProfile, resolveBaseBranch } from "@/helpers";
 import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@/starterPack";
 import { listCustomAgents } from "@/storage/customAgents";
-import { useAppStore } from "@/store";
+import { type HostStore, useAppStore, useHostStore } from "@/store";
 import { chatActiveAt, STANDUP_PROMPT, shouldAskForStandup } from "./standup";
 
 /** How the user picked the agent for a new chat: a custom agent (the Project
@@ -94,7 +94,12 @@ const checkingStandup = new Map<string, Promise<void>>();
 /** Ask the opened chat for a digest, if the board moved since it was last live.
  *  Never throws: a failed digest is a message the user didn't get, not an error
  *  worth putting on the Roadmap tab. */
-async function askForStandup(api: Api, projectId: string, chat: AgentRecord): Promise<void> {
+async function askForStandup(
+  api: Api,
+  store: HostStore,
+  projectId: string,
+  chat: AgentRecord,
+): Promise<void> {
   if (askedProjects.has(projectId)) return;
   const inFlight = checkingStandup.get(projectId);
   if (inFlight) return inFlight;
@@ -123,7 +128,7 @@ async function askForStandup(api: Api, projectId: string, chat: AgentRecord): Pr
     // The digest lands as an ordinary user turn in this chat, which is what makes
     // it self-limiting across app restarts too: the next session reads it as the
     // chat's last activity.
-    await useAppStore.getState().sendUserMessage(chat.id, STANDUP_PROMPT);
+    await store.getState().sendUserMessage(chat.id, STANDUP_PROMPT);
   })()
     .catch(() => {})
     .finally(() => {
@@ -163,6 +168,7 @@ export interface PmChatsState {
 
 export function usePmChats(projectId: string | null, repoPath: string): PmChatsState {
   const { api, events } = useEngine();
+  const store = useHostStore();
   const registerOffSidebarAgents = useAppStore((s) => s.registerOffSidebarAgents);
   const discard = useAppStore((s) => s.discard);
   // Re-resolves whenever the library changes, so a Project Manager created in
@@ -217,7 +223,7 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
         if (!alive) return;
         // Register before rendering: ChatPane resolves its transcript adapter
         // synchronously on mount, ahead of this hook's mirror effect.
-        useAppStore.getState().registerOffSidebarAgents(rows);
+        store.getState().registerOffSidebarAgents(rows);
         setChats(rows);
         // Open on the newest conversation — where the user left off — rather
         // than on the first one they ever started.
@@ -234,7 +240,7 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
     return () => {
       alive = false;
     };
-  }, [projectId, api]);
+  }, [projectId, api, store]);
 
   // These records don't ride the workspace snapshot, so the two fields the
   // thread renders live — the running/idle state and the first message, which
@@ -269,8 +275,8 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
     // empty one this hook starts with.
     if (!projectId || loading || !selectedId) return;
     const chat = chatsRef.current.find((c) => c.id === selectedId);
-    if (chat) void askForStandup(api, projectId, chat);
-  }, [projectId, loading, selectedId, api]);
+    if (chat) void askForStandup(api, store, projectId, chat);
+  }, [projectId, loading, selectedId, api, store]);
 
   // ── actions ────────────────────────────────────────────────────────
   // Read through a ref so `startChat` doesn't change identity per keystroke of
@@ -314,7 +320,7 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
           ROADMAP_PM_PURPOSE,
         );
         // Register before rendering — same reason as the list load above.
-        useAppStore.getState().registerOffSidebarAgents([rec]);
+        store.getState().registerOffSidebarAgents([rec]);
         setChats((prev) => [rec, ...prev]);
         setSelectedId(rec.id);
         // The opening turn, dispatched without waiting: the send appends its
@@ -326,7 +332,7 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
         // last spoke", and the opening turn below may not have persisted a row yet.
         freshChats.add(rec.id);
         const opening = firstMessage?.trim();
-        if (opening) void useAppStore.getState().sendUserMessage(rec.id, opening);
+        if (opening) void store.getState().sendUserMessage(rec.id, opening);
         return true;
       } catch (e) {
         setError(String(e));
@@ -335,7 +341,7 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
         setStarting(false);
       }
     },
-    [api],
+    [api, store],
   );
 
   const deleteChat = useCallback(
@@ -360,13 +366,13 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
         if (projectId) {
           const rows = await api.listProjectChats(projectId, ROADMAP_PM_PURPOSE).catch(() => null);
           if (rows) {
-            useAppStore.getState().registerOffSidebarAgents(rows);
+            store.getState().registerOffSidebarAgents(rows);
             setChats(rows);
           }
         }
       }
     },
-    [chats, discard, projectId, api],
+    [chats, discard, projectId, api, store],
   );
 
   const selected = chats.find((c) => c.id === selectedId) ?? null;

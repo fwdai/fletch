@@ -21,8 +21,7 @@ vi.mock("@/api", () => ({
 }));
 vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
 
-import { api } from "@/api";
-import { activeEngine } from "@/api/engine";
+import { activeEngine, localEngine } from "@/api/engine";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
 
@@ -153,7 +152,7 @@ describe("discard/restore/archive stay consistent when the refresh returns null"
 
     getWorkspace.mockResolvedValueOnce({ agents: [agent("a"), agent("b")] });
     const { refreshWorkspace } = await import("./refreshWorkspace");
-    await refreshWorkspace(api, store.setState);
+    await refreshWorkspace(localEngine, store.setState);
     expect(
       store.getState().workspace?.agents.find((x) => x.id === "a")?.archive,
       "pre-commit snapshot must not re-expose the row",
@@ -184,7 +183,7 @@ describe("discard/restore/archive stay consistent when the refresh returns null"
     // Withdrawn: a later live snapshot is applied as-is.
     getWorkspace.mockResolvedValueOnce({ agents: [agent("a")] });
     const { refreshWorkspace } = await import("./refreshWorkspace");
-    await refreshWorkspace(api, store.setState);
+    await refreshWorkspace(localEngine, store.setState);
     expect(store.getState().workspace?.agents.find((x) => x.id === "a")?.archive).toBeNull();
   });
 
@@ -194,12 +193,12 @@ describe("discard/restore/archive stay consistent when the refresh returns null"
 
     getWorkspace.mockResolvedValueOnce({ agents: [agent("a"), agent("b")] });
     const { refreshWorkspace } = await import("./refreshWorkspace");
-    await refreshWorkspace(api, store.setState);
+    await refreshWorkspace(localEngine, store.setState);
     expect(store.getState().workspace?.agents.map((x) => x.id)).toEqual(["b"]);
 
     // Confirmed once a snapshot no longer lists it.
     getWorkspace.mockResolvedValueOnce({ agents: [agent("b")] });
-    await refreshWorkspace(api, store.setState);
+    await refreshWorkspace(localEngine, store.setState);
     expect(store.getState().workspace?.agents.map((x) => x.id)).toEqual(["b"]);
   });
 });

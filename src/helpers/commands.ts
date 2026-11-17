@@ -4,7 +4,7 @@
 // expansion of bodied commands (codex prompts), whose CLI never resolves
 // `/name` itself over the managed transport.
 
-import type { Api } from "../api";
+import type { Engine } from "../api/engine";
 import {
   builtinCommandsFor,
   cachedCommandsAcrossProjects,
@@ -13,20 +13,22 @@ import {
   type SlashCommand,
 } from "../data/slashCommands";
 import { type Skill, type SkillSnapshot, skillSlug } from "../storage/skills";
+import type { EnvironmentId } from "../store/environments";
 
 /** If `text` is a `/<name>` matching a known passthrough command for the
- *  given provider, return its bare name; otherwise null. `projectDir` scopes
- *  discovered project-level commands (see commandsFor). The result is used
- *  both to swap the optimistic user_message for a slash_command notice and to
- *  set a busy label. */
+ *  given provider, return its bare name; otherwise null. `hostId` and
+ *  `projectDir` scope discovered project-level commands (see commandsFor). The
+ *  result is used both to swap the optimistic user_message for a slash_command
+ *  notice and to set a busy label. */
 export function passthroughSlashName(
+  hostId: EnvironmentId,
   providerId: string | undefined,
   text: string,
   projectDir?: string,
 ): string | null {
   if (!providerId || !text.startsWith("/")) return null;
   const first = text.split(/\s/)[0].slice(1);
-  const match = commandsFor(providerId, projectDir).find(
+  const match = commandsFor(hostId, providerId, projectDir).find(
     (c) => c.kind === "passthrough" && c.name === first,
   );
   return match ? match.name : null;
@@ -148,12 +150,13 @@ export function expandCommandText(commands: SlashCommand[], text: string): strin
  *  discovered). Callers on the send path should `await discoverCommands`
  *  first so a send racing the composer's async cache fill still expands. */
 export function expandSlashCommand(
+  hostId: EnvironmentId,
   providerId: string | undefined,
   text: string,
   projectDir?: string,
 ): string | null {
   if (!providerId) return null;
-  return expandCommandText(commandsFor(providerId, projectDir), text);
+  return expandCommandText(commandsFor(hostId, providerId, projectDir), text);
 }
 
 /** If a user message's text is an app-expanded command send — the typed
@@ -220,7 +223,7 @@ const CLAUDE_TUI_ONLY_COMMANDS = new Set([
  *  store uses this to block the send and surface a "use the Native view" notice
  *  instead of dispatching a doomed turn that flashes and disappears. */
 export async function unsupportedManagedCommand(
-  api: Api,
+  engine: Pick<Engine, "api" | "hostId">,
   providerId: string | undefined,
   text: string,
   projectDir?: string,
@@ -234,7 +237,7 @@ export async function unsupportedManagedCommand(
   // cache: otherwise a `/usage` sent before the composer has run discovery
   // would be wrongly blocked. Only reached for the rare curated-name case, so
   // the extra round-trip is cheap.
-  const commands = await discoverCommands(api, providerId, projectDir);
+  const commands = await discoverCommands(engine, providerId, projectDir);
   if (commands.some((c) => c.name === first)) return null;
   return first;
 }

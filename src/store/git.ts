@@ -17,10 +17,10 @@ import {
 } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
 import { newestWins } from "@/util/newestWins";
-import { activeEnvironment, activeEnvironmentId, forActiveEnvironment } from "./environments";
+import { environmentEntry } from "./environments";
 import { gateReason } from "./gates";
-import { applyPrStateChanged, upsertState } from "./prEvents";
-import { acceptPrWrite, issuePrWrite } from "./prWriteOrder";
+import { applyPrStateChanged, prWriteOrderOf, upsertState } from "./prEvents";
+import type { PrWriteOrder } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
 
 export interface GitSlice {
@@ -66,8 +66,8 @@ export interface GitSlice {
   /** Live host delegations per checkout, keyed by `checkoutKey(agentId,
    *  subdir?)` (absent = none). A MIRROR: the host owns the lifecycle
    *  (`supervisor::delegation`), and this is fed by `delegation:changed` and by
-   *  `get_delegations` on bootstrap, reconnect and environment switch, so every
-   *  window driving the host shows the same thing at the same moment. */
+   *  `get_delegations` on bootstrap and every handshake, so every window
+   *  driving the host shows the same thing at the same moment. */
   delegations: Record<string, Delegation>;
   /** Transient outcome text for a settled delegation, keyed by checkout — the
    *  "Conflicts resolved" / "Agent finished" confirmation the host's `done` /
@@ -80,8 +80,8 @@ export interface GitSlice {
    *  checkout: the lock must outlive a switch to another repo and back, or the
    *  same push could be dispatched twice. Scoped by environment because hosts
    *  reuse agent ids and the push belongs to the host running it; so it is
-   *  deliberately NOT stashed on an environment switch — the entry stays put
-   *  and its completion clears exactly it, whichever host is on screen. */
+   *  deliberately not a host key (./hostState) — the entry stays at the top
+   *  level and its completion clears exactly it, whichever host is on screen. */
   gitBusy: Record<string, string>;
   /** The Git panel's transient confirmation per checkout ("Pushed to origin"),
    *  keyed like `gitBusy`, self-expiring like `delegationNotices`. */
@@ -116,11 +116,12 @@ export interface GitSlice {
   /** Seed the fleet's PR state + CI from one `get_all_pr_status` read: every
    *  repo with a known PR across every agent, keyed by `checkoutKey`, so the
    *  sidebar badges are right without opening a panel. A seed, not a poll —
-   *  run on GitHub connecting, environment switch / reconnect and window
-   *  focus; between those the host watcher's `pr:*` events keep it current.
-   *  `reverifyClosed` asks for an immediate live look at closed PRs (launch,
-   *  reconnect and environment switch); the host watcher also does that on a
-   *  slow cadence, so a reopen converges with no client at all. */
+   *  run on GitHub connecting (`useGitSync`, which also runs it when the host
+   *  on screen changes), handshake and window focus; between those the host
+   *  watcher's `pr:*` events keep it current. `reverifyClosed` asks for an
+   *  immediate live look at closed PRs (launch, handshake and the host on
+   *  screen changing); the host watcher also does that on a slow cadence, so
+   *  a reopen converges with no client at all. */
   loadAllPrStatus: (reverifyClosed?: boolean) => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
   /** PR state + CI in one backend pass over ETag-conditional REST, both from
@@ -265,12 +266,13 @@ function focusedIntoSet(
  *  for a `set()` to spread. Accepted inside the write, so a read that has
  *  nothing to fold in doesn't claim the slice. */
 function setsWrite(
+  order: PrWriteOrder,
   s: GitSlice,
   mapKey: string,
   ticket: number,
   next: PrSetEntry[] | null,
 ): Partial<GitSlice> {
-  if (!next || !acceptPrWrite("prSets", mapKey, ticket)) return {};
+  if (!next || !order.accept("prSets", mapKey, ticket)) return {};
   return { prSets: { ...s.prSets, [mapKey]: next } };
 }
 
@@ -280,6 +282,7 @@ function setsWrite(
 // drops the "checking…" placeholder, while a later transient error keeps the
 // last good value. `toSet` folds an accepted value into the checkout's PR set.
 const fetchPrAux = async <K extends "prChecks" | "prComments">(
+  order: PrWriteOrder,
   set: GitSet,
   agentId: string,
   key: K,
@@ -288,15 +291,15 @@ const fetchPrAux = async <K extends "prChecks" | "prComments">(
   toSet?: (s: GitSlice, mapKey: string, value: GitSlice[K][string]) => PrSetEntry[] | null,
 ): Promise<void> => {
   const mapKey = checkoutKey(agentId, subdir);
-  const ticket = issuePrWrite();
+  const ticket = order.issue();
   try {
     const value = await fetch(agentId, subdir);
-    if (!acceptPrWrite(key, mapKey, ticket)) return;
+    if (!order.accept(key, mapKey, ticket)) return;
     set(
       (s) =>
         ({
           [key]: { ...s[key], [mapKey]: value },
-          ...setsWrite(s, mapKey, ticket, toSet?.(s, mapKey, value) ?? null),
+          ...setsWrite(order, s, mapKey, ticket, toSet?.(s, mapKey, value) ?? null),
         }) as Partial<GitSlice>,
     );
   } catch {
@@ -317,9 +320,6 @@ const githubReady = (get: GitGet) => get().github?.authenticated ?? false;
  *  transient-notice window (`useTransientFeedback`) so the two read alike. */
 const DELEGATION_NOTICE_MS = 3500;
 
-/** Live expiry timers for `delegationNotices`, by checkout key. Module scope
- *  because they're side-channel cleanup, not observable state. */
-const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** The panel's own confirmations lapse on the same clock, one timer per checkout. */
 const GIT_NOTICE_MS = 3500;
 const gitNoticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -344,11 +344,6 @@ function mirrorOf(e: DelegationEvent): Delegation | null {
   };
 }
 
-/** The fleet PR seed in flight, the environment it is reading and whether it
- *  includes the stronger closed-PR recheck. A strong request joining a weak
- *  one chains its own read; it must never be silently satisfied by less work. */
-let allPrStatusLoad: { env: string; reverifyClosed: boolean; done: Promise<void> } | null = null;
-
 /** `next` as a checkout's PR set, each PR keeping its last-known checks where
  *  `next` has nothing to say about them (`checks: null`) — the same rule the
  *  seed applies to `prChecks`. */
@@ -363,14 +358,17 @@ function withKnownChecks(prev: PrSetEntry[] | undefined, next: PrSetEntry[]): Pr
 
 /** One `get_all_pr_status` read, merged into `prStates` / `prChecks` /
  *  `prSets`. */
-async function readAllPrStatus(api: Api, set: GitSet, reverifyClosed: boolean): Promise<void> {
-  const ticket = issuePrWrite();
+async function readAllPrStatus(
+  order: PrWriteOrder,
+  api: Api,
+  set: GitSet,
+  reverifyClosed: boolean,
+): Promise<void> {
+  const ticket = order.issue();
   try {
     // The reply is the seed itself: the host's watcher emits only on a change,
-    // so nothing else would ever tell this window the current state. Dropped if
-    // the user switched environment mid-read (agent ids recur across hosts).
-    const map = await forActiveEnvironment(() => api.getAllPrStatus(reverifyClosed));
-    if (!map) return;
+    // so nothing else would ever tell this window the current state.
+    const map = await api.getAllPrStatus(reverifyClosed);
     set((s) => {
       // Merge, never replace: agents absent from the reply keep whatever the
       // focused-panel / per-trigger paths recorded. `checks` is only written
@@ -385,13 +383,13 @@ async function readAllPrStatus(api: Api, set: GitSet, reverifyClosed: boolean): 
       const prChecks = { ...s.prChecks };
       const prSets = { ...s.prSets };
       for (const [key, entry] of Object.entries(map)) {
-        if (acceptPrWrite("prStates", key, ticket)) prStates[key] = entry.state;
-        if (entry.checks != null && acceptPrWrite("prChecks", key, ticket)) {
+        if (order.accept("prStates", key, ticket)) prStates[key] = entry.state;
+        if (entry.checks != null && order.accept("prChecks", key, ticket)) {
           prChecks[key] = entry.checks;
         }
         // A host from before PR sets reports the focused PR alone, which is
         // its whole set as far as it knows.
-        if (acceptPrWrite("prSets", key, ticket)) {
+        if (order.accept("prSets", key, ticket)) {
           const next = entry.prs ?? [{ state: entry.state, checks: entry.checks }];
           prSets[key] = withKnownChecks(s.prSets[key], next);
         }
@@ -404,443 +402,457 @@ async function readAllPrStatus(api: Api, set: GitSet, reverifyClosed: boolean): 
   }
 }
 
-/** The `started_at` of the last delegation that ended on each checkout, so the
- *  `delegate_git` reply landing after its own `done` cannot put it back. */
-const endedDelegations = new Map<string, number>();
+export const createGitSlice: SliceCreator<GitSlice> = (set, get, { api, hostId }) => {
+  /** The PR write order of this host's keys. */
+  const prOrder = () => prWriteOrderOf(hostId);
 
-/** Every resync starts a `get_delegations` without waiting for the last, so the
- *  newest owns the mirror (util/newestWins). */
-const delegationLoads = newestWins();
+  /** Live expiry timers for `delegationNotices`, by checkout key. Not store
+   *  state: they're side-channel cleanup, not observable state. */
+  const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-/** `delegation:changed` events seen while a `get_delegations` is in flight,
- *  replayed over its answer. Null when no load is outstanding. */
-let delegationsInFlight: DelegationEvent[] | null = null;
+  /** The fleet PR seed in flight, and whether it includes the stronger
+   *  closed-PR recheck. A strong request joining a weak one chains its own
+   *  read; it must never be silently satisfied by less work. */
+  let allPrStatusLoad: { reverifyClosed: boolean; done: Promise<void> } | null = null;
 
-export const createGitSlice: SliceCreator<GitSlice> = (set, get, { api }) => ({
-  gitStates: {},
-  gitBlocked: {},
-  gitShortstats: {},
-  prStates: {},
-  prChecks: {},
-  prComments: {},
-  prSets: {},
-  delegations: {},
-  delegationNotices: {},
-  gitBusy: {},
-  gitNotices: {},
-  gitCommitAction: "agent-commit-pr" as GitCommitAction,
-  publishApprovalWait: DEFAULT_PUBLISH_APPROVAL_WAIT,
-  autoArchiveIdleDays: DEFAULT_AUTO_ARCHIVE_IDLE_DAYS,
-  branchPrefix: "",
-  draftPrs: false,
+  /** The `started_at` of the last delegation that ended on each checkout, so
+   *  the `delegate_git` reply landing after its own `done` cannot put it
+   *  back. */
+  const endedDelegations = new Map<string, number>();
 
-  fetchGitState: async (agentId, subdir, poll) => {
-    try {
-      // Dropped if the user switched environment mid-poll: agent ids recur
-      // across hosts, so a late answer would land on the new host's checkout.
-      const state = await forActiveEnvironment(() => api.getGitState(agentId, subdir, poll));
-      if (!state) return;
-      const key = checkoutKey(agentId, subdir);
-      const blocked = state.blocked_config ?? [];
-      if (blocked.length > 0) {
-        set((s) => ({ gitBlocked: { ...s.gitBlocked, [key]: blocked } }));
+  /** Every resync starts a `get_delegations` without waiting for the last, so
+   *  the newest owns the mirror (util/newestWins). */
+  const delegationLoads = newestWins();
+
+  /** `delegation:changed` events seen while a `get_delegations` is in flight,
+   *  replayed over its answer. Null when no load is outstanding. */
+  let delegationsInFlight: DelegationEvent[] | null = null;
+
+  return {
+    gitStates: {},
+    gitBlocked: {},
+    gitShortstats: {},
+    prStates: {},
+    prChecks: {},
+    prComments: {},
+    prSets: {},
+    delegations: {},
+    delegationNotices: {},
+    gitBusy: {},
+    gitNotices: {},
+    gitCommitAction: "agent-commit-pr" as GitCommitAction,
+    publishApprovalWait: DEFAULT_PUBLISH_APPROVAL_WAIT,
+    autoArchiveIdleDays: DEFAULT_AUTO_ARCHIVE_IDLE_DAYS,
+    branchPrefix: "",
+    draftPrs: false,
+
+    fetchGitState: async (agentId, subdir, poll) => {
+      try {
+        const state = await api.getGitState(agentId, subdir, poll);
+        if (!state) return;
+        const key = checkoutKey(agentId, subdir);
+        const blocked = state.blocked_config ?? [];
+        if (blocked.length > 0) {
+          set((s) => ({ gitBlocked: { ...s.gitBlocked, [key]: blocked } }));
+          return;
+        }
+        set((s) => {
+          const { [key]: _cleared, ...gitBlocked } = s.gitBlocked;
+          return { gitStates: { ...s.gitStates, [key]: state }, gitBlocked };
+        });
+      } catch {
+        // non-fatal — next poll tick will retry
+      }
+    },
+
+    fetchAllShortstats: async () => {
+      try {
+        const map = await api.getAllShortstats();
+        // Replace wholesale — agents archived/removed between ticks fall
+        // out naturally. This map is independent of `gitStates`, so the
+        // focused panel's full-state poll can't be clobbered.
+        set({ gitShortstats: map });
+      } catch {
+        // non-fatal — next poll tick will retry
+      }
+    },
+
+    fetchPrState: async (agentId, subdir) => {
+      const mapKey = checkoutKey(agentId, subdir);
+      const order = prOrder();
+      const ticket = order.issue();
+      try {
+        const state = await api.getPrState(agentId, subdir);
+        if (!order.accept("prStates", mapKey, ticket)) return;
+        // Always write (including null) to distinguish "confirmed: no PR" from
+        // "not yet fetched" (absent key). Unlike fetchGitState which guards the
+        // write, PR state being null is meaningful.
+        // The set's entry for it moves too, so it isn't stale until the next
+        // sweep; a confirmed "no PR" names no entry to touch.
+        set((s) => ({
+          prStates: { ...s.prStates, [mapKey]: state },
+          ...setsWrite(order, s, mapKey, ticket, state && focusedIntoSet(s.prSets[mapKey], state)),
+        }));
+      } catch {
+        // non-fatal
+      }
+    },
+
+    loadAllPrStatus: (reverifyClosed = false) => {
+      if (!githubReady(get)) return Promise.resolve();
+      const env = environmentEntry(hostId);
+      if (env.kind === "remote" && !hostSupports(env.protocol, "get_all_pr_status")) {
+        return Promise.resolve();
+      }
+      // GitHub connecting, a handshake and a focus can all ask at once (a
+      // handshake flips `github` as it re-probes). Equal or stronger work
+      // answers a caller directly. A closed-PR recheck joining a snapshot-only
+      // read must run after it: returning the weaker promise is the race that
+      // left reopened PRs displayed as closed indefinitely.
+      const current = allPrStatusLoad;
+      if (current && (current.reverifyClosed || !reverifyClosed)) return current.done;
+      const read = () => readAllPrStatus(prOrder(), api, set, reverifyClosed);
+      const pending = current ? current.done.then(read) : read();
+      const done = pending.finally(() => {
+        if (allPrStatusLoad?.done === done) allPrStatusLoad = null;
+      });
+      allPrStatusLoad = { reverifyClosed, done };
+      return done;
+    },
+
+    fetchPrChecks: (agentId, subdir) =>
+      fetchPrAux(
+        prOrder(),
+        set,
+        agentId,
+        "prChecks",
+        api.getPrChecks,
+        subdir,
+        (s, mapKey, checks) => {
+          // Checks are the focused PR's; with none known (or none resolved) there
+          // is no entry to write them to.
+          const focused = s.prStates[mapKey];
+          return focused && checks ? focusedIntoSet(s.prSets[mapKey], focused, checks) : null;
+        },
+      ),
+
+    fetchPrLive: async (agentId, subdir) => {
+      if (!githubReady(get)) return;
+      const mapKey = checkoutKey(agentId, subdir);
+      const order = prOrder();
+      const ticket = order.issue();
+      try {
+        const live = await api.getPrLive(agentId, subdir);
+        // One ticket, checked per slice: the fleet seed and the watcher's events
+        // write these same keys, so an older response must not land on top of a
+        // newer one (nor on top of the post-merge refresh).
+        const takeState = order.accept("prStates", mapKey, ticket);
+        const takeChecks =
+          (live?.checks != null || live == null) && order.accept("prChecks", mapKey, ticket);
+        if (!takeState && !takeChecks) return;
+        // Writing `null` state is safe here *because* the backend degrades a failed
+        // lookup to the last persisted snapshot (see `get_pr_live` /
+        // `resolve_pr_state`) rather than reporting nothing. So a null reply means
+        // "this repo has no PR", not "the fetch failed" — the distinction the
+        // panel depends on, since it treats a present null as authoritative and
+        // skips its snapshot fallback.
+        //
+        // Checks are only written when the read resolved them: a null `checks` on a
+        // present PR means the CI reads degraded (or the PR isn't open), and
+        // overwriting a good rollup there would blank the pill on a transient
+        // error.
+        //
+        // The set's entry for the PR moves with the state (and its checks, when
+        // those were taken too), so it isn't stale until the next sweep.
+        set((s) => ({
+          prStates: takeState ? { ...s.prStates, [mapKey]: live?.state ?? null } : s.prStates,
+          prChecks: takeChecks ? { ...s.prChecks, [mapKey]: live?.checks ?? null } : s.prChecks,
+          ...setsWrite(
+            order,
+            s,
+            mapKey,
+            ticket,
+            takeState && live
+              ? focusedIntoSet(s.prSets[mapKey], live.state, takeChecks ? live.checks : null)
+              : null,
+          ),
+        }));
+      } catch {
+        // Mirror fetchPrAux's failure contract: degrade an absent key to null so
+        // the "checking…" placeholder clears, but let a later transient error
+        // keep the last good value.
+        set((s) => ({
+          prChecks: mapKey in s.prChecks ? s.prChecks : { ...s.prChecks, [mapKey]: null },
+        }));
+      }
+    },
+
+    fetchPrThreads: async (agentId, subdir) => {
+      // Not GitHub-gated like `fetchPrLive`: the host's read merges the local
+      // reviewer's threads with the PR's, and the local ones exist with no PR,
+      // no origin and no GitHub login. The host itself skips GitHub when it
+      // can't reach it, so an offline user still generates no API chatter.
+      await fetchPrAux(prOrder(), set, agentId, "prComments", api.getPrThreads, subdir);
+    },
+
+    delegateAction: async (agentId, action, params, subdir) => {
+      // A host that can't run delegations says so rather than being sent a
+      // trigger nothing on it would watch. Never closed locally.
+      const gated = gateReason(environmentEntry(hostId), "delegateGit");
+      if (gated) {
+        get().setLastError(gated);
         return;
       }
+      try {
+        const recorded = await api.delegateGit(agentId, action, params, subdir);
+        // The host's `delegation:changed` says the same and may land either side
+        // of this reply. Writing now shows the label without waiting for the
+        // event; the one thing it must not do is resurrect a delegation whose end
+        // already arrived.
+        const key = checkoutKey(recorded.agent_id, recorded.subdir ?? undefined);
+        const live = mirrorOf(recorded);
+        if (!live || endedDelegations.get(key) === recorded.started_at) return;
+        set((s) => ({ delegations: { ...s.delegations, [key]: live } }));
+      } catch (e) {
+        get().setLastError(String(e));
+      }
+    },
+
+    applyDelegationChange: (e) => {
+      delegationsInFlight?.push(e);
+      const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
+      const live = mirrorOf(e);
+      if (live) {
+        set((s) => ({ delegations: { ...s.delegations, [key]: live } }));
+        return;
+      }
+      endedDelegations.set(key, e.started_at);
       set((s) => {
-        const { [key]: _cleared, ...gitBlocked } = s.gitBlocked;
-        return { gitStates: { ...s.gitStates, [key]: state }, gitBlocked };
+        const { [key]: _ended, ...rest } = s.delegations;
+        return { delegations: rest };
       });
-    } catch {
-      // non-fatal — next poll tick will retry
-    }
-  },
+      if (e.notice) get().noteDelegationOutcome(key, e.notice);
+      // A fresh PR (or branch update) changes the merge gate — refresh now rather
+      // than waiting out the slow poll.
+      if (e.phase === "done") void get().fetchPrChecks(e.agent_id, e.subdir ?? undefined);
+    },
 
-  fetchAllShortstats: async () => {
-    try {
-      const map = await api.getAllShortstats();
-      // Replace wholesale — agents archived/removed between ticks fall
-      // out naturally. This map is independent of `gitStates`, so the
-      // focused panel's full-state poll can't be clobbered.
-      set({ gitShortstats: map });
-    } catch {
-      // non-fatal — next poll tick will retry
-    }
-  },
+    loadDelegations: async () => {
+      const env = environmentEntry(hostId);
+      if (env.kind === "remote" && !hostSupports(env.protocol, "get_delegations")) return;
+      const claim = delegationLoads.claim();
+      const buffer: DelegationEvent[] = [];
+      delegationsInFlight = buffer;
+      try {
+        const rows = await api.getDelegations();
+        if (!claim.current()) return;
+        // The table as the host read it, with whatever it said since folded back
+        // in — an event that raced the read must not be undone by it.
+        const delegations: Record<string, Delegation> = {};
+        for (const e of [...rows, ...buffer]) {
+          const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
+          const live = mirrorOf(e);
+          if (live) delegations[key] = live;
+          else delete delegations[key];
+        }
+        set({ delegations });
+      } catch {
+        // Best effort, like the other resync reads: the events keep it current.
+      } finally {
+        if (delegationsInFlight === buffer) delegationsInFlight = null;
+      }
+    },
 
-  fetchPrState: async (agentId, subdir) => {
-    const mapKey = checkoutKey(agentId, subdir);
-    const ticket = issuePrWrite();
-    try {
-      const state = await api.getPrState(agentId, subdir);
-      if (!acceptPrWrite("prStates", mapKey, ticket)) return;
-      // Always write (including null) to distinguish "confirmed: no PR" from
-      // "not yet fetched" (absent key). Unlike fetchGitState which guards the
-      // write, PR state being null is meaningful.
-      // The set's entry for it moves too, so it isn't stale until the next
-      // sweep; a confirmed "no PR" names no entry to touch.
-      set((s) => ({
-        prStates: { ...s.prStates, [mapKey]: state },
-        ...setsWrite(s, mapKey, ticket, state && focusedIntoSet(s.prSets[mapKey], state)),
-      }));
-    } catch {
-      // non-fatal
-    }
-  },
-
-  loadAllPrStatus: (reverifyClosed = false) => {
-    if (!githubReady(get)) return Promise.resolve();
-    const env = activeEnvironment();
-    if (env.kind === "remote" && !hostSupports(env.protocol, "get_all_pr_status")) {
-      return Promise.resolve();
-    }
-    // GitHub connecting, an environment switch and a focus can all ask at once
-    // (a switch flips `github` as it re-probes). Equal or stronger work answers
-    // a caller directly. A closed-PR recheck joining a snapshot-only read must
-    // run after it: returning the weaker promise is the race that left reopened
-    // PRs displayed as closed indefinitely.
-    const envId = activeEnvironmentId();
-    const current = allPrStatusLoad?.env === envId ? allPrStatusLoad : null;
-    if (current && (current.reverifyClosed || !reverifyClosed)) return current.done;
-    // A queued upgrade belongs to the environment that requested it. If the
-    // user switches before the weaker read settles, the entered environment's
-    // own load is authoritative; never retarget this delayed call to it.
-    const read = () =>
-      activeEnvironmentId() === envId
-        ? readAllPrStatus(api, set, reverifyClosed)
-        : Promise.resolve();
-    const pending = current ? current.done.then(read) : read();
-    const done = pending.finally(() => {
-      if (allPrStatusLoad?.done === done) allPrStatusLoad = null;
-    });
-    allPrStatusLoad = { env: envId, reverifyClosed, done };
-    return done;
-  },
-
-  fetchPrChecks: (agentId, subdir) =>
-    fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir, (s, mapKey, checks) => {
-      // Checks are the focused PR's; with none known (or none resolved) there
-      // is no entry to write them to.
-      const focused = s.prStates[mapKey];
-      return focused && checks ? focusedIntoSet(s.prSets[mapKey], focused, checks) : null;
-    }),
-
-  fetchPrLive: async (agentId, subdir) => {
-    if (!githubReady(get)) return;
-    const mapKey = checkoutKey(agentId, subdir);
-    const ticket = issuePrWrite();
-    try {
-      const live = await api.getPrLive(agentId, subdir);
-      // One ticket, checked per slice: the fleet seed and the watcher's events
-      // write these same keys, so an older response must not land on top of a
-      // newer one (nor on top of the post-merge refresh).
-      const takeState = acceptPrWrite("prStates", mapKey, ticket);
-      const takeChecks =
-        (live?.checks != null || live == null) && acceptPrWrite("prChecks", mapKey, ticket);
-      if (!takeState && !takeChecks) return;
-      // Writing `null` state is safe here *because* the backend degrades a failed
-      // lookup to the last persisted snapshot (see `get_pr_live` /
-      // `resolve_pr_state`) rather than reporting nothing. So a null reply means
-      // "this repo has no PR", not "the fetch failed" — the distinction the
-      // panel depends on, since it treats a present null as authoritative and
-      // skips its snapshot fallback.
-      //
-      // Checks are only written when the read resolved them: a null `checks` on a
-      // present PR means the CI reads degraded (or the PR isn't open), and
-      // overwriting a good rollup there would blank the pill on a transient
-      // error.
-      //
-      // The set's entry for the PR moves with the state (and its checks, when
-      // those were taken too), so it isn't stale until the next sweep.
-      set((s) => ({
-        prStates: takeState ? { ...s.prStates, [mapKey]: live?.state ?? null } : s.prStates,
-        prChecks: takeChecks ? { ...s.prChecks, [mapKey]: live?.checks ?? null } : s.prChecks,
-        ...setsWrite(
-          s,
-          mapKey,
-          ticket,
-          takeState && live
-            ? focusedIntoSet(s.prSets[mapKey], live.state, takeChecks ? live.checks : null)
-            : null,
-        ),
-      }));
-    } catch {
-      // Mirror fetchPrAux's failure contract: degrade an absent key to null so
-      // the "checking…" placeholder clears, but let a later transient error
-      // keep the last good value.
-      set((s) => ({
-        prChecks: mapKey in s.prChecks ? s.prChecks : { ...s.prChecks, [mapKey]: null },
-      }));
-    }
-  },
-
-  fetchPrThreads: async (agentId, subdir) => {
-    // Not GitHub-gated like `fetchPrLive`: the host's read merges the local
-    // reviewer's threads with the PR's, and the local ones exist with no PR,
-    // no origin and no GitHub login. The host itself skips GitHub when it
-    // can't reach it, so an offline user still generates no API chatter.
-    await fetchPrAux(set, agentId, "prComments", api.getPrThreads, subdir);
-  },
-
-  delegateAction: async (agentId, action, params, subdir) => {
-    // A host that can't run delegations says so rather than being sent a
-    // trigger nothing on it would watch. Never closed locally.
-    const gated = gateReason(activeEnvironment(), "delegateGit");
-    if (gated) {
-      get().setLastError(gated);
-      return;
-    }
-    try {
-      const recorded = await forActiveEnvironment(() =>
-        api.delegateGit(agentId, action, params, subdir),
+    noteDelegationOutcome: (key, text) => {
+      set((s) => ({ delegationNotices: { ...s.delegationNotices, [key]: text } }));
+      // Self-expiring: the notice is a confirmation, not state. Clearing on a timer
+      // (rather than on the next render) keeps it visible long enough to read when a
+      // panel IS mounted, and harmlessly lapses when none is.
+      clearTimeout(noticeTimers.get(key));
+      noticeTimers.set(
+        key,
+        setTimeout(() => {
+          noticeTimers.delete(key);
+          set((s) => {
+            const { [key]: _expired, ...rest } = s.delegationNotices;
+            return { delegationNotices: rest };
+          });
+        }, DELEGATION_NOTICE_MS),
       );
-      if (!recorded) return;
-      // The host's `delegation:changed` says the same and may land either side
-      // of this reply. Writing now shows the label without waiting for the
-      // event; the one thing it must not do is resurrect a delegation whose end
-      // already arrived.
-      const key = checkoutKey(recorded.agent_id, recorded.subdir ?? undefined);
-      const live = mirrorOf(recorded);
-      if (!live || endedDelegations.get(key) === recorded.started_at) return;
-      set((s) => ({ delegations: { ...s.delegations, [key]: live } }));
-    } catch (e) {
-      get().setLastError(String(e));
-    }
-  },
+    },
 
-  applyDelegationChange: (e) => {
-    delegationsInFlight?.push(e);
-    const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
-    const live = mirrorOf(e);
-    if (live) {
-      set((s) => ({ delegations: { ...s.delegations, [key]: live } }));
-      return;
-    }
-    endedDelegations.set(key, e.started_at);
-    set((s) => {
-      const { [key]: _ended, ...rest } = s.delegations;
-      return { delegations: rest };
-    });
-    if (e.notice) get().noteDelegationOutcome(key, e.notice);
-    // A fresh PR (or branch update) changes the merge gate — refresh now rather
-    // than waiting out the slow poll.
-    if (e.phase === "done") void get().fetchPrChecks(e.agent_id, e.subdir ?? undefined);
-  },
-
-  loadDelegations: async () => {
-    const env = activeEnvironment();
-    if (env.kind === "remote" && !hostSupports(env.protocol, "get_delegations")) return;
-    const claim = delegationLoads.claim();
-    const buffer: DelegationEvent[] = [];
-    delegationsInFlight = buffer;
-    try {
-      const rows = await forActiveEnvironment(() => api.getDelegations());
-      if (!rows || !claim.current()) return;
-      // The table as the host read it, with whatever it said since folded back
-      // in — an event that raced the read must not be undone by it.
-      const delegations: Record<string, Delegation> = {};
-      for (const e of [...rows, ...buffer]) {
-        const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
-        const live = mirrorOf(e);
-        if (live) delegations[key] = live;
-        else delete delegations[key];
+    runGitBusy: async (k, label, fn) => {
+      if (gitBusyOwners.has(k)) return undefined;
+      const owner = {};
+      gitBusyOwners.set(k, owner);
+      set((s) => ({ gitBusy: { ...s.gitBusy, [k]: label } }));
+      try {
+        return await fn();
+      } finally {
+        if (gitBusyOwners.get(k) === owner) {
+          gitBusyOwners.delete(k);
+          set((s) => {
+            const { [k]: _done, ...rest } = s.gitBusy;
+            return { gitBusy: rest };
+          });
+        }
       }
-      set({ delegations });
-    } catch {
-      // Best effort, like the other resync reads: the events keep it current.
-    } finally {
-      if (delegationsInFlight === buffer) delegationsInFlight = null;
-    }
-  },
+    },
 
-  noteDelegationOutcome: (key, text) => {
-    set((s) => ({ delegationNotices: { ...s.delegationNotices, [key]: text } }));
-    // Self-expiring: the notice is a confirmation, not state. Clearing on a timer
-    // (rather than on the next render) keeps it visible long enough to read when a
-    // panel IS mounted, and harmlessly lapses when none is.
-    clearTimeout(noticeTimers.get(key));
-    noticeTimers.set(
-      key,
-      setTimeout(() => {
-        noticeTimers.delete(key);
-        set((s) => {
-          const { [key]: _expired, ...rest } = s.delegationNotices;
-          return { delegationNotices: rest };
-        });
-      }, DELEGATION_NOTICE_MS),
-    );
-  },
+    noteGitAction: (k, text) => {
+      set((s) => ({ gitNotices: { ...s.gitNotices, [k]: text } }));
+      clearTimeout(gitNoticeTimers.get(k));
+      gitNoticeTimers.set(
+        k,
+        setTimeout(() => {
+          gitNoticeTimers.delete(k);
+          set((s) => {
+            const { [k]: _expired, ...rest } = s.gitNotices;
+            return { gitNotices: rest };
+          });
+        }, GIT_NOTICE_MS),
+      );
+    },
 
-  runGitBusy: async (k, label, fn) => {
-    if (gitBusyOwners.has(k)) return undefined;
-    const owner = {};
-    gitBusyOwners.set(k, owner);
-    set((s) => ({ gitBusy: { ...s.gitBusy, [k]: label } }));
-    try {
-      return await fn();
-    } finally {
-      if (gitBusyOwners.get(k) === owner) {
-        gitBusyOwners.delete(k);
-        set((s) => {
-          const { [k]: _done, ...rest } = s.gitBusy;
-          return { gitBusy: rest };
-        });
+    setGitCommitAction: (action) => {
+      set({ gitCommitAction: action });
+      void setSetting("gitCommitAction", action);
+    },
+
+    setPublishApprovalWait: async (secs) => {
+      await api.setPublishApprovalWait(secs);
+      set({ publishApprovalWait: secs });
+    },
+
+    setAutoArchiveIdleDays: async (days) => {
+      await api.setAutoArchiveIdleDays(days);
+      set({ autoArchiveIdleDays: days });
+    },
+
+    setBranchPrefix: async (prefix) => {
+      // The backend trims and validates; store what it actually kept.
+      const stored = await api.setBranchPrefix(prefix);
+      set({ branchPrefix: stored });
+    },
+
+    setDraftPrs: async (enabled) => {
+      await api.setDraftPrs(enabled);
+      set({ draftPrs: enabled });
+    },
+
+    pushAgent: async (agentId, subdir) => {
+      try {
+        // "up-to-date" | "pushed" — lets the UI confirm the outcome.
+        const summary = await api.pushAgent(agentId, subdir);
+        await get().fetchGitState(agentId, subdir);
+        // pr:state_changed event will update prStates automatically
+        return summary;
+      } catch (e) {
+        set({ lastError: String(e) });
+        return null;
       }
-    }
-  },
+    },
 
-  noteGitAction: (k, text) => {
-    set((s) => ({ gitNotices: { ...s.gitNotices, [k]: text } }));
-    clearTimeout(gitNoticeTimers.get(k));
-    gitNoticeTimers.set(
-      k,
-      setTimeout(() => {
-        gitNoticeTimers.delete(k);
-        set((s) => {
-          const { [k]: _expired, ...rest } = s.gitNotices;
-          return { gitNotices: rest };
-        });
-      }, GIT_NOTICE_MS),
-    );
-  },
+    pullAgent: (agentId, subdir) =>
+      runGitMutation(get, agentId, () => api.pullAgent(agentId, subdir), subdir),
 
-  setGitCommitAction: (action) => {
-    set({ gitCommitAction: action });
-    void setSetting("gitCommitAction", action);
-  },
+    rebaseAgent: (agentId, subdir) =>
+      runGitMutation(get, agentId, () => api.rebaseAgent(agentId, subdir), subdir),
 
-  setPublishApprovalWait: async (secs) => {
-    await api.setPublishApprovalWait(secs);
-    set({ publishApprovalWait: secs });
-  },
+    commitChanges: (agentId, message, subdir) =>
+      runGitMutation(get, agentId, () => api.commitAgent(agentId, message, subdir), subdir),
 
-  setAutoArchiveIdleDays: async (days) => {
-    await api.setAutoArchiveIdleDays(days);
-    set({ autoArchiveIdleDays: days });
-  },
+    commitAndOpenPr: async (agentId, message, subdir) => {
+      try {
+        await api.commitAgent(agentId, message, subdir);
+        await api.pushAgent(agentId, subdir);
+        const pr = await api.createPr(agentId, "", "", subdir);
+        // Authoritative: we just created this PR, now the checkout's focused one.
+        // Applied as the host's focus event would be: stamped so a poll that was
+        // already in flight — and saw no PR at all — can't erase the card, and
+        // the "no PR" checks dropped so the new PR gets its own live read.
+        set((s) => applyPrStateChanged(prOrder(), s, { agent_id: agentId, subdir, state: pr }));
+        await get().fetchGitState(agentId, subdir);
+        return true;
+      } catch (e) {
+        set({ lastError: String(e) });
+        await get().fetchGitState(agentId, subdir);
+        return false;
+      }
+    },
 
-  setBranchPrefix: async (prefix) => {
-    // The backend trims and validates; store what it actually kept.
-    const stored = await api.setBranchPrefix(prefix);
-    set({ branchPrefix: stored });
-  },
+    stashChanges: async (agentId, subdir) => {
+      await runGitMutation(get, agentId, () => api.stashAgent(agentId, subdir), subdir);
+    },
 
-  setDraftPrs: async (enabled) => {
-    await api.setDraftPrs(enabled);
-    set({ draftPrs: enabled });
-  },
+    discardChanges: async (agentId, subdir) => {
+      await runGitMutation(get, agentId, () => api.discardAgentChanges(agentId, subdir), subdir);
+    },
 
-  pushAgent: async (agentId, subdir) => {
-    try {
-      // "up-to-date" | "pushed" — lets the UI confirm the outcome.
-      const summary = await api.pushAgent(agentId, subdir);
-      await get().fetchGitState(agentId, subdir);
-      // pr:state_changed event will update prStates automatically
-      return summary;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return null;
-    }
-  },
+    abortMerge: async (agentId, subdir) => {
+      await runGitMutation(get, agentId, () => api.abortMergeAgent(agentId, subdir), subdir);
+    },
 
-  pullAgent: (agentId, subdir) =>
-    runGitMutation(get, agentId, () => api.pullAgent(agentId, subdir), subdir),
+    clearCheckoutConfig: (agentId, subdir) =>
+      runGitMutation(get, agentId, () => api.clearCheckoutConfig(agentId, subdir), subdir),
 
-  rebaseAgent: (agentId, subdir) =>
-    runGitMutation(get, agentId, () => api.rebaseAgent(agentId, subdir), subdir),
+    deleteBranch: async (agentId, subdir) => {
+      await runGitMutation(get, agentId, () => api.deleteBranchAgent(agentId, subdir), subdir);
+    },
 
-  commitChanges: (agentId, message, subdir) =>
-    runGitMutation(get, agentId, () => api.commitAgent(agentId, message, subdir), subdir),
+    createPr: async (agentId, title, body, subdir) => {
+      try {
+        const pr = await api.createPr(agentId, title, body, subdir);
+        // Authoritative (see commitAndOpenPr): outranks any in-flight poll.
+        set((s) => applyPrStateChanged(prOrder(), s, { agent_id: agentId, subdir, state: pr }));
+        return pr;
+      } catch (e) {
+        set({ lastError: String(e) });
+        return null;
+      }
+    },
 
-  commitAndOpenPr: async (agentId, message, subdir) => {
-    try {
-      await api.commitAgent(agentId, message, subdir);
-      await api.pushAgent(agentId, subdir);
-      const pr = await api.createPr(agentId, "", "", subdir);
-      // Authoritative: we just created this PR, now the checkout's focused one.
-      // Applied as the host's focus event would be: stamped so a poll that was
-      // already in flight — and saw no PR at all — can't erase the card, and
-      // the "no PR" checks dropped so the new PR gets its own live read.
-      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, state: pr }));
-      await get().fetchGitState(agentId, subdir);
-      return true;
-    } catch (e) {
-      set({ lastError: String(e) });
-      await get().fetchGitState(agentId, subdir);
-      return false;
-    }
-  },
+    mergePr: async (agentId, subdir) => {
+      try {
+        await api.mergePr(agentId, subdir);
+        // Refresh immediately: no backend event fires on merge, and the panel
+        // should transition to the merged state as soon as GitHub reports it
+        // (with --auto + pending checks the PR can legitimately stay open).
+        // One read covers state and checks; the merge just changed both, so the
+        // conditional GETs come back 200 rather than 304 here.
+        await get().fetchPrLive(agentId, subdir);
+      } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
 
-  stashChanges: async (agentId, subdir) => {
-    await runGitMutation(get, agentId, () => api.stashAgent(agentId, subdir), subdir);
-  },
+    focusPr: async (agentId, number, subdir) => {
+      // The chips are disabled on a host without the op; this refuses a click
+      // that slips past them rather than send a call it would answer `unknown op`.
+      const gated = gateReason(environmentEntry(hostId), "focusPr");
+      if (gated) {
+        get().setLastError(gated);
+        return;
+      }
+      try {
+        const pr = await api.setFocusedPr(agentId, number, subdir);
+        set((s) => applyPrStateChanged(prOrder(), s, { agent_id: agentId, subdir, state: pr }));
+      } catch (e) {
+        get().setLastError(String(e));
+      }
+    },
 
-  discardChanges: async (agentId, subdir) => {
-    await runGitMutation(get, agentId, () => api.discardAgentChanges(agentId, subdir), subdir);
-  },
-
-  abortMerge: async (agentId, subdir) => {
-    await runGitMutation(get, agentId, () => api.abortMergeAgent(agentId, subdir), subdir);
-  },
-
-  clearCheckoutConfig: (agentId, subdir) =>
-    runGitMutation(get, agentId, () => api.clearCheckoutConfig(agentId, subdir), subdir),
-
-  deleteBranch: async (agentId, subdir) => {
-    await runGitMutation(get, agentId, () => api.deleteBranchAgent(agentId, subdir), subdir);
-  },
-
-  createPr: async (agentId, title, body, subdir) => {
-    try {
-      const pr = await api.createPr(agentId, title, body, subdir);
-      // Authoritative (see commitAndOpenPr): outranks any in-flight poll.
-      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, state: pr }));
-      return pr;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return null;
-    }
-  },
-
-  mergePr: async (agentId, subdir) => {
-    try {
-      await api.mergePr(agentId, subdir);
-      // Refresh immediately: no backend event fires on merge, and the panel
-      // should transition to the merged state as soon as GitHub reports it
-      // (with --auto + pending checks the PR can legitimately stay open).
-      // One read covers state and checks; the merge just changed both, so the
-      // conditional GETs come back 200 rather than 304 here.
-      await get().fetchPrLive(agentId, subdir);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
-
-  focusPr: async (agentId, number, subdir) => {
-    // The chips are disabled on a host without the op; this refuses a click
-    // that slips past them rather than send a call it would answer `unknown op`.
-    const gated = gateReason(activeEnvironment(), "focusPr");
-    if (gated) {
-      get().setLastError(gated);
-      return;
-    }
-    try {
-      const pr = await api.setFocusedPr(agentId, number, subdir);
-      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, state: pr }));
-    } catch (e) {
-      get().setLastError(String(e));
-    }
-  },
-
-  publishAgent: async (agentId, isPrivate) => {
-    try {
-      const url = await api.publishAgent(agentId, isPrivate);
-      // Origin now exists — refresh so the panel drops the no-origin
-      // affordances and shows normal push/PR against the new remote.
-      await get().fetchGitState(agentId);
-      return url;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return null;
-    }
-  },
-});
+    publishAgent: async (agentId, isPrivate) => {
+      try {
+        const url = await api.publishAgent(agentId, isPrivate);
+        // Origin now exists — refresh so the panel drops the no-origin
+        // affordances and shows normal push/PR against the new remote.
+        await get().fetchGitState(agentId);
+        return url;
+      } catch (e) {
+        set({ lastError: String(e) });
+        return null;
+      }
+    },
+  };
+};

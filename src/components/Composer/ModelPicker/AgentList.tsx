@@ -3,8 +3,8 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
 import { FlyoutGlyph, FlyoutRow, FlyoutSection } from "@/components/ui/FlyoutMenu";
 import type { PROVIDERS } from "@/data/providers";
-import { useAppStore } from "@/store";
-import { activeEntry } from "@/store/capabilities";
+import type { useAppStore } from "@/store";
+import { useHostEntry } from "@/store/capabilities";
 import type { useAgentAvailability } from "../availability";
 import { CUSTOM_FLY, useSelectableCustomAgents } from "./CustomAgentOptions";
 
@@ -36,7 +36,7 @@ export function AgentList({
   onPickModel: (providerId: string, model: string | undefined) => void;
   onOpenSettings: OpenSettings;
 }) {
-  const env = useAppStore(activeEntry);
+  const env = useHostEntry();
   const selectableCustom = useSelectableCustomAgents();
   // Looked up in the offered list: one whose base is switched off is still the
   // chip's identity, but the row has nothing to open for it.

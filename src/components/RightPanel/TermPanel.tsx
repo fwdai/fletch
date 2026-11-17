@@ -7,7 +7,7 @@ import { getShellBuffer, registerShellSink } from "@/pty/buffers";
 import { useXterm } from "@/util/useXterm";
 
 export function TermPanel({ agent }: { agent: AgentRecord }) {
-  const { api } = useEngine();
+  const { api, hostId } = useEngine();
   const search = useTerminalSearch();
 
   // ── Terminal setup ──────────────────────────────────────────────
@@ -28,7 +28,7 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
       const detachSearch = search.attach(term);
       term.loadAddon(new WebLinksAddon((_, url) => open(url)));
 
-      const buffered = getShellBuffer(agent.id);
+      const buffered = getShellBuffer(hostId, agent.id);
       if (buffered && buffered.length > 0) term.write(buffered);
 
       const onResize = term.onResize(({ cols, rows }) => {
@@ -39,7 +39,7 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
           console.error("writeToShell failed", err);
         });
       });
-      const unregister = registerShellSink(agent.id, (bytes) => term.write(bytes));
+      const unregister = registerShellSink(hostId, agent.id, (bytes) => term.write(bytes));
 
       return () => {
         detachSearch();
@@ -51,7 +51,7 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
         // archived/discarded (handled by backend) or app quits.
       };
     },
-    [agent.id],
+    [hostId, agent.id],
   );
 
   return (

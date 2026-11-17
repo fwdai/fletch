@@ -4,16 +4,17 @@ import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
 import { projectKey } from "@/util/projects";
 import { track } from "@/util/track";
-import { activeGateReason, type GateName } from "./capabilities";
+import { type GateName, hostGateReason } from "./capabilities";
+import type { EnvironmentId } from "./environments";
 import type { AppState, SliceCreator } from "./types";
 
-/** Refuse a write the environment the user is driving cannot take. The control
+/** Refuse a write the host `hostId` cannot take. The control
  *  is already disabled with this reason, so this is the backstop for the paths
  *  that never touch a button — Enter in the name field, a blur that saves a
  *  label — as the Git panel's dispatch is for its own keyboard shortcuts.
  *  Throws, because every caller here surfaces the failure inline. */
-function refuseWhenGated(gate: GateName = "projectAdmin"): void {
-  const reason = activeGateReason(gate);
+function refuseWhenGated(hostId: EnvironmentId, gate: GateName = "projectAdmin"): void {
+  const reason = hostGateReason(hostId, gate);
   if (reason) throw new Error(reason);
 }
 
@@ -75,7 +76,7 @@ export interface ReposSlice {
   ) => Promise<void>;
 }
 
-export const createReposSlice: SliceCreator<ReposSlice> = (set, get, { api }) => ({
+export const createReposSlice: SliceCreator<ReposSlice> = (set, get, { api, hostId }) => ({
   addWorkspaceRepo: async (path, opts) => {
     set({ busy: true, lastError: null });
     try {
@@ -103,7 +104,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get, { api }) =>
   removeWorkspaceRepo: async (path) => {
     // The one action here that reports through `lastError` rather than
     // throwing; the refusal follows it.
-    const gated = activeGateReason("projectAdmin");
+    const gated = hostGateReason(hostId, "projectAdmin");
     if (gated) {
       set({ lastError: gated });
       return;
@@ -118,41 +119,41 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get, { api }) =>
 
   attachRepoToProject: async (projectId, path) => {
     // Errors propagate to the Repositories section for inline display.
-    refuseWhenGated();
+    refuseWhenGated(hostId);
     const ws = await api.attachRepoToProject(projectId, path);
     set({ workspace: ws });
   },
 
   detachRepoFromProject: async (projectId, path) => {
-    refuseWhenGated();
+    refuseWhenGated(hostId);
     const ws = await api.detachRepoFromProject(projectId, path);
     set({ workspace: ws });
   },
 
   setRepoLabel: async (path, label) => {
-    refuseWhenGated();
+    refuseWhenGated(hostId);
     const ws = await api.setRepoLabel(path, label);
     set({ workspace: ws });
   },
 
   renameProject: async (projectId, name) => {
     // Errors propagate to the modal for inline display.
-    refuseWhenGated();
+    refuseWhenGated(hostId);
     const ws = await api.renameProject(projectId, name);
     set({ workspace: ws });
   },
 
   setProjectIcon: async (projectId, source, bytes) => {
-    refuseWhenGated("projectIcon");
+    refuseWhenGated(hostId, "projectIcon");
     const ws = await api.projectIconSet(projectId, source, bytes);
     set({ workspace: ws });
   },
 
   deleteProject: async (projectId) => {
-    refuseWhenGated();
+    refuseWhenGated(hostId);
     const result = await api.deleteProject(projectId);
     const deletedIds = result.deleted_agent_ids;
-    for (const id of deletedIds) clearOutputBuffer(id);
+    for (const id of deletedIds) clearOutputBuffer(hostId, id);
     set((state) => {
       let patch = {};
       for (const id of deletedIds)
@@ -172,7 +173,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get, { api }) =>
   },
 
   relocateProject: async (oldPath, newPath) => {
-    refuseWhenGated();
+    refuseWhenGated(hostId);
     const ws = await api.relocateRepo(oldPath, newPath);
     // Keep the project's manual sidebar position, and repoint the open project
     // view (keyed by repo path) at the new location so it doesn't go stale.
@@ -216,7 +217,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get, { api }) =>
     // The popover's Create row is already dead on a host that cannot take it;
     // this is the same backstop the settings writes have, for a modal left open
     // across an environment switch.
-    refuseWhenGated("createProject");
+    refuseWhenGated(hostId, "createProject");
     const before = get().workspace;
     const first = (before?.projects.length ?? 0) === 0;
     const ws = await api.createRepo(name, destParent, isPrivate, description, publish);

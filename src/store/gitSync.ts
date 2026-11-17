@@ -13,9 +13,9 @@
 //   - the focused agent's full git state, 1 s with the panel showing, 10 s not.
 //
 // Listened to (folded by `eventListeners`), with one read to seed:
-//   - the fleet's PR state + CI: `loadAllPrStatus` when GitHub connects (below),
-//     and on environment switch / reconnect (`environmentSwitch`) and window
-//     focus (`setupResync`);
+//   - the fleet's PR state + CI: `loadAllPrStatus` when GitHub connects and
+//     when the host on screen changes (below), on every handshake
+//     (`environmentReconnected`) and on window focus (`setupResync`);
 //   - the focused checkouts' PR state, checks and review threads: one
 //     `get_pr_live` + `get_pr_threads` when a checkout comes into focus with
 //     nothing cached for it, or when its PR changes under it (see

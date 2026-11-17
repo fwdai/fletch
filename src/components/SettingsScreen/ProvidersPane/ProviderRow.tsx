@@ -17,7 +17,7 @@ import { modelSummary } from "@/data/modelCatalog";
 import { installCommand, PROVIDER_DETAIL, supportsAccounts } from "@/data/providerDetail";
 import type { Provider } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { activeEntry, useGate } from "@/store/capabilities";
+import { useGate, useHostEntry } from "@/store/capabilities";
 import type { InstallState } from "@/store/types";
 import { BinaryPathRow } from "../BinaryPathRow";
 import { ProviderAuthBadge } from "../ProviderAuthBadge";
@@ -50,10 +50,8 @@ export function ProviderRow({ provider }: { provider: Provider }) {
   const installAgent = useAppStore((s) => s.installAgent);
   const cancelAgentInstall = useAppStore((s) => s.cancelAgentInstall);
   const clearInstallState = useAppStore((s) => s.clearInstallState);
-  const remoteHost = useAppStore((s) => {
-    const env = activeEntry(s);
-    return env.kind === "remote" ? env.name : undefined;
-  });
+  const env = useHostEntry();
+  const remoteHost = env.kind === "remote" ? env.name : undefined;
   const binGate = useGate("hostSettings");
 
   const [open, setOpen] = useState(false);

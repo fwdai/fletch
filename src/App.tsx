@@ -28,6 +28,7 @@ import { UsageScreen } from "./components/UsageScreen";
 import { Workspace } from "./components/Workspace";
 import { ACCENT_VALUES } from "./data/providers";
 import { useAppStore } from "./store";
+import { EngineScope } from "./store/EngineScope";
 import { useGitSync } from "./store/gitSync";
 import { projectView } from "./store/surface";
 import { useGlobalShortcuts } from "./util/shortcuts";
@@ -37,11 +38,17 @@ import { RunActivityPanel } from "./workflows/run/ActivityPanel";
 
 /** The boot screen until the engine is ready, then the app. `AppShell` mounts
  *  only then, so its `init` (and every command the tree below it invokes) runs
- *  against an engine that can answer. */
+ *  against an engine that can answer. The whole app is scoped to the
+ *  environment on screen. */
 export function App() {
   const bootStatus = useAppStore((s) => s.bootStatus);
+  const environmentId = useAppStore((s) => s.activeEnvironmentId);
   if (bootStatus.phase !== "ready") return <BootScreen status={bootStatus} />;
-  return <AppShell />;
+  return (
+    <EngineScope hostId={environmentId}>
+      <AppShell />
+    </EngineScope>
+  );
 }
 
 function AppShell() {

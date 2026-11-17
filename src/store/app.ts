@@ -82,7 +82,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get, engine) => ({
     if (get().initialized) return;
     set({ initialized: true });
 
-    await hydrateSettings(engine.api, set);
+    await hydrateSettings(engine, set);
     set({ settingsHydrated: true });
     await hydrateAccount(engine.api, set);
 
@@ -109,13 +109,13 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get, engine) => ({
     void get().loadBoxSetup();
 
     // The desktop-pinned streams first, since nothing ever takes them down;
-    // the engine ones are re-made against the new transport on every
-    // environment switch (see `switchEnvironment`).
+    // then this desktop's own engine's. A paired host's are made when its
+    // client is (`startHost` in ./hostScope).
     await registerLocalListeners(engine.events, set);
     await registerEventListeners(engine, set, get);
-    setupResync(engine.api, set, get);
+    setupResync(engine, set, get);
 
-    await refreshWorkspace(engine.api, set);
+    await refreshWorkspace(engine, set);
     // Delegations the host was already running — a reloaded window, or one
     // opened while an agent works through a playbook it was handed earlier.
     void get().loadDelegations();

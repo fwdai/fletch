@@ -8,7 +8,7 @@ import { developerUnlocked } from "@/components/SettingsScreen/nav";
 import { detectEditors } from "@/components/TitleBar/OpenInEditor/editors";
 import { Scrim } from "@/components/ui/Scrim";
 import { useFocusScope } from "@/components/ui/useFocusScope";
-import { useAppStore } from "@/store";
+import { useAppStore, useHostStore } from "@/store";
 import { arrowTarget } from "@/util/arrowNav";
 import { effectiveCombos, matchesCombo, SHORTCUT_BY_ID } from "@/util/keymap";
 import { useRuns } from "@/workflows/run/useRuns";
@@ -37,6 +37,7 @@ function isPaletteChord(e: KeyboardEvent): boolean {
  *  the conversation, the ⌘-digit panels) stay out of it. */
 export function PaletteDialog() {
   const { api } = useEngine();
+  const store = useHostStore();
   const togglePalette = useAppStore((s) => s.togglePalette);
   const setLastError = useAppStore((s) => s.setLastError);
   const close = useCallback(() => togglePalette(false), [togglePalette]);
@@ -98,7 +99,7 @@ export function PaletteDialog() {
   );
   // biome-ignore lint/correctness/useExhaustiveDependencies: trigger is the re-run signal
   const items = useMemo<PaletteItem[]>(() => {
-    const s = useAppStore.getState();
+    const s = store.getState();
     const ctx: PaletteContext = {
       s,
       api,
@@ -111,14 +112,14 @@ export function PaletteDialog() {
         void navigator.clipboard.writeText(text).catch((e) => setLastError(String(e))),
     };
     return pageRows(ctx, page);
-  }, [trigger, page, runs, editors, setLastError, api]);
+  }, [trigger, page, runs, editors, setLastError, api, store]);
 
   const sections = useMemo(
     () =>
       page === "root" && !query.trim()
-        ? emptySections(useAppStore.getState(), items, recents)
+        ? emptySections(store.getState(), items, recents)
         : searchSections(items, query),
-    [items, page, query, recents],
+    [items, page, query, recents, store],
   );
 
   const rows = useMemo<Row[]>(() => sections.flatMap((sec) => sec.rows), [sections]);

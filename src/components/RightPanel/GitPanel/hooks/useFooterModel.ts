@@ -4,7 +4,7 @@ import type { ActionTone } from "@/components/RightPanel/primaryActions";
 import { describeMergeGate } from "@/mergeGate";
 import { hasWorkSinceMerge } from "@/readiness";
 import { useAppStore } from "@/store";
-import { activeEntry } from "@/store/capabilities";
+import { useHostEntry } from "@/store/capabilities";
 import { type Gate, gateAction } from "../actionGate";
 import { actionGateReason } from "../actionGates";
 import {
@@ -50,7 +50,7 @@ export function useFooterModel(input: {
 } {
   const { mode, gitState, prState, checks, mergeState, comments, base, customActive } = input;
   const commitMode = useAppStore((s) => s.gitCommitAction);
-  const env = useAppStore(activeEntry);
+  const env = useHostEntry();
 
   // The merge gate's `checksFailed` means *failing required checks*; the
   // ladder, the PR row and this all derive it the same way (`readiness.ts`).
