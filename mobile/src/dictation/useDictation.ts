@@ -1,7 +1,8 @@
 import type { DictationPhase } from "@desktop/components/Composer/PrimaryControl/primaryState";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DictationStatus } from "../api";
-import { api, useStore } from "../store";
+import { useHost } from "../host/useHost";
+import { useStore } from "../store";
 import { canCapture, startCapture } from "./capture";
 import { LEVEL_BARS } from "./level";
 import { DictationSession } from "./session";
@@ -30,6 +31,7 @@ const IDLE_LEVELS: number[] = Array(LEVEL_BARS).fill(0);
  *  (`error`), in a banner above the footer, and clear on their own. */
 export function useDictation(onText: (text: string) => void) {
   const connection = useStore((s) => s.connection);
+  const { api } = useHost();
   // null while the probe is in flight; `available: false` with no reason is a
   // host too old to know the op, where no mic is best shown at all.
   const [status, setStatus] = useState<DictationStatus | null>(null);
@@ -84,7 +86,7 @@ export function useDictation(onText: (text: string) => void) {
     return () => {
       cancelled = true;
     };
-  }, [connection]);
+  }, [api, connection]);
 
   // Unmounting mid-session (leaving the agent) must not leave the mic open.
   useEffect(
@@ -160,7 +162,7 @@ export function useDictation(onText: (text: string) => void) {
       settle();
       fail(e);
     }
-  }, [status, fail, clearError, finish, settle, setPhaseState]);
+  }, [api, status, fail, clearError, finish, settle, setPhaseState]);
 
   /** The mic's own action: open it, or close it and transcribe. */
   const toggle = useCallback(async () => {

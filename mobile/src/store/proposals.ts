@@ -7,7 +7,7 @@
 // and because two chats on one project propose onto the same board.
 
 import type { RoadmapItem } from "@desktop/api/types/roadmap";
-import type { Api } from "../api";
+import type { HostLink } from "../host";
 import type { MobileState } from "./index";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
@@ -34,7 +34,8 @@ export interface ProposalsSlice {
 /** What the slice borrows from the store it composes into, so it can be a module
  *  of its own without importing the store back. */
 export interface ProposalsDeps {
-  api: Api;
+  /** The link of the host the slice acts on, asked for at every call. */
+  link(): HostLink;
   /** Record a failure where the error UI can see it, then rethrow. */
   guard<T>(fn: () => Promise<T>): Promise<T>;
 }
@@ -42,7 +43,7 @@ export interface ProposalsDeps {
 const newestFirst = (a: RoadmapItem, b: RoadmapItem) => b.created_at - a.created_at;
 
 export function createProposalsSlice(set: Set, get: Get, deps: ProposalsDeps): ProposalsSlice {
-  const { api, guard } = deps;
+  const { link, guard } = deps;
 
   /** Take one item out of whichever project holds it, leaving every other
    *  project's array at the same reference. */
@@ -67,7 +68,7 @@ export function createProposalsSlice(set: Set, get: Get, deps: ProposalsDeps): P
       // Nothing to ask an older host, and asking would answer "unknown op".
       if (!get().hostSupports("roadmap_list_items")) return;
       try {
-        const items = await api.roadmapListItems(projectId);
+        const items = await link().api.roadmapListItems(projectId);
         set((s) => ({
           proposals: {
             ...s.proposals,
@@ -88,7 +89,12 @@ export function createProposalsSlice(set: Set, get: Get, deps: ProposalsDeps): P
         // while the row is still a proposal. `applied: false` means someone
         // ruled on it first — the row that comes back is the truth either way,
         // and folding it in is what takes the card down.
-        const update = await api.roadmapUpdateItem(item.id, { status: "open" }, "proposed", queue);
+        const update = await link().api.roadmapUpdateItem(
+          item.id,
+          { status: "open" },
+          "proposed",
+          queue,
+        );
         get().applyRoadmapItem(update.item);
       });
     },
@@ -100,7 +106,7 @@ export function createProposalsSlice(set: Set, get: Get, deps: ProposalsDeps): P
         // it first — folding that row in takes the card down (it is no longer a
         // ghost) without anything having been deleted. `applied: false` with no
         // row is a ghost that is already gone.
-        const { applied, item: current } = await api.roadmapDiscardProposal(item.id);
+        const { applied, item: current } = await link().api.roadmapDiscardProposal(item.id);
         if (!applied && current) get().applyRoadmapItem(current);
         else get().removeRoadmapItem(item.id);
       });

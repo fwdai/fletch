@@ -8,6 +8,9 @@ import type { LiveTurn } from "@desktop/api/types/session";
 import { PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import { beforeAll, describe, expect, it, type MockInstance, vi } from "vitest";
 import type { ChatItem } from "../src/adapters";
+import type { Api } from "../src/api";
+import { linkOf } from "../src/host";
+import type { RemoteClient } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import {
   prChecks as fixturePrChecks,
@@ -17,12 +20,16 @@ import {
   PENDING_TOOL_USE_ID,
   PM_CUSTOM_AGENT_ID,
 } from "../src/remote/mock/fixtures";
-import { agentOf, api, client, projectOf, useStore } from "../src/store";
+import { agentOf, projectOf, useStore } from "../src/store";
 import { isReplayed, replayLiveTurn } from "../src/store/liveTurn";
 import { forgetHost, loadSettings, saveHost, saveSettings } from "../src/store/persist";
 import { pastHistory } from "../src/store/transcript";
 
 const state = () => useStore.getState();
+
+/** The mock host's link: the one `init` pairs with and the store stays live on. */
+let api: Api;
+let client: RemoteClient;
 
 /** Deliver a host event frame to the store's listeners, as the socket would:
  *  for the events the mock host never emits on its own. */
@@ -34,6 +41,7 @@ const hostEvent = (event: string, payload: unknown) =>
 beforeAll(async () => {
   await state().init();
   await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  ({ api, client } = linkOf(MOCK_HOST_KEY));
 });
 
 describe("connection and snapshot", () => {
@@ -358,7 +366,11 @@ describe("paged transcripts", () => {
   // call, the prompt is a page back and the session's header two.
   const PAGE = 3;
   const RECORDS = 7;
-  const realPage = api.readSessionPage;
+  /** The mock's own page read, taken before any test here spies on it. */
+  let realPage: Api["readSessionPage"];
+  beforeAll(() => {
+    realPage = api.readSessionPage;
+  });
 
   /** Run `fn` against pages of `PAGE` records, end to end through the mock. */
   async function withSmallPages(fn: (read: MockInstance<typeof realPage>) => Promise<void>) {

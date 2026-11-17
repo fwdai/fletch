@@ -5,16 +5,21 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { Api } from "../src/api";
+import { linkOf } from "../src/host";
 import { childPath, parentPath } from "../src/lib/paths";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { HOME } from "../src/remote/mock/fixtures";
 import { AddProjectSheet } from "../src/sheets/AddProjectSheet";
 import { CloneForm } from "../src/sheets/AddProjectSheet/CloneForm";
 import { OpenFolderForm } from "../src/sheets/AddProjectSheet/OpenFolderForm";
-import { api, useStore } from "../src/store";
+import { useStore } from "../src/store";
 import { loadDestParent } from "../src/store/persist";
 
 const state = () => useStore.getState();
+
+/** The mock host's link: the one `init` pairs with and the store stays live on. */
+let api: Api;
 
 /** Where the picker would land after browsing to `~/Code` — the absolute base
  *  the host reports, not the string it was asked for. */
@@ -23,6 +28,7 @@ const codeDir = async () => (await state().listDir("~/Code")).base;
 beforeAll(async () => {
   await state().init();
   await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  ({ api } = linkOf(MOCK_HOST_KEY));
 });
 
 describe("path arithmetic", () => {

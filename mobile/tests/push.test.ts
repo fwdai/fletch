@@ -32,8 +32,9 @@ vi.mock("@tauri-apps/api/event", async (importOriginal) => ({
   },
 }));
 
+import { linkOf } from "../src/host";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { api, client, useStore } from "../src/store";
+import { useStore } from "../src/store";
 import { loadSettings, saveSettings } from "../src/store/persist";
 import { FORGET_PUSH_TIMEOUT_MS, pushTab } from "../src/store/push";
 
@@ -42,6 +43,8 @@ import { FORGET_PUSH_TIMEOUT_MS, pushTab } from "../src/store/push";
 (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {};
 
 const state = () => useStore.getState();
+/** The mock host's link: the one the store is live on while paired with it. */
+const mock = () => linkOf(MOCK_HOST_KEY);
 const emit = (event: string, payload: unknown) => plugin.listeners.get(event)?.({ payload });
 const asked = () => plugin.invoked.filter((c) => c === "plugin:push|request_permission").length;
 /** syncPush is fired and not awaited, so "nothing happened" needs a tick. */
@@ -61,7 +64,7 @@ describe("registration", () => {
   });
 
   it("hands the host the token, and hands it over again after the next hello", async () => {
-    const registerPush = vi.spyOn(api, "registerPush");
+    const registerPush = vi.spyOn(mock().api, "registerPush");
     emit("push://token", { token: "0a1b2c", environment: "sandbox" });
     await vi.waitFor(() => expect(registerPush).toHaveBeenCalledWith("0a1b2c", "sandbox"));
 
@@ -74,7 +77,7 @@ describe("registration", () => {
   });
 
   it("drops a token that is not lowercase hex instead of sending an op error", async () => {
-    const registerPush = vi.spyOn(api, "registerPush");
+    const registerPush = vi.spyOn(mock().api, "registerPush");
     emit("push://token", { token: "NOT-HEX", environment: "sandbox" });
     await settle();
     expect(registerPush).not.toHaveBeenCalled();
@@ -83,7 +86,7 @@ describe("registration", () => {
 
   it("sends nothing once the user has refused", async () => {
     await saveSettings({ pushPermission: { [MOCK_HOST_KEY]: "denied" } });
-    const registerPush = vi.spyOn(api, "registerPush");
+    const registerPush = vi.spyOn(mock().api, "registerPush");
     const before = plugin.invoked.length;
 
     await state().reconnect();
@@ -132,8 +135,8 @@ describe("a tapped alert", () => {
 
 describe("unpairing", () => {
   it("clears the token on the host before the link drops", async () => {
-    const registerPush = vi.spyOn(api, "registerPush");
-    const disconnect = vi.spyOn(client, "disconnect");
+    const registerPush = vi.spyOn(mock().api, "registerPush");
+    const disconnect = vi.spyOn(mock().client, "disconnect");
     await state().unpair();
     // The clear goes out while still connected, or the host would keep alerting
     // a phone that has forgotten it.
@@ -150,7 +153,9 @@ describe("unpairing", () => {
     await vi.waitFor(() => expect(state().connection).toBe("connected"));
     // A host that has gone silent without closing the socket: the request
     // would hang forever, and the unpair must not hang with it.
-    const registerPush = vi.spyOn(api, "registerPush").mockReturnValue(new Promise(() => {}));
+    const registerPush = vi
+      .spyOn(mock().api, "registerPush")
+      .mockReturnValue(new Promise(() => {}));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const unpairing = state().unpair();

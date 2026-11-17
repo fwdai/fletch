@@ -7,6 +7,7 @@ import { buildCatalog } from "@desktop/data/modelCatalog/build";
 import type { ModelsDevIndex } from "@desktop/data/modelCatalog/modelsDev";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { linkOf } from "../src/host";
 import { loadModels, modelsFor } from "../src/lib/models";
 
 const mocks = vi.hoisted(() => ({
@@ -85,15 +86,15 @@ describe("loadModels", () => {
   it("rebuilds for a host the cache wasn't built from", async () => {
     // Half the catalog is the host's installed CLIs, so a phone re-paired to
     // another Mac must not serve the previous host's lists for up to an hour.
-    await loadModels("host-a");
-    await loadModels("host-b");
+    await loadModels(linkOf("host-a"));
+    await loadModels(linkOf("host-b"));
 
     expect(forced(1)).toBe(true);
   });
 
   it("serves the cache while the host is unchanged", async () => {
-    await loadModels("host-a");
-    await loadModels("host-a");
+    await loadModels(linkOf("host-a"));
+    await loadModels(linkOf("host-a"));
 
     expect(forced(1)).toBe(false);
   });
@@ -121,8 +122,8 @@ describe("loadModels", () => {
       return inFlight;
     });
 
-    const a = loadModels("host-a");
-    const b = loadModels("host-b");
+    const a = loadModels(linkOf("host-a"));
+    const b = loadModels(linkOf("host-b"));
     await flush();
     expect(mocks.refreshCatalog).toHaveBeenCalledTimes(1);
 
@@ -136,10 +137,10 @@ describe("loadModels", () => {
 
   it("does not claim the cache belongs to a host after a failed rebuild", async () => {
     mocks.refreshCatalog.mockResolvedValue(null);
-    expect(await loadModels("host-a")).toBeNull();
+    expect(await loadModels(linkOf("host-a"))).toBeNull();
 
     mocks.refreshCatalog.mockResolvedValue(catalog);
-    await loadModels("host-a");
+    await loadModels(linkOf("host-a"));
 
     expect(forced(1)).toBe(true);
   });

@@ -11,8 +11,9 @@
 // signing in are the operator's, on the host — so all it does is say so.
 
 import { useEffect, useState } from "react";
+import { useHost } from "../host/useHost";
 import type { HostProvider } from "../remote";
-import { api, useStore } from "../store";
+import { useStore } from "../store";
 
 /** The host's provider rows while `active`, or null when the host has not been
  *  asked, cannot be asked, or did not answer. Re-read whenever `active` goes
@@ -20,6 +21,7 @@ import { api, useStore } from "../store";
  *  up on the second. */
 export function useHostProviders(active: boolean): HostProvider[] | null {
   const supported = useStore((s) => s.hostSupports("host_providers"));
+  const { api } = useHost();
   const [rows, setRows] = useState<HostProvider[] | null>(null);
 
   useEffect(() => {
@@ -36,7 +38,7 @@ export function useHostProviders(active: boolean): HostProvider[] | null {
     return () => {
       live = false;
     };
-  }, [active, supported]);
+  }, [api, active, supported]);
 
   return supported ? rows : null;
 }

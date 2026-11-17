@@ -4,12 +4,13 @@ import { useAttachments } from "../../attachments";
 import { PromptField } from "../../components/PromptField";
 import { PickerSheet, ProjectIcon, ProviderMark, Sheet } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
+import { useHost } from "../../host/useHost";
 import { modelLabel, providerLabel } from "../../lib/agents";
 import { hostProviderBlock, useHostProviders } from "../../lib/hostProviders";
 import { ignore } from "../../lib/ignore";
 import { modelsFor, useModels } from "../../lib/models";
 import { primaryPath, projectsOf } from "../../lib/projects";
-import { api, useStore } from "../../store";
+import { useStore } from "../../store";
 import { RunnerSheet } from "./RunnerSheet";
 
 type Picker = "project" | "branch" | "runner" | null;
@@ -30,6 +31,7 @@ export function NewAgentSheet({
   const spawn = useStore((s) => s.spawn);
   const lastError = useStore((s) => s.lastError);
   const clearError = useStore((s) => s.clearError);
+  const { api } = useHost();
   const models = useModels();
   // Which agents the Mac can actually start, re-read each time the sheet
   // opens. Null until it answers (or forever, on a host too old for the op),
@@ -57,10 +59,13 @@ export function NewAgentSheet({
   // The phone spawns in the project's primary repo (single-repo for now).
   const repoPath = project ? primaryPath(project) : null;
 
-  const allocate = useCallback(async (taken: string[]) => {
-    const next = await api.allocateDraftName(taken).catch(() => "");
-    if (next) setName(next);
-  }, []);
+  const allocate = useCallback(
+    async (taken: string[]) => {
+      const next = await api.allocateDraftName(taken).catch(() => "");
+      if (next) setName(next);
+    },
+    [api],
+  );
 
   const firstProjectId = projects[0]?.id;
   useEffect(() => {
@@ -86,7 +91,7 @@ export function NewAgentSheet({
     return () => {
       live = false;
     };
-  }, [open, repoPath]);
+  }, [api, open, repoPath]);
 
   if (!project || !repoPath) {
     return (

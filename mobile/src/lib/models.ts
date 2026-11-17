@@ -13,7 +13,9 @@ import { loadCachedCatalog, refreshCatalog } from "@desktop/data/modelCatalog";
 import type { ModelMeta } from "@desktop/data/modelCatalog/types";
 import { PROVIDERS } from "@desktop/data/providers";
 import { useEffect, useState } from "react";
-import { api, useStore } from "../store";
+import type { HostLink } from "../host";
+import { useHost } from "../host/useHost";
+import { useStore } from "../store";
 
 /** A provider's selectable models, keyed by agent id — the catalog's `byAgent`
  *  view, which is all the pickers need. */
@@ -75,10 +77,10 @@ function rememberHost(hostKey: string | null): void {
 // dedupe has cleared.
 let queue: Promise<unknown> = Promise.resolve();
 
-/** The catalog for `hostKey`, rebuilt when the cache belongs to another host or
- *  has aged out, else served from it. Null when the rebuild failed and the
+/** The catalog for `link`'s host, rebuilt when the cache belongs to another host
+ *  or has aged out, else served from it. Null when the rebuild failed and the
  *  caller should keep what it has. */
-export function loadModels(hostKey: string | null): Promise<ModelsByAgent | null> {
+export function loadModels({ hostKey, api }: HostLink): Promise<ModelsByAgent | null> {
   const run = queue.then(async () => {
     const catalog = await refreshCatalog(api.discoverSupportedModels, builtForHost() !== hostKey);
     if (!catalog) return null;
@@ -95,18 +97,18 @@ export function loadModels(hostKey: string | null): Promise<ModelsByAgent | null
  *  (discovery is a host round-trip) and whenever the paired host changes. */
 export function useModels(): ModelsByAgent {
   const connection = useStore((s) => s.connection);
-  const hostKey = useStore((s) => s.hostKey);
+  const link = useHost();
   const [models, setModels] = useState<ModelsByAgent>(current);
   useEffect(() => {
     if (connection !== "connected") return;
     let live = true;
-    void loadModels(hostKey).then((byAgent) => {
+    void loadModels(link).then((byAgent) => {
       if (live && byAgent) setModels(byAgent);
     });
     return () => {
       live = false;
     };
-  }, [connection, hostKey]);
+  }, [connection, link]);
   return models;
 }
 

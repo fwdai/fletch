@@ -6,11 +6,19 @@ import type { AccountLimits } from "@desktop/api/types/providers";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { Api } from "../src/api";
+import { linkOf } from "../src/host";
+import type { RemoteClient } from "../src/remote";
+import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { providerLimits } from "../src/remote/mock/fixtures";
 import { ProvidersScreen } from "../src/screens/Providers";
-import { api, client, useStore } from "../src/store";
+import { useStore } from "../src/store";
 
 const state = () => useStore.getState();
+
+/** The mock host's link: the one `init` pairs with and the store stays live on. */
+let api: Api;
+let client: RemoteClient;
 
 /** Deliver a host event frame to the store's listeners, as the socket would. */
 const hostEvent = (event: string, payload: unknown) =>
@@ -24,6 +32,7 @@ let root: Root;
 beforeAll(async () => {
   await state().init();
   await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  ({ api, client } = linkOf(MOCK_HOST_KEY));
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);

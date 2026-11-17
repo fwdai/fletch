@@ -3,13 +3,22 @@
 // the other store tests are waiting on.
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { api, client, RESUME_PROBE_TIMEOUT_MS, useStore } from "../src/store";
+import type { Api } from "../src/api";
+import { linkOf } from "../src/host";
+import type { RemoteClient } from "../src/remote";
+import { MOCK_HOST_KEY } from "../src/remote/mock";
+import { RESUME_PROBE_TIMEOUT_MS, useStore } from "../src/store";
 
 const state = () => useStore.getState();
+
+/** The mock host's link: the one `init` pairs with and the store stays live on. */
+let api: Api;
+let client: RemoteClient;
 
 beforeAll(async () => {
   await state().init();
   await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  ({ api, client } = linkOf(MOCK_HOST_KEY));
 });
 
 afterEach(() => {

@@ -5,10 +5,9 @@
 // router's business, not the plugin's.
 
 import { inTauri } from "@desktop/remote/ws";
-import type { Api } from "../api";
+import type { HostLink } from "../host";
 import { ignore } from "../lib/ignore";
 import { withTimeout } from "../lib/timeout";
-import type { RemoteClient } from "../remote";
 import {
   onPushOpened,
   onPushToken,
@@ -36,8 +35,8 @@ export const pushTab = (kind: string | undefined): AgentTab | undefined =>
   SHIP_PUSH_KINDS.has(kind ?? "") ? "ship" : undefined;
 
 export interface PushDeps {
-  client: RemoteClient;
-  api: Api;
+  /** The link of the host the app is live on, asked for at every call. */
+  link: () => HostLink;
   get: () => MobileState;
 }
 
@@ -74,7 +73,7 @@ export async function startPush(next: PushDeps): Promise<void> {
 /** Called after every successful `pair` and `hello`. */
 export async function syncPush(): Promise<void> {
   if (!deps) return;
-  const hostKey = deps.client.hostKey ?? deps.get().hostKey;
+  const hostKey = deps.link().client.hostKey ?? deps.get().hostKey;
   if (!hostKey) return;
   // A refusal is final: nothing is sent, so the host keeps no token for this
   // device and never asks the relay to reach it.
@@ -89,10 +88,11 @@ export async function syncPush(): Promise<void> {
  *  forgotten keep alerting it. Best effort — forgetting must not be blocked by
  *  a host that is already gone. */
 export async function forgetPush(): Promise<void> {
-  if (deps?.client.state !== "connected") return;
+  const link = deps?.link();
+  if (link?.client.state !== "connected") return;
   // Bounded: remote calls have no timeout, and a host that has stopped
   // answering without closing the socket must not hold the unpair hostage.
-  await withTimeout(deps.api.registerPush(null).catch(ignore), FORGET_PUSH_TIMEOUT_MS);
+  await withTimeout(link.api.registerPush(null).catch(ignore), FORGET_PUSH_TIMEOUT_MS);
 }
 
 /** How long an unpair waits for the host to acknowledge the token clear. */
@@ -117,7 +117,8 @@ const isDeviceToken = (value: string) => /^[0-9a-f]+$/.test(value);
  *  to say until iOS has given us one, and no way to say it until the link is
  *  up — the next handshake calls `syncPush` again. */
 async function report(): Promise<void> {
-  if (!deps || !token || deps.client.state !== "connected") return;
+  const link = deps?.link();
+  if (!link || !token || link.client.state !== "connected") return;
   if (!isDeviceToken(token.token)) return;
-  await deps.api.registerPush(token.token, token.environment).catch(ignore);
+  await link.api.registerPush(token.token, token.environment).catch(ignore);
 }

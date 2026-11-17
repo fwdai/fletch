@@ -11,6 +11,7 @@ import { reconcileSending } from "@desktop/helpers/sending";
 import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import { newestWins } from "@desktop/util/newestWins";
 import type { Api } from "../api";
+import type { HostLink } from "../host";
 import { primaryPath, projectById } from "../lib/projects";
 import { dropTasks } from "./backgroundTasks";
 import { agentOf, type MobileState } from "./index";
@@ -52,7 +53,8 @@ export interface ChatsSlice {
 /** What the slice borrows from the store it composes into, so it can be a
  *  module of its own without importing the store back. */
 export interface ChatsDeps {
-  api: Api;
+  /** The link of the host the slice acts on, asked for at every call. */
+  link(): HostLink;
   /** Record a failure where the error UI can see it, then rethrow. */
   guard<T>(fn: () => Promise<T>): Promise<T>;
   /** The optimistic-turn → wait-for-spawn → first-message path a spawn takes,
@@ -165,7 +167,7 @@ export function noteChatRemoved(agentId: string): void {
 }
 
 export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlice {
-  const { api, guard, firstTurn } = deps;
+  const { link, guard, firstTurn } = deps;
   return {
     chats: {},
 
@@ -176,7 +178,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
       const overtaken: Replay[] = [];
       listsInFlight.add(overtaken);
       try {
-        const rows = await api.listProjectChats(projectId, ROADMAP_PM_PURPOSE);
+        const rows = await link().api.listProjectChats(projectId, ROADMAP_PM_PURPOSE);
         if (!claim.current()) return;
         // A fresh read of these records settles their `sending` bridge the way
         // a workspace snapshot settles a sidebar agent's (see helpers/sending):
@@ -200,14 +202,15 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         const project = projectById(get().workspace, projectId);
         if (!project) throw new Error("that project is not on the host");
         const repoPath = primaryPath(project);
-        const pm = await projectManager(api);
+        const pm = await projectManager(link().api);
+        const { api } = link();
         const [name, forkBase] = await Promise.all([
           // The chat was never a sidebar draft, but the spawn op still wants a
           // name, so one is drawn here exactly as `spawn` draws it.
           api.allocateDraftName([]),
           api.repoDefaultBranch(repoPath).catch(() => "main"),
         ]);
-        const record = await api.spawnAgent(
+        const record = await link().api.spawnAgent(
           repoPath,
           pm.provider,
           name,
@@ -240,7 +243,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
       if (agentOf(get(), agentId)) return;
       if (!get().hostSupports("get_agent")) return;
       try {
-        const record = await api.getAgent(agentId);
+        const record = await link().api.getAgent(agentId);
         if (!record) return;
         // A purpose tag is exactly what keeps a record out of the snapshot, so
         // it is this registry's to hold. An untagged record is a sidebar agent
@@ -281,7 +284,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
           .at(-1);
         if (top?.screen === "agent" && top.props.agentId === agentId) get().pop();
         try {
-          await api.discardAgent(agentId);
+          await link().api.discardAgent(agentId);
         } catch (e) {
           // The removal was wrong — put the host's truth back on screen.
           if (chat) await get().loadChats(chat.project_id);

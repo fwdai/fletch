@@ -1,6 +1,7 @@
 import { Icon } from "@desktop/components/Icon";
+import { useHost } from "../../host/useHost";
 import { ignore } from "../../lib/ignore";
-import { activeHostName, client, useStore } from "../../store";
+import { activeHostName, useStore } from "../../store";
 import { STEP_LABELS, Working } from "../Pair/Progress";
 
 /** Home's whole body while there is no workspace to show: the link to the Mac
@@ -23,6 +24,7 @@ export function HostState() {
   const hostName = useStore(activeHostName);
   const reconnect = useStore((s) => s.reconnect);
   const openSheet = useStore((s) => s.openSheet);
+  const { client } = useHost();
   const host = hostName ?? client.target?.name ?? "your Mac";
 
   const tryNow = () => void reconnect().catch(ignore);

@@ -25,7 +25,7 @@ import {
   limitsKeyParts,
   withLimitsChange,
 } from "@desktop/data/providerLimits";
-import type { Api } from "../api";
+import type { HostLink } from "../host";
 import { noteChatPatch, patchChatIn } from "./chats";
 import type { MobileState } from "./index";
 import type { LogLoad } from "./transcript";
@@ -79,7 +79,8 @@ export interface ProviderAccountsSlice {
 }
 
 export interface ProviderAccountsDeps {
-  api: Api;
+  /** The link of the host the slice acts on, asked for at every call. */
+  link(): HostLink;
 }
 
 /** `accounts` grouped by provider, in the order the host listed them. */
@@ -127,7 +128,7 @@ export function createProviderAccountsSlice(
   get: Get,
   deps: ProviderAccountsDeps,
 ): ProviderAccountsSlice {
-  const { api } = deps;
+  const { link } = deps;
 
   // The read in flight, and the writes the host announced while it was out.
   // A list is probed on the host (a Keychain check per account), so an event
@@ -157,12 +158,12 @@ export function createProviderAccountsSlice(
       const seq = ++loadSeq;
       set({ providerAccountsLoad: { status: "loading" } });
       try {
-        const accounts = groupByProvider(await api.listProviderAccounts());
+        const accounts = groupByProvider(await link().api.listProviderAccounts());
         const providers = Object.keys(accounts);
         // A limits read that fails fails the whole read: an empty map would
         // show every account as never read, which is a claim, not a failure.
         const rows: Record<string, AccountLimits>[] = await Promise.all(
-          providers.map((p) => api.getProviderLimits(p)),
+          providers.map((p) => link().api.getProviderLimits(p)),
         );
         if (seq !== loadSeq) return;
         const limits: LimitsByProvider = {};
@@ -191,7 +192,7 @@ export function createProviderAccountsSlice(
     },
 
     async setActiveProviderAccount(provider, id) {
-      await api.setActiveProviderAccount(provider, id);
+      await link().api.setActiveProviderAccount(provider, id);
       // The host announces the key it wrote, but an event only reaches the
       // devices connected when it fired; the re-list is the sure answer.
       await get().loadProviderAccounts();
@@ -203,7 +204,7 @@ export function createProviderAccountsSlice(
       refreshes.set(key, [...(refreshes.get(key) ?? []), flight]);
       let row: AccountLimits;
       try {
-        row = await api.refreshProviderLimits(provider, account);
+        row = await link().api.refreshProviderLimits(provider, account);
       } finally {
         const rest = (refreshes.get(key) ?? []).filter((f) => f !== flight);
         if (rest.length > 0) refreshes.set(key, rest);
@@ -251,7 +252,7 @@ export function createProviderAccountsSlice(
         set((s) => ({ switchingAccount: { ...s.switchingAccount, [agentId]: on } }));
       switching(true);
       try {
-        const record = await api.switchAgentAccount(agentId, account);
+        const record = await link().api.switchAgentAccount(agentId, account);
         // Only the stamp, as on the desktop: the host relaunches the agent, and
         // an `agent:status` that landed before this answer is newer than the
         // record's. No optimistic stamp either, so a refusal never leaves the

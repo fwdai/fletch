@@ -26,14 +26,13 @@ import { newestWins } from "@desktop/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@desktop/util/publishApprovals";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
-import { createApi } from "../api";
+import { dropLink, type HostLink, linkOf, pairingLink } from "../host";
 import { isBusy } from "../lib/agents";
 import { ignore } from "../lib/ignore";
 import { projectById } from "../lib/projects";
 import { withTimeout } from "../lib/timeout";
 import {
   type ConnectionState,
-  createClient,
   DEFAULT_PORT,
   type HostInfo,
   type HostProtocol,
@@ -74,9 +73,6 @@ import {
 } from "./shipActivity";
 import { type LoadedHistory, type LogLoad, pastHistory, renderHistory } from "./transcript";
 import { beginWorkspaceRead } from "./workspaceReads";
-
-export const client = createClient();
-export const api = createApi(client);
 
 export type ThemeMode = "system" | "light" | "dark";
 export type ScreenName =
@@ -415,6 +411,23 @@ export interface SpawnInput {
 
 let initialized = false;
 
+/** The link the app is live on: the one `connect` last dialled, and the one
+ *  every action and slice reaches its host through (`hostLink`). One at a time
+ *  — going live on another link drops this one's connection first (`goLive`).
+ *
+ *  Not the same as the active host's link: between a pairing's handshake and
+ *  `adopt`, the store already shows and reads the host that answered while
+ *  `hostKey` still names the one before it. Before the first dial it is a link
+ *  to no host, whose calls fail as a dropped link's do. */
+let liveLink: HostLink = pairingLink();
+
+/** The link of the host the store acts on. */
+const hostLink = (): HostLink => liveLink;
+
+/** The links the store listens to. Each is listened to once, however often it
+ *  goes live: a second registration would fold every host event in twice. */
+const listened = new WeakSet<HostLink>();
+
 /** A tapped alert that arrived before `init` finished. It cannot be acted on
  *  yet: which screen it opens depends on the host key, which is still being
  *  read off disk. */
@@ -589,7 +602,12 @@ const hostScopedState = (): Partial<MobileState> => ({
  *  and the client retries it on its own with the key it pinned — that retry
  *  has no `connect` above it, and without this the app would sit on the Pair
  *  screen holding a working connection. */
-async function adopt(set: Setter, get: () => MobileState, host: HostInfo): Promise<void> {
+async function adopt(
+  set: Setter,
+  get: () => MobileState,
+  { client }: HostLink,
+  host: HostInfo,
+): Promise<void> {
   // The client owns the target: the spent pairing token is gone from it and
   // the host key the handshake authenticated is pinned in.
   const target = client.target;
@@ -620,6 +638,151 @@ async function adopt(set: Setter, get: () => MobileState, host: HostInfo): Promi
   // Mock mode must not leave a "mock" host behind for the next real run.
   if (mockEnabled() || !entry) return;
   await saveHost(entry);
+}
+
+/** The log of an open thread is kept current by live events, which a dropped
+ *  socket or a backgrounded webview silently misses — so every reconnect and
+ *  every return to the foreground re-reads it from the host. */
+function refreshOpenAgent(get: () => MobileState): void {
+  const agentId = [...get().nav].reverse().find((n) => n.props.agentId)?.props.agentId;
+  if (agentId) void get().loadAgent(agentId).catch(ignore);
+}
+
+/** Every project whose planning chats are loaded re-reads them: a status those
+ *  records missed off-socket has no other way back. */
+function refreshChats(get: () => MobileState): void {
+  for (const projectId of Object.keys(get().chats)) {
+    void get().loadChats(projectId).catch(ignore);
+  }
+}
+
+/** The Providers screen, when it is up: its selection and meters follow
+ *  `settings:changed`, which a dropped socket or a suspended app misses like
+ *  any other event, and the handshake carries none of it. */
+function refreshProviders(get: () => MobileState): void {
+  if (get().nav.some((n) => n.screen === "providers")) {
+    void get().loadProviderAccounts().catch(ignore);
+  }
+}
+
+/** Make `link` the live one: listened to, and the only link with a
+ *  connection. Listened to before it is live, so the state its subscription
+ *  replays at once is not taken for news. */
+function goLive(set: StateSetter, get: () => MobileState, link: HostLink): void {
+  if (!listened.has(link)) {
+    listened.add(link);
+    listen(set, get, link);
+  }
+  if (link === liveLink) return;
+  const left = liveLink;
+  liveLink = link;
+  left.client.disconnect();
+}
+
+/** Fold `link`'s host events and connection into the store. Only the live link
+ *  speaks for the screen: a link stops being live by being disconnected, so all
+ *  it can still say is that disconnect — which must not land over the state of
+ *  the link taking its place. */
+function listen(set: StateSetter, get: () => MobileState, link: HostLink): void {
+  const { client } = link;
+  const isLive = () => link === liveLink;
+  registerRemoteEvents(client, set, get);
+  client.onState((state, error) => {
+    if (!isLive()) return;
+    set({
+      connection: state,
+      connectionError: error ?? null,
+      retrying: client.retrying,
+      hostInfo: client.host,
+      protocol: client.protocol,
+      via: client.via,
+    });
+  });
+  // Only while a `connect` owns the flow: a background reconnect is the
+  // connection banner's business, and moving the Pair screen's progress on
+  // behalf of one would be describing a connection the user did not ask for.
+  client.onStep((step) => {
+    if (isLive() && get().pairStep) set({ pairStep: step });
+  });
+  client.onConfirmCode((code) => {
+    if (isLive() && get().pairStep) set({ pairCode: code });
+  });
+  client.onSnapshot((snapshot) => {
+    if (!isLive()) return;
+    // A host other than the one on screen answered — a pairing that adds
+    // one, or the retry that completes it. Nothing shown belongs to it, and
+    // `adopt` (in `connect`, or below) makes it the active host.
+    const newHost = client.hostKey !== get().hostKey;
+    if (newHost) set({ ...hostScopedState(), via: client.via });
+    set({ hostInfo: snapshot.host, protocol: snapshot.protocol ?? null });
+    // The client has folded the host's relay into its target; a reconnect
+    // that never passes through `adopt` still has to keep it — and the name
+    // the host answers to now, for the header.
+    const relay = client.target?.relay ?? null;
+    const saved = newHost ? null : activeHostOf(get());
+    if (saved) {
+      if (relay !== get().relay) set({ relay });
+      const patch = { relay: relay ?? undefined, name: snapshot.host.name || saved.name };
+      if (patch.relay !== saved.relay || patch.name !== saved.name) {
+        set((s) => ({ hosts: s.hosts.map((h) => (h === saved ? { ...h, ...patch } : h)) }));
+        if (!mockEnabled()) void updateHost(saved.hostKey, patch);
+      }
+    }
+    const ws = snapshot.workspace;
+    // The handshake's snapshot is as authoritative as `refreshWorkspace`'s
+    // read, so it settles the `sending` bridge the same way (helpers/sending)
+    // — this is the path that clears a flag stranded by a reconnect.
+    if (ws) set((s) => ({ workspace: ws, sending: reconcileSending(s.sending, ws.agents) }));
+    else void get().refreshWorkspace();
+    // A PR read still out was asked of the socket before this one — perhaps
+    // of another host, whose agent ids recur here — so none of them may land.
+    // The reads below are issued after the fence and outrank it.
+    fencePrWrites();
+    // Planning chats are absent from that snapshot; their records, and their
+    // flags, settle through their own list.
+    refreshChats(get);
+    // Task events missed while the socket was down are gone for good — a
+    // task held as running could never be seen ending — so the maps start
+    // over on every handshake and refill from whatever the host emits next.
+    // The replay watermarks go with them: a restarted host counts from zero,
+    // and so does the Ship tab's activity list. Review threads too: they
+    // follow `pr:threads_changed`, so a missed one would linger — emptied,
+    // an open Ship tab reads them again.
+    set({
+      backgroundTasks: {},
+      liveSeq: {},
+      shipActivity: {},
+      delegations: {},
+      autopilot: {},
+      autopilotSwitches: null,
+      prComments: {},
+    });
+    // The snapshot carries no stats or PR state, so the rows get both on
+    // every handshake: stats from the first tick of their poll, PR state
+    // from the one seed the watcher's events then keep current.
+    void get().loadShortstats();
+    void get().loadPrStatus();
+    // The publishes this host is blocked on. Every handshake, because the
+    // request event only reached the devices connected when it fired — and so
+    // did the resolution, whoever gave it.
+    void get().loadPendingApprovals().catch(ignore);
+    // …and the delegations it is running: the strip's `working` state is
+    // the host's, and the events that built it were lost with the socket.
+    void get().loadDelegations().catch(ignore);
+    // …and its autopilot, for the same reason: state and log are host facts,
+    // and the events are only the deltas.
+    void get().loadAutopilot().catch(ignore);
+    refreshOpenAgent(get);
+    refreshProviders(get);
+    // Every handshake — the first pairing and every reconnect — is when the
+    // host is told the APNs token again.
+    void syncPush().catch(ignore);
+    // A handshake from a host that is not the active one (or with none
+    // active yet) is the one that pairs it: `connect` does this itself, so
+    // this is for the retry that completes a pairing whose first attempt died
+    // after the code was spent. Guarded on `pairStep` so the two never race.
+    if (newHost && !get().pairStep) void adopt(set, get, link, snapshot.host).catch(ignore);
+  });
 }
 
 /** Where an agent record can live: the workspace snapshot, or — for a chat the
@@ -694,7 +857,7 @@ async function firstTurn(
   try {
     await whileSending(record.id, async () => {
       await waitForSpawn(get, record.id);
-      await api.sendUserMessage(record.id, turnId, prompt, attachments);
+      await hostLink().api.sendUserMessage(record.id, turnId, prompt, attachments);
     });
   } catch (e) {
     // The agent exists on the host but never got the prompt: drop the
@@ -761,130 +924,13 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async init() {
     // Idempotent: React StrictMode mounts effects twice in dev, and a second
-    // registration would fold every host event into the log twice.
+    // run would attach the push and foreground listeners twice.
     if (initialized) return;
     initialized = true;
-    registerRemoteEvents(client, set, get);
     // Early, and awaited: the plugin holds the APNs token — and a tap that
     // launched the app — until it is asked to register, and hands both over
     // through events these listeners have to be in place for.
-    await startPush({ client, api, get }).catch(ignore);
-    client.onState((state, error) =>
-      set({
-        connection: state,
-        connectionError: error ?? null,
-        retrying: client.retrying,
-        hostInfo: client.host,
-        protocol: client.protocol,
-        via: client.via,
-      }),
-    );
-    // Only while a `connect` owns the flow: a background reconnect is the
-    // connection banner's business, and moving the Pair screen's progress on
-    // behalf of one would be describing a connection the user did not ask for.
-    client.onStep((step) => {
-      if (get().pairStep) set({ pairStep: step });
-    });
-    client.onConfirmCode((code) => {
-      if (get().pairStep) set({ pairCode: code });
-    });
-    // The log of an open thread is kept current by live events, which a
-    // dropped socket or a backgrounded webview silently misses — so every
-    // reconnect and every return to the foreground re-reads it from the host.
-    const refreshOpenAgent = () => {
-      const agentId = [...get().nav].reverse().find((n) => n.props.agentId)?.props.agentId;
-      if (agentId) void get().loadAgent(agentId).catch(ignore);
-    };
-    // Every project whose planning chats are loaded re-reads them: a status
-    // those records missed off-socket has no other way back.
-    const refreshChats = () => {
-      for (const projectId of Object.keys(get().chats)) {
-        void get().loadChats(projectId).catch(ignore);
-      }
-    };
-    // The Providers screen, when it is up: its selection and meters follow
-    // `settings:changed`, which a dropped socket or a suspended app misses
-    // like any other event, and the handshake carries none of it.
-    const refreshProviders = () => {
-      if (get().nav.some((n) => n.screen === "providers")) {
-        void get().loadProviderAccounts().catch(ignore);
-      }
-    };
-    client.onSnapshot((snapshot) => {
-      // A host other than the one on screen answered — a pairing that adds
-      // one, or the retry that completes it. Nothing shown belongs to it, and
-      // `adopt` (in `connect`, or below) makes it the active host.
-      const newHost = client.hostKey !== get().hostKey;
-      if (newHost) set({ ...hostScopedState(), via: client.via });
-      set({ hostInfo: snapshot.host, protocol: snapshot.protocol ?? null });
-      // The client has folded the host's relay into its target; a reconnect
-      // that never passes through `adopt` still has to keep it — and the name
-      // the host answers to now, for the header.
-      const relay = client.target?.relay ?? null;
-      const saved = newHost ? null : activeHostOf(get());
-      if (saved) {
-        if (relay !== get().relay) set({ relay });
-        const patch = { relay: relay ?? undefined, name: snapshot.host.name || saved.name };
-        if (patch.relay !== saved.relay || patch.name !== saved.name) {
-          set((s) => ({ hosts: s.hosts.map((h) => (h === saved ? { ...h, ...patch } : h)) }));
-          if (!mockEnabled()) void updateHost(saved.hostKey, patch);
-        }
-      }
-      const ws = snapshot.workspace;
-      // The handshake's snapshot is as authoritative as `refreshWorkspace`'s
-      // read, so it settles the `sending` bridge the same way (helpers/sending)
-      // — this is the path that clears a flag stranded by a reconnect.
-      if (ws) set((s) => ({ workspace: ws, sending: reconcileSending(s.sending, ws.agents) }));
-      else void get().refreshWorkspace();
-      // A PR read still out was asked of the socket before this one — perhaps
-      // of another host, whose agent ids recur here — so none of them may land.
-      // The reads below are issued after the fence and outrank it.
-      fencePrWrites();
-      // Planning chats are absent from that snapshot; their records, and their
-      // flags, settle through their own list.
-      refreshChats();
-      // Task events missed while the socket was down are gone for good — a
-      // task held as running could never be seen ending — so the maps start
-      // over on every handshake and refill from whatever the host emits next.
-      // The replay watermarks go with them: a restarted host counts from zero,
-      // and so does the Ship tab's activity list. Review threads too: they
-      // follow `pr:threads_changed`, so a missed one would linger — emptied,
-      // an open Ship tab reads them again.
-      set({
-        backgroundTasks: {},
-        liveSeq: {},
-        shipActivity: {},
-        delegations: {},
-        autopilot: {},
-        autopilotSwitches: null,
-        prComments: {},
-      });
-      // The snapshot carries no stats or PR state, so the rows get both on
-      // every handshake: stats from the first tick of their poll, PR state
-      // from the one seed the watcher's events then keep current.
-      void get().loadShortstats();
-      void get().loadPrStatus();
-      // The publishes this host is blocked on. Every handshake, because the
-      // request event only reached the devices connected when it fired — and so
-      // did the resolution, whoever gave it.
-      void get().loadPendingApprovals().catch(ignore);
-      // …and the delegations it is running: the strip's `working` state is
-      // the host's, and the events that built it were lost with the socket.
-      void get().loadDelegations().catch(ignore);
-      // …and its autopilot, for the same reason: state and log are host facts,
-      // and the events are only the deltas.
-      void get().loadAutopilot().catch(ignore);
-      refreshOpenAgent();
-      refreshProviders();
-      // Every handshake — the first pairing and every reconnect — is when the
-      // host is told the APNs token again.
-      void syncPush().catch(ignore);
-      // A handshake from a host that is not the active one (or with none
-      // active yet) is the one that pairs it: `connect` does this itself, so
-      // this is for the retry that completes a pairing whose first attempt died
-      // after the code was spent. Guarded on `pairStep` so the two never race.
-      if (newHost && !get().pairStep) void adopt(set, get, snapshot.host).catch(ignore);
-    });
+    await startPush({ link: hostLink, get }).catch(ignore);
     // Back in the foreground: refresh what the background missed — once the
     // socket has shown it is still alive. iOS freezes a suspended app's
     // socket, and when the app returns it can read as connected for a while
@@ -903,13 +949,14 @@ export const useStore = create<MobileState>()((set, get) => ({
       void get().loadShortstats();
       // A `pr:*` event that reached a suspended app may never have been read.
       void get().loadPrStatus();
-      refreshOpenAgent();
-      refreshProviders();
-      refreshChats();
+      refreshOpenAgent(get);
+      refreshProviders(get);
+      refreshChats(get);
     };
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
         if (document.hidden) return;
+        const { client } = hostLink();
         // A retry waiting out its backoff was scheduled while the phone was
         // away; the user looking at the app is reason enough to dial now.
         if (client.retrying) {
@@ -973,9 +1020,13 @@ export const useStore = create<MobileState>()((set, get) => ({
     // The client owns the target from here: it strips the spent pairing token
     // and pins the host key the handshake authenticated.
     set({ connectionError: null, pairStep: "connecting", pairCode: null });
+    // A host the target names has its own link; an address typed by hand gets
+    // a fresh one, which becomes that host's link once it answers.
+    const link = target.hostKey ? linkOf(target.hostKey) : pairingLink();
+    goLive(set, get, link);
     try {
-      const snapshot = await client.connect(target);
-      await adopt(set, get, snapshot.host);
+      const snapshot = await link.client.connect(target);
+      await adopt(set, get, link, snapshot.host);
       set({ workspace: snapshot.workspace });
       if (!snapshot.workspace) await get().refreshWorkspace();
     } catch (e) {
@@ -1020,9 +1071,10 @@ export const useStore = create<MobileState>()((set, get) => ({
   /** Retry the link the client already holds — the store no longer keeps a
    *  copy of the target, so there is no stale pairing token to replay. */
   async reconnect() {
+    const { client } = hostLink();
     if (!client.target) return;
     set({ connectionError: null });
-    // The snapshot subscription in `init` folds the fresh host and workspace
+    // The snapshot subscription in `listen` folds the fresh host and workspace
     // in; the state subscription reports the failure.
     await client.reconnect();
   },
@@ -1031,11 +1083,13 @@ export const useStore = create<MobileState>()((set, get) => ({
     const saved = get().hosts.find((h) => h.hostKey === hostKey);
     // Already the live one: there is nothing to drop, and a link that is down
     // has its own Retry.
-    if (!saved || (hostKey === get().hostKey && client.target?.hostKey === hostKey)) return;
+    if (!saved || (hostKey === get().hostKey && hostLink().client.target?.hostKey === hostKey)) {
+      return;
+    }
     // A PR read still out describes the host being left.
     fencePrWrites();
-    // Nothing awaits between here and the dial (`client.connect` drops the old
-    // socket first thing): an answer from the host being left that landed in
+    // Nothing awaits between here and the dial (`connect` drops the link being
+    // left first thing): an answer from the host being left that landed in
     // between would read as a new host and be adopted over this one. The
     // clone destination is resolved by `adopt`, once the host has answered.
     set({
@@ -1060,7 +1114,8 @@ export const useStore = create<MobileState>()((set, get) => ({
     // Before the link drops: the host keeps the push token until told
     // otherwise.
     await forgetPush();
-    client.disconnect();
+    // Its link goes with it, so a later pairing with this host starts afresh.
+    dropLink(hostKey);
     // A PR read still out describes the host being forgotten.
     fencePrWrites();
     if (!mockEnabled()) await forgetSavedHost(hostKey);
@@ -1089,13 +1144,14 @@ export const useStore = create<MobileState>()((set, get) => ({
     // The live link stops while the Pair screen is up: a pairing replaces it
     // anyway, and its retries would otherwise report errors on a screen about
     // another Mac. Cancelling dials it again.
-    client.disconnect();
+    hostLink().client.disconnect();
     set({ addingHost: true, pairTarget: null, connectionError: null, sheet: null });
   },
 
   async cancelAddHost() {
     set({ addingHost: false, pairTarget: null, connectionError: null });
     const active = activeHostOf(get());
+    const { client } = hostLink();
     // Back to the host the Pair screen was opened over, which `addHost` or a
     // pairing attempt has left.
     if (active && !(client.target?.hostKey === active.hostKey && client.state === "connected")) {
@@ -1187,7 +1243,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     // over its answer (store/workspaceReads).
     const read = beginWorkspaceRead();
     try {
-      const workspace = await api.getWorkspace();
+      const workspace = await hostLink().api.getWorkspace();
       if (workspace && read.current()) {
         const agents = read.apply(workspace.agents);
         const next = agents === workspace.agents ? workspace : { ...workspace, agents };
@@ -1253,9 +1309,12 @@ export const useStore = create<MobileState>()((set, get) => ({
       // page either way.
       const readNewest = async (): Promise<LoadedHistory> =>
         get().hostSupports("read_session_page")
-          ? api.readSessionPage(agentId)
-          : { records: await api.readSessionRecords(agentId), older: null };
-      let [history, turns] = await Promise.all([readNewest(), api.readUserTurns(agentId)]);
+          ? hostLink().api.readSessionPage(agentId)
+          : { records: await hostLink().api.readSessionRecords(agentId), older: null };
+      let [history, turns] = await Promise.all([
+        readNewest(),
+        hostLink().api.readUserTurns(agentId),
+      ]);
       // The host ingests a turn's transcript into session_records only at
       // turn-end, and that ingest can insert nothing (session id not captured
       // yet, transcript not located). Mirror the desktop's readHistory: with no
@@ -1264,8 +1323,8 @@ export const useStore = create<MobileState>()((set, get) => ({
       // The newest page answers that as well as the whole list: an agent's own
       // records are the newest in its history.
       if (history.records.every((r) => r.inherited)) {
-        await api.syncSession(agentId);
-        [history, turns] = await Promise.all([readNewest(), api.readUserTurns(agentId)]);
+        await hostLink().api.syncSession(agentId);
+        [history, turns] = await Promise.all([readNewest(), hostLink().api.readUserTurns(agentId)]);
       }
       const { records } = history;
       const histories = (s: MobileState) => ({ ...s.histories, [agentId]: history });
@@ -1291,13 +1350,13 @@ export const useStore = create<MobileState>()((set, get) => ({
       // below runs in the response's own continuation, before the next frame
       // is dispatched, so nothing arrives between the capture and the fold.
       const late: AgentManagedEvent[] = [];
-      const off = client.on("agent:event", (payload) => {
+      const off = hostLink().client.on("agent:event", (payload) => {
         const e = payload as AgentManagedEvent;
         if (e.agent_id === agentId) late.push(e);
       });
       let live: LiveTurn;
       try {
-        live = await api.readLiveTurn(agentId);
+        live = await hostLink().api.readLiveTurn(agentId);
       } finally {
         off();
       }
@@ -1323,8 +1382,8 @@ export const useStore = create<MobileState>()((set, get) => ({
     const loaded = get().histories[agentId];
     if (!loaded?.older) return;
     const [page, turns] = await Promise.all([
-      api.readSessionPage(agentId, loaded.older),
-      api.readUserTurns(agentId),
+      hostLink().api.readSessionPage(agentId, loaded.older),
+      hostLink().api.readUserTurns(agentId),
     ]);
     // A rebuild that landed meanwhile replaced the pages this one extends;
     // its log is the newer, and the cursor it holds is the one to follow.
@@ -1347,12 +1406,15 @@ export const useStore = create<MobileState>()((set, get) => ({
     // read here (see `loadPrLive`); the git state has no event to race.
     const ticket = issuePrWrite();
     try {
-      const [, pr] = await Promise.all([get().loadGitState(agentId), api.getPrState(agentId)]);
+      const [, pr] = await Promise.all([
+        get().loadGitState(agentId),
+        hostLink().api.getPrState(agentId),
+      ]);
       if (acceptPrWrite("prStates", agentId, ticket)) {
         set((s) => ({ prStates: { ...s.prStates, [agentId]: pr } }));
       }
       if (pr) {
-        const checks = await api.getPrChecks(agentId);
+        const checks = await hostLink().api.getPrChecks(agentId);
         if (!acceptPrWrite("prChecks", agentId, ticket)) return;
         set((s) => ({ prChecks: { ...s.prChecks, [agentId]: checks } }));
       }
@@ -1367,7 +1429,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     const claim = claimGitRead(agentId);
     const read = (async () => {
       try {
-        const git = await api.getGitState(agentId);
+        const git = await hostLink().api.getGitState(agentId);
         if (claim.current()) set((s) => ({ gitStates: { ...s.gitStates, [agentId]: git } }));
       } catch {
         // Advisory, like loadGit: keep the last-known state.
@@ -1386,7 +1448,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     // (@desktop/store/prWriteOrder).
     const ticket = issuePrWrite();
     try {
-      const live = await api.getPrLive(agentId);
+      const live = await hostLink().api.getPrLive(agentId);
       // Null means the host had nothing to say this round, not "no PR".
       if (!live) return;
       // One ticket, checked per slice: a checks event outranks only the checks.
@@ -1406,7 +1468,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     // Ordered against `pr:threads_changed`, as `loadPrLive` is against the rest.
     const ticket = issuePrWrite();
     try {
-      const comments = await api.getPrThreads(agentId);
+      const comments = await hostLink().api.getPrThreads(agentId);
       if (!acceptPrWrite("prComments", agentId, ticket)) return;
       set((s) => ({ prComments: { ...s.prComments, [agentId]: comments } }));
     } catch {
@@ -1419,7 +1481,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // Replaced wholesale, mirroring the desktop's `fetchAllShortstats`: the
       // host answers for the whole fleet, so an agent that has gone clean (or
       // been archived) falls out instead of keeping its last number.
-      const shortstats = await api.getAllShortstats();
+      const shortstats = await hostLink().api.getAllShortstats();
       set({ shortstats });
     } catch {
       // Advisory, like the rest of the git reads: keep the last numbers.
@@ -1432,7 +1494,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     // out outranks that agent's row and nobody else's (see `loadPrLive`).
     const ticket = issuePrWrite();
     try {
-      const all = await api.getAllPrStatus();
+      const all = await hostLink().api.getAllPrStatus();
       const states: Record<string, PrState | null> = {};
       const checks: Record<string, PrChecks> = {};
       for (const [key, entry] of Object.entries(all)) {
@@ -1457,7 +1519,7 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async loadTree(agentId) {
     return guard(set, async () => {
-      const tree = await api.listCheckoutTree(agentId);
+      const tree = await hostLink().api.listCheckoutTree(agentId);
       set((s) => ({ trees: { ...s.trees, [agentId]: tree } }));
     });
   },
@@ -1482,7 +1544,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     return guard(set, async () => {
       try {
         await whileSending(agentId, () =>
-          api.sendUserMessage(agentId, turnId, trimmed, attachments),
+          hostLink().api.sendUserMessage(agentId, turnId, trimmed, attachments),
         );
       } catch (e) {
         // The send never reached the host, so no status will discharge it.
@@ -1496,8 +1558,8 @@ export const useStore = create<MobileState>()((set, get) => ({
     return guard(set, async () => {
       // The user has been looking at (and possibly rerolled) this name; the
       // agent must launch under it, not a fresh draw.
-      const name = shown || (await api.allocateDraftName([]));
-      const record = await api.spawnAgent(repoPath, provider, name, effort, model, base);
+      const name = shown || (await hostLink().api.allocateDraftName([]));
+      const record = await hostLink().api.spawnAgent(repoPath, provider, name, effort, model, base);
       set((s) => ({
         workspace: s.workspace
           ? { ...s.workspace, agents: [record, ...s.workspace.agents] }
@@ -1525,7 +1587,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       return { pendingToolUse: { ...s.pendingToolUse, [agentId]: forAgent } };
     });
     return guard(set, async () => {
-      await api.answerToolUse(agentId, requestId, updatedInput, behavior);
+      await hostLink().api.answerToolUse(agentId, requestId, updatedInput, behavior);
     });
   },
 
@@ -1545,7 +1607,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     try {
       // The snapshot is what the host was blocked on when it read its queue,
       // not when it answered; whatever it said in between is folded back in.
-      const pending = await api.listPublishApprovals();
+      const pending = await hostLink().api.listPublishApprovals();
       // …unless a newer load has been issued to replace this queue, in which
       // case ours is the older snapshot and writing it would undo the newer.
       if (!claim.current()) return;
@@ -1561,7 +1623,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     set((s) => ({
       pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
     }));
-    await guard(set, () => api.answerPublishApproval(id, approved));
+    await guard(set, () => hostLink().api.answerPublishApproval(id, approved));
   },
 
   resolvePublishApproval(id) {
@@ -1573,13 +1635,13 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async stop(agentId) {
     return guard(set, async () => {
-      await api.stopAgent(agentId);
+      await hostLink().api.stopAgent(agentId);
     });
   },
 
   async resume(agentId) {
     return guard(set, async () => {
-      await api.resumeAgent(agentId);
+      await hostLink().api.resumeAgent(agentId);
     });
   },
 
@@ -1591,7 +1653,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // `deleteChat` is the honest gesture for those; refuse here so no other
       // path can strand one.
       if (agent?.purpose) throw new Error("a planning chat is deleted, not archived");
-      await api.archiveAgent(agentId);
+      await hostLink().api.archiveAgent(agentId);
       get().closeSheet();
       get().pop();
       await get().refreshWorkspace();
@@ -1599,11 +1661,11 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async setModel(agentId, model) {
-    await guard(set, () => api.setAgentModel(agentId, model));
+    await guard(set, () => hostLink().api.setAgentModel(agentId, model));
   },
 
   async setEffort(agentId, effort) {
-    await guard(set, () => api.setAgentEffort(agentId, effort));
+    await guard(set, () => hostLink().api.setAgentEffort(agentId, effort));
   },
 
   async delegateGit(agentId, action, params) {
@@ -1620,7 +1682,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     // mid-turn and decides when it is over, so the delegation outlives this
     // phone's connection and reads the same on the Mac.
     await guard(set, async () => {
-      const recorded = await api.delegateGit(agentId, action, params);
+      const recorded = await hostLink().api.delegateGit(agentId, action, params);
       // The `delegation:changed` for this carries the activity line and may
       // land either side of this reply; this only makes sure the strip turns at
       // once — and never revives one whose end already arrived.
@@ -1647,7 +1709,7 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async loadDelegations() {
     if (!get().hostSupports("get_delegations")) return;
-    const rows = await api.getDelegations();
+    const rows = await hostLink().api.getDelegations();
     set({
       delegations: Object.fromEntries(rows.filter((r) => !r.subdir).map((r) => [r.agent_id, r])),
     });
@@ -1668,6 +1730,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async loadAutopilot() {
+    const { api } = hostLink();
     await Promise.all([
       get().hostSupports("autopilot_state") &&
         api.getAutopilotState().then((snapshot) => {
@@ -1695,16 +1758,16 @@ export const useStore = create<MobileState>()((set, get) => ({
     await guard(set, async () => {
       // The whole host's state after the change — the pause, and the cycle it
       // dropped — so the switch settles on the host's word, not the tap's.
-      const snapshot = await api.setAutopilot({ agentId }, enabled);
+      const snapshot = await hostLink().api.setAutopilot({ agentId }, enabled);
       set({ autopilot: autopilotFromSnapshot(snapshot), autopilotSwitches: switchesOf(snapshot) });
     });
   },
 
   async publish(agentId, title, body) {
     const git = get().gitStates[agentId];
-    if (git?.files.length) await api.commitAgent(agentId, title);
-    await api.pushAgent(agentId);
-    const pr = await api.createPr(agentId, title, body);
+    if (git?.files.length) await hostLink().api.commitAgent(agentId, title);
+    await hostLink().api.pushAgent(agentId);
+    const pr = await hostLink().api.createPr(agentId, title, body);
     // The host's own answer: a read that went out before the PR existed must
     // not land after it and say there is none.
     stampPrWrite("prStates", agentId);
@@ -1715,8 +1778,8 @@ export const useStore = create<MobileState>()((set, get) => ({
   async pushToPr(agentId) {
     const git = get().gitStates[agentId];
     const title = get().prStates[agentId]?.title ?? "Update";
-    if (git?.files.length) await api.commitAgent(agentId, title);
-    await api.pushAgent(agentId);
+    if (git?.files.length) await hostLink().api.commitAgent(agentId, title);
+    await hostLink().api.pushAgent(agentId);
     await get().loadGit(agentId);
   },
 
@@ -1725,7 +1788,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // Read before the reload: afterwards the record says merged, and the
       // line is about the PR that was open when the tap landed.
       const number = get().prStates[agentId]?.number;
-      await api.mergePr(agentId);
+      await hostLink().api.mergePr(agentId);
       set((s) => ({
         shipActivity: appendActivity(
           s.shipActivity,
@@ -1738,7 +1801,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async listDir(path) {
-    return guard(set, () => api.listDir(path));
+    return guard(set, () => hostLink().api.listDir(path));
   },
 
   /** Both add-project ops answer with the whole new `Workspace`, which is
@@ -1749,14 +1812,14 @@ export const useStore = create<MobileState>()((set, get) => ({
    *  opened in the meantime. */
   async addWorkspaceRepo(repoPath) {
     return guard(set, async () => {
-      set({ workspace: await api.addWorkspaceRepo(repoPath) });
+      set({ workspace: await hostLink().api.addWorkspaceRepo(repoPath) });
       get().closeSheetIf("addProject");
     });
   },
 
   async cloneRepo(spec, destParent) {
     return guard(set, async () => {
-      const workspace = await api.cloneRepo(spec, destParent);
+      const workspace = await hostLink().api.cloneRepo(spec, destParent);
       set({ workspace, lastDestParent: destParent });
       await saveDestParent(get().hostKey, destParent);
       get().closeSheetIf("addProject");
@@ -1764,24 +1827,24 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async ghStatus() {
-    return guard(set, () => api.ghStatus());
+    return guard(set, () => hostLink().api.ghStatus());
   },
 
   async ghRepoList() {
-    return guard(set, () => api.ghRepoList());
+    return guard(set, () => hostLink().api.ghRepoList());
   },
 
   ...createChatsSlice(set, get, {
-    api,
+    link: hostLink,
     guard: (fn) => guard(set, fn),
     firstTurn: (input) => firstTurn(set, get, input),
   }),
 
-  ...createProposalsSlice(set, get, { api, guard: (fn) => guard(set, fn) }),
+  ...createProposalsSlice(set, get, { link: hostLink, guard: (fn) => guard(set, fn) }),
 
-  ...createRoadmapSlice(set, get, api),
+  ...createRoadmapSlice(set, get, hostLink),
 
-  ...createProviderAccountsSlice(set, get, { api }),
+  ...createProviderAccountsSlice(set, get, { link: hostLink }),
 }));
 
 export type { RawEvent };

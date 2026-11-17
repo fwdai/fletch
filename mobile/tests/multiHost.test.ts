@@ -1,17 +1,19 @@
 // Several paired hosts, one live at a time, over the real store and the real
-// protocol client. The client is built on the mock socket when the store
-// module loads (the suite's `?mock=1`), and every host it dials answers as the
-// mock host. The URL then leaves mock mode before `init`, so the store treats
-// these as real hosts: it reads and writes the settings file, which is what
-// upgrading, adding, switching and forgetting are about.
+// protocol client. Each host's link is built on the mock socket, which is
+// chosen when the store module loads (the suite's `?mock=1`), so every host
+// dialled answers as the mock host. The URL then leaves mock mode before
+// `init`, so the store treats these as real hosts: it reads and writes the
+// settings file, which is what upgrading, adding, switching and forgetting are
+// about.
 //
 // One file, in order, because `init` runs once per module registry: the phone
 // starts as the single-host build left it and goes from there.
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChatItem } from "../src/adapters";
+import { linkOf } from "../src/host";
 import type { HostTarget } from "../src/remote";
-import { client, useStore } from "../src/store";
+import { useStore } from "../src/store";
 import { loadSettings } from "../src/store/persist";
 
 const state = () => useStore.getState();
@@ -64,6 +66,7 @@ afterAll(() => window.history.replaceState({}, "", url));
 
 describe("the first launch after updating from the single-host build", () => {
   it("greets the host it was paired with — hello, not a new pairing", async () => {
+    const { client } = linkOf(MINI);
     expect(client.target).toMatchObject({ host: "10.0.0.5", port: 47285, hostKey: MINI });
     expect(client.target?.pairingToken).toBeUndefined();
     expect(client.target?.confirm).toBeUndefined();
@@ -91,7 +94,7 @@ describe("adding a host from a pairing link", () => {
     expect(await savedKeys()).toEqual([MINI, STUDIO]);
     expect((await loadSettings()).activeHostKey).toBe(STUDIO);
     // The code is spent: what a reconnect would use greets with hello.
-    expect(client.target?.pairingToken).toBeUndefined();
+    expect(linkOf(STUDIO).client.target?.pairingToken).toBeUndefined();
     confirm.mockRestore();
   });
 });
@@ -100,7 +103,7 @@ describe("switching hosts", () => {
   it("drops what was on screen and greets the chosen host with hello", async () => {
     const studioLog: ChatItem[] = [{ kind: "user_message", text: "on the studio", turnId: "t" }];
     useStore.setState({ logs: { arabia: studioLog } });
-    const connect = vi.spyOn(client, "connect");
+    const connect = vi.spyOn(linkOf(MINI).client, "connect");
 
     const switching = state().switchHost(MINI);
     // Agent ids recur across hosts: nothing of the studio's may show while the
@@ -114,13 +117,15 @@ describe("switching hosts", () => {
     expect(connect).toHaveBeenCalledOnce();
     expect(connect.mock.calls[0][0]).toMatchObject({ host: "10.0.0.5", hostKey: MINI });
     expect(connect.mock.calls[0][0].pairingToken).toBeUndefined();
+    // One host live at a time: the studio's connection went with the switch.
+    expect(linkOf(STUDIO).client.state).toBe("disconnected");
     expect((await loadSettings()).activeHostKey).toBe(MINI);
     expect(keys()).toEqual([MINI, STUDIO]);
     connect.mockRestore();
   });
 
   it("leaves the live host alone when it is picked again", async () => {
-    const connect = vi.spyOn(client, "connect");
+    const connect = vi.spyOn(linkOf(MINI).client, "connect");
     await state().switchHost(MINI);
     expect(connect).not.toHaveBeenCalled();
     connect.mockRestore();
@@ -128,7 +133,7 @@ describe("switching hosts", () => {
 
   it("can still switch away from a host that does not answer", async () => {
     const connect = vi
-      .spyOn(client, "connect")
+      .spyOn(linkOf(STUDIO).client, "connect")
       .mockRejectedValueOnce(new Error("Can't reach the Mac"));
     await expect(state().switchHost(STUDIO)).rejects.toThrow("Can't reach the Mac");
     expect(state().hostKey).toBe(STUDIO);

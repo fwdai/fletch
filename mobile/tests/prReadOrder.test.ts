@@ -5,10 +5,18 @@
 
 import type { AgentPrStatus, PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Api } from "../src/api";
+import { linkOf } from "../src/host";
+import type { RemoteClient } from "../src/remote";
+import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { prChecks as fixtureChecks, prStates as fixtureStates } from "../src/remote/mock/fixtures";
-import { api, client, useStore } from "../src/store";
+import { useStore } from "../src/store";
 
 const state = () => useStore.getState();
+
+/** The mock host's link: the one `init` pairs with and the store stays live on. */
+let api: Api;
+let client: RemoteClient;
 
 const hostEvent = (event: string, payload: unknown) =>
   (
@@ -54,6 +62,7 @@ const forget = <T>(map: Record<string, T>) => {
 beforeAll(async () => {
   await state().init();
   await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  ({ api, client } = linkOf(MOCK_HOST_KEY));
   const protocol = state().protocol;
   // The mock host predates the threads read; the race is the same either way.
   useStore.setState({
