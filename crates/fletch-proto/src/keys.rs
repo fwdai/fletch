@@ -134,19 +134,30 @@ impl StaticKey {
 /// half-written and never briefly world-readable.
 fn write_private(path: &Path, private: &[u8; KEY_LEN]) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, private).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    restrict(&tmp);
+    create_private(&tmp, private).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Created 0600, so the bytes are never in a file anyone else can read. The
+/// mode only applies to a file this call creates, so a temp file left by a
+/// write that died is removed first rather than written into.
 #[cfg(unix)]
-fn restrict(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+fn create_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let _ = std::fs::remove_file(path);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(bytes)
 }
 
 #[cfg(not(unix))]
-fn restrict(_path: &Path) {}
+fn create_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
 
 /// The X25519 public key for a stored private key. Only the private half is on
 /// disk (the doc fixes the file at 32 bytes), so the public half is derived at
@@ -215,6 +226,24 @@ mod tests {
             "left in place for the user to delete deliberately"
         );
         assert!(!dir.path().join("device_key.tmp").exists());
+    }
+
+    /// Owner-only from the moment the bytes are on disk, including when a write
+    /// that died left its temp file behind at another mode: that file is not
+    /// written into.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_key_file_is_owner_only_even_over_a_stale_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join("device_key.tmp");
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        StaticKey::load_or_create(dir.path(), DEVICE_KEY_FILE).unwrap();
+        let written = std::fs::metadata(dir.path().join(DEVICE_KEY_FILE)).unwrap();
+        assert_eq!(written.permissions().mode() & 0o777, 0o600);
+        assert!(!stale.exists());
     }
 
     /// Both ends must reach the same secret from opposite sides, which is what

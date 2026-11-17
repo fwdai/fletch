@@ -506,7 +506,18 @@ where
             // tungstenite; they can legitimately interleave the handshake.
             Message::Ping(_) | Message::Pong(_) => continue,
             Message::Text(_) => return Err("the peer sent a cleartext frame".to_string()),
-            Message::Close(_) => return Err("the peer closed during the handshake".to_string()),
+            // The code is kept, in exactly this form, because it is the news: a
+            // relay refuses a device at attach time by accepting the upgrade
+            // and closing at once, `4404` for a Mac that is offline and `4429`
+            // for one with no device slot free, and a client matches the
+            // suffix to say so.
+            Message::Close(Some(frame)) => {
+                return Err(format!(
+                    "the peer closed during the handshake (code {})",
+                    u16::from(frame.code)
+                ))
+            }
+            Message::Close(None) => return Err("the peer closed during the handshake".to_string()),
             _ => return Err("expected a binary handshake message, got a control frame".to_string()),
         }
     }

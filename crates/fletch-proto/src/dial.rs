@@ -22,7 +22,8 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
-use tokio_tungstenite::{client_async_tls, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::{client_async_tls_with_config, MaybeTlsStream, WebSocketStream};
 
 use crate::Result;
 
@@ -37,6 +38,17 @@ pub const STAGGER: Duration = Duration::from_millis(300);
 /// The caller bounds the whole thing; nothing here waits on its own account
 /// beyond the stagger between attempts.
 pub async fn connect(url: &str) -> Result<Ws> {
+    connect_with_config(url, None, false).await
+}
+
+/// [`connect`] with the two choices `connect_async_with_config` leaves to its
+/// caller: tungstenite's limits, and whether to turn Nagle off on the socket.
+/// The host's relay link dials through this.
+pub async fn connect_with_config(
+    url: &str,
+    config: Option<WebSocketConfig>,
+    disable_nagle: bool,
+) -> Result<Ws> {
     let request = url.into_client_request().map_err(|e| e.to_string())?;
     let (host, port) = host_port(&request)?;
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
@@ -44,7 +56,10 @@ pub async fn connect(url: &str) -> Result<Ws> {
         .map_err(|e| format!("cannot resolve {host}: {e}"))?
         .collect();
     let stream = race(interleave(addrs)).await.map_err(|e| e.to_string())?;
-    let (ws, _) = client_async_tls(request, stream)
+    if disable_nagle {
+        stream.set_nodelay(true).map_err(|e| e.to_string())?;
+    }
+    let (ws, _) = client_async_tls_with_config(request, stream, config, None)
         .await
         .map_err(|e| e.to_string())?;
     Ok(ws)

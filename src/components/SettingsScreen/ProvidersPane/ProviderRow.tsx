@@ -52,7 +52,7 @@ export function ProviderRow({ provider }: { provider: Provider }) {
   const clearInstallState = useAppStore((s) => s.clearInstallState);
   const env = useHostEntry();
   const remoteHost = env.kind === "remote" ? env.name : undefined;
-  const binGate = useGate("hostSettings");
+  const binGate = useGate("agentBinary");
 
   const [open, setOpen] = useState(false);
   const phase = install?.phase;

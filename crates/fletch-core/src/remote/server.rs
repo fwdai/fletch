@@ -95,8 +95,9 @@ const OUTBOUND_BUFFER: usize = 64;
 /// call each.
 const MAX_IN_FLIGHT: usize = 8;
 
-/// A failed Noise handshake, a text frame, or a first frame that was neither
-/// `pair` nor `hello` — the three things the doc gives 4001.
+/// A failed Noise handshake, a text frame, a frame that does not parse, a first
+/// frame that was neither `pair` nor `hello`, or no authentication within
+/// `AUTH_TIMEOUT` — the things the doc gives 4001.
 const CLOSE_BAD_FIRST_FRAME: CloseCode = CloseCode::Library(4001);
 /// Unauthenticated, or a bad/revoked credential.
 const CLOSE_UNAUTHENTICATED: CloseCode = CloseCode::Library(4003);
@@ -117,6 +118,15 @@ const CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
 /// `read_loop` does, so this is what bounds a socket that opens and then says
 /// nothing.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a connection has, from the end of the Noise handshake, to
+/// authenticate with `pair` or `hello` (or a confirmed pairing). Pings only drop
+/// a peer that stops answering them, and on a relayed connection the host's
+/// pings are answered locally (see `relay::VirtualConn`), so without this a
+/// stranger who finished the handshake could hold a LAN socket, or one of the
+/// relay's device slots for this host, for as long as it liked. Not counted
+/// while the Mac's prompt is up, which has its own `CONFIRM_TIMEOUT`. The
+/// client's own bound on its first frame is the same 15 s.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
 
 type Ws = WebSocketStream<TcpStream>;
 
@@ -440,6 +450,9 @@ async fn read_loop<S: WsTransport>(
     let mut ping = tokio::time::interval(PING_INTERVAL);
     // `interval` fires immediately; the first real ping belongs one period out.
     ping.tick().await;
+    // Counted from here, where the Noise handshake has just finished.
+    let auth_deadline = tokio::time::sleep(AUTH_TIMEOUT);
+    tokio::pin!(auth_deadline);
 
     loop {
         tokio::select! {
@@ -490,11 +503,23 @@ async fn read_loop<S: WsTransport>(
                         continue;
                     }
                 };
-                if !admit(state, out, session, secured, &record, &pending.frame_id, result, &mut event_task) {
+                let events = state.subscribe();
+                if !admit(state, out, session, secured, &record, &pending.frame_id, result, events, &mut event_task) {
                     out.send(close_frame(CLOSE_UNAUTHENTICATED, "bad credential"));
                     break;
                 }
                 authenticated = Some(record.device_id);
+            }
+            // See `AUTH_TIMEOUT`. 4001, which a client retries, and not 4003,
+            // which tells it the device is no longer paired and stops it for
+            // good: a slow honest client must be able to come back. Held off
+            // while the Mac is deciding; a decline or no answer that comes
+            // after the deadline is answered by the arm above first, so the
+            // phone reads why before the close.
+            _ = &mut auth_deadline, if authenticated.is_none() && decision.is_none() => {
+                tracing::debug!(%peer, "remote: not authenticated in time");
+                out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "authentication timed out"));
+                break;
             }
             _ = ping.tick() => {
                 if missed_pongs >= MAX_MISSED_PONGS {
@@ -547,14 +572,15 @@ async fn read_loop<S: WsTransport>(
                         let frame: RequestFrame = match serde_json::from_slice(&plaintext) {
                             Ok(frame) => frame,
                             Err(e) => {
-                                if first_frame {
-                                    out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "expected pair or hello"));
-                                    break;
-                                }
-                                // No id to answer with; the client will time its
-                                // own request out.
+                                // As fatal as a frame that does not decrypt.
+                                // An ordinary message is a run of chunks, so
+                                // anyone on the path can join two messages into
+                                // one that still decrypts but no longer parses;
+                                // skipping it would lose both requests with the
+                                // channel still up and nothing said.
                                 tracing::debug!(error = %e, %peer, "remote: unparseable frame");
-                                continue;
+                                out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "frame did not parse"));
+                                break;
                             }
                         };
                         let handshake = matches!(frame.op.as_str(), "pair" | "hello" | PAIR_REQUEST);
@@ -632,9 +658,14 @@ async fn read_loop<S: WsTransport>(
                                 }
                                 _ => {}
                             }
+                            // On the fan-out before `authenticate` reads the
+                            // `hello` snapshot: an event emitted while it does
+                            // waits here for `admit` to forward, rather than
+                            // falling between the snapshot and the stream.
+                            let events = state.subscribe();
                             match authenticate(state, &frame, &secured.remote_static).await {
                                 Some((record, result)) => {
-                                    if !admit(state, out, session, secured, &record, &frame.id, result, &mut event_task) {
+                                    if !admit(state, out, session, secured, &record, &frame.id, result, events, &mut event_task) {
                                         out.send(close_frame(CLOSE_UNAUTHENTICATED, "bad credential"));
                                         break;
                                     }
@@ -762,9 +793,12 @@ async fn read_loop<S: WsTransport>(
     stream
 }
 
-/// Bring an authenticated device onto this connection: frame limit raised,
-/// event forwarding on, the session bound to the device, and only then the
-/// reply. `false` when the device was revoked in the gap — the caller closes.
+/// Bring an authenticated device onto this connection: frame limit raised, the
+/// session bound to the device, event forwarding on, and only then the reply.
+/// `false` when the device was revoked in the gap — the caller closes.
+///
+/// `events` is the connection's subscription, taken before any snapshot
+/// `result` carries was read, so it holds every event since.
 #[allow(clippy::too_many_arguments)]
 fn admit(
     state: &Arc<RemoteState>,
@@ -774,6 +808,7 @@ fn admit(
     record: &DeviceRecord,
     frame_id: &str,
     result: Value,
+    events: broadcast::Receiver<Arc<str>>,
     event_task: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> bool {
     // Before the reply: the phone may send a fragmented frame the moment it
@@ -782,10 +817,6 @@ fn admit(
         .channel
         .lock()
         .set_frame_limit(secure::MAX_FRAME_PLAINTEXT);
-    // Subscribe before the reply goes out: an event emitted in the gap would
-    // otherwise be lost, and the phone would render a snapshot it can't see the
-    // next change to.
-    *event_task = Some(spawn_event_forwarder(state, out.clone()));
     // Makes this socket revocable and visible as `connected`.
     session.bind_device(&record.device_id);
     // The device could have been revoked between authenticating and the line
@@ -794,6 +825,11 @@ fn admit(
     if !state.devices().contains(&record.device_id) {
         return false;
     }
+    // Forwarding before the reply goes out: an event emitted in the gap would
+    // otherwise be lost, and the phone would render a snapshot it can't see the
+    // next change to. After the check above, so a device revoked in the gap is
+    // never forwarded an event ahead of its close.
+    *event_task = Some(spawn_event_forwarder(events, out.clone()));
     state.devices().touch(&record.device_id);
     // Reply last: the phone must not be able to observe itself as
     // authenticated before it is on the fan-out and in the registry.
@@ -932,12 +968,13 @@ fn accept_confirmed(
     Ok((record, result))
 }
 
-/// Forward the shared event stream to one connection. Owned by a task rather
-/// than the reader's `select!` so a lagging phone can't stall request handling.
-fn spawn_event_forwarder(state: &Arc<RemoteState>, out: Outbox) -> tokio::task::JoinHandle<()> {
-    // Subscribed here, not inside the task, so the connection is on the
-    // fan-out the instant this returns.
-    let mut rx = state.subscribe();
+/// Forward the shared event stream to one connection, from wherever `rx` was
+/// subscribed. Owned by a task rather than the reader's `select!` so a lagging
+/// phone can't stall request handling.
+fn spawn_event_forwarder(
+    mut rx: broadcast::Receiver<Arc<str>>,
+    out: Outbox,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -1215,5 +1252,66 @@ impl ClientInfo {
         self.platform
             .clone()
             .unwrap_or_else(|| "unknown".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::dispatch::Scope;
+    use crate::remote::tests::{device, StubDispatch};
+
+    /// A device revoked between authenticating and `admit` is turned away
+    /// before it is put on the event fan-out, so no event can reach it ahead of
+    /// its close.
+    #[tokio::test]
+    async fn a_device_revoked_in_the_gap_is_never_forwarded_an_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
+        let phone = device();
+        let record = state
+            .devices()
+            .register("phone", "ios", &phone.public, &Scope::ALL)
+            .unwrap();
+        state.revoke_device(&record.device_id).unwrap();
+
+        // The host's end of a real handshake, which is all `admit` touches of it.
+        let host = secure::HostKey::generate().unwrap();
+        let mut ours = secure::Handshake::new(&phone.key, true).unwrap();
+        let mut theirs = secure::Handshake::new(&host, false).unwrap();
+        theirs.read(&ours.write().unwrap()).unwrap();
+        ours.read(&theirs.write().unwrap()).unwrap();
+        theirs.read(&ours.write().unwrap()).unwrap();
+        let secured = Secured {
+            channel: Arc::new(Mutex::new(theirs.finish().unwrap())),
+            remote_static: phone.public,
+        };
+        let (tx, mut queued) = mpsc::channel(OUTBOUND_BUFFER);
+        let (close, _close_rx) = mpsc::channel(1);
+        let session = state.sessions().register(close.clone());
+        let out = Outbox {
+            tx,
+            close,
+            frame_cap: MAX_OUTBOUND_FRAME_BYTES,
+        };
+
+        let mut event_task = None;
+        let admitted = admit(
+            &state,
+            &out,
+            &session,
+            &secured,
+            &record,
+            "1",
+            Value::Null,
+            state.subscribe(),
+            &mut event_task,
+        );
+        assert!(!admitted);
+        assert!(event_task.is_none(), "no forwarder for a revoked device");
+
+        state.forward_event("agent:status", &json!({ "agentId": "arabia" }));
+        tokio::task::yield_now().await;
+        assert!(queued.try_recv().is_err(), "nothing was queued for it");
     }
 }

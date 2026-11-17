@@ -112,6 +112,11 @@ pub(super) struct RelayTiming {
     /// blipping, and every relayed phone reads the gap as "Your Mac is
     /// offline" until the next attempt lands, long after the network is back.
     pub backoff_max: Duration,
+    /// How long one dial has, TCP and TLS and the WebSocket upgrade together,
+    /// so a stalled TLS handshake costs one attempt rather than holding it
+    /// until the OS gives up, with every relayed phone reading "Your Mac is
+    /// offline" meanwhile. The phone gives its own relay dial the same 15 s.
+    pub dial_timeout: Duration,
     /// How long the relay has to complete challenge → proof → ready.
     pub auth_timeout: Duration,
     /// Host↔relay keepalive. This hop has its own ping/pong, never forwarded.
@@ -126,6 +131,7 @@ impl Default for RelayTiming {
         Self {
             backoff_initial: Duration::from_secs(1),
             backoff_max: Duration::from_secs(15),
+            dial_timeout: Duration::from_secs(15),
             auth_timeout: Duration::from_secs(10),
             ping_interval: Duration::from_secs(20),
             shutdown_grace: Duration::from_secs(2),
@@ -322,12 +328,24 @@ async fn attempt(
     let mut config = WebSocketConfig::default();
     config.max_message_size = Some(MAX_LINK_MESSAGE);
     config.max_frame_size = Some(MAX_LINK_MESSAGE);
-    let dial = tokio_tungstenite::connect_async_with_config(&endpoint, Some(config), true);
+    // Through the phone's dialer, which races the address families: with a
+    // bound on the attempt, trying them one at a time would let a blackholed
+    // IPv6 path spend every attempt before IPv4 was ever dialled.
+    let dial = tokio::time::timeout(
+        timing.dial_timeout,
+        fletch_proto::dial::connect_with_config(&endpoint, Some(config), true),
+    );
     let mut ws = tokio::select! {
         _ = shutdown.recv() => return Outcome::Done,
         dialed = dial => match dialed {
-            Ok((ws, _)) => ws,
-            Err(e) => return retry(format!("{url} could not be reached: {e}")),
+            Ok(Ok(ws)) => ws,
+            Ok(Err(e)) => return retry(format!("{url} could not be reached: {e}")),
+            Err(_) => {
+                return retry(format!(
+                    "{url} could not be reached: no answer within {:?}",
+                    timing.dial_timeout
+                ))
+            }
         },
     };
 

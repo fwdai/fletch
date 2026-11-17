@@ -144,15 +144,21 @@ describe("gateReason", () => {
       expect(gateReason(host([...V2_DEFAULT_OPS]), gate)).toBe(GATES[gate].reason);
     }
     // A `control` device's descriptor: every settings op but the five that
-    // decide how publishing happens (docs/remote-protocol.md, "Scopes").
+    // decide how publishing happens and the one that chooses a program the
+    // host runs (docs/remote-protocol.md, "Scopes").
     const control = host([
       ...V2_DEFAULT_OPS,
       ...requiredOps("hostSettings"),
       ...requiredOps("projectSettings"),
     ]);
+    expect(requiredOps("hostSettings")).not.toContain("set_agent_bin_override");
     expect(gateReason(control, "hostSettings")).toBeNull();
     expect(gateReason(control, "projectSettings")).toBeNull();
     expect(gateReason(control, "publishSettings")).toBe(GATES.publishSettings.reason);
+    expect(gateReason(control, "agentBinary")).toBe(GATES.agentBinary.reason);
+    expect(
+      gateReason(host([...V2_DEFAULT_OPS, ...requiredOps("agentBinary")]), "agentBinary"),
+    ).toBeNull();
     expect(
       gateReason(host([...V2_DEFAULT_OPS, ...requiredOps("publishSettings")]), "publishSettings"),
     ).toBeNull();

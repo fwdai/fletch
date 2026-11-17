@@ -82,9 +82,9 @@ export const GATES = {
     reason: "This host is too old to change project settings — change them on the host.",
   },
   /** The host's own configuration in Settings: the alerts, the idle sweep,
-   *  code indexing, the sandbox engine and its launch knobs, provider binary
-   *  overrides (docs/remote-protocol.md, "Settings"). The read and every
-   *  setter, which went on the wire together under the `projects` scope. */
+   *  code indexing, the sandbox engine and its launch knobs
+   *  (docs/remote-protocol.md, "Settings"). The read and every setter, which
+   *  went on the wire together under the `projects` scope. */
   hostSettings: {
     op: [
       "get_settings",
@@ -92,10 +92,19 @@ export const GATES = {
       "set_notify_pr_activity",
       "set_auto_archive_idle_days",
       "set_code_indexing_enabled",
-      "set_agent_bin_override",
     ],
     label: "Host settings",
     reason: "This host is too old to change its settings from here. Change them on the host.",
+  },
+  /** A provider's binary override in Settings. Its own gate because it is
+   *  `publish`-scoped: it chooses a program the host runs as the user, so a
+   *  device paired without full access keeps the rest of the host's settings
+   *  but may not set it, and the reason names both causes. */
+  agentBinary: {
+    op: ["get_settings", "set_agent_bin_override"],
+    label: "Agent binary",
+    reason:
+      "This host is too old, or this device isn't paired with full access. Change the agent's path on the host.",
   },
   /** Settings › Git's publishing preferences and attribution. Their own gate
    *  because they are `publish`-scoped: a device paired without it reads them
