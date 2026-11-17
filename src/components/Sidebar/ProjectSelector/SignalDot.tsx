@@ -1,9 +1,16 @@
 import { type ProjectSignal, SIGNAL_LABEL } from "../projectSignal";
 
-/** A project signal as a dot, in the colour the agent rows give that state.
- *  `where` finishes the tooltip: which project, or that it is a hidden one. */
-export function SignalDot({ signal, where }: { signal: ProjectSignal; where?: string }) {
-  const tip = where ? `${SIGNAL_LABEL[signal]} ${where}` : SIGNAL_LABEL[signal];
+interface Props {
+  signal: ProjectSignal;
+  /** No tooltip or accessible name: the control it sits on carries them. */
+  decorative?: boolean;
+}
+
+export function SignalDot({ signal, decorative = false }: Props) {
+  if (decorative) {
+    return <span className="proj-signal" data-signal={signal} aria-hidden="true" />;
+  }
+  const tip = SIGNAL_LABEL[signal];
   return (
     <span
       className="proj-signal tip"
