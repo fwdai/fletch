@@ -168,6 +168,10 @@ export interface WorkspaceSlice {
   runs: Record<string, RunStatus>;
 
   selectAgent: (id: string | null) => void;
+  /** Drop `id`'s unseen-results mark: the agent is on screen again without
+   *  having been selected anew (its host came back on screen with it still
+   *  selected). */
+  markResultsSeen: (id: string) => void;
   /** Select a workflow run for the main pane (clears agent/draft/settings selection). */
   selectRun: (id: string) => void;
   /** Select a run and focus one of its step agents' chats in the monitor. */
@@ -373,6 +377,13 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
         // they are absent from that snapshot, so this is their only authority.
         sending: reconcileSending(state.sending, agents, sendsInFlight(hostId)),
       })),
+
+    markResultsSeen: (id) =>
+      set((state) => {
+        if (!(id in state.unseenResults)) return state;
+        const { [id]: _seen, ...unseenResults } = state.unseenResults;
+        return { unseenResults };
+      }),
 
     selectAgent: (id) =>
       set((state) => {

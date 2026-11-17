@@ -27,7 +27,7 @@ import { UpdateToast } from "./components/UpdateToast";
 import { UsageScreen } from "./components/UsageScreen";
 import { Workspace } from "./components/Workspace";
 import { ACCENT_VALUES } from "./data/providers";
-import { useAppStore } from "./store";
+import { useAppStore, useUnseenCount } from "./store";
 import { EngineScope } from "./store/EngineScope";
 import { useGitSync } from "./store/gitSync";
 import { projectView } from "./store/surface";
@@ -82,9 +82,11 @@ function AppShell() {
   // The view as shown, the Context view's developer gate applied (surface.ts).
   const view = useAppStore(projectView);
   // Count of agents that finished a turn while the user wasn't looking at them
-  // (set on completion, cleared when the agent is opened). This is the same
-  // signal behind the sidebar "new" dots — mirror it onto the app icon badge.
-  const unseenCount = useAppStore((s) => Object.keys(s.unseenResults).length);
+  // (set on completion, cleared when the agent is opened), on every host: the
+  // badge is the window's, not the host on screen's. This is the same signal
+  // behind the sidebar "new" dots — mirror it onto the app icon badge.
+  const unseenCount = useUnseenCount();
+  const markResultsSeen = useAppStore((s) => s.markResultsSeen);
 
   useEffect(() => {
     init();
@@ -95,6 +97,13 @@ function AppShell() {
   useEffect(() => {
     setAppBadgeCount(unseenCount);
   }, [unseenCount]);
+
+  // A host coming back on screen shows the agent it had selected, so whatever
+  // that agent finished meanwhile is seen. `markResultsSeen` is the scope's
+  // own, so this runs for the host that just came on screen.
+  useEffect(() => {
+    if (selectedAgentId) markResultsSeen(selectedAgentId);
+  }, [selectedAgentId, markResultsSeen]);
 
   // All git / GitHub polling lives in one place.
   useGitSync();

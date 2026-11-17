@@ -29,7 +29,7 @@ vi.mock("@/api", async (importOriginal) => {
 import type { AgentRecord, Workspace } from "@/api";
 import { useEngine } from "@/api/engine";
 import type { Transport } from "@/api/transport";
-import { hostStore, startHost, stopHost, useAppStore } from "@/store";
+import { hostStore, startHost, stopHost, useAppStore, useUnseenCount } from "@/store";
 import { renderHook } from "@/test/render";
 import { EngineScope } from "./EngineScope";
 import { LOCAL_ENVIRONMENT_ID } from "./environments";
@@ -218,6 +218,45 @@ describe("a host's events", () => {
     await settle();
     expect(hosts[0].calls).toHaveLength(studioCalls);
     expect(localCalls).toEqual([]);
+  });
+});
+
+describe("a turn that ends on a host", () => {
+  /** Claude's own word that the turn is over, as the host forwards it. */
+  const turnEnds = (host: FakeHost) =>
+    host.emit("agent:event", { agent_id: "fuji", event: { type: "result", subtype: "success" } });
+
+  it("is unseen when its host is in the background, even for the agent selected there", () => {
+    hostStore("cloud").setState({ workspace: workspace("cloud"), selectedAgentId: "fuji" });
+
+    turnEnds(hosts[1]);
+
+    expect(partition("cloud").unseenResults).toEqual({ fuji: true });
+  });
+
+  it("is seen when its host is on screen with that agent selected", () => {
+    hostStore("cloud").setState({ workspace: workspace("cloud"), selectedAgentId: "fuji" });
+    useAppStore.getState().switchEnvironment("cloud");
+
+    turnEnds(hosts[1]);
+
+    expect(partition("cloud").unseenResults).toEqual({});
+  });
+
+  it("is counted for the window whichever host is on screen, until it is seen", () => {
+    hostStore("cloud").setState({ workspace: workspace("cloud"), selectedAgentId: "fuji" });
+    useAppStore.setState({ unseenResults: { kyoto: true } });
+    turnEnds(hosts[1]);
+    const inStudio = ({ children }: { children: ReactNode }) =>
+      createElement(EngineScope, { hostId: "studio", children });
+
+    const { result, rerender } = renderHook(() => useUnseenCount(), { wrapper: inStudio });
+    expect(result.current).toBe(2);
+
+    hostStore("cloud").getState().markResultsSeen("fuji");
+    rerender();
+    expect(result.current).toBe(1);
+    expect(partition("cloud").unseenResults).toEqual({});
   });
 });
 

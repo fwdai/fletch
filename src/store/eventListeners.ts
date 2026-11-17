@@ -332,11 +332,18 @@ export const registerEventListeners = async (engine: Engine, set: AppSet, get: A
             signalAway(hostId, get, e.agent_id, "Turn complete", "success");
           // Flag results for review on any agent the user isn't currently
           // looking at — this is the only signal for research-only turns that
-          // leave no diff behind. Cleared when the agent is selected. Never set
-          // for a purpose-tagged chat: it has no sidebar row to show the dot on,
-          // and the only clearing paths (`selectAgent`, discard) are unreachable
-          // from its surface — the key would pin the dock badge forever.
-          if (get().selectedAgentId !== e.agent_id && !agentRecord(get(), e.agent_id)?.purpose) {
+          // leave no diff behind. An agent is looked at when it is selected
+          // and its host is the one on screen: a host left in the background
+          // keeps its selection, and its selected agent finishing there is as
+          // unseen as any other. Cleared when the agent is selected, or its
+          // host comes back on screen with it selected (`markResultsSeen`).
+          // Never set for a purpose-tagged chat: it has no sidebar row to show
+          // the dot on, and the only clearing paths (`selectAgent`, discard)
+          // are unreachable from its surface — the key would pin the dock
+          // badge forever.
+          const lookedAt =
+            get().activeEnvironmentId === hostId && get().selectedAgentId === e.agent_id;
+          if (!lookedAt && !agentRecord(get(), e.agent_id)?.purpose) {
             set((state) => ({
               unseenResults: { ...state.unseenResults, [e.agent_id]: true },
             }));

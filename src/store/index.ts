@@ -92,6 +92,19 @@ export const useAppStore = Object.assign(useScopedAppStore, {
   subscribe: store.subscribe,
 }) as typeof store;
 
+/** How many agents finished a turn the user has not looked at, on this desktop
+ *  and on every paired host: the window-wide count behind the app icon badge,
+ *  whichever host is on screen. */
+export function useUnseenCount(): number {
+  return store((state) => {
+    let count = Object.keys(state.unseenResults).length;
+    for (const host of Object.values(state.hostStates)) {
+      count += Object.keys(host.unseenResults).length;
+    }
+    return count;
+  });
+}
+
 /** The `getState` / `setState` of the host the calling component is scoped to,
  *  for a read that must not subscribe (an event handler, an async callback).
  *  Stable for as long as the scope's host is. */
