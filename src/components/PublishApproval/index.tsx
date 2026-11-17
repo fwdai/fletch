@@ -56,8 +56,7 @@ function ApprovalPrompt({ more }: { more: number }) {
     >
       <ModalBody>
         <p className="text-base">
-          An agent{where} wants to{" "}
-          <strong>{request.detail}</strong> using your GitHub identity.
+          An agent{where} wants to <strong>{request.detail}</strong> using your GitHub identity.
         </p>
         {more > 0 && (
           <p className="text-xs">

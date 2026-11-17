@@ -104,7 +104,9 @@ describe("BoxEgressToast", () => {
 
     render(<BoxEgressToast />);
 
-    expect(await screen.findByText("fletch\u2019s settings file asks to allow a host")).toBeTruthy();
+    expect(
+      await screen.findByText("fletch\u2019s settings file asks to allow a host"),
+    ).toBeTruthy();
     expect(
       await screen.findByText("fletch\u2019s settings file on Studio asks to allow a host"),
     ).toBeTruthy();
