@@ -9,6 +9,7 @@ import { limitsRefreshKey } from "@/data/providerLimits";
 import { useAppStore } from "@/store";
 import { useLimitsRefresh } from "@/util/useLimitsRefresh";
 import { AccountBlock } from "./AccountBlock";
+import { cardBox } from "./placement";
 import { UsageReportRow } from "./UsageReportRow";
 import { useListedAccounts } from "./useListedAccounts";
 
@@ -17,10 +18,12 @@ export { LimitsButton } from "./LimitsButton";
 /** Every account's plan limits at a glance: one click (or ⌘U) from anywhere,
  *  where Settings › Providers is a screen, a row and an expand away. It reads
  *  every account afresh as it opens, so what it shows is current. Mounted
- *  at app root and pinned bottom-left, above the sidebar footer's usage chip
- *  that opens it, so the chord works with the sidebar hidden too. An outside
- *  click, Escape or any dialog opened after it dismisses it. */
-export function LimitsPopover() {
+ *  at app root, so the chord works with the sidebar hidden too, and pinned
+ *  to the bottom of the window, centered over the sidebar (`cardBox`) just
+ *  above the footer whose usage chip opens it. `sidebarWidth` is the
+ *  sidebar's width on screen, 0 while it is hidden. An outside click, Escape
+ *  or any dialog opened after it dismisses it. */
+export function LimitsPopover({ sidebarWidth }: { sidebarWidth: number }) {
   const open = useAppStore((s) => s.limitsPopoverOpen);
   const toggle = useAppStore((s) => s.toggleLimitsPopover);
   const close = useCallback(() => toggle(false), [toggle]);
@@ -28,12 +31,12 @@ export function LimitsPopover() {
   return (
     <>
       <Scrim onClose={close} zIndex={APP_POPOVER_SCRIM_Z} />
-      <LimitsCard onGiveWay={close} />
+      <LimitsCard onGiveWay={close} sidebarWidth={sidebarWidth} />
     </>
   );
 }
 
-function LimitsCard({ onGiveWay }: { onGiveWay: () => void }) {
+function LimitsCard({ onGiveWay, sidebarWidth }: { onGiveWay: () => void; sidebarWidth: number }) {
   const providerLimits = useAppStore((s) => s.providerLimits);
   const inFlight = useAppStore((s) => s.providerLimitsRefreshing);
   const refreshAccounts = useAppStore((s) => s.refreshProviderAccounts);
@@ -57,7 +60,13 @@ function LimitsCard({ onGiveWay }: { onGiveWay: () => void }) {
   }, [refreshAccounts, refresh]);
 
   return (
-    <div ref={cardRef} className="lim-pop" role="dialog" aria-label="Usage">
+    <div
+      ref={cardRef}
+      className="lim-pop"
+      style={cardBox(sidebarWidth)}
+      role="dialog"
+      aria-label="Usage"
+    >
       <div className="lim-pop-head flex-center">
         <span className="lim-pop-title text-base">Usage</span>
         <IconButton size="sm" tip="Manage accounts" onClick={() => openSettingsScreen("providers")}>
