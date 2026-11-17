@@ -21,6 +21,7 @@ import {
   CLOSE_BAD_FIRST_FRAME,
   CLOSE_UNAUTHENTICATED,
   type EventFrame,
+  type HostInfo,
   type RequestFrame,
   type ResponseFrame,
 } from "@desktop/remote/types";
@@ -45,6 +46,26 @@ export interface MockOptions {
   /** Wall-clock scale for the scripted stream; 0 emits everything at once
    *  (what the tests use). */
   speed?: number;
+}
+
+/** Who a mock host is and what it holds: the parts that tell two hosts apart.
+ *  Anything left out is the fixtures'. */
+export interface MockHostSpec {
+  host?: HostInfo;
+  workspace?: Workspace;
+  records?: Record<string, SessionRecord[]>;
+}
+
+/** The hosts given an identity of their own (`registerMockHost`), by key. */
+const specs = new Map<string, MockHostSpec>();
+
+/** Answer every dial for `hostKey` as `spec` rather than as the fixtures' host —
+ *  for a test that needs several hosts live at once, each one itself. Every
+ *  socket opened to that key starts from `spec`, as any other mock socket
+ *  starts from the fixtures. A key never registered answers with the fixtures,
+ *  under whatever key it was dialled with. */
+export function registerMockHost(hostKey: string, spec: MockHostSpec): void {
+  specs.set(hostKey, spec);
 }
 
 interface MockState {
@@ -119,14 +140,18 @@ export class MockHost {
   private dictation = new Map<string, number>();
   /** Open attachment uploads → the name they will be staged under. */
   private uploads = new Map<string, string>();
+  /** What `pair` and `hello` say this host is. */
+  private readonly info: HostInfo;
 
   constructor(
     private readonly emit: (frame: ResponseFrame | EventFrame) => void,
     private readonly opts: MockOptions = {},
+    spec: MockHostSpec = {},
   ) {
+    this.info = spec.host ?? fx.hostInfo;
     this.state = {
-      workspace: structuredClone(fx.workspace),
-      records: structuredClone(fx.records),
+      workspace: structuredClone(spec.workspace ?? fx.workspace),
+      records: structuredClone(spec.records ?? fx.records),
       turns: structuredClone(fx.userTurns),
       liveTurns: {},
       liveSeq: {},
@@ -170,7 +195,7 @@ export class MockHost {
           ok: true,
           result: {
             deviceId: "mock-device",
-            host: fx.hostInfo,
+            host: this.info,
             relay: fx.relay,
             protocol: fx.protocol,
           },
@@ -683,7 +708,7 @@ export class MockHost {
         this.later(() => this.bootstrap(), 400);
         return {
           deviceId: "mock-device",
-          host: fx.hostInfo,
+          host: this.info,
           relay: fx.relay,
           protocol: fx.protocol,
         };
@@ -696,7 +721,7 @@ export class MockHost {
         this.authed = true;
         this.later(() => this.bootstrap(), 400);
         return {
-          host: fx.hostInfo,
+          host: this.info,
           workspace: this.visibleWorkspace(),
           relay: fx.relay,
           protocol: fx.protocol,
@@ -1158,34 +1183,43 @@ export class MockHost {
 
   /** What a freshly connected host pushes: the held tool-use prompt (so the
    *  waiting agent shows its approval card without a turn having to run) and a
-   *  live turn on the running agent. */
+   *  live turn on the running agent — each on a host that holds the agent. */
   private bootstrap() {
-    this.agentEvent("pamukkale", {
-      type: "control_request",
-      request_id: fx.PENDING_REQUEST_ID,
-      request: {
-        subtype: "can_use_tool",
-        tool_use_id: fx.PENDING_TOOL_USE_ID,
-        tool_name: "Bash",
-      },
-    });
+    if (this.state.workspace.agents.some((a) => a.id === "pamukkale")) {
+      this.agentEvent("pamukkale", {
+        type: "control_request",
+        request_id: fx.PENDING_REQUEST_ID,
+        request: {
+          subtype: "can_use_tool",
+          tool_use_id: fx.PENDING_TOOL_USE_ID,
+          tool_name: "Bash",
+        },
+      });
+    }
     this.later(() => this.runTurn("arabia", "continue"), 1200);
   }
 }
 
 /** `SocketFactory` that plugs the mock host into the real client. The expected
- *  host key is ignored — there is no handshake to fail — but a key is still
- *  reported, so pinning behaves as it does against a real host. */
+ *  host key is never refused — there is no handshake to fail — but it picks
+ *  which host answers (`registerMockHost`) and is the key reported back. A dial
+ *  that expects none, a pairing by address, is answered as `MOCK_HOST_KEY`, so
+ *  pinning behaves as it does against a real host. */
 export function mockSocket(opts: MockOptions = {}): SocketFactory {
-  return async (_url, handlers) => {
-    const host = new MockHost((frame) => handlers.onMessage(JSON.stringify(frame)), opts);
+  return async (_url, handlers, dial) => {
+    const hostKey = dial?.hostKey ?? MOCK_HOST_KEY;
+    const host = new MockHost(
+      (frame) => handlers.onMessage(JSON.stringify(frame)),
+      opts,
+      specs.get(hostKey),
+    );
     host.onClose = (code) => {
       host.close();
       handlers.onClose(code);
     };
     handlers.onOpen();
     const socket: Socket = {
-      hostKey: MOCK_HOST_KEY,
+      hostKey,
       // There is no network under the mock host, so it is always the near path.
       via: "lan",
       send: (text) => host.receive(text),
