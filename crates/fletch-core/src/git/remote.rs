@@ -666,7 +666,7 @@ async fn require_origin_unchanged(checkout: &Path, source_repo: &Path) -> Result
 /// planted in a checkout cannot dress a repointed origin up as the right one
 /// (nor a user's global rewrite make an unchanged one look wrong). `None`
 /// without an origin.
-async fn origin_url(repo: &Path) -> Result<Option<String>> {
+pub(crate) async fn origin_url(repo: &Path) -> Result<Option<String>> {
     let out = git_output(repo, &["config", "--get", "remote.origin.url"]).await?;
     if !out.status.success() {
         return Ok(None);

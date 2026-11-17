@@ -183,6 +183,30 @@ pub async fn project_icon_set(
     .map_err(|e| Error::Other(format!("set icon: {e}")))?
 }
 
+/// The project as another device needs it to run one of its workspaces.
+#[tauri::command]
+pub async fn project_definition(
+    ctx: State<'_, Arc<EngineCtx>>,
+    supervisor: State<'_, Arc<Supervisor>>,
+    project_id: String,
+) -> Result<fletch_core::workspace::ProjectDefinition> {
+    fletch_core::commands::project_definition_impl(&ctx, &supervisor, &project_id).await
+}
+
+/// Make sure this Mac can run workspaces of another device's project, cloning
+/// its repositories on first sight.
+#[tauri::command]
+pub async fn ensure_project(
+    ctx: State<'_, Arc<EngineCtx>>,
+    supervisor: State<'_, Arc<Supervisor>>,
+    definition: fletch_core::workspace::ProjectDefinition,
+) -> Result<Workspace> {
+    fletch_core::commands::announce_workspace(
+        ctx.sink.as_ref(),
+        fletch_core::commands::ensure_project_impl(&supervisor, definition).await,
+    )
+}
+
 /// The project's stored icon: a glyph, an image, or null for the initial.
 #[tauri::command]
 pub fn project_icon_get(

@@ -336,6 +336,11 @@ pub const OPS: &[&str] = &[
     "project_icon_candidates",
     "project_icon_set",
     "project_icon_get",
+    // Running a project's workspaces on a device other than its home
+    // (protocol doc, "Projects on another device"): the home describes the
+    // project, the device that will run it makes its copy.
+    "project_definition",
+    "ensure_project",
     // A paired desktop handing over its own pairing link ("Pairing back").
     OFFER_INVITE,
 ];
@@ -676,6 +681,8 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("project_icon_candidates", Scope::Observe),
     ("project_icon_set", Scope::Projects),
     ("project_icon_get", Scope::Observe),
+    ("project_definition", Scope::Observe),
+    ("ensure_project", Scope::Projects),
     // Handing this host a live, full-access code for the device's own machine:
     // only a device paired with Full may, so `publish`, which Control lacks.
     (OFFER_INVITE, Scope::Publish),
@@ -1898,6 +1905,19 @@ impl Dispatch for SupervisorDispatch {
                     let a: ProjectArgs = parse(args)?;
                     res(crate::commands::project_icon_get_impl(ctx, &a.project_id))
                 }
+                "project_definition" => {
+                    let a: ProjectArgs = parse(args)?;
+                    res(crate::commands::project_definition_impl(ctx, sup, &a.project_id).await)
+                }
+                // A copy made here is a new row in the project list, so it
+                // tells the other views, as `clone_repo` does.
+                "ensure_project" => {
+                    let a: EnsureProjectArgs = parse(args)?;
+                    crate::commands::announce_workspace(
+                        ctx.sink.as_ref(),
+                        res(crate::commands::ensure_project_impl(sup, a.definition).await),
+                    )
+                }
                 // Changes the project list's `icon_hash`, so it tells the other
                 // views, as a rename does.
                 "project_icon_set" => {
@@ -2905,6 +2925,11 @@ struct ProjectChatsArgs {
 #[serde(rename_all = "camelCase")]
 struct ProjectArgs {
     project_id: String,
+}
+
+#[derive(Deserialize)]
+struct EnsureProjectArgs {
+    definition: crate::workspace::ProjectDefinition,
 }
 
 /// `source: null` clears the choice; `bytes` (base64) only with `file`.

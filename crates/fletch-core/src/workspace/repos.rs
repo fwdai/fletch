@@ -55,7 +55,7 @@ impl WorkspaceManager {
 
     /// Give a project the icon its repositories already have, unless it has a
     /// choice on record (`icon_detect`): on add and on relocate.
-    fn detect_icon(&self, project_id: &str) -> bool {
+    pub(crate) fn detect_icon(&self, project_id: &str) -> bool {
         let repos = self.project_repo_paths(project_id);
         crate::icon_detect::detect_if_unset(&self.db, project_id, &repos)
     }
@@ -80,6 +80,7 @@ impl WorkspaceManager {
     pub fn remove_workspace_repo(&self, repo_path: &Path) -> Result<Workspace> {
         let conn = self.db.lock();
         let path_str = repo_path.to_string_lossy().to_string();
+        Self::refuse_copy_repo(&conn, &path_str)?;
         conn.execute("DELETE FROM repos WHERE path = ?1", [&path_str])?;
         drop(conn);
         Ok(self.current().expect("workspace initialized"))
@@ -107,6 +108,8 @@ impl WorkspaceManager {
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
         let path_str = repo_path.to_string_lossy().to_string();
+        Self::refuse_copy(&tx, project_id)?;
+        Self::refuse_copy_repo(&tx, &path_str)?;
 
         let target_exists: bool = tx
             .query_row(
@@ -240,6 +243,7 @@ impl WorkspaceManager {
     ) -> Result<Workspace> {
         let conn = self.db.lock();
         let path_str = repo_path.to_string_lossy().to_string();
+        Self::refuse_copy(&conn, project_id)?;
 
         let (repo_id, actual_pid): (String, String) = conn
             .query_row(
@@ -265,12 +269,7 @@ impl WorkspaceManager {
             ));
         }
 
-        let checkouts: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM worktrees WHERE repo_id = ?1",
-            [&repo_id],
-            |row| row.get(0),
-        )?;
-        if checkouts > 0 {
+        if Self::has_checkouts(&conn, &repo_id)? {
             return Err(Error::Other(format!(
                 "{path_str} is used by existing agents (including archived ones). \
                  Delete those agents before detaching it."
@@ -294,6 +293,7 @@ impl WorkspaceManager {
 
         let conn = self.db.lock();
         let path_str = repo_path.to_string_lossy().to_string();
+        Self::refuse_copy_repo(&conn, &path_str)?;
         let changed = conn.execute(
             "UPDATE repos SET label = ?1 WHERE path = ?2",
             rusqlite::params![value, path_str],
@@ -315,6 +315,7 @@ impl WorkspaceManager {
         }
 
         let conn = self.db.lock();
+        Self::refuse_copy(&conn, project_id)?;
         let changed = conn.execute(
             "UPDATE projects SET name = ?1 WHERE id = ?2",
             rusqlite::params![trimmed, project_id],
@@ -403,6 +404,7 @@ impl WorkspaceManager {
         let mut conn = self.db.lock();
         let old_str = old_path.to_string_lossy().to_string();
         let new_str = new_path.to_string_lossy().to_string();
+        Self::refuse_copy_repo(&conn, &old_str)?;
 
         if old_str == new_str {
             drop(conn);
@@ -460,6 +462,206 @@ impl WorkspaceManager {
 
     /// All repo paths attached to a project, in creation order (the first is
     /// the primary). Used at spawn to provision one checkout per project repo.
+    /// A project's name, whose it is when it is a copy, and its repositories
+    /// (the id each has on the project's home, its path and its label) in the
+    /// project's own order: what
+    /// `commands::project_definition_impl` describes to another device.
+    #[allow(clippy::type_complexity)]
+    pub fn project_outline(
+        &self,
+        project_id: &str,
+    ) -> Result<(
+        String,
+        Option<ProjectHome>,
+        Vec<(String, PathBuf, Option<String>)>,
+    )> {
+        let conn = self.db.lock();
+        let (name, home_device, home_name): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT name, home_device, home_name FROM projects WHERE id = ?1",
+                [project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|_| Error::Other(format!("project not found: {project_id}")))?;
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(home_id, id), path, label FROM repos
+             WHERE project_id = ?1 ORDER BY created_at, rowid",
+        )?;
+        let repos = stmt
+            .query_map([project_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    PathBuf::from(row.get::<_, String>(1)?),
+                    row.get(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let home = home_device.map(|device| ProjectHome {
+            device,
+            name: home_name.unwrap_or_default(),
+        });
+        Ok((name, home, repos))
+    }
+
+    /// Whether this host owns the project `project_id`: `Some(true)` for one
+    /// added here, `Some(false)` for a copy of another device's, `None` when
+    /// there is no such project.
+    pub fn owns_project(&self, project_id: &str) -> Option<bool> {
+        self.db
+            .lock()
+            .query_row(
+                "SELECT home_device IS NULL FROM projects WHERE id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    /// The ids, as the home knows them, of the repositories of `project_id`
+    /// on this host.
+    pub fn project_repo_ids(&self, project_id: &str) -> HashSet<String> {
+        let conn = self.db.lock();
+        let Ok(mut stmt) =
+            conn.prepare("SELECT COALESCE(home_id, id) FROM repos WHERE project_id = ?1")
+        else {
+            return HashSet::new();
+        };
+        stmt.query_map([project_id], |row| row.get(0))
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Bring the copy of `def` in line with it, in one transaction. A
+    /// repository is known by the id it has on its home (`repos.home_id`),
+    /// which is what tells one from another across calls.
+    ///
+    /// - The project row is created on first sight, and on every later one
+    ///   brought up to the name the home has for it now.
+    /// - Each of `cloned` (a repository's home id and where its new clone is)
+    ///   is recorded; every repository already recorded takes the label the
+    ///   home has for it now.
+    /// - A recorded repository `def` no longer names leaves the project under
+    ///   the rule [`Self::detach_repo_from_project`] holds the home to: once
+    ///   no agent here has a checkout of it. Until then it is a repository of
+    ///   the project on this host like any other, so nothing that reads the
+    ///   project has a second kind of repository to know about.
+    ///
+    /// A project this host owns is never touched.
+    pub fn reconcile_copy(
+        &self,
+        def: &ProjectDefinition,
+        cloned: &[(String, PathBuf)],
+    ) -> Result<()> {
+        let conn = self.db.lock();
+        let tx = conn.unchecked_transaction()?;
+        let now = now_millis();
+        tx.execute(
+            "INSERT INTO projects (id, name, created_at, home_device, home_name)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, home_name = excluded.home_name
+             WHERE projects.home_device IS NOT NULL",
+            rusqlite::params![
+                def.project_id,
+                def.name,
+                now,
+                def.home.device,
+                def.home.name
+            ],
+        )?;
+        for (order, repo) in def.repos.iter().enumerate() {
+            match cloned.iter().find(|(id, _)| *id == repo.id) {
+                Some((_, path)) => tx.execute(
+                    "INSERT INTO repos (id, project_id, path, label, created_at, home_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        uuid::Uuid::new_v4().to_string(),
+                        def.project_id,
+                        path.to_string_lossy(),
+                        repo.label,
+                        // Keeps the home's order among rows written together.
+                        now + order as i64,
+                        repo.id
+                    ],
+                )?,
+                None => tx.execute(
+                    "UPDATE repos SET label = ?1 WHERE home_id = ?2 AND project_id = ?3",
+                    rusqlite::params![repo.label, repo.id, def.project_id],
+                )?,
+            };
+        }
+
+        let recorded: Vec<(String, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, home_id FROM repos WHERE project_id = ?1 AND home_id IS NOT NULL",
+            )?;
+            let rows = stmt
+                .query_map([&def.project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        for (repo_id, home_id) in recorded {
+            let named = def.repos.iter().any(|r| r.id == home_id);
+            if !named && !Self::has_checkouts(&tx, &repo_id)? {
+                tx.execute("DELETE FROM repos WHERE id = ?1", [&repo_id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Whether any agent, live or archived, has a checkout of the repository
+    /// `repo_id`. One that does cannot leave its project: the
+    /// `worktrees.repo_id` cascade would take those agents' tracked branches,
+    /// PRs and archive snapshots with it.
+    fn has_checkouts(conn: &Connection, repo_id: &str) -> Result<bool> {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM worktrees WHERE repo_id = ?1",
+            [repo_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Refuse a change to the structure of a project this host only runs: a
+    /// copy is edited on its home, and what is changed here would be neither
+    /// seen there nor undone by the next `ensure_project`.
+    fn refuse_copy(conn: &Connection, project_id: &str) -> Result<()> {
+        let home: Option<(Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT home_device, home_name FROM projects WHERE id = ?1",
+                [project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+        match home {
+            Some((Some(_), name)) => {
+                let name = name.filter(|n| !n.trim().is_empty());
+                Err(Error::Other(format!(
+                    "This project belongs to {}. Change it there.",
+                    name.as_deref().unwrap_or("another device")
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// [`Self::refuse_copy`] for the project the repository at `path_str`
+    /// belongs to. A path that is not pinned belongs to none.
+    fn refuse_copy_repo(conn: &Connection, path_str: &str) -> Result<()> {
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM repos WHERE path = ?1",
+                [path_str],
+                |row| row.get(0),
+            )
+            .ok();
+        match project_id {
+            Some(project_id) => Self::refuse_copy(conn, &project_id),
+            None => Ok(()),
+        }
+    }
+
     pub fn project_repo_paths(&self, project_id: &str) -> Vec<PathBuf> {
         let conn = self.db.lock();
         let mut stmt = match conn

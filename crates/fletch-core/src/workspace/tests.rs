@@ -3592,6 +3592,20 @@ fn allocate_subdir_handles_collision() {
 }
 
 #[test]
+fn allocate_repo_subdir_treats_names_differing_by_case_as_one() {
+    let used = vec!["app".to_string()];
+    assert_eq!(
+        allocate_repo_subdir(Path::new("/server/App"), &used),
+        "App-2"
+    );
+    let used = vec!["app".to_string(), "APP-2".to_string()];
+    assert_eq!(
+        allocate_repo_subdir(Path::new("/server/App"), &used),
+        "App-3"
+    );
+}
+
+#[test]
 fn allocate_subdir_never_claims_a_reserved_name() {
     // A repo whose basename matches a Fletch-owned workspace subdir gets a
     // numbered subdir rather than colliding with it, even with nothing else
@@ -3604,6 +3618,12 @@ fn allocate_subdir_never_claims_a_reserved_name() {
         assert_eq!(
             allocate_repo_subdir(Path::new(&format!("/foo/{reserved}")), &[]),
             format!("{reserved}-2"),
+        );
+        // The same folder on a filesystem that ignores case.
+        let shouted = reserved.to_uppercase();
+        assert_eq!(
+            allocate_repo_subdir(Path::new(&format!("/foo/{shouted}")), &[]),
+            format!("{shouted}-2"),
         );
     }
 }

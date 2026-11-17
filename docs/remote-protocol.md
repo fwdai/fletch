@@ -745,9 +745,9 @@ The six scopes, and what each one covers:
 
 | scope | covers |
 |---|---|
-| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `list_provider_accounts`, `get_provider_limits`, `refresh_provider_limits` (a vendor read the host stores, as its own Refresh button does), `scan_usage_transcripts`, `approvals_list`, `box_egress_pending`, `box_egress_activity`, `get_settings`, `get_project_settings`, `project_icon_candidates`, `project_icon_get` |
+| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `list_provider_accounts`, `get_provider_limits`, `refresh_provider_limits` (a vendor read the host stores, as its own Refresh button does), `scan_usage_transcripts`, `approvals_list`, `box_egress_pending`, `box_egress_activity`, `get_settings`, `get_project_settings`, `project_icon_candidates`, `project_icon_get`, `project_definition` |
 | `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, switch the provider account (`switch_agent_account`), dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`, `clear_checkout_config`), and choosing which of a checkout's PRs is focused (`set_focused_pr`) |
-| `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; every project setting (`set_project_setting`, and the icon through `project_icon_set`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides, and which provider account the host's agents run under (`set_active_provider_account`) |
+| `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; copy another device's project so its workspaces can run here (`ensure_project`); every project setting (`set_project_setting`, and the icon through `project_icon_set`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides, and which provider account the host's agents run under (`set_active_provider_account`) |
 | `workflows` | launch, cancel and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
 | `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be — and `autopilot_set`, for the same reason: an enrolled checkout's pushes skip the prompt (see "Autopilot"), so switching autopilot on is a standing publish grant; plus the five settings that decide how a publish happens: `set_publish_confirmation`, `set_publish_approval_wait`, `set_branch_prefix`, `set_draft_prs`, `set_agent_attribution_removed`; and `offer_invite`, which hands this host a full-access code for the sender's own machine, so only a Full device may (see "Pairing back") |
@@ -1022,6 +1022,8 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `project_icon_candidates` | `{ projectId }` — a fresh scan of the project's repositories on the host for its icon (docs/project-surfaces-plan.md §3.6), primary repo first, best first; each with its image for a thumbnail. `path` is repo-relative (a secondary repo's starts with its folder name). Read-only | `{ path, source, width: number \| null, mime, data }[]` — `data` base64 |
 | `project_icon_set` | `{ projectId, source: string \| null, bytes?: string }` — make `source` the project's icon: `detected:<path>` (one of the candidates' `path`s, re-checked against a fresh scan — never an arbitrary file), `file` with the image's `bytes` (base64, at most 1 MB), `builtin:<glyph>` (`web`, `desktop`, `mobile`, `cli`, `library`, `docs`), `initial`, or `null` to clear the choice (detection fills an undecided project in on add, relocate and the host's startup pass). The image is copied under the host's data directory, so the repository is never read to draw it. Writes `icon.source` and emits `project_settings:changed` and `workspace:changed` | `Workspace` |
 | `project_icon_get` | `{ projectId }` — the stored icon: fetch it when the project's `ProjectRef.icon_hash` changes, never per snapshot. An SVG is drawn through `<img>`, never inlined | `{ glyph } \| { mime, data } \| null` — `null` draws the initial |
+| `project_definition` | `{ projectId }` — the project as another device needs it to run one of its workspaces (see "Projects on another device"). For a project the host owns, `home` is the host itself and each repo's `origin` is read off disk; for a copy, `home` is the device the copy came from. Read-only | `ProjectDefinition` |
+| `ensure_project` | `{ definition: ProjectDefinition }` — make sure the host can run workspaces of this project: a no-op for one it already has, else it clones each repository from its `origin` and records the project as a copy (see "Projects on another device"). Emits `workspace:changed` | `Workspace` |
 | `offer_invite` | `{ url }` — a `fletch://pair` link for the sending desktop's own machine, printable ASCII, at most 2 KiB; `publish` scope; raises `remote:invite-offered` on the host's screen, and a host with no screen refuses it (see "Pairing back") | `{}` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
@@ -1070,6 +1072,73 @@ The spawn flow is the desktop's: `allocate_draft_name` → `spawn_agent` →
 wait for `agent:status` to leave `spawning` → `send_user_message` with the
 prompt as the first turn (`turnId` = client UUID). The phone does not send
 the prompt through `instructions`.
+
+### Projects on another device
+
+A project belongs to the device it was added on: its **home**, the only device
+that edits it. Any other device is where one of its workspaces may *run*. To
+run one there the device needs the repositories on its own disk, so the client
+carries the project across in two calls:
+
+1. `project_definition { projectId }` on the home. The answer is small and
+   self-contained, so a client may keep it and use it later while the home is
+   out of reach.
+2. `ensure_project { definition }` on the device that will run the workspace,
+   then `spawn_agent` there with the `path` of the project's first
+   `ProjectRef` in the answer.
+
+```
+ProjectDefinition {
+  project_id: string            // the home's id, kept by every copy
+  name: string
+  home: { device: string, name: string }
+  repos: { id: string, dir: string, origin: string | null, label: string | null }[]
+}
+```
+
+`home.device` is the home's host id, the key a client that paired with it
+already holds, so a client can tell which of its hosts a project belongs to.
+`repos` is in the project's own order. `id` is the repository's id on its
+home, kept by every copy: it is what tells one repository of a project from
+another when the home relabels or removes one. `dir` is its folder name.
+`origin` never carries credentials: a `scheme://` URL is sent without its
+query and fragment, an http(s) one without its userinfo and any other without
+its password, since the
+definition is readable with `observe` and the device that clones signs in with
+its own login.
+
+`ensure_project` clones each repository the host does not have yet from its
+`origin` into the host's own state
+(`~/.fletch/projects/<project_id>/repos/<repo id>/<dir>`) with the host's
+GitHub login, and records the project as a copy under the same `project_id`.
+Called again for a copy, it brings the copy in line with the definition: the
+project's `name` and each repository's `label` follow the home, a repository
+the home has added is cloned, and one the home has removed leaves the copy
+under the rule the home itself is held to when detaching a repository: once no
+agent on the host, live or archived, has a checkout of it. Until then it stays
+a repository of the project on that host, the same as any other. What is not
+followed: a repository
+whose folder the home renamed or whose `origin` the home repointed keeps the
+folder and remote it was cloned with; delete the copy on the host to have it
+made again.
+A GitHub ssh `origin` is cloned over https with that login,
+since the home's ssh key is the home's. A repository with `origin: null`
+refuses the whole call before anything is cloned: a project runs with all of
+its repositories or not at all. For the same reason the clones are made in a
+staging folder and only moved into place and recorded, together, once every
+one has finished; a call that fails or is abandoned partway leaves no project
+behind. A project the host owns is never changed by this op.
+
+A copy shows up in the host's `Workspace.projects` like any project, with
+`ProjectRef.home` set; a project the host owns has no `home`. Workspaces of a
+copy carry the home's `project_id`, which is how a client lists a project's
+workspaces across every device that runs them. Nothing flows back to the home,
+and a copy's structure is not edited where it runs: `rename_project`,
+`attach_repo_to_project`, `detach_repo_from_project`, `set_repo_label`,
+`relocate_repo` and `remove_workspace_repo` refuse a copy with "This project
+belongs to <home>. Change it there." `delete_project` still removes one. Its
+project settings, roadmap and context are the host's own, empty until
+something there writes them.
 
 ### Which providers a host can run
 

@@ -4,7 +4,8 @@ use super::*;
 
 /// Compute a unique subdir name for a new tracked repo. Basename of
 /// the repo path, with `-2`, `-3`, … suffix appended on collision with
-/// an existing subdir in the same agent.
+/// an existing subdir in the same agent. Names that differ only by case
+/// collide: the default macOS filesystem would give them one folder.
 pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
     let base = repo_path
         .file_name()
@@ -17,16 +18,25 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
     // and `.fletch-cow` (a confined sandbox tenant's private copies — see
     // `sandbox::COW_DIR`) are Fletch-owned; a repo with one of those
     // basenames gets a numbered subdir instead of colliding with it.
-    let reserved = base == crate::agent_profile::PROFILE_DIR
-        || base == crate::attachments::WORKSPACE_ATTACHMENTS_DIR
-        || base == crate::sandbox::COW_DIR;
-    if !reserved && !used.iter().any(|u| u == &base) {
+    let reserved = [
+        crate::agent_profile::PROFILE_DIR,
+        crate::attachments::WORKSPACE_ATTACHMENTS_DIR,
+        crate::sandbox::COW_DIR,
+    ];
+    let taken = |name: &str| {
+        let used = used.iter().map(String::as_str);
+        reserved
+            .into_iter()
+            .chain(used)
+            .any(|u| u.to_lowercase() == name.to_lowercase())
+    };
+    if !taken(&base) {
         return base;
     }
     let mut n = 2;
     loop {
         let candidate = format!("{base}-{n}");
-        if !used.iter().any(|u| u == &candidate) {
+        if !taken(&candidate) {
             return candidate;
         }
         n += 1;
