@@ -131,9 +131,9 @@ async fn ensure_project_under(
     let _one_at_a_time = ENSURING.lock().await;
     let workspace = &supervisor.workspace;
 
-    if workspace.owns_project(&def.project_id) != Some(true) {
+    if workspace.owns_project(&def.project_id)? != Some(true) {
         let root = copy_root(projects_root, &def.project_id);
-        let have = workspace.project_repo_ids(&def.project_id);
+        let have = workspace.project_repo_ids(&def.project_id)?;
         let missing: Vec<&RepoDefinition> =
             def.repos.iter().filter(|r| !have.contains(&r.id)).collect();
         for repo in &missing {
@@ -449,7 +449,11 @@ mod tests {
             err.to_string(),
             "local-only has no remote to clone from. Publish it from MacBook first."
         );
-        assert!(sup.workspace.owns_project(&def.project_id).is_none());
+        assert!(sup
+            .workspace
+            .owns_project(&def.project_id)
+            .unwrap()
+            .is_none());
         assert!(!copy_root(&root, &def.project_id).exists());
     }
 
@@ -563,7 +567,11 @@ mod tests {
             .await
             .is_err());
 
-        assert!(sup.workspace.owns_project(&def.project_id).is_none());
+        assert!(sup
+            .workspace
+            .owns_project(&def.project_id)
+            .unwrap()
+            .is_none());
         assert!(!copy_root(&root, &def.project_id).exists());
         let left: Vec<_> = std::fs::read_dir(root.join(&def.project_id))
             .map(|d| d.flatten().map(|e| e.file_name()).collect())
@@ -865,6 +873,9 @@ mod tests {
         ensure_project_under(&sup, def.clone(), &root)
             .await
             .unwrap();
+        // What an agent borrowing from the clone would lose with it.
+        let borrowed = clone_of(&root, &def, 0).join("borrowed");
+        std::fs::write(&borrowed, "").unwrap();
         sup.workspace
             .db()
             .lock()
@@ -872,8 +883,14 @@ mod tests {
             .unwrap();
 
         prune_copy_under(&sup.workspace, &root, &def.project_id).await;
+        assert!(borrowed.exists());
 
-        assert!(clone_of(&root, &def, 0).is_dir());
+        // Nor does asking for the project again take the clone for missing,
+        // and put a fresh one in its place.
+        ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap_err();
+        assert!(borrowed.exists());
     }
 
     /// On the home a repository that joins a project keeps the date it was

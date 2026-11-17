@@ -506,30 +506,31 @@ impl WorkspaceManager {
     /// Whether this host owns the project `project_id`: `Some(true)` for one
     /// added here, `Some(false)` for a copy of another device's, `None` when
     /// there is no such project.
-    pub fn owns_project(&self, project_id: &str) -> Option<bool> {
-        self.db
+    pub fn owns_project(&self, project_id: &str) -> Result<Option<bool>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .db
             .lock()
             .query_row(
                 "SELECT home_device IS NULL FROM projects WHERE id = ?1",
                 [project_id],
                 |row| row.get(0),
             )
-            .ok()
+            .optional()?)
     }
 
     /// The ids, as the home knows them, of the repositories of `project_id`
-    /// on this host.
-    pub fn project_repo_ids(&self, project_id: &str) -> HashSet<String> {
+    /// on this host. An error rather than a short set when any of it cannot
+    /// be read: `commands::ensure_project` clones afresh what is missing from
+    /// the answer, over whatever is in its place.
+    pub fn project_repo_ids(&self, project_id: &str) -> Result<HashSet<String>> {
         let conn = self.db.lock();
-        let Ok(mut stmt) =
-            conn.prepare("SELECT COALESCE(home_id, id) FROM repos WHERE project_id = ?1")
-        else {
-            return HashSet::new();
-        };
-        stmt.query_map([project_id], |row| row.get(0))
-            .ok()
-            .map(|rows| rows.filter_map(|r| r.ok()).collect())
-            .unwrap_or_default()
+        let mut stmt =
+            conn.prepare("SELECT COALESCE(home_id, id) FROM repos WHERE project_id = ?1")?;
+        let ids = stmt
+            .query_map([project_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
     }
 
     /// Bring the copy of `def` in line with it, in one transaction. A
