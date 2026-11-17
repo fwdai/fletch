@@ -9,7 +9,6 @@ import { PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import { beforeAll, describe, expect, it, type MockInstance, vi } from "vitest";
 import type { ChatItem } from "../src/adapters";
 import type { Api } from "../src/api";
-import { linkOf } from "../src/host";
 import type { RemoteClient } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import {
@@ -20,10 +19,11 @@ import {
   PENDING_TOOL_USE_ID,
   PM_CUSTOM_AGENT_ID,
 } from "../src/remote/mock/fixtures";
-import { agentOf, appStore, hostOnScreen, projectOf } from "../src/store";
+import { agentOf, appStore, projectOf } from "../src/store";
 import { isReplayed, replayLiveTurn } from "../src/store/liveTurn";
 import { forgetHost, loadSettings, saveHost, saveSettings } from "../src/store/persist";
 import { pastHistory } from "../src/store/transcript";
+import { hostEvent, hostOnScreen, launchMock, settle } from "./support";
 
 const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();
@@ -32,17 +32,8 @@ const host = () => hostOnScreen().getState();
 let api: Api;
 let client: RemoteClient;
 
-/** Deliver a host event frame to the store's listeners, as the socket would:
- *  for the events the mock host never emits on its own. */
-const hostEvent = (event: string, payload: unknown) =>
-  (
-    client as unknown as { dispatchEvent(frame: { event: string; payload: unknown }): void }
-  ).dispatchEvent({ event, payload });
-
 beforeAll(async () => {
-  await app().init();
-  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
-  ({ api, client } = linkOf(MOCK_HOST_KEY));
+  ({ api, client } = await launchMock());
 });
 
 describe("connection and snapshot", () => {
@@ -270,7 +261,7 @@ describe("transcripts through the desktop adapters", () => {
     try {
       appStore.setState({ nav: [home] });
       hostEvent("session:records-appended", { agent_id: "pamukkale" });
-      await new Promise((r) => setTimeout(r, 20));
+      await settle(20);
       expect(read).not.toHaveBeenCalled();
 
       host().openAgent("pamukkale");

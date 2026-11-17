@@ -8,7 +8,8 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { HostSwitcher } from "../src/screens/Home/HostSwitcher";
-import { appStore, hostOnScreen, hostStoreOf } from "../src/store";
+import { appStore, hostStoreOf } from "../src/store";
+import { hostOnScreen } from "./support";
 
 const HOSTS = [
   { hostKey: "mini", name: "Mac mini", host: "10.0.0.5", port: 47285, pairedAt: "2026-01-01" },

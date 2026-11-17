@@ -8,31 +8,21 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Api } from "../src/api";
-import { linkOf } from "../src/host";
-import type { RemoteClient } from "../src/remote";
-import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { AccountPickerSheet } from "../src/sheets/AccountPickerSheet";
 import { AgentMoreSheet } from "../src/sheets/AgentMoreSheet";
-import { agentOf, appStore, hostOnScreen } from "../src/store";
+import { agentOf, appStore } from "../src/store";
+import { deferred, hostEvent, hostOnScreen, launchMock } from "./support";
 
 const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();
 
-/** The mock host's link: the one `init` pairs with and the store stays live on. */
+/** The mock host's api: the one `init` pairs with and the store stays live on. */
 let api: Api;
-let client: RemoteClient;
 
-/** Deliver a host event frame to the store's listeners, as the socket would. */
-const hostEvent = (event: string, payload: unknown) =>
-  (
-    client as unknown as { dispatchEvent(frame: { event: string; payload: unknown }): void }
-  ).dispatchEvent({ event, payload });
 const stampOf = (id: string) => agentOf(host(), id)?.account;
 
 beforeAll(async () => {
-  await app().init();
-  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
-  ({ api, client } = linkOf(MOCK_HOST_KEY));
+  ({ api } = await launchMock());
   await host().loadProviderAccounts();
 });
 
@@ -289,14 +279,11 @@ describe("the More sheet's account row and its picker", () => {
       await render(agentId);
       await vi.waitFor(() => expect(rows().length).toBe(2));
     };
-    let settle: { resolve: (r: unknown) => void; reject: (e: Error) => void } = {
-      resolve: () => {},
-      reject: () => {},
+    let reply = deferred<unknown>();
+    const held = () => {
+      reply = deferred<unknown>();
+      return reply.promise;
     };
-    const held = () =>
-      new Promise((resolve, reject) => {
-        settle = { resolve, reject };
-      });
 
     // A success for kamakura must not close arabia's picker.
     // The row that is not the current account: the current one only closes.
@@ -308,7 +295,7 @@ describe("the More sheet's account row and its picker", () => {
     await act(async () => app().closeSheet());
     await openPickerFor("arabia");
     await act(async () => {
-      settle.resolve({ ...agentOf(hostOnScreen().getState(), "kamakura"), account: "work" });
+      reply.resolve({ ...agentOf(hostOnScreen().getState(), "kamakura"), account: "work" });
     });
     expect(app().sheet).toMatchObject({
       name: "accountPicker",
@@ -328,7 +315,7 @@ describe("the More sheet's account row and its picker", () => {
     await act(async () => app().closeSheet());
     await openPickerFor("arabia");
     await act(async () => {
-      settle.reject(new Error("Wait for the turn to finish before switching accounts."));
+      reply.reject(new Error("Wait for the turn to finish before switching accounts."));
     });
     expect(host.querySelector(".notice-bar.error")).toBeNull();
     expect(app().sheet).toMatchObject({

@@ -4,12 +4,10 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Api } from "../src/api";
-import { linkOf } from "../src/host";
 import type { RemoteClient } from "../src/remote";
-import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { appStore, hostOnScreen, RESUME_PROBE_TIMEOUT_MS } from "../src/store";
+import { RESUME_PROBE_TIMEOUT_MS } from "../src/store";
+import { foreground, hostOnScreen, launchMock, settle } from "./support";
 
-const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
@@ -17,17 +15,13 @@ let api: Api;
 let client: RemoteClient;
 
 beforeAll(async () => {
-  await app().init();
-  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
-  ({ api, client } = linkOf(MOCK_HOST_KEY));
+  ({ api, client } = await launchMock());
 });
 
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
-
-const foreground = () => document.dispatchEvent(new Event("visibilitychange"));
 
 describe("returning to the foreground", () => {
   it("refreshes in place when the host answers", async () => {
@@ -36,7 +30,7 @@ describe("returning to the foreground", () => {
     foreground();
     await vi.waitFor(() => expect(read).toHaveBeenCalled());
     // Give the probe time to settle: it answers well inside the budget.
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(reconnect).not.toHaveBeenCalled();
     expect(host().connection).toBe("connected");
   });
@@ -73,7 +67,7 @@ describe("returning to the foreground", () => {
     const read = vi.spyOn(api, "getWorkspace");
     const connected = vi.spyOn(client, "state", "get").mockReturnValue("connecting");
     foreground();
-    await new Promise((r) => setTimeout(r, 20));
+    await settle(20);
     expect(read).not.toHaveBeenCalled();
     connected.mockRestore();
   });

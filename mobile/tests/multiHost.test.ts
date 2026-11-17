@@ -14,8 +14,9 @@ import type { ChatItem } from "../src/adapters";
 import { linkOf } from "../src/host";
 import type { HostTarget } from "../src/remote";
 import { registerMockHost } from "../src/remote/mock";
-import { appStore, hostOnScreen, hostStoreOf } from "../src/store";
+import { appStore, hostStoreOf } from "../src/store";
 import { loadSettings } from "../src/store/persist";
+import { hostOnScreen, leaveMockMode, STUDIO } from "./support";
 
 const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();
@@ -36,7 +37,6 @@ const liveOn = (hostKey: string) =>
 
 /** The host the single-host build was paired with. */
 const MINI = "aG9zdC1vbmU";
-const STUDIO = "c3R1ZGlv";
 
 const LINK: HostTarget = {
   host: "10.0.0.7",
@@ -46,7 +46,7 @@ const LINK: HostTarget = {
   name: "Studio Mac",
 };
 
-const url = window.location.href;
+let restoreUrl: () => void;
 
 beforeAll(async () => {
   localStorage.setItem(
@@ -59,12 +59,12 @@ beforeAll(async () => {
       theme: "light",
     }),
   );
-  window.history.replaceState({}, "", "/");
+  restoreUrl = leaveMockMode();
   await app().init();
   await liveOn(MINI);
 });
 
-afterAll(() => window.history.replaceState({}, "", url));
+afterAll(() => restoreUrl());
 
 describe("the first launch after updating from the single-host build", () => {
   it("greets the host it was paired with — hello, not a new pairing", async () => {

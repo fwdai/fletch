@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentRow } from "../src/components/AgentRow";
 import { RECENT_FAILURE_MS, subagentTickMs } from "../src/lib/subagents";
 import { SubagentStrip } from "../src/screens/Agent/SubagentStrip";
-import { hostOnScreen } from "../src/store";
+import { hostOnScreen } from "./support";
 
 const NOW = 1_700_000_000_000;
 

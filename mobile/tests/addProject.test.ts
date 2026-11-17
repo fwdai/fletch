@@ -6,20 +6,20 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Api } from "../src/api";
-import { linkOf } from "../src/host";
 import { childPath, parentPath } from "../src/lib/paths";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { HOME } from "../src/remote/mock/fixtures";
 import { AddProjectSheet } from "../src/sheets/AddProjectSheet";
 import { CloneForm } from "../src/sheets/AddProjectSheet/CloneForm";
 import { OpenFolderForm } from "../src/sheets/AddProjectSheet/OpenFolderForm";
-import { appStore, hostOnScreen } from "../src/store";
+import { appStore } from "../src/store";
 import { loadDestParent } from "../src/store/persist";
+import { hostOnScreen, launchMock } from "./support";
 
 const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();
 
-/** The mock host's link: the one `init` pairs with and the store stays live on. */
+/** The mock host's api: the one `init` pairs with and the store stays live on. */
 let api: Api;
 
 /** Where the picker would land after browsing to `~/Code` — the absolute base
@@ -27,9 +27,7 @@ let api: Api;
 const codeDir = async () => (await host().listDir("~/Code")).base;
 
 beforeAll(async () => {
-  await app().init();
-  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
-  ({ api } = linkOf(MOCK_HOST_KEY));
+  ({ api } = await launchMock());
 });
 
 describe("path arithmetic", () => {

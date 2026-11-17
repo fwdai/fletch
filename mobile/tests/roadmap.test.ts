@@ -6,27 +6,16 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Api } from "../src/api";
-import { linkOf } from "../src/host";
 import { roadmapLists } from "../src/lib/roadmap";
-import type { RemoteClient } from "../src/remote";
-import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { roadmapItem } from "../src/remote/mock/fixtures";
 import { RoadmapPane } from "../src/screens/Project/Roadmap";
-import { appStore, hostOnScreen } from "../src/store";
+import { hostEvent, hostOnScreen, launchMock } from "./support";
 
-const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();
 
-/** The mock host's link: the one `init` pairs with and the store stays live on. */
+/** The mock host's api: the one `init` pairs with and the store stays live on. */
 let api: Api;
-let client: RemoteClient;
 const PROJECT = "prj-fletch";
-
-/** Deliver a host event frame to the store's listeners, as the socket would. */
-const hostEvent = (event: string, payload: unknown) =>
-  (
-    client as unknown as { dispatchEvent(frame: { event: string; payload: unknown }): void }
-  ).dispatchEvent({ event, payload });
 
 const lists = () => {
   const board = host().boards[PROJECT];
@@ -36,9 +25,7 @@ const lists = () => {
 const chipOf = (code: string) => lists().inbox.find((e) => e.item.code === code)?.chip;
 
 beforeAll(async () => {
-  await app().init();
-  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
-  ({ api, client } = linkOf(MOCK_HOST_KEY));
+  ({ api } = await launchMock());
 });
 
 describe("the roadmap segment's lists", () => {

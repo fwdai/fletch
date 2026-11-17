@@ -14,8 +14,9 @@ import {
   subagentLabel,
   visibleSubagents,
 } from "../src/lib/subagents";
-import { agentOf, appStore, type HostState, hostOnScreen } from "../src/store";
+import { agentOf, type HostState } from "../src/store";
 import { dropTasks, foldTaskEvent } from "../src/store/backgroundTasks";
+import { hostOnScreen, launchMock } from "./support";
 
 const NOW = 1_700_000_000_000;
 
@@ -144,12 +145,10 @@ describe("store helpers", () => {
 });
 
 describe("over the mock host", () => {
-  const app = () => appStore.getState();
   const host = () => hostOnScreen().getState();
 
   beforeAll(async () => {
-    await app().init();
-    await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
+    await launchMock();
   });
 
   it("keeps a sub-agent running after the turn, threads its turns, then ends it", async () => {

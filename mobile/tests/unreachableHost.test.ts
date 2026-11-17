@@ -6,10 +6,8 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { registerMockHost } from "../src/remote/mock";
-import { appStore, hostOnScreen, hostStoreOf } from "../src/store";
-
-const MINI = "bWluaQ";
-const STUDIO = "c3R1ZGlv";
+import { appStore, hostStoreOf } from "../src/store";
+import { hostOnScreen, MINI, PAIRED_MINI, PAIRED_STUDIO, pairedOnDisk, STUDIO } from "./support";
 
 const app = () => appStore.getState();
 const mini = () => hostStoreOf(MINI).getState();
@@ -18,31 +16,8 @@ const studio = () => hostStoreOf(STUDIO).getState();
 describe("a launch with one host asleep", () => {
   it("is ready on the others, and the one asleep connects when it wakes", async () => {
     registerMockHost(STUDIO, { unreachable: true });
-    localStorage.setItem(
-      "fletch-mobile-settings",
-      JSON.stringify({
-        hosts: [
-          {
-            hostKey: MINI,
-            name: "Mac mini",
-            host: "10.0.0.5",
-            port: 47285,
-            pairedAt: "2026-01-01",
-          },
-          {
-            hostKey: STUDIO,
-            name: "Studio Mac",
-            host: "10.0.0.7",
-            port: 47285,
-            pairedAt: "2026-02-01",
-          },
-        ],
-        // The one asleep is the one the app was left on.
-        activeHostKey: STUDIO,
-      }),
-    );
-    const url = window.location.href;
-    window.history.replaceState({}, "", "/");
+    // The one asleep is the one the app was left on.
+    const restoreUrl = pairedOnDisk([PAIRED_MINI, PAIRED_STUDIO], STUDIO);
 
     // Settles, rather than rejecting, with one dial failed.
     await app().init();
@@ -67,6 +42,6 @@ describe("a launch with one host asleep", () => {
     await vi.waitFor(() => expect(studio().connection).toBe("connected"), { timeout: 5000 });
     expect(studio().connectionError).toBeNull();
     expect(mini().connection).toBe("connected");
-    window.history.replaceState({}, "", url);
+    restoreUrl();
   });
 });

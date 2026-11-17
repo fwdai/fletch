@@ -3,7 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gitFollowMs, useGitFollow } from "../src/screens/Agent/useGitFollow";
-import { hostOnScreen } from "../src/store";
+import { hostOnScreen } from "./support";
 
 describe("gitFollowMs", () => {
   it("reads briskly behind Changes and Ship, slowly behind the chat", () => {

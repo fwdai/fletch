@@ -6,32 +6,13 @@
 import type { AgentPrStatus, PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Api } from "../src/api";
-import { linkOf } from "../src/host";
-import type { RemoteClient } from "../src/remote";
-import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { prChecks as fixtureChecks, prStates as fixtureStates } from "../src/remote/mock/fixtures";
-import { appStore, hostOnScreen } from "../src/store";
+import { deferred, hostEvent, hostOnScreen, launchMock } from "./support";
 
-const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();
 
-/** The mock host's link: the one `init` pairs with and the store stays live on. */
+/** The mock host's api: the one `init` pairs with and the store stays live on. */
 let api: Api;
-let client: RemoteClient;
-
-const hostEvent = (event: string, payload: unknown) =>
-  (
-    client as unknown as { dispatchEvent(frame: { event: string; payload: unknown }): void }
-  ).dispatchEvent({ event, payload });
-
-/** A host answer held back until the test lets it land. */
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
 
 const AGENT = "arabia";
 const OTHER = "pamukkale";
@@ -61,9 +42,7 @@ const forget = <T>(map: Record<string, T>) => {
 };
 
 beforeAll(async () => {
-  await app().init();
-  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
-  ({ api, client } = linkOf(MOCK_HOST_KEY));
+  ({ api } = await launchMock());
   const protocol = host().protocol;
   // The mock host predates the threads read; the race is the same either way.
   hostOnScreen().setState({

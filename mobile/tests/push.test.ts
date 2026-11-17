@@ -34,9 +34,10 @@ vi.mock("@tauri-apps/api/event", async (importOriginal) => ({
 
 import { linkOf } from "../src/host";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { appStore, hostOnScreen, hostStoreOf } from "../src/store";
+import { appStore, hostStoreOf } from "../src/store";
 import { loadSettings, saveSettings } from "../src/store/persist";
 import { FORGET_PUSH_TIMEOUT_MS, pushTab } from "../src/store/push";
+import { hostOnScreen, launchMock, STUDIO, settle } from "./support";
 
 // `inTauri()` gates the whole feature and the plugin below is faked, so say we
 // are inside the app.
@@ -48,12 +49,9 @@ const host = () => hostOnScreen().getState();
 const mock = () => linkOf(MOCK_HOST_KEY);
 const emit = (event: string, payload: unknown) => plugin.listeners.get(event)?.({ payload });
 const asked = () => plugin.invoked.filter((c) => c === "plugin:push|request_permission").length;
-/** syncPush is fired and not awaited, so "nothing happened" needs a tick. */
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 beforeAll(async () => {
-  await app().init();
-  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
+  await launchMock();
 });
 
 describe("registration", () => {
@@ -101,7 +99,6 @@ describe("registration", () => {
 
 describe("a second paired host", () => {
   /** Added the Pair screen's way; the mock answers under its key. */
-  const STUDIO = "c3R1ZGlv";
   const studio = () => linkOf(STUDIO);
 
   it("is asked about once, and the token goes to every host, each over its own link", async () => {

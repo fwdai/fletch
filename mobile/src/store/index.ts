@@ -20,7 +20,6 @@ import {
 } from "../remote";
 import type { PushFletch } from "../remote/push";
 import {
-  type HostStore,
   hostStoreOf,
   refreshChats,
   refreshOpenAgent,
@@ -715,10 +714,5 @@ export const appStore = createStore<AppState>()((set, get) => {
 export function useApp<T>(selector: (s: AppState) => T): T {
   return useStore(appStore, selector);
 }
-
-/** The store of what is on screen (`linkOnScreen`): the host on screen's, or
- *  the pairing's on the Pair screen. For code outside a component; a component
- *  reads the store of the host it acts on through `useHostStore`. */
-export const hostOnScreen = (): HostStore => storeOfLink(linkOnScreen(appStore.getState()));
 
 export type { RawEvent };

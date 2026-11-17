@@ -21,15 +21,22 @@ import {
   appStore,
   type HostState,
   hostOf,
-  hostOnScreen,
   hostStoreOf,
   isAgentOpen,
   RESUME_PROBE_TIMEOUT_MS,
 } from "../src/store";
 import { loadSettings } from "../src/store/persist";
-
-const MINI = "bWluaQ";
-const STUDIO = "c3R1ZGlv";
+import {
+  foreground,
+  hostEvent,
+  hostOnScreen,
+  MINI,
+  PAIRED_MINI,
+  PAIRED_STUDIO,
+  pairedOnDisk,
+  STUDIO,
+  settle,
+} from "./support";
 
 /** The studio's own history: what tells its `arabia` from the mini's. */
 const said = (seq: number, type: "user" | "assistant", text: string): SessionRecord => ({
@@ -78,14 +85,6 @@ const home = () => ({
   phase: "idle" as const,
 });
 
-/** Deliver a host event frame to `hostKey`'s link, as its socket would. */
-const hostEvent = (hostKey: string, event: string, payload: unknown) =>
-  (
-    linkOf(hostKey).client as unknown as {
-      dispatchEvent(frame: { event: string; payload: unknown }): void;
-    }
-  ).dispatchEvent({ event, payload });
-
 /** What a reconnect stubbed out answers with. */
 const snapshotOf = (hostKey: string): HelloResult => {
   const { client } = linkOf(hostKey);
@@ -96,10 +95,7 @@ const snapshotOf = (hostKey: string): HelloResult => {
   };
 };
 
-const foreground = () => document.dispatchEvent(new Event("visibilitychange"));
-const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
-
-const url = window.location.href;
+let restoreUrl: () => void;
 
 beforeAll(async () => {
   registerMockHost(MINI, { host: { name: "Mac mini", appVersion: "0.7.23", os: "macos" } });
@@ -112,23 +108,7 @@ beforeAll(async () => {
     },
     turns: {},
   });
-  localStorage.setItem(
-    "fletch-mobile-settings",
-    JSON.stringify({
-      hosts: [
-        { hostKey: MINI, name: "Mac mini", host: "10.0.0.5", port: 47285, pairedAt: "2026-01-01" },
-        {
-          hostKey: STUDIO,
-          name: "Studio Mac",
-          host: "10.0.0.7",
-          port: 47285,
-          pairedAt: "2026-02-01",
-        },
-      ],
-      activeHostKey: MINI,
-    }),
-  );
-  window.history.replaceState({}, "", "/");
+  restoreUrl = pairedOnDisk([PAIRED_MINI, PAIRED_STUDIO], MINI);
   await app().init();
   await vi.waitFor(
     () => {
@@ -141,7 +121,7 @@ beforeAll(async () => {
   );
 });
 
-afterAll(() => window.history.replaceState({}, "", url));
+afterAll(() => restoreUrl());
 
 afterEach(() => {
   vi.useRealTimers();
@@ -219,8 +199,8 @@ describe("every paired host, live at once", () => {
     // one on the studio's has.
     const miniRead = vi.spyOn(linkOf(MINI).api, "readSessionPage");
     const studioRead = vi.spyOn(linkOf(STUDIO).api, "readSessionPage");
-    hostEvent(MINI, "session:records-appended", { agent_id: "arabia" });
-    hostEvent(STUDIO, "session:records-appended", { agent_id: "arabia" });
+    hostEvent("session:records-appended", { agent_id: "arabia" }, MINI);
+    hostEvent("session:records-appended", { agent_id: "arabia" }, STUDIO);
     await vi.waitFor(() => expect(studioRead).toHaveBeenCalledWith("arabia"));
     await settle();
     expect(miniRead).not.toHaveBeenCalled();

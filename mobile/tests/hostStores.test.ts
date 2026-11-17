@@ -13,6 +13,7 @@ import { type HostLink, linkOf, pairingLink } from "../src/host";
 import { DEFAULT_PORT, type HostProtocol } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { type HostStore, hostStoreOf, storeOfLink } from "../src/store";
+import { deferred } from "./support";
 
 /** The same agent id on both hosts — the case that must not cross. */
 const AGENT = "arabia";
@@ -33,15 +34,6 @@ function twoHosts(): [HostStore, HostLink, HostStore, HostLink] {
   storeA.setState({ protocol: PROTOCOL });
   storeB.setState({ protocol: PROTOCOL });
   return [storeA, a, storeB, b];
-}
-
-/** A promise released by hand. */
-function held<T>() {
-  let release: (value: T) => void = () => {};
-  const promise = new Promise<T>((resolve) => {
-    release = resolve;
-  });
-  return { promise, release };
 }
 
 const git = (branch: string) => ({ branch, files: [] }) as unknown as GitState;
@@ -107,7 +99,7 @@ describe("two hosts with the same agent id", () => {
 describe("the order of one host's reads is its own", () => {
   it("a git read out on one host is not joined by the other's", async () => {
     const [storeA, a, storeB, b] = twoHosts();
-    const slow = held<GitState>();
+    const slow = deferred<GitState>();
     vi.spyOn(a.api, "getGitState").mockReturnValue(slow.promise);
     const readB = vi.spyOn(b.api, "getGitState").mockResolvedValue(git("b-now"));
 
@@ -116,27 +108,27 @@ describe("the order of one host's reads is its own", () => {
     expect(readB).toHaveBeenCalledOnce();
     expect(storeB.getState().gitStates[AGENT]).toEqual(git("b-now"));
 
-    slow.release(git("a-late"));
+    slow.resolve(git("a-late"));
     await outA;
     expect(storeA.getState().gitStates[AGENT]).toEqual(git("a-late"));
   });
 
   it("one host's PR fence does not refuse the other's read", async () => {
     const [storeA, a, storeB] = twoHosts();
-    const live = held<{ state: PrState; checks: null }>();
+    const live = deferred<{ state: PrState; checks: null }>();
     vi.spyOn(a.api, "getPrLive").mockReturnValue(live.promise as never);
 
     const read = storeA.getState().loadPrLive(AGENT);
     // Clearing a store refuses every PR read it has out — its own.
     storeB.getState().clear();
-    live.release({ state: pr("from a"), checks: null });
+    live.resolve({ state: pr("from a"), checks: null });
     await read;
     expect(storeA.getState().prStates[AGENT]).toEqual(pr("from a"));
   });
 
   it("one host's history read does not supersede the other's", async () => {
     const [storeA, a, storeB, b] = twoHosts();
-    const page = held<{ records: never[]; older: null }>();
+    const page = deferred<{ records: never[]; older: null }>();
     vi.spyOn(a.api, "readSessionPage").mockReturnValue(page.promise as never);
     vi.spyOn(b.api, "readSessionPage").mockResolvedValue({ records: [], older: null } as never);
     for (const { api } of [a, b]) {
@@ -149,20 +141,20 @@ describe("the order of one host's reads is its own", () => {
     expect(storeB.getState().logLoads[AGENT]).toEqual({ status: "ready" });
     expect(storeA.getState().logLoads[AGENT]).toEqual({ status: "loading" });
 
-    page.release({ records: [], older: null });
+    page.resolve({ records: [], older: null });
     await readA;
     expect(storeA.getState().logLoads[AGENT]).toEqual({ status: "ready" });
   });
 
   it("one host's workspace read does not supersede the other's", async () => {
     const [storeA, a, storeB, b] = twoHosts();
-    const slow = held<Workspace>();
+    const slow = deferred<Workspace>();
     vi.spyOn(a.api, "getWorkspace").mockReturnValue(slow.promise);
     vi.spyOn(b.api, "getWorkspace").mockResolvedValue(workspace("b"));
 
     const readA = storeA.getState().refreshWorkspace();
     await storeB.getState().refreshWorkspace();
-    slow.release(workspace("a"));
+    slow.resolve(workspace("a"));
     await readA;
     expect(storeA.getState().workspace).toEqual(workspace("a"));
     expect(storeB.getState().workspace).toEqual(workspace("b"));
@@ -170,13 +162,13 @@ describe("the order of one host's reads is its own", () => {
 
   it("an approval event on one host is not replayed over the other's list", async () => {
     const [storeA, a, storeB] = twoHosts();
-    const list = held<PublishApproval[]>();
+    const list = deferred<PublishApproval[]>();
     vi.spyOn(a.api, "listPublishApprovals").mockReturnValue(list.promise);
     const onB = { id: "on-b" } as PublishApproval;
 
     const loadA = storeA.getState().loadPendingApprovals();
     storeB.getState().receivePublishApproval(onB);
-    list.release([]);
+    list.resolve([]);
     await loadA;
     expect(storeA.getState().pendingPublishApprovals).toEqual([]);
     expect(storeB.getState().pendingPublishApprovals).toEqual([onB]);

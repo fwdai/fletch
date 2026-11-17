@@ -6,7 +6,8 @@
 import { expect, it } from "vitest";
 import { DEFAULT_PORT } from "../src/remote";
 import { MOCK_CONFIRM_CODE, MOCK_HOST_KEY } from "../src/remote/mock";
-import { appStore, hostOnScreen } from "../src/store";
+import { appStore } from "../src/store";
+import { hostOnScreen } from "./support";
 
 const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();

@@ -16,7 +16,8 @@ vi.mock("../src/remote/nearby", () => ({
 }));
 
 const { PairScreen } = await import("../src/screens/Pair");
-const { appStore, hostOnScreen } = await import("../src/store");
+const { appStore } = await import("../src/store");
+const { hostOnScreen } = await import("./support");
 
 /** What React reads from a controlled input: the native setter, then `input`. */
 function type(input: HTMLInputElement, value: string) {

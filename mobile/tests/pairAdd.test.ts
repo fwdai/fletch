@@ -14,11 +14,11 @@ import { describe, expect, it, vi } from "vitest";
 import { linkOf } from "../src/host";
 import type { HostTarget } from "../src/remote";
 import { PairScreen } from "../src/screens/Pair";
-import { appStore, hostOnScreen } from "../src/store";
+import { appStore } from "../src/store";
+import { hostOnScreen, MINI as PAIRED, PAIRED_MINI, pairedOnDisk } from "./support";
 
 const app = () => appStore.getState();
 
-const PAIRED = "aG9zdC1vbmU";
 const LINK: HostTarget = {
   host: "192.168.1.24",
   port: 47285,
@@ -29,21 +29,9 @@ const LINK: HostTarget = {
 
 describe("a link that launched the app over a paired host", () => {
   it("pairs with the link as an addition, the saved host dialled on a link of its own", async () => {
-    localStorage.setItem(
-      "fletch-mobile-settings",
-      JSON.stringify({
-        hosts: [
-          {
-            hostKey: PAIRED,
-            name: "Alex's Mac mini",
-            host: "10.0.0.5",
-            port: 47285,
-            pairedAt: "2026-01-01T00:00:00Z",
-          },
-        ],
-        activeHostKey: PAIRED,
-      }),
-    );
+    // Out of the suite's `?mock=1`, so `init` reads the saved host rather than
+    // keeping to the mock one.
+    const restoreUrl = pairedOnDisk([PAIRED_MINI], PAIRED);
     const targets: HostTarget[] = [];
     appStore.setState({
       connect: async (target: HostTarget) => {
@@ -51,10 +39,6 @@ describe("a link that launched the app over a paired host", () => {
       },
     });
     const confirm = vi.spyOn(window, "confirm");
-    // Out of the suite's `?mock=1`, so `init` reads the saved host rather than
-    // keeping to the mock one.
-    const url = window.location.href;
-    window.history.replaceState({}, "", "/");
 
     app().pairFromLink(LINK);
     expect(targets, "held until init has read what is on disk").toEqual([]);
@@ -73,7 +57,7 @@ describe("a link that launched the app over a paired host", () => {
     expect(app().hostKey).toBe(PAIRED);
     expect(app().hosts.map((h) => h.hostKey)).toEqual([PAIRED]);
     expect(app().addingHost).toBe(true);
-    window.history.replaceState({}, "", url);
+    restoreUrl();
     confirm.mockRestore();
   });
 });

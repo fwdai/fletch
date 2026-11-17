@@ -10,40 +10,15 @@ import { describe, expect, it, vi } from "vitest";
 import { linkOf } from "../src/host";
 import { registerMockHost } from "../src/remote/mock";
 import { appStore, hostStoreOf } from "../src/store";
-
-const MINI = "bWluaQ";
-const STUDIO = "c3R1ZGlv";
+import { MINI, PAIRED_MINI, PAIRED_STUDIO, pairedOnDisk, STUDIO } from "./support";
 
 const app = () => appStore.getState();
 
 describe("an alert that launched the app", () => {
   it("opens on its own host at once, which is dialled once and read again when it answers", async () => {
     registerMockHost(STUDIO, { host: { name: "Studio Mac", appVersion: "0.7.23", os: "macos" } });
-    localStorage.setItem(
-      "fletch-mobile-settings",
-      JSON.stringify({
-        hosts: [
-          {
-            hostKey: MINI,
-            name: "Mac mini",
-            host: "10.0.0.5",
-            port: 47285,
-            pairedAt: "2026-01-01",
-          },
-          {
-            hostKey: STUDIO,
-            name: "Studio Mac",
-            host: "10.0.0.7",
-            port: 47285,
-            pairedAt: "2026-02-01",
-          },
-        ],
-        activeHostKey: MINI,
-      }),
-    );
+    const restoreUrl = pairedOnDisk([PAIRED_MINI, PAIRED_STUDIO], MINI);
     const connects = vi.spyOn(linkOf(STUDIO).client, "connect");
-    const url = window.location.href;
-    window.history.replaceState({}, "", "/");
 
     // How the studio's connection stood when the agent's screen went up.
     let studioWas: string | null = null;
@@ -69,6 +44,6 @@ describe("an alert that launched the app", () => {
     });
     // Still open on the studio: answering does not reset the stack.
     expect(app().nav.at(-1)?.props).toEqual({ agentId: "kamakura", hostKey: STUDIO });
-    window.history.replaceState({}, "", url);
+    restoreUrl();
   });
 });
