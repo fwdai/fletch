@@ -472,15 +472,23 @@ describe("hostProvidersNote", () => {
 });
 
 describe("hostAccountNote", () => {
-  it("says nothing on this Mac, where the account page is about the machine it is on", () => {
-    expect(hostAccountNote(local)).toBeNull();
+  it("says nothing while no host is paired, when the page can only be this Mac's", () => {
+    expect(hostAccountNote([local])).toBeNull();
   });
 
-  it("names the host and how its own sign-in is done, whatever it answers", () => {
-    // Not op-backed: the account controls act on this Mac in every environment,
-    // so a host that has not been greeted yet gets the same sentence.
-    const note = hostAccountNote(host());
+  it("names the one paired host and how its own sign-in is done, whatever it answers", () => {
+    // Not op-backed: the account controls act on this Mac whichever hosts are
+    // paired, so a host that has not been greeted yet gets the same sentence.
+    const note = hostAccountNote([local, host()]);
+    expect(note).toContain("This Mac's");
     expect(note).toContain("Cloud box");
     expect(note).toContain("fletch-host github login");
+  });
+
+  it("speaks for every host once there are several", () => {
+    const studio: EnvironmentEntry = { ...host(), id: "host-key-2", name: "Studio" };
+    const note = hostAccountNote([local, host(), studio]);
+    expect(note).toContain("Each paired host");
+    expect(note).not.toContain("Cloud box");
   });
 });

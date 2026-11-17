@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type NearbyHost } from "@/api";
+import type { NearbyHost } from "@/api";
+import { useEngine } from "@/api/engine";
 import { nextSightings, type Sighting } from "./nearbyPairing";
 
 /** One browse, then a pause, round and round while the Hosts tab is mounted:
@@ -13,6 +14,7 @@ const PAUSE_MS = 2000;
  *  `searching` is true until the first browse has answered, so the list can
  *  tell "still looking" from "nobody here". */
 export function useNearby(): { hosts: NearbyHost[]; searching: boolean } {
+  const { api } = useEngine();
   const [seen, setSeen] = useState<Sighting[]>([]);
   const [searching, setSearching] = useState(true);
 
@@ -33,7 +35,7 @@ export function useNearby(): { hosts: NearbyHost[]; searching: boolean } {
       stopped = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [api]);
 
   return { hosts: seen.map((s) => s.host), searching };
 }

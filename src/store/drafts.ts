@@ -1,4 +1,4 @@
-import { api, type FolderGrant, type WorkspaceKind } from "@/api";
+import type { Api, FolderGrant, WorkspaceKind } from "@/api";
 import { workspaceTypeToSend } from "@/components/Composer/workspaceType";
 import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
@@ -15,9 +15,9 @@ import {
 import { setSetting } from "@/storage/settings";
 import { track } from "@/util/track";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
-import { activeEnvironment, activeEnvironmentId } from "./environments";
+import { environmentEntry } from "./environments";
 import { refreshWorkspace } from "./refreshWorkspace";
-import { sendOrder } from "./sendOrder";
+import { sendOrder, sendsInFlight } from "./sendOrder";
 import { activeSurface } from "./surface";
 import type { AppState, SliceCreator } from "./types";
 import { workspaceTypeOptionsFor } from "./workspaceTypes";
@@ -141,11 +141,6 @@ export interface DraftsSlice {
   ) => Promise<boolean>;
 }
 
-/** Each draft's spawn in flight, by draft id: resolves to the new agent's id
- *  once its first prompt has its place in line (`sendOrder`), or null when no
- *  agent came of it. A send made meanwhile awaits it and goes to that agent. */
-const draftSpawns = new Map<string, Promise<string | null>>();
-
 const NEW_DRAFT_SELECTION_SETTING = "newDraftSelection";
 const LAST_REPO_PATH_SETTING = "lastRepoPath";
 const DRAFT_BASE_BRANCHES_SETTING = "draftBaseBranches";
@@ -175,21 +170,16 @@ type Get = Parameters<SliceCreator<DraftsSlice>>[1];
 
 /** A new draft on `repoPath`, with the reads it needs — a landmark name, its
  *  base branch — done. `null` means don't open one; the reason is on screen.
- *
- *  Drafts belong to the environment they were started in (they are stashed
- *  and swapped on a switch), and both reads go to the active environment's
- *  host. So the environment is checked after each one: a switch that lands
- *  mid-way must not send the next read — about this repo — to the other host,
- *  nor have the draft written and selected there. The `forActiveEnvironment`
- *  rule, applied per read. */
+ *  Both reads go to the host the draft belongs to, whose partition it is then
+ *  written to. */
 async function prepareDraft(
+  api: Api,
   get: Get,
   repoPath: string,
   roadmapItemId?: string,
   kind: DraftKind = "agent",
 ): Promise<DraftAgent | null> {
   const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
-  const environment = activeEnvironmentId();
   // Name allocation is a backend call; if it fails there's no draft to
   // create. Surface it in the global error banner and bail rather than
   // leaving an unhandled rejection for the fire-and-forget callers (⌘N,
@@ -201,9 +191,7 @@ async function prepareDraft(
     get().setLastError(`Couldn't start a new agent: ${String(e)}`);
     return null;
   }
-  if (activeEnvironmentId() !== environment) return null;
   const base = await get().resolveDraftBase(repoPath);
-  if (activeEnvironmentId() !== environment) return null;
   const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
   // Carry the sticky custom-agent pick onto the new draft, but only if it
   // still exists (it may have been deleted since it was last persisted).
@@ -256,305 +244,323 @@ function surfaceKey(s: AppState): string {
   }
 }
 
-export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
-  drafts: [],
-  activeDraftId: null,
-  newDraftProvider: DEFAULT_PROVIDER_ID,
-  newDraftModel: undefined,
-  newDraftCustomAgentId: undefined,
-  lastRepoPath: undefined,
-  draftBaseByRepo: {},
+export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) => {
+  const { api, hostId } = engine;
+  /** Each draft's spawn in flight, by draft id: resolves to the new agent's id
+   *  once its first prompt has its place in line (`sendOrder`), or null when
+   *  no agent came of it. A send made meanwhile awaits it and goes to that
+   *  agent. */
+  const draftSpawns = new Map<string, Promise<string | null>>();
 
-  setLastRepoPath: (repoPath) => {
-    if (get().lastRepoPath === repoPath) return;
-    set({ lastRepoPath: repoPath });
-    void setSetting(LAST_REPO_PATH_SETTING, repoPath);
-  },
+  return {
+    drafts: [],
+    activeDraftId: null,
+    newDraftProvider: DEFAULT_PROVIDER_ID,
+    newDraftModel: undefined,
+    newDraftCustomAgentId: undefined,
+    lastRepoPath: undefined,
+    draftBaseByRepo: {},
 
-  rememberDraftBase: (repoPath, branch) => {
-    if (!repoPath || !branch) return;
-    if (get().draftBaseByRepo[repoPath] === branch) return;
-    const next = { ...get().draftBaseByRepo, [repoPath]: branch };
-    set({ draftBaseByRepo: next });
-    void setSetting(DRAFT_BASE_BRANCHES_SETTING, next);
-  },
+    setLastRepoPath: (repoPath) => {
+      if (get().lastRepoPath === repoPath) return;
+      set({ lastRepoPath: repoPath });
+      void setSetting(LAST_REPO_PATH_SETTING, repoPath);
+    },
 
-  resolveDraftBase: (repoPath) => resolveBaseBranch(repoPath, get().draftBaseByRepo[repoPath]),
+    rememberDraftBase: (repoPath, branch) => {
+      if (!repoPath || !branch) return;
+      if (get().draftBaseByRepo[repoPath] === branch) return;
+      const next = { ...get().draftBaseByRepo, [repoPath]: branch };
+      set({ draftBaseByRepo: next });
+      void setSetting(DRAFT_BASE_BRANCHES_SETTING, next);
+    },
 
-  // ── drafts ─────────────────────────────────────────────────────────────────
-  createDraft: async (repoPath, opts = {}) => {
-    const draft = await prepareDraft(get, repoPath, opts.roadmapItemId, opts.kind);
-    if (!draft) return null;
-    openDraft(set, get, draft, opts.seedPrompt);
-    return draft.id;
-  },
+    resolveDraftBase: (repoPath) =>
+      resolveBaseBranch(api, repoPath, get().draftBaseByRepo[repoPath]),
 
-  draftAfterProjectAdd: async (repoPath, first) => {
-    // Automatic, unlike every other way a draft opens: it may only take the
-    // screen if the user has not gone somewhere else while its reads were out.
-    const before = surfaceKey(get());
-    try {
-      const draft = await prepareDraft(get, repoPath);
-      if (!draft || surfaceKey(get()) !== before) return;
-      openDraft(
-        set,
-        get,
-        { ...draft, afterProjectAdd: { seeded: first } },
-        first ? FIRST_TASK_PROMPT : undefined,
-      );
-      // A project view takes the center pane over a draft (App.tsx), so a
-      // project added from the sidebar while one is open would leave the
-      // draft invisible behind it. Still the page that was open when the add
-      // began — a newer one changed the key above.
-      get().closeProjectScreen();
-      track("project_add_draft_opened", { seeded: first });
-    } catch (e) {
-      get().setLastError(`Couldn't start a new agent: ${String(e)}`);
-    }
-  },
+    // ── drafts ─────────────────────────────────────────────────────────────────
+    createDraft: async (repoPath, opts = {}) => {
+      const draft = await prepareDraft(api, get, repoPath, opts.roadmapItemId, opts.kind);
+      if (!draft) return null;
+      openDraft(set, get, draft, opts.seedPrompt);
+      return draft.id;
+    },
 
-  updateDraft: (id, patch) =>
-    set((s) => ({
-      drafts: s.drafts.map((d) => (d.id === id ? { ...d, ...patch } : d)),
-    })),
-
-  removeDraft: (id) =>
-    set((s) => {
-      const { [id]: _droppedDraft, ...restComposerDrafts } = s.composerDrafts;
-      return {
-        drafts: s.drafts.filter((d) => d.id !== id),
-        activeDraftId: s.activeDraftId === id ? null : s.activeDraftId,
-        composerDrafts: restComposerDrafts,
-      };
-    }),
-
-  selectDraft: (id) =>
-    set({
-      activeDraftId: id,
-      selectedAgentId: null,
-      selectedRunId: null,
-    }),
-
-  setNewDraftSelection: (provider, model, customAgentId) => {
-    const selection = normalizeDraftSelection(provider, model, get().modelsByAgent);
-    // Only remember a custom-agent pick that resolves to a live agent.
-    const resolvedCustomAgentId = get().customAgents.some((a) => a.id === customAgentId)
-      ? customAgentId
-      : undefined;
-    set({
-      newDraftProvider: selection.provider,
-      newDraftModel: selection.model,
-      newDraftCustomAgentId: resolvedCustomAgentId,
-    });
-    void setSetting(NEW_DRAFT_SELECTION_SETTING, {
-      ...selection,
-      ...(resolvedCustomAgentId ? { customAgentId: resolvedCustomAgentId } : {}),
-    });
-  },
-
-  rerollDraftName: async (id) => {
-    // This draft's current name stays in the list, so the allocator is forced
-    // to pick a different one.
-    const next = await api.allocateDraftName(draftNames(get().drafts));
-    set((s) => ({
-      drafts: s.drafts.map((d) => (d.id === id ? { ...d, name: next } : d)),
-    }));
-  },
-
-  spawnFromDraft: async (
-    id,
-    text,
-    provider,
-    model,
-    attachments = [],
-    thinking?,
-    customAgentId?,
-    folders = [],
-  ) => {
-    // Sent again while this draft's agent is still being spawned: the message
-    // follows the first prompt to that agent, in order, rather than spawning a
-    // second agent from the same draft.
-    const spawning = draftSpawns.get(id);
-    if (spawning) {
-      const agentId = await spawning;
-      return agentId ? get().sendUserMessage(agentId, text, attachments, folders) : false;
-    }
-    const draft = get().drafts.find((d) => d.id === id);
-    if (!draft) return false;
-    let settle: (agentId: string | null) => void = () => {};
-    draftSpawns.set(
-      id,
-      new Promise((resolve) => {
-        settle = resolve;
-      }),
-    );
-    get().setLastRepoPath(draft.repoPath);
-    set({ busy: true, lastError: null });
-    const turnId = crypto.randomUUID();
-    try {
-      // The composer's folders, still resolving its path mentions when the
-      // send was made.
-      const grants = await folders;
-      // Every agent starts in the custom view. Native is entered per agent via
-      // the header toggle, never as a spawn default — a per-turn provider has
-      // no session id before its first turn, and the backend's native path
-      // requires one, so a native spawn would fail and tear the checkout down.
-      // Resolve the selected custom agent's brief + skill/MCP assignments into
-      // by-value snapshots (see resolveAgentSpawnProfile), so the running agent
-      // is unaffected if the preset is later edited or deleted.
-      const {
-        customAgentId: resolvedCustomAgentId,
-        instructions,
-        skills: assigned,
-        mcpServers,
-      } = resolveAgentSpawnProfile(get(), customAgentId, provider);
-      // A leading `/<skill>` invokes a library skill: its snapshot joins the
-      // spawn payload (materialized + indexed like an assigned skill, deduped
-      // by name against the custom agent's set) and the typed command becomes
-      // an explicit follow-it-now prompt. Built-in provider commands win name
-      // clashes inside the resolver, so `/init` and friends pass through
-      // verbatim. The rewritten prompt is used everywhere — optimistic log and
-      // send — so the visible message matches what the transcript will replay.
-      const invocation = resolveSkillInvocation(get().skills, provider, text);
-      let prompt = invocation ? invocation.prompt : text;
-      // A bodied provider command (codex prompt) expands app-side: `codex
-      // exec` takes the prompt as a positional arg and never resolves
-      // `/name`. Skills win name clashes (resolved above, mirroring the
-      // menu's precedence). Discovery is awaited so a spawn typed straight
-      // into a fresh composer still sees disk prompts.
-      if (!invocation && text.startsWith("/")) {
-        await discoverCommands(provider, draft.repoPath);
-        prompt = expandSlashCommand(provider, text, draft.repoPath) ?? prompt;
-      }
-      const skills = invocation
-        ? [
-            ...(assigned ?? []).filter((s) => s.name !== invocation.snapshot.name),
-            invocation.snapshot,
-          ]
-        : assigned;
-      // `thinking` carries the composer's effort selection. Effort is
-      // session-level for every provider — it's persisted on the record here at
-      // spawn (claude reads it as `--effort`; per-turn agents re-read it from
-      // the record on each turn), so it never rides individual messages.
-      const rec = await api.spawnAgent(
-        "custom",
-        draft.repoPath,
-        provider,
-        draft.name,
-        thinking,
-        model,
-        instructions,
-        resolvedCustomAgentId,
-        // The base branch the user picked on the new-agent screen. The backend
-        // forks the checkout from it and records it as the agent's parent
-        // branch (PR base / ahead-behind).
-        draft.base,
-        skills,
-        mcpServers,
-        // Tags the workspace with its originating issue so the agent's PR
-        // closes it (backend appends `Closes #N` to the primary repo's PR).
-        draft.issueRef,
-        undefined,
-        // The prompt is sent below once the process is up; persisting it as the
-        // task at spawn means the returned record and every refresh snapshot
-        // already carry it, so the sidebar row never reads empty in between.
-        prompt,
-        draft.account,
-        // The composer's folders, checked by the backend and in place from
-        // the first launch.
-        grants,
-        // What the sandbox pill declares, the pick or the default alike,
-        // read from the host's answer for this repo and provider only: the
-        // agent lands where the chip says, or the spawn fails with why. With
-        // no such answer the chip shows nothing and nothing is sent. Only
-        // for an agent on this Mac: a paired host's spawn carries no
-        // workspace type yet.
-        workspaceTypeToSend(
-          draft.workspaceType,
-          activeEnvironment().kind !== "remote",
-          workspaceTypeOptionsFor(get(), draft.repoPath, provider),
-        ),
-      );
-      // The first message names each granted folder, by the canonical path
-      // the backend stored, after the files (`attachments::reference_line`).
-      const sent = [...attachments, ...(rec.folder_grants ?? []).map((g) => g.path)];
-      // A draft started from a board card links its item to the agent the
-      // moment there is an agent to link to — this is the only point where the
-      // hand-off is real (a draft can be abandoned; an agent can't be un-spawned).
-      // Fire-and-forget with the failure swallowed: the spawn succeeded, and a
-      // roadmap write must never be what tears it down. The board follows
-      // `roadmap:item`, so the card grows the agent chip without a refetch.
-      if (draft.roadmapItemId) {
-        void api.roadmapHandOffItem(draft.roadmapItemId, rec.id).catch(() => {});
-      }
-      // The other half of `project_add_draft_opened`: the hand-off draft became
-      // an agent. Compared on what the user typed, not the rewritten prompt.
-      if (draft.afterProjectAdd) {
-        track("project_add_draft_spawned", {
-          seeded: draft.afterProjectAdd.seeded,
-          kept_seed: draft.afterProjectAdd.seeded && text.trim() === FIRST_TASK_PROMPT,
-        });
-      }
-      // Apply the selection, draft cleanup and log seed immediately, ahead of
-      // the guarded workspace refresh, so this user-intent state can never be
-      // dropped if a concurrent refresh supersedes ours. The record lands in the
-      // same update: selecting an id the snapshot still holds an *archived*
-      // record for (a recycled name) would otherwise open the chat against
-      // that stale record — see adoptSpawnedAgent.
-      set((state) => {
-        const { [id]: _droppedDraft, ...restComposerDrafts } = state.composerDrafts;
-        const patches: Partial<AppState> = {
-          workspace: adoptSpawnedAgent(state.workspace, rec),
-          selectedAgentId: rec.id,
-          drafts: state.drafts.filter((d) => d.id !== id),
-          activeDraftId: null,
-          composerDrafts: restComposerDrafts,
-          managedLogs: {
-            ...state.managedLogs,
-            [rec.id]: [
-              // Carries `turnId` (the one the send below uses) so the `turn:sent`
-              // mirror recognizes this bubble as ours and skips it — see
-              // `hasSentTurn`. Without it the host's announcement of our own
-              // send appends a second, identical bubble for the first prompt.
-              sent.length > 0
-                ? { kind: "user_message", text: prompt, attachments: sent, turnId }
-                : { kind: "user_message", text: prompt, turnId },
-            ],
-          },
-          // The first prompt is on its way: busy from here until the backend's
-          // `running` lands, across the spawn in between.
-          sending: { ...state.sending, [rec.id]: true },
-        };
-        return patches;
-      });
-      // The first prompt takes the new agent's first place in line before
-      // anything sent meanwhile is let through to it (`draftSpawns`), so it is
-      // the first message the agent gets.
-      const first = sendOrder.run(rec.id, async () => {
-        await refreshWorkspace(set);
-        // In-flight across the whole wait for the agent to come up: a snapshot
-        // of the spawn's resting `idle` must not settle the `sending` flag early.
-        await whileSending(rec.id, () =>
-          sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, sent)),
+    draftAfterProjectAdd: async (repoPath, first) => {
+      // Automatic, unlike every other way a draft opens: it may only take the
+      // screen if the user has not gone somewhere else while its reads were out.
+      const before = surfaceKey(get());
+      const onScreen = get().activeEnvironmentId;
+      try {
+        const draft = await prepareDraft(api, get, repoPath);
+        if (!draft || surfaceKey(get()) !== before) return;
+        openDraft(
+          set,
+          get,
+          { ...draft, afterProjectAdd: { seeded: first } },
+          first ? FIRST_TASK_PROMPT : undefined,
         );
+        // A project view takes the center pane over a draft (App.tsx), so a
+        // project added from the sidebar while one is open would leave the
+        // draft invisible behind it. Still the page that was open when the add
+        // began — a newer one changed the key above.
+        get().closeProjectScreen();
+        // The project was added on this host, which need not be the one on
+        // screen: the draft is only in front of the user once its host is.
+        // Not if they put another host on screen meanwhile: the draft is
+        // open here for when they come back.
+        if (get().activeEnvironmentId === onScreen) set({ activeEnvironmentId: hostId });
+        track("project_add_draft_opened", { seeded: first });
+      } catch (e) {
+        get().setLastError(`Couldn't start a new agent: ${String(e)}`);
+      }
+    },
+
+    updateDraft: (id, patch) =>
+      set((s) => ({
+        drafts: s.drafts.map((d) => (d.id === id ? { ...d, ...patch } : d)),
+      })),
+
+    removeDraft: (id) =>
+      set((s) => {
+        const { [id]: _droppedDraft, ...restComposerDrafts } = s.composerDrafts;
+        return {
+          drafts: s.drafts.filter((d) => d.id !== id),
+          activeDraftId: s.activeDraftId === id ? null : s.activeDraftId,
+          composerDrafts: restComposerDrafts,
+        };
+      }),
+
+    selectDraft: (id) =>
+      set({
+        activeDraftId: id,
+        selectedAgentId: null,
+        selectedRunId: null,
+      }),
+
+    setNewDraftSelection: (provider, model, customAgentId) => {
+      const selection = normalizeDraftSelection(provider, model, get().modelsByAgent);
+      // Only remember a custom-agent pick that resolves to a live agent.
+      const resolvedCustomAgentId = get().customAgents.some((a) => a.id === customAgentId)
+        ? customAgentId
+        : undefined;
+      set({
+        newDraftProvider: selection.provider,
+        newDraftModel: selection.model,
+        newDraftCustomAgentId: resolvedCustomAgentId,
       });
-      settle(rec.id);
-      await first;
-      return true;
-    } catch (e) {
-      const selected = get().selectedAgentId;
-      set((state) => ({
-        lastError: String(e),
-        sending: selected ? { ...state.sending, [selected]: false } : state.sending,
+      void setSetting(NEW_DRAFT_SELECTION_SETTING, {
+        ...selection,
+        ...(resolvedCustomAgentId ? { customAgentId: resolvedCustomAgentId } : {}),
+      });
+    },
+
+    rerollDraftName: async (id) => {
+      // This draft's current name stays in the list, so the allocator is forced
+      // to pick a different one.
+      const next = await api.allocateDraftName(draftNames(get().drafts));
+      set((s) => ({
+        drafts: s.drafts.map((d) => (d.id === id ? { ...d, name: next } : d)),
       }));
-      // Only a spawn that never happened gives the draft back: once the agent
-      // exists its chat is open, and the composer the draft came from is gone.
-      return !get().drafts.some((d) => d.id === id);
-    } finally {
-      // No agent came of it, unless one was already announced.
-      settle(null);
-      draftSpawns.delete(id);
-      set({ busy: false });
-    }
-  },
-});
+    },
+
+    spawnFromDraft: async (
+      id,
+      text,
+      provider,
+      model,
+      attachments = [],
+      thinking?,
+      customAgentId?,
+      folders = [],
+    ) => {
+      // Sent again while this draft's agent is still being spawned: the message
+      // follows the first prompt to that agent, in order, rather than spawning a
+      // second agent from the same draft.
+      const spawning = draftSpawns.get(id);
+      if (spawning) {
+        const agentId = await spawning;
+        return agentId ? get().sendUserMessage(agentId, text, attachments, folders) : false;
+      }
+      const draft = get().drafts.find((d) => d.id === id);
+      if (!draft) return false;
+      let settle: (agentId: string | null) => void = () => {};
+      draftSpawns.set(
+        id,
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+      );
+      get().setLastRepoPath(draft.repoPath);
+      set({ busy: true, lastError: null });
+      const turnId = crypto.randomUUID();
+      try {
+        // The composer's folders, still resolving its path mentions when the
+        // send was made.
+        const grants = await folders;
+        // Every agent starts in the custom view. Native is entered per agent via
+        // the header toggle, never as a spawn default — a per-turn provider has
+        // no session id before its first turn, and the backend's native path
+        // requires one, so a native spawn would fail and tear the checkout down.
+        // Resolve the selected custom agent's brief + skill/MCP assignments into
+        // by-value snapshots (see resolveAgentSpawnProfile), so the running agent
+        // is unaffected if the preset is later edited or deleted.
+        const {
+          customAgentId: resolvedCustomAgentId,
+          instructions,
+          skills: assigned,
+          mcpServers,
+        } = resolveAgentSpawnProfile(get(), customAgentId, provider);
+        // A leading `/<skill>` invokes a library skill: its snapshot joins the
+        // spawn payload (materialized + indexed like an assigned skill, deduped
+        // by name against the custom agent's set) and the typed command becomes
+        // an explicit follow-it-now prompt. Built-in provider commands win name
+        // clashes inside the resolver, so `/init` and friends pass through
+        // verbatim. The rewritten prompt is used everywhere — optimistic log and
+        // send — so the visible message matches what the transcript will replay.
+        const invocation = resolveSkillInvocation(get().skills, provider, text);
+        let prompt = invocation ? invocation.prompt : text;
+        // A bodied provider command (codex prompt) expands app-side: `codex
+        // exec` takes the prompt as a positional arg and never resolves
+        // `/name`. Skills win name clashes (resolved above, mirroring the
+        // menu's precedence). Discovery is awaited so a spawn typed straight
+        // into a fresh composer still sees disk prompts.
+        if (!invocation && text.startsWith("/")) {
+          await discoverCommands(engine, provider, draft.repoPath);
+          prompt = expandSlashCommand(hostId, provider, text, draft.repoPath) ?? prompt;
+        }
+        const skills = invocation
+          ? [
+              ...(assigned ?? []).filter((s) => s.name !== invocation.snapshot.name),
+              invocation.snapshot,
+            ]
+          : assigned;
+        // `thinking` carries the composer's effort selection. Effort is
+        // session-level for every provider — it's persisted on the record here at
+        // spawn (claude reads it as `--effort`; per-turn agents re-read it from
+        // the record on each turn), so it never rides individual messages.
+        const rec = await api.spawnAgent(
+          "custom",
+          draft.repoPath,
+          provider,
+          draft.name,
+          thinking,
+          model,
+          instructions,
+          resolvedCustomAgentId,
+          // The base branch the user picked on the new-agent screen. The backend
+          // forks the checkout from it and records it as the agent's parent
+          // branch (PR base / ahead-behind).
+          draft.base,
+          skills,
+          mcpServers,
+          // Tags the workspace with its originating issue so the agent's PR
+          // closes it (backend appends `Closes #N` to the primary repo's PR).
+          draft.issueRef,
+          undefined,
+          // The prompt is sent below once the process is up; persisting it as the
+          // task at spawn means the returned record and every refresh snapshot
+          // already carry it, so the sidebar row never reads empty in between.
+          prompt,
+          draft.account,
+          // The composer's folders, checked by the backend and in place from
+          // the first launch.
+          grants,
+          // What the sandbox pill declares, the pick or the default alike,
+          // read from the host's answer for this repo and provider only: the
+          // agent lands where the chip says, or the spawn fails with why. With
+          // no such answer the chip shows nothing and nothing is sent. Only
+          // for an agent on this Mac: a paired host's spawn carries no
+          // workspace type yet.
+          workspaceTypeToSend(
+            draft.workspaceType,
+            environmentEntry(hostId).kind !== "remote",
+            workspaceTypeOptionsFor(get(), draft.repoPath, provider),
+          ),
+        );
+        // The first message names each granted folder, by the canonical path
+        // the backend stored, after the files (`attachments::reference_line`).
+        const sent = [...attachments, ...(rec.folder_grants ?? []).map((g) => g.path)];
+        // A draft started from a board card links its item to the agent the
+        // moment there is an agent to link to — this is the only point where the
+        // hand-off is real (a draft can be abandoned; an agent can't be un-spawned).
+        // Fire-and-forget with the failure swallowed: the spawn succeeded, and a
+        // roadmap write must never be what tears it down. The board follows
+        // `roadmap:item`, so the card grows the agent chip without a refetch.
+        if (draft.roadmapItemId) {
+          void api.roadmapHandOffItem(draft.roadmapItemId, rec.id).catch(() => {});
+        }
+        // The other half of `project_add_draft_opened`: the hand-off draft became
+        // an agent. Compared on what the user typed, not the rewritten prompt.
+        if (draft.afterProjectAdd) {
+          track("project_add_draft_spawned", {
+            seeded: draft.afterProjectAdd.seeded,
+            kept_seed: draft.afterProjectAdd.seeded && text.trim() === FIRST_TASK_PROMPT,
+          });
+        }
+        // Apply the selection, draft cleanup and log seed immediately, ahead of
+        // the guarded workspace refresh, so this user-intent state can never be
+        // dropped if a concurrent refresh supersedes ours. The record lands in the
+        // same update: selecting an id the snapshot still holds an *archived*
+        // record for (a recycled name) would otherwise open the chat against
+        // that stale record — see adoptSpawnedAgent.
+        set((state) => {
+          const { [id]: _droppedDraft, ...restComposerDrafts } = state.composerDrafts;
+          const patches: Partial<AppState> = {
+            workspace: adoptSpawnedAgent(state.workspace, rec),
+            selectedAgentId: rec.id,
+            drafts: state.drafts.filter((d) => d.id !== id),
+            activeDraftId: null,
+            composerDrafts: restComposerDrafts,
+            managedLogs: {
+              ...state.managedLogs,
+              [rec.id]: [
+                // Carries `turnId` (the one the send below uses) so the `turn:sent`
+                // mirror recognizes this bubble as ours and skips it — see
+                // `hasSentTurn`. Without it the host's announcement of our own
+                // send appends a second, identical bubble for the first prompt.
+                sent.length > 0
+                  ? { kind: "user_message", text: prompt, attachments: sent, turnId }
+                  : { kind: "user_message", text: prompt, turnId },
+              ],
+            },
+            // The first prompt is on its way: busy from here until the backend's
+            // `running` lands, across the spawn in between.
+            sending: { ...state.sending, [rec.id]: true },
+          };
+          return patches;
+        });
+        // The first prompt takes the new agent's first place in line before
+        // anything sent meanwhile is let through to it (`draftSpawns`), so it is
+        // the first message the agent gets.
+        const first = sendOrder(hostId).run(rec.id, async () => {
+          await refreshWorkspace(engine, set);
+          // In-flight across the whole wait for the agent to come up: a snapshot
+          // of the spawn's resting `idle` must not settle the `sending` flag early.
+          await whileSending(
+            rec.id,
+            () => sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, sent)),
+            sendsInFlight(hostId),
+          );
+        });
+        settle(rec.id);
+        await first;
+        return true;
+      } catch (e) {
+        const selected = get().selectedAgentId;
+        set((state) => ({
+          lastError: String(e),
+          sending: selected ? { ...state.sending, [selected]: false } : state.sending,
+        }));
+        // Only a spawn that never happened gives the draft back: once the agent
+        // exists its chat is open, and the composer the draft came from is gone.
+        return !get().drafts.some((d) => d.id === id);
+      } finally {
+        // No agent came of it, unless one was already announced.
+        settle(null);
+        draftSpawns.delete(id);
+        set({ busy: false });
+      }
+    },
+  };
+};

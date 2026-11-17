@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { SetRow } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { EMPTY_AGENTS, useAppStore } from "@/store";
@@ -13,6 +13,7 @@ export function DeleteProjectRow({
   projectId: string;
   projectName: string;
 }) {
+  const { api } = useEngine();
   const agents = useAppStore((state) => state.workspace?.agents ?? EMPTY_AGENTS);
   const deleteProject = useAppStore((state) => state.deleteProject);
   // A host from before the project-settings ops answers neither the delete nor
@@ -51,7 +52,7 @@ export function DeleteProjectRow({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [projectId, gate]);
+  }, [projectId, gate, api]);
 
   const blocked = gate !== null || checkingAgents || hasRunningAgent;
   const blockedTip =

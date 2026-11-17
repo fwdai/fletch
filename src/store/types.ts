@@ -6,6 +6,7 @@
 // time, so the slice↔types cycle carries no runtime dependency.
 
 import type { StateCreator } from "zustand";
+import type { Engine } from "@/api/engine";
 import type { AccountSlice } from "./account";
 import type { AgentInstallSlice, InstallState } from "./agentInstall";
 import type { AppSlice } from "./app";
@@ -88,4 +89,9 @@ export type AppState = AppSlice &
   LocalCommandsSlice &
   CompactionSlice;
 
-export type SliceCreator<T> = StateCreator<AppState, [], [], T>;
+type StoreArgs = Parameters<StateCreator<AppState, [], [], unknown>>;
+
+/** Builds one slice of the store. `engine` is the engine this store drives: a
+ *  slice calls its `api` and subscribes to its `events` rather than importing
+ *  them (see @/api/engine). */
+export type SliceCreator<T> = (set: StoreArgs[0], get: StoreArgs[1], engine: Engine) => T;

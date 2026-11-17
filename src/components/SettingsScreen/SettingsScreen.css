@@ -324,6 +324,19 @@
 .set-row-c .ui-select {
   width: 240px;
 }
+/* "Settings for: This Mac" under the head of a pane of host-owned settings
+   (SettingsHost/HostPicker). Quiet: a muted label and the row-control select,
+   pulled up into the head's bottom margin. */
+.set-host-pick {
+  gap: 10px;
+  margin: -14px 0 16px;
+}
+.set-host-pick-label {
+  color: var(--fg-3);
+}
+.set-host-pick .ui-select {
+  width: 240px;
+}
 /* One width, so scales with different numbers of stops line up in a column. */
 .set-scale {
   width: 320px;

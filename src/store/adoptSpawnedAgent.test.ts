@@ -20,9 +20,10 @@ vi.mock("@/data/slashCommands", () => ({ discoverCommands: vi.fn() }));
 
 import type { AgentRecord, Workspace } from "@/api";
 import { workspaceTypesKey } from "@/components/Composer/workspaceType";
+import { testEngine } from "@/test/engine";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { createDraftsSlice } from "./drafts";
-import { LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
+import { activeEnvironmentId, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import type { AppState } from "./types";
 import { createWorkspaceTypesSlice } from "./workspaceTypes";
 
@@ -65,7 +66,11 @@ const workspaceWith = (agents: AgentRecord[]): Workspace => ({
 
 const makeStore = (workspace: Workspace) => {
   const store = create<AppState>()(
-    (...a) => ({ ...createDraftsSlice(...a), ...createWorkspaceTypesSlice(...a) }) as AppState,
+    (set, get) =>
+      ({
+        ...createDraftsSlice(set, get, testEngine(activeEnvironmentId())),
+        ...createWorkspaceTypesSlice(set, get, testEngine(activeEnvironmentId())),
+      }) as AppState,
   );
   store.setState({
     workspace,

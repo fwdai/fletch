@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, type ContextEntity } from "@/api";
+import type { ContextEntity } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Button } from "@/components/ui/Button";
 import { TextInput } from "@/components/ui/TextInput";
 import { matchesSearch } from "./format";
@@ -8,6 +9,7 @@ import { matchesSearch } from "./format";
  *  picks, compiled and rendered host-side exactly as for an agent; or the
  *  overview every agent on the project is spawned with. */
 export function Preview({ projectId, entities }: { projectId: string; entities: ContextEntity[] }) {
+  const { api } = useEngine();
   const [query, setQuery] = useState("");
   const [picks, setPicks] = useState<string[]>([]);
   const [filter, setFilter] = useState("");

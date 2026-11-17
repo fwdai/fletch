@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, type ContextAssertion, type Stance } from "@/api";
+import type { ContextAssertion, Stance } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Button } from "@/components/ui/Button";
 import { Modal, ModalBody, ModalFooter } from "@/components/ui/Modal";
 import { TextArea } from "@/components/ui/TextInput";
@@ -15,6 +16,7 @@ export function SupersedeDialog({
   projectId: string;
   onClose: () => void;
 }) {
+  const { api } = useEngine();
   const [statement, setStatement] = useState(assertion.statement);
   const [rationale, setRationale] = useState(assertion.rationale);
   const [stance, setStance] = useState<Stance>(assertion.stance);

@@ -1,4 +1,4 @@
-import { api, type EgressDelta } from "@/api";
+import type { Api, EgressDelta } from "@/api";
 
 /** A list of hosts the Network rows show and add to: the user's own, for
  *  every project (`globalHosts`), or one project's, which its page builds from
@@ -13,7 +13,7 @@ export interface HostList {
 }
 
 /** The user's global list, written whole on every change. */
-export function globalHosts(global: EgressDelta): HostList {
+export function globalHosts(api: Api, global: EgressDelta): HostList {
   const save = (add: string[]) => api.setBoxEgressGlobal({ add, remove: [] });
   return {
     hosts: global.add.map((pattern) => ({

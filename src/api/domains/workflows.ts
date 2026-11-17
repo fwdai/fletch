@@ -1,9 +1,9 @@
 import type { Definition, ImportReport, Spec } from "@/workflows/spec";
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type { AgentRecord } from "../types/agent";
 import type { WfEvent, WfRun, WfRunDetail } from "../types/workflow";
 
-export const workflowsApi = {
+export const workflowsApi = (invoke: Invoke) => ({
   // ── Workflows v1 (read-only surface; scheduler slices populate the data) ──
   /** Runs newest-updated first, optionally scoped to one project. */
   wfListRuns: (projectId?: string) => invoke<WfRun[]>("wf_list_runs", { projectId }),
@@ -67,4 +67,4 @@ export const workflowsApi = {
   /** Parse + validate a YAML file and resolve it against the local library.
    *  Missing skills / unknown providers come back as warnings, not errors. */
   wfDefImportYaml: (yamlText: string) => invoke<ImportReport>("wf_def_import_yaml", { yamlText }),
-};
+});

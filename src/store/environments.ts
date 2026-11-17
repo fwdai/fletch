@@ -1,6 +1,7 @@
 // The environment dimension: which engines this client knows about, and which
-// one the UI is driving. An "environment" is one Fletch engine — the desktop's
-// own, or a paired host (docs/multi-host-plan.md §5.1).
+// one is on screen (the host of what the main pane shows). An "environment" is
+// one Fletch engine — the desktop's own, or a paired host
+// (docs/multi-host-plan.md §5.1).
 //
 // The local environment is a fixed client-side id, present from the first render
 // in state `connected`, with no async step and no dependency on the host key or
@@ -9,17 +10,17 @@
 // exactly as they do today.
 //
 // The writers below are what the paired-host lifecycle (src/remote/hosts.ts)
-// drives an entry with, and what this buys is that the two lookups which cannot
-// wait for React (the transport a call goes down, and the key a PTY chunk is
-// buffered under) have one answer, in one place.
+// drives an entry with. A remote entry comes with its host's partition of the
+// store (`hostStates`, see ./hostState): published together, dropped together.
 //
-// The switch itself — parking one environment's view and restoring another's —
-// lives in ./environmentSwitch, which needs @/api and so cannot live here (see
-// the note on `setEnvironmentsSource` at the bottom).
+// Which environment is on screen (`switchEnvironment`) and what a handshake
+// re-reads live in ./environmentSwitch, which needs @/api and so cannot live
+// here (see the note on `setEnvironmentsSource` at the bottom).
 
 import type { Transport } from "@/api/transport";
 import type { HostProtocol, HostProvider } from "@/remote/types";
-import type { AppState, SliceCreator } from "./types";
+import { BLANK_HOST_STATE, type HostState } from "./hostState";
+import type { SliceCreator } from "./types";
 
 /** The desktop's own engine, following T3Code's `PRIMARY_LOCAL_ENVIRONMENT_ID`.
  *  A constant, never a host key: host public keys identify *remote*
@@ -38,12 +39,12 @@ export interface EnvironmentEntry {
   /** Why the connection is in `error`, for the (later) environment status. */
   error?: string;
   /** Remote only. Mirrors `RemoteClient.retrying`: a retry is scheduled behind
-   *  this failure, so the switcher says "reconnecting" rather than "offline".
+   *  this failure, so a host's chip says "reconnecting" rather than "offline".
    *  False with a non-`connected` state is a failure only the user can clear
    *  (unpaired, remote access off, a changed host key). */
   retrying?: boolean;
   /** Remote only. The local environment's transport is the module-level
-   *  `localTransport`, which is what `activeTransport()` falls back to. */
+   *  `localTransport`. */
   transport?: Transport;
   /** Remote only: the app version the host reported in `hello`/`pair`
    *  (`HostInfo.appVersion`), for the rows that identify it. In memory only —
@@ -62,25 +63,25 @@ export interface EnvironmentEntry {
    *  both cases the client knows nothing and blocks nothing (see
    *  `providerReason` in ./capabilities). In memory only, like `protocol`. */
   providers?: HostProvider[];
-  /** What this environment was showing when the user last left it — the
-   *  workspace snapshot and every map keyed by something that belongs to one
-   *  engine (agent ids, checkouts, repo paths). Written and read only by
-   *  `switchEnvironment` (./environmentSwitch), which owns the list; absent
-   *  until the user has switched away from this environment once. */
-  stash?: Partial<AppState>;
-  /** The agent selected here when the user last left, restored on the way
-   *  back. Kept out of `stash` because it is the one piece of the parked view
-   *  the switcher itself may want to read. */
-  lastSelectedAgentId?: string | null;
 }
 
 export interface EnvironmentsSlice {
   environments: Record<EnvironmentId, EnvironmentEntry>;
+  /** The host on screen: the host of what the main pane shows. Every
+   *  selection that belongs to a host puts it there (`onHost`); nothing asks
+   *  the user to pick it. */
   activeEnvironmentId: EnvironmentId;
+  /** Each paired host's partition of the store, by environment id: its
+   *  workspace and every map keyed by something that belongs to its engine
+   *  (./hostState). The local environment has none — its state is the store's
+   *  own top-level keys. Read through a host's scope (./hostScope), never
+   *  directly. */
+  hostStates: Record<EnvironmentId, HostState>;
 
   /** Add a remote environment, or merge `entry` into the one already under its
    *  id — a reconnect re-reports the same host with a fresh descriptor and the
-   *  entry it lands on must not lose anything the caller left out. */
+   *  entry it lands on must not lose anything the caller left out. A host seen
+   *  for the first time gets a blank partition with its entry. */
   upsertEnvironment: (entry: EnvironmentEntry) => void;
   /** Mirror one connection's state onto its entry. `error` and `retrying` are
    *  written as given, so a state change with no reason clears the last one. */
@@ -95,9 +96,9 @@ export interface EnvironmentsSlice {
    *  handshake that published the entry, and must not carry a stale connection
    *  state back with it. */
   setEnvironmentProviders: (id: EnvironmentId, providers: HostProvider[]) => void;
-  /** Forget a paired host. The local environment is not removable: it is this
-   *  process's own engine, present from the first render, and nothing in the
-   *  app has a fallback for its absence. */
+  /** Forget a paired host, and its partition with it. The local environment is
+   *  not removable: it is this process's own engine, present from the first
+   *  render, and nothing in the app has a fallback for its absence. */
   removeEnvironment: (id: EnvironmentId) => void;
 }
 
@@ -118,10 +119,14 @@ const initialState = (): EnvironmentsState => ({
 
 export const createEnvironmentsSlice: SliceCreator<EnvironmentsSlice> = (set) => ({
   ...initialState(),
+  hostStates: {},
 
   upsertEnvironment: (entry) =>
     set((s) => ({
       environments: { ...s.environments, [entry.id]: { ...s.environments[entry.id], ...entry } },
+      ...(entry.id === LOCAL_ENVIRONMENT_ID || s.hostStates[entry.id]
+        ? {}
+        : { hostStates: { ...s.hostStates, [entry.id]: BLANK_HOST_STATE } }),
     })),
 
   setEnvironmentConnection: (id, connection, error, retrying) =>
@@ -148,12 +153,13 @@ export const createEnvironmentsSlice: SliceCreator<EnvironmentsSlice> = (set) =>
     set((s) => {
       if (id === LOCAL_ENVIRONMENT_ID) return {};
       const { [id]: _gone, ...rest } = s.environments;
+      const { [id]: _partition, ...hostStates } = s.hostStates;
       return {
         environments: rest,
+        hostStates,
         // A removal must not strand the active id on an entry that is no longer
-        // there. This is the backstop, not the path: forgetting the host on
-        // screen goes through `switchEnvironment` first (see remote/hosts.ts),
-        // which is what actually puts This Mac's view back.
+        // there: forgetting the host on screen puts This Mac on screen, whose
+        // state never left the store.
         activeEnvironmentId:
           s.activeEnvironmentId === id ? LOCAL_ENVIRONMENT_ID : s.activeEnvironmentId,
       };
@@ -162,7 +168,7 @@ export const createEnvironmentsSlice: SliceCreator<EnvironmentsSlice> = (set) =>
 
 // The store owns this state, but the readers below are called from outside React
 // — on every op and on every PTY chunk — and src/api must not import the store
-// (every slice imports @/api, so that would close a cycle). So store/index.ts
+// (the store is built over @/api's engine, so that would close a cycle). So store/index.ts
 // hands its getter in here once, the way src/pty/terminals registers its cache
 // hooks with src/pty/buffers. Until it does, the answer is the local
 // environment, which is also what the store starts with.
@@ -172,41 +178,28 @@ export function setEnvironmentsSource(source: () => EnvironmentsState) {
   read = source;
 }
 
-/** The active environment's id. Part of every key that would otherwise collide
- *  across hosts: agent ids are place names from a ~300-entry pool, so two hosts
- *  will both have an agent called `fuji` (docs/multi-host-plan.md §1.3). */
+/** The id of the host on screen: the one the main pane is scoped to. */
 export function activeEnvironmentId(): EnvironmentId {
   return read().activeEnvironmentId;
 }
 
-export function activeEnvironment(): EnvironmentEntry {
-  const state = read();
-  return (
-    state.environments[state.activeEnvironmentId] ??
-    initialState().environments[LOCAL_ENVIRONMENT_ID]
-  );
+/** The entry for `id`, falling back to the local one for an id that is not
+ *  there — a host forgotten while something about it was still in flight. */
+export function environmentEntry(id: EnvironmentId): EnvironmentEntry {
+  return read().environments[id] ?? initialState().environments[LOCAL_ENVIRONMENT_ID];
 }
 
-/** Run a routed read and hand its answer back only if the environment that was
- *  active when it started is still active when it lands. `undefined` means
- *  superseded: write nothing.
- *
- *  THIS is how a store action that writes an environment-owned slice must run a
- *  read that goes over the wire. A switch is a click, so it lands in the middle
- *  of whatever is in flight, and every such answer belongs to the environment
- *  it was asked of: written blind, one host's GitHub login — or its approval
- *  queue, or its "not connected" — appears in another host's view and gates
- *  buttons that publish somewhere else entirely.
- *
- *  Failure is not caught here. A read that must still write something when it
- *  fails (a probe whose failure means "not connected") folds that answer into
- *  `run`, so the fallback is guarded too; anything else rejects through.
- *
- *  `refreshWorkspace` is the one exception and keeps its own guard: its
- *  generation token also orders a refresh against another refresh of the SAME
- *  environment, which this cannot see. */
-export async function forActiveEnvironment<T>(run: () => Promise<T>): Promise<T | undefined> {
-  const id = activeEnvironmentId();
-  const answer = await run();
-  return activeEnvironmentId() === id ? answer : undefined;
+export function activeEnvironment(): EnvironmentEntry {
+  return environmentEntry(activeEnvironmentId());
+}
+
+/** Every environment's id, This Mac first (it is always there) and then the
+ *  paired hosts by name: the order of every surface that lists them all, so
+ *  none reshuffles as connections come and go. */
+export function hostOrder(environments: Record<EnvironmentId, EnvironmentEntry>): EnvironmentId[] {
+  return Object.values(environments)
+    .sort((a, b) =>
+      a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "local" ? -1 : 1,
+    )
+    .map((e) => e.id);
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, onPairRequest, onPairRequestEnded, type PairRequest } from "@/api";
+import type { PairRequest } from "@/api";
+import { useEngine } from "@/api/engine";
 
 /** The device waiting for this Mac to accept it, if one is, and the answer.
  *  Driven by the host's events, and seeded once from `remote_status` so a
@@ -8,13 +9,14 @@ export function usePairRequest(): {
   request: PairRequest | null;
   answer: (accept: boolean) => void;
 } {
+  const { api, events } = useEngine();
   const [request, setRequest] = useState<PairRequest | null>(null);
 
   useEffect(() => {
     let live = true;
     const offs = [
-      onPairRequest((r) => setRequest(r)),
-      onPairRequestEnded(({ id }) => setRequest((r) => (r?.id === id ? null : r))),
+      events.onPairRequest((r) => setRequest(r)),
+      events.onPairRequestEnded(({ id }) => setRequest((r) => (r?.id === id ? null : r))),
     ];
     void api
       .remoteStatus()
@@ -26,7 +28,7 @@ export function usePairRequest(): {
       live = false;
       for (const off of offs) void off.then((f) => f());
     };
-  }, []);
+  }, [api, events]);
 
   const answer = useCallback(
     (accept: boolean) => {
@@ -34,7 +36,7 @@ export function usePairRequest(): {
       setRequest(null);
       void api.remoteAnswerPairRequest(request.id, accept).catch(() => {});
     },
-    [request],
+    [request, api],
   );
 
   return { request, answer };

@@ -2,16 +2,24 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { DetectedEditor } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { developerUnlocked } from "@/components/SettingsScreen/nav";
 import { detectEditors } from "@/components/TitleBar/OpenInEditor/editors";
 import { Scrim } from "@/components/ui/Scrim";
 import { useFocusScope } from "@/components/ui/useFocusScope";
-import { useAppStore } from "@/store";
+import { useAppStore, useEveryHost, useHostStore, viewOf } from "@/store";
+import { hostOrder } from "@/store/environments";
 import { arrowTarget } from "@/util/arrowNav";
 import { effectiveCombos, matchesCombo, SHORTCUT_BY_ID } from "@/util/keymap";
 import { useRuns } from "@/workflows/run/useRuns";
-import { emptySections, type PaletteContext, pageRows, searchSections } from "./items";
+import {
+  emptySections,
+  type PaletteContext,
+  type PaletteHost,
+  pageRows,
+  searchSections,
+} from "./items";
 import { PaletteFooter } from "./PaletteFooter";
 import { PaletteRow } from "./PaletteRow";
 import { type Point, pointerMoved } from "./pointer";
@@ -35,6 +43,8 @@ function isPaletteChord(e: KeyboardEvent): boolean {
  *  else is stopped at the dialog so the app's own window listeners (find in
  *  the conversation, the ⌘-digit panels) stay out of it. */
 export function PaletteDialog() {
+  const { api } = useEngine();
+  const store = useHostStore();
   const togglePalette = useAppStore((s) => s.togglePalette);
   const setLastError = useAppStore((s) => s.setLastError);
   const close = useCallback(() => togglePalette(false), [togglePalette]);
@@ -49,13 +59,13 @@ export function PaletteDialog() {
 
   useEffect(() => {
     let alive = true;
-    detectEditors().then((found) => {
+    detectEditors(api).then((found) => {
       if (alive) setEditors(found);
     });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [api]);
 
   // The palette holds the keyboard over whatever it was opened from, another
   // dialog included, and hands focus back on the way out unless the row that
@@ -66,7 +76,10 @@ export function PaletteDialog() {
   // The rows are rebuilt when anything they read changes. The picked fields
   // are the re-render trigger; the context itself is read whole, since the
   // builders ask `store/surface` what is in front the way the shortcuts do.
-  // `trigger` changes identity exactly when a field the builders read does.
+  // `trigger` changes identity exactly when a field the builders read does;
+  // the two lists likewise for the rows that cover every host.
+  const workspaces = useEveryHost((s) => s.workspace);
+  const pending = useEveryHost((s) => s.pendingToolUse);
   const trigger = useAppStore(
     useShallow((s) => [
       s.workspace,
@@ -94,11 +107,19 @@ export function PaletteDialog() {
       s.admin,
     ]),
   );
-  // biome-ignore lint/correctness/useExhaustiveDependencies: trigger is the re-run signal
+  // biome-ignore lint/correctness/useExhaustiveDependencies: trigger, workspaces and pending are the re-run signal
   const items = useMemo<PaletteItem[]>(() => {
-    const s = useAppStore.getState();
+    const s = store.getState();
+    const all = useAppStore.getState();
+    const hosts: PaletteHost[] = hostOrder(all.environments).map((id) => {
+      const entry = all.environments[id];
+      return { id, name: entry.kind === "local" ? null : entry.name, s: viewOf(all, id) };
+    });
     const ctx: PaletteContext = {
       s,
+      hosts,
+      show: (hostId) => useAppStore.getState().switchEnvironment(hostId),
+      api,
       runs,
       editors,
       developer: developerUnlocked(s.admin),
@@ -108,14 +129,14 @@ export function PaletteDialog() {
         void navigator.clipboard.writeText(text).catch((e) => setLastError(String(e))),
     };
     return pageRows(ctx, page);
-  }, [trigger, page, runs, editors, setLastError]);
+  }, [trigger, workspaces, pending, page, runs, editors, setLastError, api, store]);
 
   const sections = useMemo(
     () =>
       page === "root" && !query.trim()
-        ? emptySections(useAppStore.getState(), items, recents)
+        ? emptySections(store.getState(), items, recents)
         : searchSections(items, query),
-    [items, page, query, recents],
+    [items, page, query, recents, store],
   );
 
   const rows = useMemo<Row[]>(() => sections.flatMap((sec) => sec.rows), [sections]);

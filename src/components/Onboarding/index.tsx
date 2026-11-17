@@ -5,7 +5,7 @@
 // so they are usually answered before the welcome is even dismissed.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { FletchLockup } from "@/components/FletchLockup";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
@@ -21,6 +21,7 @@ type Screen = "welcome" | "preflight";
 const SCREENS: Screen[] = ["welcome", "preflight"];
 
 export function Onboarding() {
+  const { api } = useEngine();
   const closeOnboarding = useAppStore((s) => s.closeOnboarding);
   const onboardingComplete = useAppStore((s) => s.onboardingComplete);
 
@@ -50,7 +51,7 @@ export function Onboarding() {
   // in Rust also collapses repeats, which covers StrictMode's double-mount.)
   useEffect(() => {
     if (firstRun) void api.trackAppOpened();
-  }, [firstRun]);
+  }, [firstRun, api]);
 
   // The funnel: one event per screen, plus the terminal event below.
   useEffect(() => {

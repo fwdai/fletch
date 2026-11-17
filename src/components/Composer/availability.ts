@@ -7,8 +7,8 @@
 // about the same draft.
 //
 // The first question is always *which machine the agent would run on*, because
-// the answer decides which facts are even relevant. An agent spawns where the
-// active environment is, so:
+// the answer decides which facts are even relevant. An agent spawns on the host
+// the composer is scoped to, so:
 //
 //   - This Mac: this Mac's probe (`providerPaths`).
 //   - A paired host: the host's own `host_providers` answer, and nothing else.
@@ -16,8 +16,8 @@
 //     and letting it veto one would hide an agent the host can run perfectly
 //     well.
 
-import { type AppState, useAppStore } from "@/store";
-import { activeEntry, providerReason } from "@/store/capabilities";
+import { useAppStore, useHostId } from "@/store";
+import { entryOf, providerReason } from "@/store/capabilities";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 
 export interface Availability {
@@ -109,19 +109,19 @@ export function blockedSentence(a: Availability): string | null {
   return a.fix ? `${a.reason} — ${a.fix}` : a.reason;
 }
 
-/** [`agentAvailability`] bound to the live store: for the active environment,
- *  where an agent would spawn, or with `"local"` for This Mac whatever is
- *  active — the machine its provider accounts and their limits belong to. */
+/** [`agentAvailability`] bound to the live store: for the host the calling
+ *  component is scoped to, where an agent would spawn, or with `"local"` for
+ *  This Mac whatever that host is — the machine its provider accounts and
+ *  their limits belong to. */
 export function useAgentAvailability(
   where: "active" | "local" = "active",
 ): (providerId: string) => Availability {
+  const hostId = useHostId();
   const facts: AvailabilityFacts = {
-    env: useAppStore(where === "local" ? localEntry : activeEntry),
+    env: useAppStore((s) => entryOf(s, where === "local" ? LOCAL_ENVIRONMENT_ID : hostId)),
     providerPaths: useAppStore((s) => s.providerPaths),
     providerVersions: useAppStore((s) => s.providerVersions),
     providersProbed: useAppStore((s) => s.providersProbed),
   };
   return (providerId: string) => agentAvailability(facts, providerId);
 }
-
-const localEntry = (s: AppState) => s.environments[LOCAL_ENVIRONMENT_ID];

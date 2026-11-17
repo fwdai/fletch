@@ -130,9 +130,10 @@ const DICTATION_NAV: NavItem = {
 
 // Right after Customize — workflows chain those custom agents. Added at render
 // because a host answers no `wf_*` op (docs/multi-host-plan.md §5.3, item 2):
-// on a remote environment a run launched from here could not start, so the
-// section is not offered. Everything else in Settings is about this desktop and
-// stays put whatever environment is active.
+// where the scope is a remote environment a run launched from here could not
+// start, so the section is not offered. Settings itself renders in This Mac's
+// scope, so it always offers it; only its panes of host-owned settings follow
+// the host picked in them (./SettingsHost).
 const WORKFLOWS_NAV: NavItem = {
   id: "workflows",
   label: "Workflows",

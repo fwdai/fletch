@@ -17,6 +17,7 @@ vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 vi.mock("@/data/slashCommands", () => ({ discoverCommands: vi.fn() }));
 
 import type { AgentRecord } from "@/api";
+import { activeEngine } from "@/api/engine";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
 
@@ -29,7 +30,9 @@ const agent = {
 } as unknown as AgentRecord;
 
 const makeStore = () => {
-  const store = create<AppState>()((...a) => ({ ...createWorkspaceSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (set, get) => ({ ...createWorkspaceSlice(set, get, activeEngine) }) as AppState,
+  );
   store.setState({
     workspace: { agents: [agent], projects: [] },
     managedLogs: {},

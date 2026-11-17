@@ -9,7 +9,6 @@
 
 import type { ChatItem } from "@/adapters";
 import { totalTokens, type UsageSnapshot } from "@/adapters/usage";
-import { api } from "@/api";
 import type { LocalCommandAction } from "@/data/slashCommands";
 import { repoPathFor } from "@/helpers";
 import type { SliceCreator } from "./types";
@@ -53,7 +52,7 @@ function contextLine(u: UsageSnapshot): string {
   return `Context now ${u.context.tokens.toLocaleString()}${limit}`;
 }
 
-export const createLocalCommandsSlice: SliceCreator<LocalCommandsSlice> = (set, get) => {
+export const createLocalCommandsSlice: SliceCreator<LocalCommandsSlice> = (set, get, { api }) => {
   // Push a transient notice into a session's log. These are store-inserted (not
   // persisted to session records), so they read as ephemeral command output and
   // disappear on transcript reload — fine for /doctor output or a /cost readout.

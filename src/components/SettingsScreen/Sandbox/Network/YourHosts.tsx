@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import type { EgressDelta } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
@@ -16,7 +17,8 @@ import { globalHosts, type HostList } from "./hostList";
 export function YourHosts(
   props: { global: EgressDelta } | { project: HostList; target: ReactNode; children?: ReactNode },
 ) {
-  const list = "project" in props ? props.project : globalHosts(props.global);
+  const { api } = useEngine();
+  const list = "project" in props ? props.project : globalHosts(api, props.global);
   const scoped = "project" in props ? props : null;
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);

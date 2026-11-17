@@ -1,9 +1,9 @@
-import { invoke, invokeLocal } from "../invoke";
+import { type Invoke, invokeLocal } from "../invoke";
 import type { Workspace } from "../types/agent";
 import type { AgentPrStatus, PrChecks, PrComments, PrLive, PrState, PrSummary } from "../types/pr";
 import type { GhRepoSummary, GhStatus } from "../types/providers";
 
-export const githubApi = {
+export const githubApi = (invoke: Invoke) => ({
   /** THIS Mac's GitHub login — the identity Settings › Account and onboarding
    *  show and act on, since signing in (`oauth_device_login`) and signing out
    *  are local by construction: a host manages its own with `fletch-host github
@@ -58,4 +58,4 @@ export const githubApi = {
     invoke<PrState>("set_focused_pr", { agentId, subdir, number }),
   listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),
   listRepoPrs: (repoPath: string) => invoke<PrSummary[]>("list_repo_prs", { repoPath }),
-};
+});

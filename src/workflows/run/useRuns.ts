@@ -12,9 +12,10 @@
 // state (the sidebar row, the roadmap board's cards and rail) reads this list, so
 // one lost event was wrong in all of them at once.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useEngine } from "@/api/engine";
 import { createRowSync, type RowSync } from "@/rowSync";
-import { api, onWfRun, onWfRunDeleted, type WfRun } from "../../api";
+import type { WfRun } from "../../api";
 
 /** Newest-updated first — the order `wf_list_runs` returns and every consumer
  *  draws. Re-applied on each change because the sequencer appends an unseen row
@@ -26,27 +27,34 @@ function newestFirst(rows: WfRun[]): WfRun[] {
 /** The hook's ordering guarantee without React: a run-row sequencer that keeps
  *  the list sorted and hands each committed list to `commit`. Exported for the
  *  test — a lost terminal flip has no other observable surface. */
-export function createRunSync(commit: (rows: WfRun[]) => void): RowSync<WfRun> {
-  let rows: WfRun[] = [];
+export function createRunSync(commit: (rows: WfRun[]) => void, held: WfRun[] = []): RowSync<WfRun> {
+  // `held` is what a caller reading the list again already shows: a read that
+  // fails then settles over it rather than over nothing.
+  let rows: WfRun[] = held;
   return createRowSync<WfRun>((update) => {
     rows = newestFirst(update(rows));
     commit(rows);
   });
 }
 
-export function useRuns(): WfRun[] {
+export function useRuns(reload = 0): WfRun[] {
+  const { api, events } = useEngine();
   const [runs, setRuns] = useState<WfRun[]>([]);
+  const shown = useRef(runs);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `reload` is read by nothing in here; a new value is the caller asking for the list again.
   useEffect(() => {
     let alive = true;
     // Unmounting mid-load must not write state, so the commit is gated the same
     // way the fetch is.
     const sync = createRunSync((rows) => {
-      if (alive) setRuns(rows);
-    });
+      if (!alive) return;
+      shown.current = rows;
+      setRuns(rows);
+    }, shown.current);
 
-    const off = onWfRun((row) => sync.push({ kind: "upsert", row }));
-    const offDeleted = onWfRunDeleted((runId) => sync.push({ kind: "delete", id: runId }));
+    const off = events.onWfRun((row) => sync.push({ kind: "upsert", row }));
+    const offDeleted = events.onWfRunDeleted((runId) => sync.push({ kind: "delete", id: runId }));
 
     void (async () => {
       // Registration has to be awaited, not just started: an event emitted
@@ -69,7 +77,7 @@ export function useRuns(): WfRun[] {
       void off.then((f) => f());
       void offDeleted.then((f) => f());
     };
-  }, []);
+  }, [api, events, reload]);
 
   return runs;
 }

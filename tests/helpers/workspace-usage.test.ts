@@ -34,6 +34,7 @@ vi.mock("@/adapters/usage", async (importOriginal) => {
 
 import type { RawEvent } from "@/adapters/types";
 import { sessionSpend, usageFromRecords } from "@/adapters/usage";
+import { api } from "@/api";
 import { recordWorkspaceUsage } from "@/helpers/usage";
 
 const call = (id: string, input: number, output: number, inherited = false): SessionRecord => ({
@@ -66,12 +67,13 @@ describe("recordWorkspaceUsage", () => {
 
   it("keeps the recorded spend from dropping across a rewind", async () => {
     const old = [call("m1", 100, 10), call("m2", 200, 20)];
-    await recordWorkspaceUsage("ws-rewind", "p1", usageFromRecords("claude", old));
+    await recordWorkspaceUsage(api, "ws-rewind", "p1", usageFromRecords("claude", old));
 
     // Rewound to before m2: the new session shows m1 and ran m3 of its own.
     host.superseded = [{ session_id: "s-rewind", records: old }];
     const current = [call("m1", 100, 10, true), call("m3", 7, 3)];
     const total = await recordWorkspaceUsage(
+      api,
       "ws-rewind",
       "p1",
       usageFromRecords("claude", current),
@@ -86,8 +88,8 @@ describe("recordWorkspaceUsage", () => {
     host.superseded = [{ session_id: "s-first", records: [call("a", 100, 10)] }];
     const usage = usageFromRecords("claude", [call("n", 5, 5)]);
 
-    const first = await recordWorkspaceUsage("ws-once", "p1", usage);
-    const again = await recordWorkspaceUsage("ws-once", "p1", usage);
+    const first = await recordWorkspaceUsage(api, "ws-once", "p1", usage);
+    const again = await recordWorkspaceUsage(api, "ws-once", "p1", usage);
 
     expect(vi.mocked(sessionSpend)).toHaveBeenCalledTimes(1);
     expect(knownAt(1)).toContain("s-first");
@@ -96,7 +98,7 @@ describe("recordWorkspaceUsage", () => {
 
     // A second rewind: only the new session's records are sent and folded.
     host.superseded.push({ session_id: "s-second", records: [call("b", 20, 2)] });
-    const later = await recordWorkspaceUsage("ws-once", "p1", usage);
+    const later = await recordWorkspaceUsage(api, "ws-once", "p1", usage);
 
     expect(vi.mocked(sessionSpend)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(sessionSpend).mock.calls[1][0]).toEqual([call("b", 20, 2)]);
@@ -108,7 +110,7 @@ describe("recordWorkspaceUsage", () => {
     host.fail = true;
     const usage = usageFromRecords("claude", [call("m1", 100, 10)]);
 
-    expect(await recordWorkspaceUsage("ws-old-host", "p1", usage)).toBe(usage);
+    expect(await recordWorkspaceUsage(api, "ws-old-host", "p1", usage)).toBe(usage);
     await flush();
     expect(recorded()).toEqual([110]);
   });

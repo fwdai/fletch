@@ -3,13 +3,12 @@
 // the spawn payload, and the small retry util that tolerates the brief window
 // before a freshly-spawned agent is addressable.
 
-import { api } from "../api";
+import type { Api } from "../api";
 import { MCP_SUPPORT, mcpAttachable } from "../data/providers";
 import type { CustomAgent } from "../storage/customAgents";
 import { type McpServerSnapshot, snapshotMcpServer } from "../storage/mcpServers";
 import type { SkillSnapshot } from "../storage/skills";
 import type { AppState } from "../store";
-import { activeEnvironmentId } from "../store/environments";
 
 /** What the backend itself degrades to when a repo's default cannot be read. */
 const FALLBACK_BASE = "main";
@@ -32,14 +31,12 @@ const FALLBACK_BASE = "main";
  *  covers the IPC call itself failing; a base must always come back, because
  *  spawning without one is the bug we're closing.
  *
- *  Both reads go to the active environment's host, about a repo of the
- *  environment this was asked in. An environment switch that lands between
- *  them means the second read is not sent: the repo is not the new host's,
- *  and a caller that writes the answer guards it with the environment (the
- *  drafts slice's `prepareDraft`) and discards it. The static fallback stands
- *  in for a superseded resolve, so the signature stays a base, always. */
-export async function resolveBaseBranch(repoPath: string, preferred?: string): Promise<string> {
-  const environment = activeEnvironmentId();
+ *  Both reads go to `api`'s host, whose repo `repoPath` is. */
+export async function resolveBaseBranch(
+  api: Api,
+  repoPath: string,
+  preferred?: string,
+): Promise<string> {
   if (preferred) {
     try {
       const branches = await api.listRepoBranches(repoPath);
@@ -47,7 +44,6 @@ export async function resolveBaseBranch(repoPath: string, preferred?: string): P
     } catch {
       // fall through to the repo default
     }
-    if (activeEnvironmentId() !== environment) return FALLBACK_BASE;
   }
   try {
     return await api.repoDefaultBranch(repoPath);

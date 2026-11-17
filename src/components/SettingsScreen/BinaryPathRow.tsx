@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
@@ -30,7 +30,7 @@ export function BinaryPathRow({
    *  `path`, not its parsed version — a working CLI may report no version). An
    *  override that fails this is flagged as not-runnable. */
   resolved: boolean;
-  /** The remote host the override belongs to, when one is on screen: the path
+  /** The remote host the override belongs to, when one is picked: the path
    *  is on ITS disk, so this Mac can't validate it (the host's next spawn is
    *  the check). Undefined for the local environment. */
   onHost?: string;
@@ -40,6 +40,7 @@ export function BinaryPathRow({
    *  backend have updated; rejects to keep the editor open on failure. */
   onSave: (path: string | null) => Promise<void>;
 }) {
+  const { api } = useEngine();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, type ContextBootstrap } from "@/api";
+import type { ContextBootstrap } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 
@@ -8,6 +9,7 @@ import { useAppStore } from "@/store";
  *  an ordinary workspace whose first message is the host's canned task —
  *  that writes the vision and what each module is for. */
 export function MapProject({ projectId, disabled }: { projectId: string; disabled: boolean }) {
+  const { api } = useEngine();
   const repoPath = useAppStore(
     (s) => s.workspace?.projects.find((p) => p.project_id === projectId)?.path,
   );

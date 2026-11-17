@@ -4,8 +4,8 @@
 // through its own store; this slice only owns the state key and its cleanup.
 //
 // Fed from `onAgentEvent` (store/eventListeners) for `system` task events.
-// Cleared when the agent's process stops or errors (`onAgentStatus`), on
-// discard (`dropAgentEntries`), and stashed per environment (environmentSwitch).
+// Cleared when the agent's process stops or errors (`onAgentStatus`) and on
+// discard (`dropAgentEntries`). Each host has its own (a host key, ./hostState).
 
 import type { RawEvent } from "@/adapters";
 import { applyTaskEvent, type BackgroundTaskMap } from "@/adapters/shared/backgroundTasks";

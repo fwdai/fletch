@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { useAppStore } from "@/store";
+import { useHostEntry } from "@/store/capabilities";
 import { SetGroup, SetHead } from "../primitives";
+import { HostPicker } from "../SettingsHost";
 import { BoxKnobs } from "./BoxKnobs";
 import { BoxSetupStatus } from "./BoxSetupStatus";
 import { SandboxSwitch } from "./SandboxSwitch";
@@ -17,6 +19,7 @@ import { VmList } from "./VmList";
 export function SandboxPane() {
   const boxProbe = useAppStore((s) => s.boxProbe);
   const refreshBoxProbe = useAppStore((s) => s.refreshBoxProbe);
+  const host = useHostEntry();
 
   useEffect(() => {
     void refreshBoxProbe();
@@ -32,13 +35,14 @@ export function SandboxPane() {
         title="Linux VM"
         desc="The VMs agents run in and what each one can use."
       />
+      <HostPicker />
 
       {boxProbe && !runtimeOk ? (
         <SetGroup>
           <div className="set-row-s text-sm set-box-setup">
             <span>
-              Linux VMs aren't available on this Mac: {boxProbe.problems.join("; ")}. Workspaces run
-              in the macOS sandbox.
+              Linux VMs aren't available on {host.kind === "local" ? "this Mac" : host.name}:{" "}
+              {boxProbe.problems.join("; ")}. Workspaces run in the macOS sandbox.
             </span>
           </div>
         </SetGroup>

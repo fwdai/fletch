@@ -190,7 +190,7 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
     // that the client schedules no retry behind them, which is what
     // `client.retrying` tells the pane.
     client.onState((state, error) =>
-      // `retrying` rides along so the switcher can tell "reconnecting" from
+      // `retrying` rides along so a host's chip can tell "reconnecting" from
       // "offline" — the client schedules no retry behind 4003/4004, and that
       // difference is the only thing that says whether waiting will help.
       writers.setEnvironmentConnection(
@@ -226,9 +226,7 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
         providers: undefined,
       });
       // Every handshake — the first and every reconnect — means this client has
-      // been out of touch, so whatever is on screen for this host is behind.
-      // The store decides whether that matters (it does only while this host is
-      // the active environment).
+      // been out of touch, so whatever it holds for this host is behind.
       writers.environmentReconnected(record.hostKey);
       // Which providers this host could actually spawn. Once per connection and
       // off the critical path: the entry is already published and usable, and a

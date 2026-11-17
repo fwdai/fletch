@@ -44,26 +44,18 @@
 // contract, one altitude up from a single card.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  api,
-  type NewRoadmapItem,
-  onRoadmapItemEvent,
-  onRoadmapOrderProposal,
-  onRoadmapOrderProposalDeleted,
-  onRoadmapProjectHold,
-  onRoadmapProjectHoldReleased,
-  onRoadmapProposal,
-  onRoadmapProposalDeleted,
-  onRoadmapQueueNote,
-  type RoadmapItem,
-  type RoadmapItemEvent,
-  type RoadmapItemPatch,
-  type RoadmapItemReview,
-  type RoadmapOrderProposal,
-  type RoadmapProjectHold,
-  type RoadmapProposal,
-  type WfRun,
+import type {
+  NewRoadmapItem,
+  RoadmapItem,
+  RoadmapItemEvent,
+  RoadmapItemPatch,
+  RoadmapItemReview,
+  RoadmapOrderProposal,
+  RoadmapProjectHold,
+  RoadmapProposal,
+  WfRun,
 } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useRoadmapRows } from "@/roadmapRows";
 import { createRowSync, createSingleSync } from "@/rowSync";
 import { useAppStore } from "@/store";
@@ -85,6 +77,7 @@ const LANDED_MS = 2200;
 const FOCUS_MS = 2200;
 
 export function useRoadmap(repoPath: string) {
+  const { api, events: engineEvents } = useEngine();
   // The board is per project, not per repo: a multi-repo project has one
   // roadmap. Resolved from the pinned-repo list the sidebar already loads.
   const projectId =
@@ -280,11 +273,11 @@ export function useRoadmap(repoPath: string) {
     const psync = createRowSync<RoadmapProposal>((update) => {
       if (alive) setProposalRows(update);
     });
-    const offProposal = onRoadmapProposal((p) => {
+    const offProposal = engineEvents.onRoadmapProposal((p) => {
       if (p.project_id !== projectId) return;
       psync.push({ kind: "upsert", row: p });
     });
-    const offProposalDeleted = onRoadmapProposalDeleted((id) => {
+    const offProposalDeleted = engineEvents.onRoadmapProposalDeleted((id) => {
       // Addressed by proposal id; one we don't hold is simply never rendered.
       psync.push({ kind: "delete", id });
     });
@@ -297,11 +290,11 @@ export function useRoadmap(repoPath: string) {
     const osync = createSingleSync<RoadmapOrderProposal>((p) => {
       if (alive) setOrderProposal(p);
     });
-    const offOrder = onRoadmapOrderProposal((p) => {
+    const offOrder = engineEvents.onRoadmapOrderProposal((p) => {
       if (p.project_id !== projectId) return;
       osync.push(p);
     });
-    const offOrderDeleted = onRoadmapOrderProposalDeleted((id) => {
+    const offOrderDeleted = engineEvents.onRoadmapOrderProposalDeleted((id) => {
       if (id !== projectId) return;
       osync.push(null);
     });
@@ -311,18 +304,18 @@ export function useRoadmap(repoPath: string) {
     const hsync = createSingleSync<RoadmapProjectHold>((h) => {
       if (alive) setProjectHold(h);
     });
-    const offHold = onRoadmapProjectHold((h) => {
+    const offHold = engineEvents.onRoadmapProjectHold((h) => {
       if (h.project_id !== projectId) return;
       hsync.push(h);
     });
-    const offHoldReleased = onRoadmapProjectHoldReleased((id) => {
+    const offHoldReleased = engineEvents.onRoadmapProjectHoldReleased((id) => {
       if (id !== projectId) return;
       hsync.push(null);
     });
     // History rows, appended only to trails some card already loaded — an
     // event for a never-expanded item is dropped here and refetched whole on
     // that item's first expand, which keeps the map leak-free.
-    const offEvent = onRoadmapItemEvent((e) => {
+    const offEvent = engineEvents.onRoadmapItemEvent((e) => {
       if (e.project_id !== projectId) return;
       // Before the lazy-trail gate: the strip follows every item's *newest*
       // event, including items whose card nobody ever opened. Merged rather than
@@ -335,7 +328,7 @@ export function useRoadmap(repoPath: string) {
     // Addressed by item id, and every id on this board belongs to this project,
     // so no extra filtering is needed — a note for a row we don't hold is
     // simply never rendered.
-    const offNote = onRoadmapQueueNote(({ item_id, note }) => {
+    const offNote = engineEvents.onRoadmapQueueNote(({ item_id, note }) => {
       setNotes((prev) => new Map(prev).set(item_id, note));
     });
 
@@ -399,7 +392,7 @@ export function useRoadmap(repoPath: string) {
       void offEvent.then((f) => f());
       void offNote.then((f) => f());
     };
-  }, [projectId, workspaceReady]);
+  }, [projectId, workspaceReady, api, engineEvents]);
 
   /** The board's loading state: the rows *and* everything beside them. Both must
    *  have landed before `blank` may claim there is nothing here. */
@@ -419,26 +412,29 @@ export function useRoadmap(repoPath: string) {
    *  `mergeSnapshot` folds the two together by id — the same
    *  subscribe-then-fetch-then-replay shape the board load uses. A failed fetch
    *  un-requests the item so the next expand retries. */
-  const loadEvents = useCallback(async (itemId: string) => {
-    if (requestedEvents.current.has(itemId)) return;
-    requestedEvents.current.add(itemId);
-    // The board this fetch is for. A project switch resets the map and the
-    // requested set, so a resolution that arrives afterwards is answering a
-    // question about a board nobody is looking at — writing it would put another
-    // project's trail under one of this project's item ids.
-    const generation = eventsGeneration.current;
-    try {
-      const snapshot = await api.roadmapListItemEvents(itemId);
-      if (eventsGeneration.current !== generation) return;
-      setEvents((prev) =>
-        new Map(prev).set(itemId, mergeSnapshot(prev.get(itemId) ?? [], snapshot)),
-      );
-    } catch {
-      // History is a footnote: not worth the board's error bar. The card
-      // simply has no trail until a later expand succeeds.
-      if (eventsGeneration.current === generation) requestedEvents.current.delete(itemId);
-    }
-  }, []);
+  const loadEvents = useCallback(
+    async (itemId: string) => {
+      if (requestedEvents.current.has(itemId)) return;
+      requestedEvents.current.add(itemId);
+      // The board this fetch is for. A project switch resets the map and the
+      // requested set, so a resolution that arrives afterwards is answering a
+      // question about a board nobody is looking at — writing it would put another
+      // project's trail under one of this project's item ids.
+      const generation = eventsGeneration.current;
+      try {
+        const snapshot = await api.roadmapListItemEvents(itemId);
+        if (eventsGeneration.current !== generation) return;
+        setEvents((prev) =>
+          new Map(prev).set(itemId, mergeSnapshot(prev.get(itemId) ?? [], snapshot)),
+        );
+      } catch {
+        // History is a footnote: not worth the board's error bar. The card
+        // simply has no trail until a later expand succeeds.
+        if (eventsGeneration.current === generation) requestedEvents.current.delete(itemId);
+      }
+    },
+    [api],
+  );
 
   /** Light up rows for a moment after they land, then clear only those — a
    *  later landing must not have its highlight cut short by an earlier timer. */
@@ -573,7 +569,7 @@ export function useRoadmap(repoPath: string) {
       markLanded([row.code]);
       return row;
     },
-    [projectId, upsert, markLanded],
+    [projectId, upsert, markLanded, api],
   );
 
   /** Drop a line into the inbox: a `captured` row the PM triages. Throws, like
@@ -586,7 +582,7 @@ export function useRoadmap(repoPath: string) {
       markLanded([row.code]);
       return row;
     },
-    [projectId, upsert, markLanded],
+    [projectId, upsert, markLanded, api],
   );
 
   /** Edit a row. Throws, like `addItem` — its caller is the same form. */
@@ -596,7 +592,7 @@ export function useRoadmap(repoPath: string) {
       upsert(item);
       return item;
     },
-    [upsert],
+    [upsert, api],
   );
 
   /** Run a mutation whose caller has nowhere to render a failure, and surface
@@ -625,7 +621,7 @@ export function useRoadmap(repoPath: string) {
         upsert(item);
         markLanded([item.code]);
       }),
-    [guarded, markLanded, upsert],
+    [guarded, markLanded, upsert, api],
   );
 
   /** Move a card within its group — bookkeeping, so no history line. Takes a
@@ -636,7 +632,7 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         for (const w of writes) upsert(await api.roadmapSetRank(w.id, w.rank));
       }),
-    [guarded, upsert],
+    [guarded, upsert, api],
   );
 
   /** Delete rows. Also how a proposal is discarded: a suggestion the user turned
@@ -648,7 +644,7 @@ export function useRoadmap(repoPath: string) {
         for (const id of ids) await api.roadmapDeleteItem(id);
         removeRows(ids);
       }),
-    [guarded, removeRows],
+    [guarded, removeRows, api],
   );
 
   const clearError = useCallback(() => setError(null), []);
@@ -727,7 +723,7 @@ export function useRoadmap(repoPath: string) {
         }
         if (refusal != null) throw refusal;
       }),
-    [guarded, markLanded, upsert],
+    [guarded, markLanded, upsert, api],
   );
 
   /** Decline pending PM proposals. The items are untouched; each refusal lands
@@ -737,7 +733,7 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         for (const id of ids) await api.roadmapRejectProposal(id);
       }),
-    [guarded],
+    [guarded, api],
   );
 
   /** Apply the PM's proposed order — one ruling for the whole sequence. A stale
@@ -749,7 +745,7 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         if (projectId) await api.roadmapAcceptOrderProposal(projectId);
       }),
-    [guarded, projectId],
+    [guarded, projectId, api],
   );
 
   /** Decline the proposed order. The board is untouched. */
@@ -758,7 +754,7 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         if (projectId) await api.roadmapRejectOrderProposal(projectId);
       }),
-    [guarded, projectId],
+    [guarded, projectId, api],
   );
 
   /** Hand items to the drainer: `open → queued`. From here the Rust side owns
@@ -783,7 +779,7 @@ export function useRoadmap(repoPath: string) {
           upsert(item);
         }
       }),
-    [dropNote, guarded, upsert],
+    [dropNote, guarded, upsert, api],
   );
 
   /** Take an item back off the queue before it's dispatched (`queued → open`).
@@ -806,7 +802,7 @@ export function useRoadmap(repoPath: string) {
           upsert(item);
         }
       }),
-    [guarded, upsert],
+    [guarded, upsert, api],
   );
 
   /** Stop the queue from building one item until it's released. Not an unqueue:
@@ -818,7 +814,7 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         upsert(await api.roadmapHoldItem(id, reason));
       }),
-    [guarded, upsert],
+    [guarded, upsert, api],
   );
 
   /** Lift one item's hold — the user's alone (the PM has an op to hold and none
@@ -829,7 +825,7 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         upsert(await api.roadmapReleaseItem(id));
       }),
-    [guarded, upsert],
+    [guarded, upsert, api],
   );
 
   /** Rule an item off the board, with the required reason. Not a delete: the
@@ -842,7 +838,7 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         upsert(await api.roadmapRejectItem(id, reason));
       }),
-    [guarded, upsert],
+    [guarded, upsert, api],
   );
 
   /** Put a rejected item back on the board (`rejected → open`). The reason is
@@ -853,7 +849,7 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         upsert(await api.roadmapReopenItem(id));
       }),
-    [guarded, upsert],
+    [guarded, upsert, api],
   );
 
   /** Take a handed-off item back off its agent — the undo of "Send to an agent".
@@ -866,7 +862,7 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         upsert(await api.roadmapReclaimItem(id));
       }),
-    [guarded, upsert],
+    [guarded, upsert, api],
   );
 
   /** Stop the whole board. Runs already in flight still settle — reflecting
@@ -877,7 +873,7 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         if (projectId) setProjectHold(await api.roadmapHoldProject(projectId, reason));
       }),
-    [guarded, projectId],
+    [guarded, projectId, api],
   );
 
   /** Let the board run again. Optimistic on the state the banner reads: the
@@ -889,7 +885,7 @@ export function useRoadmap(repoPath: string) {
         await api.roadmapReleaseProject(projectId);
         setProjectHold(null);
       }),
-    [guarded, projectId],
+    [guarded, projectId, api],
   );
 
   /** Ship an in-review item by hand: `in_review → done`. The sweep normally
@@ -903,7 +899,7 @@ export function useRoadmap(repoPath: string) {
         const { item } = await api.roadmapUpdateItem(id, { status: "done" }, "in_review");
         upsert(item);
       }),
-    [guarded, upsert],
+    [guarded, upsert, api],
   );
 
   // ── the review loop (in_review items) ──────────────────────────────
@@ -921,7 +917,7 @@ export function useRoadmap(repoPath: string) {
         await api.roadmapMergeItemPr(id);
         await refreshReview(id);
       }),
-    [guarded, refreshReview],
+    [guarded, refreshReview, api],
   );
 
   /** Hand a PR's unresolved review threads to a fresh agent, based on the PR's
@@ -956,7 +952,7 @@ export function useRoadmap(repoPath: string) {
         await api.roadmapNoteReviewFeedback(item.id, threads.length);
         closeProjectScreen();
       }),
-    [guarded, createDraft, updateDraft, closeProjectScreen, repoPath],
+    [guarded, createDraft, updateDraft, closeProjectScreen, repoPath, api],
   );
 
   // ── board interaction ──────────────────────────────────────────────

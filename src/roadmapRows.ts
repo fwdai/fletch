@@ -20,7 +20,8 @@
 // writers the user isn't (the PM's propose, the queue's claim, the sweep's ship).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, onRoadmapItem, onRoadmapItemDeleted, type RoadmapItem } from "@/api";
+import type { RoadmapItem } from "@/api";
+import { useEngine } from "@/api/engine";
 import { applyRowEvent, createRowSync } from "@/rowSync";
 
 /** How one project's board is doing.
@@ -77,6 +78,7 @@ export function useRoadmapRows(
   projectIds: readonly string[],
   options: RoadmapRowsOptions = {},
 ): RoadmapRows {
+  const { api, events } = useEngine();
   const [rows, setRows] = useState<RoadmapItem[]>([]);
   const [load, setLoad] = useState<ReadonlyMap<string, BoardLoad>>(() => new Map());
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +108,7 @@ export function useRoadmapRows(
     const sync = createRowSync<RoadmapItem>((update) => {
       if (alive) setRows(update);
     });
-    const off = onRoadmapItem((row) => {
+    const off = events.onRoadmapItem((row) => {
       if (!wanted.has(row.project_id)) return;
       sync.push({ kind: "upsert", row });
       handlers.current.onRow?.(row);
@@ -114,7 +116,7 @@ export function useRoadmapRows(
     // Addressed by item id and carries no project, so it can't be filtered:
     // a delete for a row no listed board holds removes nothing, which is the
     // right answer anyway.
-    const offDeleted = onRoadmapItemDeleted((id) => {
+    const offDeleted = events.onRoadmapItemDeleted((id) => {
       sync.push({ kind: "delete", id });
       handlers.current.onDeleted?.(id);
     });
@@ -146,7 +148,7 @@ export function useRoadmapRows(
       void off.then((f) => f());
       void offDeleted.then((f) => f());
     };
-  }, [key]);
+  }, [key, api, events]);
 
   const upsert = useCallback((row: RoadmapItem) => {
     setRows((prev) => applyRowEvent(prev, { kind: "upsert", row }));
@@ -175,6 +177,7 @@ type Failed = { id: string; failure: string };
  *  caller that renders nothing either way, and a dead link is worse than no
  *  link. */
 export function useRoadmapRow(itemId: string | null): RoadmapItem | null {
+  const { api, events } = useEngine();
   const [row, setRow] = useState<RoadmapItem | null>(null);
 
   useEffect(() => {
@@ -187,12 +190,12 @@ export function useRoadmapRow(itemId: string | null): RoadmapItem | null {
     // rather than reused because there is no snapshot-vs-live conflict to
     // resolve: the fetch below is the oldest possible value.
     let live = false;
-    const off = onRoadmapItem((r) => {
+    const off = events.onRoadmapItem((r) => {
       if (!alive || r.id !== itemId) return;
       live = true;
       setRow(r);
     });
-    const offDeleted = onRoadmapItemDeleted((id) => {
+    const offDeleted = events.onRoadmapItemDeleted((id) => {
       if (!alive || id !== itemId) return;
       live = true;
       setRow(null);
@@ -216,7 +219,7 @@ export function useRoadmapRow(itemId: string | null): RoadmapItem | null {
       void off.then((f) => f());
       void offDeleted.then((f) => f());
     };
-  }, [itemId]);
+  }, [itemId, api, events]);
 
   return row;
 }

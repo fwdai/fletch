@@ -31,7 +31,7 @@ function VmListRow({ row }: { row: VmRow }) {
   );
 }
 
-/** Every VM on the active host, like a container list: the running ones lit
+/** Every VM on the host Settings is showing, like a container list: the running ones lit
  *  with a Stop, the rest dim. A view of the store's `boxVms`, which owns keeping
  *  it true per host. A stopped VM keeps its disk and boots again when its agent
  *  next runs. */

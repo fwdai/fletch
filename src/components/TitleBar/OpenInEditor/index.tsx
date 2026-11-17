@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentRecord, DetectedEditor } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { surfaceAgent } from "@/store/surface";
@@ -15,6 +16,7 @@ import { detectEditors, EDITOR_PREF_KEY, editorsFor, inBox, openEditor } from ".
  *  workspace offers only the editors that can open it over ssh; with none
  *  installed the tile stays, disabled, saying which would. */
 export function OpenInEditor() {
+  const { api } = useEngine();
   const agent = useActiveAgent();
   const setLastError = useAppStore((s) => s.setLastError);
   const [detected, setDetected] = useState<DetectedEditor[]>([]);
@@ -24,8 +26,8 @@ export function OpenInEditor() {
   const keys = useShortcutKeys("openInEditor");
 
   useEffect(() => {
-    detectEditors().then(setDetected);
-  }, []);
+    detectEditors(api).then(setDetected);
+  }, [api]);
   useDismiss(ref, open, () => setOpen(false));
 
   if (!agent || detected.length === 0) return null;
@@ -52,7 +54,7 @@ export function OpenInEditor() {
 
   const openIn = (id: string) => {
     setOpen(false);
-    openEditor(agent, id).catch((e) => setLastError(String(e)));
+    openEditor(api, agent, id).catch((e) => setLastError(String(e)));
   };
   const pick = (id: string) => {
     setSelectedId(id);

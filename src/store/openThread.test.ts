@@ -10,13 +10,18 @@ vi.mock("@/api", () => ({ api: {} }));
 vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
+import { activeEngine } from "@/api/engine";
 import type { AppState } from "./types";
 import { createUiSlice } from "./ui";
 import { createWorkspaceSlice } from "./workspace";
 
 const makeStore = () =>
   create<AppState>()(
-    (...a) => ({ ...createWorkspaceSlice(...a), ...createUiSlice(...a) }) as AppState,
+    (set, get) =>
+      ({
+        ...createWorkspaceSlice(set, get, activeEngine),
+        ...createUiSlice(set, get, activeEngine),
+      }) as AppState,
   );
 
 describe("openSubagentThread", () => {

@@ -26,65 +26,94 @@
  *  brief staleness, never a regression.
  *
  *  The phone's store (mobile/src/store) follows the same watcher and orders its
- *  one-shot reads against its events through this module too. */
+ *  one-shot reads against its events through this module too.
+ *
+ *  One order covers one host's keys. The functions exported at the bottom are
+ *  one shared order — the phone's, and this desktop's own engine's; the desktop
+ *  gives each paired host another (`prWriteOrderOf` in ./prEvents), since agent
+ *  ids recur across hosts and one host's stamp must not refuse another's read. */
 
 export type PrSlice = "prStates" | "prChecks" | "prComments" | "prSets";
 
-let ticket = 0;
+export interface PrWriteOrder {
+  /** Claim an issue order. Call once per write, *before* awaiting the request. */
+  issue: () => number;
+  /** True if `issued` is still the newest write to land for `slice`/`key`.
+   *  Records it as applied, so re-checking the same ticket reports false the
+   *  second time — call it once per (slice, key) at the point of writing. */
+  accept: (slice: PrSlice, key: string, issued: number) => boolean;
+  /** Record an authoritative, synchronous write as the newest for
+   *  `slice`/`key` — a mutation result (`createPr`) or a state change the
+   *  backend pushed to us.
+   *
+   *  These awaited nothing of their own, so they need no ticket to protect them
+   *  from each other. They must still *advance* the counter: an unstamped write
+   *  leaves the high-water mark where it was, so a poll already in flight — one
+   *  that observed the world before the PR existed, or before it merged — would
+   *  still be accepted afterwards and overwrite it. */
+  stamp: (slice: PrSlice, key: string) => void;
+  /** Refuse every write issued so far, for every key — for a store that has
+   *  just moved to another host (the phone's handshake), where an answer still
+   *  in flight describes the host it left, and agent ids recur across hosts.
+   *  Per-key marks cannot do this: a key the new host never stamped would take
+   *  it.
+   *
+   *  Nothing issued afterwards is affected: the counter keeps rising, so the new
+   *  host's first read outranks the fence and every stamp the old host left. */
+  fence: () => void;
+  /** Tests only: back to a fresh order. */
+  reset: () => void;
+}
 
-/** Tickets at or below this were issued against a host the store has since
- *  left (see `fencePrWrites`). */
-let floor = 0;
+export function createPrWriteOrder(): PrWriteOrder {
+  let ticket = 0;
 
-/** Highest ticket applied, per slice then per store key. Nested rather than a
- *  composite string key so no separator can collide with an agent id or subdir. */
-const applied: Record<PrSlice, Map<string, number>> = {
-  prStates: new Map(),
-  prChecks: new Map(),
-  prComments: new Map(),
-  prSets: new Map(),
-};
+  /** Tickets at or below this were issued against a host the store has since
+   *  left (see `fence`). */
+  let floor = 0;
 
-/** Claim an issue order. Call once per write, *before* awaiting the request. */
-export const issuePrWrite = (): number => ++ticket;
+  /** Highest ticket applied, per slice then per store key. Nested rather than a
+   *  composite string key so no separator can collide with an agent id or
+   *  subdir. */
+  const applied: Record<PrSlice, Map<string, number>> = {
+    prStates: new Map(),
+    prChecks: new Map(),
+    prComments: new Map(),
+    prSets: new Map(),
+  };
 
-/** True if `issued` is still the newest write to land for `slice`/`key`. Records
- *  it as applied, so re-checking the same ticket reports false the second time —
- *  call it once per (slice, key) at the point of writing. */
-export const acceptPrWrite = (slice: PrSlice, key: string, issued: number): boolean => {
-  if (issued <= floor) return false;
-  const seen = applied[slice];
-  if (issued <= (seen.get(key) ?? 0)) return false;
-  seen.set(key, issued);
-  return true;
-};
+  const issue = (): number => ++ticket;
 
-/** Record an authoritative, synchronous write as the newest for `slice`/`key` —
- *  a mutation result (`createPr`) or a state change the backend pushed to us.
- *
- *  These awaited nothing of their own, so they need no ticket to protect them
- *  from each other. They must still *advance* the counter: an unstamped write
- *  leaves the high-water mark where it was, so a poll already in flight — one
- *  that observed the world before the PR existed, or before it merged — would
- *  still be accepted afterwards and overwrite it. */
-export const stampPrWrite = (slice: PrSlice, key: string): void => {
-  applied[slice].set(key, issuePrWrite());
-};
+  return {
+    issue,
+    accept: (slice, key, issued) => {
+      if (issued <= floor) return false;
+      const seen = applied[slice];
+      if (issued <= (seen.get(key) ?? 0)) return false;
+      seen.set(key, issued);
+      return true;
+    },
+    stamp: (slice, key) => {
+      applied[slice].set(key, issue());
+    },
+    fence: () => {
+      floor = issue();
+    },
+    reset: () => {
+      ticket = 0;
+      floor = 0;
+      for (const seen of Object.values(applied)) seen.clear();
+    },
+  };
+}
 
-/** Refuse every write issued so far, for every key — for a store that has just
- *  moved to another host (the phone's handshake), where an answer still in
- *  flight describes the host it left, and agent ids recur across hosts. Per-key
- *  marks cannot do this: a key the new host never stamped would take it.
- *
- *  Nothing issued afterwards is affected: the counter keeps rising, so the new
- *  host's first read outranks the fence and every stamp the old host left. */
-export const fencePrWrites = (): void => {
-  floor = issuePrWrite();
-};
+/** The shared order: the phone's, and this desktop's own engine's. */
+export const sharedPrWriteOrder = createPrWriteOrder();
 
-/** Tests only — the counter and applied maps are module-global. */
-export const resetPrWriteOrder = (): void => {
-  ticket = 0;
-  floor = 0;
-  for (const seen of Object.values(applied)) seen.clear();
-};
+export const {
+  issue: issuePrWrite,
+  accept: acceptPrWrite,
+  stamp: stampPrWrite,
+  fence: fencePrWrites,
+  reset: resetPrWriteOrder,
+} = sharedPrWriteOrder;

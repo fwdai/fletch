@@ -1,5 +1,5 @@
-// Which of the Git panel's actions the environment the user is driving can be
-// asked to run — by the key `runAction` dispatches.
+// Which of the Git panel's actions a host can be asked to run — by the key
+// `runAction` dispatches. The panel asks it of the host it is scoped to.
 //
 // The table sits beside the panel rather than inside a hook because both halves
 // of the panel need the same answer: `useFooterModel` in render (through
@@ -9,7 +9,7 @@
 // host still got the call it would answer `unknown op`.
 
 import { type GateName, gateReason } from "@/store/capabilities";
-import { activeEnvironment, type EnvironmentEntry } from "@/store/environments";
+import type { EnvironmentEntry } from "@/store/environments";
 
 /** The panel actions that call a git op on the environment's host, by the key
  *  `runAction` dispatches. Everything else the menu offers is either local
@@ -46,10 +46,4 @@ export const ACTION_GATES: Partial<Record<string, GateName>> = {
 export function actionGateReason(env: EnvironmentEntry, key: string): string | null {
   const gate = ACTION_GATES[key];
   return gate ? gateReason(env, gate) : null;
-}
-
-/** [`actionGateReason`] for the environment the user is driving, for the
- *  dispatch path — which runs outside render and so cannot use a hook. */
-export function activeActionGateReason(key: string): string | null {
-  return actionGateReason(activeEnvironment(), key);
 }

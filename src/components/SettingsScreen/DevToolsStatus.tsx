@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { api, type GhStatus, type ToolStatus } from "@/api";
+import type { GhStatus, ToolStatus } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { CopyCmd } from "@/components/ui/CopyCmd";
@@ -10,6 +11,7 @@ import { useGitInstall } from "@/util/useGitInstall";
 type S = "ok" | "warn" | "bad" | "checking";
 
 export function DevToolsStatus() {
+  const { api } = useEngine();
   const [git, setGit] = useState<ToolStatus | null>(null);
   const [gh, setGh] = useState<GhStatus | null>(null);
   const [checking, setChecking] = useState(true);
@@ -19,7 +21,7 @@ export function DevToolsStatus() {
     void Promise.allSettled([api.checkCli("git").then(setGit), api.ghStatus().then(setGh)]).finally(
       () => setChecking(false),
     );
-  }, []);
+  }, [api]);
 
   useEffect(() => {
     recheck();

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, onProjectFileChanged, type ProjectFileStatus } from "@/api";
-import { useAppStore } from "@/store";
-import { useGate } from "@/store/capabilities";
+import type { ProjectFileStatus } from "@/api";
+import { useEngine } from "@/api/engine";
+import { useAppStore, useOnHost } from "@/store";
+import { useGate, useHostWhere } from "@/store/capabilities";
 import { Icon } from "./Icon";
 import { Button } from "./ui/Button";
 
@@ -10,14 +11,15 @@ import { Button } from "./ui/Button";
 const promptKey = (s: ProjectFileStatus) => `${s.project_id}\n${s.egress.pending.join("\n")}`;
 
 /** Every project's `.fletch/settings.json` status whose file adds hosts the
- *  user has not approved yet, minus the prompts dismissed for this session.
- *  Read once per project on load and again on `project_file:changed`. */
+ *  user has not approved yet, minus the prompts dismissed for this session,
+ *  on the host the calling component is scoped to. Read once per project on
+ *  load and again on `project_file:changed`. */
 export function useProjectFilePrompts(): {
   prompts: ProjectFileStatus[];
   dismiss: (s: ProjectFileStatus) => void;
 } {
+  const { api, events } = useEngine();
   const projects = useAppStore((s) => s.workspace?.projects);
-  const environmentId = useAppStore((s) => s.activeEnvironmentId);
   const gate = useGate("projectFile");
   const [statuses, setStatuses] = useState<Record<string, ProjectFileStatus>>({});
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
@@ -28,7 +30,6 @@ export function useProjectFilePrompts(): {
     [projects],
   );
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: environmentId is the intended re-run trigger, not an unused dep
   useEffect(() => {
     setStatuses({});
     if (gate || !idsKey) return;
@@ -39,12 +40,12 @@ export function useProjectFilePrompts(): {
         .then((s) => live && setStatuses((prev) => ({ ...prev, [projectId]: s })))
         .catch(() => {});
     for (const id of idsKey.split(",")) read(id);
-    const unlisten = onProjectFileChanged((e) => read(e.project_id));
+    const unlisten = events.onProjectFileChanged((e) => read(e.project_id));
     return () => {
       live = false;
       void unlisten.then((off) => off());
     };
-  }, [idsKey, environmentId, gate]);
+  }, [idsKey, gate, api, events]);
 
   const prompts = Object.values(statuses).filter(
     (s) => s.egress.pending.length > 0 && !dismissed.has(promptKey(s)),
@@ -54,8 +55,8 @@ export function useProjectFilePrompts(): {
 }
 
 /** One project's settings file asks for hosts the user has not approved: say
- *  which project and how many, and lead to the project's settings where they
- *  are listed and approved. Rendered in the box network toast stack. */
+ *  which project (and which machine, for a paired host's) and how many, and
+ *  lead to the project's settings where they are listed and approved. Rendered in the box network toast stack. */
 export function ProjectFilePrompt({
   status,
   onDismiss,
@@ -64,7 +65,8 @@ export function ProjectFilePrompt({
   onDismiss: () => void;
 }) {
   const projects = useAppStore((s) => s.workspace?.projects);
-  const openProjectSettings = useAppStore((s) => s.openProjectSettings);
+  const onHost = useOnHost();
+  const where = useHostWhere();
   const project = projects?.find((p) => p.project_id === status.project_id);
   const name = project?.name ?? "A project";
   const path = status.repo_path ?? project?.path;
@@ -76,7 +78,7 @@ export function ProjectFilePrompt({
       <div className="update-toast-body">
         <div className="update-toast-text">
           <strong>
-            {name}&rsquo;s settings file asks to allow {n === 1 ? "a host" : `${n} hosts`}
+            {name}&rsquo;s settings file{where} asks to allow {n === 1 ? "a host" : `${n} hosts`}
           </strong>
           <span>
             Its .fletch/settings.json would let box agents reach{" "}
@@ -88,7 +90,7 @@ export function ProjectFilePrompt({
             <Button
               variant="primary"
               onClick={() => {
-                openProjectSettings(path, "network");
+                onHost((s) => s.openProjectSettings(path, "network"));
                 onDismiss();
               }}
             >

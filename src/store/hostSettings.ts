@@ -1,11 +1,12 @@
-// The host-owned global settings, as the store holds them: read from the engine
-// the UI is driving, folded into the slices' fields, and kept live by
-// `settings:changed`. The local environment reads its own `settings` table (the
-// generic bridge it always used); a remote one asks the host with
-// `get_settings`, since its values are the host's and live in the host's
-// database (docs/remote-protocol.md, "Settings").
+// The host-owned global settings, as the store holds them: read from each
+// host's engine, folded into the slices' fields in that host's partition, and
+// kept live by its `settings:changed`. The local environment reads its own
+// `settings` table (the generic bridge it always used); a remote one asks the
+// host with `get_settings`, since its values are the host's and live in the
+// host's database (docs/remote-protocol.md, "Settings").
 
-import { api, type SettingsChangedEvent } from "@/api";
+import type { SettingsChangedEvent } from "@/api";
+import type { Engine } from "@/api/engine";
 import { hostSupports } from "@/remote/types";
 import { pickHostSettings } from "@/storage/hostOwnedKeys";
 import {
@@ -16,7 +17,8 @@ import {
 import { getAllSettings } from "@/storage/settings";
 import { newestWins } from "@/util/newestWins";
 import { replaySettingChanges, withSetting } from "@/util/settingsReplay";
-import { activeEnvironment, forActiveEnvironment } from "./environments";
+import { type EnvironmentId, environmentEntry } from "./environments";
+import { perHost } from "./perHost";
 import type { AppState } from "./types";
 
 type Patch = (patch: Partial<AppState>) => void;
@@ -53,58 +55,69 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
   };
 }
 
-/** What the store last read for the active environment — the base a
- *  `settings:changed` event is folded over, since one key can decide a field
- *  that reads several (`providerPathOverrides`). */
-let current: Record<string, string> = {};
+/** One host's settings as this window holds them. */
+interface HostSettingsState {
+  /** What the store last read for the host — the base a `settings:changed`
+   *  event is folded over, since one key can decide a field that reads
+   *  several (`providerPathOverrides`). */
+  current: Record<string, string>;
+  /** One order for every hydrate: two reconnects issue two reads of the same
+   *  host, and the older answer must not land over the newer. */
+  hydrates: ReturnType<typeof newestWins>;
+  /** The `settings:changed` events that landed while the newest hydrate's read
+   *  was in flight, replayed over its answer: the host may have served the
+   *  read before a write the event already put on screen. */
+  inFlight: SettingsChangedEvent[] | null;
+}
 
-/** One order for every hydrate: a switch and back (A → B → A) or two
- *  reconnects issue two reads of the same environment, and the older answer
- *  must not land over the newer. */
-const hydrates = newestWins();
+const settingsOf = perHost(
+  (): HostSettingsState => ({ current: {}, hydrates: newestWins(), inFlight: null }),
+);
 
-/** The `settings:changed` events that landed while the newest hydrate's read
- *  was in flight, replayed over its answer: the host may have served the read
- *  before a write the event already put on screen. */
-let hydrateInFlight: SettingsChangedEvent[] | null = null;
-
-export function applyHostSettings(set: Patch, settings: Record<string, string>) {
-  current = { ...settings };
-  set(hostSettingsState(current));
+export function applyHostSettings(
+  hostId: EnvironmentId,
+  set: Patch,
+  settings: Record<string, string>,
+) {
+  const host = settingsOf(hostId);
+  host.current = { ...settings };
+  set(hostSettingsState(host.current));
 }
 
 /** Fold one write — this window's, another desktop's, a phone's — over what was
- *  read, without a refetch. */
-export function applyHostSettingChange(set: Patch, e: SettingsChangedEvent) {
-  hydrateInFlight?.push(e);
-  applyHostSettings(set, withSetting(current, e.key, e.value));
+ *  read from `hostId`, without a refetch. */
+export function applyHostSettingChange(hostId: EnvironmentId, set: Patch, e: SettingsChangedEvent) {
+  const host = settingsOf(hostId);
+  host.inFlight?.push(e);
+  applyHostSettings(hostId, set, withSetting(host.current, e.key, e.value));
 }
 
-/** The active environment's host-owned settings, or `null` when it cannot say:
- *  a host from before `get_settings`, whose Settings controls are gated closed
- *  anyway (`hostSettings` / `publishSettings`), keeps whatever was on screen. */
-async function readHostSettings(): Promise<Record<string, string> | null> {
-  const env = activeEnvironment();
+/** The engine's host-owned settings, or `null` when it cannot say: a host from
+ *  before `get_settings`, whose Settings controls are gated closed anyway
+ *  (`hostSettings` / `publishSettings`), keeps whatever was on screen. */
+async function readHostSettings({
+  api,
+  hostId,
+}: Pick<Engine, "api" | "hostId">): Promise<Record<string, string> | null> {
+  const env = environmentEntry(hostId);
   if (env.kind === "local") return pickHostSettings(await getAllSettings());
   if (!hostSupports(env.protocol, "get_settings")) return null;
   return api.getSettings();
 }
 
-/** Re-read the host-owned settings from the engine the UI is now driving. Run
- *  at launch and on every switch and reconnect; an answer that lands after the
- *  user moved on is dropped. */
-export async function hydrateHostSettings(set: Patch) {
-  const claim = hydrates.claim();
+/** Re-read the host-owned settings from `engine`'s host. Run at launch and on
+ *  every handshake; an answer older than a later read of the same host is
+ *  dropped. */
+export async function hydrateHostSettings(engine: Pick<Engine, "api" | "hostId">, set: Patch) {
+  const host = settingsOf(engine.hostId);
+  const claim = host.hydrates.claim();
   const buffer: SettingsChangedEvent[] = [];
-  hydrateInFlight = buffer;
+  host.inFlight = buffer;
   try {
-    // Two guards, as for the approval queue: a switch while the read was in
-    // flight means ours is another engine's settings, and a newer hydrate
-    // means ours is the older snapshot it was issued to replace.
-    const settings = await forActiveEnvironment(readHostSettings);
+    const settings = await readHostSettings(engine);
     if (!settings || !claim.current()) return;
-    applyHostSettings(set, replaySettingChanges(settings, buffer));
+    applyHostSettings(engine.hostId, set, replaySettingChanges(settings, buffer));
   } finally {
-    if (hydrateInFlight === buffer) hydrateInFlight = null;
+    if (host.inFlight === buffer) host.inFlight = null;
   }
 }

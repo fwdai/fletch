@@ -1,4 +1,6 @@
-import { api, type DiscoveredCommand } from "../../api";
+import type { DiscoveredCommand } from "../../api";
+import type { Engine } from "../../api/engine";
+import type { EnvironmentId } from "../../store/environments";
 import type { ProviderId } from "../providers";
 import { claudeCommandAdapter } from "./claude";
 import { codexCommandAdapter } from "./codex";
@@ -27,15 +29,17 @@ function adapterFor(providerId: string): CommandAdapter | undefined {
   return COMMAND_ADAPTERS[providerId as ProviderId];
 }
 
-// Discovered commands cached by provider + project dir. Populated by
-// `discoverCommands` (called from the composer) so the *synchronous*
+// Discovered commands cached by provider, host + project dir — a project dir
+// names a folder on one host, and two hosts can hold the same path. Populated
+// by `discoverCommands` (called from the composer) so the *synchronous*
 // `commandsFor` / `passthroughSlashName` readers see disk commands without
 // re-hitting the backend on every keystroke or message send.
 const discoveredCache = new Map<string, SlashCommand[]>();
 
-function cacheKey(provider: string, projectDir?: string): string {
-  // A NUL separator can't collide with a provider id or filesystem path.
-  return `${provider}\u0000${projectDir ?? ""}`;
+function cacheKey(hostId: EnvironmentId, provider: string, projectDir?: string): string {
+  // A NUL separator can't collide with a provider id, a host id or a
+  // filesystem path.
+  return `${provider}\u0000${hostId}\u0000${projectDir ?? ""}`;
 }
 
 function toSlashCommand(c: DiscoveredCommand): SlashCommand {
@@ -55,11 +59,12 @@ function merge(builtins: SlashCommand[], discovered: SlashCommand[]): SlashComma
   return [...builtins, ...discovered.filter((c) => !taken.has(c.name))];
 }
 
-/** Fetch a provider's on-disk slash commands for a project, populate the cache,
- *  and return the full list (builtins + discovered). Skips the backend call for
- *  non-discoverable providers. Safe to call repeatedly; a failure degrades to
- *  builtins only. */
+/** Fetch a provider's on-disk slash commands for a project on the engine's
+ *  host, populate the cache, and return the full list (builtins +
+ *  discovered). Skips the backend call for non-discoverable providers. Safe to
+ *  call repeatedly; a failure degrades to builtins only. */
 export async function discoverCommands(
+  { api, hostId }: Pick<Engine, "api" | "hostId">,
   provider: string,
   projectDir?: string,
 ): Promise<SlashCommand[]> {
@@ -69,7 +74,7 @@ export async function discoverCommands(
   try {
     const found = await api.discoverSlashCommands(provider, projectDir);
     const mapped = found.map(toSlashCommand);
-    discoveredCache.set(cacheKey(provider, projectDir), mapped);
+    discoveredCache.set(cacheKey(hostId, provider, projectDir), mapped);
     return merge(adapter.builtins, mapped);
   } catch (err) {
     console.error("[slashCommands] discovery failed", { provider, projectDir, err });
@@ -86,17 +91,22 @@ export function builtinCommandsFor(providerId: string): SlashCommand[] {
 }
 
 /** All commands for a provider: builtins plus any discovered commands cached
- *  for `projectDir`. Synchronous — reads the cache populated by
+ *  for `projectDir` on `hostId`. Synchronous — reads the cache populated by
  *  `discoverCommands`, so before discovery has run (or for an unknown project)
  *  it returns builtins only. */
-export function commandsFor(providerId: string, projectDir?: string): SlashCommand[] {
+export function commandsFor(
+  hostId: EnvironmentId,
+  providerId: string,
+  projectDir?: string,
+): SlashCommand[] {
   const adapter = adapterFor(providerId);
   if (!adapter) return [];
-  const discovered = discoveredCache.get(cacheKey(providerId, projectDir)) ?? [];
+  const discovered = discoveredCache.get(cacheKey(hostId, providerId, projectDir)) ?? [];
   return merge(adapter.builtins, discovered);
 }
 
-/** Every discovered command cached for the provider, across all project dirs.
+/** Every discovered command cached for the provider, across all project dirs
+ *  and hosts.
  *  Render sites (MessageItem) don't know their project dir, and app-expanded
  *  commands are user-level anyway, so any cache entry counts. Before any
  *  composer has run discovery this is empty — the caller then renders the

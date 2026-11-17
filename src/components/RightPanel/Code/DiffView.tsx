@@ -2,7 +2,8 @@
 // the file editor's "Diff" toggle all fetch a file's unified diff and render it
 // here, so there's a single implementation of the diff markup + highlighting.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type DiffBaseMode } from "@/api";
+import type { DiffBaseMode } from "@/api";
+import { useEngine } from "@/api/engine";
 import { hljsLang } from "@/data/languages";
 import { type DiffHunk, type DiffLine, parseUnifiedDiff } from "@/util/diff";
 import { highlightToHtml } from "@/util/highlight";
@@ -37,6 +38,7 @@ export function useFileDiff(
   dep?: string,
   base?: DiffBaseMode,
 ): FileDiffState {
+  const { api } = useEngine();
   const key = path ? `${agentId}\n${base ?? ""}\n${path}` : null;
   const [state, setState] = useState<{ key: string; hunks: DiffHunk[]; error: string | null }>();
 
@@ -57,7 +59,7 @@ export function useFileDiff(
     return () => {
       cancelled = true;
     };
-  }, [agentId, path, dep, base, key]);
+  }, [agentId, path, dep, base, key, api]);
 
   const current = state?.key === key ? state : null;
   return { hunks: current?.hunks ?? [], error: current?.error ?? null, loaded: current != null };

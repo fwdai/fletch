@@ -1,14 +1,18 @@
 import { useMemo, useRef, useState } from "react";
 import type { AgentRecord, WfRun } from "@/api";
+import { HostChip } from "@/components/HostChip";
 import { Icon } from "@/components/Icon";
 import { ProjectIcon } from "@/components/ProjectIcon";
 import type { DraftAgent } from "@/store";
-import { useAppStore } from "@/store";
+import { onHost, useAppStore, useHostId, useOnHost, useOnScreenSelection } from "@/store";
 import { useGate } from "@/store/capabilities";
+import { EngineScope } from "@/store/EngineScope";
+import { type EnvironmentId, LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { useShortcutKeys } from "@/util/shortcuts";
 import { RunRow } from "@/workflows/run/RunRow";
 import { AgentRow } from "./AgentRow";
 import { foldAgents } from "./foldAgents";
+import { rowHost, type SidebarRow } from "./hostGroups";
 
 interface Props {
   /** Project display name. */
@@ -23,6 +27,9 @@ interface Props {
   drafts: DraftAgent[];
   /** Workflow runs grouped under this repo. */
   runs: WfRun[];
+  /** The host each row runs on (`ProjectGroupData.hostOf`). Every row is
+   *  rendered in its host's scope, so it reads and acts on that host. */
+  hostOf: ReadonlyMap<SidebarRow, EnvironmentId>;
   /** Whether the user has expanded this group. */
   open: boolean;
   onToggle: () => void;
@@ -54,6 +61,7 @@ export function ProjectGroup({
   agents,
   drafts,
   runs,
+  hostOf,
   open,
   onToggle,
   fold,
@@ -64,18 +72,22 @@ export function ProjectGroup({
   dropIndicator,
   onReorderPointerDown,
 }: Props) {
-  const selectedAgentId = useAppStore((s) => s.selectedAgentId);
-  const activeDraftId = useAppStore((s) => s.activeDraftId);
-  const selectedRunId = useAppStore((s) => s.selectedRunId);
-  const selectAgent = useAppStore((s) => s.selectAgent);
-  const selectDraft = useAppStore((s) => s.selectDraft);
-  const selectRun = useAppStore((s) => s.selectRun);
-  const openRoadmap = useAppStore((s) => s.openRoadmap);
-  const openProjectSettings = useAppStore((s) => s.openProjectSettings);
-  const createDraft = useAppStore((s) => s.createDraft);
+  // The group's header is its project's on the host it is scoped to: This
+  // Mac for every project it has, a paired host for one only that host has.
+  // Its actions put that host on screen before they open anything there.
+  const groupHost = useHostId();
+  const onGroupHost = useOnHost();
   const newAgentKeys = useShortcutKeys("newAgent");
   const project = useAppStore((s) => s.workspace?.projects.find((p) => p.path === repoPath));
   const roadmapGate = useGate("roadmap");
+
+  // A row is the selection only on the host on screen: ids repeat across
+  // hosts, and every host keeps its own selection.
+  const selection = useOnScreenSelection();
+  const hostOfRow = (row: SidebarRow) => rowHost({ hostOf }, row);
+  const isOnScreen = (row: SidebarRow, id: string | null) =>
+    id !== null && row.id === id && hostOfRow(row) === selection.hostId;
+  const selectedAgent = agents.find((a) => isOnScreen(a, selection.agentId));
 
   const count = agents.length + drafts.length + runs.length;
   // A project with nothing in it has nothing to fold: it draws as one quiet
@@ -84,9 +96,9 @@ export function ProjectGroup({
   // The group the selection is in keeps its "+" on show; the others reveal
   // theirs on hover.
   const current =
-    agents.some((a) => a.id === selectedAgentId) ||
-    drafts.some((d) => d.id === activeDraftId) ||
-    runs.some((r) => r.id === selectedRunId);
+    selectedAgent !== undefined ||
+    drafts.some((d) => isOnScreen(d, selection.draftId)) ||
+    runs.some((r) => isOnScreen(r, selection.runId));
 
   // "Show N older" unfolds the group until it is folded again; the choice is
   // per group and per mount, so a fresh launch starts tidy. The rows above the
@@ -94,13 +106,14 @@ export function ProjectGroup({
   // fold row, never re-interleaved by date, so a pinned (selected / running)
   // row that predates some hidden ones doesn't watch them jump in above it.
   const [unfolded, setUnfolded] = useState(false);
-  const { shown, hidden } = useMemo(
-    () =>
-      fold
-        ? foldAgents(agents, { now, selectedId: selectedAgentId, activity })
-        : { shown: agents, hidden: [] },
-    [fold, agents, selectedAgentId, activity, now],
-  );
+  const { shown, hidden } = useMemo(() => {
+    if (!fold) return { shown: agents, hidden: [] };
+    // `activity` is This Mac's turns, by agent id: it says nothing about a
+    // paired host's workspace of the same id.
+    const turnAt = (a: AgentRecord) =>
+      rowHost({ hostOf }, a) === LOCAL_ENVIRONMENT_ID ? activity[a.id] : undefined;
+    return foldAgents(agents, { now, selected: selectedAgent, turnAt });
+  }, [fold, agents, selectedAgent, activity, hostOf, now]);
   const foldable = hidden.length > 0;
 
   const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";
@@ -122,6 +135,21 @@ export function ProjectGroup({
     if (!dragged()) open();
   };
 
+  /** One agent row, in the scope of the host it runs on. */
+  const agentRow = (a: AgentRecord) => {
+    const hostId = hostOfRow(a);
+    return (
+      <EngineScope key={`${hostId}:${a.id}`} hostId={hostId}>
+        <AgentRow
+          kind="real"
+          agent={a}
+          active={isOnScreen(a, selection.agentId)}
+          onClick={() => onHost(hostId, (s) => s.selectAgent(a.id))}
+        />
+      </EngineScope>
+    );
+  };
+
   return (
     <div
       className={[
@@ -133,7 +161,9 @@ export function ProjectGroup({
       ]
         .filter(Boolean)
         .join(" ")}
-      data-repo-path={repoPath}
+      // Only This Mac's projects are in the manual order, so only they are
+      // drop targets for a reorder.
+      data-repo-path={groupHost === LOCAL_ENVIRONMENT_ID ? repoPath : undefined}
     >
       {/* The header is the project's own row. Its name opens the Roadmap — the
           project's home — and the rest of the row folds the agents, the way a
@@ -167,11 +197,12 @@ export function ProjectGroup({
             type="button"
             className="pname tip"
             data-tip="Open roadmap"
-            onClick={action(() => openRoadmap(repoPath))}
+            onClick={action(() => onGroupHost((s) => s.openRoadmap(repoPath)))}
           >
             {label}
           </button>
         )}
+        <HostChip />
         {/* The rows say how many while they show; the count stands in for
             them once the group is folded. */}
         {!open && !empty && <span className="pcount">{count}</span>}
@@ -181,7 +212,7 @@ export function ProjectGroup({
           type="button"
           className="padd padd-quiet tip"
           data-tip="Project settings"
-          onClick={action(() => openProjectSettings(repoPath))}
+          onClick={action(() => onGroupHost((s) => s.openProjectSettings(repoPath)))}
           aria-label="Project settings"
         >
           <Icon name="settings" size={14} />
@@ -190,7 +221,7 @@ export function ProjectGroup({
           type="button"
           className="padd padd-add tip"
           data-tip={`New agent  ${newAgentKeys}`}
-          onClick={action(() => void createDraft(repoPath))}
+          onClick={action(() => onGroupHost((s) => void s.createDraft(repoPath)))}
           aria-label="New agent"
         >
           <Icon name="plus" size={11} />
@@ -198,34 +229,21 @@ export function ProjectGroup({
       </div>
 
       <div className={`agents ${open ? "" : "closed"}`}>
-        {drafts.map((d) => (
-          <AgentRow
-            key={d.id}
-            kind="draft"
-            draft={d}
-            active={d.id === activeDraftId}
-            onClick={() => selectDraft(d.id)}
-          />
-        ))}
-        {shown.map((a) => (
-          <AgentRow
-            key={a.id}
-            kind="real"
-            agent={a}
-            active={a.id === selectedAgentId}
-            onClick={() => selectAgent(a.id)}
-          />
-        ))}
-        {unfolded &&
-          hidden.map((a) => (
-            <AgentRow
-              key={a.id}
-              kind="real"
-              agent={a}
-              active={a.id === selectedAgentId}
-              onClick={() => selectAgent(a.id)}
-            />
-          ))}
+        {drafts.map((d) => {
+          const hostId = hostOfRow(d);
+          return (
+            <EngineScope key={`${hostId}:${d.id}`} hostId={hostId}>
+              <AgentRow
+                kind="draft"
+                draft={d}
+                active={isOnScreen(d, selection.draftId)}
+                onClick={() => onHost(hostId, (s) => s.selectDraft(d.id))}
+              />
+            </EngineScope>
+          );
+        })}
+        {shown.map(agentRow)}
+        {unfolded && hidden.map(agentRow)}
         {/* The toggle closes the list either way: "N older" under the recent
             rows, "Show fewer" under the revealed ones, where the eye is. */}
         {foldable && (
@@ -238,14 +256,18 @@ export function ProjectGroup({
             {unfolded ? "Show fewer" : `${hidden.length} older`}
           </button>
         )}
-        {runs.map((run) => (
-          <RunRow
-            key={run.id}
-            run={run}
-            selected={selectedRunId === run.id}
-            onSelect={() => selectRun(run.id)}
-          />
-        ))}
+        {runs.map((run) => {
+          const hostId = hostOfRow(run);
+          return (
+            <EngineScope key={`${hostId}:${run.id}`} hostId={hostId}>
+              <RunRow
+                run={run}
+                selected={isOnScreen(run, selection.runId)}
+                onSelect={() => onHost(hostId, (s) => s.selectRun(run.id))}
+              />
+            </EngineScope>
+          );
+        })}
       </div>
     </div>
   );

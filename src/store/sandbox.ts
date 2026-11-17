@@ -1,42 +1,22 @@
-import {
-  api,
-  type BoxEgressEvent,
-  type BoxImageStatus,
-  type BoxRuntimeProbe,
-  type BoxSettingKey,
-  type BoxStateEvent,
-  type BoxToolsStatus,
-  type BoxVm,
-  type EgressAnswer,
-  type EgressPrompt,
-  type EgressPromptResolved,
-  type PublishApproval,
-  type PublishApprovalResolved,
+import type {
+  BoxEgressEvent,
+  BoxImageStatus,
+  BoxRuntimeProbe,
+  BoxSettingKey,
+  BoxStateEvent,
+  BoxToolsStatus,
+  BoxVm,
+  EgressAnswer,
+  EgressPrompt,
+  EgressPromptResolved,
+  PublishApproval,
+  PublishApprovalResolved,
 } from "@/api";
 import { hostSupports } from "@/remote/types";
 import { newestWins } from "@/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@/util/publishApprovals";
-import { activeEnvironment, forActiveEnvironment } from "./environments";
+import { environmentEntry } from "./environments";
 import type { SliceCreator } from "./types";
-
-/** Every handshake starts an `approvals_list` without waiting for the last, so
- *  two can be out at once and answer out of order. One order for all of them,
- *  as everywhere else a whole list is replaced (util/newestWins). */
-const approvalLoads = newestWins();
-
-/** `box_list` is re-read on entering a host, on `box:list` and when the page
- *  opens, so two can be out at once (util/newestWins). */
-const vmLoads = newestWins();
-
-/** `box_egress_pending` is re-read on every handshake, like the approvals. */
-const promptLoads = newestWins();
-
-/** Approval events seen while an `approvals_list` is in flight, replayed over
- *  its answer so the snapshot cannot undo them (see util/publishApprovals).
- *  Belongs to the newest claim — an older load's snapshot is superseded
- *  wholesale, so the events it missed are not its to replay. Null when no list
- *  is outstanding, which is nearly always. */
-let approvalsInFlight: ApprovalEvent[] | null = null;
 
 export interface SandboxSlice {
   /** Whether an agent must get the user's approval before publishing. Mirrors
@@ -73,10 +53,10 @@ export interface SandboxSlice {
   /** Each supported provider's tools disk by provider id: seeded by the probe,
    *  then every `box:tools`. */
   boxTools: Record<string, BoxToolsStatus>;
-  /** Every VM on the active host (`box_list`), hidden workspaces included:
-   *  `null` until the host answers, and on one that cannot. A per-host value, so
-   *  `environmentSwitch` parks it with the rest; `box:list` says when to re-read
-   *  it, and `box:state` carries phases in between. */
+  /** Every VM on the host (`box_list`), hidden workspaces included: `null`
+   *  until the host answers, and on one that cannot. A host key
+   *  (./hostState); `box:list` says when to re-read it, and `box:state`
+   *  carries phases in between. */
   boxVms: BoxVm[] | null;
   /** Each box agent's phase by agent id, from `box:state`. */
   boxStates: Record<string, BoxStateEvent>;
@@ -90,13 +70,13 @@ export interface SandboxSlice {
    *  already authorized — a delegation's or an autopilot-enrolled checkout's own
    *  pushes — the host approves without asking, so it never arrives here. */
   receivePublishApproval: (request: PublishApproval) => void;
-  /** Replace the queue with what the active host says is still waiting.
+  /** Replace the queue with what the host says is still waiting.
    *
    *  `publish:approval-requested` only reaches the clients connected when it
-   *  fired, so a window that switched to a host — or reconnected to one — has
-   *  neither the prompts raised while it was away nor any way to know the ones
-   *  it holds were answered elsewhere. Wholesale, because the host's registry
-   *  is the authority on both halves of that.
+   *  fired, so a window that (re)connected to a host has neither the prompts
+   *  raised while it was away nor any way to know the ones it holds were
+   *  answered elsewhere. Wholesale, because the host's registry is the
+   *  authority on both halves of that.
    *
    *  A no-op for the local environment (this window was listening) and for a
    *  host too old for `approvals_list` (it would answer `unknown op`). */
@@ -109,9 +89,9 @@ export interface SandboxSlice {
   resolvePublishApproval: (e: PublishApprovalResolved) => void;
   /** Queue a held host for the prompt (`box:egress-requested`). */
   receiveEgressPrompt: (prompt: EgressPrompt) => void;
-  /** Replace the queue with what the active host still holds, after a
-   *  handshake: the events only reached the clients connected when they
-   *  fired. A no-op for a host without `box_egress_pending`. */
+  /** Replace the queue with what the host still holds, after a handshake:
+   *  the events only reached the clients connected when they fired. A no-op
+   *  for a host without `box_egress_pending`. */
   loadPendingEgressPrompts: () => Promise<void>;
   /** Answer the held host `id` and drop it from the queue. */
   answerEgressPrompt: (id: string, answer: EgressAnswer) => Promise<void>;
@@ -206,223 +186,237 @@ export function foldBlocked(
 
 const promptedKey = (agentId: string, host: string) => `${agentId}\n${host}`;
 
-export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
-  publishConfirmation: false,
-  pendingPublishApprovals: [],
-  boxMemoryMib: "",
-  boxCpus: "",
-  boxDiskGib: "",
-  boxImageUrl: "",
-  boxIdleStopMinutes: "",
-  boxEgressMode: "",
-  pendingEgressPrompts: [],
-  promptedHosts: new Set(),
-  boxProbe: null,
-  boxImage: null,
-  boxTools: {},
-  boxVms: null,
-  boxStates: {},
-  boxEgressBlocked: [],
+export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get, { api, hostId }) => {
+  /** Every handshake starts an `approvals_list` without waiting for the last,
+   *  so two can be out at once and answer out of order. One order for all of
+   *  them, as everywhere else a whole list is replaced (util/newestWins). */
+  const approvalLoads = newestWins();
 
-  setPublishConfirmation: async (enabled) => {
-    await api.setPublishConfirmation(enabled);
-    set({ publishConfirmation: enabled });
-  },
+  /** `box_list` is re-read on every handshake, on `box:list` and when the page
+   *  opens, so two can be out at once (util/newestWins). */
+  const vmLoads = newestWins();
 
-  receivePublishApproval: (request) => {
-    approvalsInFlight?.push({ kind: "requested", request });
-    set((prev) => ({ pendingPublishApprovals: [...prev.pendingPublishApprovals, request] }));
-  },
+  /** `box_egress_pending` is re-read on every handshake, like the approvals. */
+  const promptLoads = newestWins();
 
-  loadPendingPublishApprovals: async () => {
-    const env = activeEnvironment();
-    if (env.kind !== "remote" || !hostSupports(env.protocol, "approvals_list")) return;
-    const claim = approvalLoads.claim();
-    const buffer: ApprovalEvent[] = [];
-    approvalsInFlight = buffer;
-    try {
-      // Two guards, composing. A switch while the read was in flight owns the
-      // queue now, and ours would be another host's prompts on this one's
-      // screen; a newer load owns it too, and ours is the older snapshot it
-      // was issued to replace.
-      const pending = await forActiveEnvironment(() => api.listPublishApprovals());
-      if (!pending || !claim.current()) return;
-      // The snapshot is what the host was blocked on when it read its queue,
-      // not when it answered; whatever it said in between is folded back in.
-      set({ pendingPublishApprovals: replayApprovalEvents(pending, buffer) });
-    } finally {
-      if (approvalsInFlight === buffer) approvalsInFlight = null;
-    }
-  },
+  /** Approval events seen while an `approvals_list` is in flight, replayed
+   *  over its answer so the snapshot cannot undo them (see
+   *  util/publishApprovals). Belongs to the newest claim — an older load's
+   *  snapshot is superseded wholesale, so the events it missed are not its to
+   *  replay. Null when no list is outstanding, which is nearly always. */
+  let approvalsInFlight: ApprovalEvent[] | null = null;
 
-  answerPublishApproval: async (id, approved) => {
-    // Drop it first: the prompt must not linger if the command throws, and a
-    // request the backend has already timed out is a no-op there anyway.
-    set((s) => ({
-      pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
-    }));
-    await api.answerPublishApproval(id, approved);
-  },
+  return {
+    publishConfirmation: false,
+    pendingPublishApprovals: [],
+    boxMemoryMib: "",
+    boxCpus: "",
+    boxDiskGib: "",
+    boxImageUrl: "",
+    boxIdleStopMinutes: "",
+    boxEgressMode: "",
+    pendingEgressPrompts: [],
+    promptedHosts: new Set(),
+    boxProbe: null,
+    boxImage: null,
+    boxTools: {},
+    boxVms: null,
+    boxStates: {},
+    boxEgressBlocked: [],
 
-  resolvePublishApproval: ({ id }) => {
-    approvalsInFlight?.push({ kind: "resolved", id });
-    set((s) => ({
-      pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
-    }));
-  },
+    setPublishConfirmation: async (enabled) => {
+      await api.setPublishConfirmation(enabled);
+      set({ publishConfirmation: enabled });
+    },
 
-  receiveEgressPrompt: (prompt) =>
-    set((s) => ({
-      pendingEgressPrompts: s.pendingEgressPrompts.some((p) => p.id === prompt.id)
-        ? s.pendingEgressPrompts
-        : [...s.pendingEgressPrompts, prompt],
-      promptedHosts: new Set(s.promptedHosts).add(promptedKey(prompt.agent_id, prompt.host)),
-    })),
+    receivePublishApproval: (request) => {
+      approvalsInFlight?.push({ kind: "requested", request });
+      set((prev) => ({ pendingPublishApprovals: [...prev.pendingPublishApprovals, request] }));
+    },
 
-  loadPendingEgressPrompts: async () => {
-    const env = activeEnvironment();
-    if (env.kind === "remote" && !hostSupports(env.protocol, "box_egress_pending")) return;
-    const claim = promptLoads.claim();
-    const pending = await forActiveEnvironment(() => api.boxEgressPending()).catch(() => null);
-    if (!pending || !claim.current()) return;
-    set((s) => {
-      const prompted = new Set(s.promptedHosts);
-      for (const p of pending) prompted.add(promptedKey(p.agent_id, p.host));
-      return { pendingEgressPrompts: pending, promptedHosts: prompted };
-    });
-  },
+    loadPendingPublishApprovals: async () => {
+      const env = environmentEntry(hostId);
+      if (env.kind !== "remote" || !hostSupports(env.protocol, "approvals_list")) return;
+      const claim = approvalLoads.claim();
+      const buffer: ApprovalEvent[] = [];
+      approvalsInFlight = buffer;
+      try {
+        // A newer load owns the queue, and ours is the older snapshot it was
+        // issued to replace.
+        const pending = await api.listPublishApprovals();
+        if (!claim.current()) return;
+        // The snapshot is what the host was blocked on when it read its queue,
+        // not when it answered; whatever it said in between is folded back in.
+        set({ pendingPublishApprovals: replayApprovalEvents(pending, buffer) });
+      } finally {
+        if (approvalsInFlight === buffer) approvalsInFlight = null;
+      }
+    },
 
-  answerEgressPrompt: async (id, answer) => {
-    // Dropped first, as a publish approval: the card must not linger if the
-    // call throws, and an id the host already refused is a no-op there.
-    set((s) => ({ pendingEgressPrompts: s.pendingEgressPrompts.filter((p) => p.id !== id) }));
-    try {
-      await api.boxEgressAnswer(id, answer);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
-
-  resolveEgressPrompt: ({ id }) =>
-    set((s) => ({ pendingEgressPrompts: s.pendingEgressPrompts.filter((p) => p.id !== id) })),
-
-  setTurnNetworkOpen: async (agentId, open) => {
-    try {
-      await api.boxEgressOpenTurn(agentId, open);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
-
-  saveBoxSetting: async (key, value) => {
-    try {
-      await api.setBoxSetting(key, value || null);
-      return null;
-    } catch (e) {
-      return String(e);
-    }
-  },
-  refreshBoxProbe: async () => {
-    try {
-      // Bound to the environment that was asked: an answer that lands after
-      // a switch is another host's and is dropped, as every host read is.
-      const probe = await forActiveEnvironment(() => api.boxRuntimeProbe());
-      if (!probe) return;
-      // The probe is also the one read of the tools disks; `box:tools` carries
-      // every change after.
-      set({
-        boxProbe: probe,
-        boxTools: Object.fromEntries(probe.tools.map((t) => [t.provider, t])),
-      });
-    } catch {
-      // A host that cannot answer (too old, or no box runtime) keeps whatever
-      // was on screen; the probe is advisory.
-    }
-  },
-  refreshBoxVms: async () => {
-    const claim = vmLoads.claim();
-    const asked = get().boxStates;
-    try {
-      // Two guards, as for the approvals: after a switch this is another host's
-      // list, and a newer read owns it too, since an older answer landing last
-      // would put back a VM that is gone.
-      const vms = await forActiveEnvironment(() => api.boxList());
-      if (!vms || !claim.current()) return;
+    answerPublishApproval: async (id, approved) => {
+      // Drop it first: the prompt must not linger if the command throws, and a
+      // request the backend has already timed out is a no-op there anyway.
       set((s) => ({
-        boxVms: vms,
-        boxStates: Object.fromEntries(
-          vms.map((vm) => {
-            const id = vm.agent_id;
-            // A phase `box:state` reported during the read is newer than this.
-            const moved = s.boxStates[id] !== asked[id];
-            return [id, moved ? s.boxStates[id] : vm.state];
-          }),
-        ),
+        pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
       }));
-    } catch {
-      // A host from before `box_list` keeps `null`: the list says why.
-    }
-  },
-  refreshBoxImage: async () => {
-    try {
-      const image = await forActiveEnvironment(() => api.boxImageStatus());
-      if (image) set({ boxImage: image });
-    } catch {
-      // Same posture as the probe.
-    }
-  },
-  loadBoxSetup: async () => {
-    // The setup is the active host's, wholesale: what the last one said is
-    // cleared before this one answers, so a switch never shows host A's
-    // download on host B.
-    set({ boxProbe: null, boxImage: null, boxTools: {} });
-    await Promise.all([get().refreshBoxProbe(), get().refreshBoxImage(), get().refreshBoxVms()]);
-  },
-  installBoxImage: async () => {
-    try {
-      await api.boxImageInstall();
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
-  cancelBoxImage: async () => {
-    try {
-      await api.boxImageCancel();
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
-  retryBoxTools: async (provider) => {
-    try {
-      await api.boxToolsRetry(provider);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
-  applyBoxImage: (e) => set({ boxImage: e }),
-  applyBoxState: (e) => set((s) => ({ boxStates: { ...s.boxStates, [e.agent_id]: e } })),
-  applyBoxTools: (e) => set((s) => ({ boxTools: { ...s.boxTools, [e.provider]: e } })),
-  receiveBoxEgress: (e) =>
-    set((s) => ({
-      boxEgressBlocked: foldBlocked(
-        s.boxEgressBlocked,
-        e,
-        s.promptedHosts.has(promptedKey(e.agent_id, e.host)),
-      ),
-    })),
-  dismissBoxEgress: (agentId) =>
-    set((s) => ({
-      boxEgressBlocked: s.boxEgressBlocked.map((b) =>
-        b.agent_id === agentId ? { ...b, seen: true } : b,
-      ),
-    })),
-  clearBoxEgress: (host) =>
-    set((s) => ({ boxEgressBlocked: s.boxEgressBlocked.filter((b) => b.host !== host) })),
-  stopBox: async (agentId) => {
-    try {
-      await api.boxStop(agentId);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
-});
+      await api.answerPublishApproval(id, approved);
+    },
+
+    resolvePublishApproval: ({ id }) => {
+      approvalsInFlight?.push({ kind: "resolved", id });
+      set((s) => ({
+        pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
+      }));
+    },
+
+    receiveEgressPrompt: (prompt) =>
+      set((s) => ({
+        pendingEgressPrompts: s.pendingEgressPrompts.some((p) => p.id === prompt.id)
+          ? s.pendingEgressPrompts
+          : [...s.pendingEgressPrompts, prompt],
+        promptedHosts: new Set(s.promptedHosts).add(promptedKey(prompt.agent_id, prompt.host)),
+      })),
+
+    loadPendingEgressPrompts: async () => {
+      const env = environmentEntry(hostId);
+      if (env.kind === "remote" && !hostSupports(env.protocol, "box_egress_pending")) return;
+      const claim = promptLoads.claim();
+      const pending = await api.boxEgressPending().catch(() => null);
+      if (!pending || !claim.current()) return;
+      set((s) => {
+        const prompted = new Set(s.promptedHosts);
+        for (const p of pending) prompted.add(promptedKey(p.agent_id, p.host));
+        return { pendingEgressPrompts: pending, promptedHosts: prompted };
+      });
+    },
+
+    answerEgressPrompt: async (id, answer) => {
+      // Dropped first, as a publish approval: the card must not linger if the
+      // call throws, and an id the host already refused is a no-op there.
+      set((s) => ({ pendingEgressPrompts: s.pendingEgressPrompts.filter((p) => p.id !== id) }));
+      try {
+        await api.boxEgressAnswer(id, answer);
+      } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
+
+    resolveEgressPrompt: ({ id }) =>
+      set((s) => ({ pendingEgressPrompts: s.pendingEgressPrompts.filter((p) => p.id !== id) })),
+
+    setTurnNetworkOpen: async (agentId, open) => {
+      try {
+        await api.boxEgressOpenTurn(agentId, open);
+      } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
+
+    saveBoxSetting: async (key, value) => {
+      try {
+        await api.setBoxSetting(key, value || null);
+        return null;
+      } catch (e) {
+        return String(e);
+      }
+    },
+    refreshBoxProbe: async () => {
+      try {
+        const probe = await api.boxRuntimeProbe();
+        // The probe is also the one read of the tools disks; `box:tools` carries
+        // every change after.
+        set({
+          boxProbe: probe,
+          boxTools: Object.fromEntries(probe.tools.map((t) => [t.provider, t])),
+        });
+      } catch {
+        // A host that cannot answer (too old, or no box runtime) keeps whatever
+        // was on screen; the probe is advisory.
+      }
+    },
+    refreshBoxVms: async () => {
+      const claim = vmLoads.claim();
+      const asked = get().boxStates;
+      try {
+        // A newer read owns the list, since an older answer landing last would
+        // put back a VM that is gone.
+        const vms = await api.boxList();
+        if (!claim.current()) return;
+        set((s) => ({
+          boxVms: vms,
+          boxStates: Object.fromEntries(
+            vms.map((vm) => {
+              const id = vm.agent_id;
+              // A phase `box:state` reported during the read is newer than this.
+              const moved = s.boxStates[id] !== asked[id];
+              return [id, moved ? s.boxStates[id] : vm.state];
+            }),
+          ),
+        }));
+      } catch {
+        // A host from before `box_list` keeps `null`: the list says why.
+      }
+    },
+    refreshBoxImage: async () => {
+      try {
+        const image = await api.boxImageStatus();
+        if (image) set({ boxImage: image });
+      } catch {
+        // Same posture as the probe.
+      }
+    },
+    loadBoxSetup: async () => {
+      // The setup is re-read wholesale: what the host said before is cleared
+      // before it answers again.
+      set({ boxProbe: null, boxImage: null, boxTools: {} });
+      await Promise.all([get().refreshBoxProbe(), get().refreshBoxImage(), get().refreshBoxVms()]);
+    },
+    installBoxImage: async () => {
+      try {
+        await api.boxImageInstall();
+      } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
+    cancelBoxImage: async () => {
+      try {
+        await api.boxImageCancel();
+      } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
+    retryBoxTools: async (provider) => {
+      try {
+        await api.boxToolsRetry(provider);
+      } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
+    applyBoxImage: (e) => set({ boxImage: e }),
+    applyBoxState: (e) => set((s) => ({ boxStates: { ...s.boxStates, [e.agent_id]: e } })),
+    applyBoxTools: (e) => set((s) => ({ boxTools: { ...s.boxTools, [e.provider]: e } })),
+    receiveBoxEgress: (e) =>
+      set((s) => ({
+        boxEgressBlocked: foldBlocked(
+          s.boxEgressBlocked,
+          e,
+          s.promptedHosts.has(promptedKey(e.agent_id, e.host)),
+        ),
+      })),
+    dismissBoxEgress: (agentId) =>
+      set((s) => ({
+        boxEgressBlocked: s.boxEgressBlocked.map((b) =>
+          b.agent_id === agentId ? { ...b, seen: true } : b,
+        ),
+      })),
+    clearBoxEgress: (host) =>
+      set((s) => ({ boxEgressBlocked: s.boxEgressBlocked.filter((b) => b.host !== host) })),
+    stopBox: async (agentId) => {
+      try {
+        await api.boxStop(agentId);
+      } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
+  };
+};

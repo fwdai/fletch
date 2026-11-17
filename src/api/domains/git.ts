@@ -1,4 +1,4 @@
-import { invoke, invokeLocal } from "../invoke";
+import { type Invoke, invokeLocal } from "../invoke";
 import type {
   AutopilotLogEntry,
   AutopilotSnapshot,
@@ -8,7 +8,7 @@ import type {
   ShortStats,
 } from "../types/git";
 
-export const gitApi = {
+export const gitApi = (invoke: Invoke) => ({
   /** This Mac's global git identity — the account surfaces' fallback when no
    *  profile is set. Local whatever environment is active: it is who the
    *  user is, not who a host is. */
@@ -65,4 +65,4 @@ export const gitApi = {
    *  checked out, and never a hardcoded "main" (which forks the wrong branch on
    *  a master/develop repo). Infallible backend-side; falls back to "main". */
   repoDefaultBranch: (repoPath: string) => invoke<string>("repo_default_branch", { repoPath }),
-};
+});

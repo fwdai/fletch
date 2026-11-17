@@ -39,11 +39,6 @@ export const COMPACTION_SETTLE_MS = 8_000;
  *  announcements don't depend on the turn. */
 export const COMPACTION_QUIET_MS = 75_000;
 
-/** When each agent's compaction was last heard of: requested here, or a
- *  signal from Claude. Not store state: nothing renders it, and a heartbeat
- *  every 30s shouldn't re-render anything. */
-const lastHeard = new Map<string, number>();
-
 export interface CompactionSlice {
   /** Each compacting agent's stage. Absent: not compacting. */
   compactions: Record<string, CompactionStage>;
@@ -111,7 +106,12 @@ export function compactBlocker(state: AppState, agentId: string): string | null 
   return null;
 }
 
-export const createCompactionSlice: SliceCreator<CompactionSlice> = (set, get) => {
+export const createCompactionSlice: SliceCreator<CompactionSlice> = (set, get, { hostId }) => {
+  /** When each agent's compaction was last heard of: requested here, or a
+   *  signal from Claude. Not store state: nothing renders it, and a heartbeat
+   *  every 30s shouldn't re-render anything. */
+  const lastHeard = new Map<string, number>();
+
   const stage = (agentId: string, next: CompactionStage | null) => {
     if (!next) lastHeard.delete(agentId);
     set((s) => {
@@ -153,7 +153,7 @@ export const createCompactionSlice: SliceCreator<CompactionSlice> = (set, get) =
       // than queue behind it. `idleOnly` re-checks at dispatch, for a turn
       // that starts some other way (another client, autopilot) while ours
       // waits on its own steps.
-      if (compactBlocker(get(), agentId) || sendOrder.pending(agentId)) return;
+      if (compactBlocker(get(), agentId) || sendOrder(hostId).pending(agentId)) return;
       stage(agentId, "requested");
       heard(agentId);
       const sent = await get()

@@ -9,13 +9,15 @@ import { create } from "zustand";
 vi.mock("@/api", () => ({ api: {} }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
+import { activeEngine } from "@/api/engine";
 import { LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { createGitSlice, gitScopeKey } from "./git";
 import type { AppState } from "./types";
 
 const makeStore = () =>
   create<AppState>()(
-    (...a) => ({ ...createGitSlice(...a), setLastError: vi.fn() }) as unknown as AppState,
+    (set, get) =>
+      ({ ...createGitSlice(set, get, activeEngine), setLastError: vi.fn() }) as unknown as AppState,
   );
 
 /** A promise the test resolves by hand. */

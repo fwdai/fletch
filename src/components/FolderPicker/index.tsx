@@ -1,10 +1,11 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Modal, ModalBody, ModalFooter } from "@/components/ui/Modal";
 import { TextInput } from "@/components/ui/TextInput";
+import { EngineScope } from "@/store/EngineScope";
 import { useFolderBrowser } from "@/util/folderBrowser";
 import { childPath } from "@/util/paths";
 import { folderRequest, resolveFolderRequest, subscribeFolderRequest } from "./pickFolder";
@@ -12,20 +13,23 @@ import { folderRequest, resolveFolderRequest, subscribeFolderRequest } from "./p
 export { pickFolder } from "./pickFolder";
 
 /** The one folder picker for the whole app, mounted at the root. Renders only
- *  while a `pickFolder` call is waiting on it — which only happens on a remote
- *  environment, where the native dialog cannot see the disk being browsed. */
+ *  while a `pickFolder` call is waiting on it — which only happens on a paired
+ *  host, where the native dialog cannot see the disk being browsed — in the
+ *  scope of that host. */
 export function FolderPickerHost() {
   const request = useSyncExternalStore(subscribeFolderRequest, folderRequest);
   if (!request) return null;
   return (
-    <FolderPicker
-      title={request.title}
-      start={request.start}
-      onDone={resolveFolderRequest}
-      // A fresh browser per request: the next one starts where it asked to,
-      // not where the last one was left.
-      key={`${request.title}:${request.start}`}
-    />
+    <EngineScope hostId={request.hostId}>
+      <FolderPicker
+        title={request.title}
+        start={request.start}
+        onDone={resolveFolderRequest}
+        // A fresh browser per request: the next one starts where it asked to,
+        // not where the last one was left.
+        key={`${request.hostId}:${request.title}:${request.start}`}
+      />
+    </EngineScope>
   );
 }
 
@@ -41,6 +45,7 @@ function FolderPicker({
   start: string;
   onDone: (path: string | null) => void;
 }) {
+  const { api } = useEngine();
   const {
     base,
     up,

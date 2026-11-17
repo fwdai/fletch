@@ -4,10 +4,11 @@
 // edited in Settings, not from these surfaces.
 
 import { useEffect, useState } from "react";
-import { api } from "../../api";
+import { useEngine } from "@/api/engine";
 import type { Definition } from "../spec";
 
 export function useDefinitions(): { definitions: Definition[]; loading: boolean } {
+  const { api } = useEngine();
   const [definitions, setDefinitions] = useState<Definition[]>([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -24,6 +25,6 @@ export function useDefinitions(): { definitions: Definition[]; loading: boolean 
     return () => {
       alive = false;
     };
-  }, []);
+  }, [api]);
   return { definitions, loading };
 }

@@ -8,14 +8,8 @@
 // the payloads the timeline summarizes.
 
 import { useEffect, useRef, useState } from "react";
-import {
-  type AgentRecord,
-  api,
-  onWfEvent,
-  onWfRun,
-  type WfEvent,
-  type WfRunDetail,
-} from "../../../api";
+import { useEngine } from "@/api/engine";
+import type { AgentRecord, WfEvent, WfRunDetail } from "../../../api";
 import { loadAllEvents } from "../useRunEvents";
 
 export interface RunDetailState {
@@ -28,6 +22,7 @@ export interface RunDetailState {
 }
 
 export function useRunDetail(runId: string): RunDetailState {
+  const { api, events: engineEvents } = useEngine();
   const [detail, setDetail] = useState<WfRunDetail | null>(null);
   const [events, setEvents] = useState<WfEvent[]>([]);
   const [agents, setAgents] = useState<AgentRecord[]>([]);
@@ -52,7 +47,7 @@ export function useRunDetail(runId: string): RunDetailState {
       try {
         const [d, tail, runAgents] = await Promise.all([
           api.wfGetRun(runId),
-          loadAllEvents(runId, maxSeq.current),
+          loadAllEvents(api, runId, maxSeq.current),
           api.wfRunAgents(runId),
         ]);
         if (cancelled) return;
@@ -88,10 +83,10 @@ export function useRunDetail(runId: string): RunDetailState {
       }, 150);
     };
 
-    const offEvent = onWfEvent((e) => {
+    const offEvent = engineEvents.onWfEvent((e) => {
       if (e.run_id === runId && e.seq > maxSeq.current) scheduleRefresh();
     });
-    const offRun = onWfRun((row) => {
+    const offRun = engineEvents.onWfRun((row) => {
       if (row.id === runId) setDetail((prev) => (prev ? { ...prev, run: row } : prev));
     });
 
@@ -101,7 +96,7 @@ export function useRunDetail(runId: string): RunDetailState {
       void offEvent.then((f) => f());
       void offRun.then((f) => f());
     };
-  }, [runId]);
+  }, [runId, api, engineEvents]);
 
   return { detail, events, agents, loading };
 }

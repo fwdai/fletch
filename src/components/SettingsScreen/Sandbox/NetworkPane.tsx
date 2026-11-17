@@ -2,6 +2,7 @@ import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { useEgressOverview } from "@/util/useEgressOverview";
 import { SetGroup, SetHead, SetRow } from "../primitives";
+import { HostPicker } from "../SettingsHost";
 import { SandboxPane } from "./index";
 import { FletchAllows } from "./Network/FletchAllows";
 import { PostureRow } from "./Network/PostureRow";
@@ -32,6 +33,7 @@ export function NetworkPane() {
         title="Network"
         desc="What agents in Linux VMs can reach."
       />
+      <HostPicker />
       {gate ? (
         <SetGroup>
           <SetRow title="Hosts VMs may reach" sub={gate} />

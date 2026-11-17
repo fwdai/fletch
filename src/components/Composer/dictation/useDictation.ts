@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  api,
-  type DictationAvailability,
-  type DictationSessionId,
-  onDictationLevel,
-  onDictationState,
-  onDictationTranscript,
-} from "@/api";
+import type { DictationAvailability, DictationSessionId } from "@/api";
+import { useEngine } from "@/api/engine";
 import type { DictationPhase } from "../PrimaryControl/primaryState";
 import { type ComposerInput, grow } from "../useComposerInput";
 import { type FreshSpan, insertTranscript } from "./spliceTranscript";
@@ -50,6 +44,7 @@ let lastAvailability: DictationAvailability | null = null;
  *  the box holds at that moment (see [`insertTranscript`]) — the user may have
  *  kept typing — and the inserted span is reported as `fresh` for a moment. */
 export function useDictation(input: ComposerInput) {
+  const { api, events } = useEngine();
   const [availability, setAvailability] = useState<DictationAvailability | null>(lastAvailability);
   const [phase, setPhase] = useState<DictationPhase>("idle");
   const [interim, setInterim] = useState("");
@@ -206,7 +201,7 @@ export function useDictation(input: ComposerInput) {
       };
 
       const live = await subscribe(() =>
-        onDictationTranscript((e) => {
+        events.onDictationTranscript((e) => {
           // A previous session's flush, or one we've since disowned — not ours
           // to show. A partial of our own arriving before the id is known is
           // safe to drop: the next one carries the whole transcript again.
@@ -224,7 +219,7 @@ export function useDictation(input: ComposerInput) {
       if (!live) return;
 
       const stillLive = await subscribe(() =>
-        onDictationState((e) => {
+        events.onDictationState((e) => {
           if (e.state === "listening") {
             // Only one session can come up at a time, so the `listening` that
             // lands while our start is in flight is ours: adopt its id here, so
@@ -262,7 +257,7 @@ export function useDictation(input: ComposerInput) {
       if (!stillLive) return;
 
       await subscribe(() =>
-        onDictationLevel((e) => {
+        events.onDictationLevel((e) => {
           if (e.session !== sessionRef.current) return;
           setLevels((prev) => [...prev.slice(1), e.level]);
         }),
@@ -284,7 +279,7 @@ export function useDictation(input: ComposerInput) {
         void api.dictationStop().catch(() => {});
       }
     };
-  }, []);
+  }, [api, events]);
 
   // The failure was about the last attempt, not about the text; typing
   // dismisses it. Our own commit doesn't count as typing — a session that

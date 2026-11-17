@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  api,
-  onPairingClosed,
-  type PairingInvite,
-  type PairingPreset,
-  type RemoteStatus,
-} from "@/api";
+import type { PairingInvite, PairingPreset, RemoteStatus } from "@/api";
+import { useEngine } from "@/api/engine";
 
 /** How often the pane re-reads status. A phone connecting or dropping produces
  *  no Tauri event (the remote server is the thing being observed, not an agent),
@@ -36,6 +31,7 @@ export interface Remote {
  *  slice: nothing outside this page reads it, and it is only live while the
  *  page is mounted. */
 export function useRemote(): Remote {
+  const { api, events } = useEngine();
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [invite, setInvite] = useState<PairingInvite | null>(null);
   const [inviteClosed, setInviteClosed] = useState(false);
@@ -49,7 +45,7 @@ export function useRemote(): Remote {
     } catch (e) {
       setError(String(e));
     }
-  }, []);
+  }, [api]);
 
   useEffect(() => {
     void refresh();
@@ -60,9 +56,9 @@ export function useRemote(): Remote {
   // The host closes the window itself, and anyone on the network can make it:
   // the card must stop offering a code that no longer works.
   useEffect(() => {
-    const off = onPairingClosed(() => setInviteClosed(true));
+    const off = events.onPairingClosed(() => setInviteClosed(true));
     return () => void off.then((f) => f());
-  }, []);
+  }, [events]);
 
   /** Run a mutating command; they all answer with the fresh status. */
   const mutate = useCallback(async (call: () => Promise<RemoteStatus>) => {
@@ -84,7 +80,7 @@ export function useRemote(): Remote {
       if (!enabled) setInvite(null);
       await mutate(() => api.remoteSetEnabled(enabled));
     },
-    [mutate],
+    [mutate, api],
   );
 
   const setPort = useCallback(
@@ -93,24 +89,27 @@ export function useRemote(): Remote {
       setInvite(null);
       await mutate(() => api.remoteSetPort(port));
     },
-    [mutate],
+    [mutate, api],
   );
 
   // Its own error, not `error`: the page mints invites on its own, and one
   // landing right after a failed command must not wipe that command's reason.
-  const beginPairing = useCallback(async (preset: PairingPreset) => {
-    try {
-      setInvite(await api.remoteBeginPairing(preset));
-      setInviteClosed(false);
-      setInviteError(null);
-    } catch (e) {
-      setInviteError(String(e));
-    }
-  }, []);
+  const beginPairing = useCallback(
+    async (preset: PairingPreset) => {
+      try {
+        setInvite(await api.remoteBeginPairing(preset));
+        setInviteClosed(false);
+        setInviteError(null);
+      } catch (e) {
+        setInviteError(String(e));
+      }
+    },
+    [api],
+  );
 
   const revoke = useCallback(
     (deviceId: string) => mutate(() => api.remoteRevokeDevice(deviceId)),
-    [mutate],
+    [mutate, api],
   );
 
   return {

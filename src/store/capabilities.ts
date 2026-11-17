@@ -1,4 +1,5 @@
-// What the UI may offer in the environment the user is driving.
+// What the UI may offer on a host: the one a component is scoped to
+// (`EngineScope`), or the one a store action runs against.
 //
 // A paired host answers a subset of this app's 212 commands — the rows of
 // docs/remote-protocol.md's op table — so a control whose op is not on it has
@@ -11,8 +12,14 @@
 // paired hosts every gate below answers `null` and the app is what it was.
 
 import type { HostProvider } from "@/remote/types";
-import { useAppStore } from "@/store";
-import { activeEnvironment, type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "./environments";
+import { useAppStore, useHostId } from "@/store";
+import {
+  activeEnvironment,
+  type EnvironmentEntry,
+  type EnvironmentId,
+  environmentEntry,
+  LOCAL_ENVIRONMENT_ID,
+} from "./environments";
 import { anyGateReason, type ClosedGate, closedGates, type GateName, gateReason } from "./gates";
 import type { AppState } from "./types";
 
@@ -129,16 +136,18 @@ export function hostProvidersNote(env: EnvironmentEntry): { summary: string; tip
   return { summary, tip };
 }
 
-/** What Settings › Account has to say while a host is the environment on
- *  screen: the identity on that page is this Mac's, and the host's is the
- *  operator's to manage there. Null for the local environment, so the groups
+/** What Settings › Account has to say while any host is paired: the identity
+ *  on that page is This Mac's, and a host's is the operator's to manage there.
+ *  Takes every environment; null while none is a paired host, so the groups
  *  can drop it in unconditionally exactly like [`hostProvidersNote`].
  *
- *  Not a gate: the controls work — they act on this Mac, which is what they
+ *  Not a gate: the controls work — they act on This Mac, which is what they
  *  have always done — so the answer is a sentence, not a closed switch. */
-export function hostAccountNote(env: EnvironmentEntry): string | null {
-  if (env.kind === "local") return null;
-  return `This is this Mac's account. ${env.name} signs in with its own. Connect it there with \`fletch-host github login\`.`;
+export function hostAccountNote(environments: EnvironmentEntry[]): string | null {
+  const hosts = environments.filter((e) => e.kind === "remote");
+  if (hosts.length === 0) return null;
+  const [who, which] = hosts.length === 1 ? [hosts[0].name, "it"] : ["Each paired host", "each"];
+  return `This account is This Mac's. ${who} signs in with its own. Connect ${which} there with \`fletch-host github login\`.`;
 }
 
 /** The host's own version, for the rows that identify it. Null for the local
@@ -150,8 +159,9 @@ export function hostVersionLabel(env: EnvironmentEntry): string | null {
 
 /** How an environment's connection is doing, in words. Here beside the gate
  *  reasons because it is the same kind of thing — the short sentence a surface
- *  shows instead of the control it can't offer — and because two surfaces say
- *  it (the switcher, and the main pane while a host has nothing to show).
+ *  shows instead of the control it can't offer — and because several surfaces
+ *  say it (a host's chip, Settings' host picker, and the main pane while a host
+ *  has nothing to show).
  *
  *  `retrying` is what separates a host that will come back on its own from one
  *  only the user can fix: the client schedules no retry behind "this device is
@@ -168,30 +178,58 @@ export function connectionLabel(env: EnvironmentEntry): string {
   }
 }
 
-/** The entry the UI is driving, falling back to the local one — the same answer
- *  `activeEnvironment()` gives outside React, as a selector. */
+/** The entry of the host on screen, falling back to the local one — the same
+ *  answer `activeEnvironment()` gives outside React, as a selector. For what is
+ *  rendered in the on-screen host's scope (the palette), where the two agree. */
 export const activeEntry = (s: AppState): EnvironmentEntry =>
   s.environments[s.activeEnvironmentId] ?? s.environments[LOCAL_ENVIRONMENT_ID];
 
-/** Why `gate` is closed in the active environment, or null when it is open —
- *  the one thing a component needs to decide between rendering a control,
- *  rendering it disabled, or leaving it out. */
+/** `hostId`'s entry, falling back to the local one, as a selector. */
+export const entryOf = (s: AppState, hostId: EnvironmentId): EnvironmentEntry =>
+  s.environments[hostId] ?? s.environments[LOCAL_ENVIRONMENT_ID];
+
+/** The entry of the host the calling component is scoped to (`EngineScope`). */
+export function useHostEntry(): EnvironmentEntry {
+  const hostId = useHostId();
+  return useAppStore((s) => entryOf(s, hostId));
+}
+
+/** How a notice says which machine it is about, on the host the calling
+ *  component is scoped to: " on Studio" for a paired host, nothing for This
+ *  Mac. Every host's notices share the window, so one about a paired host's
+ *  workspace or project names the host. */
+export function useHostWhere(): string {
+  const env = useHostEntry();
+  return env.kind === "remote" ? ` on ${env.name}` : "";
+}
+
+/** Why `gate` is closed on the host the calling component is scoped to, or
+ *  null when it is open — the one thing a component needs to decide between
+ *  rendering a control, rendering it disabled, or leaving it out. */
 export function useGate(gate: GateName): string | null {
-  return useAppStore((s) => gateReason(activeEntry(s), gate));
+  const hostId = useHostId();
+  return useAppStore((s) => gateReason(entryOf(s, hostId), gate));
 }
 
 /** [`useGate`] for a control that leads to several flows: closed only when the
- *  active environment can run none of them. Pass a constant array — the value
- *  is a string, so a fresh one each render costs nothing, but it says what it
- *  means where a reader can see it. */
+ *  host can run none of them. Pass a constant array — the value is a string,
+ *  so a fresh one each render costs nothing, but it says what it means where a
+ *  reader can see it. */
 export function useAnyGate(gates: readonly GateName[]): string | null {
-  return useAppStore((s) => anyGateReason(activeEntry(s), gates));
+  const hostId = useHostId();
+  return useAppStore((s) => anyGateReason(entryOf(s, hostId), gates));
 }
 
-/** [`gateReason`] for the environment the user is driving, outside React — a
- *  store action refusing a write the button is already disabled for, so a
- *  keyboard path (Enter in a field, a blur that saves) cannot slip past the
- *  control. The same backstop `useGitActions.runAction` applies. */
+/** [`gateReason`] for `hostId`, outside React — a store action refusing a
+ *  write the button is already disabled for, so a keyboard path (Enter in a
+ *  field, a blur that saves) cannot slip past the control. The same backstop
+ *  `useGitActions.runAction` applies. */
+export function hostGateReason(hostId: EnvironmentId, gate: GateName): string | null {
+  return gateReason(environmentEntry(hostId), gate);
+}
+
+/** [`hostGateReason`] for the host on screen — for a global keyboard
+ *  shortcut, which acts on whatever the user is looking at. */
 export function activeGateReason(gate: GateName): string | null {
   return gateReason(activeEnvironment(), gate);
 }
@@ -200,5 +238,6 @@ export function activeGateReason(gate: GateName): string | null {
  *  chooses one by the selected action's key. `undefined` means the control
  *  calls nothing a host could refuse, so it is never gated. */
 export function useGateFor(gate: GateName | undefined): string | null {
-  return useAppStore((s) => (gate ? gateReason(activeEntry(s), gate) : null));
+  const hostId = useHostId();
+  return useAppStore((s) => (gate ? gateReason(entryOf(s, hostId), gate) : null));
 }

@@ -15,6 +15,7 @@ import type {
   PublishApproval,
   PublishApprovalResolved,
 } from "@/api";
+import { testEngine } from "@/test/engine";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { createSandboxSlice } from "./sandbox";
 
@@ -32,16 +33,17 @@ vi.mock("@/api", () => ({
 
 /** The slice creator and the actions, loosely typed: the test store carries
  *  only the sandbox slice, not the whole AppState. */
-type SliceFn = (set: unknown, get: unknown) => Record<string, unknown>;
+type SliceFn = (set: unknown, get: unknown, engine: unknown) => Record<string, unknown>;
 type Recv = (r: PublishApproval) => void;
 type Resolve = (e: PublishApprovalResolved) => void;
 type Load = () => Promise<void>;
 
 describe("receivePublishApproval", () => {
-  function store() {
+  /** A store acting for `hostId`: this Mac's unless told otherwise. */
+  function store(hostId = LOCAL_ENVIRONMENT_ID) {
     answerPublishApproval.mockClear();
     return create<Record<string, unknown>>((set, get) => ({
-      ...(createSandboxSlice as unknown as SliceFn)(set, get),
+      ...(createSandboxSlice as unknown as SliceFn)(set, get, testEngine(hostId)),
     }));
   }
 
@@ -86,9 +88,8 @@ describe("receivePublishApproval", () => {
   });
 
   // `publish:approval-requested` reaches only the clients connected when it
-  // fired, so a window that has just switched to a host — or reconnected to one
-  // — has to ask what is waiting rather than wait for an event that has been
-  // and gone.
+  // fired, so a window that has just (re)connected to a host has to ask what is
+  // waiting rather than wait for an event that has been and gone.
   describe("loadPendingPublishApprovals", () => {
     const remote = (ops: string[]): EnvironmentEntry => ({
       id: "host-1",
@@ -107,7 +108,7 @@ describe("receivePublishApproval", () => {
     it("replaces the queue with what the host is still blocked on", async () => {
       listPublishApprovals.mockResolvedValue([request({ id: "raised-while-away" })]);
       activeIs(remote(["approvals_list"]));
-      const s = store();
+      const s = store("host-1");
       // A card this window holds that the host has since resolved: wholesale,
       // so it goes.
       (s.getState().receivePublishApproval as Recv)(request({ id: "answered-elsewhere" }));
@@ -125,7 +126,7 @@ describe("receivePublishApproval", () => {
       // Replacing the queue wholesale used to drop it — the host then waits out
       // its timeout with nothing on screen to answer it.
       activeIs(remote(["approvals_list"]));
-      const s = store();
+      const s = store("host-1");
       listPublishApprovals.mockImplementation(async () => {
         (s.getState().receivePublishApproval as Recv)(request({ id: "raised-mid-flight" }));
         return [request({ id: "already-waiting" })];
@@ -141,7 +142,7 @@ describe("receivePublishApproval", () => {
 
     it("does not put back a prompt the host resolved while the list was in flight", async () => {
       activeIs(remote(["approvals_list"]));
-      const s = store();
+      const s = store("host-1");
       listPublishApprovals.mockImplementation(async () => {
         (s.getState().resolvePublishApproval as Resolve)({ id: "over", outcome: "denied" });
         return [request({ id: "over" }), request({ id: "still-waiting" })];
@@ -160,7 +161,7 @@ describe("receivePublishApproval", () => {
       // used to land its stale snapshot — and, since the buffer is the newest
       // claim's, it would have replayed almost nothing over it.
       activeIs(remote(["approvals_list"]));
-      const s = store();
+      const s = store("host-1");
       const answers: ((rows: PublishApproval[]) => void)[] = [];
       listPublishApprovals.mockImplementation(
         () => new Promise<PublishApproval[]>((resolve) => answers.push(resolve)),
@@ -186,12 +187,10 @@ describe("receivePublishApproval", () => {
     it("asks neither this Mac nor a host too old for the op", async () => {
       listPublishApprovals.mockClear();
       listPublishApprovals.mockResolvedValue([]);
-      const s = store();
-
-      activeIs();
-      await (s.getState().loadPendingPublishApprovals as Load)();
       activeIs(remote([]));
-      await (s.getState().loadPendingPublishApprovals as Load)();
+
+      await (store().getState().loadPendingPublishApprovals as Load)();
+      await (store("host-1").getState().loadPendingPublishApprovals as Load)();
 
       expect(listPublishApprovals).not.toHaveBeenCalled();
     });
@@ -224,7 +223,7 @@ describe("refreshBoxVms", () => {
     boxList.mockReset();
     activeIs(LOCAL_ENVIRONMENT_ID);
     return create<Record<string, unknown>>((set, get) => ({
-      ...(createSandboxSlice as unknown as SliceFn)(set, get),
+      ...(createSandboxSlice as unknown as SliceFn)(set, get, testEngine()),
     }));
   }
   const refresh = (s: ReturnType<typeof store>) => (s.getState().refreshBoxVms as Load)();
@@ -251,7 +250,9 @@ describe("refreshBoxVms", () => {
     expect(s.getState().boxStates).toEqual({ kept: state("kept", "stopped") });
   });
 
-  it("drops an answer that lands after a switch to another host", async () => {
+  it("keeps its host's answer when another host is put on screen meanwhile", async () => {
+    // The list is this host's whichever host the user is looking at by the
+    // time it lands: it goes into this host's state, nowhere else.
     const s = store();
     boxList.mockImplementation(async () => {
       activeIs("other-host");
@@ -260,8 +261,8 @@ describe("refreshBoxVms", () => {
 
     await refresh(s);
 
-    expect(s.getState().boxVms).toBeNull();
-    expect(s.getState().boxStates).toEqual({});
+    expect(ids(s)).toEqual(["fuji"]);
+    expect(s.getState().boxStates).toEqual({ fuji: state("fuji", "running") });
   });
 
   it("lets the newest of two overlapping reads own the list", async () => {
@@ -309,7 +310,7 @@ describe("egress prompts", () => {
     boxEgressAnswer.mockClear();
     boxEgressAnswer.mockResolvedValue(undefined);
     return create<Record<string, unknown>>((set, get) => ({
-      ...(createSandboxSlice as unknown as SliceFn)(set, get),
+      ...(createSandboxSlice as unknown as SliceFn)(set, get, testEngine()),
     }));
   }
   const prompt = (over: Partial<EgressPrompt> = {}): EgressPrompt => ({

@@ -9,13 +9,15 @@
 //
 // Polled here (local git on the host; no GitHub), paused while the document is
 // hidden (`usePoll`):
-//   - fleet shortstats, 5 s — the sidebar numbers;
-//   - the focused agent's full git state, 1 s with the panel showing, 10 s not.
+//   - every host's fleet shortstats, 5 s — the sidebar numbers, which show
+//     every host's rows (`useFleetGitSync`, mounted once per host);
+//   - the focused agent's full git state, 1 s with the panel showing, 10 s
+//     not (`useFocusedGitSync`, mounted for the host on screen).
 //
 // Listened to (folded by `eventListeners`), with one read to seed:
-//   - the fleet's PR state + CI: `loadAllPrStatus` when GitHub connects (below),
-//     and on environment switch / reconnect (`environmentSwitch`) and window
-//     focus (`setupResync`);
+//   - the fleet's PR state + CI: `loadAllPrStatus` when the host's GitHub
+//     connects (below), on every handshake (`environmentReconnected`) and on
+//     window focus (`setupResync`);
 //   - the focused checkouts' PR state, checks and review threads: one
 //     `get_pr_live` + `get_pr_threads` when a checkout comes into focus with
 //     nothing cached for it, or when its PR changes under it (see
@@ -29,16 +31,13 @@ import { focusedPrReads, parsePrSignature, prSignature } from "./focusedPrReads"
 import { checkoutKey, splitCheckoutKey } from "./git";
 import type { AppState } from "./types";
 
-/** Mount once, at the app root. */
-export function useGitSync() {
+/** What one host's whole fleet needs: its sidebar numbers and its PR seed.
+ *  Mount once per host, in its scope, whether or not it is on screen. */
+export function useFleetGitSync() {
   const fetchAllShortstats = useAppStore((s) => s.fetchAllShortstats);
-  const fetchGitState = useAppStore((s) => s.fetchGitState);
   const loadAllPrStatus = useAppStore((s) => s.loadAllPrStatus);
 
   usePoll(fetchAllShortstats, 5000, [fetchAllShortstats]);
-
-  const panelVisible = useAppStore((s) => !s.rightCollapsed && !s.activeDraftId);
-  useTrackedRepoPoll(fetchGitState, panelVisible ? 1000 : 10000, panelVisible);
 
   // The fleet seed on launch: GitHub is probed asynchronously, so this runs
   // when it reports connected rather than at mount (and again if it
@@ -48,7 +47,16 @@ export function useGitSync() {
   useEffect(() => {
     if (githubConnected) void loadAllPrStatus(true);
   }, [githubConnected, loadAllPrStatus]);
+}
 
+/** What the agent in the main pane needs: its checkouts' full git state and
+ *  their PR reads. Mount once, in the scope of the host on screen. */
+export function useFocusedGitSync() {
+  const fetchGitState = useAppStore((s) => s.fetchGitState);
+  const panelVisible = useAppStore((s) => !s.rightCollapsed && !s.activeDraftId);
+  useTrackedRepoPoll(fetchGitState, panelVisible ? 1000 : 10000, panelVisible);
+
+  const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
   useFocusedPrReads(githubConnected);
 }
 

@@ -1,6 +1,6 @@
 import { readFile, stat } from "@tauri-apps/plugin-fs";
-import { api } from "@/api";
-import { activeEnvironment } from "@/store/environments";
+import type { Engine } from "@/api/engine";
+import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { assertWithinUploadCap } from "@/util/attachmentUpload";
 import { baseName } from "@/util/paths";
 
@@ -26,20 +26,26 @@ import { baseName } from "@/util/paths";
  *  `src-tauri/src/lib.rs` calls the same `allow_file` for it. Anything else —
  *  a path this webview made up — is still refused, which is the point of not
  *  widening the capability instead. */
-export async function stageAttachmentPath(path: string): Promise<string> {
-  if (activeEnvironment().kind === "local") return api.stageAttachmentPath(path);
+export async function stageAttachmentPath(
+  { api, hostId }: Pick<Engine, "api" | "hostId">,
+  path: string,
+): Promise<string> {
+  if (hostId === LOCAL_ENVIRONMENT_ID) return api.stageAttachmentPath(path);
   const name = baseName(path);
   assertWithinUploadCap({ name, size: (await stat(path)).size });
   return api.savePastedAttachment(name, await readFile(path));
 }
 
 /** What the composer should hold for a file the user named by path on the
- *  environment being driven — an `@~/Downloads/shot.png` mention. Unlike a
- *  drop, the path is already the driven environment's own, so a host's path
+ *  engine's host — an `@~/Downloads/shot.png` mention. Unlike a drop, the path
+ *  is already that host's own, so a paired host's path
  *  stands as it is; on this Mac it is staged like a drop, for the same
  *  reason. A checkout-relative mention (`@src/app.ts`) never comes here: it
  *  names a file the agent reads in place. */
-export function stageEnvironmentPath(path: string): Promise<string> {
-  if (activeEnvironment().kind === "local") return api.stageAttachmentPath(path);
+export function stageEnvironmentPath(
+  { api, hostId }: Pick<Engine, "api" | "hostId">,
+  path: string,
+): Promise<string> {
+  if (hostId === LOCAL_ENVIRONMENT_ID) return api.stageAttachmentPath(path);
   return Promise.resolve(path);
 }

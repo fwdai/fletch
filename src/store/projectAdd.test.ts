@@ -24,9 +24,10 @@ vi.mock("@/util/track", () => ({ track }));
 // The gate reads the whole store module, which would pull the real slices in
 // through a cycle; every add here runs on the local environment, where it is
 // open.
-vi.mock("./capabilities", () => ({ activeGateReason: () => null }));
+vi.mock("./capabilities", () => ({ hostGateReason: () => null }));
 
 import type { Workspace } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { createComposerSlice } from "./composer";
 import { createDraftsSlice } from "./drafts";
@@ -46,12 +47,12 @@ const makeStore = (workspace: Workspace | null) => {
   const setLastError = vi.fn();
   const requestFocusJoin = vi.fn();
   const store = create<AppState>()(
-    (...a) =>
+    (set, get) =>
       ({
-        ...createReposSlice(...a),
-        ...createDraftsSlice(...a),
-        ...createWorkspaceTypesSlice(...a),
-        ...createComposerSlice(...a),
+        ...createReposSlice(set, get, activeEngine),
+        ...createDraftsSlice(set, get, activeEngine),
+        ...createWorkspaceTypesSlice(set, get, activeEngine),
+        ...createComposerSlice(set, get, activeEngine),
         closeProjectScreen,
         setLastError,
         requestFocusJoin,
@@ -71,7 +72,7 @@ const draftOf = (store: ReturnType<typeof makeStore>["store"]) => {
   return draft ? { ...draft, text: s.composerDrafts[draft.id] } : null;
 };
 
-/** Make `entry` (or the local environment) the active one, as a switch does. */
+/** Put `entry` (or the local environment) on screen, as a switch does. */
 const activeIs = (entry?: EnvironmentEntry) =>
   setEnvironmentsSource(() => ({
     activeEnvironmentId: entry?.id ?? LOCAL_ENVIRONMENT_ID,
@@ -190,12 +191,11 @@ describe("the draft after a project is added", () => {
     expect(store.getState().lastError).toBe("Error: not a git repository");
   });
 
-  it("is dropped when the user switches environments while it opens", async () => {
-    // Drafts are stashed per environment. The add has returned, but the draft's
-    // own reads are still in flight when the switch lands — the draft must not
-    // be written into, or selected in, the environment the user moved to, and
-    // the next read (about this repo) must not go to the other host either.
-    const { store, closeProjectScreen } = makeStore(workspaceOf([]));
+  it("opens on the host it was asked of when another host is put on screen", async () => {
+    // Drafts are the host's own. The add has returned, but the draft's reads
+    // are still in flight when the user puts another host on screen: they
+    // carry on against this host, and the draft opens in this host's state.
+    const { store } = makeStore(workspaceOf([]));
     api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
     api.allocateDraftName.mockImplementation(async () => {
       activeIs(remote);
@@ -205,46 +205,39 @@ describe("the draft after a project is added", () => {
     await store.getState().addWorkspaceRepo("/repos/app");
     await settled();
 
-    expect(api.repoDefaultBranch).not.toHaveBeenCalled();
-    expect(api.listRepoBranches).not.toHaveBeenCalled();
-    expect(store.getState().drafts).toEqual([]);
-    expect(store.getState().activeDraftId).toBeNull();
-    expect(closeProjectScreen).not.toHaveBeenCalled();
-    expect(track).not.toHaveBeenCalledWith("project_add_draft_opened", expect.anything());
+    expect(api.repoDefaultBranch).toHaveBeenCalledWith("/repos/app");
+    expect(draftOf(store)).toMatchObject({ repoPath: "/repos/app", name: "everest" });
   });
 
-  it("is dropped when the switch lands during the last read too", async () => {
-    const { store } = makeStore(workspaceOf([]));
-    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
-    api.repoDefaultBranch.mockImplementation(async () => {
-      activeIs(remote);
-      return "main";
-    });
+  it("puts its own host on screen when another host was", async () => {
+    const { store } = makeStore(workspaceOf(["/repos/app"]));
+    // A paired host's workspace is in the main pane while a project is added
+    // to this Mac from the sidebar.
+    store.setState({ activeEnvironmentId: remote.id });
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/new"]));
 
-    await store.getState().addWorkspaceRepo("/repos/app");
+    await store.getState().addWorkspaceRepo("/repos/new");
     await settled();
 
-    expect(store.getState().drafts).toEqual([]);
-    expect(track).not.toHaveBeenCalledWith("project_add_draft_opened", expect.anything());
+    expect(draftOf(store)?.repoPath).toBe("/repos/new");
+    expect(store.getState().activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
   });
 
-  it("does not send the base fallback read to a host the user switched to", async () => {
-    // A remembered base branch costs two reads. The switch lands during the
-    // first, and the branch turns out to be gone — the fallback read is about
-    // the old environment's repo and must not go to the new host.
-    const { store } = makeStore(workspaceOf([]));
-    store.getState().rememberDraftBase("/repos/app", "develop");
-    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
-    api.listRepoBranches.mockImplementation(async () => {
-      activeIs(remote);
-      return ["main"];
+  it("leaves the screen alone when the user put another host on it meanwhile", async () => {
+    const { store } = makeStore(workspaceOf(["/repos/app"]));
+    store.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/new"]));
+    api.allocateDraftName.mockImplementation(async () => {
+      store.setState({ activeEnvironmentId: remote.id });
+      return "everest";
     });
 
-    await store.getState().addWorkspaceRepo("/repos/app");
+    await store.getState().addWorkspaceRepo("/repos/new");
     await settled();
 
-    expect(api.repoDefaultBranch).not.toHaveBeenCalled();
-    expect(store.getState().drafts).toEqual([]);
+    // Open in its own host's state, for when the user comes back to it.
+    expect(draftOf(store)?.repoPath).toBe("/repos/new");
+    expect(store.getState().activeEnvironmentId).toBe(remote.id);
   });
 
   it("yields to a full-screen page the user opened while it was opening", async () => {

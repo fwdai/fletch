@@ -16,11 +16,14 @@ const { allocateDraftName, repoDefaultBranch, listRepoBranches, setSetting } = v
 vi.mock("@/api", () => ({ api: { allocateDraftName, repoDefaultBranch, listRepoBranches } }));
 vi.mock("@/storage/settings", () => ({ setSetting }));
 
+import { activeEngine } from "@/api/engine";
 import { createDraftsSlice } from "./drafts";
 import type { AppState } from "./types";
 
 const makeStore = () => {
-  const store = create<AppState>()((...a) => ({ ...createDraftsSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (set, get) => ({ ...createDraftsSlice(set, get, activeEngine) }) as AppState,
+  );
   store.setState({
     customAgents: [],
     modelsByAgent: {},

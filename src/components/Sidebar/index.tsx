@@ -1,112 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentRecord, ProjectRef, WfRun } from "@/api";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
-import type { DraftAgent } from "@/store";
-import { useAppStore } from "@/store";
+import { useAppStore, useEveryHost, useOnScreenSelection } from "@/store";
+import { EngineScope } from "@/store/EngineScope";
+import { type EnvironmentId, LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename, plural } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
-import { groupProjectRefs, projectKeyResolver } from "@/util/projects";
-import { useRuns } from "@/workflows/run/useRuns";
 import { isGroupOpen, type OpenMap } from "./groupOpen";
+import { groupSignal, type ProjectGroupData, rowHost, type SidebarRow } from "./hostGroups";
 import { NewProjectPopover } from "./NewProjectPopover";
 import { PaletteHint } from "./PaletteHint";
 import { ProjectGroup } from "./ProjectGroup";
 import type { ProjectOption } from "./ProjectSelector";
 import { applyFocus } from "./projectFocus";
-import { projectSignal } from "./projectSignal";
+import type { SignalSources } from "./projectSignal";
 import { bubbleActive } from "./recentProjects";
 import { focusRow, SIDEBAR_LIST_ID, stepOrigin, visibleRows } from "./rowNav";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarHeader } from "./SidebarHeader";
+import { useHostGroups } from "./useHostGroups";
+import { useHostRuns } from "./useHostRuns";
 import { useProjectFocus } from "./useProjectFocus";
 import { useProjectReorder } from "./useProjectReorder";
 import { useTurnActivity } from "./useTurnActivity";
-
-interface ProjectGroupData {
-  /** Stable group id: the project_id, or the repo path for repos that aren't
-   *  pinned (an agent whose repo was removed from the sidebar). */
-  key: string;
-  /** Project display name (folder basename fallback for unpinned repos). */
-  label: string;
-  /** All repos attached to the project, in creation order. */
-  repoPaths: string[];
-  /** The project's first repo — the drag/order key, draft target, and
-   *  settings key, so single-repo projects behave exactly as before. */
-  primaryPath: string;
-  agents: AgentRecord[];
-  drafts: DraftAgent[];
-  runs: WfRun[];
-  pinned: boolean;
-}
-
-/** Build one group per project. The pinned repos (`workspace.projects`) are the
- *  single source of truth for which groups exist: a multi-repo project folds
- *  into one group, keyed by `project_id`. Agents, runs, and drafts only *attach*
- *  to those groups — they never fabricate one from a stale reference, so a
- *  deleted or relocated project can't reappear as a phantom sidebar group.
- *
- *  Agents and runs resolve by `project_id` first (it survives a relocate, where
- *  a run's stored `repo_path` and a draft's path both go stale), then by repo
- *  path, and only a genuinely *unpinned* repo (e.g. detached while an agent
- *  still runs in it) gets a path-keyed fallback group. Drafts carry no
- *  project_id, so they attach by path only and are dropped from the view when
- *  their repo is gone. */
-function groupByProject(
-  refs: readonly ProjectRef[],
-  agents: readonly AgentRecord[],
-  drafts: readonly DraftAgent[],
-  runs: readonly WfRun[],
-): ProjectGroupData[] {
-  const groups = new Map<string, ProjectGroupData>();
-  const byPath = new Map<string, ProjectGroupData>();
-  for (const project of groupProjectRefs(refs)) {
-    const g: ProjectGroupData = {
-      key: project.id,
-      label: project.name,
-      repoPaths: project.repos.map((r) => r.path),
-      primaryPath: project.repos[0].path,
-      agents: [],
-      drafts: [],
-      runs: [],
-      pinned: true,
-    };
-    groups.set(project.id, g);
-    for (const r of project.repos) byPath.set(r.path, g);
-  }
-  // Resolve real backend work (agents, runs) to its group (see
-  // `projectKeyResolver`): by project first, so a relocate attaches to the
-  // moved group instead of forking. A repo that isn't pinned at all still
-  // surfaces its work via a path-keyed fallback group.
-  const keyOf = projectKeyResolver(refs);
-  const groupFor = (projectId: string, path: string | undefined): ProjectGroupData | null => {
-    const key = keyOf(projectId, path);
-    if (key === undefined) return null;
-    let g = groups.get(key);
-    if (!g) {
-      g = {
-        key,
-        label: basename(key),
-        repoPaths: [key],
-        primaryPath: key,
-        agents: [],
-        drafts: [],
-        runs: [],
-        pinned: false,
-      };
-      groups.set(key, g);
-      byPath.set(key, g);
-    }
-    return g;
-  };
-  for (const a of agents) groupFor(a.project_id, a.repos[0]?.repo_path)?.agents.push(a);
-  for (const r of runs) groupFor(r.project_id, r.repo_path)?.runs.push(r);
-  // Drafts are client-only and keyed solely by repo path. Attach to an existing
-  // group but never create one: a draft left pointing at a deleted/relocated
-  // repo is dropped from the view rather than resurrecting a phantom group.
-  for (const d of drafts) byPath.get(d.repoPath)?.drafts.push(d);
-  return Array.from(groups.values());
-}
 
 function applySearch(groups: ProjectGroupData[], q: string): ProjectGroupData[] {
   if (!q.trim()) return groups;
@@ -133,12 +49,14 @@ function applySearch(groups: ProjectGroupData[], q: string): ProjectGroupData[] 
     );
 }
 
+/** The project list, over every host: This Mac's projects with the work of
+ *  every paired host that runs in one of them, then the projects only a
+ *  paired host has (see `groupByProject`). Rendered in This Mac's scope, with
+ *  each row (and a paired host's group) in the scope of the host it is on. */
 export function Sidebar() {
   const workspace = useAppStore((s) => s.workspace);
-  const drafts = useAppStore((s) => s.drafts);
-  const selectedAgentId = useAppStore((s) => s.selectedAgentId);
-  const activeDraftId = useAppStore((s) => s.activeDraftId);
-  const selectedRunId = useAppStore((s) => s.selectedRunId);
+  // What the main pane shows: one selection for the window, on one host.
+  const selection = useOnScreenSelection();
 
   const [query, setQuery] = useState("");
   const [openMap, setOpenMap] = useState<OpenMap>({});
@@ -181,44 +99,34 @@ export function Sidebar() {
   const dragCleanup = useRef<(() => void) | null>(null);
 
   const { sortPaths, reorder } = useProjectReorder();
-
-  const liveAgents = useMemo(
-    () =>
-      (workspace?.agents ?? [])
-        .filter((a) => !a.archive)
-        .slice()
-        .sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
-    [workspace?.agents],
-  );
-  const runs = useRuns();
-  const groups = useMemo(() => {
-    const built = groupByProject(workspace?.projects ?? [], liveAgents, drafts, runs);
-    // Manual ordering is keyed by each project's primary repo path, so orders
-    // saved before multi-repo grouping keep working unchanged.
-    const order = sortPaths(built.map((g) => g.primaryPath));
-    const byPath = new Map(built.map((g) => [g.primaryPath, g]));
-    return order.map((p) => byPath.get(p)).filter((g): g is ProjectGroupData => g !== undefined);
-  }, [workspace?.projects, liveAgents, drafts, runs, sortPaths]);
+  const { runsByHost, feeds } = useHostRuns();
+  const groups = useHostGroups(runsByHost, sortPaths);
 
   // The project selector narrows the list to a focus; the search then filters
   // inside it. Its menu lists every project, in the manual order.
   const groupKeys = useMemo(() => groups.map((g) => g.key), [groups]);
   const { focus, setFocus } = useProjectFocus(groupKeys);
-  // Both maps are selected whole (stable references) and read outside the
-  // selector, as the agent rows do.
-  const pendingToolUse = useAppStore((s) => s.pendingToolUse);
-  const unseenResults = useAppStore((s) => s.unseenResults);
-  const projectOptions = useMemo<ProjectOption[]>(
-    () =>
-      groups.map((g) => ({
-        key: g.key,
-        label: g.label,
-        icon: workspace?.projects.find((p) => p.path === g.primaryPath) ?? { name: g.label },
-        count: g.agents.length + g.drafts.length + g.runs.length,
-        signal: projectSignal(g, { pending: pendingToolUse, unseen: unseenResults }),
-      })),
-    [groups, workspace?.projects, pendingToolUse, unseenResults],
-  );
+  // Each host's maps are selected whole (stable references) and read outside
+  // the selector, as the agent rows do.
+  const hostIds = useEveryHost((_s, hostId) => hostId);
+  const pendingToolUse = useEveryHost((s) => s.pendingToolUse);
+  const unseenResults = useEveryHost((s) => s.unseenResults);
+  const projectOptions = useMemo<ProjectOption[]>(() => {
+    const sourcesOf = (hostId: EnvironmentId): SignalSources => {
+      const i = hostIds.indexOf(hostId);
+      return { pending: pendingToolUse[i] ?? {}, unseen: unseenResults[i] ?? {} };
+    };
+    return groups.map((g) => ({
+      key: g.key,
+      label: g.label,
+      // A project only a paired host has shows its initial: the icon is that
+      // host's to serve.
+      icon: (g.hostId === LOCAL_ENVIRONMENT_ID &&
+        workspace?.projects.find((p) => p.path === g.primaryPath)) || { name: g.label },
+      count: g.agents.length + g.drafts.length + g.runs.length,
+      signal: groupSignal(g, sourcesOf),
+    }));
+  }, [groups, workspace?.projects, hostIds, pendingToolUse, unseenResults]);
   // Focusing on a project is asking to see its workspaces, so the projects
   // picked open with the pick — wherever it was made: the selector, the
   // palette or ⌘⇧P. Keyed on the store's own array, which only changes when
@@ -259,7 +167,17 @@ export function Sidebar() {
   // off in Settings › Layout. Off while searching too: the result set is
   // short and its order should match the list it came from.
   const activeFirst = useAppStore((s) => s.features.sidebarActiveFirst);
-  const { projectTurns, agentTurns } = useTurnActivity(groups);
+  // Turns are stamped for This Mac's workspaces: the stamps are kept by agent
+  // id, which a paired host's agents share with this Mac's.
+  const localWork = useMemo(
+    () =>
+      groups.map((g) => ({
+        key: g.key,
+        agents: g.agents.filter((a) => rowHost(g, a) === LOCAL_ENVIRONMENT_ID),
+      })),
+    [groups],
+  );
+  const { projectTurns, agentTurns } = useTurnActivity(localWork);
   // The age cutoffs here and in each group's fold are re-checked once a minute,
   // so a project (or a row) that ages out while the app sits open settles back
   // without waiting for the next snapshot. One clock, shared with the groups.
@@ -275,12 +193,17 @@ export function Sidebar() {
   // An empty project has no workspace to scan for, so in the computed order
   // the empty ones settle at the tail, where they stack as one compact block
   // (see `.proj.empty`). The manual order, and a search's, stay as they are.
+  // Whatever the order, the projects only a paired host has come after This
+  // Mac's.
   const ordered = useMemo(() => {
-    const list = [...active, ...rest];
-    if (!activeFirst || searching) return list;
+    const isMine = (g: ProjectGroupData) => g.hostId === LOCAL_ENVIRONMENT_ID;
     const isEmpty = (g: ProjectGroupData) =>
       g.agents.length + g.drafts.length + g.runs.length === 0;
-    return [...list.filter((g) => !isEmpty(g)), ...list.filter(isEmpty)];
+    let list = [...active, ...rest];
+    if (activeFirst && !searching) {
+      list = [...list.filter((g) => !isEmpty(g)), ...list.filter(isEmpty)];
+    }
+    return [...list.filter(isMine), ...list.filter((g) => !isMine(g))];
   }, [active, rest, activeFirst, searching]);
 
   // Dragging is the manual mode. With active-first on the top of the list is
@@ -288,7 +211,10 @@ export function Sidebar() {
   // Off while searching too: a reorder only means something over the full,
   // unfiltered list.
   const reorderable = !activeFirst && !searching;
-  const orderedPaths = useMemo(() => groups.map((g) => g.primaryPath), [groups]);
+  const orderedPaths = useMemo(
+    () => groups.filter((g) => g.hostId === LOCAL_ENVIRONMENT_ID).map((g) => g.primaryPath),
+    [groups],
+  );
 
   // Begin a pointer-driven reorder. `markDragged` lets the group swallow the
   // trailing click so a real drag doesn't also toggle it open/closed. The order
@@ -376,48 +302,55 @@ export function Sidebar() {
   }
 
   // Auto-expand a project when its agent, draft, or run is selected.
+  const { hostId: onScreenHost, agentId, draftId, runId } = selection;
   useEffect(() => {
     setOpenMap((prev) => {
       const next = { ...prev };
+      const selected = (g: ProjectGroupData, row: SidebarRow, id: string | null) =>
+        row.id === id && rowHost(g, row) === onScreenHost;
       for (const g of groups) {
-        if (g.agents.some((a) => a.id === selectedAgentId)) next[g.key] = true;
-        if (g.drafts.some((d) => d.id === activeDraftId)) next[g.key] = true;
-        if (g.runs.some((r) => r.id === selectedRunId)) next[g.key] = true;
+        if (g.agents.some((a) => selected(g, a, agentId))) next[g.key] = true;
+        if (g.drafts.some((d) => selected(g, d, draftId))) next[g.key] = true;
+        if (g.runs.some((r) => selected(g, r, runId))) next[g.key] = true;
         if (!(g.key in next)) {
           next[g.key] = g.agents.length > 0 || g.drafts.length > 0 || g.runs.length > 0;
         }
       }
       return next;
     });
-  }, [groups, selectedAgentId, activeDraftId, selectedRunId]);
+  }, [groups, onScreenHost, agentId, draftId, runId]);
 
   function renderGroup(g: ProjectGroupData) {
-    const isOver = overPath === g.primaryPath && dragPath !== g.primaryPath;
+    // Only This Mac's projects are in the manual order.
+    const canReorder = reorderable && g.hostId === LOCAL_ENVIRONMENT_ID;
+    const isOver = canReorder && overPath === g.primaryPath && dragPath !== g.primaryPath;
     const dropAfter =
       isOver &&
       dragPath != null &&
       orderedPaths.indexOf(dragPath) < orderedPaths.indexOf(g.primaryPath);
     return (
-      <ProjectGroup
-        key={g.key}
-        label={g.label}
-        repoPath={g.primaryPath}
-        repoPaths={g.repoPaths}
-        agents={g.agents}
-        drafts={g.drafts}
-        runs={g.runs}
-        open={isGroupOpen(g.key, searching, openMap, searchOpenMap)}
-        onToggle={() => toggleGroup(g.key)}
-        fold={!searching}
-        activity={agentTurns}
-        now={now}
-        reorderable={reorderable}
-        dragging={dragPath === g.primaryPath}
-        dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}
-        onReorderPointerDown={
-          reorderable ? (e, markDragged) => startReorder(g.primaryPath, e, markDragged) : undefined
-        }
-      />
+      <EngineScope key={g.key} hostId={g.hostId}>
+        <ProjectGroup
+          label={g.label}
+          repoPath={g.primaryPath}
+          repoPaths={g.repoPaths}
+          agents={g.agents}
+          drafts={g.drafts}
+          runs={g.runs}
+          hostOf={g.hostOf}
+          open={isGroupOpen(g.key, searching, openMap, searchOpenMap)}
+          onToggle={() => toggleGroup(g.key)}
+          fold={!searching}
+          activity={agentTurns}
+          now={now}
+          reorderable={canReorder}
+          dragging={canReorder && dragPath === g.primaryPath}
+          dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}
+          onReorderPointerDown={
+            canReorder ? (e, markDragged) => startReorder(g.primaryPath, e, markDragged) : undefined
+          }
+        />
+      </EngineScope>
     );
   }
 
@@ -457,6 +390,7 @@ export function Sidebar() {
 
       <PaletteHint />
       <SidebarFooter />
+      {feeds}
 
       {npOpen && (
         <NewProjectPopover

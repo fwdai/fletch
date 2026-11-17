@@ -7,13 +7,14 @@
 // through the identical send machinery instead of a second copy of it.
 
 import { useCallback, useEffect, useState } from "react";
-import { type AgentRecord, api } from "@/api";
+import type { AgentRecord } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Composer } from "@/components/Composer";
 import { providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import { isAgentBusy } from "@/helpers";
 import { getLinearTeamId } from "@/storage/projectSettings";
-import { useAppStore } from "@/store";
+import { useAppStore, useHostStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { isCompacting } from "@/store/compaction";
 import { EGRESS_MODE_KEY, effectiveEgressMode } from "@/util/egressMode";
@@ -39,6 +40,8 @@ export function ChatComposer({
    *  container re-pins its log to the bottom here. */
   onSend?: () => void;
 }) {
+  const { api } = useEngine();
+  const store = useHostStore();
   const transcriptLoading = useAppStore((s) => s.transcriptLoading[agent.id] ?? false);
   // Raw busy (a paused question still counts) for the Stop affordance; the
   // strip gets the question-aware `liveBusy` from the owner.
@@ -89,7 +92,7 @@ export function ChatComposer({
   useEffect(() => {
     let cancelled = false;
     setLinearTeamId(undefined);
-    getLinearTeamId(projectId)
+    getLinearTeamId(api, projectId)
       .then((teamId) => {
         if (!cancelled) setLinearTeamId(teamId);
       })
@@ -97,7 +100,7 @@ export function ChatComposer({
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, api]);
 
   // The roadmap item picked into the draft is handed to this agent once the
   // message that carries its brief has reached the host — the board's "Send
@@ -234,7 +237,7 @@ export function ChatComposer({
               // strip). A refused folder is in the error banner, and false
               // puts the draft back to fix.
               // Read at send rather than subscribed to: nothing draws from it.
-              const pick = useAppStore.getState().composerRoadmapPicks[agent.id];
+              const pick = store.getState().composerRoadmapPicks[agent.id];
               // The message still names the item, so it is what is going out.
               const carried = pick && text.includes(pick.code) ? pick : undefined;
               const sent = send(agent.id, text, attachments, folders, {

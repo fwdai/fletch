@@ -1,22 +1,22 @@
 import { applyPolicy, type ChatItem, getAdapter } from "@/adapters";
 import { handoffTranscript } from "@/adapters/handoff";
 import { hasUsage, type UsageSnapshot, usageFromRecords } from "@/adapters/usage";
-import {
-  type AgentRecord,
-  type AgentView,
-  api,
-  type FolderGrant,
-  type ForkCode,
-  type ForkContext,
-  type RunPortEvent,
-  type RunStateEvent,
-  type RunStateSnapshot,
-  type RunStatus,
-  type SessionRecord,
-  type SpawnStage,
-  type UserTurn,
-  type Workspace,
-  type WorkspaceKind,
+import type {
+  AgentRecord,
+  AgentView,
+  Api,
+  FolderGrant,
+  ForkCode,
+  ForkContext,
+  RunPortEvent,
+  RunStateEvent,
+  RunStateSnapshot,
+  RunStatus,
+  SessionRecord,
+  SpawnStage,
+  UserTurn,
+  Workspace,
+  WorkspaceKind,
 } from "@/api";
 import { discoverCommands } from "@/data/slashCommands";
 import {
@@ -52,16 +52,8 @@ import {
   PENDING_ARCHIVE,
 } from "./pendingHides";
 import { refreshWorkspace } from "./refreshWorkspace";
-import { sendOrder } from "./sendOrder";
+import { sendOrder, sendsInFlight } from "./sendOrder";
 import type { AppState, SliceCreator } from "./types";
-
-// Per-agent serialization of session-config mutations (effort/model). Config
-// and message sends travel on separate async channels, so without this a send
-// could reach the backend and dispatch a turn before a just-issued effort/model
-// change was persisted — the turn would then read stale config from the record.
-// `sendUserMessage` awaits the agent's pending config op before dispatching, and
-// chaining also applies rapid config changes in call order.
-const configOps = createKeyedQueue();
 
 /** A degraded transcript-ingest state stored per agent (the `healthy` status is
  *  never stored — it deletes the key). `provider`/`version` are for the banner
@@ -176,6 +168,10 @@ export interface WorkspaceSlice {
   runs: Record<string, RunStatus>;
 
   selectAgent: (id: string | null) => void;
+  /** Drop `id`'s unseen-results mark: the agent is on screen again without
+   *  having been selected anew (its host came back on screen with it still
+   *  selected). */
+  markResultsSeen: (id: string) => void;
   /** Select a workflow run for the main pane (clears agent/draft/settings selection). */
   selectRun: (id: string) => void;
   /** Select a run and focus one of its step agents' chats in the monitor. */
@@ -290,7 +286,10 @@ export interface WorkspaceSlice {
  *  (display) and forkAgent (handoff transcript) so what a fork's agent is told
  *  is built from the history the child will show — never from a
  *  possibly-unloaded managedLogs entry. */
-async function readHistory(id: string): Promise<{ records: SessionRecord[]; turns: UserTurn[] }> {
+async function readHistory(
+  api: Api,
+  id: string,
+): Promise<{ records: SessionRecord[]; turns: UserTurn[] }> {
   let records = await api.readSessionRecords(id);
   if (records.every((r) => r.inherited)) {
     await api.syncSession(id);
@@ -307,8 +306,12 @@ async function readHistory(id: string): Promise<{ records: SessionRecord[]; turn
  *  agent, so nothing the new session should be told it said — stay out of
  *  it. Read from the records rather than managedLogs, so it is right even when
  *  the chat has not been loaded into the UI yet. */
-export async function handoffLog(provider: string | undefined, id: string): Promise<ChatItem[]> {
-  const { records, turns } = await readHistory(id);
+export async function handoffLog(
+  api: Api,
+  provider: string | undefined,
+  id: string,
+): Promise<ChatItem[]> {
+  const { records, turns } = await readHistory(api, id);
   const log = mergeUserTurns(
     reduceRecords(provider, records),
     turns.filter((t) => t.native_id),
@@ -325,692 +328,709 @@ const SLASH_BUSY_LABELS: Record<string, string> = {
   help: "Helping",
 };
 
-export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => ({
-  workspace: null,
-  selectedAgentId: null,
-  attendedChatId: null,
-  setAttendedChat: (id) => set({ attendedChatId: id }),
-  selectedRunId: null,
-  focusedStepAgentId: null,
-  offSidebarAgents: {},
-  managedLogs: {},
-  pendingToolUse: {},
-  transcriptLoading: {},
-  transcriptLoaded: {},
-  sending: {},
-  turnStartedAt: {},
-  busyLabel: {},
-  spawnStage: {},
-  switchInFlight: {},
-  switchingAccount: {},
-  movingWorkspace: {},
-  folderChangeWaiting: {},
-  unseenResults: {},
-  syncHealth: {},
-  usage: {},
-  runs: {},
+export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, engine) => {
+  const { api, hostId } = engine;
+  // Per-agent serialization of session-config mutations (effort/model). Config
+  // and message sends travel on separate async channels, so without this a send
+  // could reach the backend and dispatch a turn before a just-issued effort/model
+  // change was persisted — the turn would then read stale config from the record.
+  // `sendUserMessage` awaits the agent's pending config op before dispatching, and
+  // chaining also applies rapid config changes in call order.
+  const configOps = createKeyedQueue();
 
-  registerOffSidebarAgents: (agents) =>
-    set((state) => ({
-      offSidebarAgents: agents.reduce(
-        (acc, a) => {
-          acc[a.id] = a;
-          return acc;
-        },
-        { ...state.offSidebarAgents },
-      ),
-      // A fresh read of these records settles their `sending` bridge the way a
-      // workspace snapshot settles a sidebar agent's (see helpers/sending):
-      // they are absent from that snapshot, so this is their only authority.
-      sending: reconcileSending(state.sending, agents),
-    })),
+  return {
+    workspace: null,
+    selectedAgentId: null,
+    attendedChatId: null,
+    setAttendedChat: (id) => set({ attendedChatId: id }),
+    selectedRunId: null,
+    focusedStepAgentId: null,
+    offSidebarAgents: {},
+    managedLogs: {},
+    pendingToolUse: {},
+    transcriptLoading: {},
+    transcriptLoaded: {},
+    sending: {},
+    turnStartedAt: {},
+    busyLabel: {},
+    spawnStage: {},
+    switchInFlight: {},
+    switchingAccount: {},
+    movingWorkspace: {},
+    folderChangeWaiting: {},
+    unseenResults: {},
+    syncHealth: {},
+    usage: {},
+    runs: {},
 
-  selectAgent: (id) =>
-    set((state) => {
-      // Focusing an agent marks its results as seen — drop the key entirely
-      // so the map stays minimal and an absent key is the canonical "seen"
-      // state (matching how the component reads it with `?? false`).
-      let unseenResults = state.unseenResults;
-      if (id && id in unseenResults) {
-        const { [id]: _seen, ...rest } = unseenResults;
-        unseenResults = rest;
-      }
-      return {
-        selectedAgentId: id,
-        selectedRunId: null,
+    registerOffSidebarAgents: (agents) =>
+      set((state) => ({
+        offSidebarAgents: agents.reduce(
+          (acc, a) => {
+            acc[a.id] = a;
+            return acc;
+          },
+          { ...state.offSidebarAgents },
+        ),
+        // A fresh read of these records settles their `sending` bridge the way a
+        // workspace snapshot settles a sidebar agent's (see helpers/sending):
+        // they are absent from that snapshot, so this is their only authority.
+        sending: reconcileSending(state.sending, agents, sendsInFlight(hostId)),
+      })),
+
+    markResultsSeen: (id) =>
+      set((state) => {
+        if (!(id in state.unseenResults)) return state;
+        const { [id]: _seen, ...unseenResults } = state.unseenResults;
+        return { unseenResults };
+      }),
+
+    selectAgent: (id) =>
+      set((state) => {
+        // Focusing an agent marks its results as seen — drop the key entirely
+        // so the map stays minimal and an absent key is the canonical "seen"
+        // state (matching how the component reads it with `?? false`).
+        let unseenResults = state.unseenResults;
+        if (id && id in unseenResults) {
+          const { [id]: _seen, ...rest } = unseenResults;
+          unseenResults = rest;
+        }
+        return {
+          selectedAgentId: id,
+          selectedRunId: null,
+          activeDraftId: null,
+          historyOpen: false,
+          // A sub-agent thread belongs to the agent it was opened in.
+          openThread: null,
+          unseenResults,
+        };
+      }),
+
+    // Select a workflow run for the main pane. Mirrors selectAgent: clears
+    // agent/draft/history/settings selection.
+    selectRun: (id) =>
+      set({
+        selectedRunId: id,
+        selectedAgentId: null,
         activeDraftId: null,
         historyOpen: false,
-        // A sub-agent thread belongs to the agent it was opened in.
         openThread: null,
-        unseenResults,
-      };
-    }),
+        settingsScreenOpen: false,
+        usageScreenOpen: false,
+      }),
 
-  // Select a workflow run for the main pane. Mirrors selectAgent: clears
-  // agent/draft/history/settings selection.
-  selectRun: (id) =>
-    set({
-      selectedRunId: id,
-      selectedAgentId: null,
-      activeDraftId: null,
-      historyOpen: false,
-      openThread: null,
-      settingsScreenOpen: false,
-      usageScreenOpen: false,
-    }),
+    // Select a run and focus one of its step agents' chats in the monitor. The
+    // RunView reads `focusedStepAgentId` and drives its attempt selection to the
+    // attempt owned by that agent, then clears it — so the sidebar step child and
+    // the monitor's attempt rail stay one selection.
+    selectRunStep: (runId, agentId) =>
+      set({
+        selectedRunId: runId,
+        focusedStepAgentId: agentId,
+        selectedAgentId: null,
+        activeDraftId: null,
+        historyOpen: false,
+        openThread: null,
+        settingsScreenOpen: false,
+        usageScreenOpen: false,
+      }),
+    clearFocusedStepAgent: () => set({ focusedStepAgentId: null }),
 
-  // Select a run and focus one of its step agents' chats in the monitor. The
-  // RunView reads `focusedStepAgentId` and drives its attempt selection to the
-  // attempt owned by that agent, then clears it — so the sidebar step child and
-  // the monitor's attempt rail stay one selection.
-  selectRunStep: (runId, agentId) =>
-    set({
-      selectedRunId: runId,
-      focusedStepAgentId: agentId,
-      selectedAgentId: null,
-      activeDraftId: null,
-      historyOpen: false,
-      openThread: null,
-      settingsScreenOpen: false,
-      usageScreenOpen: false,
-    }),
-  clearFocusedStepAgent: () => set({ focusedStepAgentId: null }),
+    spawn: async (view, repoPath) => {
+      set({ busy: true, lastError: null });
+      try {
+        // The draft path carries the base the user picked; this one has no picker,
+        // so resolve the repo's default explicitly. Passing nothing used to make
+        // the backend fall back to the source repo's currently-checked-out branch
+        // — forking a new agent onto the user's in-progress local work.
+        const base = await resolveBaseBranch(api, repoPath);
+        const rec = await api.spawnAgent(
+          view,
+          repoPath,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          base,
+        );
+        // Apply the selection (and custom-view log seeds) immediately, ahead of the
+        // guarded workspace refresh, so this user-intent state can never be dropped
+        // if a concurrent refresh supersedes ours. The record rides along so a
+        // recycled name can't open the chat against its archived predecessor
+        // (see adoptSpawnedAgent).
+        set((state) => {
+          const patches: Partial<AppState> = {
+            workspace: adoptSpawnedAgent(state.workspace, rec),
+            selectedAgentId: rec.id,
+          };
+          if (view === "custom") {
+            patches.managedLogs = { ...state.managedLogs, [rec.id]: [] };
+          }
+          return patches;
+        });
+        await refreshWorkspace(engine, set);
+        return rec;
+      } catch (e) {
+        set({ lastError: String(e) });
+        return null;
+      } finally {
+        set({ busy: false });
+      }
+    },
 
-  spawn: async (view, repoPath) => {
-    set({ busy: true, lastError: null });
-    try {
-      // The draft path carries the base the user picked; this one has no picker,
-      // so resolve the repo's default explicitly. Passing nothing used to make
-      // the backend fall back to the source repo's currently-checked-out branch
-      // — forking a new agent onto the user's in-progress local work.
-      const base = await resolveBaseBranch(repoPath);
-      const rec = await api.spawnAgent(
-        view,
-        repoPath,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        base,
-      );
-      // Apply the selection (and custom-view log seeds) immediately, ahead of the
-      // guarded workspace refresh, so this user-intent state can never be dropped
-      // if a concurrent refresh supersedes ours. The record rides along so a
-      // recycled name can't open the chat against its archived predecessor
-      // (see adoptSpawnedAgent).
-      set((state) => {
-        const patches: Partial<AppState> = {
+    forkAgent: async (parentId, turnId, code, context) => {
+      set({ busy: true, lastError: null });
+      try {
+        // Render the transcript to summarize from the history the child will
+        // show (see handoffLog). A full fork needs none: the backend writes the
+        // conversation itself as the child's own transcript.
+        let transcript: string | null = null;
+        if (context === "summary") {
+          const log = await handoffLog(api, providerFor(get(), parentId), parentId);
+          transcript = handoffTranscript(log, turnId);
+        }
+        const rec = await api.forkAgent(parentId, turnId, code, context, transcript);
+        // No optimistic managedLogs seed. Every fork is created with lineage, so
+        // opening it triggers loadHistoryTranscript to render the parent's
+        // history. Set the selection ahead of the guarded refresh so it survives
+        // a superseding concurrent refresh, with the record in the same update
+        // so a recycled name can't mount against its archived predecessor (see
+        // adoptSpawnedAgent).
+        set((state) => ({
           workspace: adoptSpawnedAgent(state.workspace, rec),
           selectedAgentId: rec.id,
-        };
-        if (view === "custom") {
-          patches.managedLogs = { ...state.managedLogs, [rec.id]: [] };
-        }
-        return patches;
-      });
-      await refreshWorkspace(set);
-      return rec;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return null;
-    } finally {
-      set({ busy: false });
-    }
-  },
-
-  forkAgent: async (parentId, turnId, code, context) => {
-    set({ busy: true, lastError: null });
-    try {
-      // Render the transcript to summarize from the history the child will
-      // show (see handoffLog). A full fork needs none: the backend writes the
-      // conversation itself as the child's own transcript.
-      let transcript: string | null = null;
-      if (context === "summary") {
-        const log = await handoffLog(providerFor(get(), parentId), parentId);
-        transcript = handoffTranscript(log, turnId);
+          activeDraftId: null,
+        }));
+        await refreshWorkspace(engine, set);
+        return rec;
+      } catch (e) {
+        set({ lastError: String(e) });
+        return null;
+      } finally {
+        set({ busy: false });
       }
-      const rec = await api.forkAgent(parentId, turnId, code, context, transcript);
-      // No optimistic managedLogs seed. Every fork is created with lineage, so
-      // opening it triggers loadHistoryTranscript to render the parent's
-      // history. Set the selection ahead of the guarded refresh so it survives
-      // a superseding concurrent refresh, with the record in the same update
-      // so a recycled name can't mount against its archived predecessor (see
-      // adoptSpawnedAgent).
-      set((state) => ({
-        workspace: adoptSpawnedAgent(state.workspace, rec),
-        selectedAgentId: rec.id,
-        activeDraftId: null,
-      }));
-      await refreshWorkspace(set);
-      return rec;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return null;
-    } finally {
-      set({ busy: false });
-    }
-  },
+    },
 
-  setAgentEffort: (id, effort) => configOps.run(id, () => api.setAgentEffort(id, effort)),
-  setAgentModel: (id, model) => configOps.run(id, () => api.setAgentModel(id, model)),
-  grantAgentFolder: async (id, path, writable) => {
-    try {
-      const update = await configOps.run(id, () => api.grantAgentFolder(id, path, writable));
-      set((state) => applyFolderGrantsUpdate(state, id, update));
-      return update.granted;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return null;
-    }
-  },
-  revokeAgentFolder: async (id, path) => {
-    try {
-      const update = await configOps.run(id, () => api.revokeAgentFolder(id, path));
-      set((state) => applyFolderGrantsUpdate(state, id, update));
-      return update.folder_grants;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return null;
-    }
-  },
-  applyAgentChangesNow: async (id) => {
-    // The turn it ends is the user's doing, like a stop: no completion chime.
-    interruptedAgents.add(id);
-    try {
-      const ended = await api.applyAgentChangesNow(id);
-      if (!ended) interruptedAgents.delete(id);
-    } catch (e) {
-      interruptedAgents.delete(id);
-      set({ lastError: String(e) });
-    }
-  },
-  switchAgentAccount: async (id, account) => {
-    if (get().switchingAccount[id]) return null;
-    set((state) => ({ switchingAccount: { ...state.switchingAccount, [id]: true } }));
-    try {
-      const record = await configOps.run(id, () => api.switchAgentAccount(id, account));
-      // Only the stamp: the host relaunches the agent, and an `agent:status`
-      // event that landed before this response is newer than the record's.
-      set((state) => patchAgentRecord(state, id, { account: record.account }));
-      return record;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return null;
-    } finally {
-      set((state) => ({ switchingAccount: { ...state.switchingAccount, [id]: false } }));
-    }
-  },
-  moveWorkspace: async (id, kind) => {
-    if (get().movingWorkspace[id]) return null;
-    set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: kind } }));
-    try {
-      const record = await configOps.run(id, () => api.moveWorkspace(id, kind));
-      // Only the stamp: the host relaunches the agent, and its status events
-      // are newer than the record's.
-      set((state) => patchAgentRecord(state, id, { sandbox_engine: record.sandbox_engine }));
-      return record;
-    } catch (e) {
-      set({ lastError: String(e) });
-      return null;
-    } finally {
-      set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: null } }));
-    }
-  },
+    setAgentEffort: (id, effort) => configOps.run(id, () => api.setAgentEffort(id, effort)),
+    setAgentModel: (id, model) => configOps.run(id, () => api.setAgentModel(id, model)),
+    grantAgentFolder: async (id, path, writable) => {
+      try {
+        const update = await configOps.run(id, () => api.grantAgentFolder(id, path, writable));
+        set((state) => applyFolderGrantsUpdate(state, id, update));
+        return update.granted;
+      } catch (e) {
+        set({ lastError: String(e) });
+        return null;
+      }
+    },
+    revokeAgentFolder: async (id, path) => {
+      try {
+        const update = await configOps.run(id, () => api.revokeAgentFolder(id, path));
+        set((state) => applyFolderGrantsUpdate(state, id, update));
+        return update.folder_grants;
+      } catch (e) {
+        set({ lastError: String(e) });
+        return null;
+      }
+    },
+    applyAgentChangesNow: async (id) => {
+      // The turn it ends is the user's doing, like a stop: no completion chime.
+      interruptedAgents(hostId).add(id);
+      try {
+        const ended = await api.applyAgentChangesNow(id);
+        if (!ended) interruptedAgents(hostId).delete(id);
+      } catch (e) {
+        interruptedAgents(hostId).delete(id);
+        set({ lastError: String(e) });
+      }
+    },
+    switchAgentAccount: async (id, account) => {
+      if (get().switchingAccount[id]) return null;
+      set((state) => ({ switchingAccount: { ...state.switchingAccount, [id]: true } }));
+      try {
+        const record = await configOps.run(id, () => api.switchAgentAccount(id, account));
+        // Only the stamp: the host relaunches the agent, and an `agent:status`
+        // event that landed before this response is newer than the record's.
+        set((state) => patchAgentRecord(state, id, { account: record.account }));
+        return record;
+      } catch (e) {
+        set({ lastError: String(e) });
+        return null;
+      } finally {
+        set((state) => ({ switchingAccount: { ...state.switchingAccount, [id]: false } }));
+      }
+    },
+    moveWorkspace: async (id, kind) => {
+      if (get().movingWorkspace[id]) return null;
+      set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: kind } }));
+      try {
+        const record = await configOps.run(id, () => api.moveWorkspace(id, kind));
+        // Only the stamp: the host relaunches the agent, and its status events
+        // are newer than the record's.
+        set((state) => patchAgentRecord(state, id, { sandbox_engine: record.sandbox_engine }));
+        return record;
+      } catch (e) {
+        set({ lastError: String(e) });
+        return null;
+      } finally {
+        set((state) => ({ movingWorkspace: { ...state.movingWorkspace, [id]: null } }));
+      }
+    },
 
-  sendUserMessage: (id, text, given = [], folders = [], opts = {}) => {
-    // Stable per-turn id: the bubble drawn now, the backend's
-    // session_user_turns write (idempotent across the agent-not-ready retry)
-    // and the `turn:sent` mirror all name the turn by it.
-    const turnId = crypto.randomUUID();
-    // The bubble goes up now, before the message waits for its place in line
-    // or its folders, so it never seems lost while an earlier send — or its
-    // own folder grant, a box restart — takes seconds. Each outcome below
-    // redraws it in place (`draw`).
-    const draw = (next: ChatItem | null) =>
+    sendUserMessage: (id, text, given = [], folders = [], opts = {}) => {
+      // Stable per-turn id: the bubble drawn now, the backend's
+      // session_user_turns write (idempotent across the agent-not-ready retry)
+      // and the `turn:sent` mirror all name the turn by it.
+      const turnId = crypto.randomUUID();
+      // The bubble goes up now, before the message waits for its place in line
+      // or its folders, so it never seems lost while an earlier send — or its
+      // own folder grant, a box restart — takes seconds. Each outcome below
+      // redraws it in place (`draw`).
+      const draw = (next: ChatItem | null) =>
+        set((state) => ({
+          managedLogs: {
+            ...state.managedLogs,
+            [id]: replaceTurnBubble(state.managedLogs[id] ?? [], turnId, next),
+          },
+        }));
       set((state) => ({
         managedLogs: {
           ...state.managedLogs,
-          [id]: replaceTurnBubble(state.managedLogs[id] ?? [], turnId, next),
+          [id]: [...(state.managedLogs[id] ?? []), waitingBubble(text, turnId, given)],
         },
       }));
-    set((state) => ({
-      managedLogs: {
-        ...state.managedLogs,
-        [id]: [...(state.managedLogs[id] ?? []), waitingBubble(text, turnId, given)],
-      },
-    }));
-    return sendOrder.run(id, async () => {
-      // The message's folders, granted in its place in line: the agent
-      // relaunches with them before this reaches it, and a refused one sends
-      // nothing — its bubble comes down and the composer puts the draft back.
-      // Each rides by the path the backend stored, which can differ from the
-      // one picked (a link, `~`).
-      const granted: string[] = [];
-      for (const folder of await folders) {
-        const path = await get().grantAgentFolder(id, folder.path, folder.writable);
-        if (path === null) {
+      return sendOrder(hostId).run(id, async () => {
+        // The message's folders, granted in its place in line: the agent
+        // relaunches with them before this reaches it, and a refused one sends
+        // nothing — its bubble comes down and the composer puts the draft back.
+        // Each rides by the path the backend stored, which can differ from the
+        // one picked (a link, `~`).
+        const granted: string[] = [];
+        for (const folder of await folders) {
+          const path = await get().grantAgentFolder(id, folder.path, folder.writable);
+          if (path === null) {
+            draw(null);
+            return false;
+          }
+          granted.push(path);
+        }
+        const attachments = [...given, ...granted];
+        // Wait for any in-flight effort/model change for this agent to land before
+        // dispatching, so the turn reads the intended config from the record (the
+        // backend resolves per-turn config at dispatch). See `configOps`.
+        await configOps.pending(id)?.catch(() => {});
+        // Guard: some Claude built-in control commands (e.g. /usage, /agents,
+        // /login) only work in its interactive TUI and don't resolve over this
+        // view's stream-json transport. Dispatched as a plain message they'd
+        // produce a transient reply that never persists, so the turn reconciles
+        // away and flashes out (see onSessionRecordsAppended). Intercept them here
+        // and leave a command_output notice pointing to the Native view instead of
+        // sending a doomed turn. The notice is store-only but survives reconciles
+        // (carryForwardStoreOnly), so the explanation persists for the session.
+        const unsupported = await unsupportedManagedCommand(
+          engine,
+          providerFor(get(), id),
+          text,
+          repoPathFor(get(), id),
+        );
+        if (unsupported) {
+          draw({
+            kind: "notice",
+            subtype: "command_output",
+            label: `/${unsupported}`,
+            text: `/${unsupported} isn't available in this chat view — it only works in Claude's interactive TUI. Switch to the Native view to use it.`,
+            is_error: true,
+          });
+          return true;
+        }
+        // App-expanded commands (codex prompts): the CLI receives the prompt as a
+        // positional arg and never resolves `/name` itself, so substitute the
+        // prompt body here and send that instead. The typed text stays first in
+        // the expansion, so the transcript's user message still carries it — the
+        // render fold (MessageItem) and the queued-follow-up matcher both key off
+        // that prefix. Discovery is awaited first so a send racing the composer's
+        // async cache fill still expands; the round-trip only happens for
+        // slash-shaped text.
+        let sendText = text;
+        {
+          const provider = providerFor(get(), id);
+          if (provider && text.startsWith("/")) {
+            await discoverCommands(engine, provider, repoPathFor(get(), id));
+            sendText = expandSlashCommand(hostId, provider, text, repoPathFor(get(), id)) ?? text;
+          }
+        }
+        // Delivered mid-turn (a turn running, or one an earlier send in line
+        // just started)? Then this is a follow-up: it stays a queued_message and
+        // leaves the running turn's busy state untouched. The backend decides
+        // whether to inject it live (claude) or queue it (per-turn agents); the
+        // store never drives delivery.
+        const wasBusy = isAgentBusy(get(), id);
+        if (wasBusy && opts.idleOnly) {
           draw(null);
+          set({ lastError: `${text} wasn't sent: the agent started a turn first.` });
           return false;
         }
-        granted.push(path);
-      }
-      const attachments = [...given, ...granted];
-      // Wait for any in-flight effort/model change for this agent to land before
-      // dispatching, so the turn reads the intended config from the record (the
-      // backend resolves per-turn config at dispatch). See `configOps`.
-      await configOps.pending(id)?.catch(() => {});
-      // Guard: some Claude built-in control commands (e.g. /usage, /agents,
-      // /login) only work in its interactive TUI and don't resolve over this
-      // view's stream-json transport. Dispatched as a plain message they'd
-      // produce a transient reply that never persists, so the turn reconciles
-      // away and flashes out (see onSessionRecordsAppended). Intercept them here
-      // and leave a command_output notice pointing to the Native view instead of
-      // sending a doomed turn. The notice is store-only but survives reconciles
-      // (carryForwardStoreOnly), so the explanation persists for the session.
-      const unsupported = await unsupportedManagedCommand(
-        providerFor(get(), id),
-        text,
-        repoPathFor(get(), id),
-      );
-      if (unsupported) {
-        draw({
-          kind: "notice",
-          subtype: "command_output",
-          label: `/${unsupported}`,
-          text: `/${unsupported} isn't available in this chat view — it only works in Claude's interactive TUI. Switch to the Native view to use it.`,
-          is_error: true,
-        });
-        return true;
-      }
-      // App-expanded commands (codex prompts): the CLI receives the prompt as a
-      // positional arg and never resolves `/name` itself, so substitute the
-      // prompt body here and send that instead. The typed text stays first in
-      // the expansion, so the transcript's user message still carries it — the
-      // render fold (MessageItem) and the queued-follow-up matcher both key off
-      // that prefix. Discovery is awaited first so a send racing the composer's
-      // async cache fill still expands; the round-trip only happens for
-      // slash-shaped text.
-      let sendText = text;
-      {
-        const provider = providerFor(get(), id);
-        if (provider && text.startsWith("/")) {
-          await discoverCommands(provider, repoPathFor(get(), id));
-          sendText = expandSlashCommand(provider, text, repoPathFor(get(), id)) ?? text;
-        }
-      }
-      // Delivered mid-turn (a turn running, or one an earlier send in line
-      // just started)? Then this is a follow-up: it stays a queued_message and
-      // leaves the running turn's busy state untouched. The backend decides
-      // whether to inject it live (claude) or queue it (per-turn agents); the
-      // store never drives delivery.
-      const wasBusy = isAgentBusy(get(), id);
-      if (wasBusy && opts.idleOnly) {
-        draw(null);
-        set({ lastError: `${text} wasn't sent: the agent started a turn first.` });
-        return false;
-      }
-      try {
-        set((state) => {
-          const slashName = wasBusy
-            ? null
-            : passthroughSlashName(providerFor(state, id), text, repoPathFor(state, id));
-          // Optimistic mid-turn follow-up: default to no badge (the common case is
-          // immediate live injection). If the backend reports it was enqueued, we
-          // flip `queued` on below — carried by `turnId` so we can find it again.
-          // The turn-opening bubble carries `turnId` too, so the `turn:sent`
-          // mirror (see eventListeners) recognizes it as ours and skips it.
-          const entry: ChatItem = wasBusy
-            ? attachments.length > 0
-              ? { kind: "queued_message", text, attachments, turnId }
-              : { kind: "queued_message", text, turnId }
-            : slashName
-              ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
-              : attachments.length > 0
-                ? { kind: "user_message", text, attachments, turnId }
-                : { kind: "user_message", text, turnId };
-          return {
-            // In place of the bubble drawn at send time, now with its folders.
-            managedLogs: {
-              ...state.managedLogs,
-              [id]: replaceTurnBubble(state.managedLogs[id] ?? [], turnId, entry),
-            },
-            // Only a turn-*starting* send is ours to bridge until the backend's
-            // `running` lands; a follow-up rides a turn that is already busy.
-            ...(wasBusy
-              ? {}
-              : {
-                  sending: { ...state.sending, [id]: true },
-                  busyLabel: {
-                    ...state.busyLabel,
-                    [id]: slashName ? SLASH_BUSY_LABELS[slashName] : undefined,
-                  },
-                }),
-          };
-        });
-        // A dead session (one whose process exited when it last went idle, or any
-        // session after an app restart) needs no special handling here: the
-        // backend revives it in --resume mode and delivers this message onto the
-        // fresh process. That used to live here, keyed off an "agent not found"
-        // error, but the backend no longer surfaces one — it holds the message
-        // instead — and keeping the revive there covers every other sender
-        // (autopilot, delegation, drafts) rather than just this one.
-        // In-flight for the round trip, so a snapshot landing meanwhile can't
-        // settle the `sending` flag this send just raised (see helpers/sending).
-        const enqueued = await whileSending(id, () =>
-          api.sendUserMessage(id, turnId, sendText, attachments),
-        );
-        // Only a genuinely-held message wears the badge; a delivered one stays a
-        // plain bubble. Match by turnId — agent output may have appended since.
-        if (wasBusy && enqueued) {
+        try {
+          set((state) => {
+            const slashName = wasBusy
+              ? null
+              : passthroughSlashName(hostId, providerFor(state, id), text, repoPathFor(state, id));
+            // Optimistic mid-turn follow-up: default to no badge (the common case is
+            // immediate live injection). If the backend reports it was enqueued, we
+            // flip `queued` on below — carried by `turnId` so we can find it again.
+            // The turn-opening bubble carries `turnId` too, so the `turn:sent`
+            // mirror (see eventListeners) recognizes it as ours and skips it.
+            const entry: ChatItem = wasBusy
+              ? attachments.length > 0
+                ? { kind: "queued_message", text, attachments, turnId }
+                : { kind: "queued_message", text, turnId }
+              : slashName
+                ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
+                : attachments.length > 0
+                  ? { kind: "user_message", text, attachments, turnId }
+                  : { kind: "user_message", text, turnId };
+            return {
+              // In place of the bubble drawn at send time, now with its folders.
+              managedLogs: {
+                ...state.managedLogs,
+                [id]: replaceTurnBubble(state.managedLogs[id] ?? [], turnId, entry),
+              },
+              // Only a turn-*starting* send is ours to bridge until the backend's
+              // `running` lands; a follow-up rides a turn that is already busy.
+              ...(wasBusy
+                ? {}
+                : {
+                    sending: { ...state.sending, [id]: true },
+                    busyLabel: {
+                      ...state.busyLabel,
+                      [id]: slashName ? SLASH_BUSY_LABELS[slashName] : undefined,
+                    },
+                  }),
+            };
+          });
+          // A dead session (one whose process exited when it last went idle, or any
+          // session after an app restart) needs no special handling here: the
+          // backend revives it in --resume mode and delivers this message onto the
+          // fresh process. That used to live here, keyed off an "agent not found"
+          // error, but the backend no longer surfaces one — it holds the message
+          // instead — and keeping the revive there covers every other sender
+          // (autopilot, delegation, drafts) rather than just this one.
+          // In-flight for the round trip, so a snapshot landing meanwhile can't
+          // settle the `sending` flag this send just raised (see helpers/sending).
+          const enqueued = await whileSending(
+            id,
+            () => api.sendUserMessage(id, turnId, sendText, attachments),
+            sendsInFlight(hostId),
+          );
+          // Only a genuinely-held message wears the badge; a delivered one stays a
+          // plain bubble. Match by turnId — agent output may have appended since.
+          if (wasBusy && enqueued) {
+            set((state) => ({
+              managedLogs: {
+                ...state.managedLogs,
+                [id]: (state.managedLogs[id] ?? []).map((it) =>
+                  it.kind === "queued_message" && it.turnId === turnId
+                    ? { ...it, queued: true }
+                    : it,
+                ),
+              },
+            }));
+          }
+          opts.onDelivered?.();
+        } catch (e) {
           set((state) => ({
-            managedLogs: {
-              ...state.managedLogs,
-              [id]: (state.managedLogs[id] ?? []).map((it) =>
-                it.kind === "queued_message" && it.turnId === turnId ? { ...it, queued: true } : it,
-              ),
-            },
+            lastError: String(e),
+            // The send never reached the backend, so no status will discharge it.
+            ...(wasBusy ? {} : { sending: { ...state.sending, [id]: false } }),
           }));
         }
-        opts.onDelivered?.();
+        return true;
+      });
+    },
+
+    answerToolUse: async (id, toolUseId, updatedInput, behavior = "allow", message) => {
+      const requestId = get().pendingToolUse[id]?.[toolUseId];
+      if (!requestId) return;
+      // Drop the held prompt: feeding the answer resumes the paused turn, which
+      // never left `running`, so the spinner returns on its own. The transcript
+      // records the resulting tool_result, so there's no separate durable row to
+      // write.
+      set((state) => {
+        const forAgent = { ...(state.pendingToolUse[id] ?? {}) };
+        delete forAgent[toolUseId];
+        return { pendingToolUse: { ...state.pendingToolUse, [id]: forAgent } };
+      });
+      try {
+        await api.answerToolUse(id, requestId, updatedInput, behavior, message);
       } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
+
+    switchView: async (id, view) => {
+      if (view === "native") {
+        clearOutputBuffer(hostId, id);
+      }
+      set((state) => ({
+        switchInFlight: { ...state.switchInFlight, [id]: true },
+      }));
+      try {
+        await api.switchView(id, view);
+        if (view === "custom") {
+          await get().loadHistoryTranscript(id);
+        }
+      } catch (e) {
+        set({ lastError: String(e) });
+      } finally {
         set((state) => ({
-          lastError: String(e),
-          // The send never reached the backend, so no status will discharge it.
-          ...(wasBusy ? {} : { sending: { ...state.sending, [id]: false } }),
+          switchInFlight: { ...state.switchInFlight, [id]: false },
         }));
       }
-      return true;
-    });
-  },
+    },
 
-  answerToolUse: async (id, toolUseId, updatedInput, behavior = "allow", message) => {
-    const requestId = get().pendingToolUse[id]?.[toolUseId];
-    if (!requestId) return;
-    // Drop the held prompt: feeding the answer resumes the paused turn, which
-    // never left `running`, so the spinner returns on its own. The transcript
-    // records the resulting tool_result, so there's no separate durable row to
-    // write.
-    set((state) => {
-      const forAgent = { ...(state.pendingToolUse[id] ?? {}) };
-      delete forAgent[toolUseId];
-      return { pendingToolUse: { ...state.pendingToolUse, [id]: forAgent } };
-    });
-    try {
-      await api.answerToolUse(id, requestId, updatedInput, behavior, message);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
+    applyRunState: (id, s) =>
+      set((state) => {
+        const current = state.runs[id];
+        const revision = s.revision ?? null;
+        if (current?.revision != null && revision != null && revision <= current.revision) {
+          return state;
+        }
+        // A current host says the run's port on every state (null when none); a host
+        // from before the field says nothing, and the port it told on
+        // `run:port` stands.
+        const legacy = revision === null;
+        const next: RunStatus = {
+          phase: s.phase,
+          last_error: s.last_error,
+          port: s.port === undefined ? (legacy ? (current?.port ?? null) : null) : s.port,
+          guest_port:
+            s.guest_port === undefined
+              ? legacy
+                ? (current?.guest_port ?? null)
+                : null
+              : s.guest_port,
+          ports: s.ports ?? [],
+          revision,
+        };
+        return { runs: { ...state.runs, [id]: next } };
+      }),
 
-  switchView: async (id, view) => {
-    if (view === "native") {
-      clearOutputBuffer(id);
-    }
-    set((state) => ({
-      switchInFlight: { ...state.switchInFlight, [id]: true },
-    }));
-    try {
-      await api.switchView(id, view);
-      if (view === "custom") {
-        await get().loadHistoryTranscript(id);
+    applyRunPort: (id, e) =>
+      set((state) => {
+        const current = state.runs[id];
+        if (current && current.revision !== null) return state;
+        const next: RunStatus = {
+          phase: current?.phase ?? "running",
+          last_error: current?.last_error ?? null,
+          port: e.port,
+          guest_port: e.guest_port ?? null,
+          ports: current?.ports ?? [],
+          revision: null,
+        };
+        return { runs: { ...state.runs, [id]: next } };
+      }),
+
+    resume: async (id) => {
+      clearOutputBuffer(hostId, id);
+      try {
+        await api.resumeAgent(id);
+      } catch (e) {
+        set({ lastError: String(e) });
       }
-    } catch (e) {
-      set({ lastError: String(e) });
-    } finally {
-      set((state) => ({
-        switchInFlight: { ...state.switchInFlight, [id]: false },
-      }));
-    }
-  },
+    },
 
-  applyRunState: (id, s) =>
-    set((state) => {
-      const current = state.runs[id];
-      const revision = s.revision ?? null;
-      if (current?.revision != null && revision != null && revision <= current.revision) {
-        return state;
+    stop: async (id) => {
+      // Mark this agent as user-stopped so the completion chime is suppressed for
+      // any final turn_end the dying process flushes. Set before the await so it
+      // lands ahead of any event the backend emits in response.
+      interruptedAgents(hostId).add(id);
+      try {
+        await api.stopAgent(id);
+      } catch (e) {
+        interruptedAgents(hostId).delete(id);
+        set({ lastError: String(e) });
       }
-      // A current host says the run's port on every state (null when none); a host
-      // from before the field says nothing, and the port it told on
-      // `run:port` stands.
-      const legacy = revision === null;
-      const next: RunStatus = {
-        phase: s.phase,
-        last_error: s.last_error,
-        port: s.port === undefined ? (legacy ? (current?.port ?? null) : null) : s.port,
-        guest_port:
-          s.guest_port === undefined
-            ? legacy
-              ? (current?.guest_port ?? null)
-              : null
-            : s.guest_port,
-        ports: s.ports ?? [],
-        revision,
-      };
-      return { runs: { ...state.runs, [id]: next } };
-    }),
+    },
 
-  applyRunPort: (id, e) =>
-    set((state) => {
-      const current = state.runs[id];
-      if (current && current.revision !== null) return state;
-      const next: RunStatus = {
-        phase: current?.phase ?? "running",
-        last_error: current?.last_error ?? null,
-        port: e.port,
-        guest_port: e.guest_port ?? null,
-        ports: current?.ports ?? [],
-        revision: null,
-      };
-      return { runs: { ...state.runs, [id]: next } };
-    }),
+    discard: async (id) => {
+      try {
+        await api.discardAgent(id);
+        // The agent is gone for good: release its PTY state (both ring buffers
+        // and its cached live terminal) along with the store's side maps below.
+        dropAgentPty(hostId, id);
+        // The discard has committed, so drop the agent optimistically: remove its
+        // row from the workspace AND its side maps together, and clear the
+        // selection. Editing the workspace here (not just the side maps) keeps the
+        // list and the per-agent state consistent even if the guarded refresh
+        // below returns null (fetch failed) or is superseded — otherwise the old
+        // snapshot would keep showing a discarded agent whose logs/git/PR state we
+        // just cleared, rendering an emptied view when opened. The pending hide
+        // keeps a snapshot fetched before the commit from re-adding the row.
+        markPendingHide(hostId, id, "discard");
+        set((s) => ({
+          ...dropAgentEntries(s, id),
+          workspace: s.workspace ? applyPendingHides(hostId, s.workspace) : s.workspace,
+          selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
+        }));
+        await refreshWorkspace(engine, set);
+      } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
 
-  resume: async (id) => {
-    clearOutputBuffer(id);
-    try {
-      await api.resumeAgent(id);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
-
-  stop: async (id) => {
-    // Mark this agent as user-stopped so the completion chime is suppressed for
-    // any final turn_end the dying process flushes. Set before the await so it
-    // lands ahead of any event the backend emits in response.
-    interruptedAgents.add(id);
-    try {
-      await api.stopAgent(id);
-    } catch (e) {
-      interruptedAgents.delete(id);
-      set({ lastError: String(e) });
-    }
-  },
-
-  discard: async (id) => {
-    // Whose agent this is, resolved before the engine round-trip: the user can
-    // switch environments while it is in flight, and the PTY state to release
-    // is this environment's, not whichever one is active when it returns.
-    const envId = get().activeEnvironmentId;
-    try {
-      await api.discardAgent(id);
-      // The agent is gone for good: release its PTY state (both ring buffers
-      // and its cached live terminal) along with the store's side maps below.
-      dropAgentPty(id, envId);
-      // The discard has committed, so drop the agent optimistically: remove its
-      // row from the workspace AND its side maps together, and clear the
-      // selection. Editing the workspace here (not just the side maps) keeps the
-      // list and the per-agent state consistent even if the guarded refresh
-      // below returns null (fetch failed) or is superseded — otherwise the old
-      // snapshot would keep showing a discarded agent whose logs/git/PR state we
-      // just cleared, rendering an emptied view when opened. The pending hide
-      // keeps a snapshot fetched before the commit from re-adding the row.
-      markPendingHide(id, "discard");
+    archive: async (id) => {
+      // The click is the decision: hide the agent now and keep it hidden. The
+      // sidebar filters on `!a.archive`, so stamping `PENDING_ARCHIVE` drops the
+      // row immediately, and registering the id as a pending hide makes every
+      // snapshot applied from here on re-stamp it (see `applyPendingHides`) until
+      // one confirms the archive — so a fetch that started before the backend
+      // committed can no longer put the row back. The real metadata (diff stats,
+      // branch snapshots) arrives with the confirming snapshot. The prior
+      // selection is remembered so a refusal can undo exactly our own edits —
+      // without clobbering a newer workspace (status/repo/focus events, other
+      // actions) that may have landed while archiving was pending.
+      const wasSelected = get().selectedAgentId === id;
+      markPendingHide(hostId, id, "archive");
       set((s) => ({
-        ...dropAgentEntries(s, id),
-        workspace: s.workspace ? applyPendingHides(s.workspace) : s.workspace,
+        workspace: s.workspace ? applyPendingHides(hostId, s.workspace) : s.workspace,
         selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
       }));
-      await refreshWorkspace(set);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
+      try {
+        await api.archiveAgent(id);
+      } catch (e) {
+        // The backend refused (already archived, or mid-turn), so nothing was
+        // archived: withdraw the hide and put the row back.
+        clearPendingHide(hostId, id);
+        set((s) => {
+          const ws = s.workspace;
+          if (!ws) return { lastError: String(e) };
+          const agent = ws.agents.find((a) => a.id === id);
 
-  archive: async (id) => {
-    // The click is the decision: hide the agent now and keep it hidden. The
-    // sidebar filters on `!a.archive`, so stamping `PENDING_ARCHIVE` drops the
-    // row immediately, and registering the id as a pending hide makes every
-    // snapshot applied from here on re-stamp it (see `applyPendingHides`) until
-    // one confirms the archive — so a fetch that started before the backend
-    // committed can no longer put the row back. The real metadata (diff stats,
-    // branch snapshots) arrives with the confirming snapshot. The prior
-    // selection is remembered so a refusal can undo exactly our own edits —
-    // without clobbering a newer workspace (status/repo/focus events, other
-    // actions) that may have landed while archiving was pending.
-    const wasSelected = get().selectedAgentId === id;
-    // See `discard`: the owning environment, resolved before the round-trip.
-    const envId = get().activeEnvironmentId;
-    markPendingHide(id, "archive");
-    set((s) => ({
-      workspace: s.workspace ? applyPendingHides(s.workspace) : s.workspace,
-      selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
-    }));
-    try {
-      await api.archiveAgent(id);
-    } catch (e) {
-      // The backend refused (already archived, or mid-turn), so nothing was
-      // archived: withdraw the hide and put the row back.
-      clearPendingHide(id);
-      set((s) => {
-        const ws = s.workspace;
-        if (!ws) return { lastError: String(e) };
-        const agent = ws.agents.find((a) => a.id === id);
+          // Undoing the hide and restoring the selection are TWO independent
+          // questions — conflating them is what kept leaking edge cases.
+          //
+          // (1) Undo the hide only if the placeholder is still ours. A refresh
+          //     (getWorkspace / event-driven rebuild) lands new agent objects,
+          //     so a surviving `=== PENDING_ARCHIVE` means nothing authoritative
+          //     has overwritten us; if it's gone, that fresh state is the truth
+          //     and we leave it.
+          const reverting = agent?.archive === PENDING_ARCHIVE;
 
-        // Undoing the hide and restoring the selection are TWO independent
-        // questions — conflating them is what kept leaking edge cases.
-        //
-        // (1) Undo the hide only if the placeholder is still ours. A refresh
-        //     (getWorkspace / event-driven rebuild) lands new agent objects,
-        //     so a surviving `=== PENDING_ARCHIVE` means nothing authoritative
-        //     has overwritten us; if it's gone, that fresh state is the truth
-        //     and we leave it.
-        const reverting = agent?.archive === PENDING_ARCHIVE;
+          // (2) Restore the selection based on the agent's state in the
+          //     RESULTING workspace, not on who owns the placeholder. The agent
+          //     is live — present in the sidebar and safe to select — iff it
+          //     still exists and either we're reverting our placeholder or a
+          //     refresh already shows it un-archived. If it ended up archived,
+          //     re-selecting would orphan the pane behind a hidden row. Also
+          //     require the selection to be untouched: our clear set
+          //     selectedAgentId null and left activeDraftId null, whereas a
+          //     later selectAgent sets selectedAgentId and selectDraft sets
+          //     activeDraftId — so both still-null means no one navigated away.
+          const liveInResult = agent != null && (reverting || !agent.archive);
+          const restoreSelection =
+            wasSelected && liveInResult && s.selectedAgentId === null && s.activeDraftId === null;
 
-        // (2) Restore the selection based on the agent's state in the
-        //     RESULTING workspace, not on who owns the placeholder. The agent
-        //     is live — present in the sidebar and safe to select — iff it
-        //     still exists and either we're reverting our placeholder or a
-        //     refresh already shows it un-archived. If it ended up archived,
-        //     re-selecting would orphan the pane behind a hidden row. Also
-        //     require the selection to be untouched: our clear set
-        //     selectedAgentId null and left activeDraftId null, whereas a
-        //     later selectAgent sets selectedAgentId and selectDraft sets
-        //     activeDraftId — so both still-null means no one navigated away.
-        const liveInResult = agent != null && (reverting || !agent.archive);
-        const restoreSelection =
-          wasSelected && liveInResult && s.selectedAgentId === null && s.activeDraftId === null;
-
-        return {
-          workspace: reverting
-            ? { ...ws, agents: ws.agents.map((a) => (a.id === id ? { ...a, archive: null } : a)) }
-            : ws,
-          selectedAgentId: restoreSelection ? id : s.selectedAgentId,
-          lastError: String(e),
-        };
-      });
-      return;
-    }
-    // Archiving kills the agent's processes, so release its PTY state (both
-    // ring buffers and its cached live terminal); a restore starts fresh.
-    dropAgentPty(id, envId);
-    // Drop the agent's side maps ATOMICALLY with the post-commit snapshot that
-    // archives (hides) the row, by folding the cleanup into the guarded
-    // refresh: the backend stamps `archived_at` before it returns, so this
-    // snapshot confirms the archive and the maps go with it. If this refresh
-    // is superseded or returns null, the maps are kept until a later snapshot
-    // hides the row. The archive itself has committed, so a failed refetch is
-    // only reported — it must not put the row back.
-    try {
-      await refreshWorkspace(set, (_fresh, s) => dropAgentEntries(s, id));
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
-
-  restore: async (id) => {
-    // A restore withdraws any archive still awaiting confirmation, so the
-    // snapshot below can't re-hide the row it is about to bring back.
-    clearPendingHide(id);
-    try {
-      await api.restoreAgent(id);
-      // Keep the JSONL-replayed log in place — claude's `--resume` in
-      // stream-json mode emits new events on top of the existing
-      // conversation, so the chat view picks up exactly where the
-      // preview left off. The restore has committed, so optimistically
-      // un-archive the row AND select it together: editing the workspace here
-      // (not just the selection) keeps the live sidebar and the center pane
-      // consistent even if the guarded refresh below returns null (fetch
-      // failed) or is superseded — otherwise we'd point the center pane at an
-      // agent the sidebar still filters out as archived.
-      set((s) => ({
-        workspace: s.workspace
-          ? {
-              ...s.workspace,
-              agents: s.workspace.agents.map((a) => (a.id === id ? { ...a, archive: null } : a)),
-            }
-          : s.workspace,
-        historyOpen: false,
-        selectedAgentId: id,
-      }));
-      await refreshWorkspace(set);
-    } catch (e) {
-      set({ lastError: String(e) });
-    }
-  },
-
-  loadHistoryTranscript: async (id) => {
-    if (get().transcriptLoading[id]) return;
-    set((s) => ({ transcriptLoading: { ...s.transcriptLoading, [id]: true } }));
-    try {
-      const provider = providerFor(get(), id);
-      // session_records is the sole canonical store: per-provider verbatim
-      // transcript bodies, rendered via normalizeTranscript→reduce. readHistory
-      // lazily ingests on-disk history when the DB is empty; overlaying
-      // outgoing/pending user turns keeps a failed send visible on reload.
-      // Before the read: it can land after a later one, and calls that stream
-      // in while it runs are not in its records (see settleLiveUsage).
-      const read = beginUsageRead(id);
-      const { records, turns } = await readHistory(id);
-      const items = mergeUserTurns(reduceRecords(provider, records), turns);
-      const usage = usageFromRecords(provider, records);
-      const settled = hasUsage(usage) ? settleLiveUsage(id, usage, read) : null;
-      if (hasUsage(usage)) {
-        // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
-        // spend belongs to its project like anyone else's.
-        void recordWorkspaceUsage(id, agentRecord(get(), id)?.project_id, usage);
+          return {
+            workspace: reverting
+              ? { ...ws, agents: ws.agents.map((a) => (a.id === id ? { ...a, archive: null } : a)) }
+              : ws,
+            selectedAgentId: restoreSelection ? id : s.selectedAgentId,
+            lastError: String(e),
+          };
+        });
+        return;
       }
-      set((state) => {
-        // Nothing stored but a live turn is already rendering — don't clobber it.
-        if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {
-          return {};
+      // Archiving kills the agent's processes, so release its PTY state (both
+      // ring buffers and its cached live terminal); a restore starts fresh.
+      dropAgentPty(hostId, id);
+      // Drop the agent's side maps ATOMICALLY with the post-commit snapshot that
+      // archives (hides) the row, by folding the cleanup into the guarded
+      // refresh: the backend stamps `archived_at` before it returns, so this
+      // snapshot confirms the archive and the maps go with it. If this refresh
+      // is superseded or returns null, the maps are kept until a later snapshot
+      // hides the row. The archive itself has committed, so a failed refetch is
+      // only reported — it must not put the row back.
+      try {
+        await refreshWorkspace(engine, set, (_fresh, s) => dropAgentEntries(s, id));
+      } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
+
+    restore: async (id) => {
+      // A restore withdraws any archive still awaiting confirmation, so the
+      // snapshot below can't re-hide the row it is about to bring back.
+      clearPendingHide(hostId, id);
+      try {
+        await api.restoreAgent(id);
+        // Keep the JSONL-replayed log in place — claude's `--resume` in
+        // stream-json mode emits new events on top of the existing
+        // conversation, so the chat view picks up exactly where the
+        // preview left off. The restore has committed, so optimistically
+        // un-archive the row AND select it together: editing the workspace here
+        // (not just the selection) keeps the live sidebar and the center pane
+        // consistent even if the guarded refresh below returns null (fetch
+        // failed) or is superseded — otherwise we'd point the center pane at an
+        // agent the sidebar still filters out as archived.
+        set((s) => ({
+          workspace: s.workspace
+            ? {
+                ...s.workspace,
+                agents: s.workspace.agents.map((a) => (a.id === id ? { ...a, archive: null } : a)),
+              }
+            : s.workspace,
+          historyOpen: false,
+          selectedAgentId: id,
+        }));
+        await refreshWorkspace(engine, set);
+      } catch (e) {
+        set({ lastError: String(e) });
+      }
+    },
+
+    loadHistoryTranscript: async (id) => {
+      if (get().transcriptLoading[id]) return;
+      set((s) => ({ transcriptLoading: { ...s.transcriptLoading, [id]: true } }));
+      try {
+        const provider = providerFor(get(), id);
+        // session_records is the sole canonical store: per-provider verbatim
+        // transcript bodies, rendered via normalizeTranscript→reduce. readHistory
+        // lazily ingests on-disk history when the DB is empty; overlaying
+        // outgoing/pending user turns keeps a failed send visible on reload.
+        // Before the read: it can land after a later one, and calls that stream
+        // in while it runs are not in its records (see settleLiveUsage).
+        const read = beginUsageRead(hostId, id);
+        const { records, turns } = await readHistory(api, id);
+        const items = mergeUserTurns(reduceRecords(provider, records), turns);
+        const usage = usageFromRecords(provider, records);
+        const settled = hasUsage(usage) ? settleLiveUsage(hostId, id, usage, read) : null;
+        if (hasUsage(usage)) {
+          // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
+          // spend belongs to its project like anyone else's.
+          void recordWorkspaceUsage(api, id, agentRecord(get(), id)?.project_id, usage);
         }
-        return {
-          managedLogs: { ...state.managedLogs, [id]: items },
-          // Only overwrite when records carried usage — cursor folds usage
-          // live, so an empty records result must not wipe it.
-          ...(settled ? { usage: { ...state.usage, [id]: settled } } : {}),
-        };
-      });
-    } catch (e) {
-      set({ lastError: String(e) });
-    } finally {
-      set((s) => ({
-        transcriptLoading: { ...s.transcriptLoading, [id]: false },
-        transcriptLoaded: { ...s.transcriptLoaded, [id]: true },
-      }));
-    }
-  },
-});
+        set((state) => {
+          // Nothing stored but a live turn is already rendering — don't clobber it.
+          if (items.length === 0 && (state.managedLogs[id]?.length ?? 0) > 0) {
+            return {};
+          }
+          return {
+            managedLogs: { ...state.managedLogs, [id]: items },
+            // Only overwrite when records carried usage — cursor folds usage
+            // live, so an empty records result must not wipe it.
+            ...(settled ? { usage: { ...state.usage, [id]: settled } } : {}),
+          };
+        });
+      } catch (e) {
+        set({ lastError: String(e) });
+      } finally {
+        set((s) => ({
+          transcriptLoading: { ...s.transcriptLoading, [id]: false },
+          transcriptLoaded: { ...s.transcriptLoaded, [id]: true },
+        }));
+      }
+    },
+  };
+};

@@ -7,11 +7,14 @@ import { create } from "zustand";
 vi.mock("@/api", () => ({ api: {} }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
+import { activeEngine } from "@/api/engine";
 import type { AppState } from "./types";
 import { createUiSlice } from "./ui";
 
 const makeStore = (projectFocus: string[]) => {
-  const store = create<AppState>()((...a) => ({ ...createUiSlice(...a) }) as unknown as AppState);
+  const store = create<AppState>()(
+    (set, get) => ({ ...createUiSlice(set, get, activeEngine) }) as unknown as AppState,
+  );
   store.setState({ projectFocus });
   return store;
 };

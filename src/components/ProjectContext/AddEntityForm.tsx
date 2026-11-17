@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, type ContextEntity, type EntityKind } from "@/api";
+import type { ContextEntity, EntityKind } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Button } from "@/components/ui/Button";
 import { TextArea, TextInput } from "@/components/ui/TextInput";
 import { ENTITY_KINDS, slugify, splitList } from "./format";
@@ -15,6 +16,7 @@ export function AddEntityForm({
   initial?: ContextEntity;
   onDone: () => void;
 }) {
+  const { api } = useEngine();
   const [name, setName] = useState(initial?.name ?? "");
   const [slug, setSlug] = useState(initial?.slug ?? "");
   const [slugTouched, setSlugTouched] = useState(!!initial);

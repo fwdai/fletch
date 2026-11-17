@@ -22,6 +22,7 @@ vi.mock("@/data/slashCommands", async (importOriginal) => ({
 
 import type { RawEvent } from "@/adapters/types";
 import type { AgentRecord, FolderGrant } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { COMPACTION_QUIET_MS, COMPACTION_SETTLE_MS, createCompactionSlice } from "./compaction";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
@@ -45,7 +46,11 @@ const agent = {
 
 const makeStore = () => {
   const store = create<AppState>()(
-    (...a) => ({ ...createWorkspaceSlice(...a), ...createCompactionSlice(...a) }) as AppState,
+    (set, get) =>
+      ({
+        ...createWorkspaceSlice(set, get, activeEngine),
+        ...createCompactionSlice(set, get, activeEngine),
+      }) as AppState,
   );
   store.setState({
     workspace: { agents: [agent], projects: [] },

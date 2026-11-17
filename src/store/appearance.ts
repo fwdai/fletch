@@ -1,4 +1,3 @@
-import { api } from "@/api";
 import { DEFAULT_FEATURES, type FeatureFlags, type ThemeMode } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
 import type { SliceCreator } from "./types";
@@ -38,7 +37,7 @@ export interface AppearanceSlice {
   setNotifyPrActivity: (on: boolean) => void;
 }
 
-export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
+export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set, _get, { api }) => ({
   theme: "dark" as ThemeMode,
   codeTheme: "quorum",
   accent: "copper",

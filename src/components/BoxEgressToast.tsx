@@ -1,4 +1,6 @@
-import { useAppStore } from "@/store";
+import { useAppStore, useOnHost } from "@/store";
+import { useHostWhere } from "@/store/capabilities";
+import { EachHostScope } from "@/store/EngineScope";
 import { BoxEgressPrompt, promptsByAgent } from "./BoxEgressPrompt";
 import { Icon } from "./Icon";
 import { ProjectFilePrompt, useProjectFilePrompts } from "./ProjectFilePrompts";
@@ -17,15 +19,31 @@ import { Button } from "./ui/Button";
  * VM holding a connection until the user decides, one card per workspace. And
  * above those the prompts of a project's `.fletch/settings.json` asking for
  * hosts the user has not approved (`ProjectFilePrompts`): the same stack,
- * since all three are about what a box may reach. Renders nothing when there
- * is nothing to show, which is nearly always.
+ * since all three are about what a box may reach.
+ *
+ * Every host's VMs can be refused or held, whichever host is on screen, so the
+ * stack holds every host's toasts (This Mac's first), each in its own host's
+ * scope: answered against that host, and leading to its project. Empty, which
+ * is nearly always, the stack draws nothing.
  */
 export function BoxEgressToast() {
+  return (
+    <div className="docker-build-stack">
+      <EachHostScope>
+        <HostEgressToasts />
+      </EachHostScope>
+    </div>
+  );
+}
+
+/** The scope's host's toasts. */
+function HostEgressToasts() {
   const blocked = useAppStore((s) => s.boxEgressBlocked);
   const dismiss = useAppStore((s) => s.dismissBoxEgress);
   const agents = useAppStore((s) => s.workspace?.agents);
-  const openProjectSettings = useAppStore((s) => s.openProjectSettings);
   const pendingPrompts = useAppStore((s) => s.pendingEgressPrompts);
+  const where = useHostWhere();
+  const onHost = useOnHost();
   const { prompts, dismiss: dismissPrompt } = useProjectFilePrompts();
 
   // Unseen hosts, grouped by workspace in the order they were first refused.
@@ -39,7 +57,7 @@ export function BoxEgressToast() {
   if (byAgent.size === 0 && prompts.length === 0 && held.size === 0) return null;
 
   return (
-    <div className="docker-build-stack">
+    <>
       {prompts.map((status) => (
         <ProjectFilePrompt
           key={status.project_id}
@@ -61,7 +79,8 @@ export function BoxEgressToast() {
             <div className="update-toast-body">
               <div className="update-toast-text">
                 <strong>
-                  {name} couldn&rsquo;t reach {hosts[0]}
+                  {name}
+                  {where} couldn&rsquo;t reach {hosts[0]}
                   {more > 0 && ` and ${more} more`}
                 </strong>
                 <span>Its box reaches only the hosts allowed for the project.</span>
@@ -71,7 +90,7 @@ export function BoxEgressToast() {
                   <Button
                     variant="primary"
                     onClick={() => {
-                      openProjectSettings(repoPath, "network");
+                      onHost((s) => s.openProjectSettings(repoPath, "network"));
                       dismiss(agentId);
                     }}
                   >
@@ -86,6 +105,6 @@ export function BoxEgressToast() {
           </div>
         );
       })}
-    </div>
+    </>
   );
 }

@@ -1,6 +1,6 @@
 import type { EgressAnswer, EgressPrompt } from "@/api";
 import { useAppStore } from "@/store";
-import { useGate } from "@/store/capabilities";
+import { useGate, useHostWhere } from "@/store/capabilities";
 import { Icon } from "./Icon";
 import { Button } from "./ui/Button";
 
@@ -23,6 +23,8 @@ export function BoxEgressPrompt({
   const answer = useAppStore((s) => s.answerEgressPrompt);
   const answerGate = useGate("egressPrompt");
   const turnGate = useGate("egressTurn");
+  // A paired host's workspace is named with the host it runs on.
+  const where = useHostWhere();
   const head = prompts[0];
   if (!head) return null;
   const name = agents?.find((a) => a.id === agentId)?.name ?? "A workspace";
@@ -35,7 +37,8 @@ export function BoxEgressPrompt({
       <div className="update-toast-body">
         <div className="update-toast-text">
           <strong>
-            {name} wants to reach <span className="mono">{head.host}</span>
+            {name}
+            {where} wants to reach <span className="mono">{head.host}</span>
           </strong>
           <span>
             {answerGate ??

@@ -1,4 +1,4 @@
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type {
   ProjectDeleteResult,
   ProjectIconCandidate,
@@ -6,7 +6,7 @@ import type {
   Workspace,
 } from "../types/agent";
 
-export const workspaceApi = {
+export const workspaceApi = (invoke: Invoke) => ({
   getWorkspace: () => invoke<Workspace | null>("get_workspace"),
   addWorkspaceRepo: (repoPath: string) => invoke<Workspace>("add_workspace_repo", { repoPath }),
   removeWorkspaceRepo: (repoPath: string) =>
@@ -44,4 +44,4 @@ export const workspaceApi = {
     invoke<Workspace>("project_icon_set", { projectId, source, bytes: bytes ?? null }),
   projectIconGet: (projectId: string) =>
     invoke<ProjectIconData | null>("project_icon_get", { projectId }),
-};
+});

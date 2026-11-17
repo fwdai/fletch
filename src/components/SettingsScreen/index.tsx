@@ -3,6 +3,8 @@ import { Fragment, lazy, Suspense, useMemo } from "react";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
+import { EngineScope } from "@/store/EngineScope";
+import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { IS_MAC } from "@/util/platform";
 import { WorkflowsPane } from "@/workflows/builder";
 import pkg from "../../../package.json";
@@ -20,6 +22,7 @@ import { ProvidersPane } from "./ProvidersPane";
 import { ReviewPane } from "./ReviewPane";
 import { SandboxPane } from "./Sandbox";
 import { NetworkPane } from "./Sandbox/NetworkPane";
+import { HostScope, SettingsHostProvider } from "./SettingsHost";
 import { ShortcutsPane } from "./ShortcutsPane";
 import { SkillsPane } from "./Skills";
 
@@ -36,8 +39,22 @@ const DeveloperPane = lazy(() =>
 
 /** Dedicated full-screen settings surface. Rendered in place of the workspace
  *  panes while `settingsScreenOpen` is true. The quick-settings popover stays
- *  for fast access; this is the comprehensive surface. */
+ *  for fast access; this is the comprehensive surface.
+ *
+ *  Settings is This Mac's whichever host the rest of the window shows. Only
+ *  the panes of host-owned settings follow a host, the one picked in them
+ *  (`HostScope`), with This Mac picked on every visit. */
 export function SettingsScreen() {
+  return (
+    <EngineScope hostId={LOCAL_ENVIRONMENT_ID}>
+      <SettingsHostProvider>
+        <SettingsBody />
+      </SettingsHostProvider>
+    </EngineScope>
+  );
+}
+
+function SettingsBody() {
   const section = useAppStore((s) => s.settingsSection);
   const setSection = useAppStore((s) => s.setSettingsSection);
   const close = useAppStore((s) => s.closeSettingsScreen);
@@ -111,28 +128,60 @@ export function SettingsScreen() {
 
       <div className="set-main">
         <div className="set-content">
-          {!visible && <GeneralPane />}
-          {visible && section === "general" && <GeneralPane />}
+          {/* `HostScope` wraps the panes that hold host-owned settings; the
+              rest are this desktop's alone. */}
+          {!visible && (
+            <HostScope>
+              <GeneralPane />
+            </HostScope>
+          )}
+          {visible && section === "general" && (
+            <HostScope>
+              <GeneralPane />
+            </HostScope>
+          )}
           {visible && section === "account" && <AccountPane />}
           {visible && section === "layout" && <LayoutPane />}
           {visible && section === "shortcuts" && <ShortcutsPane />}
           {visible && section === "dictation" && <DictationPane />}
-          {visible && section === "git" && <GitPane />}
+          {visible && section === "git" && (
+            <HostScope>
+              <GitPane />
+            </HostScope>
+          )}
           {visible && section === "review" && <ReviewPane />}
-          {visible && section === "sandbox" && <SandboxPane />}
-          {visible && section === "network" && <NetworkPane />}
+          {visible && section === "sandbox" && (
+            <HostScope>
+              <SandboxPane />
+            </HostScope>
+          )}
+          {visible && section === "network" && (
+            <HostScope>
+              <NetworkPane />
+            </HostScope>
+          )}
           {/* One element for both tabs, so switching keeps the pane (and the
               pairing window it holds open) mounted. */}
           {visible && (section === "hosts" || section === "clients") && <DevicesPane />}
-          {visible && section === "providers" && <ProvidersPane />}
+          {visible && section === "providers" && (
+            <HostScope>
+              <ProvidersPane />
+            </HostScope>
+          )}
           {visible && section === "agents" && <CustomAgentsPane />}
           {visible && section === "workflows" && <WorkflowsPane />}
           {visible && section === "skills" && <SkillsPane />}
-          {visible && section === "tools" && <McpServersPane />}
+          {visible && section === "tools" && (
+            <HostScope>
+              <McpServersPane />
+            </HostScope>
+          )}
           {visible && section === "experimental" && <ExperimentalPane />}
           {visible && section === "developer" && (
             <Suspense fallback={null}>
-              <DeveloperPane />
+              <HostScope>
+                <DeveloperPane />
+              </HostScope>
             </Suspense>
           )}
         </div>

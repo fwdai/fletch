@@ -17,7 +17,7 @@ import {
 import { DEFAULT_PROVIDER_ID } from "@/data/providers";
 import type { LocalCommandAction } from "@/data/slashCommands";
 import { useAppStore } from "@/store";
-import { activeEntry } from "@/store/capabilities";
+import { useHostEntry } from "@/store/capabilities";
 import { composeIssueBrief } from "@/util/issueBrief";
 import { roadmapItemBrief } from "@/util/roadmapBrief";
 import { AddMenu, type CommandChoice } from "./AddMenu";
@@ -249,7 +249,7 @@ export function Composer({
   const modelCatalog = useAppStore((s) => s.modelCatalog);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const customAgents = useAppStore((s) => s.customAgents);
-  const environment = useAppStore(activeEntry);
+  const environment = useHostEntry();
   // The listening tooltip promises one of two things — "stops when you pause"
   // or "stop it yourself" — and which is true is the user's setting, not the
   // engine's doing: both engines honour it.

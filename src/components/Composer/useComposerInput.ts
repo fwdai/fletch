@@ -1,10 +1,11 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { stat } from "@tauri-apps/plugin-fs";
 import { useEffect, useRef, useState } from "react";
-import { api, type DirListing, type FolderGrant, type PrSummary } from "@/api";
+import type { DirListing, FolderGrant, PrSummary } from "@/api";
+import { useEngine } from "@/api/engine";
 import type { LocalCommandAction } from "@/data/slashCommands";
-import { useAppStore } from "@/store";
-import { activeEnvironment } from "@/store/environments";
+import { useAppStore, useHostStore } from "@/store";
+import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { useCommandSource } from "./autocomplete/sources/commands";
 import { useFileSource } from "./autocomplete/sources/files";
 import { usePrSource } from "./autocomplete/sources/prs";
@@ -66,6 +67,9 @@ export function grow(el: HTMLTextAreaElement) {
  *  workflow composer build their own footer + submit on top of this, so the
  *  input behaves identically everywhere. */
 export function useComposerInput(cfg: ComposerInputConfig) {
+  const engine = useEngine();
+  const { api } = engine;
+  const store = useHostStore();
   const { draftKey, autoFocus, seed, onSeedConsumed, onEnter, onKeyDown } = cfg;
   const setComposerDraft = useAppStore((s) => s.setComposerDraft);
   const setLastError = useAppStore((s) => s.setLastError);
@@ -74,7 +78,7 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   // persisting on each keystroke doesn't re-render; a view switch remounts us
   // and re-runs this initializer.
   const [text, setText] = useState(() =>
-    draftKey ? (useAppStore.getState().composerDrafts[draftKey] ?? "") : "",
+    draftKey ? (store.getState().composerDrafts[draftKey] ?? "") : "",
   );
   // Caret offset, tracked so triggers can be detected at the cursor and
   // dictation can insert there. Starts at the end of the restored draft, which
@@ -175,7 +179,11 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     const dirs = cfg.folders ? await droppedFolders(paths) : [];
     const files = paths.filter((p) => !dirs.includes(p));
     addLocalFolders(dirs);
-    if (files.length) await stageAll("file", files.map(stageAttachmentPath)).catch(() => {});
+    if (files.length)
+      await stageAll(
+        "file",
+        files.map((p) => stageAttachmentPath(engine, p)),
+      ).catch(() => {});
   };
 
   /** Folders on this Mac, from a drop or the picker, as chips for the next
@@ -183,7 +191,7 @@ export function useComposerInput(cfg: ComposerInputConfig) {
    *  machine the agent is on. */
   function addLocalFolders(dirs: string[]) {
     if (dirs.length === 0) return;
-    if (activeEnvironment().kind !== "local") {
+    if (engine.hostId !== LOCAL_ENVIRONMENT_ID) {
       setLastError("A folder on this Mac can't be given to an agent running on another machine.");
       return;
     }
@@ -236,7 +244,10 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     // An `@~/…` pick names a file outside the checkout, staged like a drop so
     // the agent can read it from wherever on this Mac it came from.
     attachFsPaths: (paths) =>
-      void stageAll("file", paths.map(stageEnvironmentPath)).catch(() => {}),
+      void stageAll(
+        "file",
+        paths.map((p) => stageEnvironmentPath(engine, p)),
+      ).catch(() => {}),
     // The listed folder itself: a path on the environment being driven, as
     // the listing is, so it is granted there as it stands.
     attachFsDir: cfg.folders ? addFolder : undefined,

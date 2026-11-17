@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useEngine } from "@/api/engine";
 import {
   ActivityHeatmap,
   CountUp,
@@ -34,6 +35,7 @@ const HORIZON_MS = (WEEKS + 1) * 7 * 86_400_000;
  *  Turn/agent/PR series load in one round of fast indexed queries; the token
  *  total folds every session's records, so it streams in behind a shimmer. */
 export function ProjectPulse({ projectId }: { projectId: string }) {
+  const { api } = useEngine();
   const [activity, setActivity] = useState<PulseActivity | null>(null);
   const [totals, setTotals] = useState<PulseTotals | null>(null);
   const [usage, setUsage] = useState<PulseUsage | null>(null);
@@ -51,7 +53,7 @@ export function ProjectPulse({ projectId }: { projectId: string }) {
     loadPulseTotals(projectId, now)
       .then((t) => !cancelled && setTotals(t))
       .catch((err) => console.error("pulse totals failed", err));
-    loadPulseUsage(projectId, catalog)
+    loadPulseUsage(api, projectId, catalog)
       .then((u) => !cancelled && setUsage(u))
       .catch((err) => {
         console.error("pulse usage failed", err);
@@ -60,7 +62,7 @@ export function ProjectPulse({ projectId }: { projectId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [projectId, catalog]);
+  }, [projectId, catalog, api]);
 
   const turns = activity?.turns ?? {};
   const streak = activity ? computeStreak(turns, Date.now()) : 0;

@@ -1,7 +1,7 @@
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type { ClaudeCommandOutput, DiscoveredCommand } from "../types/commands";
 
-export const commandsApi = {
+export const commandsApi = (invoke: Invoke) => ({
   discoverSlashCommands: (provider: string, projectDir?: string) =>
     invoke<DiscoveredCommand[]>("discover_slash_commands", {
       provider,
@@ -9,4 +9,4 @@ export const commandsApi = {
     }),
   runClaudeCommand: (agentId: string, args: string[]) =>
     invoke<ClaudeCommandOutput>("run_claude_command", { agentId, args }),
-};
+});

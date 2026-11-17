@@ -11,15 +11,16 @@ import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { activeEntry } from "@/store/capabilities";
+import { useHostEntry } from "@/store/capabilities";
 import { useProviderPoll } from "@/util/useProviderPoll";
 import { SetGroup, SetHead } from "../primitives";
+import { HostPicker } from "../SettingsHost";
 import { ProviderRow } from "./ProviderRow";
 
 export function ProvidersPane() {
   const providersProbed = useAppStore((s) => s.providersProbed);
   const refreshProviderVersions = useAppStore((s) => s.refreshProviderVersions);
-  const env = useAppStore(activeEntry);
+  const env = useHostEntry();
   const [scanning, setScanning] = useState(false);
 
   // Keep re-probing while the pane is open, so an install the user runs in
@@ -72,14 +73,16 @@ export function ProvidersPane() {
           </>
         }
       />
+      <HostPicker />
 
-      {/* This pane is This Mac's, whatever environment is active: it probes
-          this machine's binaries and installs and signs in here, and none of
-          those ops is on the wire (docs/remote-protocol.md). Say so rather
-          than let the rows read as the host's. */}
+      {/* The rows are This Mac's whichever host is picked: they probe this
+          machine's binaries and install and sign in here, and none of those
+          ops is on the wire (docs/remote-protocol.md). Only a custom binary
+          path is the picked host's setting. Say so rather than let the rows
+          read as the host's. */}
       {env.kind === "remote" && (
         <p className="set-prov-hint text-sm">
-          These are this Mac's providers. {env.name}'s are managed on {env.name}, except a custom
+          These are This Mac's providers. {env.name}'s are managed on {env.name}, except a custom
           binary path, which edits {env.name}'s setting.
         </p>
       )}

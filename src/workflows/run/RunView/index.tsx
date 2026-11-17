@@ -11,8 +11,8 @@
 // the same way the agent panels are.
 
 import { useEffect, useMemo, useState } from "react";
+import { useEngine } from "@/api/engine";
 import type { WfRun, WfRunStatus } from "../../../api";
-import { api } from "../../../api";
 import { Icon } from "../../../components/Icon";
 import { PanelToggle } from "../../../components/PanelToggle";
 import { Button } from "../../../components/ui/Button";
@@ -27,6 +27,7 @@ import { type FocusRequest, ThreadView } from "./ThreadView";
 import { useRunDetail } from "./useRunDetail";
 
 export function RunView({ id }: { id: string }) {
+  const { api } = useEngine();
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const focusedStepAgentId = useAppStore((s) => s.focusedStepAgentId);

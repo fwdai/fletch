@@ -4,7 +4,8 @@
 // resolves and retries identically.
 
 import { useCallback, useState } from "react";
-import { api, type ToolStatus } from "@/api";
+import type { ToolStatus } from "@/api";
+import { useEngine } from "@/api/engine";
 import { track } from "./track";
 import { type GitDistState, useGitDist } from "./useGitDist";
 
@@ -22,6 +23,7 @@ export interface GitInstall {
 /** `git` is the caller's latest probe result; `recheck` re-runs its checks —
  *  called when the bootstrap settles and after a manual install attempt. */
 export function useGitInstall(git: ToolStatus | null, recheck: () => void): GitInstall {
+  const { api } = useEngine();
   // While the app is downloading its portable git (no usable system git),
   // callers show that instead of a false "not found"; re-check on settle.
   const gitDist = useGitDist(recheck);
@@ -51,7 +53,7 @@ export function useGitInstall(git: ToolStatus | null, recheck: () => void): GitI
         setInstallingGit(false);
         recheck();
       });
-  }, [recheck]);
+  }, [recheck, api]);
 
   return { gitDist, gitDownloading, gitInstallError, installingGit, installGit };
 }

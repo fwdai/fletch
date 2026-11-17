@@ -1,7 +1,7 @@
 import { type KeyboardEvent, useMemo } from "react";
 import { prOrigins } from "@/adapters/shared/subagents";
 import { Icon } from "@/components/Icon";
-import { useAppStore } from "@/store";
+import { useAppStore, useOnHost } from "@/store";
 import { formatDuration } from "@/util/format";
 import type { AgentPr } from "@/util/prState";
 import { PrPill } from "./PrPill";
@@ -10,10 +10,10 @@ import { failedTip, type SubagentChild } from "./subagentChildren";
 /** One of an agent's backgrounded sub-agents as a sidebar child of its
  *  AgentRow — the same indented, quieter row a workflow run's step agents get
  *  (StepAgentRow), speaking the same rail / shimmer / loader vocabulary.
- *  Clicking opens the sub-agent's thread in the center pane (the agent's
- *  conversation is one "back" away). Reads active while that thread — or a
- *  thread nested under it — is open. The task's lifecycle is Claude's, so the
- *  row carries no actions. Of the agent's PRs (`agentPrs`), the ones this
+ *  Clicking puts the agent's host on screen and opens the sub-agent's thread
+ *  in the center pane (the agent's conversation is one "back" away). Reads
+ *  active while that thread — or a thread nested under it — is open. The
+ *  task's lifecycle is Claude's, so the row carries no actions. Of the agent's PRs (`agentPrs`), the ones this
  *  sub-agent opened get their own pill, while the agent's row keeps the
  *  aggregate. */
 export function SubagentRow({
@@ -25,11 +25,11 @@ export function SubagentRow({
   child: SubagentChild;
   agentPrs: readonly AgentPr[];
 }) {
-  const openSubagentThread = useAppStore((s) => s.openSubagentThread);
+  const onHost = useOnHost();
   const active = useAppStore(
     (s) => s.openThread?.agentId === agentId && s.openThread.path[0] === child.task.toolUseId,
   );
-  const onSelect = () => openSubagentThread(agentId, [child.task.toolUseId]);
+  const onSelect = () => onHost((s) => s.openSubagentThread(agentId, [child.task.toolUseId]));
   // Which sub-agent opened which PR, read back out of the log (the host records
   // PRs per checkout, not per thread). Read only while the agent has PRs, so a
   // streaming log re-renders no row that has nothing to attribute; the log

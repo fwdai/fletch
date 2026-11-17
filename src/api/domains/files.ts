@@ -1,11 +1,10 @@
-import { activeEnvironment } from "@/store/environments";
 import {
   type AttachmentApi,
   assertWithinUploadCap,
   uploadAttachment,
 } from "@/util/attachmentUpload";
-import { invoke, invokeLocal } from "../invoke";
-import { activeTransport, invokeLocalRaw, type Transport } from "../transport";
+import { type Invoke, invokeLocal } from "../invoke";
+import { invokeLocalRaw, type Transport } from "../transport";
 import type {
   CheckoutFile,
   CheckoutFileContents,
@@ -26,7 +25,9 @@ const attachmentApiOver = (transport: Transport): AttachmentApi => ({
   attachmentCancel: (upload) => transport.call<null>("attachment_cancel", { upload }),
 });
 
-export const filesApi = {
+/** `remote` is the paired host's transport, absent for this desktop's own
+ *  engine (see `makeApi`). */
+export const filesApi = (invoke: Invoke, remote?: () => Transport) => ({
   listCheckoutTree: (agentId: string) => invoke<CheckoutFile[]>("list_checkout_tree", { agentId }),
   /** Every file changed in the agent's checkout, as `baseMode` measures it:
    *  "fork" is everything since the workspace started, committed or not; "head"
@@ -54,8 +55,8 @@ export const filesApi = {
     invoke<void>("create_checkout_dir", { agentId, path }),
   copyCheckoutFile: (agentId: string, from: string, to: string) =>
     invoke<void>("copy_checkout_file", { agentId, from, to }),
-  /** Stage `bytes` for the active environment and resolve with a path THAT
-   *  environment can read — which is the whole point of branching here: the
+  /** Stage `bytes` for the engine this api drives and resolve with a path
+   *  THAT engine can read — which is the whole point of branching here: the
    *  message that carries the path (`send_user_message`, `wf_launch`) is
    *  routed, so a path on this Mac reaches a host that cannot open it.
    *
@@ -64,7 +65,7 @@ export const filesApi = {
    *  `attachment_*` upload of docs/remote-protocol.md, whose `attachment_end`
    *  answers with the staged host path. */
   savePastedAttachment: async (name: string, bytes: Uint8Array): Promise<string> => {
-    if (activeEnvironment().kind === "local") {
+    if (!remote) {
       return invokeLocalRaw<string>("save_pasted_attachment", bytes, {
         headers: { name: name.replace(/[^A-Za-z0-9._-]/g, "_") },
       });
@@ -72,17 +73,13 @@ export const filesApi = {
     // Refused here rather than after a minute of chunking: the host drops an
     // upload over the same cap, and a truncated file is a corrupt one.
     assertWithinUploadCap({ name, size: bytes.length });
-    // Captured once, here: a switch while the chunks are going up must not send
-    // the rest of this upload to the other host. Nothing else needs invalidating
-    // when that happens — the composer's attachment list is per-environment
-    // through the stash (store/environmentSwitch), so the path this resolves
-    // with lands in the composer of the environment it was staged on, and the
-    // one on screen never shows it.
-    return uploadAttachment(attachmentApiOver(activeTransport()), name, bytes);
+    // Captured once, here: the upload is one sequence on one connection (see
+    // `attachmentApiOver`), however the host's connection changes meanwhile.
+    return uploadAttachment(attachmentApiOver(remote()), name, bytes);
   },
   /** Copy a file on this Mac into the app's attachments staging area and
    *  resolve with the staged path. Local only: the app reads the file itself,
    *  so there is no byte round trip and no size cap, and a path on this Mac
    *  means nothing to a host anyway (see `stageAttachmentPath`). */
   stageAttachmentPath: (path: string) => invokeLocal<string>("stage_attachment_path", { path }),
-};
+});

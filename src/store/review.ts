@@ -2,16 +2,16 @@
 // (`review::*`): it spawns the hidden reviewer over a checkout, runs its
 // turns, turns its verdict into local review threads and says where the review
 // stands. This slice holds that state per checkout — fed by `review:changed`
-// and by `get_reviews` on bootstrap, reconnect and environment switch, like
-// `delegations` and `autopilot` — plus the two settings that decide when and
-// with whom a review runs.
+// and by `get_reviews` on bootstrap and every handshake, like `delegations`
+// and `autopilot` — plus the two settings that decide when and with whom a
+// review runs.
 
-import { api, type ReviewState } from "@/api";
+import type { ReviewState } from "@/api";
 import { REVIEWER_NAME } from "@/starterPack/presets";
 import type { CustomAgent } from "@/storage/customAgents";
 import { setSetting } from "@/storage/settings";
 import { newestWins } from "@/util/newestWins";
-import { activeEnvironment, forActiveEnvironment } from "./environments";
+import { environmentEntry } from "./environments";
 import { gateReason } from "./gates";
 import { checkoutKey } from "./git";
 import type { SliceCreator } from "./types";
@@ -63,101 +63,99 @@ export interface ReviewSlice {
 
 const keyOf = (r: ReviewState) => checkoutKey(r.agent_id, r.subdir ?? undefined);
 
-/** Only the newest `get_reviews` read may land (see `newestWins`). */
-const loads = newestWins();
+export const createReviewSlice: SliceCreator<ReviewSlice> = (set, get, { api, hostId }) => {
+  /** Only the newest `get_reviews` read may land (see `newestWins`). */
+  const loads = newestWins();
 
-export const createReviewSlice: SliceCreator<ReviewSlice> = (set, get) => ({
-  reviews: {},
-  reviewOnPrOpen: true,
-  reviewAgentId: "",
+  return {
+    reviews: {},
+    reviewOnPrOpen: true,
+    reviewAgentId: "",
 
-  loadReviews: async () => {
-    // A host from before the review loop answers no `get_reviews`: nothing to
-    // mirror, and no error worth raising for it.
-    if (gateReason(activeEnvironment(), "review")) {
-      set({ reviews: {} });
-      return;
-    }
-    const claim = loads.claim();
-    let rows: ReviewState[] | undefined;
-    try {
-      rows = await forActiveEnvironment(() => api.getReviews());
-    } catch {
-      // Best effort, like the other resync reads: the events keep it current.
-      return;
-    }
-    // `undefined`: the environment changed under the read, so it is not ours.
-    if (!rows || !claim.current()) return;
-    const reviews: Record<string, ReviewState> = {};
-    for (const row of rows) reviews[keyOf(row)] = row;
-    set({ reviews });
-  },
-
-  applyReviewChanged: (state) => set((s) => ({ reviews: { ...s.reviews, [keyOf(state)]: state } })),
-
-  startReview: async (agentId, subdir, customAgentId) => {
-    const gated = gateReason(activeEnvironment(), "review");
-    if (gated) {
-      get().setLastError(gated);
-      return;
-    }
-    try {
-      const state = await forActiveEnvironment(() =>
-        api.reviewStart(agentId, subdir, customAgentId),
-      );
-      if (state) get().applyReviewChanged(state);
-    } catch (e) {
-      get().setLastError(`Couldn't start the review: ${e}`);
-    }
-  },
-
-  stopReview: async (agentId, subdir) => {
-    try {
-      const state = await forActiveEnvironment(() => api.reviewStop(agentId, subdir));
-      if (state) get().applyReviewChanged(state);
-    } catch (e) {
-      get().setLastError(`Couldn't stop the review: ${e}`);
-    }
-  },
-
-  dismissReviewThread: async (agentId, threadId, subdir) => {
-    try {
-      await forActiveEnvironment(() =>
-        api.reviewDismissThread(agentId, threadId, subdir, "dismissed from the Git panel"),
-      );
-      return true;
-    } catch (e) {
-      get().setLastError(`Couldn't dismiss the finding: ${e}`);
-      return false;
-    }
-  },
-
-  openReviewer: async (reviewerAgentId, projectId) => {
-    // The reviewer is hidden from the sidebar (a purpose-tagged workspace, like
-    // a Roadmap PM chat), so the snapshot has no record for it: fetch the
-    // project's reviewer chats, register the one asked for off-sidebar — the
-    // per-agent machinery resolves provider and repo by id — then select it.
-    try {
-      const chats = await forActiveEnvironment(() => api.listProjectChats(projectId, "reviewer"));
-      const record = chats?.find((a) => a.id === reviewerAgentId);
-      if (!record) {
-        get().setLastError("The reviewer's transcript isn't available yet");
+    loadReviews: async () => {
+      // A host from before the review loop answers no `get_reviews`: nothing to
+      // mirror, and no error worth raising for it.
+      if (gateReason(environmentEntry(hostId), "review")) {
+        set({ reviews: {} });
         return;
       }
-      get().registerOffSidebarAgents([record]);
-      get().selectAgent(record.id);
-    } catch (e) {
-      get().setLastError(`Couldn't open the reviewer: ${e}`);
-    }
-  },
+      const claim = loads.claim();
+      let rows: ReviewState[];
+      try {
+        rows = await api.getReviews();
+      } catch {
+        // Best effort, like the other resync reads: the events keep it current.
+        return;
+      }
+      if (!claim.current()) return;
+      const reviews: Record<string, ReviewState> = {};
+      for (const row of rows) reviews[keyOf(row)] = row;
+      set({ reviews });
+    },
 
-  setReviewOnPrOpen: async (on) => {
-    set({ reviewOnPrOpen: on });
-    await setSetting(REVIEW_ON_PR_OPEN_KEY, on ? "true" : "false");
-  },
+    applyReviewChanged: (state) =>
+      set((s) => ({ reviews: { ...s.reviews, [keyOf(state)]: state } })),
 
-  setReviewAgent: async (customAgentId) => {
-    set({ reviewAgentId: customAgentId });
-    await setSetting(REVIEW_AGENT_KEY, customAgentId);
-  },
-});
+    startReview: async (agentId, subdir, customAgentId) => {
+      const gated = gateReason(environmentEntry(hostId), "review");
+      if (gated) {
+        get().setLastError(gated);
+        return;
+      }
+      try {
+        const state = await api.reviewStart(agentId, subdir, customAgentId);
+        if (state) get().applyReviewChanged(state);
+      } catch (e) {
+        get().setLastError(`Couldn't start the review: ${e}`);
+      }
+    },
+
+    stopReview: async (agentId, subdir) => {
+      try {
+        const state = await api.reviewStop(agentId, subdir);
+        if (state) get().applyReviewChanged(state);
+      } catch (e) {
+        get().setLastError(`Couldn't stop the review: ${e}`);
+      }
+    },
+
+    dismissReviewThread: async (agentId, threadId, subdir) => {
+      try {
+        await api.reviewDismissThread(agentId, threadId, subdir, "dismissed from the Git panel");
+        return true;
+      } catch (e) {
+        get().setLastError(`Couldn't dismiss the finding: ${e}`);
+        return false;
+      }
+    },
+
+    openReviewer: async (reviewerAgentId, projectId) => {
+      // The reviewer is hidden from the sidebar (a purpose-tagged workspace, like
+      // a Roadmap PM chat), so the snapshot has no record for it: fetch the
+      // project's reviewer chats, register the one asked for off-sidebar — the
+      // per-agent machinery resolves provider and repo by id — then select it.
+      try {
+        const chats = await api.listProjectChats(projectId, "reviewer");
+        const record = chats.find((a) => a.id === reviewerAgentId);
+        if (!record) {
+          get().setLastError("The reviewer's transcript isn't available yet");
+          return;
+        }
+        get().registerOffSidebarAgents([record]);
+        get().selectAgent(record.id);
+      } catch (e) {
+        get().setLastError(`Couldn't open the reviewer: ${e}`);
+      }
+    },
+
+    setReviewOnPrOpen: async (on) => {
+      set({ reviewOnPrOpen: on });
+      await setSetting(REVIEW_ON_PR_OPEN_KEY, on ? "true" : "false");
+    },
+
+    setReviewAgent: async (customAgentId) => {
+      set({ reviewAgentId: customAgentId });
+      await setSetting(REVIEW_AGENT_KEY, customAgentId);
+    },
+  };
+};

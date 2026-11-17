@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { type AgentRecord, api } from "@/api";
+import type { AgentRecord } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useTerminalSearch } from "@/components/ui/TerminalSearch";
 import { getOutputBuffer, registerOutputSink } from "@/pty/buffers";
 import { nativeTerminalKey } from "@/pty/terminals";
@@ -18,6 +19,7 @@ import { useXterm } from "@/util/useXterm";
  *  another agent and coming back re-attaches the same live screen rather than
  *  rebuilding one from the ring buffer. */
 export function NativeView({ agent }: { agent: AgentRecord }) {
+  const { api, hostId } = useEngine();
   const search = useTerminalSearch();
 
   const containerRef = useXterm(
@@ -35,7 +37,7 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
       // point of the cache is that it now happens once instead of on every
       // re-selection.
       term.loadAddon(new WebLinksAddon((_, url) => open(url)));
-      const buffered = getOutputBuffer(agent.id);
+      const buffered = getOutputBuffer(hostId, agent.id);
       if (buffered && buffered.length > 0) term.write(buffered);
 
       const onResize = term.onResize(({ cols, rows }) => {
@@ -46,7 +48,7 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
           console.error("writeToAgent failed", err);
         });
       });
-      const unregister = registerOutputSink(agent.id, (bytes) => term.write(bytes));
+      const unregister = registerOutputSink(hostId, agent.id, (bytes) => term.write(bytes));
 
       return () => {
         unregister();
@@ -54,9 +56,9 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
         onData.dispose();
       };
     },
-    [agent.id],
+    [hostId, agent.id],
     {
-      cacheKey: nativeTerminalKey(agent.id),
+      cacheKey: nativeTerminalKey(hostId, agent.id),
       // Per mount, not per terminal: the find bar is this component
       // instance's state, so a cached terminal must be re-bound to the
       // current mount or ⌘F would drive an unmounted component's setState.

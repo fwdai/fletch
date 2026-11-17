@@ -1,7 +1,8 @@
 // Where an agent's walkthrough comes from — its own tour when it wrote one with
 // at least a step, else its transcript — and which step the reader is on.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { type AgentRecord, api, type FileStatus, onTourChanged, type Tour } from "@/api";
+import type { AgentRecord, FileStatus, Tour } from "@/api";
+import { useEngine } from "@/api/engine";
 import type { ViewItem } from "@/components/Workspace/messages/pair";
 import { useHistoryLoad, useTranscriptFrom } from "@/components/Workspace/messages/useTranscript";
 import { useAppStore } from "@/store";
@@ -58,6 +59,7 @@ function useTranscriptItems(agent: AgentRecord, enabled: boolean): ViewItem[] {
  *  first load settles; null when it has none — or when the host can't say (a
  *  rejected `getTour`, e.g. a host without the command), which reads the same. */
 function useTour(agentId: string): Tour | null | undefined {
+  const { api, events } = useEngine();
   const [loaded, setLoaded] = useState<{ agentId: string; tour: Tour | null } | null>(null);
 
   useEffect(() => {
@@ -75,14 +77,14 @@ function useTour(agentId: string): Tour | null | undefined {
         });
     };
     load();
-    const off = onTourChanged((e) => {
+    const off = events.onTourChanged((e) => {
       if (e.agent_id === agentId) load();
     });
     return () => {
       cancelled = true;
       void off.then((f) => f());
     };
-  }, [agentId]);
+  }, [agentId, api, events]);
 
   return loaded?.agentId === agentId ? loaded.tour : undefined;
 }

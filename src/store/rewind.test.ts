@@ -19,6 +19,7 @@ vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.f
 
 import type { ChatItem } from "@/adapters";
 import type { RestoreReport, SessionRecord, UserTurn } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { createBackgroundTasksSlice } from "./backgroundTasks";
 import { createComposerSlice } from "./composer";
 import { createRewindSlice } from "./rewind";
@@ -70,12 +71,12 @@ const report: RestoreReport = {
 
 const makeStore = () => {
   const store = create<AppState>()(
-    (...a) =>
+    (set, get) =>
       ({
-        ...createWorkspaceSlice(...a),
-        ...createComposerSlice(...a),
-        ...createBackgroundTasksSlice(...a),
-        ...createRewindSlice(...a),
+        ...createWorkspaceSlice(set, get, activeEngine),
+        ...createComposerSlice(set, get, activeEngine),
+        ...createBackgroundTasksSlice(set, get, activeEngine),
+        ...createRewindSlice(set, get, activeEngine),
       }) as AppState,
   );
   store.setState({

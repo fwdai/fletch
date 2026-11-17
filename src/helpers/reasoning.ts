@@ -3,11 +3,12 @@
 // replay. The rollout's matching reasoning item supplies its canonical order.
 
 import type { RawEvent } from "../adapters";
-import { api } from "../api";
+import type { Api } from "../api";
 import type { AppState } from "../store";
 import { providerFor } from "./agentLookups";
 
 export async function persistLiveReasoning(
+  api: Api,
   get: () => AppState,
   agentId: string,
   rawEvent: RawEvent,

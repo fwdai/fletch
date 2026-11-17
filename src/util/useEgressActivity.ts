@@ -1,21 +1,20 @@
 import { useEffect, useState } from "react";
-import { api, type HostActivity, onBoxEgress, onBoxPolicy } from "@/api";
-import { useAppStore } from "@/store";
+import type { HostActivity } from "@/api";
+import { useEngine } from "@/api/engine";
 
 /** The hosts VMs reached or were refused lately (`box_egress_activity`),
- *  for every project or one, kept live by `box:egress` (each answered
- *  connection, re-read after a short pause so a burst costs one read) and
- *  `box:policy`. `null` until the first read lands, and while the host cannot
- *  answer (`skip`). */
+ *  for every project or one, on the host the caller is scoped to, kept live by
+ *  `box:egress` (each answered connection, re-read after a short pause so a
+ *  burst costs one read) and `box:policy`. `null` until the first read lands,
+ *  and while the host cannot answer (`skip`). */
 export function useEgressActivity(
   projectId: string | null,
   skip = false,
   hours?: number,
 ): HostActivity[] | null {
+  const { api, events } = useEngine();
   const [hosts, setHosts] = useState<HostActivity[] | null>(null);
-  const environmentId = useAppStore((s) => s.activeEnvironmentId);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: environmentId is the intended re-run trigger
   useEffect(() => {
     if (skip) {
       setHosts(null);
@@ -36,13 +35,13 @@ export function useEgressActivity(
       }, 500);
     };
     void read();
-    const offs = [onBoxEgress(readSoon), onBoxPolicy(readSoon)];
+    const offs = [events.onBoxEgress(readSoon), events.onBoxPolicy(readSoon)];
     return () => {
       live = false;
       if (timer) clearTimeout(timer);
       for (const off of offs) void off.then((f) => f()).catch(() => {});
     };
-  }, [projectId, skip, hours, environmentId]);
+  }, [projectId, skip, hours, api, events]);
 
   return hosts;
 }

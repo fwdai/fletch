@@ -17,20 +17,23 @@ import {
   withLiveTurn,
   withSupersededSpend,
 } from "../adapters/usage";
-import { api } from "../api";
+import type { Api } from "../api";
 import { recordUsageSnapshot } from "../storage/usageDaily";
 import type { AppState } from "../store";
+import type { EnvironmentId } from "../store/environments";
+import { perHost } from "../store/perHost";
 import { agentRecord, providerFor } from "./agentLookups";
 
 /** Record what a workspace has spent: `usage`, its current conversation's,
  *  plus what the sessions it superseded spent (see `withSupersededSpend`).
  *  Returns that total. */
 export async function recordWorkspaceUsage(
+  api: Api,
   workspaceId: string,
   projectId: string | undefined,
   usage: UsageSnapshot,
 ): Promise<UsageSnapshot> {
-  const total = withSupersededSpend(usage, await supersededSpend(workspaceId));
+  const total = withSupersededSpend(usage, await supersededSpend(api, workspaceId));
   if (hasUsage(total)) recordUsageSnapshot(workspaceId, projectId, total);
   return total;
 }
@@ -44,7 +47,7 @@ const foldedSessions = new Map<string, Spend>();
  *  them all but sends records only for those not folded yet, so once they are,
  *  this is one query that returns ids. A host that can't list them (one that
  *  predates rewind) has none. */
-async function supersededSpend(workspaceId: string): Promise<Spend[]> {
+async function supersededSpend(api: Api, workspaceId: string): Promise<Spend[]> {
   const sessions = await api
     .readSupersededRecords(workspaceId, [...foldedSessions.keys()])
     .catch(() => []);
@@ -64,6 +67,7 @@ async function supersededSpend(workspaceId: string): Promise<Spend[]> {
  *  restarts. Idempotent on the event's own id; after persisting, re-aggregate
  *  so the gauge updates this turn rather than on the next records refresh. */
 export async function persistLiveUsage(
+  api: Api,
   get: () => AppState,
   set: (patch: Partial<AppState>) => void,
   agentId: string,
@@ -94,7 +98,7 @@ export async function persistLiveUsage(
       set({ usage: { ...get().usage, [agentId]: usage } });
       // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
       // spend belongs to its project like anyone else's.
-      await recordWorkspaceUsage(agentId, agentRecord(get(), agentId)?.project_id, usage);
+      await recordWorkspaceUsage(api, agentId, agentRecord(get(), agentId)?.project_id, usage);
     }
   } catch {
     // Non-critical: the next records refresh or restart re-aggregates it.
@@ -107,9 +111,9 @@ export async function persistLiveUsage(
  *  so a point in the stream can be named (`beginUsageRead`) and still mean the
  *  same thing after earlier calls were handed to the records.
  *
- *  Keyed by agent id, which is a recycled place name: `created` says which
- *  agent of that name the turn belongs to, so a new one never folds onto what
- *  a discarded or another host's namesake left here. */
+ *  Kept per host, by agent id, which is a recycled place name: `created` says
+ *  which agent of that name the turn belongs to, so a new one never folds onto
+ *  what a discarded namesake left here. */
 interface LiveTurn {
   created: string | undefined;
   base: UsageSnapshot;
@@ -117,7 +121,7 @@ interface LiveTurn {
   seen: number;
 }
 
-const liveTurns = new Map<string, LiveTurn>();
+const liveTurnsOf = perHost(() => new Map<string, LiveTurn>());
 
 /** One read of an agent's records, as it stood when it began: its place among
  *  all reads, and how far the agent's live stream had got. */
@@ -127,14 +131,15 @@ export interface UsageRead {
 }
 
 let reads = 0;
-/** Per agent, the latest read whose snapshot was settled. */
-const settledReads = new Map<string, number>();
+/** Per host and agent, the latest read whose snapshot was settled. */
+const settledReadsOf = perHost(() => new Map<string, number>());
 
-/** Fold the usage a live event reports (`liveUsageEvents`) into the agent's
- *  snapshot, so the gauge moves while the turn runs instead of when its records
- *  land. Nothing is persisted or recorded as spend: the records are the ledger,
- *  and `settleLiveUsage` hands the snapshot back to them. */
+/** Fold the usage a live event reports (`liveUsageEvents`) into the snapshot of
+ *  `hostId`'s agent, so the gauge moves while the turn runs instead of when its
+ *  records land. Nothing is persisted or recorded as spend: the records are the
+ *  ledger, and `settleLiveUsage` hands the snapshot back to them. */
 export function foldLiveUsage(
+  hostId: EnvironmentId,
   get: () => AppState,
   set: (patch: Partial<AppState>) => void,
   agentId: string,
@@ -143,6 +148,7 @@ export function foldLiveUsage(
   const agent = agentRecord(get(), agentId);
   const events = getAdapter(agent?.provider).liveUsageEvents?.(rawEvent) ?? [];
   if (events.length === 0) return;
+  const liveTurns = liveTurnsOf(hostId);
   let turn = liveTurns.get(agentId);
   if (turn?.created !== agent?.created_at) turn = undefined;
   if (!turn) {
@@ -167,9 +173,9 @@ export function foldLiveUsage(
  *  read and pass the result to `settleLiveUsage` with the snapshot it gave:
  *  the read is async, so calls can stream in while it runs, and another read
  *  can start after it and land first. */
-export function beginUsageRead(agentId: string): UsageRead {
+export function beginUsageRead(hostId: EnvironmentId, agentId: string): UsageRead {
   reads += 1;
-  return { order: reads, seen: liveTurns.get(agentId)?.seen ?? 0 };
+  return { order: reads, seen: liveTurnsOf(hostId).get(agentId)?.seen ?? 0 };
 }
 
 /** Settle the agent's usage on the records: `recorded` is the snapshot `read`
@@ -184,13 +190,15 @@ export function beginUsageRead(agentId: string): UsageRead {
  *  are dropped, or the next fold would count them twice. Calls streamed since
  *  are not in what it read, and stay folded over `recorded`. */
 export function settleLiveUsage(
+  hostId: EnvironmentId,
   agentId: string,
   recorded: UsageSnapshot,
   read: UsageRead,
 ): UsageSnapshot | null {
+  const settledReads = settledReadsOf(hostId);
   if (read.order < (settledReads.get(agentId) ?? 0)) return null;
   settledReads.set(agentId, read.order);
-  const turn = liveTurns.get(agentId);
+  const turn = liveTurnsOf(hostId).get(agentId);
   if (!turn) return recorded;
   const since = Math.min(turn.events.length, turn.seen - read.seen);
   turn.base = recorded;

@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { type AgentRecord, api, type DetectedEditor } from "@/api";
+import type { AgentRecord, Api, DetectedEditor } from "@/api";
 import type { IconName } from "@/components/Icon";
 import { EDITOR_LOGOS } from "./logos";
 
@@ -34,7 +34,7 @@ function monogram(label: string): string {
 // share the result across mounts (the launcher unmounts when no agent is open).
 let cache: Promise<DetectedEditor[]> | null = null;
 
-export function detectEditors(): Promise<DetectedEditor[]> {
+export function detectEditors(api: Api): Promise<DetectedEditor[]> {
   cache ??= api.detectEditors().catch(() => []);
   return cache;
 }
@@ -67,7 +67,7 @@ export function rememberEditor(id: string): void {
  *  which needs one `Include` line in the editor's ssh config and the
  *  editor's remote extension: the first time, the user is shown what Fletch
  *  will change and asked before it happens. */
-export async function openEditor(agent: AgentRecord, editorId: string): Promise<void> {
+export async function openEditor(api: Api, agent: AgentRecord, editorId: string): Promise<void> {
   const outcome = await api.openInEditor(agent.id, editorId);
   if (outcome === "opened") return;
   const { ssh_config, extension } = outcome.needs_setup;
@@ -86,9 +86,9 @@ export async function openEditor(agent: AgentRecord, editorId: string): Promise<
 /** Open an agent's checkout in the editor the title-bar launcher last used
  *  (its first usable one until a pick is made). Resolves without doing
  *  anything when no editor can open it. */
-export async function openInPreferredEditor(agent: AgentRecord): Promise<void> {
-  const editors = editorsFor(agent, await detectEditors());
+export async function openInPreferredEditor(api: Api, agent: AgentRecord): Promise<void> {
+  const editors = editorsFor(agent, await detectEditors(api));
   const pref = localStorage.getItem(EDITOR_PREF_KEY);
   const editor = editors.find((e) => e.id === pref) ?? editors[0];
-  if (editor) await openEditor(agent, editor.id);
+  if (editor) await openEditor(api, agent, editor.id);
 }

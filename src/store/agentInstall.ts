@@ -15,7 +15,7 @@
 // otherwise it would offer Retry over a still-dying install, which either
 // bounces off "already in progress" or overlaps the installer being torn down.
 
-import { type AgentInstallEvent, api } from "@/api";
+import type { AgentInstallEvent } from "@/api";
 import { track } from "@/util/track";
 import type { SliceCreator } from "./types";
 
@@ -125,7 +125,7 @@ export function applyInstallDone(
   };
 }
 
-export const createAgentInstallSlice: SliceCreator<AgentInstallSlice> = (set, get) => ({
+export const createAgentInstallSlice: SliceCreator<AgentInstallSlice> = (set, get, { api }) => ({
   installs: {},
 
   installAgent: async (id) => {

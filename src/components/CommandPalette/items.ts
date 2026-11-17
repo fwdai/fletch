@@ -13,12 +13,12 @@ import { ACCENTS } from "@/data/providers";
 import { activeSurface, surfaceAgent } from "@/store/surface";
 import type { AppState } from "@/store/types";
 import { agentItems, pageItems, shortcutItems } from "./commands";
-import { type PaletteContext, SEC, startDraft } from "./context";
-import { entityItems, environmentRows, projectRows, settingsRows } from "./entities";
+import { agentItemId, type PaletteContext, SEC, startDraft } from "./context";
+import { entityItems, projectRows, settingsRows } from "./entities";
 import { bestMatch } from "./match";
 import type { PageId, PaletteItem, Row, Section } from "./types";
 
-export { type PaletteContext, SEC } from "./context";
+export { type PaletteContext, type PaletteHost, SEC } from "./context";
 
 /** How many rows a section shows while searching; the query narrows the rest. */
 const SECTION_CAP: Record<string, number> = { [SEC.agents]: 8 };
@@ -42,8 +42,6 @@ export function pageRows(ctx: PaletteContext, page: PageId): PaletteItem[] {
       return projectRows(s, (repo) => startDraft(s, repo, "agent"));
     case "workflow":
       return projectRows(s, (repo) => startDraft(s, repo, "workflow"));
-    case "environment":
-      return environmentRows(s);
     case "settings":
       return settingsRows(ctx, "");
     case "editor": {
@@ -59,7 +57,7 @@ export function pageRows(ctx: PaletteContext, page: PageId): PaletteItem[] {
         section: SEC.editors,
         run: () => {
           rememberEditor(e.id);
-          openEditor(agent, e.id).catch((err) => s.setLastError(String(err)));
+          openEditor(ctx.api, agent, e.id).catch((err) => s.setLastError(String(err)));
         },
       }));
     }
@@ -98,8 +96,9 @@ export function emptySections(
     .map((id) => byId.get(id))
     .filter((it): it is PaletteItem => it !== undefined && !taken.has(it.id))
     .slice(0, RECENT_CAP);
+  const current = s.selectedAgentId && agentItemId(s.activeEnvironmentId, s.selectedAgentId);
   const jump = items
-    .filter((it) => it.section === SEC.agents && it.id !== `agent:${s.selectedAgentId}`)
+    .filter((it) => it.section === SEC.agents && it.id !== current)
     .slice(0, JUMP_CAP);
   return [
     { label: SEC.suggested, rows: plain(suggested) },

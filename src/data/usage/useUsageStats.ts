@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UsageScan } from "@/api";
-import { api } from "@/api";
+import { localEngine } from "@/api/engine";
 import { hostSupports } from "@/remote/types";
 import { useAppStore } from "@/store";
 import type { EnvironmentEntry, EnvironmentId } from "@/store/environments";
@@ -91,7 +91,7 @@ const cache = new Map<EnvironmentId, HostUsageScan>();
 const inFlight = new Map<EnvironmentId, Promise<void>>();
 
 /** Which environments to ask. Local always — its transcripts are on this disk
- *  whatever environment the UI is driving. A remote host only when it is
+ *  whichever host is on screen. A remote host only when it is
  *  connected *and* says it answers the op: hosts that predate it would reply
  *  "unknown op", which is not a failure worth showing. Local first, then by
  *  name, so the filter's order is stable across reconnects. */
@@ -108,7 +108,8 @@ export function usageScanHosts(
     );
 }
 
-/** Scan one host over the widest window, writing the answer into the cache.
+/** Scan one host over the widest window, writing the answer into the cache:
+ *  this Mac through its own engine, a paired host down its own connection.
  *  Rejects with whatever the transport said; the caller decides what a single
  *  host's failure means. */
 function scanHost(env: EnvironmentEntry): Promise<void> {
@@ -119,7 +120,7 @@ function scanHost(env: EnvironmentEntry): Promise<void> {
   // store/environments.ts); `api` goes down Tauri IPC to this machine.
   const call = env.transport
     ? env.transport.call<UsageScan>(SCAN_OP, { sinceMs, untilMs })
-    : api.scanUsageTranscripts(sinceMs, untilMs);
+    : localEngine.api.scanUsageTranscripts(sinceMs, untilMs);
   const run = call
     .then((scan) => {
       cache.set(env.id, { envId: env.id, envName: env.name, scan, fetchedAt: Date.now() });

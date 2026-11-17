@@ -19,6 +19,7 @@ vi.mock("@/data/slashCommands", () => ({ discoverCommands: vi.fn() }));
 
 import type { ChatItem } from "@/adapters";
 import type { TurnSentEvent } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { mirrorSentTurn } from "@/helpers";
 import { createDraftsSlice } from "./drafts";
 import type { AppState } from "./types";
@@ -28,7 +29,11 @@ const PROMPT = "reorganize the settings pane";
 
 const makeStore = () => {
   const store = create<AppState>()(
-    (...a) => ({ ...createDraftsSlice(...a), ...createWorkspaceTypesSlice(...a) }) as AppState,
+    (set, get) =>
+      ({
+        ...createDraftsSlice(set, get, activeEngine),
+        ...createWorkspaceTypesSlice(set, get, activeEngine),
+      }) as AppState,
   );
   store.setState({
     drafts: [

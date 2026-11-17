@@ -5,9 +5,8 @@ import pkg from "../../package.json";
 /** One line saying what a paired host cannot do, with the reasons and both
  *  versions in its tooltip. Renders nothing for the local environment, for a
  *  host that has not been greeted yet, and for a host that answers everything —
- *  which is why the two surfaces that identify a host (Settings › Devices ›
- *  Hosts, and the sidebar's environment switcher) can both
- *  drop it in unconditionally.
+ *  which is why a surface that identifies a host (Settings › Devices › Hosts)
+ *  can drop it in unconditionally.
  *
  *  `className` is the caller's own sub-line class: the note is a line in an
  *  existing stack, not a component with a look of its own. */

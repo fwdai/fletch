@@ -1,12 +1,13 @@
 import { useEffect } from "react";
-import { api } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { stepSelection } from "@/components/Sidebar/rowNav";
 import { openInPreferredEditor } from "@/components/TitleBar/OpenInEditor/editors";
 import { escapeTaken } from "@/components/ui/useEscape";
 import type { FeatureFlags } from "@/storage/preferences";
 import type { AppState } from "@/store";
-import { useAppStore } from "@/store";
+import { hostStore, onHost, useAppStore } from "@/store";
 import { activeGateReason, type GateName } from "@/store/capabilities";
+import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { focusNeedsRuns, isOnlyFocus, projectCount, surfaceProjectKey } from "@/store/projectFocus";
 import { activeSurface, surfaceAgent, surfaceRepoPath } from "@/store/surface";
 import type { RightPanelTab } from "@/store/types";
@@ -28,6 +29,10 @@ export function useShortcutKeys(id: string): string {
   const combo = shortcut ? effectiveCombos(shortcut, overrides)[0] : undefined;
   return combo ? formatCombo(combo) : "";
 }
+
+/** The store as the host on screen sees it: a chord acts on whatever the user
+ *  is looking at. */
+const onScreen = (): AppState => hostStore(useAppStore.getState().activeEnvironmentId).getState();
 
 /** One global shortcut's behavior. `whileTyping` lets it fire with a text field
  *  focused; the default skips it there, for chords the field itself uses
@@ -60,7 +65,7 @@ function withSidebar(s: AppState, fn: () => void) {
 /** Show one right-rail tab for the open agent, opening the rail if hidden. A
  *  tab whose feature is off in Settings › Layout is not there to show. */
 function showPanel(tab: RightPanelTab, feature: keyof FeatureFlags, gate?: GateName) {
-  const s = useAppStore.getState();
+  const s = onScreen();
   const agent = surfaceAgent(s);
   if (!agent || !s.features[feature]) return;
   // The rail drops a tab the environment can't serve (see RightPanel); the
@@ -86,7 +91,7 @@ export function closeScreens(s: AppState) {
  *  front, leave it. The store refuses the roadmap on an environment without
  *  one. */
 function toggleProjectView(view: "roadmap" | "settings") {
-  const s = useAppStore.getState();
+  const s = onScreen();
   const surface = activeSurface(s);
   const repo = surfaceRepoPath(s);
   if (surface.kind === "project" && surface.view === view) s.closeProjectScreen();
@@ -99,19 +104,21 @@ function toggleProjectView(view: "roadmap" | "settings") {
  *  only when the answer turns on them (see `store/projectFocus`), so the
  *  usual press stays synchronous. */
 async function toggleProjectFocus() {
-  const runs = focusNeedsRuns(useAppStore.getState()) ? await api.wfListRuns().catch(() => []) : [];
-  const s = useAppStore.getState();
+  const runs = focusNeedsRuns(onScreen())
+    ? await activeEngine.api.wfListRuns().catch(() => [])
+    : [];
+  const s = onScreen();
   const key = surfaceProjectKey(s, runs);
   if (!key || projectCount(s, runs) < 2) return;
   withSidebar(s, () => s.setProjectFocus(isOnlyFocus(s, key) ? [] : [key]));
 }
 
 const ACTIONS: Record<string, Action> = {
-  palette: { whileTyping: true, run: () => useAppStore.getState().togglePalette() },
+  palette: { whileTyping: true, run: () => onScreen().togglePalette() },
   search: {
     run: () => {
       // The input mounts with the sidebar, so the focus waits a frame for it.
-      withSidebar(useAppStore.getState(), () => document.getElementById("sidebar-search")?.focus());
+      withSidebar(onScreen(), () => document.getElementById("sidebar-search")?.focus());
     },
   },
   focusProject: { whileTyping: true, run: () => void toggleProjectFocus() },
@@ -119,43 +126,43 @@ const ACTIONS: Record<string, Action> = {
   // exactly as they do to ↑/↓ — which means the sidebar has to be on screen.
   prevAgent: {
     whileTyping: true,
-    run: () => withSidebar(useAppStore.getState(), () => stepSelection(-1)),
+    run: () => withSidebar(onScreen(), () => stepSelection(-1)),
   },
   nextAgent: {
     whileTyping: true,
-    run: () => withSidebar(useAppStore.getState(), () => stepSelection(1)),
+    run: () => withSidebar(onScreen(), () => stepSelection(1)),
   },
+  // Home is This Mac's: a paired host's work is reached through its rows.
   home: {
     whileTyping: true,
     run: () => {
-      const s = useAppStore.getState();
-      closeScreens(s);
-      s.selectAgent(null);
+      closeScreens(onScreen());
+      onHost(LOCAL_ENVIRONMENT_ID, (s) => s.selectAgent(null));
     },
   },
   // Not while typing: Ctrl+Y is redo in a text field on Windows and Linux.
-  history: { run: () => useAppStore.getState().toggleHistory() },
+  history: { run: () => onScreen().toggleHistory() },
   usage: {
     whileTyping: true,
     run: () => {
-      const s = useAppStore.getState();
+      const s = onScreen();
       if (s.usageScreenOpen) s.closeUsageScreen();
       else s.openUsageScreen();
     },
   },
-  limits: { whileTyping: true, run: () => useAppStore.getState().toggleLimitsPopover() },
-  quickSettings: { whileTyping: true, run: () => useAppStore.getState().toggleSettings() },
+  limits: { whileTyping: true, run: () => onScreen().toggleLimitsPopover() },
+  quickSettings: { whileTyping: true, run: () => onScreen().toggleSettings() },
   roadmap: { whileTyping: true, run: () => toggleProjectView("roadmap") },
   projectSettings: { whileTyping: true, run: () => toggleProjectView("settings") },
   shortcuts: {
     whileTyping: true,
-    run: () => useAppStore.getState().openSettingsScreen("shortcuts"),
+    run: () => onScreen().openSettingsScreen("shortcuts"),
   },
-  escape: { run: () => closeScreens(useAppStore.getState()) },
+  escape: { run: () => closeScreens(onScreen()) },
 
   newAgent: {
     run: () => {
-      const s = useAppStore.getState();
+      const s = onScreen();
       const active = newAgentRepoPath(s);
       if (!active) return;
       // A draft selects itself but does not leave Settings or a project
@@ -164,12 +171,12 @@ const ACTIONS: Record<string, Action> = {
       void s.createDraft(active);
     },
   },
+  // The sidebar's own popover, so This Mac's, whichever host is on screen.
   addProject: {
     whileTyping: true,
     run: () => {
+      closeScreens(onScreen());
       const s = useAppStore.getState();
-      closeScreens(s);
-      // The store refuses this on an environment that can add nothing.
       withSidebar(s, () => useAppStore.getState().openAddProject());
     },
   },
@@ -184,15 +191,16 @@ const ACTIONS: Record<string, Action> = {
   openInEditor: {
     whileTyping: true,
     run: () => {
-      const s = useAppStore.getState();
+      const s = onScreen();
       const agent = surfaceAgent(s);
-      if (agent) void openInPreferredEditor(agent).catch((e) => s.setLastError(String(e)));
+      if (agent)
+        void openInPreferredEditor(activeEngine.api, agent).catch((e) => s.setLastError(String(e)));
     },
   },
   stopAgent: {
     whileTyping: true,
     run: () => {
-      const s = useAppStore.getState();
+      const s = onScreen();
       const agent = surfaceAgent(s);
       if (agent && (agent.status === "running" || agent.status === "spawning"))
         void s.stop(agent.id);
@@ -202,22 +210,22 @@ const ACTIONS: Record<string, Action> = {
   compactAgent: {
     whileTyping: true,
     run: () => {
-      const s = useAppStore.getState();
+      const s = onScreen();
       const agent = surfaceAgent(s);
       if (agent) void s.compactAgent(agent.id);
     },
   },
   archiveAgent: {
     run: () => {
-      const s = useAppStore.getState();
+      const s = onScreen();
       const agent = surfaceAgent(s);
       // The same states the sidebar row offers Archive for.
       if (agent && ["idle", "stopped", "error"].includes(agent.status)) void s.archive(agent.id);
     },
   },
 
-  toggleSidebar: { whileTyping: true, run: () => useAppStore.getState().toggleLeft() },
-  togglePanel: { whileTyping: true, run: () => useAppStore.getState().toggleRight() },
+  toggleSidebar: { whileTyping: true, run: () => onScreen().toggleLeft() },
+  togglePanel: { whileTyping: true, run: () => onScreen().toggleRight() },
   panelCode: { whileTyping: true, run: () => showPanel("code", "code") },
   panelGit: { whileTyping: true, run: () => showPanel("git", "git") },
   panelRun: { whileTyping: true, run: () => showPanel("run", "run", "runScripts") },
@@ -225,7 +233,7 @@ const ACTIONS: Record<string, Action> = {
   toggleTheme: {
     whileTyping: true,
     run: () => {
-      const s = useAppStore.getState();
+      const s = onScreen();
       s.setTheme(s.theme === "dark" ? "light" : "dark");
     },
   },
@@ -246,7 +254,7 @@ export function useGlobalShortcuts() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = isTypingTarget(e.target);
-      const { shortcutOverrides: overrides, paletteOpen } = useAppStore.getState();
+      const { shortcutOverrides: overrides, paletteOpen } = onScreen();
       for (const shortcut of GLOBAL_SHORTCUTS) {
         if (!effectiveCombos(shortcut, overrides).some((c) => matchesCombo(e, c))) continue;
         // With the palette up, the only chord that acts is the one that

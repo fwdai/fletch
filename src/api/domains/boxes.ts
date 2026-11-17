@@ -2,7 +2,7 @@
 // environment: the probe, the image and a box live on the host that runs the
 // agents. The five `box_*` settings are host-owned and written only through
 // `setBoxSetting` (never `setSetting`), since the engine reads them.
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type {
   BoxImageStatus,
   BoxRuntimeProbe,
@@ -17,7 +17,7 @@ import type {
   WorkspaceTypeOption,
 } from "../types/sandbox";
 
-export const boxesApi = {
+export const boxesApi = (invoke: Invoke) => ({
   /** Can this host boot a box: helper, dylibs, hypervisor, arch, image, flag. */
   boxRuntimeProbe: () => invoke<BoxRuntimeProbe>("box_runtime_probe"),
   /** The pinned image's install state; `onBoxImage` carries the changes. */
@@ -72,4 +72,4 @@ export const boxesApi = {
    *  Rejects for a workspace with no VM. */
   boxEgressOpenTurn: (agentId: string, open: boolean) =>
     invoke<void>("box_egress_open_turn", { agentId, open }),
-};
+});

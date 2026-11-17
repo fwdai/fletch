@@ -4,7 +4,7 @@ import { usePrState } from "@/util/prState";
 import { checkoutPrs } from "@/util/prSummary";
 
 /** The title-bar capsule's view of the active agent's primary checkout, for
- *  the badge: `useGitSync` keeps all of this current. Checks are surfaced only
+ *  the badge: `useFocusedGitSync` keeps all of this current. Checks are surfaced only
  *  while the PR is open, since that's the only state the chip renders. `prs` is
  *  the checkout's whole PR set, focused first (the focused PR alone when no set
  *  is known). The popover's lanes come from `useWorkspaceLanes`, the same

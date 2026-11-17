@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { pickFolder } from "@/components/FolderPicker";
 import { PanelToggle } from "@/components/PanelToggle";
-import { useAppStore } from "@/store";
-import { activeEntry, useGate } from "@/store/capabilities";
+import { useAppStore, useHostId } from "@/store";
+import { useGate, useHostEntry } from "@/store/capabilities";
 import { useShortcutKeys } from "@/util/shortcuts";
 import { ActionCard } from "./ActionCard";
 import { greeting } from "./greeting";
@@ -23,6 +23,7 @@ export function Home() {
   const toggleHistory = useAppStore((s) => s.toggleHistory);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
   const setLastError = useAppStore((s) => s.setLastError);
+  const hostId = useHostId();
 
   const [adding, setAdding] = useState(false);
   const openProjectGate = useGate("openProject");
@@ -32,7 +33,7 @@ export function Home() {
     sidebar: useShortcutKeys("toggleSidebar"),
     shortcuts: useShortcutKeys("shortcuts"),
   };
-  const remote = useAppStore((s) => activeEntry(s).kind === "remote");
+  const remote = useHostEntry().kind === "remote";
 
   const repos = workspace?.repos ?? [];
   const projects = workspace?.projects ?? [];
@@ -63,13 +64,13 @@ export function Home() {
   };
 
   // Same flow as the sidebar's "Open a folder" (NewProjectPopover): pick a
-  // folder on the active environment → pin the repo → remember it as the next
-  // New-agent target.
+  // folder on the host this Home is for → pin the repo → remember it as the
+  // next New-agent target.
   const addProject = async () => {
     if (adding || openProjectGate) return;
     setAdding(true);
     try {
-      const picked = await pickFolder({ title: "Select a git repository" });
+      const picked = await pickFolder({ hostId, title: "Select a git repository" });
       // `addWorkspaceRepo` routes its own failures to the error banner; the
       // picker itself can still reject (plugin/platform error, a host that went
       // away), which we'd otherwise drop as an unhandled rejection with no user

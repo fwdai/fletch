@@ -16,6 +16,7 @@
 @import "./styles/foundation/main-split.css";
 @import "./components/Sidebar/Sidebar.css";
 @import "./styles/shared/badge.css";
+@import "./components/HostChip/HostChip.css";
 @import "./components/Workspace/Workspace.css";
 @import "./components/ContextBadge/ContextBadge.css";
 @import "./components/Workspace/Home/Home.css";

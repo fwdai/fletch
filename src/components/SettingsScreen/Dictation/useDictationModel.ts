@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  api,
-  type DictationModelProgressEvent,
-  type DictationModelStatus,
-  onDictationModelProgress,
-} from "@/api";
+import type { DictationModelProgressEvent, DictationModelStatus } from "@/api";
+import { useEngine } from "@/api/engine";
 import type { UnlistenFn } from "@/api/transport";
 
 export interface DictationModelView {
@@ -26,6 +22,7 @@ export interface DictationModelView {
  *  followed through `dictation:model_progress`. Terminal events change what's
  *  on disk, so they trigger a re-fetch rather than a locally inferred status. */
 export function useDictationModel(): DictationModelView {
+  const { api, events } = useEngine();
   const [status, setStatus] = useState<DictationModelStatus | null>(null);
   const [progress, setProgress] = useState<DictationModelProgressEvent | null>(null);
 
@@ -42,21 +39,23 @@ export function useDictationModel(): DictationModelView {
     refresh();
 
     let unlisten: UnlistenFn | undefined;
-    void onDictationModelProgress((e) => {
-      if (disposed) return;
-      setProgress(e);
-      if (e.state === "installed" || e.state === "error") refresh();
-    }).then((fn) => {
-      // The effect may have been cleaned up while listen() was in flight.
-      if (disposed) fn();
-      else unlisten = fn;
-    });
+    void events
+      .onDictationModelProgress((e) => {
+        if (disposed) return;
+        setProgress(e);
+        if (e.state === "installed" || e.state === "error") refresh();
+      })
+      .then((fn) => {
+        // The effect may have been cleaned up while listen() was in flight.
+        if (disposed) fn();
+        else unlisten = fn;
+      });
 
     return () => {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [api, events]);
 
   const act = useCallback((call: () => Promise<DictationModelStatus>) => {
     // Drop the last progress event: it describes the download this action
@@ -67,7 +66,7 @@ export function useDictationModel(): DictationModelView {
       .catch(() => {});
   }, []);
 
-  const select = useCallback((id: string) => act(() => api.setDictationModel(id)), [act]);
+  const select = useCallback((id: string) => act(() => api.setDictationModel(id)), [act, api]);
   // A download the user asked for on a row is also a choice of that row's
   // model, so it selects first — `dictation_model_download` only ever fetches
   // the selected one. Selecting what is already selected is a harmless
@@ -78,9 +77,9 @@ export function useDictationModel(): DictationModelView {
         await api.setDictationModel(id);
         return api.dictationModelDownload();
       }),
-    [act],
+    [act, api],
   );
-  const remove = useCallback((id: string) => act(() => api.dictationModelRemove(id)), [act]);
+  const remove = useCallback((id: string) => act(() => api.dictationModelRemove(id)), [act, api]);
 
   return { status, progress, select, download, remove };
 }

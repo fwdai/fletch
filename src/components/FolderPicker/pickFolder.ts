@@ -1,7 +1,7 @@
-// Asking the user for a folder, in whichever environment the UI is driving.
-// This Mac's native picker cannot see a paired host's disk, so on a remote
-// environment the question is asked by the in-app browser instead (index.tsx),
-// which walks the host over `list_dir`.
+// Asking the user for a folder on one host: the one the caller is scoped to.
+// This Mac's native picker cannot see a paired host's disk, so on a paired host
+// the question is asked by the in-app browser instead (index.tsx), which walks
+// the host over `list_dir`.
 //
 // The modal is a singleton mounted once at the app root, so the request lives
 // here — module state with a subscription, read by `FolderPickerHost` through
@@ -9,9 +9,11 @@
 // two pickers answered.
 
 import { open } from "@tauri-apps/plugin-dialog";
-import { activeEnvironment } from "@/store/environments";
+import { type EnvironmentId, environmentEntry } from "@/store/environments";
 
 export interface FolderRequest {
+  /** The host whose disk is browsed. */
+  hostId: EnvironmentId;
   title: string;
   /** Where the browser opens. `~` is resolved by the host. */
   start: string;
@@ -40,17 +42,19 @@ export function resolveFolderRequest(path: string | null): void {
   request?.resolve(path);
 }
 
-/** Pick a folder on the active environment: the native directory dialog on this
- *  Mac, the in-app browser on a paired host. Resolves to an absolute path — the
- *  one the host itself reported, remotely — or null if nothing was chosen. */
+/** Pick a folder on `hostId`: the native directory dialog on this Mac, the
+ *  in-app browser on a paired host. Resolves to an absolute path — the one the
+ *  host itself reported, remotely — or null if nothing was chosen. */
 export async function pickFolder({
+  hostId,
   title,
   start,
 }: {
+  hostId: EnvironmentId;
   title: string;
   start?: string;
 }): Promise<string | null> {
-  if (activeEnvironment().kind === "local") {
+  if (environmentEntry(hostId).kind === "local") {
     const picked = await open({
       directory: true,
       multiple: false,
@@ -63,7 +67,7 @@ export async function pickFolder({
   // first on a promise nothing can settle.
   resolveFolderRequest(null);
   return new Promise((resolve) => {
-    pending = { title, start: start || "~", resolve };
+    pending = { hostId, title, start: start || "~", resolve };
     for (const listener of listeners) listener();
   });
 }

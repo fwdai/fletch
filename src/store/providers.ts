@@ -1,4 +1,3 @@
-import { api } from "@/api";
 import type { ProviderAccount, ProviderAuthStatus } from "@/api/types/providers";
 import {
   loadCachedCatalog,
@@ -110,7 +109,7 @@ const cachedCatalog = loadCachedCatalog();
 /** The limits refreshes out right now, per `provider/account`. */
 const limitsRefreshes = new Map<string, Promise<void>>();
 
-export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => ({
+export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get, { api }) => ({
   providerFlags: {},
   providerVersions: {},
   providerPaths: {},

@@ -1,12 +1,12 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useEffect, useState } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import type { ProjectIconCandidate, ProjectRef } from "@/api/types/agent";
 import { Button } from "@/components/ui/Button";
 import { Scrim } from "@/components/ui/Scrim";
 import { useAppStore } from "@/store";
-import { activeEntry, useGate } from "@/store/capabilities";
+import { useGate, useHostEntry } from "@/store/capabilities";
 import { bytesToBase64 } from "@/util/base64";
 import { useProjectSettings } from "@/util/useProjectSettings";
 import { PROJECT_GLYPHS } from "./glyphs";
@@ -23,12 +23,13 @@ const IMAGE_FILTERS = [
  *  the initial, and "Detect again", which takes the scan's top pick. On a
  *  paired host the file choice is hidden — its picker can only see this Mac. */
 export function IconPicker({ project }: { project: ProjectRef }) {
+  const { api } = useEngine();
   const id = project.project_id;
   const [open, setOpen] = useState(false);
   const [found, setFound] = useState<ProjectIconCandidate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const setProjectIcon = useAppStore((s) => s.setProjectIcon);
-  const local = useAppStore((s) => activeEntry(s).kind === "local");
+  const local = useHostEntry().kind === "local";
   const gate = useGate("projectIcon");
   const current = useProjectSettings(open ? id : null).settings?.[ICON_SOURCE_KEY] ?? null;
 
@@ -43,7 +44,7 @@ export function IconPicker({ project }: { project: ProjectRef }) {
       setFound([]);
       return [];
     }
-  }, [id]);
+  }, [id, api]);
 
   useEffect(() => {
     if (open) void scan();

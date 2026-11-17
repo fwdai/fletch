@@ -1,4 +1,4 @@
-import { api } from "@/api";
+import type { Api } from "@/api";
 
 // Run-config values live in the host's `project_settings` under a `run.` prefix
 // so the table can hold other panels' per-project data without colliding. Two
@@ -18,6 +18,7 @@ const runKey = (id: string, agentId?: string) =>
  *  is given, the per-agent overrides — stripped of their prefix so keys
  *  match detected-row ids. */
 export async function loadRunOverrides(
+  api: Api,
   projectId: string,
   agentId?: string,
 ): Promise<Record<string, string>> {
@@ -37,6 +38,7 @@ export async function loadRunOverrides(
  *  Pass `agentId` to write the per-agent scope instead of the project's.
  *  Failures are logged, not thrown, so one bad key can't abort the batch. */
 export function persistRunOverrides(
+  api: Api,
   projectId: string,
   toSet: Array<{ id: string; value: string }>,
   toDelete: string[],

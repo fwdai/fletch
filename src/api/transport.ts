@@ -13,7 +13,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { RemoteClient } from "@/remote/types";
-import { activeEnvironment } from "@/store/environments";
 
 /** Re-exported so callers of `Transport.on` (and of Tauri's own webview
  *  listeners) need no `@tauri-apps` import of their own. */
@@ -54,12 +53,6 @@ export class RemoteTransport implements Transport {
   on<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
     return Promise.resolve(this.client.on(event, (payload) => cb(payload as T)));
   }
-}
-
-/** How ops and events reach the environment the UI is currently driving. The
- *  local environment carries no transport of its own — it is this singleton. */
-export function activeTransport(): Transport {
-  return activeEnvironment().transport ?? localTransport;
 }
 
 /** Raw Tauri IPC, for the one call whose body is not a record of arguments:

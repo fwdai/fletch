@@ -33,14 +33,20 @@ describe("foldAgents", () => {
 
   it("counts an old workspace resumed today as recent", () => {
     const agents = [agent("a", 1), agent("b", 20), agent("c", 30), agent("d", 40)];
-    const { shown, hidden } = foldAgents(agents, { now: NOW, activity: { c: NOW - DAY / 2 } });
+    const { shown, hidden } = foldAgents(agents, {
+      now: NOW,
+      turnAt: (a) => (a.id === "c" ? NOW - DAY / 2 : undefined),
+    });
     expect(ids(shown)).toEqual(["a", "c"]);
     expect(ids(hidden)).toEqual(["b", "d"]);
   });
 
   it("gives the cap to the rows last used, in list order", () => {
     const agents = ["a", "b", "c", "d", "e", "f", "g"].map((id, i) => agent(id, i * 0.5));
-    const { shown, hidden } = foldAgents(agents, { now: NOW, activity: { g: NOW } });
+    const { shown, hidden } = foldAgents(agents, {
+      now: NOW,
+      turnAt: (a) => (a.id === "g" ? NOW : undefined),
+    });
     expect(ids(shown)).toEqual(["a", "b", "c", "d", "g"]);
     expect(ids(hidden)).toEqual(["e", "f"]);
   });
@@ -53,8 +59,27 @@ describe("foldAgents", () => {
       agent("gone", 40),
       agent("gone2", 50),
     ];
-    const { shown, hidden } = foldAgents(agents, { now: NOW, selectedId: "old" });
+    const { shown, hidden } = foldAgents(agents, { now: NOW, selected: agents[5] });
     expect(ids(shown)).toEqual(["a", "b", "c", "d", "e", "old", "live"]);
     expect(ids(hidden)).toEqual(["gone", "gone2"]);
+  });
+
+  it("tells two hosts' workspaces of one id apart", () => {
+    // `fuji` on this Mac and `fuji` on a paired host, both old: selecting one,
+    // or a turn in one, keeps that row and not its namesake.
+    const mine = agent("fuji", 20);
+    const theirs = agent("fuji", 30);
+    const agents = [agent("a", 1), mine, theirs, agent("gone", 40)];
+
+    const bySelection = foldAgents(agents, { now: NOW, selected: mine });
+    expect(bySelection.shown).toEqual([agents[0], mine]);
+    expect(bySelection.hidden).toEqual([theirs, agents[3]]);
+
+    const byTurn = foldAgents(agents, {
+      now: NOW,
+      turnAt: (a) => (a === theirs ? NOW : undefined),
+    });
+    expect(byTurn.shown).toEqual([agents[0], theirs]);
+    expect(byTurn.hidden).toEqual([mine, agents[3]]);
   });
 });

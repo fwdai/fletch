@@ -6,7 +6,7 @@ import { prSnapshot } from "@/util/prState";
 
 /** The Git panel's view of one repo's git/PR state, derived from the store.
  *
- *  A pure read — `useGitSync` owns the polling that keeps these current. The
+ *  A pure read — `store/gitSync` owns the polling that keeps these current. The
  *  fetchers returned at the bottom are for *actions*, not refresh loops: after a
  *  push or a delegated git op the caller wants the new state now rather than at
  *  the next tick.
@@ -49,7 +49,7 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
 
   // Subdir-bound fetchers for *actions* — a push, a merge, a delegated git op —
   // so callers refresh this section's repo without re-threading the scope.
-  // Background freshness is `useGitSync`'s job, not theirs.
+  // Background freshness is `store/gitSync`'s job, not theirs.
   const fetchGitState = useCallback(
     (id: string) => fetchGitStateStore(id, subdir),
     [fetchGitStateStore, subdir],

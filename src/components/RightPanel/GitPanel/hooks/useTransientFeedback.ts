@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { useAppStore } from "@/store";
+import { useAppStore, useHostId } from "@/store";
 import { gitScopeKey } from "@/store/git";
 
 /** Two short-lived UI signals the panel shows for actions that otherwise
@@ -13,7 +13,7 @@ import { gitScopeKey } from "@/store/git";
  *  the action starts, and travels with it — a push begun on one host posts
  *  its outcome to that host however the user moves meanwhile. */
 export function useTransientFeedback(checkout: string) {
-  const envId = useAppStore((s) => s.activeEnvironmentId);
+  const envId = useHostId();
   const scoped = gitScopeKey(envId, checkout);
   const busy = useAppStore((s) => s.gitBusy[scoped] ?? null);
   const notice = useAppStore((s) => s.gitNotices[scoped] ?? null);

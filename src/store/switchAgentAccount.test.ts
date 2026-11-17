@@ -14,6 +14,7 @@ vi.mock("@/api", () => ({ api: { switchAgentAccount, sendUserMessage } }));
 vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
 
 import type { AgentRecord } from "@/api";
+import { activeEngine } from "@/api/engine";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
 
@@ -21,7 +22,9 @@ const agent = (id: string, account: string | null = null, status: AgentRecord["s
   ({ id, provider: "claude", status, account, repos: [] }) as unknown as AgentRecord;
 
 const makeStore = (agents: AgentRecord[], offSidebar: Record<string, AgentRecord> = {}) => {
-  const store = create<AppState>()((...a) => ({ ...createWorkspaceSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (set, get) => ({ ...createWorkspaceSlice(set, get, activeEngine) }) as AppState,
+  );
   store.setState({
     // biome-ignore lint/suspicious/noExplicitAny: minimal workspace fixture
     workspace: { agents } as any,

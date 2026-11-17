@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
 import { BoxKnob, IMAGE_URL_FIELD } from "./Sandbox/BoxKnobs";
+import { HostPicker } from "./SettingsHost";
 
 /** Dev-only settings surface. The nav entry that routes here is gated on
  *  `import.meta.env.DEV`, so this pane only ships under `bun tauri dev`. */
@@ -35,6 +36,7 @@ export function DeveloperPane() {
         title="Developer"
         desc="Tools for working on Fletch itself."
       />
+      <HostPicker />
 
       <SetGroup label="Pilots">
         <SetRow

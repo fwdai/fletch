@@ -3,16 +3,9 @@ import type { IconSubject } from "@/components/ProjectIcon";
 import type { DotStatus } from "@/components/TitleBar/WorkspaceStatus/derive";
 
 /** The drill-in pages a row can open. `root` is the search over everything;
- *  the rest list one kind of thing to pick (a project to start an agent in,
- *  a host to switch to, an accent). */
-export type PageId =
-  | "root"
-  | "new-agent"
-  | "workflow"
-  | "environment"
-  | "settings"
-  | "editor"
-  | "accent";
+ *  the rest list one kind of thing to pick (a project to start an agent in, a
+ *  settings section, an accent). */
+export type PageId = "root" | "new-agent" | "workflow" | "settings" | "editor" | "accent";
 
 /** What stands at the front of a row: a glyph on a tile, an agent's status
  *  dot, a colour swatch, or a project's own icon. */
@@ -71,7 +64,6 @@ export const PAGES: Record<PageId, PageSpec> = {
   root: { title: "", placeholder: "Search agents, projects, commands…" },
   "new-agent": { title: "New agent", placeholder: "Which project?" },
   workflow: { title: "Run workflow", placeholder: "Which project?" },
-  environment: { title: "Environment", placeholder: "Switch to…" },
   settings: { title: "Settings", placeholder: "Which section?" },
   editor: { title: "Open in", placeholder: "Which editor?" },
   accent: { title: "Accent", placeholder: "Pick a colour" },

@@ -9,7 +9,8 @@
 // legacy events are only ever about the focused PR, so they write the legacy
 // maps unconditionally and upsert the focused entry into the set;
 // `pr:set_entry_changed` reports the rest of the set and writes the set alone.
-// Only the slices actually written are stamped.
+// Only the slices actually written are stamped, in the order of the host the
+// event came from.
 
 import type { Workspace } from "@/api/types/agent";
 import type {
@@ -21,8 +22,17 @@ import type {
   PrStateChangedEvent,
   PrThreadsChangedEvent,
 } from "@/api/types/pr";
+import { type EnvironmentId, LOCAL_ENVIRONMENT_ID } from "./environments";
 import { checkoutKey, type GitSlice } from "./git";
-import { stampPrWrite } from "./prWriteOrder";
+import { perHost } from "./perHost";
+import { createPrWriteOrder, type PrWriteOrder, sharedPrWriteOrder } from "./prWriteOrder";
+
+const remoteOrders = perHost(createPrWriteOrder);
+
+/** The PR write order of `hostId`'s keys: the shared one for this desktop's own
+ *  engine, one of its own for each paired host. */
+export const prWriteOrderOf = (hostId: EnvironmentId): PrWriteOrder =>
+  hostId === LOCAL_ENVIRONMENT_ID ? sharedPrWriteOrder : remoteOrders(hostId);
 
 const keyOf = (e: { agent_id: string; subdir?: string | null }): string =>
   checkoutKey(e.agent_id, e.subdir ?? undefined);
@@ -89,18 +99,19 @@ function bindOnRecord(
  *  before PR sets, which binds one PR per checkout: its PR is the whole set,
  *  so one it has since replaced must not linger as a sibling. */
 export function applyPrStateChanged(
+  order: PrWriteOrder,
   s: StateSlices,
   e: PrStateChangedEvent,
   wholeSet = false,
 ): Partial<StateSlices> {
   const key = keyOf(e);
   const state = e.state;
-  stampPrWrite("prStates", key);
+  order.stamp("prStates", key);
   const out: Partial<StateSlices> = { prStates: { ...s.prStates, [key]: state } };
   const workspace = bindOnRecord(s.workspace, e);
   if (workspace) out.workspace = workspace;
   if (state) {
-    stampPrWrite("prSets", key);
+    order.stamp("prSets", key);
     const prev = s.prSets[key];
     const base = wholeSet ? prev?.filter((p) => p.state.number === state.number) : prev;
     out.prSets = { ...s.prSets, [key]: upsertState(base, state) };
@@ -113,8 +124,8 @@ export function applyPrStateChanged(
   // checkout (nothing cached yet) has nothing stale to replace.
   const before = s.prStates[key];
   if (state && before !== undefined && before?.number !== state.number) {
-    stampPrWrite("prChecks", key);
-    stampPrWrite("prComments", key);
+    order.stamp("prChecks", key);
+    order.stamp("prComments", key);
     const checks = out.prSets?.[key]?.find((p) => p.state.number === state.number)?.checks;
     const { [key]: _checks, ...prChecks } = s.prChecks;
     const { [key]: _threads, ...prComments } = s.prComments;
@@ -128,15 +139,16 @@ type ChecksSlices = Pick<GitSlice, "prChecks" | "prSets">;
 
 /** The focused PR's checks: the legacy map, and its entry in the set. */
 export function applyPrChecksChanged(
+  order: PrWriteOrder,
   s: ChecksSlices,
   e: PrChecksChangedEvent,
 ): Partial<ChecksSlices> {
   const key = keyOf(e);
-  stampPrWrite("prChecks", key);
+  order.stamp("prChecks", key);
   const out: Partial<ChecksSlices> = { prChecks: { ...s.prChecks, [key]: e.checks } };
   const set = s.prSets[key];
   if (set?.some((p) => p.state.number === e.number)) {
-    stampPrWrite("prSets", key);
+    order.stamp("prSets", key);
     out.prSets = {
       ...s.prSets,
       [key]: set.map((p) => (p.state.number === e.number ? { ...p, checks: e.checks } : p)),
@@ -147,21 +159,23 @@ export function applyPrChecksChanged(
 
 /** The focused PR's threads — the only PR whose threads the host reads. */
 export function applyPrThreadsChanged(
+  order: PrWriteOrder,
   s: Pick<GitSlice, "prComments">,
   e: PrThreadsChangedEvent,
 ): Pick<GitSlice, "prComments"> {
   const key = keyOf(e);
-  stampPrWrite("prComments", key);
+  order.stamp("prComments", key);
   return { prComments: { ...s.prComments, [key]: e.comments } };
 }
 
 /** Another PR of the checkout's set: its entry, never the legacy maps. */
 export function applyPrSetEntryChanged(
+  order: PrWriteOrder,
   s: Pick<GitSlice, "prSets">,
   e: PrSetEntryChangedEvent,
 ): Pick<GitSlice, "prSets"> {
   const key = keyOf(e);
-  stampPrWrite("prSets", key);
+  order.stamp("prSets", key);
   return {
     prSets: { ...s.prSets, [key]: upsertState(s.prSets[key], e.entry.state, e.entry.checks) },
   };
