@@ -624,7 +624,9 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("set_auto_archive_idle_days", Scope::Projects),
     ("set_code_indexing_enabled", Scope::Projects),
     ("set_context_layer_enabled", Scope::Projects),
-    ("set_agent_bin_override", Scope::Projects),
+    // Publish, not Projects: it chooses a program the host then runs as the
+    // user, outside the sandbox and the publish gate. Only a Full device may.
+    ("set_agent_bin_override", Scope::Publish),
     ("set_project_setting", Scope::Projects),
     // The box sandbox: three reads; the image, the settings and a project's
     // egress list are host configuration like the knobs above; stopping a box

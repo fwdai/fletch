@@ -753,10 +753,10 @@ The six scopes, and what each one covers:
 |---|---|
 | `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `list_provider_accounts`, `get_provider_limits`, `refresh_provider_limits` (a vendor read the host stores, as its own Refresh button does), `scan_usage_transcripts`, `approvals_list`, `box_egress_pending`, `box_egress_activity`, `get_settings`, `get_project_settings`, `project_icon_candidates`, `project_icon_get`, `project_definition` |
 | `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, switch the provider account (`switch_agent_account`), dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`, `clear_checkout_config`), and choosing which of a checkout's PRs is focused (`set_focused_pr`) |
-| `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; copy another device's project so its workspaces can run here (`ensure_project`); every project setting (`set_project_setting`, and the icon through `project_icon_set`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides, and which provider account the host's agents run under (`set_active_provider_account`) |
+| `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; copy another device's project so its workspaces can run here (`ensure_project`); every project setting (`set_project_setting`, and the icon through `project_icon_set`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, and which provider account the host's agents run under (`set_active_provider_account`) |
 | `workflows` | launch, cancel and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
-| `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be — and `autopilot_set`, for the same reason: an enrolled checkout's pushes skip the prompt (see "Autopilot"), so switching autopilot on is a standing publish grant; plus the five settings that decide how a publish happens: `set_publish_confirmation`, `set_publish_approval_wait`, `set_branch_prefix`, `set_draft_prs`, `set_agent_attribution_removed`; and `offer_invite`, which hands this host a full-access code for the sender's own machine, so only a Full device may (see "Pairing back") |
+| `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be — and `autopilot_set`, for the same reason: an enrolled checkout's pushes skip the prompt (see "Autopilot"), so switching autopilot on is a standing publish grant; plus the five settings that decide how a publish happens: `set_publish_confirmation`, `set_publish_approval_wait`, `set_branch_prefix`, `set_draft_prs`, `set_agent_attribution_removed`; `offer_invite`, which hands this host a full-access code for the sender's own machine, so only a Full device may (see "Pairing back"); and `set_agent_bin_override`, which chooses a program the host runs as the user, outside the sandbox and the publish gate |
 
 Every op in the table below has exactly one scope. `register_push` is outside
 the scheme and always allowed: it writes the calling device's own APNs token
@@ -1299,7 +1299,7 @@ default the host does):
 | `code_indexing_enabled` | `set_code_indexing_enabled` | `projects` |
 | `context_layer_enabled` | `set_context_layer_enabled` | `projects` |
 | `box_memory_mib`, `box_cpus`, `box_disk_gib`, `box_image_url`, `box_idle_stop_minutes`, `box_egress_mode` | `set_box_setting` | `projects` |
-| `agent_bin_path_<id>` | `set_agent_bin_override` | `projects` |
+| `agent_bin_path_<id>` | `set_agent_bin_override` | `publish` |
 | `git_branch_prefix` | `set_branch_prefix` | `publish` |
 | `github_draft_prs` | `set_draft_prs` | `publish` |
 | `publish_confirmation` | `set_publish_confirmation` | `publish` |
@@ -1318,11 +1318,13 @@ The scope split follows the line `publish` already draws. The five settings
 that decide whether and how an agent's work leaves the machine — the approval
 gate and its wait, the branch prefix, draft PRs, attribution — are `publish`,
 so a `control` device cannot switch the approval gate off on its way to a
-publish it is not allowed to approve. Everything else is the host's own
-configuration and sits under `projects`, the scope that already rewrites what
-the host holds; note that it includes the sandbox engine and the provider
-binary paths, so a device paired without `projects` cannot change how the host
-runs agents either.
+publish it is not allowed to approve. The provider binary paths are `publish`
+too: a path chooses the program the host runs as the user, outside the sandbox
+and the publish gate, which only a Full device may. Everything else is the
+host's own configuration and sits under `projects`, the scope that already
+rewrites what the host holds; note that it includes the sandbox engine, so a
+device paired without `projects` cannot change how the host runs agents
+either.
 
 **Project settings.** `get_project_settings` / `set_project_setting` address
 one project's rows through an allowlist the host enforces on both sides — the

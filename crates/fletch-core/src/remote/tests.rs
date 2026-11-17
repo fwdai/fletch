@@ -770,8 +770,10 @@ fn every_op_has_exactly_one_scope() {
 /// the approval gate above all, which a device that may not publish must not
 /// be able to switch off. `offer_invite` is on it because the link it carries
 /// hands this host full control of the sender's machine, which only a Full
-/// device may decide to do. Named here so narrowing or widening `publish` is a
-/// deliberate edit of this list, not a side effect of moving a row.
+/// device may decide to do, and `set_agent_bin_override` because it chooses a
+/// program the host runs as the user. Named here so narrowing or widening
+/// `publish` is a deliberate edit of this list, not a side effect of moving a
+/// row.
 #[test]
 fn the_publish_scope_is_what_leaves_the_machine_and_how() {
     let publish: Vec<&str> = dispatch::ops_for(&[Scope::Publish]);
@@ -785,6 +787,7 @@ fn the_publish_scope_is_what_leaves_the_machine_and_how() {
             "delegate_git",
             "autopilot_set",
             "roadmap_merge_item_pr",
+            "set_agent_bin_override",
             "set_branch_prefix",
             "set_draft_prs",
             "set_publish_confirmation",
