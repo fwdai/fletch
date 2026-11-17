@@ -96,6 +96,19 @@ export interface ClientOptions {
 const DIAL_FAILED = /^cannot reach \S+: (.+)$/s;
 /** And a failed Noise handshake as `handshake failed: {cause}`. */
 const HANDSHAKE_FAILED = /^handshake failed/i;
+/** And a close that arrived before the Noise handshake finished as `the peer
+ *  closed during the handshake (code {code})`, possibly inside a dial failure.
+ *  It is how the relay refuses a device (its Mac offline, or out of device
+ *  slots): it accepts the socket and closes it at once, so the code is the
+ *  whole reason. */
+const CLOSED_IN_HANDSHAKE = /closed during the handshake \(code (\d+)\)/;
+
+/** The close code a transport failure names, if it was such a close. */
+function handshakeCloseCode(message: string): number | null {
+  const closed = CLOSED_IN_HANDSHAKE.exec(message);
+  return closed ? Number(closed[1]) : null;
+}
+
 /** What a transport failure says when none of the usual causes fits. The raw
  *  text names protocol internals (handshake, frames, sockets), which are for
  *  a log and mean nothing on a phone screen. */
@@ -108,6 +121,9 @@ const COULD_NOT_CONNECT = "Couldn't connect to your Mac.";
  *  where it is one of the usual three. */
 function reportable(message: string): string {
   if (message.includes(HOST_KEY_MISMATCH)) return HOST_KEY_MISMATCH_REASON;
+  // Worded as the same close would be once the socket is open (`onClose`).
+  const closed = handshakeCloseCode(message);
+  if (closed !== null) return CLOSE_REASONS[closed] ?? CONNECTION_LOST;
   if (HANDSHAKE_FAILED.test(message)) return COULD_NOT_CONNECT;
   const dial = DIAL_FAILED.exec(message);
   if (!dial) return message;
@@ -412,11 +428,15 @@ export class ProtocolClient implements RemoteClient {
       const message = e instanceof Error ? e.message : String(e);
       // A pairing code is single use and short lived, so a refused pairing
       // attempt is the user's to retry. A host presenting the wrong identity
-      // is never worth retrying either: only re-pairing can clear it.
+      // is never worth retrying either: only re-pairing can clear it. Nor is a
+      // close the handshake met with a code that is final once the socket is
+      // open.
+      const closed = handshakeCloseCode(message);
       const retryable =
         !this._target?.pairingToken &&
         !this._target?.confirm &&
-        !message.includes(HOST_KEY_MISMATCH);
+        !message.includes(HOST_KEY_MISMATCH) &&
+        !(closed !== null && FATAL_CLOSE.has(closed));
       const shown = reportable(message);
       if (this.current(gen)) {
         // A socket whose handshake did not complete is no use, and after a

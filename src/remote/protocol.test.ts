@@ -499,6 +499,57 @@ describe("connection lifecycle", () => {
     expect(shown).not.toBe("");
   });
 
+  /** The relay refuses a device by accepting the socket and closing it at
+   *  once, which the transport meets mid-handshake and reports with the code. */
+  it.each([
+    ["the peer closed during the handshake (code 4404)", "Your Mac is offline", true],
+    [
+      "cannot reach wss://relay.test/v1/device/abc: the peer closed during the handshake (code 4429)",
+      "This Mac already has its 8 remote devices connected",
+      true,
+    ],
+    [
+      "the peer closed during the handshake (code 4003)",
+      CLOSE_REASONS[CLOSE_UNAUTHENTICATED],
+      false,
+    ],
+  ])("reads %j as the close it names", async (raw, shown, retried) => {
+    const seen: (string | undefined)[] = [];
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: async () => {
+        throw new Error(raw);
+      },
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    client.onState((_, error) => seen.push(error));
+    await expect(client.connect({ host: "h", port: 1, hostKey: HOST_KEY })).rejects.toThrow(shown);
+    expect(seen.at(-1)).toBe(shown);
+    // Retried or not as the same close would be once the socket is open.
+    expect(client.retrying).toBe(retried);
+    expect(timers.map((t) => t.ms)).toEqual(retried ? [1000] : []);
+  });
+
+  it("leaves a close during the handshake that names no code as it was", async () => {
+    const raw = "the peer closed during the handshake";
+    const seen: (string | undefined)[] = [];
+    const { setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: async () => {
+        throw new Error(raw);
+      },
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    client.onState((_, error) => seen.push(error));
+    await expect(client.connect({ host: "h", port: 1, hostKey: HOST_KEY })).rejects.toThrow(raw);
+    expect(seen.at(-1)).toBe(raw);
+    expect(client.retrying).toBe(true);
+  });
+
   it("gives up on a pairing the host never answers, instead of waiting for ever", async () => {
     // The relay accepts a device link whenever it believes a host link is up,
     // and a Mac that went to sleep leaves it believing that: the socket opens,
