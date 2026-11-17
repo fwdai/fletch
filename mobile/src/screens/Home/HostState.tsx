@@ -4,18 +4,18 @@ import { ignore } from "../../lib/ignore";
 import { useHostName, useHostNav, useHostStore } from "../../store";
 import { STEP_LABELS, Working } from "../Pair/Progress";
 
-/** Home's whole body while there is no workspace to show: the link to the Mac
- *  is down, coming up, or up with the snapshot still on its way. There is
- *  nothing to add and no agent to start until it is, so nothing here offers
- *  to — the screen says what the connection is doing and what, if anything,
- *  the user can do about it.
+/** Home's whole body while no paired host has anything to show, said of the
+ *  host on screen: the link to the Mac is down, coming up, or up with the
+ *  snapshot still on its way. There is nothing to add and no agent to start
+ *  until it is, so nothing here offers to — the screen says what the
+ *  connection is doing and what, if anything, the user can do about it.
  *
  *  The one case that needs care is `error`: the client retries most failures
  *  on its own (a dropped socket, the Mac asleep), and those read as
  *  "reconnecting"; the few it cannot clear (this device unpaired, remote
  *  access switched off, a changed host key) are stated as they are and point
- *  at the Host sheet, where the fix lives. Another paired Mac is always a tap
- *  away in the header's host switcher. */
+ *  at the Host sheet, where the fix lives. Every paired Mac is a tap away in
+ *  the header's host list. */
 export function HostState() {
   const connection = useHostStore((s) => s.connection);
   const error = useHostStore((s) => s.connectionError);

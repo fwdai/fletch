@@ -20,7 +20,7 @@ import { NewAgentSheet } from "./sheets/NewAgentSheet";
 import { NewPlanSheet } from "./sheets/NewPlanSheet";
 import { PrSheet } from "./sheets/PrSheet";
 import { ShipMoreSheet } from "./sheets/ShipMoreSheet";
-import { type NavItem, type SheetName, useApp, useHostStore } from "./store";
+import { type NavItem, type SheetName, useApp, useHostKeys, useHostStore } from "./store";
 import "./styles/base.css";
 import "./styles/screens.css";
 import "@desktop/components/ui/Loader.css";
@@ -72,14 +72,13 @@ function Screen({ item }: { item: NavItem }) {
   }
 }
 
-/** One fleet-wide poll for the host on screen, like the desktop's — every agent
- *  row on every screen reads the maps these fill, so no row polls for itself.
- *  Working-tree stats are local git on the host, with no event for them, so
- *  they poll; a host off screen is kept current by its events, all but these,
- *  so the poll is keyed by the host on screen and reads at once when another
- *  is put there. PR state does not poll: it is seeded on every handshake and
- *  return to the foreground (`resync` in store/host) and the host watcher's
- *  `pr:*` events keep it current between. */
+/** One fleet-wide poll for the host this acts on, like the desktop's — every
+ *  agent row on every screen reads the maps these fill, so no row polls for
+ *  itself — run for every paired host while it is connected, since Home lists
+ *  all of their rows. Working-tree stats are local git on the host, with no
+ *  event for them, so they poll. PR state does not poll: it is seeded on every
+ *  handshake and return to the foreground (`resync` in store/host) and the host
+ *  watcher's `pr:*` events keep it current between. */
 function ShortstatsPoll() {
   const connected = useHostStore((s) => s.connection === "connected");
   const loadShortstats = useHostStore((s) => s.loadShortstats);
@@ -99,6 +98,7 @@ export function App() {
   // Pair screen also comes up over a paired host, to add another.
   const hostKey = useApp((s) => s.hostKey);
   const addingHost = useApp((s) => s.addingHost);
+  const hostKeys = useHostKeys();
 
   useEffect(() => {
     void init();
@@ -114,9 +114,11 @@ export function App() {
     <div className={`m-app theme-${resolved}`}>
       {!ready ? null : hostKey && !addingHost ? (
         <>
-          <OnHost hostKey={hostKey}>
-            <ShortstatsPoll key={hostKey} />
-          </OnHost>
+          {hostKeys.map((key) => (
+            <OnHost key={key} hostKey={key}>
+              <ShortstatsPoll />
+            </OnHost>
+          ))}
           <Stack
             dimmed={dimmed}
             render={(item) => (
