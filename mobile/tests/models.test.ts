@@ -3,16 +3,28 @@
 // `providerHint: "anthropic"` and an empty list), so reading the raw discovery
 // left the Model sheet with nothing but its own "Default model" row.
 
+import { CATALOG_CACHE_KEY } from "@desktop/data/modelCatalog";
 import { buildCatalog } from "@desktop/data/modelCatalog/build";
 import type { ModelsDevIndex } from "@desktop/data/modelCatalog/modelsDev";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { linkOf } from "../src/host";
-import { CATALOG_TTL_MS, loadModels, modelsFor, modelsOf } from "../src/lib/models";
+import { type KeyedLink, linkOf } from "../src/host";
+import { forgetModels, loadModels, modelsFor, modelsOf } from "../src/lib/models";
+import { deferred } from "./support";
 
-const mocks = vi.hoisted(() => ({ rebuildCatalog: vi.fn() }));
+const mocks = vi.hoisted(() => {
+  // What an earlier build left in storage, before lib/models is first read.
+  localStorage.setItem("modelCatalog.byHost", "{}");
+  return { fetchModelsDevIndex: vi.fn() };
+});
 
-vi.mock("@desktop/data/modelCatalog", () => ({ rebuildCatalog: mocks.rebuildCatalog }));
+vi.mock("@desktop/data/modelCatalog/modelsDev", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@desktop/data/modelCatalog/modelsDev")>()),
+  fetchModelsDevIndex: mocks.fetchModelsDevIndex,
+}));
+
+/** The desktop catalog's expiry. */
+const HOUR = 60 * 60 * 1000;
 
 /** A host key no earlier case has built a catalog for: the catalogs are kept
  *  for the life of the module, as they are for the life of the app. */
@@ -68,93 +80,138 @@ describe("modelsFor", () => {
 });
 
 describe("loadModels", () => {
-  const catalog = { byId: {}, byAgent: { codex: [] } };
-  const onA = { byId: {}, byAgent: { claude: [] } };
-  const onB = { byId: {}, byAgent: { codex: [] } };
+  /** What a host with claude installed reports, and one with only codex. */
+  const CLAUDE: AgentModels[] = [{ agent: "claude", providerHint: "anthropic", models: [] }];
+  const CODEX: AgentModels[] = [{ agent: "codex", models: [{ id: "gpt-9", name: "GPT 9" }] }];
+  const listsOf = (agents: AgentModels[]) => buildCatalog(agents, index).byAgent;
+
+  /** `link`'s discovery answering `agents` — how a rebuild for its host is
+   *  counted. */
+  const discovering = (link: KeyedLink, agents: AgentModels[]) =>
+    vi.spyOn(link.api, "discoverSupportedModels").mockResolvedValue(agents);
 
   beforeEach(() => {
-    mocks.rebuildCatalog.mockReset();
-    mocks.rebuildCatalog.mockResolvedValue(catalog);
+    mocks.fetchModelsDevIndex.mockReset();
+    mocks.fetchModelsDevIndex.mockResolvedValue(index);
   });
 
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it("builds each host a catalog of its own, from that host's discovery", async () => {
     // Half a catalog is the host's installed CLIs, so one host must never be
     // served another's lists.
     const a = freshHost();
     const b = freshHost();
-    mocks.rebuildCatalog.mockImplementation(async (discover) =>
-      discover === a.api.discoverSupportedModels ? onA : onB,
-    );
+    const onA = discovering(a, CLAUDE);
+    const onB = discovering(b, CODEX);
 
-    expect(await loadModels(a)).toEqual(onA.byAgent);
-    expect(await loadModels(b)).toEqual(onB.byAgent);
-    expect(modelsOf(a.hostKey)).toEqual(onA.byAgent);
-    expect(modelsOf(b.hostKey)).toEqual(onB.byAgent);
-    expect(mocks.rebuildCatalog).toHaveBeenCalledTimes(2);
+    expect(await loadModels(a)).toEqual(listsOf(CLAUDE));
+    expect(await loadModels(b)).toEqual(listsOf(CODEX));
+    expect(modelsOf(a.hostKey)).toEqual(listsOf(CLAUDE));
+    expect(modelsOf(b.hostKey)).toEqual(listsOf(CODEX));
+    expect(onA).toHaveBeenCalledOnce();
+    expect(onB).toHaveBeenCalledOnce();
   });
 
   it("serves a host its own catalog again, however often the other host builds", async () => {
     const a = freshHost();
     const b = freshHost();
+    const onA = discovering(a, CLAUDE);
+    const onB = discovering(b, CODEX);
     await loadModels(a);
     await loadModels(b);
     await loadModels(a);
     await loadModels(b);
     // One rebuild each: going back and forth between hosts rebuilds nothing.
-    expect(mocks.rebuildCatalog).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(localStorage.getItem("modelCatalog.byHost") ?? "{}")).toMatchObject({
-      [a.hostKey ?? ""]: { byAgent: catalog.byAgent },
-      [b.hostKey ?? ""]: { byAgent: catalog.byAgent },
-    });
+    expect(onA).toHaveBeenCalledOnce();
+    expect(onB).toHaveBeenCalledOnce();
+    // Kept as the desktop keeps its own, under a key of the host's.
+    const kept = JSON.parse(localStorage.getItem(`${CATALOG_CACHE_KEY}:${b.hostKey}`) ?? "{}");
+    expect(kept.catalog.byAgent).toEqual(listsOf(CODEX));
   });
 
   it("rebuilds a host's catalog once it has aged out, and only that host's", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const a = freshHost();
-    await loadModels(a);
-    vi.advanceTimersByTime(CATALOG_TTL_MS / 2);
     const b = freshHost();
+    const onA = discovering(a, CLAUDE);
+    const onB = discovering(b, CODEX);
+    await loadModels(a);
+    vi.advanceTimersByTime(HOUR / 2);
     await loadModels(b);
-    vi.advanceTimersByTime(CATALOG_TTL_MS / 2 + 1);
+    vi.advanceTimersByTime(HOUR / 2 + 1);
 
     await loadModels(a);
     await loadModels(b);
-    expect(mocks.rebuildCatalog).toHaveBeenCalledTimes(3);
+    expect(onA).toHaveBeenCalledTimes(2);
+    expect(onB).toHaveBeenCalledOnce();
   });
 
   it("shares one rebuild between two pickers on the same host, not across hosts", async () => {
     const a = freshHost();
     const b = freshHost();
-    let finishA: (value: unknown) => void = () => {};
-    mocks.rebuildCatalog.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finishA = resolve;
-        }),
-    );
+    const answer = deferred<AgentModels[]>();
+    const onA = vi.spyOn(a.api, "discoverSupportedModels").mockReturnValue(answer.promise);
+    const onB = discovering(b, CODEX);
 
     const first = loadModels(a);
     const second = loadModels(a);
     // Another host's rebuild is its own, and lands while host a's is out.
-    expect(await loadModels(b)).toEqual(catalog.byAgent);
-    expect(mocks.rebuildCatalog).toHaveBeenCalledTimes(2);
+    expect(await loadModels(b)).toEqual(listsOf(CODEX));
+    expect(onA).toHaveBeenCalledOnce();
+    expect(onB).toHaveBeenCalledOnce();
 
-    finishA(onA);
-    expect(await first).toEqual(onA.byAgent);
-    expect(await second).toEqual(onA.byAgent);
-    expect(modelsOf(b.hostKey)).toEqual(catalog.byAgent);
+    answer.resolve(CLAUDE);
+    expect(await first).toEqual(listsOf(CLAUDE));
+    expect(await second).toEqual(listsOf(CLAUDE));
+    expect(modelsOf(b.hostKey)).toEqual(listsOf(CODEX));
+  });
+
+  it("reads models.dev once for every host within an expiry, and again after it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // Past whatever an earlier case read.
+    vi.advanceTimersByTime(2 * HOUR);
+    const a = freshHost();
+    const b = freshHost();
+    discovering(a, CLAUDE);
+    discovering(b, CODEX);
+    await loadModels(a);
+    await loadModels(b);
+    expect(mocks.fetchModelsDevIndex).toHaveBeenCalledOnce();
+
+    vi.advanceTimersByTime(HOUR + 1);
+    await loadModels(a);
+    expect(mocks.fetchModelsDevIndex).toHaveBeenCalledTimes(2);
   });
 
   it("keeps nothing for a host whose rebuild failed, and tries again next time", async () => {
     const a = freshHost();
-    mocks.rebuildCatalog.mockResolvedValue(null);
+    // A host whose CLIs report nothing builds an empty catalog: a failure.
+    const onA = discovering(a, []);
     expect(await loadModels(a)).toBeNull();
     expect(modelsOf(a.hostKey)).toEqual({});
 
-    mocks.rebuildCatalog.mockResolvedValue(catalog);
-    expect(await loadModels(a)).toEqual(catalog.byAgent);
-    expect(mocks.rebuildCatalog).toHaveBeenCalledTimes(2);
+    onA.mockResolvedValue(CLAUDE);
+    expect(await loadModels(a)).toEqual(listsOf(CLAUDE));
+    expect(onA).toHaveBeenCalledTimes(2);
+  });
+
+  it("forgets a host's catalog, and nothing of another's", async () => {
+    const a = freshHost();
+    const b = freshHost();
+    discovering(a, CLAUDE);
+    discovering(b, CODEX);
+    await loadModels(a);
+    await loadModels(b);
+    forgetModels(a.hostKey);
+    expect(modelsOf(a.hostKey)).toEqual({});
+    expect(modelsOf(b.hostKey)).toEqual(listsOf(CODEX));
+  });
+
+  it("clears what earlier builds kept, which nothing reads", () => {
+    expect(localStorage.getItem("modelCatalog.byHost")).toBeNull();
   });
 });

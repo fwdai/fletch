@@ -10,6 +10,7 @@ import type { RawEvent } from "../adapters";
 import { dropLink, type HostLink, linkOf, pairingLink } from "../host";
 import { useHost } from "../host/useHost";
 import { ignore } from "../lib/ignore";
+import { forgetModels } from "../lib/models";
 import {
   DEFAULT_PORT,
   type HostInfo,
@@ -515,6 +516,8 @@ export const appStore = createStore<AppState>()((set, get) => {
       // until told otherwise.
       await forgetPush(linkOf(forgotten));
       if (!mockEnabled()) await forgetSavedHost(forgotten);
+      // Its model catalog goes with it: the lists are that host's CLIs.
+      forgetModels(forgotten);
       const hosts = get().hosts.filter((h) => h.hostKey !== forgotten);
       // Nothing left on screen names it: whatever does would reach for its link
       // after it has gone.
