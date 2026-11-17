@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { type ComponentType, useCallback, useEffect } from "react";
 import { Stack } from "./components/Stack";
 import { OnHost } from "./host/OnHost";
 import { usePoll, useSystemTheme } from "./lib/hooks";
@@ -20,7 +20,7 @@ import { NewAgentSheet } from "./sheets/NewAgentSheet";
 import { NewPlanSheet } from "./sheets/NewPlanSheet";
 import { PrSheet } from "./sheets/PrSheet";
 import { ShipMoreSheet } from "./sheets/ShipMoreSheet";
-import { type NavItem, useApp, useHostStore } from "./store";
+import { type NavItem, type SheetName, useApp, useHostStore } from "./store";
 import "./styles/base.css";
 import "./styles/screens.css";
 import "@desktop/components/ui/Loader.css";
@@ -29,8 +29,25 @@ import "@desktop/styles/shared/icon-button.css";
 import "@desktop/components/Workspace/messages/Steps.css";
 import "./styles/agent.css";
 
+/** Every sheet, by name — a sheet name with no component here does not compile.
+ *  Each takes whether it is up and how to close it, and the string props it
+ *  was opened with, every one optional. */
+const SHEETS: Record<SheetName, ComponentType<{ open: boolean; onClose: () => void }>> = {
+  host: HostSheet,
+  newAgent: NewAgentSheet,
+  newPlan: NewPlanSheet,
+  addProject: AddProjectSheet,
+  agentMore: AgentMoreSheet,
+  shipMore: ShipMoreSheet,
+  modelPicker: ModelPickerSheet,
+  accountPicker: AccountPickerSheet,
+  pr: PrSheet,
+};
+
+const SHEET_NAMES = Object.keys(SHEETS) as SheetName[];
+
 /** Sheets that push the whole stack back rather than sitting over it. */
-const FULL_SHEETS = new Set(["newAgent", "newPlan", "addProject", "pr"]);
+const FULL_SHEETS = new Set<SheetName>(["newAgent", "newPlan", "addProject", "pr"]);
 
 function Screen({ item }: { item: NavItem }) {
   switch (item.screen) {
@@ -87,13 +104,10 @@ export function App() {
   useSystemTheme(useCallback((t) => setSystemTheme(t), [setSystemTheme]));
 
   const resolved = theme === "system" ? systemTheme : theme;
-  const props = (name: string) => (sheet?.name === name ? sheet.props : {});
-  const isOpen = (name: string) => !!(sheet?.name === name && sheet.open);
   const dimmed = !!sheet?.open && FULL_SHEETS.has(sheet.name);
-  /** The host a sheet acts on, as its props name it; one that names none acts
-   *  on the host on screen. */
-  const on = (name: string) => props(name).hostKey;
 
+  // Every screen and sheet acts on the host its props name; one that names
+  // none — Home, or a sheet with nothing open — on the host on screen.
   return (
     <div className={`m-app theme-${resolved}`}>
       {!ready ? null : hostKey && !addingHost ? (
@@ -109,49 +123,20 @@ export function App() {
               </OnHost>
             )}
           />
-          <OnHost hostKey={on("host") ?? hostKey}>
-            <HostSheet open={isOpen("host")} onClose={closeSheet} />
-          </OnHost>
-          <OnHost hostKey={on("newAgent") ?? hostKey}>
-            <NewAgentSheet open={isOpen("newAgent")} onClose={closeSheet} {...props("newAgent")} />
-          </OnHost>
-          <OnHost hostKey={on("newPlan") ?? hostKey}>
-            <NewPlanSheet open={isOpen("newPlan")} onClose={closeSheet} {...props("newPlan")} />
-          </OnHost>
-          <OnHost hostKey={on("addProject") ?? hostKey}>
-            <AddProjectSheet
-              open={isOpen("addProject")}
-              onClose={closeSheet}
-              {...props("addProject")}
-            />
-          </OnHost>
-          <OnHost hostKey={on("agentMore") ?? hostKey}>
-            <AgentMoreSheet
-              open={isOpen("agentMore")}
-              onClose={closeSheet}
-              {...props("agentMore")}
-            />
-          </OnHost>
-          <OnHost hostKey={on("shipMore") ?? hostKey}>
-            <ShipMoreSheet open={isOpen("shipMore")} onClose={closeSheet} {...props("shipMore")} />
-          </OnHost>
-          <OnHost hostKey={on("modelPicker") ?? hostKey}>
-            <ModelPickerSheet
-              open={isOpen("modelPicker")}
-              onClose={closeSheet}
-              {...props("modelPicker")}
-            />
-          </OnHost>
-          <OnHost hostKey={on("accountPicker") ?? hostKey}>
-            <AccountPickerSheet
-              open={isOpen("accountPicker")}
-              onClose={closeSheet}
-              {...props("accountPicker")}
-            />
-          </OnHost>
-          <OnHost hostKey={on("pr") ?? hostKey}>
-            <PrSheet open={isOpen("pr")} onClose={closeSheet} {...props("pr")} />
-          </OnHost>
+          {SHEET_NAMES.map((name) => {
+            const Sheet = SHEETS[name];
+            // The props it was opened with, kept while it animates closed.
+            const props = sheet?.name === name ? sheet.props : {};
+            return (
+              <OnHost key={name} hostKey={props.hostKey ?? hostKey}>
+                <Sheet
+                  open={!!(sheet?.name === name && sheet.open)}
+                  onClose={closeSheet}
+                  {...props}
+                />
+              </OnHost>
+            );
+          })}
         </>
       ) : (
         <PairScreen />
