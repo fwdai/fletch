@@ -10,7 +10,6 @@ interface Props {
   query: string;
   onQueryChange: (q: string) => void;
   onArrowDown: () => void;
-  compact: boolean;
 }
 
 export function ListFilter({
@@ -20,18 +19,12 @@ export function ListFilter({
   query,
   onQueryChange,
   onArrowDown,
-  compact,
 }: Props) {
   const scoped = projects.length > 1;
   return (
     <div className="side-filter flex-center">
       <Icon name="search" size={12} className="side-filter-icon" />
-      <FilterInput
-        query={query}
-        onChange={onQueryChange}
-        onArrowDown={onArrowDown}
-        compact={compact}
-      />
+      <FilterInput query={query} onChange={onQueryChange} onArrowDown={onArrowDown} />
       {scoped && (
         <>
           <span className="side-filter-sep" aria-hidden="true" />

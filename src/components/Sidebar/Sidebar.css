@@ -156,13 +156,10 @@
   height: 100%;
   padding: 0 8px;
   color: var(--fg-0);
+  text-overflow: ellipsis;
 }
 .side-filter-input::placeholder {
   color: var(--fg-3);
-}
-.side-filter .kbd {
-  flex-shrink: 0;
-  margin-right: 8px;
 }
 .side-filter-clear {
   flex-shrink: 0;
