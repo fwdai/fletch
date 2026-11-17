@@ -80,6 +80,7 @@ impl WorkspaceManager {
     pub fn remove_workspace_repo(&self, repo_path: &Path) -> Result<Workspace> {
         let conn = self.db.lock();
         let path_str = repo_path.to_string_lossy().to_string();
+        Self::refuse_copy_repo(&conn, &path_str)?;
         conn.execute("DELETE FROM repos WHERE path = ?1", [&path_str])?;
         drop(conn);
         Ok(self.current().expect("workspace initialized"))
@@ -107,6 +108,8 @@ impl WorkspaceManager {
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
         let path_str = repo_path.to_string_lossy().to_string();
+        Self::refuse_copy(&tx, project_id)?;
+        Self::refuse_copy_repo(&tx, &path_str)?;
 
         let target_exists: bool = tx
             .query_row(
@@ -240,6 +243,7 @@ impl WorkspaceManager {
     ) -> Result<Workspace> {
         let conn = self.db.lock();
         let path_str = repo_path.to_string_lossy().to_string();
+        Self::refuse_copy(&conn, project_id)?;
 
         let (repo_id, actual_pid): (String, String) = conn
             .query_row(
@@ -294,6 +298,7 @@ impl WorkspaceManager {
 
         let conn = self.db.lock();
         let path_str = repo_path.to_string_lossy().to_string();
+        Self::refuse_copy_repo(&conn, &path_str)?;
         let changed = conn.execute(
             "UPDATE repos SET label = ?1 WHERE path = ?2",
             rusqlite::params![value, path_str],
@@ -315,6 +320,7 @@ impl WorkspaceManager {
         }
 
         let conn = self.db.lock();
+        Self::refuse_copy(&conn, project_id)?;
         let changed = conn.execute(
             "UPDATE projects SET name = ?1 WHERE id = ?2",
             rusqlite::params![trimmed, project_id],
@@ -403,6 +409,7 @@ impl WorkspaceManager {
         let mut conn = self.db.lock();
         let old_str = old_path.to_string_lossy().to_string();
         let new_str = new_path.to_string_lossy().to_string();
+        Self::refuse_copy_repo(&conn, &old_str)?;
 
         if old_str == new_str {
             drop(conn);
@@ -505,11 +512,20 @@ impl WorkspaceManager {
             .ok()
     }
 
-    /// Write the project row of a copy of `def`: created on first sight, and
-    /// on every later one brought up to the name the home has for it now. A
-    /// project this host owns is never touched.
-    pub fn upsert_project_copy(&self, def: &ProjectDefinition) -> Result<()> {
-        self.db.lock().execute(
+    /// Record a copy of `def`, with the clones in `repos` (path, label, and
+    /// the repository's place in the home's order) as its repositories, in one
+    /// transaction. The project row is created on first sight and on every
+    /// later one brought up to the name the home has for it now; a project
+    /// this host owns is never touched.
+    pub fn record_copy(
+        &self,
+        def: &ProjectDefinition,
+        repos: &[(PathBuf, Option<String>, usize)],
+    ) -> Result<()> {
+        let conn = self.db.lock();
+        let tx = conn.unchecked_transaction()?;
+        let now = now_millis();
+        tx.execute(
             "INSERT INTO projects (id, name, created_at, home_device, home_name)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(id) DO UPDATE SET name = excluded.name, home_name = excluded.home_name
@@ -517,37 +533,66 @@ impl WorkspaceManager {
             rusqlite::params![
                 def.project_id,
                 def.name,
-                now_millis(),
+                now,
                 def.home.device,
                 def.home.name
             ],
         )?;
+        for (path, label, order) in repos {
+            tx.execute(
+                "INSERT INTO repos (id, project_id, path, label, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    def.project_id,
+                    path.to_string_lossy(),
+                    label,
+                    // Keeps the home's order among rows written together.
+                    now + *order as i64
+                ],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
-    /// Record the clone at `path` as a repository of the copy `project_id`.
-    /// Idempotent. `order` keeps the home's order among repositories recorded
-    /// in the same millisecond.
-    pub fn record_copy_repo(
-        &self,
-        project_id: &str,
-        path: &Path,
-        label: Option<&str>,
-        order: usize,
-    ) -> Result<()> {
-        self.db.lock().execute(
-            "INSERT INTO repos (id, project_id, path, label, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(path) DO NOTHING",
-            rusqlite::params![
-                uuid::Uuid::new_v4().to_string(),
-                project_id,
-                path.to_string_lossy(),
-                label,
-                now_millis() + order as i64
-            ],
-        )?;
-        Ok(())
+    /// Refuse a change to the structure of a project this host only runs: a
+    /// copy is edited on its home, and what is changed here would be neither
+    /// seen there nor undone by the next `ensure_project`.
+    fn refuse_copy(conn: &Connection, project_id: &str) -> Result<()> {
+        let home: Option<(Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT home_device, home_name FROM projects WHERE id = ?1",
+                [project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+        match home {
+            Some((Some(_), name)) => {
+                let name = name.filter(|n| !n.trim().is_empty());
+                Err(Error::Other(format!(
+                    "This project belongs to {}. Change it there.",
+                    name.as_deref().unwrap_or("another device")
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// [`Self::refuse_copy`] for the project the repository at `path_str`
+    /// belongs to. A path that is not pinned belongs to none.
+    fn refuse_copy_repo(conn: &Connection, path_str: &str) -> Result<()> {
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM repos WHERE path = ?1",
+                [path_str],
+                |row| row.get(0),
+            )
+            .ok();
+        match project_id {
+            Some(project_id) => Self::refuse_copy(conn, &project_id),
+            None => Ok(()),
+        }
     }
 
     pub fn project_repo_paths(&self, project_id: &str) -> Vec<PathBuf> {

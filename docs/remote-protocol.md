@@ -1098,7 +1098,9 @@ ProjectDefinition {
 
 `home.device` is the home's host id, the key a client that paired with it
 already holds, so a client can tell which of its hosts a project belongs to.
-`repos` is in the project's own order; `dir` is the repository's folder name.
+`repos` is in the project's own order. `dir` is the repository's folder name,
+made distinct within the project (`app`, `app-2`) when two repositories share
+one, compared without regard to case.
 
 `ensure_project` on a device that already has the project, as its own or as a
 copy, clones nothing: it brings a copy's `name` up to date and clones any
@@ -1108,15 +1110,21 @@ with the host's GitHub login, and the project is recorded as a copy under the
 same `project_id`. A GitHub ssh `origin` is cloned over https with that login,
 since the home's ssh key is the home's. A repository with `origin: null`
 refuses the whole call before anything is cloned: a project runs with all of
-its repositories or not at all. A project the host owns is never changed by
-this op.
+its repositories or not at all. For the same reason the clones are made in a
+staging folder and only moved into place and recorded, together, once every
+one has finished; a call that fails or is abandoned partway leaves no project
+behind. A project the host owns is never changed by this op.
 
 A copy shows up in the host's `Workspace.projects` like any project, with
 `ProjectRef.home` set; a project the host owns has no `home`. Workspaces of a
 copy carry the home's `project_id`, which is how a client lists a project's
-workspaces across every device that runs them. Nothing flows back to the home:
-the copy is not edited where it runs, and its project settings, roadmap and
-context are the host's own, empty until something there writes them.
+workspaces across every device that runs them. Nothing flows back to the home,
+and a copy's structure is not edited where it runs: `rename_project`,
+`attach_repo_to_project`, `detach_repo_from_project`, `set_repo_label`,
+`relocate_repo` and `remove_workspace_repo` refuse a copy with "This project
+belongs to <home>. Change it there." `delete_project` still removes one. Its
+project settings, roadmap and context are the host's own, empty until
+something there writes them.
 
 ### Which providers a host can run
 
