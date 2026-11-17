@@ -510,6 +510,38 @@ describe("connection lifecycle", () => {
     expect(timers.filter((t) => t.ms !== HANDSHAKE_TIMEOUT_MS)).toHaveLength(0);
   });
 
+  it("frees the requests of attempts the host never answered, so a later one is sent", async () => {
+    // A relay forwarding into a Mac that has gone quiet: the socket opens, the
+    // `hello` goes out, nothing comes back, attempt after attempt.
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    /** Run the first live timer that `pick` matches, as if it had come due. */
+    const fire = (pick: (ms: number) => boolean) => {
+      const at = timers.findIndex((t) => pick(t.ms));
+      expect(at).toBeGreaterThanOrEqual(0);
+      const [timer] = timers.splice(at, 1);
+      timer.fn();
+    };
+    void client.connect({ host: "h", port: 1, hostKey: HOST_KEY }).catch(() => {});
+    for (let sent = 1; sent <= MAX_IN_FLIGHT; sent += 1) {
+      await vi.waitFor(() => expect(fake.sent).toHaveLength(sent));
+      fire((ms) => ms === HANDSHAKE_TIMEOUT_MS);
+      await vi.waitFor(() => expect(client.retrying).toBe(true));
+      fire((ms) => ms !== HANDSHAKE_TIMEOUT_MS);
+    }
+    // The host is back: the next attempt's `hello` has to reach it.
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(MAX_IN_FLIGHT + 1));
+    expect(fake.sent[MAX_IN_FLIGHT].op).toBe("hello");
+    fake.reply(helloOk(fake.sent[MAX_IN_FLIGHT].id as string));
+    await vi.waitFor(() => expect(client.state).toBe("connected"));
+  });
+
   it("ignores a close from a socket it has already replaced", async () => {
     const first = fakeSocket();
     const second = fakeSocket();

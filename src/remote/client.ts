@@ -414,10 +414,12 @@ export class ProtocolClient implements RemoteClient {
       const shown = reportable(message);
       if (this.current(gen)) {
         // A socket whose handshake did not complete is no use, and after a
-        // timeout it is still open with the host yet to answer.
-        const socket = this.socket;
-        this.socket = null;
-        socket?.close();
+        // timeout it is still open with the host yet to answer. Closing it
+        // ourselves silences it, so nothing would ever answer the requests
+        // still out on it: they go with it, or every abandoned attempt would
+        // keep an in-flight slot and a later `hello` would queue behind them
+        // for ever.
+        this.teardown(shown);
         this.fail(shown, retryable);
       }
       throw shown === message && e instanceof Error ? e : new Error(shown);
