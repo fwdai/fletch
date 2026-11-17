@@ -1,9 +1,9 @@
 // Push registration — the phone's side of docs/remote-protocol.md, "Push
 // notifications". Two jobs: ask iOS for permission once per paired host, and
 // make sure every paired host always holds this phone's current APNs token,
-// each told over its own link. A tap on an alert is routed by the store's own
-// `openFromPush`, because navigation is the router's business, not the
-// plugin's.
+// each told over its own link — on its own handshakes, and when the token
+// changes. A tap on an alert is routed by the store's own `openFromPush`,
+// because navigation is the router's business, not the plugin's.
 
 import { inTauri } from "@desktop/remote/ws";
 import { type HostLink, linkOf } from "../host";
@@ -43,9 +43,20 @@ export interface PushDeps {
  *  is what makes every entry point below inert in a browser. */
 let deps: PushDeps | null = null;
 
-/** The last token iOS handed us, for the life of the process: the host has to
- *  be told again after every handshake, not only when the token changes. */
+/** The last token iOS handed us, for the life of the process: a host has to be
+ *  told again after every handshake of its own, not only when the token
+ *  changes. */
 let token: PushToken | null = null;
+
+/** The plugin's registration this run, once asked for. Apple wants one per
+ *  launch, and iOS hands the token back (`onPushToken`) on every one, so
+ *  asking again would only repeat it. A failed one is asked for again. */
+let registration: Promise<unknown> | null = null;
+
+const register = () =>
+  (registration ??= registerPush().catch(() => {
+    registration = null;
+  }));
 
 /** Called at the top of `init`, before anything can trigger a registration: the
  *  plugin holds the token — and a tap that launched the app — until the first
@@ -54,7 +65,11 @@ export async function startPush(next: PushDeps): Promise<void> {
   if (!inTauri()) return;
   deps = next;
   await onPushToken((fresh) => {
+    const same = fresh.token === token?.token && fresh.environment === token?.environment;
     token = fresh;
+    // A new token is every paired host's business; the same one again is
+    // nobody's — each host was told it on its own handshake (`syncPush`).
+    if (same) return;
     for (const { hostKey } of next.get().hosts) void report(linkOf(hostKey));
   });
   await onPushOpened((opened) => next.get().openFromPush(opened.fletch));
@@ -65,11 +80,12 @@ export async function startPush(next: PushDeps): Promise<void> {
   // the token and may alert — though: asking is the pairing's job, below.
   const saved = await loadSettings();
   if (saved.hosts?.some((h) => saved.pushPermission?.[h.hostKey] === "granted")) {
-    await registerPush().catch(ignore);
+    await register();
   }
 }
 
-/** Called after every successful `pair` and `hello` on `link`. */
+/** Called after every successful `pair` and `hello` on `link`: that host, and
+ *  no other, is told the token. */
 export async function syncPush(link: HostLink): Promise<void> {
   if (!deps) return;
   const hostKey = link.client.hostKey ?? link.hostKey;
@@ -77,7 +93,9 @@ export async function syncPush(link: HostLink): Promise<void> {
   // A refusal is final: nothing is sent, so the host keeps no token for this
   // device and never asks the relay to reach it.
   if ((await permissionFor(hostKey)) !== "granted") return;
-  await registerPush().catch(ignore);
+  // The first host to be granted registers the app; the token it releases
+  // reaches this host with every other (`onPushToken` above).
+  await register();
   await report(link);
 }
 

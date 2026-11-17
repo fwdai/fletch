@@ -11,6 +11,8 @@ const plugin = vi.hoisted(() => ({
   invoked: [] as string[],
   /** Tauri event name → the handler the app attached. */
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
+  /** The token iOS last handed over, which it hands back on every register. */
+  token: null as unknown,
 }));
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
@@ -18,6 +20,9 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
   invoke: (command: string) => {
     plugin.invoked.push(command);
     if (command === "plugin:push|request_permission") return Promise.resolve("granted");
+    if (command === "plugin:push|register" && plugin.token) {
+      queueMicrotask(() => plugin.listeners.get("push://token")?.({ payload: plugin.token }));
+    }
     // Anything else is the settings file, which has no backend here — `persist`
     // reads that as an empty store and keeps its values in memory.
     return Promise.resolve(undefined);
@@ -47,8 +52,12 @@ const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();
 /** The mock host's link: the one the store is live on while paired with it. */
 const mock = () => linkOf(MOCK_HOST_KEY);
-const emit = (event: string, payload: unknown) => plugin.listeners.get(event)?.({ payload });
+const emit = (event: string, payload: unknown) => {
+  if (event === "push://token") plugin.token = payload;
+  plugin.listeners.get(event)?.({ payload });
+};
 const asked = () => plugin.invoked.filter((c) => c === "plugin:push|request_permission").length;
+const registered = () => plugin.invoked.filter((c) => c === "plugin:push|register").length;
 
 beforeAll(async () => {
   await launchMock();
@@ -57,7 +66,7 @@ beforeAll(async () => {
 describe("registration", () => {
   it("asks iOS once for the paired host and registers with APNs", async () => {
     await vi.waitFor(() => expect(asked()).toBe(1));
-    expect(plugin.invoked).toContain("plugin:push|register");
+    await vi.waitFor(() => expect(registered()).toBe(1));
     // Persisted per host, which is what makes the prompt a one-off.
     expect((await loadSettings()).pushPermission?.[MOCK_HOST_KEY]).toBe("granted");
   });
@@ -70,8 +79,21 @@ describe("registration", () => {
     registerPush.mockClear();
     await host().reconnect();
     await vi.waitFor(() => expect(registerPush).toHaveBeenCalledWith("0a1b2c", "sandbox"));
-    // The token is resent on every handshake, but iOS is never asked twice.
+    await settle();
+    // Once per handshake: the app registered with APNs once this run, so iOS
+    // has no reason to hand the token back and set off a second report — and
+    // iOS is never asked twice.
+    expect(registerPush).toHaveBeenCalledOnce();
+    expect(registered()).toBe(1);
     expect(asked()).toBe(1);
+    registerPush.mockRestore();
+  });
+
+  it("tells no host again when iOS hands back the token it already has", async () => {
+    const registerPush = vi.spyOn(mock().api, "registerPush");
+    emit("push://token", { token: "0a1b2c", environment: "sandbox" });
+    await settle();
+    expect(registerPush).not.toHaveBeenCalled();
     registerPush.mockRestore();
   });
 
@@ -117,14 +139,21 @@ describe("a second paired host", () => {
       expect(onMock).toHaveBeenCalledWith("0d0e0f", "sandbox");
       expect(onStudio).toHaveBeenCalledWith("0d0e0f", "sandbox");
     });
+    await settle();
+    expect(onMock).toHaveBeenCalledOnce();
+    expect(onStudio).toHaveBeenCalledOnce();
 
-    // …and again on each host's own handshake, to that host alone.
+    // …and again on each host's own handshake, to that host alone, once.
     onMock.mockClear();
     onStudio.mockClear();
     await hostStoreOf(STUDIO).getState().reconnect();
     await vi.waitFor(() => expect(onStudio).toHaveBeenCalledWith("0d0e0f", "sandbox"));
+    await settle();
+    expect(onStudio).toHaveBeenCalledOnce();
     expect(onMock).not.toHaveBeenCalled();
     expect(asked()).toBe(2);
+    // The app registered with APNs once this run, whatever the hosts did.
+    expect(registered()).toBe(1);
     onMock.mockRestore();
     onStudio.mockRestore();
   });
