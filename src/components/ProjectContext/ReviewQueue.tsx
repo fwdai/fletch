@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, type ContextGraph, type ContextProposal, type DismissReason } from "@/api";
+import type { ContextGraph, ContextProposal, DismissReason } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { DismissAll } from "./DismissAll";
@@ -49,6 +50,7 @@ function ProposalCard({
   graph: ContextGraph;
   projectId: string;
 }) {
+  const { api } = useEngine();
   const [reason, setReason] = useState<DismissReason>("wrong");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

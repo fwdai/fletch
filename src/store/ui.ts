@@ -1,4 +1,3 @@
-import { api } from "@/api";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
@@ -235,7 +234,7 @@ export interface UiSlice {
   resetAllShortcuts: () => void;
 }
 
-export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
+export const createUiSlice: SliceCreator<UiSlice> = (set, get, { api }) => ({
   paletteOpen: false,
   settingsOpen: false,
   settingsScreenOpen: false,

@@ -21,8 +21,9 @@ import { tourApi } from "./domains/tour";
 import { usageApi } from "./domains/usage";
 import { workflowsApi } from "./domains/workflows";
 import { workspaceApi } from "./domains/workspace";
+import { type Invoke, invoke } from "./invoke";
 
-// Re-export every `on*` event-listener factory.
+// Re-export `makeEvents` and the active environment's `on*` subscriptions.
 export * from "./events";
 // Re-export every DTO/type so `import type { … } from "@/api"` keeps working.
 export * from "./types/agent";
@@ -46,31 +47,41 @@ export * from "./types/usage";
 export * from "./types/verify";
 export * from "./types/workflow";
 
-/** The single `api` facade assembled from the per-domain command wrappers.
- *  Each domain contributes a disjoint set of method names, so the spread order
- *  never shadows a method. */
-export const api = {
-  ...workspaceApi,
-  ...miscApi,
-  ...sandboxApi,
-  ...boxesApi,
-  ...githubApi,
-  ...issuesApi,
-  ...agentsApi,
-  ...sessionApi,
-  ...settingsApi,
-  ...gitApi,
-  ...shellApi,
-  ...runApi,
-  ...filesApi,
-  ...commandsApi,
-  ...dictationApi,
-  ...providersApi,
-  ...remoteApi,
-  ...workflowsApi,
-  ...roadmapApi,
-  ...usageApi,
-  ...contextApi,
-  ...reviewApi,
-  ...tourApi,
-};
+/** One `api` facade over `invoke`, assembled from the per-domain command
+ *  wrappers. Each domain contributes a disjoint set of method names, so the
+ *  spread order never shadows a method. The routed domains are built over
+ *  `invoke`; the ones that only ever address this desktop (see `invokeLocal`)
+ *  take nothing and are spread as they are. */
+export function makeApi(invoke: Invoke) {
+  return {
+    ...workspaceApi(invoke),
+    ...miscApi,
+    ...sandboxApi(invoke),
+    ...boxesApi(invoke),
+    ...githubApi(invoke),
+    ...issuesApi(invoke),
+    ...agentsApi(invoke),
+    ...sessionApi(invoke),
+    ...settingsApi(invoke),
+    ...gitApi(invoke),
+    ...shellApi(invoke),
+    ...runApi(invoke),
+    ...filesApi(invoke),
+    ...commandsApi(invoke),
+    ...dictationApi,
+    ...providersApi,
+    ...remoteApi,
+    ...workflowsApi(invoke),
+    ...roadmapApi(invoke),
+    ...usageApi,
+    ...contextApi(invoke),
+    ...reviewApi(invoke),
+    ...tourApi(invoke),
+  };
+}
+
+export type Api = ReturnType<typeof makeApi>;
+
+/** The `api` of the environment the UI is driving: every routed op resolves the
+ *  active transport at call time (see ./invoke). */
+export const api = makeApi(invoke);

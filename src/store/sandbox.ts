@@ -1,17 +1,16 @@
-import {
-  api,
-  type BoxEgressEvent,
-  type BoxImageStatus,
-  type BoxRuntimeProbe,
-  type BoxSettingKey,
-  type BoxStateEvent,
-  type BoxToolsStatus,
-  type BoxVm,
-  type EgressAnswer,
-  type EgressPrompt,
-  type EgressPromptResolved,
-  type PublishApproval,
-  type PublishApprovalResolved,
+import type {
+  BoxEgressEvent,
+  BoxImageStatus,
+  BoxRuntimeProbe,
+  BoxSettingKey,
+  BoxStateEvent,
+  BoxToolsStatus,
+  BoxVm,
+  EgressAnswer,
+  EgressPrompt,
+  EgressPromptResolved,
+  PublishApproval,
+  PublishApprovalResolved,
 } from "@/api";
 import { hostSupports } from "@/remote/types";
 import { newestWins } from "@/util/newestWins";
@@ -206,7 +205,7 @@ export function foldBlocked(
 
 const promptedKey = (agentId: string, host: string) => `${agentId}\n${host}`;
 
-export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
+export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get, { api }) => ({
   publishConfirmation: false,
   pendingPublishApprovals: [],
   boxMemoryMib: "",

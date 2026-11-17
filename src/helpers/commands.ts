@@ -4,6 +4,7 @@
 // expansion of bodied commands (codex prompts), whose CLI never resolves
 // `/name` itself over the managed transport.
 
+import type { Api } from "../api";
 import {
   builtinCommandsFor,
   cachedCommandsAcrossProjects,
@@ -219,6 +220,7 @@ const CLAUDE_TUI_ONLY_COMMANDS = new Set([
  *  store uses this to block the send and surface a "use the Native view" notice
  *  instead of dispatching a doomed turn that flashes and disappears. */
 export async function unsupportedManagedCommand(
+  api: Api,
   providerId: string | undefined,
   text: string,
   projectDir?: string,
@@ -232,7 +234,7 @@ export async function unsupportedManagedCommand(
   // cache: otherwise a `/usage` sent before the composer has run discovery
   // would be wrongly blocked. Only reached for the rare curated-name case, so
   // the extra round-trip is cheap.
-  const commands = await discoverCommands(providerId, projectDir);
+  const commands = await discoverCommands(api, providerId, projectDir);
   if (commands.some((c) => c.name === first)) return null;
   return first;
 }

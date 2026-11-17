@@ -4,7 +4,7 @@
 
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useEffect, useState } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useAppStore } from "@/store";
 import { type PickedImage, pickImageAsBase64 } from "@/util/image";
 
@@ -23,6 +23,7 @@ const SENT_LINGER_MS = 1400;
 export type FeedbackStatus = "idle" | "sending" | "sent" | "error";
 
 export function useFeedback(onClose: () => void) {
+  const { api } = useEngine();
   const accountEmail = useAppStore((s) => s.account?.email);
 
   const [message, setMessage] = useState("");

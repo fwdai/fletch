@@ -1,10 +1,10 @@
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type { ReviewState } from "../types/review";
 
 /** The local review loop: a hidden reviewer agent the host runs over a
  *  checkout, on PR open or on demand. Its findings arrive as local review
  *  threads (`PrComment.source === "local"`); these ops only drive the turn. */
-export const reviewApi = {
+export const reviewApi = (invoke: Invoke) => ({
   getReview: (agentId: string, subdir?: string) =>
     invoke<ReviewState | null>("get_review", { agentId, subdir }),
   /** Every checkout the host has a review state for — a client connecting
@@ -19,4 +19,4 @@ export const reviewApi = {
   /** Resolve a local thread by hand, recording why. */
   reviewDismissThread: (agentId: string, threadId: string, subdir?: string, reason?: string) =>
     invoke<void>("review_dismiss_thread", { agentId, subdir, threadId, reason: reason ?? null }),
-};
+});

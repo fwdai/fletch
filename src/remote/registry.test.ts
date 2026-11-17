@@ -5,6 +5,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
+import { activeEngine } from "@/api/engine";
 import {
   createEnvironmentsSlice,
   type EnvironmentEntry,
@@ -153,7 +154,9 @@ const settled = async () => {
 };
 
 function harness() {
-  const store = create<AppState>()((...a) => ({ ...createEnvironmentsSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (set, get) => ({ ...createEnvironmentsSlice(set, get, activeEngine) }) as AppState,
+  );
   const client = fakeClient();
   const device = vi.fn(() => Promise.resolve(DEVICE));
   // What a handshake reports upwards. Spied rather than wired to the switch

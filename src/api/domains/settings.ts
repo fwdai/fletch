@@ -6,10 +6,10 @@
 // the host's in-memory mirror and emits `settings:changed` /
 // `project_settings:changed`; never write one of these keys with `setSetting`
 // or `dbUpsert` (src/storage/hostOwnedKeys.test.ts enforces it).
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type { ProjectFileEdit, ProjectFileStatus, ProjectFileWhich } from "../types/settings";
 
-export const settingsApi = {
+export const settingsApi = (invoke: Invoke) => ({
   /** The host-owned global settings as stored, and nothing else (no secret,
    *  no client preference). An absent key is unset: apply its default. */
   getSettings: () => invoke<Record<string, string>>("get_settings"),
@@ -63,4 +63,4 @@ export const settingsApi = {
    *  The host refuses a key outside its allowlist. */
   setProjectSetting: (projectId: string, key: string, value: string | null) =>
     invoke<void>("set_project_setting", { projectId, key, value }),
-};
+});

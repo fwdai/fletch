@@ -5,6 +5,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
+import { activeEngine } from "@/api/engine";
 import { activeTransport, localTransport, type Transport } from "@/api/transport";
 import { createAccountSlice } from "./account";
 import {
@@ -26,7 +27,9 @@ vi.mock("@/storage/accounts", () => ({
 }));
 
 const newStore = () => {
-  const store = create<AppState>()((...a) => ({ ...createEnvironmentsSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (set, get) => ({ ...createEnvironmentsSlice(set, get, activeEngine) }) as AppState,
+  );
   setEnvironmentsSource(store.getState);
   return store;
 };
@@ -122,8 +125,11 @@ describe("refreshGithub across a switch", () => {
 
   const newAccountStore = () => {
     const store = create<AppState>()(
-      (...a) =>
-        ({ ...createEnvironmentsSlice(...a), ...createAccountSlice(...a) }) as unknown as AppState,
+      (set, get) =>
+        ({
+          ...createEnvironmentsSlice(set, get, activeEngine),
+          ...createAccountSlice(set, get, activeEngine),
+        }) as unknown as AppState,
     );
     setEnvironmentsSource(store.getState);
     store.setState({ environments: { ...store.getState().environments, [HOST]: remoteEntry } });

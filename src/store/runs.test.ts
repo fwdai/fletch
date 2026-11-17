@@ -15,12 +15,15 @@ vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.f
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 vi.mock("@/data/slashCommands", () => ({ discoverCommands: vi.fn() }));
 
+import { activeEngine } from "@/api/engine";
 import type { RunStateEvent, RunStateSnapshot, RunStatus } from "@/api/types/run";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
 
 const makeStore = () =>
-  create<AppState>()((...a) => ({ ...createWorkspaceSlice(...a) }) as AppState);
+  create<AppState>()(
+    (set, get) => ({ ...createWorkspaceSlice(set, get, activeEngine) }) as AppState,
+  );
 
 /** A `run:state` from a current host: every field present, null when none. */
 const event = (over: Partial<RunStateEvent>): RunStateEvent => ({

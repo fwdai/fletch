@@ -8,11 +8,13 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
+import { activeEngine } from "@/api/engine";
 import { revealToolRow } from "@/components/Workspace/messages/revealToolRow";
 import type { AppState } from "@/store/types";
 import { createUiSlice } from "@/store/ui";
 
-const makeStore = () => create<AppState>()((...a) => ({ ...createUiSlice(...a) }) as AppState);
+const makeStore = () =>
+  create<AppState>()((set, get) => ({ ...createUiSlice(set, get, activeEngine) }) as AppState);
 
 /** A frame scheduler under test control: `flush` runs what is pending, and a
  *  cancelled id never runs. */

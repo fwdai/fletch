@@ -1,4 +1,4 @@
-import { api } from "@/api";
+import type { Api } from "@/api";
 
 // Per-project settings are the HOST's: run commands, env sharing, verify,
 // roadmap autonomy, autopilot's switch, the Linear team, … (`hostOwnedKeys.ts`)
@@ -18,7 +18,7 @@ export const LINEAR_TEAM_NAME_KEY = "linear.team_name";
 
 /** The project's configured Linear team id, or undefined (also for a blank
  *  `projectId`, e.g. before a draft's project resolves). */
-export async function getLinearTeamId(projectId: string): Promise<string | undefined> {
+export async function getLinearTeamId(api: Api, projectId: string): Promise<string | undefined> {
   if (!projectId) return undefined;
   const all = await api.getProjectSettings(projectId);
   return all[LINEAR_TEAM_ID_KEY] || undefined;

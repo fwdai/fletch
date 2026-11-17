@@ -5,7 +5,7 @@
 // `get_settings`, since its values are the host's and live in the host's
 // database (docs/remote-protocol.md, "Settings").
 
-import { api, type SettingsChangedEvent } from "@/api";
+import type { Api, SettingsChangedEvent } from "@/api";
 import { hostSupports } from "@/remote/types";
 import { pickHostSettings } from "@/storage/hostOwnedKeys";
 import {
@@ -83,7 +83,7 @@ export function applyHostSettingChange(set: Patch, e: SettingsChangedEvent) {
 /** The active environment's host-owned settings, or `null` when it cannot say:
  *  a host from before `get_settings`, whose Settings controls are gated closed
  *  anyway (`hostSettings` / `publishSettings`), keeps whatever was on screen. */
-async function readHostSettings(): Promise<Record<string, string> | null> {
+async function readHostSettings(api: Api): Promise<Record<string, string> | null> {
   const env = activeEnvironment();
   if (env.kind === "local") return pickHostSettings(await getAllSettings());
   if (!hostSupports(env.protocol, "get_settings")) return null;
@@ -93,7 +93,7 @@ async function readHostSettings(): Promise<Record<string, string> | null> {
 /** Re-read the host-owned settings from the engine the UI is now driving. Run
  *  at launch and on every switch and reconnect; an answer that lands after the
  *  user moved on is dropped. */
-export async function hydrateHostSettings(set: Patch) {
+export async function hydrateHostSettings(api: Api, set: Patch) {
   const claim = hydrates.claim();
   const buffer: SettingsChangedEvent[] = [];
   hydrateInFlight = buffer;
@@ -101,7 +101,7 @@ export async function hydrateHostSettings(set: Patch) {
     // Two guards, as for the approval queue: a switch while the read was in
     // flight means ours is another engine's settings, and a newer hydrate
     // means ours is the older snapshot it was issued to replace.
-    const settings = await forActiveEnvironment(readHostSettings);
+    const settings = await forActiveEnvironment(() => readHostSettings(api));
     if (!settings || !claim.current()) return;
     applyHostSettings(set, replaySettingChanges(settings, buffer));
   } finally {

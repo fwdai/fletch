@@ -1,12 +1,12 @@
-import {
-  api,
-  type DelegationEvent,
-  type GitState,
-  type PrChecks,
-  type PrComments,
-  type PrSetEntry,
-  type PrState,
-  type ShortStats,
+import type {
+  Api,
+  DelegationEvent,
+  GitState,
+  PrChecks,
+  PrComments,
+  PrSetEntry,
+  PrState,
+  ShortStats,
 } from "@/api";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import type { Delegation } from "@/delegation";
@@ -363,7 +363,7 @@ function withKnownChecks(prev: PrSetEntry[] | undefined, next: PrSetEntry[]): Pr
 
 /** One `get_all_pr_status` read, merged into `prStates` / `prChecks` /
  *  `prSets`. */
-async function readAllPrStatus(set: GitSet, reverifyClosed: boolean): Promise<void> {
+async function readAllPrStatus(api: Api, set: GitSet, reverifyClosed: boolean): Promise<void> {
   const ticket = issuePrWrite();
   try {
     // The reply is the seed itself: the host's watcher emits only on a change,
@@ -416,7 +416,7 @@ const delegationLoads = newestWins();
  *  replayed over its answer. Null when no load is outstanding. */
 let delegationsInFlight: DelegationEvent[] | null = null;
 
-export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
+export const createGitSlice: SliceCreator<GitSlice> = (set, get, { api }) => ({
   gitStates: {},
   gitBlocked: {},
   gitShortstats: {},
@@ -505,7 +505,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     // user switches before the weaker read settles, the entered environment's
     // own load is authoritative; never retarget this delayed call to it.
     const read = () =>
-      activeEnvironmentId() === envId ? readAllPrStatus(set, reverifyClosed) : Promise.resolve();
+      activeEnvironmentId() === envId
+        ? readAllPrStatus(api, set, reverifyClosed)
+        : Promise.resolve();
     const pending = current ? current.done.then(read) : read();
     const done = pending.finally(() => {
       if (allPrStatusLoad?.done === done) allPrStatusLoad = null;

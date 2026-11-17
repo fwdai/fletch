@@ -20,7 +20,8 @@
 // hidden. Nothing accumulates.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type RoadmapItem, type RoadmapItemReview } from "@/api";
+import type { RoadmapItem, RoadmapItemReview } from "@/api";
+import { useEngine } from "@/api/engine";
 import { describeMergeGate, type MergeGate, mergeGateLabel } from "@/mergeGate";
 import { usePoll } from "@/util/hooks";
 
@@ -93,6 +94,7 @@ export function reviewGate(review: RoadmapItemReview): ReviewGate {
  *  gate — never a false "no checks". Answers are dropped as soon as their item
  *  leaves review, so the map stays board-sized. */
 export function useItemReviews(items: readonly RoadmapItem[]) {
+  const { api } = useEngine();
   const [reviews, setReviews] = useState<ReadonlyMap<string, RoadmapItemReview>>(() => new Map());
   const targetIds = reviewTargets(items);
   /** The poll's scope as one stable string, so a board re-render that changed
@@ -140,21 +142,24 @@ export function useItemReviews(items: readonly RoadmapItem[]) {
       }
       return next;
     });
-  }, [targets]);
+  }, [targets, api]);
 
   usePoll(tick, REVIEW_POLL_MS, [tick]);
 
   /** Re-read one item now — after a merge, so the card stops offering to merge
    *  an already-merged PR while it waits for the sweep to ship the row. */
-  const refreshReview = useCallback(async (itemId: string) => {
-    try {
-      const answer = await api.roadmapItemReview(itemId);
-      if (!alive.current || !answer) return;
-      setReviews((prev) => new Map(prev).set(itemId, answer));
-    } catch {
-      // Same policy as the tick: a failed refresh leaves the last answer up.
-    }
-  }, []);
+  const refreshReview = useCallback(
+    async (itemId: string) => {
+      try {
+        const answer = await api.roadmapItemReview(itemId);
+        if (!alive.current || !answer) return;
+        setReviews((prev) => new Map(prev).set(itemId, answer));
+      } catch {
+        // Same policy as the tick: a failed refresh leaves the last answer up.
+      }
+    },
+    [api],
+  );
 
   return { reviews, refreshReview };
 }

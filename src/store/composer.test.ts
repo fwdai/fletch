@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { create } from "zustand";
+import { activeEngine } from "@/api/engine";
 import { createComposerSlice } from "./composer";
 import type { AppState } from "./types";
 
 const makeStore = () =>
-  create<AppState>()((...a) => ({ ...createComposerSlice(...a) }) as AppState);
+  create<AppState>()(
+    (set, get) => ({ ...createComposerSlice(set, get, activeEngine) }) as AppState,
+  );
 
 describe("composer roadmap picks", () => {
   it("forgets a pick once the send that carried it is done", () => {

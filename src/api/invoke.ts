@@ -1,5 +1,9 @@
 import { activeTransport, localTransport } from "./transport";
 
+/** One engine op as a call: the shape of `invoke` below, and what each routed
+ *  domain in ./domains is built over (see `makeApi`). */
+export type Invoke = <T>(op: string, args?: Record<string, unknown>) => Promise<T>;
+
 /** Call one engine op on the environment the UI is driving. For the local
  *  environment — the only one today — this is Tauri's `invoke` with one
  *  indirection in front of it (see ./transport). */

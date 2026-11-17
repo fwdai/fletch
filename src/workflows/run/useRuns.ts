@@ -13,8 +13,9 @@
 // one lost event was wrong in all of them at once.
 
 import { useEffect, useState } from "react";
+import { useEngine } from "@/api/engine";
 import { createRowSync, type RowSync } from "@/rowSync";
-import { api, onWfRun, onWfRunDeleted, type WfRun } from "../../api";
+import type { WfRun } from "../../api";
 
 /** Newest-updated first — the order `wf_list_runs` returns and every consumer
  *  draws. Re-applied on each change because the sequencer appends an unseen row
@@ -35,6 +36,7 @@ export function createRunSync(commit: (rows: WfRun[]) => void): RowSync<WfRun> {
 }
 
 export function useRuns(): WfRun[] {
+  const { api, events } = useEngine();
   const [runs, setRuns] = useState<WfRun[]>([]);
 
   useEffect(() => {
@@ -45,8 +47,8 @@ export function useRuns(): WfRun[] {
       if (alive) setRuns(rows);
     });
 
-    const off = onWfRun((row) => sync.push({ kind: "upsert", row }));
-    const offDeleted = onWfRunDeleted((runId) => sync.push({ kind: "delete", id: runId }));
+    const off = events.onWfRun((row) => sync.push({ kind: "upsert", row }));
+    const offDeleted = events.onWfRunDeleted((runId) => sync.push({ kind: "delete", id: runId }));
 
     void (async () => {
       // Registration has to be awaited, not just started: an event emitted
@@ -69,7 +71,7 @@ export function useRuns(): WfRun[] {
       void off.then((f) => f());
       void offDeleted.then((f) => f());
     };
-  }, []);
+  }, [api, events]);
 
   return runs;
 }

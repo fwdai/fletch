@@ -2,6 +2,7 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { DetectedEditor } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { developerUnlocked } from "@/components/SettingsScreen/nav";
 import { detectEditors } from "@/components/TitleBar/OpenInEditor/editors";
@@ -35,6 +36,7 @@ function isPaletteChord(e: KeyboardEvent): boolean {
  *  else is stopped at the dialog so the app's own window listeners (find in
  *  the conversation, the ⌘-digit panels) stay out of it. */
 export function PaletteDialog() {
+  const { api } = useEngine();
   const togglePalette = useAppStore((s) => s.togglePalette);
   const setLastError = useAppStore((s) => s.setLastError);
   const close = useCallback(() => togglePalette(false), [togglePalette]);
@@ -49,13 +51,13 @@ export function PaletteDialog() {
 
   useEffect(() => {
     let alive = true;
-    detectEditors().then((found) => {
+    detectEditors(api).then((found) => {
       if (alive) setEditors(found);
     });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [api]);
 
   // The palette holds the keyboard over whatever it was opened from, another
   // dialog included, and hands focus back on the way out unless the row that
@@ -99,6 +101,7 @@ export function PaletteDialog() {
     const s = useAppStore.getState();
     const ctx: PaletteContext = {
       s,
+      api,
       runs,
       editors,
       developer: developerUnlocked(s.admin),
@@ -108,7 +111,7 @@ export function PaletteDialog() {
         void navigator.clipboard.writeText(text).catch((e) => setLastError(String(e))),
     };
     return pageRows(ctx, page);
-  }, [trigger, page, runs, editors, setLastError]);
+  }, [trigger, page, runs, editors, setLastError, api]);
 
   const sections = useMemo(
     () =>

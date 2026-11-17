@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type ProjectRef } from "@/api";
+import type { ProjectRef } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
@@ -23,6 +24,7 @@ const NO_PROJECTS: ProjectRef[] = [];
  *  First message in the composer spawns the real agent and dispatches
  *  the message in one go. */
 export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
+  const { api } = useEngine();
   const rerollDraftName = useAppStore((s) => s.rerollDraftName);
   const spawnFromDraft = useAppStore((s) => s.spawnFromDraft);
   const removeDraft = useAppStore((s) => s.removeDraft);
@@ -67,7 +69,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   useEffect(() => {
     let cancelled = false;
     setLinearTeamId(undefined);
-    getLinearTeamId(projectId)
+    getLinearTeamId(api, projectId)
       .then((teamId) => {
         if (!cancelled) setLinearTeamId(teamId);
       })
@@ -75,7 +77,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, api]);
 
   // A host answers no `wf_*` op (docs/multi-host-plan.md §5.3, item 2), so on a
   // remote environment a workflow draft gets the quick-agent page — which is

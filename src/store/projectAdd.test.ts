@@ -27,6 +27,7 @@ vi.mock("@/util/track", () => ({ track }));
 vi.mock("./capabilities", () => ({ activeGateReason: () => null }));
 
 import type { Workspace } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { createComposerSlice } from "./composer";
 import { createDraftsSlice } from "./drafts";
@@ -46,12 +47,12 @@ const makeStore = (workspace: Workspace | null) => {
   const setLastError = vi.fn();
   const requestFocusJoin = vi.fn();
   const store = create<AppState>()(
-    (...a) =>
+    (set, get) =>
       ({
-        ...createReposSlice(...a),
-        ...createDraftsSlice(...a),
-        ...createWorkspaceTypesSlice(...a),
-        ...createComposerSlice(...a),
+        ...createReposSlice(set, get, activeEngine),
+        ...createDraftsSlice(set, get, activeEngine),
+        ...createWorkspaceTypesSlice(set, get, activeEngine),
+        ...createComposerSlice(set, get, activeEngine),
         closeProjectScreen,
         setLastError,
         requestFocusJoin,

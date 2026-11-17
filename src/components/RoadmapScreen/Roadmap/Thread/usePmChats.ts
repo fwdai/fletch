@@ -21,13 +21,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type AgentRecord,
-  api,
-  onAgentStatus,
-  onAgentTask,
+  type Api,
   ROADMAP_PM_PURPOSE,
   type RoadmapItemEvent,
   type UserTurn,
 } from "@/api";
+import { useEngine } from "@/api/engine";
 import { resolveAgentSpawnProfile, resolveBaseBranch } from "@/helpers";
 import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@/starterPack";
 import { listCustomAgents } from "@/storage/customAgents";
@@ -95,7 +94,7 @@ const checkingStandup = new Map<string, Promise<void>>();
 /** Ask the opened chat for a digest, if the board moved since it was last live.
  *  Never throws: a failed digest is a message the user didn't get, not an error
  *  worth putting on the Roadmap tab. */
-async function askForStandup(projectId: string, chat: AgentRecord): Promise<void> {
+async function askForStandup(api: Api, projectId: string, chat: AgentRecord): Promise<void> {
   if (askedProjects.has(projectId)) return;
   const inFlight = checkingStandup.get(projectId);
   if (inFlight) return inFlight;
@@ -163,6 +162,7 @@ export interface PmChatsState {
 }
 
 export function usePmChats(projectId: string | null, repoPath: string): PmChatsState {
+  const { api, events } = useEngine();
   const registerOffSidebarAgents = useAppStore((s) => s.registerOffSidebarAgents);
   const discard = useAppStore((s) => s.discard);
   // Re-resolves whenever the library changes, so a Project Manager created in
@@ -234,7 +234,7 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
     return () => {
       alive = false;
     };
-  }, [projectId]);
+  }, [projectId, api]);
 
   // These records don't ride the workspace snapshot, so the two fields the
   // thread renders live — the running/idle state and the first message, which
@@ -248,15 +248,15 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
   }, []);
 
   useEffect(() => {
-    const offStatus = onAgentStatus((e) =>
+    const offStatus = events.onAgentStatus((e) =>
       patch(e.agent_id, { status: e.status, last_error: e.last_error }),
     );
-    const offTask = onAgentTask((e) => patch(e.agent_id, { task: e.task }));
+    const offTask = events.onAgentTask((e) => patch(e.agent_id, { task: e.task }));
     return () => {
       void offStatus.then((f) => f());
       void offTask.then((f) => f());
     };
-  }, [patch]);
+  }, [patch, events]);
 
   // ── the standup digest ─────────────────────────────────────────────
   // Read the opened chat through a ref: the records re-identify on every status
@@ -269,8 +269,8 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
     // empty one this hook starts with.
     if (!projectId || loading || !selectedId) return;
     const chat = chatsRef.current.find((c) => c.id === selectedId);
-    if (chat) void askForStandup(projectId, chat);
-  }, [projectId, loading, selectedId]);
+    if (chat) void askForStandup(api, projectId, chat);
+  }, [projectId, loading, selectedId, api]);
 
   // ── actions ────────────────────────────────────────────────────────
   // Read through a ref so `startChat` doesn't change identity per keystroke of
@@ -278,62 +278,65 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
   const repoRef = useRef(repoPath);
   repoRef.current = repoPath;
 
-  const startChat = useCallback(async (pick: ChatAgentPick, firstMessage?: string) => {
-    setStarting(true);
-    setError(null);
-    try {
-      const repo = repoRef.current;
-      // The preset's own reasoning budget: the PM is a "think hard" agent, and
-      // the picker doesn't offer effort (there is no per-chat reason to lower
-      // it), so it comes from the agent definition.
-      const custom = useAppStore.getState().customAgents.find((a) => a.id === pick.customAgentId);
-      const profile = resolveAgentSpawnProfile(
-        useAppStore.getState(),
-        pick.customAgentId,
-        pick.provider,
-      );
-      const base = await resolveBaseBranch(repo);
-      const rec = await api.spawnAgent(
-        "custom",
-        repo,
-        pick.provider,
-        // No pinned name: this chat was never a sidebar draft, so the backend
-        // allocates one under the same lock that writes the row.
-        undefined,
-        custom?.effort ?? undefined,
-        pick.model,
-        profile.instructions,
-        profile.customAgentId,
-        base,
-        profile.skills,
-        profile.mcpServers,
-        // Not issue work, and not a sidebar agent: the purpose tag is what
-        // keeps it on this tab and off the publish path.
-        undefined,
-        ROADMAP_PM_PURPOSE,
-      );
-      // Register before rendering — same reason as the list load above.
-      useAppStore.getState().registerOffSidebarAgents([rec]);
-      setChats((prev) => [rec, ...prev]);
-      setSelectedId(rec.id);
-      // The opening turn, dispatched without waiting: the send appends its
-      // optimistic bubble to this agent's log, which is what the pane mounting
-      // on the next render reads, so the message is already on screen when the
-      // transcript appears. Failures land in the store's own error channel —
-      // this hook's `error` is about the spawn, and the chat now exists.
-      // Never digest into a chat this session created: there is no "since we
-      // last spoke", and the opening turn below may not have persisted a row yet.
-      freshChats.add(rec.id);
-      const opening = firstMessage?.trim();
-      if (opening) void useAppStore.getState().sendUserMessage(rec.id, opening);
-      return true;
-    } catch (e) {
-      setError(String(e));
-      return false;
-    } finally {
-      setStarting(false);
-    }
-  }, []);
+  const startChat = useCallback(
+    async (pick: ChatAgentPick, firstMessage?: string) => {
+      setStarting(true);
+      setError(null);
+      try {
+        const repo = repoRef.current;
+        // The preset's own reasoning budget: the PM is a "think hard" agent, and
+        // the picker doesn't offer effort (there is no per-chat reason to lower
+        // it), so it comes from the agent definition.
+        const custom = useAppStore.getState().customAgents.find((a) => a.id === pick.customAgentId);
+        const profile = resolveAgentSpawnProfile(
+          useAppStore.getState(),
+          pick.customAgentId,
+          pick.provider,
+        );
+        const base = await resolveBaseBranch(api, repo);
+        const rec = await api.spawnAgent(
+          "custom",
+          repo,
+          pick.provider,
+          // No pinned name: this chat was never a sidebar draft, so the backend
+          // allocates one under the same lock that writes the row.
+          undefined,
+          custom?.effort ?? undefined,
+          pick.model,
+          profile.instructions,
+          profile.customAgentId,
+          base,
+          profile.skills,
+          profile.mcpServers,
+          // Not issue work, and not a sidebar agent: the purpose tag is what
+          // keeps it on this tab and off the publish path.
+          undefined,
+          ROADMAP_PM_PURPOSE,
+        );
+        // Register before rendering — same reason as the list load above.
+        useAppStore.getState().registerOffSidebarAgents([rec]);
+        setChats((prev) => [rec, ...prev]);
+        setSelectedId(rec.id);
+        // The opening turn, dispatched without waiting: the send appends its
+        // optimistic bubble to this agent's log, which is what the pane mounting
+        // on the next render reads, so the message is already on screen when the
+        // transcript appears. Failures land in the store's own error channel —
+        // this hook's `error` is about the spawn, and the chat now exists.
+        // Never digest into a chat this session created: there is no "since we
+        // last spoke", and the opening turn below may not have persisted a row yet.
+        freshChats.add(rec.id);
+        const opening = firstMessage?.trim();
+        if (opening) void useAppStore.getState().sendUserMessage(rec.id, opening);
+        return true;
+      } catch (e) {
+        setError(String(e));
+        return false;
+      } finally {
+        setStarting(false);
+      }
+    },
+    [api],
+  );
 
   const deleteChat = useCallback(
     async (id: string) => {
@@ -363,7 +366,7 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
         }
       }
     },
-    [chats, discard, projectId],
+    [chats, discard, projectId, api],
   );
 
   const selected = chats.find((c) => c.id === selectedId) ?? null;

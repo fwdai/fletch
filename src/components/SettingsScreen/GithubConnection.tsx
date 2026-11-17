@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type GhStatus } from "@/api";
+import type { GhStatus } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
@@ -15,6 +16,7 @@ import { HostAccountNote } from "./HostAccountNote";
  *  `github`, which follows the active environment. A host is signed in on the
  *  host; [`HostAccountNote`] says so. */
 export function GithubConnection() {
+  const { api } = useEngine();
   const [github, setGithub] = useState<GhStatus | null>(null);
   const disconnectGithub = useAppStore((s) => s.disconnectGithub);
 
@@ -25,7 +27,7 @@ export function GithubConnection() {
       .ghStatus()
       .then(setGithub)
       .catch(() => setGithub({ installed: true, authenticated: false, login: null }));
-  }, []);
+  }, [api]);
   const { connect, cancel, device, error, busy } = useGithubConnect(probe);
 
   useEffect(probe, [probe]);

@@ -2,7 +2,8 @@
 // preview" message for binary / too-large / unreadable files, a loading
 // state, or the editable FileEditor.
 import { useEffect, useState } from "react";
-import { type AgentRecord, api, type CheckoutFileContents, type DiffBaseMode } from "@/api";
+import type { AgentRecord, CheckoutFileContents, DiffBaseMode } from "@/api";
+import { useEngine } from "@/api/engine";
 import { basename, parentDir } from "@/util/format";
 import { FileEditor } from "./FileEditor";
 import { ViewerHeader } from "./ViewerHeader";
@@ -15,6 +16,7 @@ interface FileViewerProps {
 }
 
 export function FileViewer({ agent, path, diffBase, onBack }: FileViewerProps) {
+  const { api } = useEngine();
   const name = basename(path);
   const dir = parentDir(path);
 
@@ -36,7 +38,7 @@ export function FileViewer({ agent, path, diffBase, onBack }: FileViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [agent.id, path, diffBase]);
+  }, [agent.id, path, diffBase, api]);
 
   if (error || (contents && (contents.binary || contents.too_large))) {
     return (

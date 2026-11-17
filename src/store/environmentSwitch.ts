@@ -221,7 +221,11 @@ export interface EnvironmentSwitchSlice {
   environmentReconnected: (id: EnvironmentId) => void;
 }
 
-export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> = (set, get) => {
+export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> = (
+  set,
+  get,
+  engine,
+) => {
   /** Re-read the selected agent's conversation from the host, the way the
    *  phone does on every reconnect: a dropped socket silently misses the live
    *  events a log is built from, and the records are the authority.
@@ -251,7 +255,7 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     // Issued unconditionally so it always claims the newest refresh
     // generation, which is what drops a `get_workspace` still in flight
     // against the environment we left.
-    await refreshWorkspace(set).catch(() => {});
+    await refreshWorkspace(engine.api, set).catch(() => {});
     // What this environment is blocked on, which no event will tell a client
     // that was not connected when it was raised.
     await get()
@@ -292,7 +296,7 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     // switch is dropped by `hydrateHostSettings` itself.
     // …and where its Linux VM stands, which its `box:*` events keep current
     // from here.
-    void hydrateHostSettings(set)
+    void hydrateHostSettings(engine.api, set)
       .then(() => get().loadBoxSetup())
       .catch(() => {});
   };
@@ -337,7 +341,7 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
       // The subscriptions resolved `activeTransport()` when they were made, so
       // they are still folding the environment we just left. Make them again.
       await detachEventListeners();
-      await registerEventListeners(set, get);
+      await registerEventListeners(engine, set, get);
 
       // A second switch while this one awaited the re-attach owns the state
       // now; ours must not write over it.

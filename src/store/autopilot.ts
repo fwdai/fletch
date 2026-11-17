@@ -6,12 +6,11 @@
 // `autopilot:switches` and `autopilot:event` in between — so every client
 // driving the host shows the same thing at the same moment.
 
-import {
-  type AutopilotCheckout,
-  type AutopilotLogEntry,
-  type AutopilotSnapshot,
-  type AutopilotSwitches,
-  api,
+import type {
+  AutopilotCheckout,
+  AutopilotLogEntry,
+  AutopilotSnapshot,
+  AutopilotSwitches,
 } from "@/api";
 import { hostSupports } from "@/remote/types";
 import { newestWins } from "@/util/newestWins";
@@ -144,7 +143,7 @@ let inFlight: { mirror: ((m: Mirror) => Mirror)[]; entries: AutopilotLogEntry[] 
  *  touches the lists, so a slow earlier reply can't undo a later click. */
 const switchWrites = newestWins();
 
-export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => {
+export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get, { api }) => {
   const writeSwitch = async (target: SwitchTarget, enabled: boolean) => {
     const gated = gateReason(activeEnvironment(), "autopilot");
     if (gated) {

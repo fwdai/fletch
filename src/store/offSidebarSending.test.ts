@@ -10,6 +10,7 @@ vi.mock("@/api", () => ({ api: {} }));
 vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
 
 import type { AgentRecord } from "@/api";
+import { activeEngine } from "@/api/engine";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
 
@@ -17,7 +18,9 @@ const chat = (id: string, status: AgentRecord["status"]): AgentRecord =>
   ({ id, status, provider: "claude", repos: [], purpose: "roadmap_pm" }) as unknown as AgentRecord;
 
 const makeStore = () => {
-  const store = create<AppState>()((...a) => ({ ...createWorkspaceSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (set, get) => ({ ...createWorkspaceSlice(set, get, activeEngine) }) as AppState,
+  );
   // biome-ignore lint/suspicious/noExplicitAny: partial store seed
   store.setState({ sending: { sakura: true, kyoto: true } } as any);
   return store;

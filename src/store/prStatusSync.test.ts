@@ -9,6 +9,7 @@ const { getAllPrStatus } = vi.hoisted(() => ({ getAllPrStatus: vi.fn() }));
 vi.mock("@/api", () => ({ api: { getAllPrStatus } }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
+import { activeEngine } from "@/api/engine";
 import { createEnvironmentsSlice, setEnvironmentsSource } from "./environments";
 import { createGitSlice } from "./git";
 import type { AppState } from "./types";
@@ -23,10 +24,10 @@ const deferred = <T>() => {
 
 const makeStore = () => {
   const store = create<AppState>()(
-    (...a) =>
+    (set, get) =>
       ({
-        ...createEnvironmentsSlice(...a),
-        ...createGitSlice(...a),
+        ...createEnvironmentsSlice(set, get, activeEngine),
+        ...createGitSlice(set, get, activeEngine),
         github: { authenticated: true },
       }) as unknown as AppState,
   );

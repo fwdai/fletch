@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
@@ -40,6 +40,7 @@ export function BinaryPathRow({
    *  backend have updated; rejects to keep the editor open on failure. */
   onSave: (path: string | null) => Promise<void>;
 }) {
+  const { api } = useEngine();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);

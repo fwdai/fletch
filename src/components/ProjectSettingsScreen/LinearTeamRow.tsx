@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type LinearTeam } from "@/api";
+import type { LinearTeam } from "@/api";
+import { useEngine } from "@/api/engine";
 import { SetRow } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
@@ -13,6 +14,7 @@ import { useProjectSettings } from "@/util/useProjectSettings";
  *  picker. The connection itself is this Mac's and lives in Settings ›
  *  Account; this row only links there while it is missing. */
 export function LinearTeamRow({ projectId }: { projectId: string }) {
+  const { api } = useEngine();
   const linear = useAppStore((s) => s.linear);
   const refreshLinear = useAppStore((s) => s.refreshLinear);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
@@ -44,7 +46,7 @@ export function LinearTeamRow({ projectId }: { projectId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [connected]);
+  }, [connected, api]);
 
   function pickTeam(nextId: string) {
     const team = teams?.find((t) => t.id === nextId);

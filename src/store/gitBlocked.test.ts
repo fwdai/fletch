@@ -10,6 +10,7 @@ const { getGitState } = vi.hoisted(() => ({ getGitState: vi.fn() }));
 vi.mock("@/api", () => ({ api: { getGitState } }));
 
 import type { GitState } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { type EnvironmentId, setEnvironmentsSource } from "./environments";
 import { createGitSlice } from "./git";
 import type { AppState } from "./types";
@@ -31,7 +32,9 @@ const state = (over: Partial<GitState> = {}): GitState => ({
 });
 
 const makeStore = () =>
-  create<AppState>()((...a) => ({ ...createGitSlice(...a) }) as unknown as AppState);
+  create<AppState>()(
+    (set, get) => ({ ...createGitSlice(set, get, activeEngine) }) as unknown as AppState,
+  );
 
 describe("fetchGitState on a refused checkout", () => {
   beforeEach(() => {

@@ -1,4 +1,4 @@
-import { api, type Workspace } from "@/api";
+import type { Workspace } from "@/api";
 import { dropAgentEntries } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
@@ -75,7 +75,7 @@ export interface ReposSlice {
   ) => Promise<void>;
 }
 
-export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
+export const createReposSlice: SliceCreator<ReposSlice> = (set, get, { api }) => ({
   addWorkspaceRepo: async (path, opts) => {
     set({ busy: true, lastError: null });
     try {

@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { create } from "zustand";
 import type { RawEvent } from "@/adapters";
+import { activeEngine } from "@/api/engine";
 import { createBackgroundTasksSlice } from "./backgroundTasks";
 import type { AppState } from "./types";
 
@@ -19,7 +20,9 @@ const started = (task_id: string): RawEvent => ({
 });
 
 const makeStore = () =>
-  create<AppState>()((...a) => ({ ...createBackgroundTasksSlice(...a) }) as AppState);
+  create<AppState>()(
+    (set, get) => ({ ...createBackgroundTasksSlice(set, get, activeEngine) }) as AppState,
+  );
 
 describe("backgroundTasks slice", () => {
   it("keys tasks by agent and clears one agent's tasks without touching others", () => {

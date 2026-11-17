@@ -1,4 +1,4 @@
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type {
   AssertionInput,
   CompileQuery,
@@ -15,7 +15,7 @@ import type {
  *  crates/fletch-core/src/commands/context.rs). Every write makes the host
  *  emit `context:changed`, so a tab that subscribes reloads rather than
  *  patching state from the answer — see `useContextOverview`. */
-export const contextApi = {
+export const contextApi = (invoke: Invoke) => ({
   /** The toggles, the graph, the pending proposals and the stats, in one read. */
   contextOverview: (projectId: string) =>
     invoke<ContextOverview>("context_overview", { projectId }),
@@ -71,4 +71,4 @@ export const contextApi = {
    *  to how many. Pass exactly the ids on screen, so nothing unseen is ruled. */
   contextDismissProposals: (projectId: string, proposalIds: string[]) =>
     invoke<number>("context_dismiss_proposals", { projectId, proposalIds }),
-};
+});

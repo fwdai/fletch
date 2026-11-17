@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AgentRecord } from "@/api"; // for EMPTY_AGENTS
+import { activeEngine } from "@/api/engine";
 import { createAccountSlice } from "./account";
 import { createAgentInstallSlice } from "./agentInstall";
 import { createAppSlice } from "./app";
@@ -28,32 +29,36 @@ import { createWorkspaceTypesSlice } from "./workspaceTypes";
 
 export const EMPTY_AGENTS: readonly AgentRecord[] = Object.freeze([]);
 
-export const useAppStore = create<AppState>()((...a) => ({
-  ...createAppSlice(...a),
-  ...createEnvironmentsSlice(...a),
-  ...createEnvironmentSwitchSlice(...a),
-  ...createWorkspaceSlice(...a),
-  ...createReposSlice(...a),
-  ...createRewindSlice(...a),
-  ...createGitSlice(...a),
-  ...createComposerSlice(...a),
-  ...createDraftsSlice(...a),
-  ...createUiSlice(...a),
-  ...createAccountSlice(...a),
-  ...createAppearanceSlice(...a),
-  ...createAutopilotSlice(...a),
-  ...createReviewSlice(...a),
-  ...createBackgroundTasksSlice(...a),
-  ...createProvidersSlice(...a),
-  ...createAgentInstallSlice(...a),
-  ...createCustomAgentsSlice(...a),
-  ...createSkillsSlice(...a),
-  ...createMcpServersSlice(...a),
-  ...createSandboxSlice(...a),
-  ...createWorkspaceTypesSlice(...a),
-  ...createLocalCommandsSlice(...a),
-  ...createCompactionSlice(...a),
-}));
+export const useAppStore = create<AppState>()((set, get) => {
+  // Every slice drives the one engine there is: the active environment's.
+  const a = [set, get, activeEngine] as const;
+  return {
+    ...createAppSlice(...a),
+    ...createEnvironmentsSlice(...a),
+    ...createEnvironmentSwitchSlice(...a),
+    ...createWorkspaceSlice(...a),
+    ...createReposSlice(...a),
+    ...createRewindSlice(...a),
+    ...createGitSlice(...a),
+    ...createComposerSlice(...a),
+    ...createDraftsSlice(...a),
+    ...createUiSlice(...a),
+    ...createAccountSlice(...a),
+    ...createAppearanceSlice(...a),
+    ...createAutopilotSlice(...a),
+    ...createReviewSlice(...a),
+    ...createBackgroundTasksSlice(...a),
+    ...createProvidersSlice(...a),
+    ...createAgentInstallSlice(...a),
+    ...createCustomAgentsSlice(...a),
+    ...createSkillsSlice(...a),
+    ...createMcpServersSlice(...a),
+    ...createSandboxSlice(...a),
+    ...createWorkspaceTypesSlice(...a),
+    ...createLocalCommandsSlice(...a),
+    ...createCompactionSlice(...a),
+  };
+});
 
 // The transport lookup and the PTY buffers read the active environment straight
 // off the store, outside React (see ./environments).

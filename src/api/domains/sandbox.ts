@@ -1,7 +1,7 @@
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type { IsolationReport, PublishApproval } from "../types/sandbox";
 
-export const sandboxApi = {
+export const sandboxApi = (invoke: Invoke) => ({
   // What each engine actually guarantees, for the picker (`sandbox::guarantees`).
   describeSandboxIsolation: () => invoke<IsolationReport[]>("describe_sandbox_isolation"),
   // Whether an agent must get the user's approval before publishing. Backend-owned
@@ -16,4 +16,4 @@ export const sandboxApi = {
   // that has just (re)connected to a host learns of one — gate it on
   // `hostSupports("approvals_list")`, since an older host answers `unknown op`.
   listPublishApprovals: () => invoke<PublishApproval[]>("approvals_list"),
-};
+});

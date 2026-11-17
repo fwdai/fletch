@@ -1,4 +1,4 @@
-import { api, type GhStatus, type GitIdentity, type LinearStatus } from "@/api";
+import type { GhStatus, GitIdentity, LinearStatus } from "@/api";
 import { type AccountProfile, getAccount, saveAccountProfile, toProfile } from "@/storage/accounts";
 import { forActiveEnvironment } from "./environments";
 import type { SliceCreator } from "./types";
@@ -59,7 +59,7 @@ export interface AccountSlice {
   setDictationAutoStop: (enabled: boolean) => void;
 }
 
-export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
+export const createAccountSlice: SliceCreator<AccountSlice> = (set, get, { api }) => ({
   account: null,
   gitIdentity: null,
   telemetryEnabled: true,

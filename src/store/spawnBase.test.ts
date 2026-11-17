@@ -21,12 +21,16 @@ vi.mock("@/api", () => ({
 }));
 vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
 
+import { api } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { resolveBaseBranch } from "@/helpers";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
 
 const makeStore = () => {
-  const store = create<AppState>()((...a) => ({ ...createWorkspaceSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (set, get) => ({ ...createWorkspaceSlice(set, get, activeEngine) }) as AppState,
+  );
   // biome-ignore lint/suspicious/noExplicitAny: partial store seed
   store.setState({ managedLogs: {}, sending: {} } as any);
   return store;
@@ -65,7 +69,7 @@ describe("spawn base branch", () => {
 
   it("resolves the default branch rather than assuming main", async () => {
     repoDefaultBranch.mockResolvedValue("master");
-    await expect(resolveBaseBranch("/repos/legacy")).resolves.toBe("master");
+    await expect(resolveBaseBranch(api, "/repos/legacy")).resolves.toBe("master");
   });
 });
 
@@ -80,23 +84,23 @@ describe("sticky base branch", () => {
 
   it("honors a remembered branch that still exists", async () => {
     listRepoBranches.mockResolvedValue(["main", "develop", "release/1.x"]);
-    await expect(resolveBaseBranch("/repos/app", "develop")).resolves.toBe("develop");
+    await expect(resolveBaseBranch(api, "/repos/app", "develop")).resolves.toBe("develop");
     expect(repoDefaultBranch).not.toHaveBeenCalled();
   });
 
   it("falls back to the repo default when the remembered branch was deleted", async () => {
     listRepoBranches.mockResolvedValue(["main", "release/1.x"]);
-    await expect(resolveBaseBranch("/repos/app", "develop")).resolves.toBe("main");
+    await expect(resolveBaseBranch(api, "/repos/app", "develop")).resolves.toBe("main");
   });
 
   it("falls back rather than forking from an unverified branch", async () => {
     // Listing branches failed, so "develop" can't be confirmed to exist.
     listRepoBranches.mockRejectedValue(new Error("not a repo"));
-    await expect(resolveBaseBranch("/repos/app", "develop")).resolves.toBe("main");
+    await expect(resolveBaseBranch(api, "/repos/app", "develop")).resolves.toBe("main");
   });
 
   it("skips the branch listing entirely when nothing is remembered", async () => {
-    await expect(resolveBaseBranch("/repos/app")).resolves.toBe("main");
+    await expect(resolveBaseBranch(api, "/repos/app")).resolves.toBe("main");
     expect(listRepoBranches).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type ContextOverview, onContextChanged } from "@/api";
+import type { ContextOverview } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useAppStore } from "@/store";
 
 /** One project's context overview, read from the engine the UI is driving and
@@ -13,6 +14,7 @@ export function useContextOverview(projectId: string): {
   error: string | null;
   reload: () => void;
 } {
+  const { api, events } = useEngine();
   const [overview, setOverview] = useState<ContextOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Re-read (and re-subscribe) on a switch: both are bound to the transport
@@ -39,7 +41,7 @@ export function useContextOverview(projectId: string): {
         if (latest.current !== mine) return;
         setError(String(e));
       });
-  }, [projectId]);
+  }, [projectId, api]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: environmentId is the intended re-run trigger, not an unused dep
   useEffect(() => {
@@ -48,18 +50,20 @@ export function useContextOverview(projectId: string): {
     reload();
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    onContextChanged((e) => {
-      if (e.project_id === projectId) reload();
-    }).then((un) => {
-      if (cancelled) un();
-      else unlisten = un;
-    });
+    events
+      .onContextChanged((e) => {
+        if (e.project_id === projectId) reload();
+      })
+      .then((un) => {
+        if (cancelled) un();
+        else unlisten = un;
+      });
     return () => {
       cancelled = true;
       latest.current += 1;
       unlisten?.();
     };
-  }, [projectId, environmentId, reload]);
+  }, [projectId, environmentId, reload, events]);
 
   return { overview, error, reload };
 }

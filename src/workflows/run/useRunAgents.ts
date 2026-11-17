@@ -5,9 +5,11 @@
 // rail tracks reality without polling every collapsed run.
 
 import { useEffect, useRef, useState } from "react";
-import { type AgentRecord, api, onWfEvent, onWfRun } from "../../api";
+import { useEngine } from "@/api/engine";
+import type { AgentRecord } from "../../api";
 
 export function useRunAgents(runId: string, enabled: boolean): AgentRecord[] {
+  const { api, events } = useEngine();
   const [agents, setAgents] = useState<AgentRecord[]>([]);
   const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -35,10 +37,10 @@ export function useRunAgents(runId: string, enabled: boolean): AgentRecord[] {
     };
 
     void refresh();
-    const offEvent = onWfEvent((e) => {
+    const offEvent = events.onWfEvent((e) => {
       if (e.run_id === runId) schedule();
     });
-    const offRun = onWfRun((row) => {
+    const offRun = events.onWfRun((row) => {
       if (row.id === runId) schedule();
     });
 
@@ -53,7 +55,7 @@ export function useRunAgents(runId: string, enabled: boolean): AgentRecord[] {
       void offEvent.then((f) => f());
       void offRun.then((f) => f());
     };
-  }, [runId, enabled]);
+  }, [runId, enabled, api, events]);
 
   return agents;
 }

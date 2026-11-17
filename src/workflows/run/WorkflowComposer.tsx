@@ -11,7 +11,7 @@
 // monitor (RunView) then observes.
 
 import { type CSSProperties, Fragment, useEffect, useRef, useState } from "react";
-import { api } from "../../api";
+import { useEngine } from "@/api/engine";
 import { ComposerFrame } from "../../components/Composer/ComposerFrame";
 import { PrimaryControl } from "../../components/Composer/PrimaryControl";
 import { useComposerInput } from "../../components/Composer/useComposerInput";
@@ -57,6 +57,7 @@ export function WorkflowHeading() {
 }
 
 export function WorkflowComposer({ repoPath, baseBranch, projectId, onLaunched }: ComposerContext) {
+  const { api } = useEngine();
   const selectRun = useAppStore((s) => s.selectRun);
   const setLastError = useAppStore((s) => s.setLastError);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
@@ -76,13 +77,13 @@ export function WorkflowComposer({ repoPath, baseBranch, projectId, onLaunched }
   useEffect(() => {
     let cancelled = false;
     setDefaultWorkflowId(undefined);
-    void loadDefaultWorkflowId(projectId ?? "").then((id) => {
+    void loadDefaultWorkflowId(api, projectId ?? "").then((id) => {
       if (!cancelled) setDefaultWorkflowId(id);
     });
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, api]);
 
   const def = pickDefinition(definitions, defId, defaultWorkflowId);
   // Still reading the default and nothing picked yet: the composer isn't ready.
@@ -90,7 +91,7 @@ export function WorkflowComposer({ repoPath, baseBranch, projectId, onLaunched }
 
   const pickDef = (id: string) => {
     setDefId(id);
-    if (projectId) rememberDefaultWorkflow(projectId, id);
+    if (projectId) rememberDefaultWorkflow(api, projectId, id);
   };
   const steps = flattenSteps(def?.spec ?? null);
 

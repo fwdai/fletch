@@ -6,6 +6,7 @@ vi.mock("@/api", () => ({ api: { setFocusedPr } }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
 import type { PrState } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { GATES } from "./gates";
 import { createGitSlice } from "./git";
@@ -28,9 +29,9 @@ const activeIs = (entry?: EnvironmentEntry) =>
 const makeStore = () => {
   const setLastError = vi.fn();
   const store = create<AppState>()(
-    (...a) =>
+    (set, get) =>
       ({
-        ...createGitSlice(...a),
+        ...createGitSlice(set, get, activeEngine),
         setLastError,
         github: { authenticated: true },
       }) as unknown as AppState,

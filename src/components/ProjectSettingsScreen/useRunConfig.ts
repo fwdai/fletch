@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { loadRunOverrides, type SetupRow, toSetupRows } from "@/components/RunConfig";
 import { useAppStore } from "@/store";
 
@@ -14,6 +14,7 @@ export interface RunConfig {
  *  the persisted overrides. Both must be ready before the editor mounts so the
  *  draft baseline is correct. */
 export function useRunConfig(repoPath: string) {
+  const { api } = useEngine();
   const [loaded, setLoaded] = useState<RunConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,7 +35,7 @@ export function useRunConfig(repoPath: string) {
           if (!known) throw err;
           return { project_id: known, configs: [] };
         });
-        const overrides = await loadRunOverrides(project_id).catch((err) => {
+        const overrides = await loadRunOverrides(api, project_id).catch((err) => {
           console.error("loadRunOverrides failed", err);
           return {};
         });
@@ -55,7 +56,7 @@ export function useRunConfig(repoPath: string) {
     return () => {
       cancelled = true;
     };
-  }, [repoPath]);
+  }, [repoPath, api]);
 
   return { loaded, error };
 }

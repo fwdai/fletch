@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { type AssertionKind, api, type ContextEntity, type Domain, type Stance } from "@/api";
+import type { AssertionKind, ContextEntity, Domain, Stance } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Button } from "@/components/ui/Button";
 import { TextArea, TextInput } from "@/components/ui/TextInput";
 import { ASSERTION_KINDS, DOMAINS, matchesSearch } from "./format";
@@ -17,6 +18,7 @@ export function AddDecisionForm({
   initialAbout: string[];
   onDone: () => void;
 }) {
+  const { api } = useEngine();
   const [kind, setKind] = useState<AssertionKind>("decision");
   const [domain, setDomain] = useState<Domain>("architectural");
   const [stance, setStance] = useState<Stance>("adopted");

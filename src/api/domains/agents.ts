@@ -1,6 +1,6 @@
 import type { McpServerSnapshot } from "@/storage/mcpServers";
 import type { SkillSnapshot } from "@/storage/skills";
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type {
   AgentRecord,
   AgentView,
@@ -16,7 +16,7 @@ import type {
 } from "../types/agent";
 import type { WorkspaceKind } from "../types/sandbox";
 
-export const agentsApi = {
+export const agentsApi = (invoke: Invoke) => ({
   spawnAgent: (
     view: AgentView,
     repoPath: string,
@@ -193,4 +193,4 @@ export const agentsApi = {
   /** Name for a new draft. Pass only the *open drafts'* names — the backend
    *  reads live agents from the DB itself, so callers can't over-reserve. */
   allocateDraftName: (drafts: string[]) => invoke<string>("allocate_draft_name", { drafts }),
-};
+});

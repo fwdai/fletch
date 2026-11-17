@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, type ContextAssertion } from "@/api";
+import type { ContextAssertion } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Button } from "@/components/ui/Button";
 import { Modal, ModalBody, ModalFooter } from "@/components/ui/Modal";
 import { TextArea } from "@/components/ui/TextInput";
@@ -18,6 +19,7 @@ export function ResolveDialog({
   projectId: string;
   onClose: () => void;
 }) {
+  const { api } = useEngine();
   const [reasoning, setReasoning] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

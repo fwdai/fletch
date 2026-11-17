@@ -5,14 +5,18 @@
 
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { api } from "../../api";
+import type { Api } from "../../api";
 import { slugify } from "../shared";
 
 const YAML_FILTERS = [{ name: "YAML", extensions: ["yaml", "yml"] }];
 
 /** Export a definition to a user-chosen `.yaml` file. Returns the written path,
  *  or `null` if the user dismissed the save dialog. */
-export async function exportDefinitionYaml(id: string, name: string): Promise<string | null> {
+export async function exportDefinitionYaml(
+  api: Api,
+  id: string,
+  name: string,
+): Promise<string | null> {
   const yaml = await api.wfDefExportYaml(id);
   const path = await save({
     title: "Export workflow",

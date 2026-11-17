@@ -1,7 +1,7 @@
 // What every row builder reads and the few derivations they share. Pure:
 // a store snapshot plus what lives outside it, and nothing that renders.
 
-import type { AgentRecord, DetectedEditor, WfRun } from "@/api";
+import type { AgentRecord, Api, DetectedEditor, WfRun } from "@/api";
 import { agentDotStatus } from "@/components/TitleBar/WorkspaceStatus/derive";
 import type { AppState } from "@/store/types";
 import { basename, firstLine } from "@/util/format";
@@ -11,6 +11,8 @@ import { closeScreens } from "@/util/shortcuts";
  *  what the store does not hold. */
 export interface PaletteContext {
   s: AppState;
+  /** The engine the rows act on. */
+  api: Api;
   runs: readonly WfRun[];
   editors: DetectedEditor[];
   /** Whether the Developer settings section is unlocked on this build. */

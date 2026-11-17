@@ -4,7 +4,8 @@
 // is still up) and every row, panel and event reads the same truth.
 
 import { useCallback, useEffect, useState } from "react";
-import { api, type GhStatus, type ToolStatus } from "@/api";
+import type { GhStatus, ToolStatus } from "@/api";
+import { useEngine } from "@/api/engine";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
 import type { GitDistState } from "@/util/useGitDist";
@@ -53,6 +54,7 @@ export interface OnboardingSetup {
  *  user's own terminal) lights its row up without hunting for a re-check
  *  button. */
 export function useOnboardingSetup(pollAgents: boolean): OnboardingSetup {
+  const { api } = useEngine();
   const providerVersions = useAppStore((s) => s.providerVersions);
   const providerPaths = useAppStore((s) => s.providerPaths);
   const providersProbed = useAppStore((s) => s.providersProbed);
@@ -81,7 +83,7 @@ export function useOnboardingSetup(pollAgents: boolean): OnboardingSetup {
       .ghStatus()
       .then(setGh, () => {})
       .finally(() => setGhProbed(true));
-  }, [refreshProviders]);
+  }, [refreshProviders, api]);
 
   useEffect(() => {
     recheck();

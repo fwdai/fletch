@@ -5,7 +5,7 @@
 // whether each agent's code restore can still be undone.
 
 import { handoffTranscriptBefore } from "@/adapters/handoff";
-import { api, type RewindScope } from "@/api";
+import type { RewindScope } from "@/api";
 import { providerFor } from "@/helpers";
 import type { SliceCreator } from "./types";
 import { handoffLog } from "./workspace";
@@ -36,7 +36,7 @@ export interface RewindSlice {
   refreshCodeUndo: (agentId: string) => Promise<void>;
 }
 
-export const createRewindSlice: SliceCreator<RewindSlice> = (set, get) => {
+export const createRewindSlice: SliceCreator<RewindSlice> = (set, get, { api }) => {
   const markCodeUndo = (agentId: string, undoable: boolean) =>
     set((s) => {
       if (undoable === agentId in s.codeUndo) return s;
@@ -54,7 +54,10 @@ export const createRewindSlice: SliceCreator<RewindSlice> = (set, get) => {
         // The conversation before the turn, as the rewound session will show
         // it: what its agent is briefed with when it can't resume natively.
         const transcript = conversation
-          ? handoffTranscriptBefore(await handoffLog(providerFor(get(), agentId), agentId), turnId)
+          ? handoffTranscriptBefore(
+              await handoffLog(api, providerFor(get(), agentId), agentId),
+              turnId,
+            )
           : null;
         const outcome = await api.rewindAgent(agentId, turnId, scope, transcript);
         if (outcome.code) markCodeUndo(agentId, true);

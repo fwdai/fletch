@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { getWorkspace } = vi.hoisted(() => ({ getWorkspace: vi.fn() }));
 vi.mock("@/api", () => ({ api: { getWorkspace } }));
 
+import { api } from "@/api";
 import { refreshWorkspace } from "./refreshWorkspace";
 
 interface Deferred<T> {
@@ -51,8 +52,8 @@ describe("refreshWorkspace generation guard", () => {
 
     // Two refreshes issued back-to-back; the second is the up-to-date snapshot
     // (agent "a" was deleted), the first still shows "a".
-    const stalePending = refreshWorkspace(set);
-    const freshPending = refreshWorkspace(set);
+    const stalePending = refreshWorkspace(api, set);
+    const freshPending = refreshWorkspace(api, set);
 
     // The newer (later-issued) fetch resolves first and applies...
     fresh.resolve(ws([]));
@@ -69,7 +70,10 @@ describe("refreshWorkspace generation guard", () => {
     getWorkspace.mockResolvedValueOnce(ws(["a"])).mockResolvedValueOnce(ws(["b"]));
     const set = vi.fn();
 
-    const [superseded, latest] = await Promise.all([refreshWorkspace(set), refreshWorkspace(set)]);
+    const [superseded, latest] = await Promise.all([
+      refreshWorkspace(api, set),
+      refreshWorkspace(api, set),
+    ]);
 
     expect(superseded).toBeNull();
     expect(latest?.agents.map((a) => a.id)).toEqual(["b"]);

@@ -6,7 +6,8 @@
 // revealed on hover (progressive disclosure, constant identity).
 
 import { type KeyboardEvent, type MouseEvent, useState } from "react";
-import { api, type WfRun } from "../../api";
+import { useEngine } from "@/api/engine";
+import type { WfRun } from "../../api";
 import { Icon } from "../../components/Icon";
 import { StepAgentRow } from "../../components/Sidebar/StepAgentRow";
 import { deriveStepChildren } from "../../components/Sidebar/stepChildren";
@@ -29,6 +30,7 @@ export function RunRow({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const { api } = useEngine();
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const setLastError = useAppStore((s) => s.setLastError);

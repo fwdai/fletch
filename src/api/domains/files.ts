@@ -4,7 +4,7 @@ import {
   assertWithinUploadCap,
   uploadAttachment,
 } from "@/util/attachmentUpload";
-import { invoke, invokeLocal } from "../invoke";
+import { type Invoke, invokeLocal } from "../invoke";
 import { activeTransport, invokeLocalRaw, type Transport } from "../transport";
 import type {
   CheckoutFile,
@@ -26,7 +26,7 @@ const attachmentApiOver = (transport: Transport): AttachmentApi => ({
   attachmentCancel: (upload) => transport.call<null>("attachment_cancel", { upload }),
 });
 
-export const filesApi = {
+export const filesApi = (invoke: Invoke) => ({
   listCheckoutTree: (agentId: string) => invoke<CheckoutFile[]>("list_checkout_tree", { agentId }),
   /** Every file changed in the agent's checkout, as `baseMode` measures it:
    *  "fork" is everything since the workspace started, committed or not; "head"
@@ -85,4 +85,4 @@ export const filesApi = {
    *  so there is no byte round trip and no size cap, and a path on this Mac
    *  means nothing to a host anyway (see `stageAttachmentPath`). */
   stageAttachmentPath: (path: string) => invokeLocal<string>("stage_attachment_path", { path }),
-};
+});

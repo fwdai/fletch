@@ -18,6 +18,7 @@ vi.mock("@/api", () => ({
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 vi.mock("@/data/slashCommands", () => ({ discoverCommands: vi.fn() }));
 
+import { activeEngine } from "@/api/engine";
 import { createDraftsSlice } from "./drafts";
 import { createSandboxSlice } from "./sandbox";
 import type { AppState } from "./types";
@@ -51,11 +52,11 @@ function deferred() {
 
 const makeStore = () => {
   const store = create<AppState>()(
-    (...a) =>
+    (set, get) =>
       ({
-        ...createSandboxSlice(...a),
-        ...createWorkspaceTypesSlice(...a),
-        ...createDraftsSlice(...a),
+        ...createSandboxSlice(set, get, activeEngine),
+        ...createWorkspaceTypesSlice(set, get, activeEngine),
+        ...createDraftsSlice(set, get, activeEngine),
       }) as AppState,
   );
   store.setState({

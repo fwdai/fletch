@@ -1,4 +1,4 @@
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type {
   ItemStatus,
   NewRoadmapItem,
@@ -16,7 +16,7 @@ import type {
  *  mutation also broadcasts the row on `roadmap:item` / `roadmap:item-deleted`,
  *  so callers that already subscribe don't need to refetch after writing —
  *  see `useRoadmap`. */
-export const roadmapApi = {
+export const roadmapApi = (invoke: Invoke) => ({
   /** Every item on a project's roadmap in board order — by `rank`, which is also
    *  the order the queue dispatches in. Includes `done` items: the board hides
    *  them from the horizons and counts them as shipped. */
@@ -178,4 +178,4 @@ export const roadmapApi = {
   /** Decline the proposed order — the board is untouched. */
   roadmapRejectOrderProposal: (projectId: string) =>
     invoke<void>("roadmap_reject_order_proposal", { projectId }),
-};
+});

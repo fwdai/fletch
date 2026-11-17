@@ -15,7 +15,8 @@
 // Faithful port of the design (fletch v2 files.jsx), wired to the real
 // checkout via the `*_checkout_*` Tauri commands.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { type AgentRecord, api, type CheckoutFile, type DiffBaseMode } from "@/api";
+import type { AgentRecord, CheckoutFile, DiffBaseMode } from "@/api";
+import { useEngine } from "@/api/engine";
 import { type ContextMenuEntry, FileContextMenu } from "@/components/RightPanel/FileContextMenu";
 import { joinPath, parentDir } from "@/util/format";
 import { usePoll } from "@/util/hooks";
@@ -44,6 +45,7 @@ interface FilePanelProps {
 }
 
 export function FilePanel({ agent, openPath, onOpenPath, diffBase }: FilePanelProps) {
+  const { api } = useEngine();
   const [files, setFiles] = useState<CheckoutFile[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
@@ -82,7 +84,7 @@ export function FilePanel({ agent, openPath, onOpenPath, diffBase }: FilePanelPr
     } catch {
       // Keep the previous tree on a transient IPC error rather than blanking it.
     }
-  }, [agent.id]);
+  }, [agent.id, api]);
 
   // Poll the tree at 2s, but only while the explorer is showing — no point
   // re-listing the checkout while a file is open in the editor.

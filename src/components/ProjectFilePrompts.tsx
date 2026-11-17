@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, onProjectFileChanged, type ProjectFileStatus } from "@/api";
+import type { ProjectFileStatus } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { Icon } from "./Icon";
@@ -16,6 +17,7 @@ export function useProjectFilePrompts(): {
   prompts: ProjectFileStatus[];
   dismiss: (s: ProjectFileStatus) => void;
 } {
+  const { api, events } = useEngine();
   const projects = useAppStore((s) => s.workspace?.projects);
   const environmentId = useAppStore((s) => s.activeEnvironmentId);
   const gate = useGate("projectFile");
@@ -39,12 +41,12 @@ export function useProjectFilePrompts(): {
         .then((s) => live && setStatuses((prev) => ({ ...prev, [projectId]: s })))
         .catch(() => {});
     for (const id of idsKey.split(",")) read(id);
-    const unlisten = onProjectFileChanged((e) => read(e.project_id));
+    const unlisten = events.onProjectFileChanged((e) => read(e.project_id));
     return () => {
       live = false;
       void unlisten.then((off) => off());
     };
-  }, [idsKey, environmentId, gate]);
+  }, [idsKey, environmentId, gate, api, events]);
 
   const prompts = Object.values(statuses).filter(
     (s) => s.egress.pending.length > 0 && !dismissed.has(promptKey(s)),

@@ -23,6 +23,7 @@ const { cancelAgentInstall, installAgent } = vi.hoisted(() => ({
 vi.mock("@/api", () => ({ api: { cancelAgentInstall, installAgent } }));
 vi.mock("@/util/track", () => ({ track: vi.fn() }));
 
+import { activeEngine } from "@/api/engine";
 import {
   applyInstallDone,
   createAgentInstallSlice,
@@ -42,7 +43,9 @@ const running = (log: string[] = [], line?: string): InstallState => ({
 const cancelling = (log: string[] = []): InstallState => ({ phase: "cancelling", log });
 
 const makeStore = (installs: Record<string, InstallState>) => {
-  const store = create<AppState>()((...a) => ({ ...createAgentInstallSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (set, get) => ({ ...createAgentInstallSlice(set, get, activeEngine) }) as AppState,
+  );
   store.setState({ installs });
   return store;
 };

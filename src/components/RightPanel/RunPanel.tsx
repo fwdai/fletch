@@ -1,6 +1,7 @@
 import type { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
-import { type AgentRecord, api, onRunOutput } from "@/api";
+import type { AgentRecord } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import {
   loadRunOverrides,
@@ -28,6 +29,7 @@ import { RunSettingsSheet } from "./RunSettingsSheet";
 // scrollback, and scrolling.
 
 export function RunPanel({ agent }: { agent: AgentRecord }) {
+  const { api, events } = useEngine();
   // The run is owned by the store (fed by an app-wide `run:state` subscription)
   // so the Run tab's running dot survives this panel unmounting on a tab switch.
   const status = useAppStore((s) => s.runs[agent.id]);
@@ -51,18 +53,18 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       setOverrides({});
       return;
     }
-    loadRunOverrides(agent.project_id).then((loaded) => {
+    loadRunOverrides(api, agent.project_id).then((loaded) => {
       if (cancelled) return;
       setProjectValues(loaded);
     });
-    loadRunOverrides(agent.project_id, agent.id).then((loaded) => {
+    loadRunOverrides(api, agent.project_id, agent.id).then((loaded) => {
       if (cancelled) return;
       setOverrides(loaded);
     });
     return () => {
       cancelled = true;
     };
-  }, [agent.project_id, agent.id]);
+  }, [agent.project_id, agent.id, api]);
 
   const isActive = phase === "setup" || phase === "running";
 
@@ -92,7 +94,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     return () => {
       cancelled = true;
     };
-  }, [agent.id, isActive]);
+  }, [agent.id, isActive, api]);
 
   // Mount a read-only xterm terminal and stream run output into it.
   // Rehydrate the snapshot on mount/agent-switch so the panel preserves logs
@@ -136,7 +138,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       const pending: { bytes: Uint8Array; seq: number }[] = [];
 
       (async () => {
-        const unOutput = await onRunOutput((e) => {
+        const unOutput = await events.onRunOutput((e) => {
           if (e.agent_id !== agent.id) return;
           const bytes = new Uint8Array(e.bytes);
           // Buffer until the handoff completes; after that every chunk is
@@ -249,7 +251,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     // the project setting is only edited from Project Settings.
     const { cleaned, toSet, toDelete } = reconcileOverrides(effectiveRows, overrides, next);
     if (agent.project_id) {
-      persistRunOverrides(agent.project_id, toSet, toDelete, agent.id);
+      persistRunOverrides(api, agent.project_id, toSet, toDelete, agent.id);
     }
 
     setOverrides(cleaned);

@@ -3,13 +3,7 @@
 // `spawnFromDraft` sends what the chip declares from it, so both read the one
 // answer, and neither ever reads an answer for other inputs.
 
-import {
-  api,
-  type BoxImageStatus,
-  type BoxStateEvent,
-  type BoxToolsStatus,
-  type WorkspaceTypeOption,
-} from "@/api";
+import type { BoxImageStatus, BoxStateEvent, BoxToolsStatus, WorkspaceTypeOption } from "@/api";
 import {
   answeredOptions,
   type WorkspaceTypeAnswer,
@@ -93,7 +87,7 @@ export function applyBoxSetupEvent(get: () => AppState, e: BoxSetupEvent): void 
 /** The latest read started; a response lands only while it is still this. */
 let latestRead = 0;
 
-export const createWorkspaceTypesSlice: SliceCreator<WorkspaceTypesSlice> = (set, get) => {
+export const createWorkspaceTypesSlice: SliceCreator<WorkspaceTypesSlice> = (set, get, { api }) => {
   const currentKey = () => {
     const inputs = get().workspaceTypes.inputs;
     return inputs ? workspaceTypesKey(inputs.repoPath, inputs.provider) : null;

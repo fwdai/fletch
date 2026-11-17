@@ -6,52 +6,8 @@
 import { getAdapter, type RawEvent } from "@/adapters";
 import { isTaskEvent } from "@/adapters/shared/backgroundTasks";
 import { hasUsage, usageFromRecords } from "@/adapters/usage";
-import {
-  api,
-  onAgentBranch,
-  onAgentEffort,
-  onAgentEvent,
-  onAgentFolderGrants,
-  onAgentInstallState,
-  onAgentModel,
-  onAgentNotify,
-  onAgentOutput,
-  onAgentRepoAdded,
-  onAgentStatus,
-  onAgentTask,
-  onAgentTitle,
-  onAgentView,
-  onAutopilotEvent,
-  onAutopilotState,
-  onAutopilotSwitches,
-  onBoxEgress,
-  onBoxEgressRequested,
-  onBoxEgressResolved,
-  onBoxImage,
-  onBoxList,
-  onBoxState,
-  onBoxTools,
-  onDelegationChanged,
-  onLocalSettingsChanged,
-  onPrChecksChanged,
-  onPrSetEntryChanged,
-  onPrStateChanged,
-  onPrThreadsChanged,
-  onPublishApprovalRequested,
-  onPublishApprovalResolved,
-  onReviewChanged,
-  onRunPort,
-  onRunState,
-  onSessionRecordsAppended,
-  onSessionSyncHealth,
-  onSettingsChanged,
-  onShellOutput,
-  onSpawnProgress,
-  onTurnSent,
-  onTurnStarted,
-  onWorkspaceAutoArchived,
-  onWorkspaceChanged,
-} from "@/api";
+import type { Api, Events } from "@/api";
+import type { Engine } from "@/api/engine";
 import type { UnlistenFn } from "@/api/transport";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import {
@@ -146,7 +102,7 @@ const patchAgent = (_get: AppGet, set: AppSet, agentId: string, patch: AgentPatc
 
 // Load persisted settings from the DB and hydrate the matching UI state.
 // First launch / DB-not-ready is non-fatal — defaults stand in.
-export const hydrateSettings = async (set: AppSet) => {
+export const hydrateSettings = async (api: Api, set: AppSet) => {
   try {
     const s = await getAllSettings();
     const {
@@ -217,12 +173,12 @@ export const hydrateSettings = async (set: AppSet) => {
   // belong to the engine the UI is driving, not to this client's table: read
   // apart from the client's own preferences above, and again on every switch
   // and reconnect (`resyncEnvironment`).
-  await hydrateHostSettings(set).catch(() => {});
+  await hydrateHostSettings(api, set).catch(() => {});
 };
 
 // Load (or lazily create) the single local account profile. Non-fatal — the
 // Account screen shows empty fields until a save succeeds.
-export const hydrateAccount = async (set: AppSet) => {
+export const hydrateAccount = async (api: Api, set: AppSet) => {
   try {
     const row = await getOrCreateAccount();
     set({ account: toProfile(row) });
@@ -249,7 +205,7 @@ export const hydrateAccount = async (set: AppSet) => {
 let attached: UnlistenFn[] = [];
 
 // Subscribe to every backend event stream, folding each into store state.
-export const registerEventListeners = async (set: AppSet, get: AppGet) => {
+export const registerEventListeners = async ({ api, events }: Engine, set: AppSet, get: AppGet) => {
   // Each subscription is still awaited in order — the transport's `on` resolves
   // once the stream is live, and an event arriving before the next listener is
   // registered would otherwise be missed.
@@ -258,19 +214,19 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   };
 
   await bind(
-    onAgentOutput((e) => {
+    events.onAgentOutput((e) => {
       pushAgentOutput(e.agent_id, decodeBase64(e.bytes));
     }),
   );
 
   await bind(
-    onShellOutput((e) => {
+    events.onShellOutput((e) => {
       pushShellOutput(e.agent_id, decodeBase64(e.bytes));
     }),
   );
 
   await bind(
-    onAgentEvent((e) => {
+    events.onAgentEvent((e) => {
       const ev = e.event as RawEvent;
       // Claude's own word on a compaction (started / ended / failed), which
       // outlives the turn that asked for it — see store/compaction.
@@ -325,13 +281,13 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       });
       // Capture usage that lives only on the live stream (cursor) into
       // session_records so it folds like every other agent (see persistLiveUsage).
-      void persistLiveUsage(get, set, e.agent_id, e.event as RawEvent);
+      void persistLiveUsage(api, get, set, e.agent_id, e.event as RawEvent);
       // And the usage a stream reports ahead of its records (claude): fold it
       // in now, so the context badge moves during the turn.
       foldLiveUsage(get, set, e.agent_id, e.event as RawEvent);
       // Codex rollout files encrypt reasoning text, so retain the readable live
       // event as a compiled record and merge it back at its rollout item on replay.
-      void persistLiveReasoning(get, e.agent_id, e.event as RawEvent);
+      void persistLiveReasoning(api, get, e.agent_id, e.event as RawEvent);
       // A turn can't end with prompts still held — clear any stale entries
       // (e.g. an interrupt that denied a pending question).
       if (turnEnded && get().pendingToolUse[e.agent_id]) {
@@ -375,7 +331,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // ephemeral live render with the canonical one (richer — e.g. tool results
   // the live stream dropped). No-op if nothing was stored.
   await bind(
-    onSessionRecordsAppended((e) => {
+    events.onSessionRecordsAppended((e) => {
       const id = e.agent_id;
       void (async () => {
         try {
@@ -408,13 +364,13 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
           if (hasUsage(usage)) {
             // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
             // spend belongs to its project like anyone else's.
-            void recordWorkspaceUsage(id, agentRecord(get(), id)?.project_id, usage);
+            void recordWorkspaceUsage(api, id, agentRecord(get(), id)?.project_id, usage);
           }
           // The first turn captures the agent's session id in the DB; pull it
           // into the live workspace so the Native toggle unblocks without a
           // reload. Only when still missing locally — avoids per-turn re-fetch.
           if (needsSessionIdRefresh(get().workspace, id)) {
-            await refreshWorkspace(set);
+            await refreshWorkspace(api, set);
           }
         } catch {
           // Non-critical refresh; the next load picks up the records.
@@ -428,7 +384,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // non-blocking banner in the chat view; `healthy` clears it (deletes the
   // key, mirroring how `unseenResults` treats an absent key as the good state).
   await bind(
-    onSessionSyncHealth((e) => {
+    events.onSessionSyncHealth((e) => {
       set((state) => {
         const syncHealth = { ...state.syncHealth };
         if (e.status === "healthy") {
@@ -446,7 +402,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   );
 
   await bind(
-    onAgentBranch((e) => {
+    events.onAgentBranch((e) => {
       patchAgent(get, set, e.agent_id, (a) => ({
         repos: a.repos.map((r) => (r.subdir === e.subdir ? { ...r, branch: e.branch } : r)),
       }));
@@ -454,7 +410,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   );
 
   await bind(
-    onAgentRepoAdded((e) => {
+    events.onAgentRepoAdded((e) => {
       patchAgent(get, set, e.agent_id, (a) => ({ repos: [...a.repos, e.repo] }));
     }),
   );
@@ -462,7 +418,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // The host owns every delegation's lifecycle; this window mirrors it, so it
   // shows the same label at the same moment as every other client.
   await bind(
-    onDelegationChanged((e) => {
+    events.onDelegationChanged((e) => {
       get().applyDelegationChange(e);
     }),
   );
@@ -470,36 +426,36 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // Autopilot runs on the host too; its rows, its switches and its history are
   // mirrored the same way.
   await bind(
-    onAutopilotState((e) => {
+    events.onAutopilotState((e) => {
       get().applyAutopilotState(e);
     }),
   );
   await bind(
-    onAutopilotSwitches((e) => {
+    events.onAutopilotSwitches((e) => {
       get().applyAutopilotSwitches(e);
     }),
   );
   await bind(
-    onAutopilotEvent((e) => {
+    events.onAutopilotEvent((e) => {
       get().applyAutopilotEvent(e);
     }),
   );
   // The local review loop runs on the host as well; its per-checkout state is
   // mirrored the same way (its findings arrive as `pr:threads_changed`).
   await bind(
-    onReviewChanged((e) => {
+    events.onReviewChanged((e) => {
       get().applyReviewChanged(e);
     }),
   );
 
   await bind(
-    onAgentTask((e) => {
+    events.onAgentTask((e) => {
       patchAgent(get, set, e.agent_id, { task: e.task });
     }),
   );
 
   await bind(
-    onAgentTitle((e) => {
+    events.onAgentTitle((e) => {
       patchAgent(get, set, e.agent_id, { title: e.title });
     }),
   );
@@ -508,38 +464,38 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // whether or not the chat is on screen — the mute still applies. The body
   // falls back to the agent's name so the notification says who sent it.
   await bind(
-    onAgentNotify((e) => {
+    events.onAgentNotify((e) => {
       if (!get().notifyEnabled) return;
       notify(e.title, e.body || agentName(get, e.agent_id));
     }),
   );
 
   await bind(
-    onAgentView((e) => {
+    events.onAgentView((e) => {
       patchAgent(get, set, e.agent_id, { view: e.view });
     }),
   );
 
   await bind(
-    onAgentEffort((e) => {
+    events.onAgentEffort((e) => {
       patchAgent(get, set, e.agent_id, { effort: e.effort });
     }),
   );
 
   await bind(
-    onAgentModel((e) => {
+    events.onAgentModel((e) => {
       patchAgent(get, set, e.agent_id, { model: e.model });
     }),
   );
 
   await bind(
-    onAgentFolderGrants((e) => {
+    events.onAgentFolderGrants((e) => {
       set((state) => applyFolderGrantsUpdate(state, e.agent_id, e));
     }),
   );
 
   await bind(
-    onAgentStatus((e) => {
+    events.onAgentStatus((e) => {
       // A new turn starting clears any stale stop-suppression flag: if the
       // killed process never flushed a turn_end, this ensures the next genuine
       // completion still chimes.
@@ -636,7 +592,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // don't have yet is kept: the first stages can beat the refetch this spawn's
   // `workspace:changed` triggered, and its `agent:status` still clears the key.
   await bind(
-    onSpawnProgress((e) => {
+    events.onSpawnProgress((e) => {
       set((state) => {
         const agent = state.workspace?.agents.find((a) => a.id === e.agent_id);
         if (agent && agent.status !== "spawning") return {};
@@ -656,7 +612,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // turnId (see workspace.sendMessage) and is skipped. The Running status the
   // message produces lands right after, on every client alike.
   await bind(
-    onTurnSent((e) => {
+    events.onTurnSent((e) => {
       set((state) => {
         const prev = state.managedLogs[e.agent_id] ?? [];
         const next = mirrorSentTurn(prev, e);
@@ -670,7 +626,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // with the persisted duration so the strip and footer measure from the same
   // instant (no off-by-the-delivery-latency drift).
   await bind(
-    onTurnStarted((e) => {
+    events.onTurnStarted((e) => {
       set((state) => ({
         turnStartedAt: { ...state.turnStartedAt, [e.agent_id]: e.started_at },
       }));
@@ -681,8 +637,8 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // which `agent:status` alone doesn't cover. The backend emits this
   // small ping after either operation; we reload the workspace.
   await bind(
-    onWorkspaceChanged(async () => {
-      await refreshWorkspace(set);
+    events.onWorkspaceChanged(async () => {
+      await refreshWorkspace(api, set);
     }),
   );
 
@@ -690,7 +646,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // and where to get it back, through the same native-notification path the
   // turn signals use (and the same mute).
   await bind(
-    onWorkspaceAutoArchived((e) => {
+    events.onWorkspaceAutoArchived((e) => {
       if (!get().notifyEnabled || e.names.length === 0) return;
       const n = e.names.length;
       notify(
@@ -701,7 +657,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   );
 
   await bind(
-    onPublishApprovalRequested((request) => {
+    events.onPublishApprovalRequested((request) => {
       // The backend blocks on this until it is answered or its timeout denies it —
       // see `receivePublishApproval`, which decides whether to answer or prompt.
       get().receivePublishApproval(request);
@@ -709,7 +665,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   );
 
   await bind(
-    onPublishApprovalResolved((e) => {
+    events.onPublishApprovalResolved((e) => {
       // The question is over — answered on another device, answered from a host
       // terminal, or refused because nobody answered in time. Take the prompt
       // down; answering it now could not reach the agent anyway. Our own answer
@@ -720,8 +676,8 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
 
   // A VM holding a connection for an answer (the `ask` posture), and the hold
   // ending: the same two-event shape as the publish approval.
-  await bind(onBoxEgressRequested((prompt) => get().receiveEgressPrompt(prompt)));
-  await bind(onBoxEgressResolved((e) => get().resolveEgressPrompt(e)));
+  await bind(events.onBoxEgressRequested((prompt) => get().receiveEgressPrompt(prompt)));
+  await bind(events.onBoxEgressResolved((e) => get().resolveEgressPrompt(e)));
 
   // The host-side PR watcher's events (and a push's or turn end's state read).
   // These are what keep the PR badges, checks and comments current — the
@@ -731,25 +687,25 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // three are the checkout's focused PR; `pr:set_entry_changed` is the rest of
   // its set, and a host that does not advertise it predates PR sets.
   await bind(
-    onPrStateChanged((e) => {
+    events.onPrStateChanged((e) => {
       const env = activeEnvironment();
       const wholeSet =
         env.kind === "remote" && !env.protocol?.events.includes("pr:set_entry_changed");
       set((s) => applyPrStateChanged(s, e, wholeSet));
     }),
   );
-  await bind(onPrChecksChanged((e) => set((s) => applyPrChecksChanged(s, e))));
-  await bind(onPrThreadsChanged((e) => set((s) => applyPrThreadsChanged(s, e))));
-  await bind(onPrSetEntryChanged((e) => set((s) => applyPrSetEntryChanged(s, e))));
+  await bind(events.onPrChecksChanged((e) => set((s) => applyPrChecksChanged(s, e))));
+  await bind(events.onPrThreadsChanged((e) => set((s) => applyPrThreadsChanged(s, e))));
+  await bind(events.onPrSetEntryChanged((e) => set((s) => applyPrSetEntryChanged(s, e))));
 
   // A host-owned setting was written — here, on another desktop, or from a
   // phone. Folded over what was read, so Settings follows without a refetch.
   // (Project settings are per page; each section subscribes for its project.)
-  await bind(onSettingsChanged((e) => applyHostSettingChange(set, e)));
+  await bind(events.onSettingsChanged((e) => applyHostSettingChange(set, e)));
   // Provider limits are rows about this Mac, written by its own engine (an
   // agent's stream, a usage scan, a Refresh), so they follow the local engine
   // whichever environment is active.
-  await bind(onLocalSettingsChanged((e) => get().applyProviderLimitsChange(e.key, e.value)));
+  await bind(events.onLocalSettingsChanged((e) => get().applyProviderLimitsChange(e.key, e.value)));
 
   // App-wide run tracking. The RunPanel unmounts when its tab isn't active, so
   // its own subscription can't keep the Run tab's dot or the sidebar's chip
@@ -758,20 +714,20 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // never got. `run:port` is read only for a host from before `port` rode
   // `run:state` (the store tells by the missing revision): nothing orders it
   // against this stream, which carries the same port on a current host.
-  await bind(onRunState((e) => get().applyRunState(e.agent_id, e)));
-  await bind(onRunPort((e) => get().applyRunPort(e.agent_id, e)));
+  await bind(events.onRunState((e) => get().applyRunState(e.agent_id, e)));
+  await bind(events.onRunPort((e) => get().applyRunPort(e.agent_id, e)));
 
   // The box sandbox: the image install and the tools builds for the Developer
   // pane's setup line, each box's phase for the workspace capsule, and the
   // connections the egress proxy refused for the toast. Allowed connections
   // are routine. A phase change also moves the default workspace type, so the
   // composer's picker on screen re-reads its options.
-  await bind(onBoxImage((image) => applyBoxSetupEvent(get, { image })));
-  await bind(onBoxTools((tools) => applyBoxSetupEvent(get, { tools })));
-  await bind(onBoxState((state) => applyBoxSetupEvent(get, { state })));
-  await bind(onBoxList(() => void get().refreshBoxVms()));
+  await bind(events.onBoxImage((image) => applyBoxSetupEvent(get, { image })));
+  await bind(events.onBoxTools((tools) => applyBoxSetupEvent(get, { tools })));
+  await bind(events.onBoxState((state) => applyBoxSetupEvent(get, { state })));
+  await bind(events.onBoxList(() => void get().refreshBoxVms()));
   await bind(
-    onBoxEgress((e) => {
+    events.onBoxEgress((e) => {
       if (!e.allowed) get().receiveBoxEgress(e);
     }),
   );
@@ -784,8 +740,8 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
  *  Registered app-wide (not per surface) so onboarding's agents step and
  *  Settings › Providers read the same run — and so a pane unmounting
  *  mid-install doesn't lose its output. */
-export const registerLocalListeners = async (set: AppSet) => {
-  await onAgentInstallState((e) => {
+export const registerLocalListeners = async (events: Events, set: AppSet) => {
+  await events.onAgentInstallState((e) => {
     set((s) => ({ installs: reduceInstallEvent(s.installs, e) }));
   });
 };
@@ -809,7 +765,7 @@ export const detachEventListeners = async () => {
 // actually running) until its next transition. The refetch is cheap and
 // `get_workspace` overlays live in-memory status, so it's authoritative — and
 // every busy surface derives from that status, so one refetch corrects them all.
-export const setupResync = (set: AppSet, get: AppGet) => {
+export const setupResync = (api: Api, set: AppSet, get: AppGet) => {
   let resyncInFlight = false;
   // The records the snapshot omits — Roadmap chats — are re-read by project
   // from the same host, so a status they missed has a way back too. Each fresh
@@ -838,7 +794,7 @@ export const setupResync = (set: AppSet, get: AppGet) => {
       // snapshot seed still recovers a reopen even if this client missed its
       // event; launch, reconnect and environment switch ask for a live look.
       await Promise.all([
-        refreshWorkspace(set),
+        refreshWorkspace(api, set),
         refreshOffSidebarAgents(),
         get().loadAllPrStatus(),
       ]);

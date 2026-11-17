@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, type ContextEntity, type ContextGraph, type Rel } from "@/api";
+import type { ContextEntity, ContextGraph, Rel } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { AssertionRow } from "./AssertionRow";
@@ -23,6 +24,7 @@ export function EntityDetail({
   onEdit: () => void;
   onArchived: () => void;
 }) {
+  const { api } = useEngine();
   const [error, setError] = useState<string | null>(null);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [mergeInto, setMergeInto] = useState("");

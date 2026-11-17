@@ -1,5 +1,5 @@
 import { hasUsage, priceSnapshot, usageFromRecords } from "@/adapters/usage";
-import { api } from "@/api";
+import type { Api } from "@/api";
 import type { SlimCatalog } from "@/data/modelCatalog";
 import { recordWorkspaceUsage } from "@/helpers/usage";
 import { dbQuery } from "@/storage/db";
@@ -132,7 +132,11 @@ export async function loadPulseTotals(projectId: string, nowMs: number): Promise
  *  only: it is recomputed live with whatever the catalog says today, and is
  *  NOT snapshotted — see `recordUsageSnapshot` for why a cumulative
  *  catalog-priced number would corrupt the per-day history. */
-export async function loadPulseUsage(projectId: string, catalog: SlimCatalog): Promise<PulseUsage> {
+export async function loadPulseUsage(
+  api: Api,
+  projectId: string,
+  catalog: SlimCatalog,
+): Promise<PulseUsage> {
   // The provider of each workspace's current session (the one not superseded).
   const rows = await dbQuery<{ id: string; provider: string | null }>(
     `SELECT w.id AS id, s.provider AS provider
@@ -151,6 +155,7 @@ export async function loadPulseUsage(projectId: string, catalog: SlimCatalog): P
           const records = await api.readSessionRecords(r.id);
           // The workspace's spend, its rewound-away sessions' included.
           const usage = await recordWorkspaceUsage(
+            api,
             r.id,
             projectId,
             usageFromRecords(r.provider ?? undefined, records),

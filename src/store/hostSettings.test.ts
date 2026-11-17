@@ -6,6 +6,7 @@ vi.mock("@/storage/settings", () => ({
   getAllSettings: () => new Promise<Record<string, string>>((resolve) => localReads.push(resolve)),
 }));
 
+import { api } from "@/api";
 import {
   applyHostSettingChange,
   applyHostSettings,
@@ -64,7 +65,7 @@ describe("host settings", () => {
 
   it("replays a settings:changed that raced the read over its stale answer", async () => {
     const store = recorder();
-    const hydrated = hydrateHostSettings(store.set);
+    const hydrated = hydrateHostSettings(api, store.set);
     // Another client turns the alert off after the read was served; the event
     // lands first and is on screen at once.
     applyHostSettingChange(store.set, { key: "notify_turn_complete", value: "false" });
@@ -78,8 +79,8 @@ describe("host settings", () => {
 
   it("drops a hydrate superseded by a newer one", async () => {
     const store = recorder();
-    const older = hydrateHostSettings(store.set);
-    const newer = hydrateHostSettings(store.set);
+    const older = hydrateHostSettings(api, store.set);
+    const newer = hydrateHostSettings(api, store.set);
     const [answerOlder, answerNewer] = localReads.splice(0);
 
     answerNewer({ git_branch_prefix: "new/" });

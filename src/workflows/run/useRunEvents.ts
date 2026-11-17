@@ -5,12 +5,13 @@
 // derives its phase rows from the same journal).
 
 import { useEffect, useRef, useState } from "react";
-import { api, onWfEvent, type WfEvent } from "../../api";
+import { useEngine } from "@/api/engine";
+import type { Api, WfEvent } from "../../api";
 
 const PAGE = 500;
 
 /** Page the whole journal forward from `after`, following short pages to the end. */
-export async function loadAllEvents(runId: string, after: number): Promise<WfEvent[]> {
+export async function loadAllEvents(api: Api, runId: string, after: number): Promise<WfEvent[]> {
   const acc: WfEvent[] = [];
   let cursor = after;
   for (;;) {
@@ -24,6 +25,7 @@ export async function loadAllEvents(runId: string, after: number): Promise<WfEve
 }
 
 export function useRunEvents(runId: string): { events: WfEvent[]; loading: boolean } {
+  const { api, events: engineEvents } = useEngine();
   const [events, setEvents] = useState<WfEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const maxSeq = useRef(0);
@@ -37,7 +39,7 @@ export function useRunEvents(runId: string): { events: WfEvent[]; loading: boole
 
     const refresh = async () => {
       try {
-        const tail = await loadAllEvents(runId, maxSeq.current);
+        const tail = await loadAllEvents(api, runId, maxSeq.current);
         if (cancelled || tail.length === 0) return;
         maxSeq.current = Math.max(maxSeq.current, tail[tail.length - 1].seq);
         setEvents((prev) => {
@@ -64,7 +66,7 @@ export function useRunEvents(runId: string): { events: WfEvent[]; loading: boole
       }, 150);
     };
 
-    const offEvent = onWfEvent((e) => {
+    const offEvent = engineEvents.onWfEvent((e) => {
       if (e.run_id === runId && e.seq > maxSeq.current) scheduleRefresh();
     });
 
@@ -73,7 +75,7 @@ export function useRunEvents(runId: string): { events: WfEvent[]; loading: boole
       if (pending) clearTimeout(pending);
       void offEvent.then((f) => f());
     };
-  }, [runId]);
+  }, [runId, api, engineEvents]);
 
   return { events, loading };
 }

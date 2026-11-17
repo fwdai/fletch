@@ -117,6 +117,8 @@ function state(over: Partial<AppState> = {}): AppState {
 function ctx(over: Partial<AppState> = {}, extra: Partial<PaletteContext> = {}): PaletteContext {
   return {
     s: state(over),
+    // No row under test reaches the engine.
+    api: {} as PaletteContext["api"],
     runs: [],
     editors: [],
     developer: false,

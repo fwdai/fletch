@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { DropdownItem, DropdownMenu, DropdownSection } from "@/components/ui/Dropdown";
 import { Scrim } from "@/components/ui/Scrim";
@@ -16,6 +16,7 @@ interface Props {
 }
 
 export function BranchPicker({ repoPath, value, onChange }: Props) {
+  const { api } = useEngine();
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
   const [canScrollUp, setCanScrollUp] = useState(false);
@@ -41,7 +42,7 @@ export function BranchPicker({ repoPath, value, onChange }: Props) {
         requestAnimationFrame(() => updateScrollState());
       })
       .catch(() => setBranches([]));
-  }, [open, repoPath, updateScrollState]);
+  }, [open, repoPath, updateScrollState, api]);
 
   function scrollBy(delta: number) {
     listRef.current?.scrollBy({ top: delta, behavior: "smooth" });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, onProjectSettingsChanged } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useAppStore } from "@/store";
 import { followProjectSettings, withSetting } from "./settingsReplay";
 
@@ -15,6 +15,7 @@ export function useProjectSettings(projectId: string | null | undefined): {
   settings: Record<string, string> | null;
   save: (key: string, value: string | null) => void;
 } {
+  const { api, events } = useEngine();
   const [settings, setSettings] = useState<Record<string, string> | null>(null);
   // Re-read (and re-subscribe) on a switch: both are bound to the transport
   // that was active when they were made.
@@ -26,10 +27,10 @@ export function useProjectSettings(projectId: string | null | undefined): {
     if (!projectId) return;
     return followProjectSettings(
       projectId,
-      { read: api.getProjectSettings, subscribe: onProjectSettingsChanged },
+      { read: api.getProjectSettings, subscribe: events.onProjectSettingsChanged },
       setSettings,
     );
-  }, [projectId, environmentId]);
+  }, [projectId, environmentId, api, events]);
 
   const save = useCallback(
     (key: string, value: string | null) => {
@@ -39,7 +40,7 @@ export function useProjectSettings(projectId: string | null | undefined): {
         .setProjectSetting(projectId, key, value)
         .catch((e) => console.error(`save ${key} failed`, e));
     },
-    [projectId],
+    [projectId, api],
   );
 
   return { settings, save };

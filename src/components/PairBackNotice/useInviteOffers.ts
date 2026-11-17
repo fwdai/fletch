@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { onInviteOffered } from "@/api";
+import { useEngine } from "@/api/engine";
 import { pairWithOfferedLink } from "@/remote/hosts";
 import { useAppStore } from "@/store";
 
@@ -8,11 +8,12 @@ import { useAppStore } from "@/store";
  *  failure goes to the app's error banner: the person here accepted that
  *  device moments ago, so there is nothing to ask, only to report. */
 export function useInviteOffers(): { controlling: string | null; dismiss: () => void } {
+  const { events } = useEngine();
   const [controlling, setControlling] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
-    const off = onInviteOffered((offer) => {
+    const off = events.onInviteOffered((offer) => {
       pairWithOfferedLink(offer.url).then(
         () => {
           if (live) setControlling(offer.deviceName);
@@ -29,7 +30,7 @@ export function useInviteOffers(): { controlling: string | null; dismiss: () => 
       live = false;
       void off.then((f) => f());
     };
-  }, []);
+  }, [events]);
 
   const dismiss = useCallback(() => setControlling(null), []);
   return { controlling, dismiss };

@@ -20,7 +20,7 @@
 // passes through `applyPendingHides`, which keeps a user-requested removal
 // hidden until a snapshot confirms it.
 
-import { api, type Workspace } from "@/api";
+import type { Api, Workspace } from "@/api";
 import { reconcileSending } from "@/helpers";
 import { newestWins } from "@/util/newestWins";
 import { applyPendingHides } from "./pendingHides";
@@ -44,6 +44,7 @@ const refetches = newestWins();
  * failed or was superseded.
  */
 export const refreshWorkspace = async (
+  api: Api,
   set: AppSet,
   extra?: (fresh: Workspace, state: AppState) => Partial<AppState>,
 ): Promise<Workspace | null> => {

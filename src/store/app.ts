@@ -64,7 +64,7 @@ export interface AppSlice {
   runUpdateCheck: () => Promise<void>;
 }
 
-export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
+export const createAppSlice: SliceCreator<AppSlice> = (set, get, engine) => ({
   busy: false,
   lastError: null,
   updateReadyVersion: null,
@@ -82,9 +82,9 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     if (get().initialized) return;
     set({ initialized: true });
 
-    await hydrateSettings(set);
+    await hydrateSettings(engine.api, set);
     set({ settingsHydrated: true });
-    await hydrateAccount(set);
+    await hydrateAccount(engine.api, set);
 
     // Probe installed provider CLIs for real versions + paths (async,
     // non-blocking). Errors are non-fatal — UI falls back to hardcoded versions.
@@ -111,11 +111,11 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     // The desktop-pinned streams first, since nothing ever takes them down;
     // the engine ones are re-made against the new transport on every
     // environment switch (see `switchEnvironment`).
-    await registerLocalListeners(set);
-    await registerEventListeners(set, get);
-    setupResync(set, get);
+    await registerLocalListeners(engine.events, set);
+    await registerEventListeners(engine, set, get);
+    setupResync(engine.api, set, get);
 
-    await refreshWorkspace(set);
+    await refreshWorkspace(engine.api, set);
     // Delegations the host was already running — a reloaded window, or one
     // opened while an agent works through a playbook it was handed earlier.
     void get().loadDelegations();

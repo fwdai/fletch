@@ -1,4 +1,5 @@
 import type { EgressDelta, HostActivity } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
@@ -22,7 +23,8 @@ const MAX_ROWS = 12;
  *  to the list the page edits. Telemetry is left out, and so are the hosts
  *  already on that list. */
 export function RecentHosts(props: { global: EgressDelta } | { project: HostList }) {
-  const list = "project" in props ? props.project : globalHosts(props.global);
+  const { api } = useEngine();
+  const list = "project" in props ? props.project : globalHosts(api, props.global);
   const projectId = list.projectId ?? null;
   const gate = useGate("egressActivity");
   const hosts = useEgressActivity(projectId, !!gate);

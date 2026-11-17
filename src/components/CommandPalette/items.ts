@@ -59,7 +59,7 @@ export function pageRows(ctx: PaletteContext, page: PageId): PaletteItem[] {
         section: SEC.editors,
         run: () => {
           rememberEditor(e.id);
-          openEditor(agent, e.id).catch((err) => s.setLastError(String(err)));
+          openEditor(ctx.api, agent, e.id).catch((err) => s.setLastError(String(err)));
         },
       }));
     }

@@ -1,7 +1,7 @@
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type { SessionRecord, SupersededSession, UserTurn } from "../types/session";
 
-export const sessionApi = {
+export const sessionApi = (invoke: Invoke) => ({
   readSessionRecords: (agentId: string) =>
     invoke<SessionRecord[]>("read_session_records", { agentId }),
   /** Every session the agent's workspace has superseded — a rewind's
@@ -19,4 +19,4 @@ export const sessionApi = {
     nativeId: string,
     body: Record<string, unknown>,
   ) => invoke<boolean>("append_live_record", { agentId, provider, nativeId, body }),
-};
+});

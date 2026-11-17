@@ -6,7 +6,7 @@
 // `delegations` and `autopilot` — plus the two settings that decide when and
 // with whom a review runs.
 
-import { api, type ReviewState } from "@/api";
+import type { ReviewState } from "@/api";
 import { REVIEWER_NAME } from "@/starterPack/presets";
 import type { CustomAgent } from "@/storage/customAgents";
 import { setSetting } from "@/storage/settings";
@@ -66,7 +66,7 @@ const keyOf = (r: ReviewState) => checkoutKey(r.agent_id, r.subdir ?? undefined)
 /** Only the newest `get_reviews` read may land (see `newestWins`). */
 const loads = newestWins();
 
-export const createReviewSlice: SliceCreator<ReviewSlice> = (set, get) => ({
+export const createReviewSlice: SliceCreator<ReviewSlice> = (set, get, { api }) => ({
   reviews: {},
   reviewOnPrOpen: true,
   reviewAgentId: "",

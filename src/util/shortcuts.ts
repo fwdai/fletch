@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { api } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { stepSelection } from "@/components/Sidebar/rowNav";
 import { openInPreferredEditor } from "@/components/TitleBar/OpenInEditor/editors";
 import { escapeTaken } from "@/components/ui/useEscape";
@@ -99,7 +99,9 @@ function toggleProjectView(view: "roadmap" | "settings") {
  *  only when the answer turns on them (see `store/projectFocus`), so the
  *  usual press stays synchronous. */
 async function toggleProjectFocus() {
-  const runs = focusNeedsRuns(useAppStore.getState()) ? await api.wfListRuns().catch(() => []) : [];
+  const runs = focusNeedsRuns(useAppStore.getState())
+    ? await activeEngine.api.wfListRuns().catch(() => [])
+    : [];
   const s = useAppStore.getState();
   const key = surfaceProjectKey(s, runs);
   if (!key || projectCount(s, runs) < 2) return;
@@ -186,7 +188,8 @@ const ACTIONS: Record<string, Action> = {
     run: () => {
       const s = useAppStore.getState();
       const agent = surfaceAgent(s);
-      if (agent) void openInPreferredEditor(agent).catch((e) => s.setLastError(String(e)));
+      if (agent)
+        void openInPreferredEditor(activeEngine.api, agent).catch((e) => s.setLastError(String(e)));
     },
   },
   stopAgent: {

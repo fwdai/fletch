@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type EnvEntry, type EnvFileKeys } from "@/api";
+import type { EnvEntry, EnvFileKeys } from "@/api";
+import { useEngine } from "@/api/engine";
 import { SetGroup } from "@/components/SettingsScreen/primitives";
 import {
   loadRunEnvDoc,
@@ -24,6 +25,7 @@ interface Props {
  *  Run process and whether its value mirrors `.env` or is overridden. Nothing
  *  is shared by default. Autosaves per edit, like the run-config rows. */
 export function EnvVars({ projectId, repoPath }: Props) {
+  const { api } = useEngine();
   const [entries, setEntries] = useState<EnvEntry[] | null>(null);
   // Keys declared by `.env.example`/`.env.sample` but absent from `.env` —
   // the project wants them, no value is set (and example placeholders are
@@ -47,7 +49,7 @@ export function EnvVars({ projectId, repoPath }: Props) {
     (async () => {
       const [envKeys, loadedDoc] = await Promise.all([
         api.readEnvFileKeys(repoPath).catch((): EnvFileKeys => ({ env: [], declared: [] })),
-        loadRunEnvDoc(projectId),
+        loadRunEnvDoc(api, projectId),
       ]);
       if (cancelled) return;
       setEntries(envKeys.env);
@@ -66,7 +68,7 @@ export function EnvVars({ projectId, repoPath }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [projectId, repoPath]);
+  }, [projectId, repoPath, api]);
 
   const envMap = useMemo(() => new Map((entries ?? []).map((e) => [e.key, e])), [entries]);
 
@@ -97,7 +99,7 @@ export function EnvVars({ projectId, repoPath }: Props) {
     const next = mutate(docRef.current);
     docRef.current = next;
     setDoc(next);
-    const save = saveQueue.current.then(() => saveRunEnvDoc(projectId, docRef.current));
+    const save = saveQueue.current.then(() => saveRunEnvDoc(api, projectId, docRef.current));
     saveQueue.current = save.catch(() => {}); // keep the chain alive after a failure
     return save;
   };

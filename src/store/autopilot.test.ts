@@ -16,6 +16,7 @@ const { getAutopilotState, getAutopilotLog, setAutopilot } = vi.hoisted(() => ({
 vi.mock("@/api", () => ({ api: { getAutopilotState, getAutopilotLog, setAutopilot } }));
 
 import type { AutopilotCheckout, AutopilotLogEntry, AutopilotSnapshot } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { dropAgentEntries } from "@/helpers/agentLookups";
 import { AUTOPILOT_LOG_LIMIT, autopilotProjectOn, createAutopilotSlice } from "./autopilot";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
@@ -71,7 +72,8 @@ const snapshot = (over: Partial<AutopilotSnapshot> = {}): AutopilotSnapshot => (
 const makeStore = () => {
   const setLastError = vi.fn();
   const store = create<AppState>()(
-    (...a) => ({ ...createAutopilotSlice(...a), setLastError }) as unknown as AppState,
+    (set, get) =>
+      ({ ...createAutopilotSlice(set, get, activeEngine), setLastError }) as unknown as AppState,
   );
   return { store, setLastError };
 };

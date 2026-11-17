@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { type AgentRecord, api } from "@/api";
+import type { AgentRecord } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useTerminalSearch } from "@/components/ui/TerminalSearch";
 import { getOutputBuffer, registerOutputSink } from "@/pty/buffers";
 import { nativeTerminalKey } from "@/pty/terminals";
@@ -18,6 +19,7 @@ import { useXterm } from "@/util/useXterm";
  *  another agent and coming back re-attaches the same live screen rather than
  *  rebuilding one from the ring buffer. */
 export function NativeView({ agent }: { agent: AgentRecord }) {
+  const { api } = useEngine();
   const search = useTerminalSearch();
 
   const containerRef = useXterm(

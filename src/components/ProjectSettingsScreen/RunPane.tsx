@@ -1,3 +1,4 @@
+import { useEngine } from "@/api/engine";
 import {
   EcosystemBadge,
   persistRunOverrides,
@@ -36,6 +37,7 @@ export function RunPane({
   overrides,
   onOverrides,
 }: Props) {
+  const { api } = useEngine();
   // Every core field is shown, detected or not — a row the detector couldn't
   // fill (or an unrecognized stack) should be configurable, not hidden.
   const rows = withFallbackRows(detected);
@@ -49,7 +51,7 @@ export function RunPane({
   // logic the Run panel runs on Apply, just committed immediately.
   const commit = (next: Record<string, string>) => {
     const { cleaned, toSet, toDelete } = reconcileOverrides(rows, overrides, next);
-    persistRunOverrides(projectId, toSet, toDelete);
+    persistRunOverrides(api, projectId, toSet, toDelete);
     onOverrides(cleaned);
   };
 

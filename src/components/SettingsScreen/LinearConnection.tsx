@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { TextInput } from "@/components/ui/TextInput";
@@ -11,6 +11,7 @@ import { HostAccountNote } from "./HostAccountNote";
  *  team a project draws tickets from stays on that project's screen. Same
  *  chrome as `GithubConnection` (`set-gh-*`). */
 export function LinearConnection() {
+  const { api } = useEngine();
   const linear = useAppStore((s) => s.linear);
   const refreshLinear = useAppStore((s) => s.refreshLinear);
   const [apiKey, setApiKey] = useState("");

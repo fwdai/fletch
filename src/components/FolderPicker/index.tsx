@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
@@ -41,6 +41,7 @@ function FolderPicker({
   start: string;
   onDone: (path: string | null) => void;
 }) {
+  const { api } = useEngine();
   const {
     base,
     up,

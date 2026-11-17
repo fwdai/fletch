@@ -1,4 +1,4 @@
-import { api, type FolderGrant, type WorkspaceKind } from "@/api";
+import type { Api, FolderGrant, WorkspaceKind } from "@/api";
 import { workspaceTypeToSend } from "@/components/Composer/workspaceType";
 import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
@@ -183,6 +183,7 @@ type Get = Parameters<SliceCreator<DraftsSlice>>[1];
  *  nor have the draft written and selected there. The `forActiveEnvironment`
  *  rule, applied per read. */
 async function prepareDraft(
+  api: Api,
   get: Get,
   repoPath: string,
   roadmapItemId?: string,
@@ -256,7 +257,7 @@ function surfaceKey(s: AppState): string {
   }
 }
 
-export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
+export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, { api }) => ({
   drafts: [],
   activeDraftId: null,
   newDraftProvider: DEFAULT_PROVIDER_ID,
@@ -279,11 +280,11 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     void setSetting(DRAFT_BASE_BRANCHES_SETTING, next);
   },
 
-  resolveDraftBase: (repoPath) => resolveBaseBranch(repoPath, get().draftBaseByRepo[repoPath]),
+  resolveDraftBase: (repoPath) => resolveBaseBranch(api, repoPath, get().draftBaseByRepo[repoPath]),
 
   // ── drafts ─────────────────────────────────────────────────────────────────
   createDraft: async (repoPath, opts = {}) => {
-    const draft = await prepareDraft(get, repoPath, opts.roadmapItemId, opts.kind);
+    const draft = await prepareDraft(api, get, repoPath, opts.roadmapItemId, opts.kind);
     if (!draft) return null;
     openDraft(set, get, draft, opts.seedPrompt);
     return draft.id;
@@ -294,7 +295,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     // screen if the user has not gone somewhere else while its reads were out.
     const before = surfaceKey(get());
     try {
-      const draft = await prepareDraft(get, repoPath);
+      const draft = await prepareDraft(api, get, repoPath);
       if (!draft || surfaceKey(get()) !== before) return;
       openDraft(
         set,
@@ -423,7 +424,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // menu's precedence). Discovery is awaited so a spawn typed straight
       // into a fresh composer still sees disk prompts.
       if (!invocation && text.startsWith("/")) {
-        await discoverCommands(provider, draft.repoPath);
+        await discoverCommands(api, provider, draft.repoPath);
         prompt = expandSlashCommand(provider, text, draft.repoPath) ?? prompt;
       }
       const skills = invocation
@@ -531,7 +532,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // anything sent meanwhile is let through to it (`draftSpawns`), so it is
       // the first message the agent gets.
       const first = sendOrder.run(rec.id, async () => {
-        await refreshWorkspace(set);
+        await refreshWorkspace(api, set);
         // In-flight across the whole wait for the agent to come up: a snapshot
         // of the spawn's resting `idle` must not settle the `sending` flag early.
         await whileSending(rec.id, () =>

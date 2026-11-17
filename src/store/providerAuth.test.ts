@@ -49,12 +49,15 @@ vi.mock("@/data/modelCatalog", () => ({
 }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
+import { activeEngine } from "@/api/engine";
 import type { AccountLimits, ProviderAccount, ProviderAuthProbe } from "@/api/types/providers";
 import { createProvidersSlice } from "./providers";
 import type { AppState } from "./types";
 
 const makeStore = () =>
-  create<AppState>()((...a) => ({ ...createProvidersSlice(...a) }) as AppState);
+  create<AppState>()(
+    (set, get) => ({ ...createProvidersSlice(set, get, activeEngine) }) as AppState,
+  );
 
 const probe = (id: string, status: ProviderAuthProbe["status"]): ProviderAuthProbe => ({
   id,

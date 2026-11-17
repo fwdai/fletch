@@ -14,6 +14,7 @@ vi.mock("@/api", () => ({ api: { getPrLive, getPrState, getPrChecks } }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
 import type { PrChecks, PrSetEntry, PrState } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { createGitSlice } from "./git";
 import { resetPrWriteOrder, stampPrWrite } from "./prWriteOrder";
 import type { AppState } from "./types";
@@ -42,9 +43,9 @@ const entry = (state: PrState, c: PrChecks | null = null): PrSetEntry => ({ stat
 /** A store whose checkout `a1` holds #651 and the focused #650. */
 const makeStore = () => {
   const store = create<AppState>()(
-    (...a) =>
+    (set, get) =>
       ({
-        ...createGitSlice(...a),
+        ...createGitSlice(set, get, activeEngine),
         github: { authenticated: true },
         setLastError: vi.fn(),
       }) as unknown as AppState,

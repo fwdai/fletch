@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type GhRepoSummary } from "@/api";
+import type { GhRepoSummary } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 
 interface Props {
@@ -10,6 +11,7 @@ interface Props {
 /** Searchable list of the user's GitHub repos for the clone picker.
  *  Fetches once; filtering is client-side. */
 export function RepoList({ selected, onSelect }: Props) {
+  const { api } = useEngine();
   const [repos, setRepos] = useState<GhRepoSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -27,7 +29,7 @@ export function RepoList({ selected, onSelect }: Props) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [api]);
 
   const filtered = useMemo(() => {
     if (!repos) return [];

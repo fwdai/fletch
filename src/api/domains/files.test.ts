@@ -11,10 +11,13 @@ import {
   setEnvironmentsSource,
 } from "@/store/environments";
 import { CHUNK_BYTES, MAX_UPLOAD_BYTES } from "@/util/attachmentUpload";
+import { invoke } from "../invoke";
 import { filesApi } from "./files";
 
 const { rawInvoke } = vi.hoisted(() => ({ rawInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: rawInvoke }));
+
+const files = filesApi(invoke);
 
 /** Records every op the active environment is asked for, and answers the
  *  upload flow the way a host does. */
@@ -64,7 +67,7 @@ describe("savePastedAttachment", () => {
   it("writes to this Mac's staging area for the local environment", async () => {
     onLocal();
 
-    const path = await filesApi.savePastedAttachment("shot 1.png", new Uint8Array(4));
+    const path = await files.savePastedAttachment("shot 1.png", new Uint8Array(4));
 
     expect(path).toBe("/Users/alex/Library/…/shot.png");
     // Name reduced to a plain ASCII basename: it travels as a header.
@@ -80,7 +83,7 @@ describe("savePastedAttachment", () => {
     // Two chunks and a remainder, so the slicing is exercised rather than
     // assumed.
     const bytes = new Uint8Array(CHUNK_BYTES * 2 + 5);
-    const path = await filesApi.savePastedAttachment("shot.png", bytes);
+    const path = await files.savePastedAttachment("shot.png", bytes);
 
     expect(path).toBe("/host/.fletch/staging/u1/shot.png");
     expect(calls.map((c) => c.op)).toEqual([
@@ -107,7 +110,7 @@ describe("savePastedAttachment", () => {
     onHost(first.transport);
 
     const bytes = new Uint8Array(CHUNK_BYTES + 5);
-    const path = await filesApi.savePastedAttachment("shot.png", bytes);
+    const path = await files.savePastedAttachment("shot.png", bytes);
 
     expect(path).toBe("/host/.fletch/staging/u1/shot.png");
     expect(first.calls.map((c) => c.op)).toEqual([
@@ -140,7 +143,7 @@ describe("savePastedAttachment", () => {
     };
     onHost(first.transport);
 
-    await expect(filesApi.savePastedAttachment("shot.png", new Uint8Array(4))).rejects.toThrow(
+    await expect(files.savePastedAttachment("shot.png", new Uint8Array(4))).rejects.toThrow(
       /socket closed/,
     );
 
@@ -157,7 +160,7 @@ describe("savePastedAttachment", () => {
     onHost(transport);
 
     await expect(
-      filesApi.savePastedAttachment("clip.mov", new Uint8Array(MAX_UPLOAD_BYTES + 1)),
+      files.savePastedAttachment("clip.mov", new Uint8Array(MAX_UPLOAD_BYTES + 1)),
     ).rejects.toThrow(/limit is 32 MB/);
     expect(calls).toEqual([]);
   });

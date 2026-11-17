@@ -3,7 +3,7 @@
 // the definition surface, persisting through the v1 `wf_def_*` commands (§13).
 
 import { useEffect, useState } from "react";
-import { api } from "../../api";
+import { useEngine } from "@/api/engine";
 import { installStarterPack, STARTER_WORKFLOW_NAME } from "../../starterPack";
 import { useAppStore } from "../../store";
 import type { Definition, ImportReport, Spec } from "../spec";
@@ -16,6 +16,7 @@ import { exportDefinitionYaml, pickYamlText } from "./yamlFile";
 type Editing = { state: EditorState; isNew: boolean };
 
 export function WorkflowsPane() {
+  const { api } = useEngine();
   const agents = useAppStore((s) => s.customAgents);
   const createCustomAgent = useAppStore((s) => s.createCustomAgent);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
@@ -111,7 +112,7 @@ export function WorkflowsPane() {
 
   const exportDef = async (d: Definition) => {
     try {
-      await exportDefinitionYaml(d.id, d.spec.name);
+      await exportDefinitionYaml(api, d.id, d.spec.name);
     } catch (e) {
       setLastError(`Failed to export workflow: ${e}`);
     }

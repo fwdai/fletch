@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, type ContextProposal } from "@/api";
+import type { ContextProposal } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Button } from "@/components/ui/Button";
 
 /** Clears the review queue in one ruling (each dismissed as trivial). Two
@@ -14,6 +15,7 @@ export function DismissAll({
   projectId: string;
   proposals: ContextProposal[];
 }) {
+  const { api } = useEngine();
   // The ids armed by the first click; null when not confirming.
   const [armed, setArmed] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);

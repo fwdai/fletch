@@ -1,7 +1,7 @@
-import { invoke } from "../invoke";
+import type { Invoke } from "../invoke";
 import type { DetectedConfig, EnvFileKeys, ProjectRunConfig, RunStateSnapshot } from "../types/run";
 
-export const runApi = {
+export const runApi = (invoke: Invoke) => ({
   runStart: (agentId: string) => invoke<void>("run_start", { agentId }),
   runStop: (agentId: string) => invoke<void>("run_stop", { agentId }),
   runState: (agentId: string) => invoke<RunStateSnapshot>("run_state", { agentId }),
@@ -15,4 +15,4 @@ export const runApi = {
     invoke<void>("set_env_override", { projectId, key, value }),
   clearEnvOverride: (projectId: string, key: string) =>
     invoke<void>("clear_env_override", { projectId, key }),
-};
+});

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type HostActivity, onBoxEgress, onBoxPolicy } from "@/api";
+import type { HostActivity } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useAppStore } from "@/store";
 
 /** The hosts VMs reached or were refused lately (`box_egress_activity`),
@@ -12,6 +13,7 @@ export function useEgressActivity(
   skip = false,
   hours?: number,
 ): HostActivity[] | null {
+  const { api, events } = useEngine();
   const [hosts, setHosts] = useState<HostActivity[] | null>(null);
   const environmentId = useAppStore((s) => s.activeEnvironmentId);
 
@@ -36,13 +38,13 @@ export function useEgressActivity(
       }, 500);
     };
     void read();
-    const offs = [onBoxEgress(readSoon), onBoxPolicy(readSoon)];
+    const offs = [events.onBoxEgress(readSoon), events.onBoxPolicy(readSoon)];
     return () => {
       live = false;
       if (timer) clearTimeout(timer);
       for (const off of offs) void off.then((f) => f()).catch(() => {});
     };
-  }, [projectId, skip, hours, environmentId]);
+  }, [projectId, skip, hours, environmentId, api, events]);
 
   return hosts;
 }

@@ -3,7 +3,7 @@
 // the spawn payload, and the small retry util that tolerates the brief window
 // before a freshly-spawned agent is addressable.
 
-import { api } from "../api";
+import type { Api } from "../api";
 import { MCP_SUPPORT, mcpAttachable } from "../data/providers";
 import type { CustomAgent } from "../storage/customAgents";
 import { type McpServerSnapshot, snapshotMcpServer } from "../storage/mcpServers";
@@ -38,7 +38,11 @@ const FALLBACK_BASE = "main";
  *  and a caller that writes the answer guards it with the environment (the
  *  drafts slice's `prepareDraft`) and discards it. The static fallback stands
  *  in for a superseded resolve, so the signature stays a base, always. */
-export async function resolveBaseBranch(repoPath: string, preferred?: string): Promise<string> {
+export async function resolveBaseBranch(
+  api: Api,
+  repoPath: string,
+  preferred?: string,
+): Promise<string> {
   const environment = activeEnvironmentId();
   if (preferred) {
     try {

@@ -1,22 +1,22 @@
 import { applyPolicy, type ChatItem, getAdapter } from "@/adapters";
 import { handoffTranscript } from "@/adapters/handoff";
 import { hasUsage, type UsageSnapshot, usageFromRecords } from "@/adapters/usage";
-import {
-  type AgentRecord,
-  type AgentView,
-  api,
-  type FolderGrant,
-  type ForkCode,
-  type ForkContext,
-  type RunPortEvent,
-  type RunStateEvent,
-  type RunStateSnapshot,
-  type RunStatus,
-  type SessionRecord,
-  type SpawnStage,
-  type UserTurn,
-  type Workspace,
-  type WorkspaceKind,
+import type {
+  AgentRecord,
+  AgentView,
+  Api,
+  FolderGrant,
+  ForkCode,
+  ForkContext,
+  RunPortEvent,
+  RunStateEvent,
+  RunStateSnapshot,
+  RunStatus,
+  SessionRecord,
+  SpawnStage,
+  UserTurn,
+  Workspace,
+  WorkspaceKind,
 } from "@/api";
 import { discoverCommands } from "@/data/slashCommands";
 import {
@@ -290,7 +290,10 @@ export interface WorkspaceSlice {
  *  (display) and forkAgent (handoff transcript) so what a fork's agent is told
  *  is built from the history the child will show — never from a
  *  possibly-unloaded managedLogs entry. */
-async function readHistory(id: string): Promise<{ records: SessionRecord[]; turns: UserTurn[] }> {
+async function readHistory(
+  api: Api,
+  id: string,
+): Promise<{ records: SessionRecord[]; turns: UserTurn[] }> {
   let records = await api.readSessionRecords(id);
   if (records.every((r) => r.inherited)) {
     await api.syncSession(id);
@@ -307,8 +310,12 @@ async function readHistory(id: string): Promise<{ records: SessionRecord[]; turn
  *  agent, so nothing the new session should be told it said — stay out of
  *  it. Read from the records rather than managedLogs, so it is right even when
  *  the chat has not been loaded into the UI yet. */
-export async function handoffLog(provider: string | undefined, id: string): Promise<ChatItem[]> {
-  const { records, turns } = await readHistory(id);
+export async function handoffLog(
+  api: Api,
+  provider: string | undefined,
+  id: string,
+): Promise<ChatItem[]> {
+  const { records, turns } = await readHistory(api, id);
   const log = mergeUserTurns(
     reduceRecords(provider, records),
     turns.filter((t) => t.native_id),
@@ -325,7 +332,7 @@ const SLASH_BUSY_LABELS: Record<string, string> = {
   help: "Helping",
 };
 
-export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => ({
+export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, { api }) => ({
   workspace: null,
   selectedAgentId: null,
   attendedChatId: null,
@@ -423,7 +430,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // so resolve the repo's default explicitly. Passing nothing used to make
       // the backend fall back to the source repo's currently-checked-out branch
       // — forking a new agent onto the user's in-progress local work.
-      const base = await resolveBaseBranch(repoPath);
+      const base = await resolveBaseBranch(api, repoPath);
       const rec = await api.spawnAgent(
         view,
         repoPath,
@@ -450,7 +457,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         }
         return patches;
       });
-      await refreshWorkspace(set);
+      await refreshWorkspace(api, set);
       return rec;
     } catch (e) {
       set({ lastError: String(e) });
@@ -468,7 +475,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // conversation itself as the child's own transcript.
       let transcript: string | null = null;
       if (context === "summary") {
-        const log = await handoffLog(providerFor(get(), parentId), parentId);
+        const log = await handoffLog(api, providerFor(get(), parentId), parentId);
         transcript = handoffTranscript(log, turnId);
       }
       const rec = await api.forkAgent(parentId, turnId, code, context, transcript);
@@ -483,7 +490,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         selectedAgentId: rec.id,
         activeDraftId: null,
       }));
-      await refreshWorkspace(set);
+      await refreshWorkspace(api, set);
       return rec;
     } catch (e) {
       set({ lastError: String(e) });
@@ -610,6 +617,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // sending a doomed turn. The notice is store-only but survives reconciles
       // (carryForwardStoreOnly), so the explanation persists for the session.
       const unsupported = await unsupportedManagedCommand(
+        api,
         providerFor(get(), id),
         text,
         repoPathFor(get(), id),
@@ -636,7 +644,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       {
         const provider = providerFor(get(), id);
         if (provider && text.startsWith("/")) {
-          await discoverCommands(provider, repoPathFor(get(), id));
+          await discoverCommands(api, provider, repoPathFor(get(), id));
           sendText = expandSlashCommand(provider, text, repoPathFor(get(), id)) ?? text;
         }
       }
@@ -853,7 +861,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         workspace: s.workspace ? applyPendingHides(s.workspace) : s.workspace,
         selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
       }));
-      await refreshWorkspace(set);
+      await refreshWorkspace(api, set);
     } catch (e) {
       set({ lastError: String(e) });
     }
@@ -934,7 +942,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     // hides the row. The archive itself has committed, so a failed refetch is
     // only reported — it must not put the row back.
     try {
-      await refreshWorkspace(set, (_fresh, s) => dropAgentEntries(s, id));
+      await refreshWorkspace(api, set, (_fresh, s) => dropAgentEntries(s, id));
     } catch (e) {
       set({ lastError: String(e) });
     }
@@ -965,7 +973,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         historyOpen: false,
         selectedAgentId: id,
       }));
-      await refreshWorkspace(set);
+      await refreshWorkspace(api, set);
     } catch (e) {
       set({ lastError: String(e) });
     }
@@ -983,14 +991,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // Before the read: it can land after a later one, and calls that stream
       // in while it runs are not in its records (see settleLiveUsage).
       const read = beginUsageRead(id);
-      const { records, turns } = await readHistory(id);
+      const { records, turns } = await readHistory(api, id);
       const items = mergeUserTurns(reduceRecords(provider, records), turns);
       const usage = usageFromRecords(provider, records);
       const settled = hasUsage(usage) ? settleLiveUsage(id, usage, read) : null;
       if (hasUsage(usage)) {
         // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
         // spend belongs to its project like anyone else's.
-        void recordWorkspaceUsage(id, agentRecord(get(), id)?.project_id, usage);
+        void recordWorkspaceUsage(api, id, agentRecord(get(), id)?.project_id, usage);
       }
       set((state) => {
         // Nothing stored but a live turn is already rendering — don't clobber it.

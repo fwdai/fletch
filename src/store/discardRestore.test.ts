@@ -21,6 +21,8 @@ vi.mock("@/api", () => ({
 }));
 vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
 
+import { api } from "@/api";
+import { activeEngine } from "@/api/engine";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
 
@@ -57,7 +59,9 @@ const agent = (id: string, archive: any = null) => ({ id, archive }) as any;
 
 // biome-ignore lint/suspicious/noExplicitAny: test builds a partial store
 const makeStore = (agents: any[]) => {
-  const store = create<AppState>()((...a) => ({ ...createWorkspaceSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (set, get) => ({ ...createWorkspaceSlice(set, get, activeEngine) }) as AppState,
+  );
   store.setState({
     ...EMPTY_MAPS,
     // biome-ignore lint/suspicious/noExplicitAny: minimal workspace fixture
@@ -149,7 +153,7 @@ describe("discard/restore/archive stay consistent when the refresh returns null"
 
     getWorkspace.mockResolvedValueOnce({ agents: [agent("a"), agent("b")] });
     const { refreshWorkspace } = await import("./refreshWorkspace");
-    await refreshWorkspace(store.setState);
+    await refreshWorkspace(api, store.setState);
     expect(
       store.getState().workspace?.agents.find((x) => x.id === "a")?.archive,
       "pre-commit snapshot must not re-expose the row",
@@ -180,7 +184,7 @@ describe("discard/restore/archive stay consistent when the refresh returns null"
     // Withdrawn: a later live snapshot is applied as-is.
     getWorkspace.mockResolvedValueOnce({ agents: [agent("a")] });
     const { refreshWorkspace } = await import("./refreshWorkspace");
-    await refreshWorkspace(store.setState);
+    await refreshWorkspace(api, store.setState);
     expect(store.getState().workspace?.agents.find((x) => x.id === "a")?.archive).toBeNull();
   });
 
@@ -190,12 +194,12 @@ describe("discard/restore/archive stay consistent when the refresh returns null"
 
     getWorkspace.mockResolvedValueOnce({ agents: [agent("a"), agent("b")] });
     const { refreshWorkspace } = await import("./refreshWorkspace");
-    await refreshWorkspace(store.setState);
+    await refreshWorkspace(api, store.setState);
     expect(store.getState().workspace?.agents.map((x) => x.id)).toEqual(["b"]);
 
     // Confirmed once a snapshot no longer lists it.
     getWorkspace.mockResolvedValueOnce({ agents: [agent("b")] });
-    await refreshWorkspace(store.setState);
+    await refreshWorkspace(api, store.setState);
     expect(store.getState().workspace?.agents.map((x) => x.id)).toEqual(["b"]);
   });
 });

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, type TidyCandidate } from "@/api";
+import type { TidyCandidate } from "@/api";
+import { useEngine } from "@/api/engine";
 import { Button } from "@/components/ui/Button";
 
 /** "Tidy": what the log already holds that the ingester would not land today —
@@ -7,6 +8,7 @@ import { Button } from "@/components/ui/Button";
  *  statement a later record replaced. Lists first; retracts only what the user
  *  confirms, one `retracted` event each, with the pass's reason. */
 export function Tidy({ projectId, disabled }: { projectId: string; disabled: boolean }) {
+  const { api } = useEngine();
   const [busy, setBusy] = useState(false);
   const [found, setFound] = useState<TidyCandidate[] | null>(null);
   const [retracted, setRetracted] = useState<number | null>(null);

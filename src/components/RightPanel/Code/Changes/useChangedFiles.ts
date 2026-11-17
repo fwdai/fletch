@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { api, type DiffBaseMode, type FileStatus } from "@/api";
+import type { DiffBaseMode, FileStatus } from "@/api";
+import { useEngine } from "@/api/engine";
 import { fileRevision } from "@/util/diff";
 import { usePoll } from "@/util/hooks";
 import type { AgentGit } from "../useAgentGit";
@@ -80,6 +81,7 @@ interface ForkFiles {
 /** The files changed since the fork point, polled while `enabled`; null
  *  before the first answer for this agent. */
 function useForkFiles(agentId: string, enabled: boolean, busy: boolean): ForkFiles | null {
+  const { api } = useEngine();
   const [state, setState] = useState<{ agentId: string; sig: string; result: ForkFiles }>();
   // The agent on screen, so a poll for one the user has since left is dropped
   // rather than replacing the newer agent's list.
@@ -97,7 +99,7 @@ function useForkFiles(agentId: string, enabled: boolean, busy: boolean): ForkFil
     setState((prev) =>
       prev?.agentId === agentId && prev.sig === sig ? prev : { agentId, sig, result },
     );
-  }, [agentId, enabled]);
+  }, [agentId, enabled, api]);
   usePoll(tick, busy ? 1000 : 2000, [tick]);
 
   return state?.agentId === agentId ? state.result : null;

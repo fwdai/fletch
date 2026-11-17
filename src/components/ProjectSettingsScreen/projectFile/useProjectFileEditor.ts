@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, type ProjectFileEdit, type ProjectFileWhich } from "@/api";
+import type { ProjectFileEdit, ProjectFileWhich } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useGate } from "@/store/capabilities";
 import { useProjectFile } from "@/util/useProjectFile";
 import { fileReport } from "./files";
@@ -11,6 +12,7 @@ export type ProjectFileEditor = ReturnType<typeof useProjectFileEditor>;
  *  keeps a file, else just you), and one change at a time with its error.
  *  `run` and `edit` resolve whether the change went through. */
 export function useProjectFileEditor(projectId: string) {
+  const { api } = useEngine();
   const gate = useGate("projectFile");
   const editGate = useGate("projectFileEdit");
   const { status, approve } = useProjectFile(gate ? null : projectId);

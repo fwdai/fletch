@@ -11,7 +11,7 @@
 // three readers.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "@/api";
+import { useEngine } from "@/api/engine";
 import { loadDefaultWorkflowId } from "@/workflows/run/projectPipeline";
 import type { Definition } from "@/workflows/spec";
 
@@ -30,6 +30,7 @@ export interface ProjectWorkflows {
 }
 
 export function useProjectWorkflows(projectId: string | null): ProjectWorkflows {
+  const { api } = useEngine();
   const [definitions, setDefinitions] = useState<Definition[]>([]);
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -43,7 +44,7 @@ export function useProjectWorkflows(projectId: string | null): ProjectWorkflows 
     }
     let alive = true;
     setReady(false);
-    Promise.all([api.wfDefList().catch(() => []), loadDefaultWorkflowId(projectId)])
+    Promise.all([api.wfDefList().catch(() => []), loadDefaultWorkflowId(api, projectId)])
       .then(([defs, id]) => {
         if (!alive) return;
         setDefinitions(defs);
@@ -55,7 +56,7 @@ export function useProjectWorkflows(projectId: string | null): ProjectWorkflows 
     return () => {
       alive = false;
     };
-  }, [projectId]);
+  }, [projectId, api]);
 
   const resolve = useCallback(
     (workflowDefId: string | null) => {

@@ -31,6 +31,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
+import { activeEngine } from "@/api/engine";
 import { activeTransport, localTransport, type Transport } from "@/api/transport";
 import { createEnvironmentSwitchSlice } from "./environmentSwitch";
 import {
@@ -68,10 +69,10 @@ const remoteEntry = (over: Partial<EnvironmentEntry> = {}): EnvironmentEntry => 
 // state, which is all `switchEnvironment` ever does with them.
 const newStore = () => {
   const store = create<AppState>()(
-    (...a) =>
+    (set, get) =>
       ({
-        ...createEnvironmentsSlice(...a),
-        ...createEnvironmentSwitchSlice(...a),
+        ...createEnvironmentsSlice(set, get, activeEngine),
+        ...createEnvironmentSwitchSlice(set, get, activeEngine),
         workspace: null,
         selectedAgentId: null,
         composerDrafts: {},

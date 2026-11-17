@@ -1,4 +1,4 @@
-import { api, type DiscoveredCommand } from "../../api";
+import type { Api, DiscoveredCommand } from "../../api";
 import type { ProviderId } from "../providers";
 import { claudeCommandAdapter } from "./claude";
 import { codexCommandAdapter } from "./codex";
@@ -60,6 +60,7 @@ function merge(builtins: SlashCommand[], discovered: SlashCommand[]): SlashComma
  *  non-discoverable providers. Safe to call repeatedly; a failure degrades to
  *  builtins only. */
 export async function discoverCommands(
+  api: Api,
   provider: string,
   projectDir?: string,
 ): Promise<SlashCommand[]> {

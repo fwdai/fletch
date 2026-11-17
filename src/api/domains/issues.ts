@@ -1,4 +1,4 @@
-import { invoke, invokeLocal } from "../invoke";
+import { type Invoke, invokeLocal } from "../invoke";
 import type {
   IssueComment,
   IssueSource,
@@ -7,7 +7,7 @@ import type {
   TrackerIssue,
 } from "../types/issues";
 
-export const issuesApi = {
+export const issuesApi = (invoke: Invoke) => ({
   /** Open, relevant issues for a repo across every configured tracker source
    *  (GitHub by origin, Linear by the project's configured team): not closed,
    *  and unassigned or assigned to the signed-in user — never someone else's
@@ -37,4 +37,4 @@ export const issuesApi = {
   linearConnect: (apiKey: string) => invokeLocal<LinearStatus>("linear_connect", { apiKey }),
   linearDisconnect: () => invokeLocal<void>("linear_disconnect"),
   linearListTeams: () => invokeLocal<LinearTeam[]>("linear_list_teams"),
-};
+});

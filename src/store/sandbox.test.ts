@@ -15,6 +15,7 @@ import type {
   PublishApproval,
   PublishApprovalResolved,
 } from "@/api";
+import { activeEngine } from "@/api/engine";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { createSandboxSlice } from "./sandbox";
 
@@ -32,7 +33,7 @@ vi.mock("@/api", () => ({
 
 /** The slice creator and the actions, loosely typed: the test store carries
  *  only the sandbox slice, not the whole AppState. */
-type SliceFn = (set: unknown, get: unknown) => Record<string, unknown>;
+type SliceFn = (set: unknown, get: unknown, engine: unknown) => Record<string, unknown>;
 type Recv = (r: PublishApproval) => void;
 type Resolve = (e: PublishApprovalResolved) => void;
 type Load = () => Promise<void>;
@@ -41,7 +42,7 @@ describe("receivePublishApproval", () => {
   function store() {
     answerPublishApproval.mockClear();
     return create<Record<string, unknown>>((set, get) => ({
-      ...(createSandboxSlice as unknown as SliceFn)(set, get),
+      ...(createSandboxSlice as unknown as SliceFn)(set, get, activeEngine),
     }));
   }
 
@@ -224,7 +225,7 @@ describe("refreshBoxVms", () => {
     boxList.mockReset();
     activeIs(LOCAL_ENVIRONMENT_ID);
     return create<Record<string, unknown>>((set, get) => ({
-      ...(createSandboxSlice as unknown as SliceFn)(set, get),
+      ...(createSandboxSlice as unknown as SliceFn)(set, get, activeEngine),
     }));
   }
   const refresh = (s: ReturnType<typeof store>) => (s.getState().refreshBoxVms as Load)();
@@ -309,7 +310,7 @@ describe("egress prompts", () => {
     boxEgressAnswer.mockClear();
     boxEgressAnswer.mockResolvedValue(undefined);
     return create<Record<string, unknown>>((set, get) => ({
-      ...(createSandboxSlice as unknown as SliceFn)(set, get),
+      ...(createSandboxSlice as unknown as SliceFn)(set, get, activeEngine),
     }));
   }
   const prompt = (over: Partial<EgressPrompt> = {}): EgressPrompt => ({

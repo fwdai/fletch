@@ -1,11 +1,13 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { type AgentRecord, api } from "@/api";
+import type { AgentRecord } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useTerminalSearch } from "@/components/ui/TerminalSearch";
 import { getShellBuffer, registerShellSink } from "@/pty/buffers";
 import { useXterm } from "@/util/useXterm";
 
 export function TermPanel({ agent }: { agent: AgentRecord }) {
+  const { api } = useEngine();
   const search = useTerminalSearch();
 
   // ── Terminal setup ──────────────────────────────────────────────

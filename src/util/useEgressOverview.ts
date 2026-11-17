@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type EgressOverview, onBoxPolicy, onProjectFileChanged } from "@/api";
+import type { EgressOverview } from "@/api";
+import { useEngine } from "@/api/engine";
 import { useAppStore } from "@/store";
 
 /** The template's categories, in display order, as the Network lists name
@@ -21,6 +22,7 @@ export function useEgressOverview(
   projectId: string | null,
   skip = false,
 ): { overview: EgressOverview | null; reload: () => void } {
+  const { api, events } = useEngine();
   const [overview, setOverview] = useState<EgressOverview | null>(null);
   const [nonce, setNonce] = useState(0);
   const environmentId = useAppStore((s) => s.activeEnvironmentId);
@@ -40,10 +42,10 @@ export function useEgressOverview(
         .catch(() => {});
     read();
     const offs = [
-      onBoxPolicy((e) => {
+      events.onBoxPolicy((e) => {
         if (e.project_id === null || e.project_id === projectId) read();
       }),
-      onProjectFileChanged((e) => {
+      events.onProjectFileChanged((e) => {
         if (e.project_id === projectId) read();
       }),
     ];
@@ -51,7 +53,7 @@ export function useEgressOverview(
       live = false;
       for (const off of offs) void off.then((f) => f()).catch(() => {});
     };
-  }, [projectId, skip, environmentId, nonce]);
+  }, [projectId, skip, environmentId, nonce, api, events]);
 
   return { overview, reload };
 }
