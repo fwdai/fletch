@@ -20,7 +20,7 @@ describe("ProjectSelector", () => {
       <ProjectSelector projects={[project("a"), project("b")]} focus={[]} onChange={() => {}} />,
     );
     expect(trigger().getAttribute("data-tip")).toBe("All projects");
-    expect(trigger().classList.contains("active")).toBe(false);
+    expect(trigger().classList.contains("on")).toBe(false);
   });
 
   it("counts the focused projects and lights up", () => {
@@ -32,7 +32,7 @@ describe("ProjectSelector", () => {
       />,
     );
     expect(trigger().getAttribute("data-tip")).toBe("2 of 3 projects");
-    expect(trigger().classList.contains("active")).toBe(true);
+    expect(trigger().classList.contains("on")).toBe(true);
   });
 
   it("reports a signal from a hidden project, not from a shown one", () => {

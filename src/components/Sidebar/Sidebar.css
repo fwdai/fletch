@@ -106,18 +106,44 @@
 /* Static, so the menu anchors to the field and spans it. */
 .side-filter > .proj-select {
   position: static;
+  align-self: stretch;
   flex: none;
-  margin-right: 3px;
 }
-.side-scope:not(.active) {
+.side-filter-sep {
+  flex-shrink: 0;
+  align-self: stretch;
+  width: 1px;
+  margin: 6px 0;
+  background: var(--bd-soft);
+}
+.side-scope {
+  gap: 3px;
+  height: 100%;
+  padding: 0 6px 0 8px;
+  border-radius: 0 calc(var(--r-md) - 1px) calc(var(--r-md) - 1px) 0;
   color: var(--fg-2);
+  transition:
+    color 0.12s,
+    background 0.12s;
 }
+.side-scope:hover,
 .side-scope[aria-expanded="true"] {
   background: var(--hover);
+  color: var(--fg-0);
 }
 .side-scope:focus-visible {
   outline: 1px solid var(--accent-line);
   outline-offset: -1px;
+}
+.side-scope-icon {
+  position: relative;
+}
+.side-scope.on .side-scope-icon {
+  color: var(--accent);
+}
+.side-scope-chev {
+  flex-shrink: 0;
+  opacity: 0.6;
 }
 .side-filter-icon {
   flex-shrink: 0;
@@ -150,9 +176,6 @@
 .side-filter-clear:hover {
   background: var(--hover);
   color: var(--fg-0);
-}
-.side-filter > :is(.kbd, .side-filter-clear):not(:last-child) {
-  margin-right: 3px;
 }
 .side-beyond {
   display: block;
@@ -226,10 +249,10 @@
 .proj-signal[data-signal="running"] {
   background: var(--success);
 }
-.side-scope > .proj-signal {
+.side-scope-icon > .proj-signal {
   position: absolute;
-  top: 2px;
-  right: 2px;
+  top: -3px;
+  right: -4px;
 }
 .proj-select > .dd {
   left: 0;

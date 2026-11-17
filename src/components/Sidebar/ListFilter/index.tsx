@@ -32,7 +32,12 @@ export function ListFilter({
         onArrowDown={onArrowDown}
         compact={compact}
       />
-      {scoped && <ProjectSelector projects={projects} focus={focus} onChange={onFocusChange} />}
+      {scoped && (
+        <>
+          <span className="side-filter-sep" aria-hidden="true" />
+          <ProjectSelector projects={projects} focus={focus} onChange={onFocusChange} />
+        </>
+      )}
     </div>
   );
 }

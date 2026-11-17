@@ -1,5 +1,4 @@
 import { Icon } from "@/components/Icon";
-import { IconButton } from "@/components/ui/IconButton";
 import { MenuButton } from "@/components/ui/MenuButton";
 import type { ProjectFocus } from "../projectFocus";
 import { SIGNAL_LABEL, strongestSignal } from "../projectSignal";
@@ -28,17 +27,19 @@ export function ProjectSelector({ projects, focus, onChange }: Props) {
     <MenuButton
       anchorClassName="proj-select"
       trigger={(trigger) => (
-        <IconButton
-          size="sm"
-          className="side-scope"
-          active={narrowed}
-          tip={hidden ? `${scope}\n${hidden}` : scope}
+        <button
+          type="button"
+          className={`side-scope flex-center tip ${narrowed ? "on" : ""}`}
+          data-tip={hidden ? `${scope}\n${hidden}` : scope}
           aria-label={`Projects shown: ${shown}${hidden ? `. ${hidden}` : ""}`}
           {...trigger}
         >
-          <Icon name="layers" />
-          {hiddenSignal && <SignalDot signal={hiddenSignal} decorative />}
-        </IconButton>
+          <span className="side-scope-icon iflex-center">
+            <Icon name="layers" size={13} />
+            {hiddenSignal && <SignalDot signal={hiddenSignal} decorative />}
+          </span>
+          <Icon name="chevD" size={11} className="side-scope-chev" />
+        </button>
       )}
     >
       {(close) => (
