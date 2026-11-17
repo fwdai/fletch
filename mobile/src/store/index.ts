@@ -20,6 +20,7 @@ import {
 } from "../remote";
 import type { PushFletch } from "../remote/push";
 import { hostStoreOf, storeOfLink, useHostStore } from "./host";
+import { createNavSlice, homeItem, type NavSlice } from "./nav";
 import {
   forgetHost as forgetSavedHost,
   loadDestParent,
@@ -46,48 +47,11 @@ export {
   useHostStore,
 } from "./host";
 export { useHostNav } from "./hostNav";
+export type { AgentTab, NavItem, ScreenName, SheetName, SheetState } from "./nav";
 
 export type ThemeMode = "system" | "light" | "dark";
-export type ScreenName =
-  | "home"
-  | "project"
-  | "agent"
-  | "subagent"
-  | "code"
-  | "file"
-  | "diff"
-  | "providers";
-export type SheetName =
-  | "host"
-  | "newAgent"
-  | "newPlan"
-  | "addProject"
-  | "agentMore"
-  | "shipMore"
-  | "modelPicker"
-  | "accountPicker"
-  | "pr";
 
-export interface NavItem {
-  key: number;
-  screen: ScreenName;
-  /** What the screen shows. `hostKey` names the host it acts on (`withHost`
-   *  in store/hostNav); Home, which names none, acts on the host on screen. */
-  props: Record<string, string>;
-  phase: "enter" | "idle" | "leave";
-}
-
-/** The agent screen's tabs, as its `tab` nav prop names them. */
-export type AgentTab = "chat" | "changes" | "ship";
-
-export interface SheetState {
-  name: SheetName;
-  /** As a screen's: `hostKey` names the host the sheet acts on. */
-  props: Record<string, string>;
-  open: boolean;
-}
-
-export interface AppState {
+export interface AppState extends NavSlice {
   ready: boolean;
   /** How far the `connect` in flight has got, and null when none is.
    *
@@ -126,8 +90,6 @@ export interface AppState {
   /** Home lists projects with recent agent activity first (see
    *  `lib/activeProjects`). Off keeps the host's order. */
   activeFirst: boolean;
-  nav: NavItem[];
-  sheet: SheetState | null;
   /** The last failed action, on whichever host it ran: one banner for all. */
   lastError: string | null;
 
@@ -157,14 +119,7 @@ export interface AppState {
   setSystemTheme(t: "light" | "dark"): void;
   setActiveFirst(on: boolean): void;
   clearError(): void;
-
-  push(screen: ScreenName, props?: Record<string, string>): void;
-  pop(): void;
   openFromPush(fletch: PushFletch): void;
-  openSheet(name: SheetName, props?: Record<string, string>): void;
-  /** Close whatever sheet is open. Safe to hand straight to an `onClose` or
-   *  `onClick`: it ignores its arguments. */
-  closeSheet(): void;
 }
 
 let initialized = false;
@@ -195,8 +150,6 @@ let queuedLink: HostTarget | null = null;
  *  dialled, until it lands (`adopt`) or is called off (`callOffPairing`). A
  *  failed one stays, in case its client is still retrying. */
 let pairing: HostLink | null = null;
-
-const homeItem = (): NavItem => ({ key: Date.now(), screen: "home", props: {}, phase: "idle" });
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -360,8 +313,6 @@ export const appStore = createStore<AppState>()((set, get) => {
     theme: "dark",
     systemTheme: "dark",
     activeFirst: true,
-    nav: [{ key: 1, screen: "home", props: {}, phase: "idle" }],
-    sheet: null,
     lastError: null,
 
     async init() {
@@ -578,29 +529,6 @@ export const appStore = createStore<AppState>()((set, get) => {
       set({ lastError: null });
     },
 
-    push(screen, props = {}) {
-      const key = Date.now() + Math.random();
-      set((s) => ({ nav: [...s.nav, { key, screen, props, phase: "enter" }] }));
-      // Two frames so the enter transform is painted before it is released.
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() =>
-          set((s) => ({
-            nav: s.nav.map((i) =>
-              i.key === key && i.phase === "enter" ? { ...i, phase: "idle" } : i,
-            ),
-          })),
-        ),
-      );
-    },
-
-    pop() {
-      const live = get().nav.filter((i) => i.phase !== "leave");
-      if (live.length <= 1) return;
-      const top = live[live.length - 1];
-      set((s) => ({ nav: s.nav.map((i) => (i.key === top.key ? { ...i, phase: "leave" } : i)) }));
-      setTimeout(() => set((s) => ({ nav: s.nav.filter((i) => i.phase !== "leave") })), 470);
-    },
-
     /** A tapped alert (docs/remote-protocol.md, "Push notifications"). The stack
      *  is reset first: waking straight into whatever five screens were open last
      *  session is a maze, and the tap named exactly one place to be. */
@@ -626,12 +554,7 @@ export const appStore = createStore<AppState>()((set, get) => {
       hostStoreOf(hostId).getState().openAgent(agentId, pushTab(fletch.kind));
     },
 
-    openSheet(name, props = {}) {
-      set({ sheet: { name, props, open: true } });
-    },
-    closeSheet() {
-      set((s) => (s.sheet ? { sheet: { ...s.sheet, open: false } } : s));
-    },
+    ...createNavSlice(set, get),
   };
 });
 
