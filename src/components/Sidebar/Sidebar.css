@@ -170,7 +170,10 @@
   color: var(--fg-3);
   pointer-events: none;
 }
+/* Raised off the baseline so the smaller glyphs centre on the field. */
 .side-filter-keys {
+  position: relative;
+  top: -1px;
   margin-left: 7px;
   font-size: 10px;
   letter-spacing: 0.06em;
