@@ -195,13 +195,21 @@ class PushPlugin: Plugin, UNUserNotificationCenterDelegate {
   }
 
   /// Which APNs host can reach this build, read from the profile the build was
-  /// actually signed with rather than from a compile-time flag — a TestFlight
-  /// build of the same source needs `production`. A simulator build has no
-  /// embedded profile and cannot receive a real push anyway, so it reports
-  /// `sandbox`.
+  /// actually signed with rather than from a compile-time flag. A build from
+  /// Xcode or an ad hoc one embeds that profile, which names it. An App Store
+  /// or TestFlight build embeds none — Apple re-signs it — and is always on
+  /// `production`. A simulator build has no profile either and cannot receive
+  /// a real push anyway, so it reports `sandbox`.
   private static func apsEnvironment() -> String {
-    guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
-      let raw = try? Data(contentsOf: url),
+    guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision")
+    else {
+      #if targetEnvironment(simulator)
+        return "sandbox"
+      #else
+        return "production"
+      #endif
+    }
+    guard let raw = try? Data(contentsOf: url),
       // The profile is CMS-signed with a plist in the middle; slice the plist
       // out rather than pull in a decoder for the envelope.
       let text = String(data: raw, encoding: .isoLatin1),
