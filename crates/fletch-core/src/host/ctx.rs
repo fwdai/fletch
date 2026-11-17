@@ -38,6 +38,10 @@ pub struct EngineCtx {
     /// Serializes account switches against removal and sign-out
     /// (`accounts::AccountLocks`).
     pub account_locks: crate::agent::accounts::AccountLocks,
+    /// This host's id (its public key, base64url), set once during boot when
+    /// the remote state loaded or created the key. Unset on a host whose
+    /// remote dir is unusable, and before boot reaches that step.
+    host_id: OnceLock<String>,
 }
 
 impl EngineCtx {
@@ -50,7 +54,21 @@ impl EngineCtx {
             context: OnceLock::new(),
             focus,
             account_locks: Default::default(),
+            host_id: OnceLock::new(),
         }
+    }
+
+    /// Publish this host's id. Boot calls this once; an empty id (no key) is
+    /// not an identity and is ignored.
+    pub fn set_host_id(&self, id: String) {
+        if !id.is_empty() {
+            let _ = self.host_id.set(id);
+        }
+    }
+
+    /// The id other devices know this host by, or `None` when it has no key.
+    pub fn host_id(&self) -> Option<&str> {
+        self.host_id.get().map(String::as_str)
     }
 
     /// The project context store. Built lazily because it mints this host's

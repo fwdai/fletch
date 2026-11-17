@@ -656,6 +656,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
             // `remote_status` panics the moment Settings opens. Such a failure
             // travels as `RemoteStatus::error` instead.
             let state = crate::remote::RemoteState::new(&data_dir.join("remote"), dispatch);
+            ctx.set_host_id(state.host_id());
             // Forwarding rides the broadcast; the push-alert tap has to run
             // inside each emit, so it comes back as a sink and joins the fanout
             // here (see `remote::push`).

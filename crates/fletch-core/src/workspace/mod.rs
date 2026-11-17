@@ -460,6 +460,48 @@ pub struct ProjectRef {
     /// initial.
     #[serde(default)]
     pub icon_hash: Option<String>,
+    /// Whose project this is, when this host only runs it (a copy made by
+    /// `ensure_project`). `None` for a project this host owns. Absent from a
+    /// host that predates project copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<ProjectHome>,
+}
+
+/// The device a project belongs to: the one it was added on, and the only one
+/// that edits it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectHome {
+    /// The home's host id (its public key, base64url): what a client that has
+    /// paired with that device already knows it by.
+    pub device: String,
+    /// What the home called itself when this was written, for a row shown
+    /// while the home is out of reach.
+    pub name: String,
+}
+
+/// A project as another device needs it to run one of its workspaces: its
+/// identity and where to clone each repository from. Written by the home
+/// (`project_definition`) and handed to the device that will run the
+/// workspace (`ensure_project`); small enough for a client to keep, so it can
+/// start a workspace on a host while the home is out of reach.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectDefinition {
+    pub project_id: String,
+    pub name: String,
+    pub home: ProjectHome,
+    /// In the project's own order; the first is its primary repository.
+    pub repos: Vec<RepoDefinition>,
+}
+
+/// One repository of a [`ProjectDefinition`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoDefinition {
+    /// The folder name the repository has on its home, and gets in a copy.
+    pub dir: String,
+    /// Its `origin` URL. `None` for a repository that has no remote, which no
+    /// other device can clone.
+    pub origin: Option<String>,
+    pub label: Option<String>,
 }
 
 /// What the DB phase of an attach changed, so the command layer can undo it

@@ -55,7 +55,7 @@ impl WorkspaceManager {
 
     /// Give a project the icon its repositories already have, unless it has a
     /// choice on record (`icon_detect`): on add and on relocate.
-    fn detect_icon(&self, project_id: &str) -> bool {
+    pub(crate) fn detect_icon(&self, project_id: &str) -> bool {
         let repos = self.project_repo_paths(project_id);
         crate::icon_detect::detect_if_unset(&self.db, project_id, &repos)
     }
@@ -460,6 +460,96 @@ impl WorkspaceManager {
 
     /// All repo paths attached to a project, in creation order (the first is
     /// the primary). Used at spawn to provision one checkout per project repo.
+    /// A project's name, whose it is when it is a copy, and its repositories
+    /// (path and label) in the project's own order: what
+    /// `commands::project_definition_impl` describes to another device.
+    #[allow(clippy::type_complexity)]
+    pub fn project_outline(
+        &self,
+        project_id: &str,
+    ) -> Result<(String, Option<ProjectHome>, Vec<(PathBuf, Option<String>)>)> {
+        let conn = self.db.lock();
+        let (name, home_device, home_name): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT name, home_device, home_name FROM projects WHERE id = ?1",
+                [project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|_| Error::Other(format!("project not found: {project_id}")))?;
+        let mut stmt = conn.prepare(
+            "SELECT path, label FROM repos WHERE project_id = ?1 ORDER BY created_at, rowid",
+        )?;
+        let repos = stmt
+            .query_map([project_id], |row| {
+                Ok((PathBuf::from(row.get::<_, String>(0)?), row.get(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let home = home_device.map(|device| ProjectHome {
+            device,
+            name: home_name.unwrap_or_default(),
+        });
+        Ok((name, home, repos))
+    }
+
+    /// Whether this host owns the project `project_id`: `Some(true)` for one
+    /// added here, `Some(false)` for a copy of another device's, `None` when
+    /// there is no such project.
+    pub fn owns_project(&self, project_id: &str) -> Option<bool> {
+        self.db
+            .lock()
+            .query_row(
+                "SELECT home_device IS NULL FROM projects WHERE id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    /// Write the project row of a copy of `def`: created on first sight, and
+    /// on every later one brought up to the name the home has for it now. A
+    /// project this host owns is never touched.
+    pub fn upsert_project_copy(&self, def: &ProjectDefinition) -> Result<()> {
+        self.db.lock().execute(
+            "INSERT INTO projects (id, name, created_at, home_device, home_name)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, home_name = excluded.home_name
+             WHERE projects.home_device IS NOT NULL",
+            rusqlite::params![
+                def.project_id,
+                def.name,
+                now_millis(),
+                def.home.device,
+                def.home.name
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Record the clone at `path` as a repository of the copy `project_id`.
+    /// Idempotent. `order` keeps the home's order among repositories recorded
+    /// in the same millisecond.
+    pub fn record_copy_repo(
+        &self,
+        project_id: &str,
+        path: &Path,
+        label: Option<&str>,
+        order: usize,
+    ) -> Result<()> {
+        self.db.lock().execute(
+            "INSERT INTO repos (id, project_id, path, label, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(path) DO NOTHING",
+            rusqlite::params![
+                uuid::Uuid::new_v4().to_string(),
+                project_id,
+                path.to_string_lossy(),
+                label,
+                now_millis() + order as i64
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn project_repo_paths(&self, project_id: &str) -> Vec<PathBuf> {
         let conn = self.db.lock();
         let mut stmt = match conn

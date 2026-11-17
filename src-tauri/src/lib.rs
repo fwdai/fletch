@@ -1262,6 +1262,8 @@ pub fn run() {
             commands::project_icon_candidates,
             commands::project_icon_set,
             commands::project_icon_get,
+            commands::project_definition,
+            commands::ensure_project,
             commands::gh_status,
             commands::git_identity,
             commands::gh_repo_list,

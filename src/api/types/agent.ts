@@ -190,6 +190,38 @@ export interface ProjectRef {
   /** The project's icon, by hash: fetch it with `projectIconGet` when this
    *  changes. Null (or absent, from an older host) draws the initial. */
   icon_hash?: string | null;
+  /** Whose project this is, when the host only runs it (a copy made by
+   *  `ensure_project`). Absent for a project the host owns. */
+  home?: ProjectHome;
+}
+
+/** The device a project belongs to: the one it was added on, and the only one
+ *  that edits it. */
+export interface ProjectHome {
+  /** The home's host id, the key a client that paired with it knows it by. */
+  device: string;
+  /** What the home called itself when this was written. */
+  name: string;
+}
+
+/** A project as another device needs it to run one of its workspaces
+ *  (`project_definition` on its home, `ensure_project` on the device that will
+ *  run it). Small enough to keep, so a workspace can be started on a host
+ *  while the home is out of reach. */
+export interface ProjectDefinition {
+  project_id: string;
+  name: string;
+  home: ProjectHome;
+  /** In the project's own order; the first is its primary repository. */
+  repos: RepoDefinition[];
+}
+
+export interface RepoDefinition {
+  /** The repository's folder name. */
+  dir: string;
+  /** Its `origin` URL; null for a repository no other device can clone. */
+  origin: string | null;
+  label: string | null;
 }
 
 /** A project's stored icon (`project_icon_get`): a built-in glyph or an image's

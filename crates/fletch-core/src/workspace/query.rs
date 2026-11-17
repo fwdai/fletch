@@ -56,7 +56,7 @@ impl WorkspaceManager {
     /// than the repo silently vanishing from the sidebar.
     pub(super) fn query_project_refs(conn: &Connection) -> Vec<ProjectRef> {
         let mut stmt = match conn.prepare(
-            "SELECT r.path, p.name, p.id, r.label, s.value
+            "SELECT r.path, p.name, p.id, r.label, s.value, p.home_device, p.home_name
              FROM repos r LEFT JOIN projects p ON p.id = r.project_id
              LEFT JOIN project_settings s ON s.project_id = r.project_id AND s.key = ?1
              ORDER BY r.created_at",
@@ -70,6 +70,8 @@ impl WorkspaceManager {
             let project_id: Option<String> = row.get(2)?;
             let label: Option<String> = row.get(3)?;
             let icon_hash: Option<String> = row.get(4)?;
+            let home_device: Option<String> = row.get(5)?;
+            let home_name: Option<String> = row.get(6)?;
             let name = name.unwrap_or_else(|| {
                 Path::new(&path)
                     .file_name()
@@ -85,6 +87,10 @@ impl WorkspaceManager {
                 label,
                 native_app,
                 icon_hash,
+                home: home_device.map(|device| ProjectHome {
+                    device,
+                    name: home_name.unwrap_or_default(),
+                }),
             })
         })
         .ok()
@@ -313,11 +319,15 @@ impl WorkspaceManager {
     }
 
     pub(super) fn find_or_create_project(conn: &Connection, name: &str) -> Result<String> {
-        // Try to find an existing project by name.
+        // Try to find an existing project by name, among the projects this
+        // host owns: a folder added here never joins another device's project
+        // because the two happen to share a name.
         let existing: Option<String> = conn
-            .query_row("SELECT id FROM projects WHERE name = ?1", [name], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT id FROM projects WHERE name = ?1 AND home_device IS NULL",
+                [name],
+                |row| row.get(0),
+            )
             .ok();
 
         if let Some(id) = existing {

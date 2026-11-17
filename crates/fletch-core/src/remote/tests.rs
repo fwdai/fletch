@@ -717,6 +717,8 @@ fn allowlist_matches_the_protocol_table() {
         "project_icon_candidates",
         "project_icon_set",
         "project_icon_get",
+        "project_definition",
+        "ensure_project",
         "offer_invite",
         "register_push",
     ];
