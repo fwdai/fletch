@@ -139,6 +139,8 @@ describe("switching hosts", () => {
     await expect(app().switchHost(STUDIO)).rejects.toThrow("Can't reach the Mac");
     expect(app().hostKey).toBe(STUDIO);
     expect(host().connectionError).toBe("Can't reach the Mac");
+    // Back on the studio, nothing it showed before the switch away comes back.
+    expect(host().logs).toEqual({});
 
     await app().switchHost(MINI);
     await liveOn(MINI);
