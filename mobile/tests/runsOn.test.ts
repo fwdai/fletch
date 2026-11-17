@@ -298,7 +298,10 @@ describe("Runs on, with two hosts paired", () => {
     // The sheet is the studio's now, with the prompt as it was.
     expect(app().sheet?.props).toEqual({ hostKey: STUDIO, projectId: "prj-atlas" });
     expect(picked()).toBe("Studio Mac");
-    expect(notes()).toEqual([]);
+    // On a copy, the row says what a copy starts from.
+    expect(notes()).toEqual([
+      "Starts from the branch as pushed. Commits not pushed from Mac mini are not included.",
+    ]);
     expect(field().value).toBe("Map the atlas tiles");
 
     const push = vi.fn();
