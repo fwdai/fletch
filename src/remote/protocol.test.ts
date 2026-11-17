@@ -316,6 +316,25 @@ describe("envelope", () => {
     await expect(call).rejects.toThrow("unknown op");
   });
 
+  it("refuses a call until the handshake has finished, and sends nothing for it", async () => {
+    const fake = fakeSocket();
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    // The socket is open and `hello` is out, unanswered: the host would close
+    // on anything else said now.
+    expect(client.state).toBe("connecting");
+    await expect(client.call("get_workspace")).rejects.toThrow("not connected");
+    expect(fake.sent).toHaveLength(1);
+
+    fake.reply(helloOk(fake.sent[0].id as string));
+    await connected;
+    const read = client.call<null>("get_workspace");
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(2));
+    fake.reply({ id: fake.sent[1].id, ok: true, result: null });
+    await expect(read).resolves.toBeNull();
+  });
+
   it("pins the host key on first contact when the target had none", async () => {
     const fake = fakeSocket();
     const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
@@ -1039,6 +1058,32 @@ describe("confirmed pairing", () => {
     await pairing;
     // Spent: a reconnect says `hello`, not `pair_request`.
     expect(client.target?.confirm).toBeUndefined();
+  });
+
+  it("says nothing else on the socket while the Mac decides", async () => {
+    const fake = fakeSocket();
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    const pairing = client.connect({ host: "h", port: 1, hostKey: HOST_KEY, confirm: true });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply({ id: fake.sent[0].id, ok: true, result: { nonce: "host-n" } });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    expect(fake.sent[1].op).toBe("pair_confirm");
+
+    // A window coming back into focus re-reads the workspace. The host would
+    // close the connection, and the pairing with it.
+    await expect(client.call("get_workspace")).rejects.toThrow("not connected");
+    expect(fake.sent).toHaveLength(2);
+
+    fake.reply({
+      id: fake.sent[1].id,
+      ok: true,
+      result: { deviceId: "d", host: { name: "Mac", appVersion: "1", os: "macos" }, relay: null },
+    });
+    // The handshake's own read still goes out.
+    await vi.waitFor(() => expect(fake.sent.length).toBe(3));
+    expect(fake.sent[2].op).toBe("get_workspace");
+    fake.reply({ id: fake.sent[2].id, ok: true, result: null });
+    await expect(pairing).resolves.toMatchObject({ host: { name: "Mac" } });
   });
 
   it("is not retried when the Mac says no — asking again is the user's call", async () => {

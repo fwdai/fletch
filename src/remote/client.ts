@@ -266,7 +266,12 @@ export class ProtocolClient implements RemoteClient {
     args: Record<string, unknown> = {},
     opts: CallOptions = {},
   ): Promise<T> {
-    if (!this.socket) throw new Error("not connected");
+    // Not before the handshake has finished, though the socket is there: the
+    // host closes a connection that says anything else while `pair` or `hello`
+    // is unanswered, or while the person at the Mac decides on a confirmed
+    // pairing, so a request then would end the attempt it rode on. The
+    // handshake's own frames go through `request`.
+    if (!this.socket || this._state !== "connected") throw new Error("not connected");
     return this.request<T>(op, args, opts.timeoutMs ?? 0);
   }
 
@@ -517,7 +522,7 @@ export class ProtocolClient implements RemoteClient {
       // state above says `connected`, but there is nothing to show until this
       // answers, and over a relay it is not instant.
       this.step("workspace");
-      const workspace = await this.call<HelloResult["workspace"]>("get_workspace");
+      const workspace = await this.request<HelloResult["workspace"]>("get_workspace", {});
       return this.publishSnapshot({
         host: paired.host,
         workspace,
