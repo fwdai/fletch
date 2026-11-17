@@ -72,6 +72,11 @@ export function sheetOf(hostKey: string | null, name: SheetName): SheetState | n
 export const pushOn = (hostKey: string, screen: ScreenName, props?: Props): void =>
   appStore.getState().push(screen, withHost(hostKey, props));
 
+/** Open the `name` sheet on `hostKey`'s host — or, while it is up, move it
+ *  there: it stays up, and acts on that host from then on. */
+export const openSheetOn = (hostKey: string, name: SheetName, props?: Props): void =>
+  appStore.getState().openSheet(name, withHost(hostKey, props));
+
 /** Close the sheet if it is `hostKey`'s — and with `name`, only if it is that
  *  one. For an action finishing late, which must not dismiss what the user
  *  opened since, on this host or another. */

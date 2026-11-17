@@ -60,16 +60,18 @@
   margin: 0 -3px 0 -2px;
 }
 /* The host chip and the providers button as one control: the chip keeps its
-   look on its own (`alone`, an older host), and gains a right-hand cog on a
-   host that lists its accounts. Also the anchor for the switcher's menu. */
+   look on its own (`alone`: an older host, or several hosts), and gains a
+   right-hand cog on a lone host that lists its accounts. Also the anchor for
+   the chip's menu. */
 .host-pair {
   position: relative;
   display: inline-flex;
   align-items: stretch;
   flex-shrink: 0;
 }
-/* The host switcher's dropdown under the chip: every paired host, then adding
-   one and the Host sheet. The backdrop only catches the tap that closes it. */
+/* The dropdown under the host chip: every paired host, then adding one — and,
+   with one host, its Host sheet. The backdrop only catches the tap that closes
+   it. */
 .host-menu-bg {
   position: fixed;
   inset: 0;
@@ -540,6 +542,13 @@
 /* The appearance switch is a control, not a value: give it room to breathe. */
 .kv .seg {
   min-width: 200px;
+}
+/* A line that opens somewhere, its chevron where the value would be. */
+button.kv {
+  width: 100%;
+  align-items: center;
+  text-align: left;
+  color: var(--fg-3);
 }
 
 /* progress steps (spawn + PR) */
