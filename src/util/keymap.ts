@@ -48,9 +48,9 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       {
         id: "search",
         combos: ["Mod+Shift+F"],
-        label: "Filter the sidebar",
+        label: "Search the sidebar",
         description:
-          "Focus the sidebar filter, showing the sidebar if hidden; ↓ steps into the list.",
+          "Focus the sidebar search, showing the sidebar if hidden; ↓ steps into the list.",
       },
       {
         id: "focusProject",
