@@ -101,6 +101,15 @@ export function useAttachments() {
     setItems([]);
   }, []);
 
+  // A staged path is a file on the host that took it, so a composer that moves
+  // to another host (a sheet picking a project there) starts with none.
+  const stagedOn = useRef(api);
+  useEffect(() => {
+    if (stagedOn.current === api) return;
+    stagedOn.current = api;
+    clear();
+  }, [api, clear]);
+
   return {
     items,
     /** Staged paths, in the order they were picked, for the message. */

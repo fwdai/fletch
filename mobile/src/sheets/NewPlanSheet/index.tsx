@@ -2,14 +2,17 @@ import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { useAttachments } from "../../attachments";
 import { PromptField } from "../../components/PromptField";
-import { PickerSheet, ProjectIcon, Sheet } from "../../components/ui";
+import { ProjectIcon, Sheet } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { ignore } from "../../lib/ignore";
-import { primaryPath, projectsOf } from "../../lib/projects";
 import { useApp, useHostStore } from "../../store";
+import { ProjectPickerSheet } from "../ProjectPickerSheet";
+import { useProjectChoice } from "../useProjectChoice";
 
 /** The idea you had on the way somewhere: pick the project, say the thing, and
- *  the project's Project Manager picks it up from there.
+ *  the project's Project Manager picks it up from there — on the host the
+ *  sheet acts on (`useProjectChoice`): the project's speaking host, where its
+ *  roadmap is.
  *
  *  Deliberately thinner than the New Agent sheet — no runner and no base
  *  branch. A PM chat runs under the Project Manager preset (its own model and
@@ -24,15 +27,11 @@ export function NewPlanSheet({
   onClose: () => void;
   projectId?: string;
 }) {
-  // Derived from the snapshot, not selected: `projectsOf` is stable per
-  // snapshot, so neither the render nor the reset effect below loops.
-  const workspace = useHostStore((s) => s.workspace);
-  const projects = projectsOf(workspace);
+  const { entries, entry, project, pick } = useProjectChoice("newPlan", open, projectId);
   const startPlanningChat = useHostStore((s) => s.startPlanningChat);
   const lastError = useApp((s) => s.lastError);
   const clearError = useApp((s) => s.clearError);
 
-  const [pid, setPid] = useState(projectId ?? projects[0]?.id ?? "");
   const [prompt, setPrompt] = useState("");
   const [picking, setPicking] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -41,15 +40,11 @@ export function NewPlanSheet({
   const [dictating, setDictating] = useState(false);
   const attachments = useAttachments();
 
-  const project = projects.find((p) => p.id === pid) ?? projects[0];
-
-  const firstProjectId = projects[0]?.id;
   useEffect(() => {
     if (!open) return;
-    setPid(projectId ?? firstProjectId ?? "");
     setStarting(false);
     clearError();
-  }, [open, projectId, firstProjectId, clearError]);
+  }, [open, clearError]);
 
   if (!project) {
     return (
@@ -141,18 +136,12 @@ export function NewPlanSheet({
           </button>
         </div>
       </Sheet>
-      <PickerSheet
+      <ProjectPickerSheet
         open={picking}
         onClose={() => setPicking(false)}
-        title="Project"
-        items={projects.map((p) => ({
-          id: p.id,
-          label: p.name,
-          sub: primaryPath(p),
-          icon: <ProjectIcon project={p} />,
-        }))}
-        value={pid}
-        onChange={setPid}
+        entries={entries}
+        value={entry}
+        onPick={pick}
       />
     </>
   );
