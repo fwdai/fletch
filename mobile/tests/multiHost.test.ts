@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChatItem } from "../src/adapters";
 import { linkOf } from "../src/host";
 import type { HostTarget } from "../src/remote";
+import { registerMockHost } from "../src/remote/mock";
 import { appStore, hostOnScreen, hostStoreOf } from "../src/store";
 import { loadSettings } from "../src/store/persist";
 
@@ -157,24 +158,29 @@ describe("switching hosts", () => {
   });
 
   it("dials a host that is down with no retry coming, and can still switch away from it", async () => {
-    // Down for good — what a refused dial leaves — rather than retrying.
-    linkOf(STUDIO).client.disconnect();
-    const connect = vi
-      .spyOn(linkOf(STUDIO).client, "connect")
-      .mockRejectedValueOnce(new Error("Can't reach the Mac"));
-    await expect(app().switchHost(STUDIO)).rejects.toThrow("Can't reach the Mac");
+    // Down for good — what a refused dial leaves — rather than retrying; and
+    // asleep, so the dial goes unanswered.
+    const { client } = linkOf(STUDIO);
+    client.disconnect();
+    registerMockHost(STUDIO, { unreachable: true });
+    const connect = vi.spyOn(client, "connect");
+    await expect(app().switchHost(STUDIO)).rejects.toThrow("No answer from your Mac");
     expect(connect).toHaveBeenCalledOnce();
     expect(connect.mock.calls[0][0]).toMatchObject({ host: "10.0.0.7", hostKey: STUDIO });
     expect(connect.mock.calls[0][0].pairingToken).toBeUndefined();
     expect(app().hostKey).toBe(STUDIO);
-    expect(host().connectionError).toBe("Can't reach the Mac");
+    expect(host().connectionError).toContain("No answer from your Mac");
+    // The client's own retry carries on from here.
+    expect(host().retrying).toBe(true);
 
     await app().switchHost(MINI);
     await liveOn(MINI);
-    // Picked again, it is dialled again — and answers this time.
-    connect.mockRestore();
+    // Awake again: picked again, it is left to that retry, which lands.
+    registerMockHost(STUDIO, {});
     await app().switchHost(STUDIO);
+    expect(connect).toHaveBeenCalledOnce();
     await liveOn(STUDIO);
+    connect.mockRestore();
     await app().switchHost(MINI);
     await liveOn(MINI);
   });

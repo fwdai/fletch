@@ -346,9 +346,12 @@ function watch(set: Set, get: Get, link: HostLink): void {
 }
 
 /** Connect a paired host's link, greeting it with `hello` — this device is
- *  already registered there. Its store shows how far the dial has got and how
- *  it failed; from then on the client keeps the link up on its own, retrying
- *  with backoff for as long as the host is paired. */
+ *  already registered there. Its store shows how far the dial has got, and
+ *  how it failed through the client's own report — which a dial superseded by
+ *  a newer attempt on the link (a pairing link naming this host) never makes,
+ *  so the newer one's outcome is what shows. From then on the client keeps the
+ *  link up on its own, retrying with backoff for as long as the host is
+ *  paired. */
 async function dial(set: Set, get: Get, saved: SavedHost): Promise<void> {
   const link = linkOf(saved.hostKey);
   const host = storeOfLink(link);
@@ -357,9 +360,6 @@ async function dial(set: Set, get: Get, saved: SavedHost): Promise<void> {
   const off = link.client.onStep((dialStep) => host.setState({ dialStep }));
   try {
     await link.client.connect(targetOf(saved));
-  } catch (e) {
-    host.setState({ connectionError: message(e) });
-    throw e;
   } finally {
     off();
     host.setState({ dialStep: null });
@@ -384,14 +384,14 @@ function callOffPairing(get: Get): void {
  *  slowly. */
 function wake(link: HostLink): void {
   const { client } = link;
-  const store = storeOfLink(link);
   // A retry waiting out its backoff was scheduled while the phone was away;
   // the user looking at the app is reason enough to dial now.
   if (client.retrying) {
-    void store.getState().reconnect().catch(ignore);
+    void storeOfLink(link).getState().reconnect().catch(ignore);
     return;
   }
   if (client.state !== "connected") return;
+  const store = storeOfLink(link);
   void (async () => {
     const alive = await withTimeout(
       store.getState().refreshWorkspace(),

@@ -55,6 +55,9 @@ export interface MockHostSpec {
   workspace?: Workspace;
   records?: Record<string, SessionRecord[]>;
   turns?: Record<string, UserTurn[]>;
+  /** A Mac that does not answer: every dial to it times out, as one to a Mac
+   *  that is asleep does. */
+  unreachable?: boolean;
 }
 
 /** The hosts given an identity of their own (`registerMockHost`), by key. */
@@ -1207,13 +1210,12 @@ export class MockHost {
  *  that expects none, a pairing by address, is answered as `MOCK_HOST_KEY`, so
  *  pinning behaves as it does against a real host. */
 export function mockSocket(opts: MockOptions = {}): SocketFactory {
-  return async (_url, handlers, dial) => {
+  return async (url, handlers, dial) => {
     const hostKey = dial?.hostKey ?? MOCK_HOST_KEY;
-    const host = new MockHost(
-      (frame) => handlers.onMessage(JSON.stringify(frame)),
-      opts,
-      specs.get(hostKey),
-    );
+    const spec = specs.get(hostKey);
+    // Worded as the transport words it, so the client reports it as it would.
+    if (spec?.unreachable) throw new Error(`cannot reach ${url}: timed out`);
+    const host = new MockHost((frame) => handlers.onMessage(JSON.stringify(frame)), opts, spec);
     host.onClose = (code) => {
       host.close();
       handlers.onClose(code);
