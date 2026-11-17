@@ -6,25 +6,18 @@
 import { buildCatalog } from "@desktop/data/modelCatalog/build";
 import type { ModelsDevIndex } from "@desktop/data/modelCatalog/modelsDev";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { linkOf } from "../src/host";
-import { loadModels, modelsFor } from "../src/lib/models";
+import { CATALOG_TTL_MS, loadModels, modelsFor, modelsOf } from "../src/lib/models";
 
-const mocks = vi.hoisted(() => ({
-  refreshCatalog: vi.fn(),
-  loadCachedCatalog: vi.fn(() => ({ byId: {}, byAgent: {} })),
-}));
+const mocks = vi.hoisted(() => ({ rebuildCatalog: vi.fn() }));
 
-vi.mock("@desktop/data/modelCatalog", () => ({
-  loadCachedCatalog: mocks.loadCachedCatalog,
-  refreshCatalog: mocks.refreshCatalog,
-}));
+vi.mock("@desktop/data/modelCatalog", () => ({ rebuildCatalog: mocks.rebuildCatalog }));
 
-/** Whether the call at `index` asked for a forced rebuild. */
-const forced = (index: number) => mocks.refreshCatalog.mock.calls[index][1];
-
-/** Let queued refreshes reach their `refreshCatalog` call. */
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+/** A host key no earlier case has built a catalog for: the catalogs are kept
+ *  for the life of the module, as they are for the life of the app. */
+let hosts = 0;
+const freshHost = () => linkOf(`models-host-${++hosts}`);
 
 const index: ModelsDevIndex = {
   byId: {
@@ -76,72 +69,92 @@ describe("modelsFor", () => {
 
 describe("loadModels", () => {
   const catalog = { byId: {}, byAgent: { codex: [] } };
+  const onA = { byId: {}, byAgent: { claude: [] } };
+  const onB = { byId: {}, byAgent: { codex: [] } };
 
   beforeEach(() => {
-    localStorage.clear();
-    mocks.refreshCatalog.mockReset();
-    mocks.refreshCatalog.mockResolvedValue(catalog);
+    mocks.rebuildCatalog.mockReset();
+    mocks.rebuildCatalog.mockResolvedValue(catalog);
   });
 
-  it("rebuilds for a host the cache wasn't built from", async () => {
-    // Half the catalog is the host's installed CLIs, so a phone re-paired to
-    // another Mac must not serve the previous host's lists for up to an hour.
-    await loadModels(linkOf("host-a"));
-    await loadModels(linkOf("host-b"));
+  afterEach(() => vi.useRealTimers());
 
-    expect(forced(1)).toBe(true);
+  it("builds each host a catalog of its own, from that host's discovery", async () => {
+    // Half a catalog is the host's installed CLIs, so one host must never be
+    // served another's lists.
+    const a = freshHost();
+    const b = freshHost();
+    mocks.rebuildCatalog.mockImplementation(async (discover) =>
+      discover === a.api.discoverSupportedModels ? onA : onB,
+    );
+
+    expect(await loadModels(a)).toEqual(onA.byAgent);
+    expect(await loadModels(b)).toEqual(onB.byAgent);
+    expect(modelsOf(a.hostKey)).toEqual(onA.byAgent);
+    expect(modelsOf(b.hostKey)).toEqual(onB.byAgent);
+    expect(mocks.rebuildCatalog).toHaveBeenCalledTimes(2);
   });
 
-  it("serves the cache while the host is unchanged", async () => {
-    await loadModels(linkOf("host-a"));
-    await loadModels(linkOf("host-a"));
-
-    expect(forced(1)).toBe(false);
-  });
-
-  it("does not stamp a rebuild that was already running for another host", async () => {
-    // `refreshCatalog` dedupes on one global in-flight promise, so a host swap
-    // mid-rebuild used to be handed the previous host's catalog and save it as
-    // the new host's.
-    const forHostA = { byId: {}, byAgent: { claude: [] } };
-    let finishA: (value: unknown) => void = () => {};
-    let inFlight: Promise<unknown> | null = null;
-    // Faithful to the real refreshCatalog: one global in-flight promise, handed
-    // to every caller regardless of who asked or whether they forced.
-    mocks.refreshCatalog.mockImplementation(() => {
-      if (inFlight) return inFlight;
-      const result =
-        mocks.refreshCatalog.mock.calls.length === 1
-          ? new Promise((resolve) => {
-              finishA = resolve;
-            })
-          : Promise.resolve(catalog);
-      inFlight = result.finally(() => {
-        inFlight = null;
-      });
-      return inFlight;
+  it("serves a host its own catalog again, however often the other host builds", async () => {
+    const a = freshHost();
+    const b = freshHost();
+    await loadModels(a);
+    await loadModels(b);
+    await loadModels(a);
+    await loadModels(b);
+    // One rebuild each: going back and forth between hosts rebuilds nothing.
+    expect(mocks.rebuildCatalog).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(localStorage.getItem("modelCatalog.byHost") ?? "{}")).toMatchObject({
+      [a.hostKey ?? ""]: { byAgent: catalog.byAgent },
+      [b.hostKey ?? ""]: { byAgent: catalog.byAgent },
     });
-
-    const a = loadModels(linkOf("host-a"));
-    const b = loadModels(linkOf("host-b"));
-    await flush();
-    expect(mocks.refreshCatalog).toHaveBeenCalledTimes(1);
-
-    finishA(forHostA);
-    expect(await a).toEqual(forHostA.byAgent);
-    // host-b waited for its own rebuild rather than being handed host-a's.
-    expect(await b).toEqual(catalog.byAgent);
-    expect(forced(1)).toBe(true);
-    expect(localStorage.getItem("modelCatalog.host")).toBe("host-b");
   });
 
-  it("does not claim the cache belongs to a host after a failed rebuild", async () => {
-    mocks.refreshCatalog.mockResolvedValue(null);
-    expect(await loadModels(linkOf("host-a"))).toBeNull();
+  it("rebuilds a host's catalog once it has aged out, and only that host's", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const a = freshHost();
+    await loadModels(a);
+    vi.advanceTimersByTime(CATALOG_TTL_MS / 2);
+    const b = freshHost();
+    await loadModels(b);
+    vi.advanceTimersByTime(CATALOG_TTL_MS / 2 + 1);
 
-    mocks.refreshCatalog.mockResolvedValue(catalog);
-    await loadModels(linkOf("host-a"));
+    await loadModels(a);
+    await loadModels(b);
+    expect(mocks.rebuildCatalog).toHaveBeenCalledTimes(3);
+  });
 
-    expect(forced(1)).toBe(true);
+  it("shares one rebuild between two pickers on the same host, not across hosts", async () => {
+    const a = freshHost();
+    const b = freshHost();
+    let finishA: (value: unknown) => void = () => {};
+    mocks.rebuildCatalog.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishA = resolve;
+        }),
+    );
+
+    const first = loadModels(a);
+    const second = loadModels(a);
+    // Another host's rebuild is its own, and lands while host a's is out.
+    expect(await loadModels(b)).toEqual(catalog.byAgent);
+    expect(mocks.rebuildCatalog).toHaveBeenCalledTimes(2);
+
+    finishA(onA);
+    expect(await first).toEqual(onA.byAgent);
+    expect(await second).toEqual(onA.byAgent);
+    expect(modelsOf(b.hostKey)).toEqual(catalog.byAgent);
+  });
+
+  it("keeps nothing for a host whose rebuild failed, and tries again next time", async () => {
+    const a = freshHost();
+    mocks.rebuildCatalog.mockResolvedValue(null);
+    expect(await loadModels(a)).toBeNull();
+    expect(modelsOf(a.hostKey)).toEqual({});
+
+    mocks.rebuildCatalog.mockResolvedValue(catalog);
+    expect(await loadModels(a)).toEqual(catalog.byAgent);
+    expect(mocks.rebuildCatalog).toHaveBeenCalledTimes(2);
   });
 });

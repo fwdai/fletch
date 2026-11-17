@@ -8,8 +8,13 @@
 //
 // models.dev is a phone-side fetch, so a device with no WAN keeps the small
 // static list below as a stand-in.
+//
+// Every paired host has a catalog of its own: half of one is that host's
+// installed CLIs, and with every host connected at once a picker on one must
+// neither show another's lists nor throw away another's catalog to build its
+// own.
 
-import { loadCachedCatalog, refreshCatalog } from "@desktop/data/modelCatalog";
+import { rebuildCatalog } from "@desktop/data/modelCatalog";
 import type { ModelMeta } from "@desktop/data/modelCatalog/types";
 import { PROVIDERS } from "@desktop/data/providers";
 import { useEffect, useState } from "react";
@@ -42,74 +47,93 @@ export const STATIC_MODELS: ModelsByAgent = {
   codex: [{ id: "gpt-5-codex", name: "GPT-5 Codex", contextWindow: 0, reasoning: true }],
 };
 
-// Last catalog this run, so a picker mounted later starts from the freshest
-// value rather than re-reading (and re-parsing) the localStorage cache.
-let current: ModelsByAgent = loadCachedCatalog().byAgent;
+/** How long a host's catalog is served before it is rebuilt: the desktop's
+ *  hour, so a newly released model shows up without an app release. */
+export const CATALOG_TTL_MS = 60 * 60 * 1000;
 
-// Which host the cached catalog was built from. Half of it is that host's
-// installed CLIs, so a phone re-paired to another Mac must not go on offering
-// the previous one's lists — a mismatch rebuilds instead of waiting out the
-// TTL. Persisted beside the catalog: holding it in memory only would force a
-// full rebuild (and its multi-megabyte models.dev fetch) on every launch.
-const HOST_KEY = "modelCatalog.host";
-
-function builtForHost(): string | null {
-  try {
-    return localStorage.getItem(HOST_KEY);
-  } catch {
-    return null;
-  }
+/** One host's catalog, and when it was built. */
+interface HostCatalog {
+  builtAt: number;
+  byAgent: ModelsByAgent;
 }
 
-function rememberHost(hostKey: string | null): void {
+/** Every host's catalog, by host key. Persisted: holding them in memory only
+ *  would force a full rebuild (and its multi-megabyte models.dev fetch) on
+ *  every launch. */
+const STORAGE_KEY = "modelCatalog.byHost";
+
+let catalogs: Record<string, HostCatalog> | null = null;
+
+/** The catalogs, read off storage the first time they are asked for. */
+function held(): Record<string, HostCatalog> {
+  if (!catalogs) {
+    try {
+      catalogs = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") ?? {};
+    } catch {
+      catalogs = {};
+    }
+  }
+  return catalogs ?? {};
+}
+
+function keep(hostKey: string, catalog: HostCatalog): void {
+  catalogs = { ...held(), [hostKey]: catalog };
   try {
-    if (hostKey) localStorage.setItem(HOST_KEY, hostKey);
-    else localStorage.removeItem(HOST_KEY);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(catalogs));
   } catch {
     // Storage unavailable — the catalog just rebuilds again next launch.
   }
 }
 
-// Refreshes run one at a time. `refreshCatalog` dedupes by a single global
-// in-flight promise, with no notion of who asked: a host swapped mid-rebuild
-// would be handed the *previous* host's result and stamp it as its own. Queuing
-// means each host's rebuild starts only once the last one has settled and that
-// dedupe has cleared.
-let queue: Promise<unknown> = Promise.resolve();
+const NONE: ModelsByAgent = {};
 
-/** The catalog for `link`'s host, rebuilt when the cache belongs to another host
- *  or has aged out, else served from it. Null when the rebuild failed and the
- *  caller should keep what it has. */
+/** `hostKey`'s catalog as last built, or nothing yet. */
+export const modelsOf = (hostKey: string | null): ModelsByAgent =>
+  (hostKey && held()[hostKey]?.byAgent) || NONE;
+
+/** Each host's rebuild while it is out, so two pickers on one host share it. */
+const building = new Map<string, Promise<ModelsByAgent | null>>();
+
+/** The catalog for `link`'s host: its own, rebuilt when it has none or it has
+ *  aged out. Null when the rebuild failed and the caller should keep what it
+ *  has. */
 export function loadModels({ hostKey, api }: HostLink): Promise<ModelsByAgent | null> {
-  const run = queue.then(async () => {
-    const catalog = await refreshCatalog(api.discoverSupportedModels, builtForHost() !== hostKey);
-    if (!catalog) return null;
-    rememberHost(hostKey);
-    current = catalog.byAgent;
-    return current;
-  });
-  // A failed refresh must not wedge the queue for every later one.
-  queue = run.catch(() => null);
+  if (!hostKey) return Promise.resolve(null);
+  const own = held()[hostKey];
+  if (own && Date.now() - own.builtAt < CATALOG_TTL_MS) return Promise.resolve(own.byAgent);
+  let run = building.get(hostKey);
+  if (!run) {
+    run = rebuildCatalog(api.discoverSupportedModels)
+      .then((catalog) => {
+        if (!catalog) return null;
+        keep(hostKey, { builtAt: Date.now(), byAgent: catalog.byAgent });
+        return catalog.byAgent;
+      })
+      .finally(() => building.delete(hostKey));
+    building.set(hostKey, run);
+  }
   return run;
 }
 
-/** The catalog's per-agent model lists, refreshed when the connection comes up
- *  (discovery is a host round-trip) and whenever the paired host changes. */
+/** The per-agent model lists of the host this component acts on, refreshed
+ *  when its connection comes up (discovery is a host round-trip). */
 export function useModels(): ModelsByAgent {
   const connection = useHostStore((s) => s.connection);
   const link = useHost();
-  const [models, setModels] = useState<ModelsByAgent>(current);
+  // Bumped when a load lands. The lists themselves are read by host, so a
+  // picker never shows another host's.
+  const [, landed] = useState(0);
   useEffect(() => {
     if (connection !== "connected") return;
     let live = true;
     void loadModels(link).then((byAgent) => {
-      if (live && byAgent) setModels(byAgent);
+      if (live && byAgent) landed((n) => n + 1);
     });
     return () => {
       live = false;
     };
   }, [connection, link]);
-  return models;
+  return modelsOf(link.hostKey);
 }
 
 /** A provider's rows for a picker: the default first, then its models. An empty
