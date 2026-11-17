@@ -8,19 +8,11 @@
 import type { BackgroundTaskMap } from "@desktop/adapters/shared/backgroundTasks";
 import type { AgentManagedEvent, AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
-import type {
-  AutopilotCheckout,
-  AutopilotLogEntry,
-  AutopilotSwitches,
-  DelegationEvent,
-  GitState,
-  ShortStats,
-} from "@desktop/api/types/git";
+import type { GitState, ShortStats } from "@desktop/api/types/git";
 import type { PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { LiveTurn } from "@desktop/api/types/session";
 import type { VerificationReport } from "@desktop/api/types/verify";
-import { appActionMessage } from "@desktop/delegation";
 import { reconcileSending, whileSending } from "@desktop/helpers/sending";
 import { createPrWriteOrder } from "@desktop/store/prWriteOrder";
 import { newestWins } from "@desktop/util/newestWins";
@@ -41,7 +33,7 @@ import {
   type PairStep,
 } from "../remote";
 import { type ApprovalsSlice, createApprovalsSlice } from "./approvals";
-import { type AutopilotMap, autopilotFromSnapshot, checkoutKey, switchesOf } from "./autopilot";
+import { type AutopilotSlice, createAutopilotSlice } from "./autopilot";
 import { type ChatsSlice, createChatLists, createChatsSlice, patchChatIn } from "./chats";
 import { registerRemoteEvents } from "./events";
 import { closeSheetOf, isScreenOpen, openAgentOf, popAgent, pushOn } from "./hostNav";
@@ -51,19 +43,13 @@ import { saveDestParent } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
 import { createProviderAccountsSlice, type ProviderAccountsSlice } from "./providerAccounts";
 import { createRoadmapSlice, type RoadmapSlice } from "./roadmap";
-import {
-  appendActivity,
-  askedText,
-  autopilotActivity,
-  delegationActivityText,
-  mergeActivity,
-  type ShipActivityMap,
-} from "./shipActivity";
+import { appendActivity, type ShipActivityMap } from "./shipActivity";
 import { type LoadedHistory, type LogLoad, pastHistory, renderHistory } from "./transcript";
 import { createWorkspaceReads } from "./workspaceReads";
 
 export interface HostState
   extends ApprovalsSlice,
+    AutopilotSlice,
     ChatsSlice,
     ProposalsSlice,
     ProviderAccountsSlice,
@@ -137,20 +123,6 @@ export interface HostState
    *  (`workspace:auto-archived`) since the user last dismissed the notice on
    *  Home. Null when there is nothing to say. Not persisted. */
   autoArchived: string[] | null;
-  /** The host's live delegation per agent (`delegation:changed`), primary repo
-   *  only — the phone is single-repo for now. A mirror: the host decides when
-   *  one starts, runs and ends; the Ship strip reads `working` off it. Re-read
-   *  with `get_delegations` on every handshake. */
-  delegations: Record<string, DelegationEvent>;
-  /** The host's autopilot per checkout (store/autopilot), every checkout of
-   *  every live agent. A mirror like `delegations`: `autopilot:state` replaces
-   *  a row, a snapshot (`autopilot_state` on every handshake, `autopilot_set`'s
-   *  answer) replaces them all. Empty on a host without the ops. */
-  autopilot: AutopilotMap;
-  /** The host's two autopilot opt-out lists, whole: from every snapshot, and
-   *  replaced by `autopilot:switches` — which every `autopilot_set` fires, even
-   *  on a project with no agents (so no row changes). `null` until read. */
-  autopilotSwitches: AutopilotSwitches | null;
   trees: Record<string, CheckoutFile[]>;
 
   /** Retry the link the client already holds — the store keeps no copy of the
@@ -250,29 +222,6 @@ export interface HostState
   /** `null` clears the pinned model, leaving the provider CLI's own default. */
   setModel(agentId: string, model: string | null): Promise<void>;
   setEffort(agentId: string, effort: string): Promise<void>;
-  /** Hand a git action to the coding agent, as the desktop git panel does: the
-   *  agent writes the commit message / PR description itself. `action` is a
-   *  playbook name from `instructions/git_actions.md` (`commit-pr`, `open-pr`,
-   *  `commit-push`, …); `params` carry only what the playbook can't know. */
-  delegateGit(agentId: string, action: string, params?: Record<string, string>): Promise<void>;
-  /** Fold one `delegation:changed` into `delegations`, with its activity line. */
-  applyDelegation(e: DelegationEvent): void;
-  /** Replace `delegations` with the host's table. A no-op on a host without
-   *  `get_delegations`. */
-  loadDelegations(): Promise<void>;
-  /** Fold one `autopilot:state` into `autopilot`. */
-  applyAutopilotState(row: AutopilotCheckout): void;
-  /** Take one `autopilot:switches`: both lists, replaced whole. */
-  applyAutopilotSwitches(switches: AutopilotSwitches): void;
-  /** Fold one `autopilot:event` into the agent's activity list. */
-  applyAutopilotEvent(entry: AutopilotLogEntry): void;
-  /** Re-read autopilot from the host: its state into `autopilot`, its log into
-   *  the activity lists. Each half is a no-op on a host without its op. */
-  loadAutopilot(): Promise<void>;
-  /** Pause (`false`) or resume an agent's autopilot (`autopilot_set`), taking
-   *  the host's answer as the new state. The project's switch is the Mac's to
-   *  flip. A no-op on a host — or a pairing — without the op. */
-  setAgentAutopilot(agentId: string, enabled: boolean): Promise<void>;
   /** Manual path: commit + push + open a PR with the user's own text. */
   publish(agentId: string, title: string, body: string): Promise<void>;
   pushToPr(agentId: string): Promise<void>;
@@ -413,10 +362,6 @@ export function createHostStore(link: HostLink): HostStore {
   const workspaceReads = createWorkspaceReads();
   const chatLists = createChatLists();
 
-  /** The `started_at` of the last delegation that ended per agent, so a
-   *  `delegate_git` reply landing after its own end cannot put it back. */
-  const endedDelegations = new Map<string, number>();
-
   /** Per agent, the order of its history reads: opening a chat, a reconnect
    *  and a turn end can each start one, and only the newest says how loading
    *  went. */
@@ -530,9 +475,6 @@ export function createHostStore(link: HostLink): HostStore {
     verificationReports: {},
     shipActivity: {},
     autoArchived: null,
-    delegations: {},
-    autopilot: {},
-    autopilotSwitches: null,
     trees: {},
 
     async reconnect() {
@@ -1023,105 +965,6 @@ export function createHostStore(link: HostLink): HostStore {
       await guard(() => api.setAgentEffort(agentId, effort));
     },
 
-    async delegateGit(agentId, action, params) {
-      if (!get().hostSupports("delegate_git")) {
-        // A host from before the op: send the trigger as the plain user turn it
-        // always was. Nothing holds it while the agent is mid-turn, and nothing
-        // tracks it — `agent:git-action` and `pr:state_changed` (events.ts) reload
-        // the git/PR state when it lands.
-        await get().send(agentId, appActionMessage(action, params));
-        set((s) => ({ shipActivity: appendActivity(s.shipActivity, agentId, askedText(action)) }));
-        return;
-      }
-      // The host's: it composes the trigger, holds it while the agent is
-      // mid-turn and decides when it is over, so the delegation outlives this
-      // phone's connection and reads the same on the Mac.
-      await guard(async () => {
-        const recorded = await api.delegateGit(agentId, action, params);
-        // The `delegation:changed` for this carries the activity line and may
-        // land either side of this reply; this only makes sure the strip turns at
-        // once — and never revives one whose end already arrived.
-        if (endedDelegations.get(agentId) === recorded.started_at) return;
-        set((s) =>
-          s.delegations[agentId] ? {} : { delegations: { ...s.delegations, [agentId]: recorded } },
-        );
-      });
-    },
-
-    applyDelegation(e) {
-      if (e.subdir) return;
-      const ended = e.phase === "done" || e.phase === "abandoned";
-      if (ended) endedDelegations.set(e.agent_id, e.started_at);
-      set((s) => {
-        const line = delegationActivityText(s.delegations[e.agent_id], e);
-        const { [e.agent_id]: _prev, ...rest } = s.delegations;
-        return {
-          delegations: ended ? rest : { ...rest, [e.agent_id]: e },
-          ...(line ? { shipActivity: appendActivity(s.shipActivity, e.agent_id, line) } : {}),
-        };
-      });
-    },
-
-    async loadDelegations() {
-      if (!get().hostSupports("get_delegations")) return;
-      const rows = await api.getDelegations();
-      set({
-        delegations: Object.fromEntries(rows.filter((r) => !r.subdir).map((r) => [r.agent_id, r])),
-      });
-    },
-
-    applyAutopilotState(row) {
-      set((s) => ({
-        autopilot: { ...s.autopilot, [checkoutKey(row.agent_id, row.subdir)]: row },
-      }));
-    },
-
-    applyAutopilotSwitches(switches) {
-      set({ autopilotSwitches: switchesOf(switches) });
-    },
-
-    applyAutopilotEvent(entry) {
-      set((s) => ({
-        shipActivity: mergeActivity(s.shipActivity, entry.agent_id, [autopilotActivity(entry)]),
-      }));
-    },
-
-    async loadAutopilot() {
-      await Promise.all([
-        get().hostSupports("autopilot_state") &&
-          api.getAutopilotState().then((snapshot) => {
-            set({
-              autopilot: autopilotFromSnapshot(snapshot),
-              autopilotSwitches: switchesOf(snapshot),
-            });
-          }),
-        // Merged rather than replaced: a live event may have landed first, and
-        // it is the same row by id.
-        get().hostSupports("autopilot_log") &&
-          api.getAutopilotLog().then((rows) => {
-            set((s) => ({
-              shipActivity: rows.reduce(
-                (map, row) => mergeActivity(map, row.agent_id, [autopilotActivity(row)]),
-                s.shipActivity,
-              ),
-            }));
-          }),
-      ]);
-    },
-
-    async setAgentAutopilot(agentId, enabled) {
-      if (!get().hostSupports("autopilot_set")) return;
-      await guard(async () => {
-        // The whole host's state after the change — the pause, and the cycle it
-        // dropped — so the switch settles on the host's word, not the tap's.
-        const snapshot = await api.setAutopilot({ agentId }, enabled);
-        set({
-          autopilot: autopilotFromSnapshot(snapshot),
-          autopilotSwitches: switchesOf(snapshot),
-        });
-      });
-    },
-
     async publish(agentId, title, body) {
       const git = get().gitStates[agentId];
       if (git?.files.length) await api.commitAgent(agentId, title);
@@ -1202,6 +1045,8 @@ export function createHostStore(link: HostLink): HostStore {
     }),
 
     ...createApprovalsSlice(set, get, { link, guard }),
+
+    ...createAutopilotSlice(set, get, { link, guard }),
 
     ...createProposalsSlice(set, get, { link, guard }),
 
