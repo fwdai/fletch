@@ -106,12 +106,14 @@ export function ProjectGroup({
   // fold row, never re-interleaved by date, so a pinned (selected / running)
   // row that predates some hidden ones doesn't watch them jump in above it.
   const [unfolded, setUnfolded] = useState(false);
-  const selectedId = selectedAgent?.id;
-  const { shown, hidden } = useMemo(
-    () =>
-      fold ? foldAgents(agents, { now, selectedId, activity }) : { shown: agents, hidden: [] },
-    [fold, agents, selectedId, activity, now],
-  );
+  const { shown, hidden } = useMemo(() => {
+    if (!fold) return { shown: agents, hidden: [] };
+    // `activity` is This Mac's turns, by agent id: it says nothing about a
+    // paired host's workspace of the same id.
+    const turnAt = (a: AgentRecord) =>
+      rowHost({ hostOf }, a) === LOCAL_ENVIRONMENT_ID ? activity[a.id] : undefined;
+    return foldAgents(agents, { now, selected: selectedAgent, turnAt });
+  }, [fold, agents, selectedAgent, activity, hostOf, now]);
   const foldable = hidden.length > 0;
 
   const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";

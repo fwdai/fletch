@@ -35,10 +35,11 @@ export function createRunSync(commit: (rows: WfRun[]) => void): RowSync<WfRun> {
   });
 }
 
-export function useRuns(): WfRun[] {
+export function useRuns(reload = 0): WfRun[] {
   const { api, events } = useEngine();
   const [runs, setRuns] = useState<WfRun[]>([]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `reload` is read by nothing in here; a new value is the caller asking for the list again.
   useEffect(() => {
     let alive = true;
     // Unmounting mid-load must not write state, so the commit is gated the same
@@ -71,7 +72,7 @@ export function useRuns(): WfRun[] {
       void off.then((f) => f());
       void offDeleted.then((f) => f());
     };
-  }, [api, events]);
+  }, [api, events, reload]);
 
   return runs;
 }

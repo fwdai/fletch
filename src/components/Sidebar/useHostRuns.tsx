@@ -1,6 +1,6 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WfRun } from "@/api";
-import { useEveryHost } from "@/store";
+import { useAppStore, useEveryHost } from "@/store";
 import { EngineScope } from "@/store/EngineScope";
 import { type EnvironmentId, LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { useRuns } from "@/workflows/run/useRuns";
@@ -41,8 +41,19 @@ export function useHostRuns(): {
   return { runsByHost, feeds };
 }
 
+/** One paired host's runs, read again each time its connection comes up: a
+ *  read made before the first handshake, or while the host was away, has
+ *  nothing to answer it, and the events since were not heard. The rows held
+ *  stay on show in between. */
 function RunsFeed({ hostId, report }: { hostId: EnvironmentId; report: Report }) {
-  const runs = useRuns();
+  const connected = useAppStore((s) => s.environments[hostId]?.connection === "connected");
+  const wasConnected = useRef(connected);
+  const [connections, setConnections] = useState(0);
+  useEffect(() => {
+    if (connected && !wasConnected.current) setConnections((n) => n + 1);
+    wasConnected.current = connected;
+  }, [connected]);
+  const runs = useRuns(connections);
   useEffect(() => report(hostId, runs), [hostId, runs, report]);
   useEffect(() => () => report(hostId, null), [hostId, report]);
   return null;

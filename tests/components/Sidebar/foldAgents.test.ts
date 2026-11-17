@@ -51,7 +51,7 @@ describe("foldAgents", () => {
 
   it("keeps the selected row out even when stale or past the cap", () => {
     const list = [...Array.from({ length: 7 }, (_, i) => agent(`a${i}`, i)), agent("old", 45)];
-    const { shown, hidden } = foldAgents(list, { now: NOW, selectedId: "old" });
+    const { shown, hidden } = foldAgents(list, { now: NOW, selected: list[7] });
     expect(ids(shown)).toEqual(["a0", "a1", "a2", "a3", "a4", "old"]);
     expect(ids(hidden)).toEqual(["a5", "a6"]);
   });

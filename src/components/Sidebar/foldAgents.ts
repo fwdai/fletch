@@ -7,13 +7,14 @@ export const RECENT_CAP = 5;
 
 export interface FoldOptions {
   now: number;
-  /** The selected agent is never folded away — the row the transcript belongs
-   *  to has to stay reachable by eye and by the arrow keys. */
-  selectedId?: string | null;
-  /** When a turn last started in each workspace, by agent id (see
-   *  `useTurnActivity`). Absent for a workspace nobody has messaged since it
-   *  was launched. */
-  activity?: Readonly<Record<string, number>>;
+  /** The selected row is never folded away — the row the transcript belongs
+   *  to has to stay reachable by eye and by the arrow keys. The record itself,
+   *  not its id: two hosts' workspaces of one id are two rows. */
+  selected?: AgentRecord | null;
+  /** When a turn last started in a workspace (see `useTurnActivity`), asked
+   *  per row for the same reason. Absent for a workspace nobody has messaged
+   *  since it was launched. */
+  turnAt?: (a: AgentRecord) => number | undefined;
   cap?: number;
   windowMs?: number;
 }
@@ -26,16 +27,16 @@ export interface FoldedAgents {
 /** Whether a row must stay visible whatever its age: it is selected, or it is
  *  live. An old error is not pinned — a failure from weeks ago is history, not
  *  something to act on, and a recent one is shown by age anyway. */
-function pinned(a: AgentRecord, selectedId: string | null | undefined): boolean {
-  return a.id === selectedId || a.status === "running" || a.status === "spawning";
+function pinned(a: AgentRecord, selected: AgentRecord | null | undefined): boolean {
+  return a === selected || a.status === "running" || a.status === "spawning";
 }
 
 /** When the workspace was last used: its launch, or the last turn started in
  *  it, whichever is later. A workspace created a month ago and resumed this
  *  morning is this morning's. */
-export function lastUsed(a: AgentRecord, activity: Readonly<Record<string, number>> = {}): number {
+export function lastUsed(a: AgentRecord, turnAt = 0): number {
   const created = new Date(a.created_at).getTime();
-  const turn = activity[a.id] ?? 0;
+  const turn = turnAt;
   // An undatable row with no turn on record is kept rather than hidden on a
   // guess, so it ranks as just used.
   if (Number.isNaN(created)) return turn || Number.POSITIVE_INFINITY;
@@ -57,10 +58,10 @@ export function lastUsed(a: AgentRecord, activity: Readonly<Record<string, numbe
  *  where they sit. The caller renders `hidden` after `shown` when unfolded
  *  rather than merging them back, so the rows already on screen never move. */
 export function foldAgents(agents: readonly AgentRecord[], opts: FoldOptions): FoldedAgents {
-  const { now, selectedId, activity, cap = RECENT_CAP, windowMs = RECENT_WINDOW_MS } = opts;
+  const { now, selected, turnAt, cap = RECENT_CAP, windowMs = RECENT_WINDOW_MS } = opts;
   const kept = new Set(
     agents
-      .map((a, i) => ({ a, i, t: lastUsed(a, activity) }))
+      .map((a, i) => ({ a, i, t: lastUsed(a, turnAt?.(a)) }))
       .filter((x) => now - x.t <= windowMs)
       .sort((x, y) => y.t - x.t || x.i - y.i)
       .slice(0, cap)
@@ -68,7 +69,7 @@ export function foldAgents(agents: readonly AgentRecord[], opts: FoldOptions): F
   );
   const shown: AgentRecord[] = [];
   const hidden: AgentRecord[] = [];
-  for (const a of agents) (kept.has(a) || pinned(a, selectedId) ? shown : hidden).push(a);
+  for (const a of agents) (kept.has(a) || pinned(a, selected) ? shown : hidden).push(a);
   if (hidden.length <= 1) return { shown: agents.slice(), hidden: [] };
   return { shown, hidden };
 }

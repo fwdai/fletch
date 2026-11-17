@@ -290,6 +290,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
       // Automatic, unlike every other way a draft opens: it may only take the
       // screen if the user has not gone somewhere else while its reads were out.
       const before = surfaceKey(get());
+      const onScreen = get().activeEnvironmentId;
       try {
         const draft = await prepareDraft(api, get, repoPath);
         if (!draft || surfaceKey(get()) !== before) return;
@@ -304,6 +305,11 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
         // draft invisible behind it. Still the page that was open when the add
         // began — a newer one changed the key above.
         get().closeProjectScreen();
+        // The project was added on this host, which need not be the one on
+        // screen: the draft is only in front of the user once its host is.
+        // Not if they put another host on screen meanwhile: the draft is
+        // open here for when they come back.
+        if (get().activeEnvironmentId === onScreen) set({ activeEnvironmentId: hostId });
         track("project_add_draft_opened", { seeded: first });
       } catch (e) {
         get().setLastError(`Couldn't start a new agent: ${String(e)}`);

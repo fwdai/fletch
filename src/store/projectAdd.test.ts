@@ -209,6 +209,37 @@ describe("the draft after a project is added", () => {
     expect(draftOf(store)).toMatchObject({ repoPath: "/repos/app", name: "everest" });
   });
 
+  it("puts its own host on screen when another host was", async () => {
+    const { store } = makeStore(workspaceOf(["/repos/app"]));
+    // A paired host's workspace is in the main pane while a project is added
+    // to this Mac from the sidebar.
+    store.setState({ activeEnvironmentId: remote.id });
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/new"]));
+
+    await store.getState().addWorkspaceRepo("/repos/new");
+    await settled();
+
+    expect(draftOf(store)?.repoPath).toBe("/repos/new");
+    expect(store.getState().activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
+  });
+
+  it("leaves the screen alone when the user put another host on it meanwhile", async () => {
+    const { store } = makeStore(workspaceOf(["/repos/app"]));
+    store.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app", "/repos/new"]));
+    api.allocateDraftName.mockImplementation(async () => {
+      store.setState({ activeEnvironmentId: remote.id });
+      return "everest";
+    });
+
+    await store.getState().addWorkspaceRepo("/repos/new");
+    await settled();
+
+    // Open in its own host's state, for when the user comes back to it.
+    expect(draftOf(store)?.repoPath).toBe("/repos/new");
+    expect(store.getState().activeEnvironmentId).toBe(remote.id);
+  });
+
   it("yields to a full-screen page the user opened while it was opening", async () => {
     // Settings sits over the center pane; a draft opened beneath it would be
     // waiting there when the page closes. Every overlay and takeover counts,
