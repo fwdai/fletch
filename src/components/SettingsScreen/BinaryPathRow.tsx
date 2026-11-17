@@ -30,7 +30,7 @@ export function BinaryPathRow({
    *  `path`, not its parsed version — a working CLI may report no version). An
    *  override that fails this is flagged as not-runnable. */
   resolved: boolean;
-  /** The remote host the override belongs to, when one is on screen: the path
+  /** The remote host the override belongs to, when one is picked: the path
    *  is on ITS disk, so this Mac can't validate it (the host's next spawn is
    *  the check). Undefined for the local environment. */
   onHost?: string;

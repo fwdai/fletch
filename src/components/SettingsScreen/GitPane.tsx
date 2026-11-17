@@ -5,6 +5,7 @@ import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
+import { HostPicker } from "./SettingsHost";
 
 const ACTION_OPTIONS: { value: GitCommitAction; label: string }[] = [
   { value: "agent-commit", label: "Commit" },
@@ -44,6 +45,7 @@ export function GitPane() {
         title="Git"
         desc="How agents commit, push, and open pull requests on your behalf."
       />
+      <HostPicker />
 
       <SetGroup label="Publishing">
         <SetRow title="Default Git action" sub="Preselected action in the Git panel.">

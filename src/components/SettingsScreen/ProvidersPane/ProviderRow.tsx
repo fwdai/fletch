@@ -98,8 +98,8 @@ export function ProviderRow({ provider }: { provider: Provider }) {
 
   // Built once and handed to whichever detail is showing: "Locate binary…" is
   // the same validated editor in the installed, missing and failed states.
-  // With a host on screen the override is the host's (a path on its disk), so
-  // this Mac's probe can neither validate it nor call it missing.
+  // With a host picked in Settings the override is the host's (a path on its
+  // disk), so this Mac's probe can neither validate it nor call it missing.
   const locate: ReactNode = (
     <BinaryPathRow
       providerLabel={label}

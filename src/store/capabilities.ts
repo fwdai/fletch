@@ -136,16 +136,18 @@ export function hostProvidersNote(env: EnvironmentEntry): { summary: string; tip
   return { summary, tip };
 }
 
-/** What Settings › Account has to say while a host is the environment on
- *  screen: the identity on that page is this Mac's, and the host's is the
- *  operator's to manage there. Null for the local environment, so the groups
+/** What Settings › Account has to say while any host is paired: the identity
+ *  on that page is This Mac's, and a host's is the operator's to manage there.
+ *  Takes every environment; null while none is a paired host, so the groups
  *  can drop it in unconditionally exactly like [`hostProvidersNote`].
  *
- *  Not a gate: the controls work — they act on this Mac, which is what they
+ *  Not a gate: the controls work — they act on This Mac, which is what they
  *  have always done — so the answer is a sentence, not a closed switch. */
-export function hostAccountNote(env: EnvironmentEntry): string | null {
-  if (env.kind === "local") return null;
-  return `This is this Mac's account. ${env.name} signs in with its own. Connect it there with \`fletch-host github login\`.`;
+export function hostAccountNote(environments: EnvironmentEntry[]): string | null {
+  const hosts = environments.filter((e) => e.kind === "remote");
+  if (hosts.length === 0) return null;
+  const [who, which] = hosts.length === 1 ? [hosts[0].name, "it"] : ["Each paired host", "each"];
+  return `This account is This Mac's. ${who} signs in with its own. Connect ${which} there with \`fletch-host github login\`.`;
 }
 
 /** The host's own version, for the rows that identify it. Null for the local
@@ -157,8 +159,9 @@ export function hostVersionLabel(env: EnvironmentEntry): string | null {
 
 /** How an environment's connection is doing, in words. Here beside the gate
  *  reasons because it is the same kind of thing — the short sentence a surface
- *  shows instead of the control it can't offer — and because two surfaces say
- *  it (the switcher, and the main pane while a host has nothing to show).
+ *  shows instead of the control it can't offer — and because several surfaces
+ *  say it (the switcher, Settings' host picker, and the main pane while a host
+ *  has nothing to show).
  *
  *  `retrying` is what separates a host that will come back on its own from one
  *  only the user can fix: the client schedules no retry behind "this device is

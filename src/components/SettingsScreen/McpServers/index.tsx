@@ -2,6 +2,7 @@ import { useState } from "react";
 import { CustomizeSwitch } from "@/components/SettingsScreen/CustomizeSwitch";
 import { LibraryList } from "@/components/SettingsScreen/LibraryList";
 import { SetGroup, SetRow, SetToggle } from "@/components/SettingsScreen/primitives";
+import { HostPicker } from "@/components/SettingsScreen/SettingsHost";
 import { mcpCapableLabels } from "@/data/providers";
 import type { McpServer, NewMcpServer } from "@/storage/mcpServers";
 import { useAppStore } from "@/store";
@@ -101,7 +102,12 @@ export function McpServersPane() {
       eyebrowAside={<CustomizeSwitch />}
       title="Tools (MCP)"
       desc="MCP servers your custom agents can attach as tools."
-      before={<BuiltInTools />}
+      before={
+        <>
+          <HostPicker />
+          <BuiltInTools />
+        </>
+      }
       newLabel="New server"
       emptyLabel="Add your first MCP server"
       icon="webhook"

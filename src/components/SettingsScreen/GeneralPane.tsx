@@ -7,6 +7,7 @@ import type { ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
+import { HostPicker } from "./SettingsHost";
 
 const CODE_THEME_OPTIONS = CODE_THEMES.map((t) => ({ value: t.id, label: t.label }));
 
@@ -42,7 +43,7 @@ export function GeneralPane() {
   const setAutoArchiveIdleDays = useAppStore((s) => s.setAutoArchiveIdleDays);
   const revealLogs = useAppStore((s) => s.revealLogs);
   // The two alert switches and the sweep are the host's (it sends the alerts
-  // and runs the sweep), so they edit the environment on screen.
+  // and runs the sweep), so they edit the host picked in Settings.
   const hostGate = useGate("hostSettings");
 
   return (
@@ -52,6 +53,7 @@ export function GeneralPane() {
         title="General"
         desc="How Fletch looks, when it alerts you, and what it shares."
       />
+      <HostPicker />
 
       <SetGroup label="Appearance">
         <SetRow title="Theme">

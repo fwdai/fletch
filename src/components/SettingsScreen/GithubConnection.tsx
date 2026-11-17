@@ -13,7 +13,7 @@ import { HostAccountNote } from "./HostAccountNote";
  *
  *  Both act on THIS Mac — `oauth_device_login` is local by construction — so
  *  the status beside them is read locally too, rather than from the store's
- *  `github`, which follows the active environment. A host is signed in on the
+ *  `github`, which follows the scope's host. A host is signed in on the
  *  host; [`HostAccountNote`] says so. */
 export function GithubConnection() {
   const { api } = useEngine();
