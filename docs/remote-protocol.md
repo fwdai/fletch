@@ -1101,8 +1101,9 @@ already holds, so a client can tell which of its hosts a project belongs to.
 `repos` is in the project's own order. `id` is the repository's id on its
 home, kept by every copy: it is what tells one repository of a project from
 another when the home relabels or removes one. `dir` is its folder name.
-`origin` never carries credentials: an http(s) URL is sent without its
-userinfo and any other `scheme://` URL without its password, since the
+`origin` never carries credentials: a `scheme://` URL is sent without its
+query and fragment, an http(s) one without its userinfo and any other without
+its password, since the
 definition is readable with `observe` and the device that clones signs in with
 its own login.
 
@@ -1112,9 +1113,13 @@ its own login.
 GitHub login, and records the project as a copy under the same `project_id`.
 Called again for a copy, it brings the copy in line with the definition: the
 project's `name` and each repository's `label` follow the home, a repository
-the home has added is cloned, and one the home has removed is dropped with its
-clone, unless a workspace on the host (live or archived) still has a checkout
-of it, in which case it stays until those are gone and a later call drops it.
+the home has added is cloned, and one the home has removed is retired: it
+leaves the project, for the snapshot and for every new workspace, while its
+clone stays for the workspaces and runs started with it (and it is part of the
+project again if the home adds it back). What is not followed: a repository
+whose folder the home renamed or whose `origin` the home repointed keeps the
+folder and remote it was cloned with; delete the copy on the host to have it
+made again.
 A GitHub ssh `origin` is cloned over https with that login,
 since the home's ssh key is the home's. A repository with `origin: null`
 refuses the whole call before anything is cloned: a project runs with all of

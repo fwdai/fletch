@@ -59,6 +59,7 @@ impl WorkspaceManager {
             "SELECT r.path, p.name, p.id, r.label, s.value, p.home_device, p.home_name
              FROM repos r LEFT JOIN projects p ON p.id = r.project_id
              LEFT JOIN project_settings s ON s.project_id = r.project_id AND s.key = ?1
+             WHERE r.retired_at IS NULL
              ORDER BY r.created_at",
         ) {
             Ok(s) => s,
@@ -100,7 +101,7 @@ impl WorkspaceManager {
 
     pub(super) fn query_all_repo_paths(conn: &Connection) -> Vec<PathBuf> {
         let mut stmt = conn
-            .prepare("SELECT path FROM repos ORDER BY created_at")
+            .prepare("SELECT path FROM repos WHERE retired_at IS NULL ORDER BY created_at")
             .unwrap_or_else(|_| conn.prepare("SELECT 1 WHERE 0").unwrap());
         stmt.query_map([], |row| {
             let p: String = row.get(0)?;

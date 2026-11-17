@@ -68,19 +68,21 @@ pub async fn project_definition_impl(
 /// `origin` as another device may be told it. A definition is readable by any
 /// paired device and kept by clients, and the device that clones signs in with
 /// its own login, so a credential the home keeps in the URL
-/// (`https://user:token@host/…`) never leaves it: an http(s) URL loses its
-/// whole userinfo, any other `scheme://` URL its password. An scp-style
-/// remote (`git@host:path`) has no place for one.
+/// (`https://user:token@host/…`, `…/repo.git?access_token=…`) never leaves it:
+/// a `scheme://` URL loses its query and fragment, an http(s) one its whole
+/// userinfo, any other its password. An scp-style remote (`git@host:path`) has
+/// no place for one.
 fn without_credentials(origin: &str) -> String {
     let Some((scheme, rest)) = origin.split_once("://") else {
         return origin.to_string();
     };
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
     let (authority, path) = match rest.find('/') {
         Some(at) => rest.split_at(at),
         None => (rest, ""),
     };
     let Some((userinfo, host)) = authority.rsplit_once('@') else {
-        return origin.to_string();
+        return format!("{scheme}://{authority}{path}");
     };
     let user = userinfo.split(':').next().unwrap_or_default();
     if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
@@ -100,8 +102,8 @@ static ENSURING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// A project this host owns is left as it is. Otherwise each repository this
 /// host does not have yet is cloned from its `origin`, and the copy is brought
 /// in line with the definition (`WorkspaceManager::reconcile_copy`): its name
-/// and labels follow the home, and a repository the home has removed is
-/// dropped with its clone once no workspace here uses it.
+/// and labels follow the home, and a repository the home has removed leaves
+/// the project for every new workspace.
 ///
 /// All or nothing: a repository with no `origin` fails the call before
 /// anything is cloned, and the clones are made in a staging folder and only
@@ -166,12 +168,7 @@ async fn ensure_project_under(
             cloned.push((repo.id.clone(), slot.join(&repo.dir)));
         }
         let _ = tokio::fs::remove_dir_all(&staging).await;
-        for clone in workspace.reconcile_copy(&def, &cloned)? {
-            // Only ever a slot of this copy: `<root>/<repo id>`.
-            if let Some(slot) = clone.parent().filter(|s| s.parent() == Some(&*root)) {
-                let _ = tokio::fs::remove_dir_all(slot).await;
-            }
-        }
+        workspace.reconcile_copy(&def, &cloned)?;
         workspace.detect_icon(&def.project_id);
     }
 
@@ -598,74 +595,73 @@ mod tests {
         let (sup, root) = host(td.path());
         let app = origin_repo(td.path(), "app");
         let api = origin_repo(td.path(), "api");
-        let mut def = definition(vec![repo("app", Some(&app)), repo("api", Some(&api))]);
-        ensure_project_under(&sup, def.clone(), &root)
+        let whole = definition(vec![repo("app", Some(&app)), repo("api", Some(&api))]);
+        ensure_project_under(&sup, whole.clone(), &root)
             .await
             .unwrap();
-        let api_clone = clone_of(&root, &def, 1);
+        let api_clone = clone_of(&root, &whole, 1);
+        std::fs::write(api_clone.join("marker"), "kept").unwrap();
+        let of_project = |ws: &Workspace| -> Vec<(PathBuf, Option<String>)> {
+            ws.projects
+                .iter()
+                .filter(|p| p.project_id == whole.project_id)
+                .map(|p| (p.path.clone(), p.label.clone()))
+                .collect()
+        };
 
         // On the home: the first repository is labelled, the second removed.
+        let mut def = whole.clone();
         def.repos[0].label = Some("Frontend".into());
         def.repos.truncate(1);
         let ws = ensure_project_under(&sup, def.clone(), &root)
             .await
             .unwrap();
 
-        let refs: Vec<_> = ws
-            .projects
-            .iter()
-            .filter(|p| p.project_id == def.project_id)
-            .collect();
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].path, clone_of(&root, &def, 0));
-        assert_eq!(refs[0].label.as_deref(), Some("Frontend"));
-        assert!(!api_clone.exists(), "the removed clone was left on disk");
+        assert_eq!(
+            of_project(&ws),
+            [(clone_of(&root, &def, 0), Some("Frontend".to_string()))]
+        );
+        // Out of the project for whatever is started next, its clone kept for
+        // what was started with it.
+        assert_eq!(
+            sup.workspace.project_repo_paths(&def.project_id),
+            [clone_of(&root, &def, 0)]
+        );
+        assert!(api_clone.is_dir());
+
+        // The home has it again: the same clone is part of the project again.
+        let ws = ensure_project_under(&sup, whole.clone(), &root)
+            .await
+            .unwrap();
+        assert_eq!(of_project(&ws).len(), 2);
+        assert!(api_clone.join("marker").is_file(), "it was cloned again");
     }
 
     #[tokio::test]
-    async fn a_removed_repository_stays_while_a_workspace_here_uses_it() {
-        use crate::workspace::{new_agent_record, AgentView, TrackedRepo};
+    async fn a_repository_the_home_moved_to_another_project_is_copied_for_both() {
         let td = tempfile::tempdir().unwrap();
         let (sup, root) = host(td.path());
         let app = origin_repo(td.path(), "app");
-        let api = origin_repo(td.path(), "api");
-        let mut def = definition(vec![repo("app", Some(&app)), repo("api", Some(&api))]);
-        ensure_project_under(&sup, def.clone(), &root)
-            .await
-            .unwrap();
-        let api_clone = clone_of(&root, &def, 1);
-        let tracked = TrackedRepo {
-            repo_path: api_clone.clone(),
-            subdir: "api".into(),
-            branch: None,
-            parent_branch: None,
-            pr_base: None,
-            base_sha: None,
-            pr_number: None,
-            pr_url: None,
-            pr_title: None,
-            pr_state: None,
-            label: None,
-            adopted_checkout: None,
-        };
-        let mut record = new_agent_record(
-            "fuji".into(),
-            "agent".into(),
-            "claude".into(),
-            tracked,
-            "task".into(),
-            AgentView::Custom,
-        );
-        sup.workspace.add_agent(&mut record).unwrap();
-
-        def.repos.truncate(1);
-        let ws = ensure_project_under(&sup, def.clone(), &root)
+        let old = definition(vec![repo("app", Some(&app))]);
+        ensure_project_under(&sup, old.clone(), &root)
             .await
             .unwrap();
 
-        assert!(ws.projects.iter().any(|p| p.path == api_clone));
-        assert!(api_clone.is_dir());
-        assert_eq!(ws.agents.len(), 1);
+        // The same repository, by its id, now under another project.
+        let mut new = definition(vec![old.repos[0].clone()]);
+        new.name = "Elsewhere".into();
+        let ws = ensure_project_under(&sup, new.clone(), &root)
+            .await
+            .unwrap();
+
+        assert!(ws
+            .projects
+            .iter()
+            .any(|p| p.path == clone_of(&root, &old, 0)));
+        assert!(ws
+            .projects
+            .iter()
+            .any(|p| p.path == clone_of(&root, &new, 0)));
     }
 
     #[test]
@@ -690,6 +686,14 @@ mod tests {
             (
                 "ssh://git@github.com/fwdai/fletch",
                 "ssh://git@github.com/fwdai/fletch",
+            ),
+            (
+                "https://git.example/repo.git?access_token=secret",
+                "https://git.example/repo.git",
+            ),
+            (
+                "https://alice@git.example/repo.git#token=secret",
+                "https://git.example/repo.git",
             ),
             (
                 "git@github.com:fwdai/fletch.git",
