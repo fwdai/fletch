@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::supervisor::Supervisor;
-use crate::workspace::{ProjectDefinition, ProjectHome, RepoDefinition, Workspace};
+use crate::workspace::{
+    ProjectDefinition, ProjectHome, RepoDefinition, Workspace, WorkspaceManager,
+};
 
 /// Describe the project `project_id` for a device that will run it. For a
 /// project this host owns the home is this host; for a copy it is whoever the
@@ -103,7 +105,7 @@ static ENSURING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// host does not have yet is cloned from its `origin`, and the copy is brought
 /// in line with the definition (`WorkspaceManager::reconcile_copy`): its name
 /// and labels follow the home, and a repository the home has removed leaves
-/// the project once no agent here has a checkout of it.
+/// the project, its clone with it, once no agent here has a checkout of it.
 ///
 /// All or nothing: a repository with no `origin` fails the call before
 /// anything is cloned, and the clones are made in a staging folder and only
@@ -159,8 +161,7 @@ async fn ensure_project_under(
         for repo in missing {
             let slot = root.join(&repo.id);
             // Not recorded, so nothing refers to it: what an earlier call
-            // moved into place before it failed to record the project, or the
-            // clone of a repository that has since left it.
+            // moved into place before it failed to record the project.
             if slot.exists() {
                 tokio::fs::remove_dir_all(&slot).await?;
             }
@@ -170,6 +171,7 @@ async fn ensure_project_under(
         }
         let _ = tokio::fs::remove_dir_all(&staging).await;
         workspace.reconcile_copy(&def, &cloned)?;
+        prune_copy_under(workspace, projects_root, &def.project_id).await;
         workspace.detect_icon(&def.project_id);
     }
 
@@ -182,6 +184,43 @@ async fn ensure_project_under(
 /// name the home knows it by.
 fn copy_root(projects_root: &Path, project_id: &str) -> PathBuf {
     projects_root.join(project_id).join("repos")
+}
+
+/// Remove the clones this host made for the project `project_id` that no
+/// repository of it is recorded at any more: the whole copy once the project
+/// is deleted. Best effort, and a no-op for a project this host owns, which
+/// has no clones of its own making.
+pub async fn prune_copy(workspace: &WorkspaceManager, project_id: &str) {
+    // A copy's id is always one (`validate`), and it names a folder here.
+    if uuid::Uuid::parse_str(project_id).is_err() {
+        return;
+    }
+    let Ok(root) = crate::workspace::projects_root() else {
+        return;
+    };
+    // Not while `ensure_project` has clones in place that it has yet to record.
+    let _one_at_a_time = ENSURING.lock().await;
+    prune_copy_under(workspace, &root, project_id).await;
+}
+
+/// [`prune_copy`] with the projects root given and the caller holding
+/// [`ENSURING`]. A clone is of use only through the row that records it: the
+/// checkouts forked from it refer to that row, so one with no row has nothing
+/// left that borrows from it.
+async fn prune_copy_under(workspace: &WorkspaceManager, projects_root: &Path, project_id: &str) {
+    let root = copy_root(projects_root, project_id);
+    let recorded = workspace.project_repo_paths(project_id);
+    let Ok(mut slots) = tokio::fs::read_dir(&root).await else {
+        return;
+    };
+    while let Ok(Some(slot)) = slots.next_entry().await {
+        let slot = slot.path();
+        if !recorded.iter().any(|clone| clone.starts_with(&slot)) {
+            let _ = tokio::fs::remove_dir_all(&slot).await;
+        }
+    }
+    // Goes with its last clone; refused while one is left.
+    let _ = tokio::fs::remove_dir(&root).await;
 }
 
 /// What to hand `github::repo_clone` for `origin`. A GitHub ssh remote becomes
@@ -279,7 +318,6 @@ fn validate(def: &ProjectDefinition) -> Result<()> {
 mod tests {
     use super::*;
     use crate::git::testing::{commit_file, git, init_repo};
-    use crate::workspace::WorkspaceManager;
     use std::sync::Arc;
 
     const HOME_ID: &str = "aG9tZS1kZXZpY2U";
@@ -626,6 +664,10 @@ mod tests {
             sup.workspace.project_repo_paths(&def.project_id),
             [clone_of(&root, &def, 0)]
         );
+        // Nothing here used it, so its clone went with it.
+        assert!(!copy_root(&root, &whole.project_id)
+            .join(&whole.repos[1].id)
+            .exists());
 
         // The home has it again: it is cloned again.
         let ws = ensure_project_under(&sup, whole.clone(), &root)
@@ -636,8 +678,8 @@ mod tests {
     }
 
     /// The rule the home is held to when it detaches a repository: one an
-    /// agent has a checkout of stays, here as a repository of the project like
-    /// any other, and leaves once that agent is gone.
+    /// agent has a checkout of stays, here as a repository of the project
+    /// after the ones the home names, and leaves once that agent is gone.
     #[tokio::test]
     async fn a_removed_repository_an_agent_here_uses_stays_until_the_agent_is_gone() {
         let td = tempfile::tempdir().unwrap();
@@ -666,22 +708,82 @@ mod tests {
             .await
             .unwrap();
 
-        // Still the project's first repository to everything that reads it.
+        // Still a repository of the project, behind the one the home names:
+        // the primary is the home's.
         assert_eq!(copied(&ws, &whole).len(), 2);
         assert_eq!(
             sup.workspace.project_repo_paths(&whole.project_id),
-            [app_clone.clone(), clone_of(&root, &whole, 1)]
+            [clone_of(&root, &whole, 1), app_clone.clone()]
         );
         assert_eq!(
             ws.agents.iter().map(|a| &a.id).collect::<Vec<_>>(),
             [&agent.id]
         );
 
+        // Its clone is what that agent's checkout borrows from.
+        assert!(app_clone.is_dir());
+
         sup.workspace.remove_agent(&agent.id).unwrap();
         let ws = ensure_project_under(&sup, def.clone(), &root)
             .await
             .unwrap();
         assert_eq!(copied(&ws, &def), [(clone_of(&root, &def, 0), None)]);
+        assert!(!app_clone.exists());
+    }
+
+    #[tokio::test]
+    async fn a_deleted_copy_takes_its_clones_and_no_other_projects() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, root) = host(td.path());
+        let app = origin_repo(td.path(), "app");
+        let gone = definition(vec![repo("app", Some(&app))]);
+        let kept = definition(vec![repo("app", Some(&app))]);
+        for def in [&gone, &kept] {
+            ensure_project_under(&sup, def.clone(), &root)
+                .await
+                .unwrap();
+        }
+
+        sup.workspace.delete_project(&gone.project_id, &[]).unwrap();
+        prune_copy_under(&sup.workspace, &root, &gone.project_id).await;
+
+        assert!(!copy_root(&root, &gone.project_id).exists());
+        assert!(clone_of(&root, &kept, 0).is_dir());
+    }
+
+    /// On the home a repository that joins a project keeps the date it was
+    /// pinned, so it can come first; its clone here is the newest.
+    #[tokio::test]
+    async fn a_copy_keeps_the_homes_order_whenever_each_repository_was_cloned() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, root) = host(td.path());
+        let app = origin_repo(td.path(), "app");
+        let core = origin_repo(td.path(), "core");
+        let mut def = definition(vec![repo("app", Some(&app))]);
+        ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+
+        // The home's project gains a repository ahead of the one it had.
+        def.repos.insert(0, repo("core", Some(&core)));
+        let ws = ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+        let in_order = [clone_of(&root, &def, 0), clone_of(&root, &def, 1)];
+        assert_eq!(sup.workspace.project_repo_paths(&def.project_id), in_order);
+        // The project list's first is the primary a new workspace starts in.
+        let listed: Vec<PathBuf> = copied(&ws, &def).into_iter().map(|(p, _)| p).collect();
+        assert_eq!(listed, in_order);
+
+        // And when two it already has change places.
+        def.repos.swap(0, 1);
+        ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+        assert_eq!(
+            sup.workspace.project_repo_paths(&def.project_id),
+            [clone_of(&root, &def, 0), clone_of(&root, &def, 1)]
+        );
     }
 
     #[tokio::test]
