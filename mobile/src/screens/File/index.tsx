@@ -2,14 +2,14 @@ import type { CheckoutFileContents } from "@desktop/api/types/checkout";
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { CodeLine, Nav } from "../../components/ui";
-import { useHost } from "../../host/useHost";
+import { useHost, useHostNav } from "../../host/useHost";
 import { useApp, useHostStore } from "../../store";
 
 /** Read-only file viewer. `chg_add` / `chg_mod` are the 1-indexed lines the
  *  agent added / modified, which is what tints the gutter. */
 export function FileScreen({ agentId, path }: { agentId: string; path: string }) {
   const pop = useApp((s) => s.pop);
-  const push = useApp((s) => s.push);
+  const { push } = useHostNav();
   const changed = useHostStore((s) => s.gitStates[agentId]?.files.some((f) => f.path === path));
   const { api } = useHost();
   const [file, setFile] = useState<CheckoutFileContents | null>(null);

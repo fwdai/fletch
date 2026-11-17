@@ -1,18 +1,18 @@
 import { Icon } from "@desktop/components/Icon";
+import { useHostNav } from "../../../host/useHost";
 import { ignore } from "../../../lib/ignore";
-import { useApp, useHostStore } from "../../../store";
+import { useApp } from "../../../store";
 import { HostRow } from "./HostRow";
 
 /** The dropdown under the host chip: every paired host, a tap away, then
- *  adding another and the active host's sheet, which is where it is unpaired.
- *  Every action closes it. */
+ *  adding another and the sheet of the host on screen, which is where it is
+ *  unpaired. Every action closes it. */
 export function HostMenu({ onClose }: { onClose: () => void }) {
   const hosts = useApp((s) => s.hosts);
   const activeKey = useApp((s) => s.hostKey);
-  const connection = useHostStore((s) => s.connection);
   const switchHost = useApp((s) => s.switchHost);
   const addHost = useApp((s) => s.addHost);
-  const openSheet = useApp((s) => s.openSheet);
+  const { openSheet } = useHostNav();
 
   const then = (fn: () => void) => () => {
     onClose();
@@ -27,7 +27,7 @@ export function HostMenu({ onClose }: { onClose: () => void }) {
           <HostRow
             key={host.hostKey}
             host={host}
-            connection={host.hostKey === activeKey ? connection : null}
+            active={host.hostKey === activeKey}
             onSelect={then(() => void switchHost(host.hostKey).catch(ignore))}
           />
         ))}

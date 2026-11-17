@@ -1,6 +1,7 @@
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useMemo, useState } from "react";
 import { Nav } from "../../components/ui";
+import { useHostNav } from "../../host/useHost";
 import { branchOf, refLabel } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";
 import { buildTree, defaultOpen, flattenTree } from "../../lib/tree";
@@ -14,7 +15,7 @@ export function CodeScreen({ agentId }: { agentId: string }) {
   const git = useHostStore((s) => s.gitStates[agentId]);
   const files = useHostStore((s) => s.trees[agentId]);
   const loadTree = useHostStore((s) => s.loadTree);
-  const push = useApp((s) => s.push);
+  const { push } = useHostNav();
   const pop = useApp((s) => s.pop);
   const [open, setOpen] = useState<Set<string> | null>(null);
 

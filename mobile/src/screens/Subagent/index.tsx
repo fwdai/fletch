@@ -20,6 +20,7 @@ import { agentTitle } from "@desktop/util/agentTitle";
 import { useMemo } from "react";
 import { type ChatItem, getAdapter } from "../../adapters";
 import { Nav } from "../../components/ui";
+import { useHostNav } from "../../host/useHost";
 import { isAgentBusy } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { joinThreadPath, splitThreadPath, tasksByToolUse, threadStatus } from "../../lib/thread";
@@ -36,7 +37,7 @@ export function SubagentScreen({ agentId, path: pathProp }: { agentId: string; p
   const load = useHostStore((s) => s.logLoads[agentId]);
   const tasks = useHostStore((s) => s.backgroundTasks[agentId]);
   const busy = useHostStore((s) => (agent ? isAgentBusy(s, agent) : false));
-  const push = useApp((s) => s.push);
+  const { push } = useHostNav();
   const pop = useApp((s) => s.pop);
 
   const path = useMemo(() => splitThreadPath(pathProp), [pathProp]);

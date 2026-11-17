@@ -122,7 +122,7 @@ export function PairScreen() {
       <div className="pair-top">
         <Wordmark />
         {adding && (
-          <button type="button" className="tbtn" onClick={() => void cancel()}>
+          <button type="button" className="tbtn" onClick={() => cancel()}>
             Cancel
           </button>
         )}

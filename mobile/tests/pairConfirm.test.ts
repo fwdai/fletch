@@ -6,10 +6,10 @@
 import { expect, it } from "vitest";
 import { DEFAULT_PORT } from "../src/remote";
 import { MOCK_CONFIRM_CODE, MOCK_HOST_KEY } from "../src/remote/mock";
-import { appStore, liveHost } from "../src/store";
+import { appStore, hostOnScreen } from "../src/store";
 
 const app = () => appStore.getState();
-const host = () => liveHost().getState();
+const host = () => hostOnScreen().getState();
 
 it("shows the code while the Mac decides, and connects once it accepts", async () => {
   // As the app does: `init` attaches the store to the client (and, in mock

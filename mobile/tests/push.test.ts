@@ -34,7 +34,7 @@ vi.mock("@tauri-apps/api/event", async (importOriginal) => ({
 
 import { linkOf } from "../src/host";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { appStore, liveHost } from "../src/store";
+import { appStore, hostOnScreen } from "../src/store";
 import { loadSettings, saveSettings } from "../src/store/persist";
 import { FORGET_PUSH_TIMEOUT_MS, pushTab } from "../src/store/push";
 
@@ -43,7 +43,7 @@ import { FORGET_PUSH_TIMEOUT_MS, pushTab } from "../src/store/push";
 (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {};
 
 const app = () => appStore.getState();
-const host = () => liveHost().getState();
+const host = () => hostOnScreen().getState();
 /** The mock host's link: the one the store is live on while paired with it. */
 const mock = () => linkOf(MOCK_HOST_KEY);
 const emit = (event: string, payload: unknown) => plugin.listeners.get(event)?.({ payload });
@@ -118,7 +118,8 @@ describe("a tapped alert", () => {
     await vi.waitFor(() => {
       const top = app().nav[app().nav.length - 1];
       expect(top.screen).toBe("agent");
-      expect(top.props).toEqual({ agentId: "kamakura", tab: "ship" });
+      // …and names the host it was opened on, which is what it acts on.
+      expect(top.props).toEqual({ agentId: "kamakura", tab: "ship", hostKey: MOCK_HOST_KEY });
     });
     expect(pushTab("autopilot_gave_up")).toBe("ship");
     expect(pushTab("checks_settled")).toBe("ship");

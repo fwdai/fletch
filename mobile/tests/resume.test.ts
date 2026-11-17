@@ -7,10 +7,10 @@ import type { Api } from "../src/api";
 import { linkOf } from "../src/host";
 import type { RemoteClient } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { appStore, liveHost, RESUME_PROBE_TIMEOUT_MS } from "../src/store";
+import { appStore, hostOnScreen, RESUME_PROBE_TIMEOUT_MS } from "../src/store";
 
 const app = () => appStore.getState();
-const host = () => liveHost().getState();
+const host = () => hostOnScreen().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;

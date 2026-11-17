@@ -1,16 +1,18 @@
 import { Icon } from "@desktop/components/Icon";
 import { Segmented, Sheet, Toggle } from "../components/ui";
+import { useHost } from "../host/useHost";
 import { CONNECTION_TEXT } from "../lib/connection";
 import { ignore } from "../lib/ignore";
 import { projectsOf } from "../lib/projects";
-import { useActiveHostName, useApp, useHostStore } from "../store";
+import { useApp, useHostName, useHostStore } from "../store";
 
-/** The active Mac as the user knows it: its name, whether it is reachable, and
+/** A paired Mac as the user knows it: its name, whether it is reachable, and
  *  what is on it. How the link is made — address, keys, relay, which path —
  *  is never shown: it connects on its own, and nothing here could change it.
  *  Unpair forgets this Mac only; the others stay in the host switcher. */
 export function HostSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const hostName = useActiveHostName();
+  const { hostKey } = useHost();
+  const hostName = useHostName();
   const connection = useHostStore((s) => s.connection);
   const theme = useApp((s) => s.theme);
   const setTheme = useApp((s) => s.setTheme);
@@ -101,7 +103,7 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
           className="btn danger block"
           onClick={() => {
             onClose();
-            void unpair();
+            void unpair(hostKey ?? undefined);
           }}
         >
           <Icon name="trash" size={16} />

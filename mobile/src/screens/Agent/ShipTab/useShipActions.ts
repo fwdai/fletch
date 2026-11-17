@@ -1,10 +1,11 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import type { FooterAction } from "@desktop/components/RightPanel/GitPanel/footerModel";
 import { useEffect, useState } from "react";
+import { useHostNav } from "../../../host/useHost";
 import { baseOf, isAgentBusy } from "../../../lib/agents";
 import { ignore } from "../../../lib/ignore";
 import { openExternal } from "../../../lib/links";
-import { useApp, useHostStore } from "../../../store";
+import { useHostStore } from "../../../store";
 import { type ShipFacts, shipOp } from "./actions";
 
 /** How long an armed merge waits for its second tap. */
@@ -19,7 +20,7 @@ export function useShipActions(agent: AgentRecord, onDelegated?: () => void) {
   const pr = useHostStore((s) => s.prStates[agent.id] ?? null);
   const checks = useHostStore((s) => s.prChecks[agent.id] ?? null);
   const comments = useHostStore((s) => s.prComments[agent.id] ?? null);
-  const openSheet = useApp((s) => s.openSheet);
+  const { openSheet } = useHostNav();
   const delegateGit = useHostStore((s) => s.delegateGit);
   const mergePr = useHostStore((s) => s.mergePr);
   const archive = useHostStore((s) => s.archive);

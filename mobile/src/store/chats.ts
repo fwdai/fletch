@@ -15,7 +15,7 @@ import type { HostLink } from "../host";
 import { primaryPath, projectById } from "../lib/projects";
 import { dropTasks } from "./backgroundTasks";
 import { agentOf, type HostState } from "./host";
-import { appStore } from "./index";
+import { appStore, hostOf } from "./index";
 
 type Set = (partial: Partial<HostState> | ((s: HostState) => Partial<HostState>)) => void;
 type Get = () => HostState;
@@ -311,7 +311,11 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         const app = appStore.getState();
         app.closeSheet();
         const top = app.nav.filter((i) => i.phase !== "leave").at(-1);
-        if (top?.screen === "agent" && top.props.agentId === agentId) app.pop();
+        const onTop =
+          top?.screen === "agent" &&
+          top.props.agentId === agentId &&
+          hostOf(app, top.props) === link.hostKey;
+        if (onTop) app.pop();
         try {
           await link.api.discardAgent(agentId);
         } catch (e) {

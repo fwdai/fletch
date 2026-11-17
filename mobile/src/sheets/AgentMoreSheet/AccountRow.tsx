@@ -1,9 +1,10 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { useEffect } from "react";
+import { useHostNav } from "../../host/useHost";
 import { useAgentAccount } from "../../lib/agentAccount";
 import { ignore } from "../../lib/ignore";
-import { useApp, useHostStore } from "../../store";
+import { useHostStore } from "../../store";
 
 /** The account the agent runs under, and the way into moving it onto another
  *  of its provider's: the account picker, which takes this sheet's place.
@@ -15,7 +16,7 @@ import { useApp, useHostStore } from "../../store";
 export function AccountRow({ agent, open }: { agent: AgentRecord; open: boolean }) {
   const view = useAgentAccount(agent);
   const load = useHostStore((s) => s.loadProviderAccounts);
-  const openSheet = useApp((s) => s.openSheet);
+  const { openSheet } = useHostNav();
   const enabled = view !== null;
 
   // Re-read on every open, as the desktop composer does as it mounts: only

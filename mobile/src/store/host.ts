@@ -39,12 +39,13 @@ import {
   type HostInfo,
   type HostProtocol,
   hostSupports,
+  type PairStep,
   type Via,
 } from "../remote";
 import { type AutopilotMap, autopilotFromSnapshot, checkoutKey, switchesOf } from "./autopilot";
 import { type ChatsSlice, createChatLists, createChatsSlice } from "./chats";
 import { registerRemoteEvents } from "./events";
-import { type AgentTab, appStore } from "./index";
+import { type AgentTab, appStore, hostOf } from "./index";
 import { replayLiveTurn, runningTurnStart } from "./liveTurn";
 import { saveDestParent } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
@@ -67,6 +68,10 @@ export interface HostState extends ChatsSlice, ProposalsSlice, ProviderAccountsS
   /** Mirrors the client: an `error` with a retry scheduled behind it reads as
    *  "reconnecting", one without as something the user has to fix. */
   retrying: boolean;
+  /** How far the dial the app started for this host has got (`dial` in
+   *  store/index), and null when none is in flight. A retry the client runs on
+   *  its own reports nothing here: that is the connection banner's business. */
+  dialStep: PairStep | null;
   hostInfo: HostInfo | null;
   /** What the connected host said it answers, or null when it said nothing (a
    *  host from before the field) or nothing is connected. Read through
@@ -159,11 +164,13 @@ export interface HostState extends ChatsSlice, ProposalsSlice, ProviderAccountsS
    *  "Compatibility"). Everything on the v1 allowlist is always true, so only a
    *  surface added after v2 was fixed needs to ask. */
   hostSupports(op: string): boolean;
-  /** Empty everything shown of the host (`hostScopedState`), and refuse every
-   *  PR read still out: what showing it afresh starts from. */
+  /** Empty everything held of the host (`hostScopedState`), and refuse every
+   *  PR read still out. */
   clear(): void;
   /** Take the snapshot a handshake answered with, then re-read what it does
-   *  not carry and what the socket may have missed while it was down. */
+   *  not carry and what the socket may have missed while it was down — the
+   *  screens open on this host included. Every handshake of the link, whichever
+   *  host is on screen. */
   applyHandshake(snapshot: HelloResult): void;
 
   /** Re-read the workspace snapshot. Resolves to whether the host answered:
@@ -321,6 +328,28 @@ export function refreshChats(s: HostState): void {
   }
 }
 
+/** The log of an open thread is kept current by live events, which a dropped
+ *  socket or a backgrounded webview silently misses — so every reconnect and
+ *  every return to the foreground re-reads it from the host. The top-most
+ *  agent screen open on `hostKey`'s host, if any. */
+export function refreshOpenAgent(hostKey: string | null, s: HostState): void {
+  const app = appStore.getState();
+  const agentId = [...app.nav]
+    .reverse()
+    .find((n) => n.props.agentId && hostOf(app, n.props) === hostKey)?.props.agentId;
+  if (agentId) void s.loadAgent(agentId).catch(ignore);
+}
+
+/** The Providers screen of `hostKey`'s host, when it is up: its selection and
+ *  meters follow `settings:changed`, which a dropped socket or a suspended app
+ *  misses like any other event, and the handshake carries none of it. */
+export function refreshProviders(hostKey: string | null, s: HostState): void {
+  const app = appStore.getState();
+  if (app.nav.some((n) => n.screen === "providers" && hostOf(app, n.props) === hostKey)) {
+    void s.loadProviderAccounts().catch(ignore);
+  }
+}
+
 const newId = () =>
   globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36)}`;
 
@@ -347,8 +376,7 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Everything on screen that belongs to one host, emptied — for a switch to
- *  it, a pairing that adds it, or forgetting it. Fresh objects every call:
+/** Everything the store holds of its host, emptied. Fresh objects every call:
  *  they are about to be written into. */
 const hostScopedState = (): Partial<HostState> => ({
   workspace: null,
@@ -406,11 +434,17 @@ function waitForSpawn(get: () => HostState, agentId: string, timeoutMs = 30_000)
   });
 }
 
-/** A store over `link`, holding nothing yet. It folds the link's host events
- *  and connection state in from the moment it is built; its handshakes are
- *  handed to it (`applyHandshake`). */
+/** A store over `link`, holding nothing yet. It folds the link's host events,
+ *  connection state and handshakes in from the moment it is built, whichever
+ *  host is on screen. */
 export function createHostStore(link: HostLink): HostStore {
   const { client, api } = link;
+
+  /** `props` naming this host, for a screen opened on it: it acts on this host
+   *  whichever is on screen by then. Read when called — a pairing's link learns
+   *  its host on the first answer. */
+  const onThisHost = (props: Record<string, string>): Record<string, string> =>
+    link.hostKey ? { ...props, hostKey: link.hostKey } : props;
 
   /** The order of this host's PR writes against its watcher's events
    *  (@desktop/store/prWriteOrder). */
@@ -499,7 +533,7 @@ export function createHostStore(link: HostLink): HostStore {
     // The sheet that asked closes, and the agent opens: the app's screens.
     const app = appStore.getState();
     app.closeSheet();
-    app.push("agent", { agentId: record.id });
+    app.push("agent", onThisHost({ agentId: record.id }));
     try {
       await whileSending(
         record.id,
@@ -529,6 +563,7 @@ export function createHostStore(link: HostLink): HostStore {
     connection: "disconnected",
     connectionError: null,
     retrying: false,
+    dialStep: null,
     hostInfo: null,
     protocol: null,
     relay: null,
@@ -561,8 +596,7 @@ export function createHostStore(link: HostLink): HostStore {
     async reconnect() {
       if (!client.target) return;
       set({ connectionError: null });
-      // The state subscription below reports the failure; the handshake's
-      // snapshot is handed in by whoever listens for it (`applyHandshake`).
+      // The subscriptions below report the failure and take the handshake.
       await client.reconnect();
     },
 
@@ -622,6 +656,9 @@ export function createHostStore(link: HostLink): HostStore {
       // …and its autopilot, for the same reason: state and log are host facts,
       // and the events are only the deltas.
       void get().loadAutopilot().catch(ignore);
+      // …and whatever is open on this host's screens.
+      refreshOpenAgent(link.hostKey, get());
+      refreshProviders(link.hostKey, get());
     },
 
     async refreshWorkspace() {
@@ -648,7 +685,7 @@ export function createHostStore(link: HostLink): HostStore {
     },
 
     openAgent(agentId, tab) {
-      appStore.getState().push("agent", tab ? { agentId, tab } : { agentId });
+      appStore.getState().push("agent", onThisHost(tab ? { agentId, tab } : { agentId }));
       void get().loadAgent(agentId).catch(ignore);
     },
 
@@ -1249,10 +1286,15 @@ export function createHostStore(link: HostLink): HostStore {
     ...createProviderAccountsSlice(set, get, { link, chatLists, workspaceReads }),
   }));
 
-  registerRemoteEvents(client, store.setState, store.getState, {
+  registerRemoteEvents(link, store.setState, store.getState, {
     workspaceReads,
     chatLists,
     prWrites,
+  });
+  client.onSnapshot((snapshot) => {
+    // The client has folded the host's relay into its target.
+    store.setState({ relay: client.target?.relay ?? null });
+    store.getState().applyHandshake(snapshot);
   });
   client.onState((state, error) => {
     store.setState({
@@ -1287,7 +1329,7 @@ export function storeOfLink(link: HostLink): HostStore {
 export const hostStoreOf = (hostKey: string): HostStore => storeOfLink(linkOf(hostKey));
 
 /** Read the store of the host this component acts on (`useHost`): the one a
- *  `HostContext` above it names, else the one the app is live on. */
+ *  `HostContext` above it names, else the one on screen. */
 export function useHostStore<T>(selector: (s: HostState) => T): T {
   return useStore(storeOfLink(useHost()), selector);
 }

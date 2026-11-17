@@ -1,13 +1,14 @@
 import { Icon } from "@desktop/components/Icon";
-import { useActiveHostName, useApp } from "../../store";
+import { useHostNav } from "../../host/useHost";
+import { useHostName } from "../../store";
 
 /** Home with a live host and nothing on it. The two ways a project gets here
  *  from the phone are the actions, each opening Add project on its own tab;
  *  the third way — pinning a repo in Fletch on the Mac — is mentioned so a
  *  desktop user is not left wondering why this is empty. */
 export function EmptyProjects() {
-  const openSheet = useApp((s) => s.openSheet);
-  const host = useActiveHostName() ?? "your Mac";
+  const { openSheet } = useHostNav();
+  const host = useHostName() ?? "your Mac";
   return (
     <div className="blank fade">
       <div className="glyph accent">

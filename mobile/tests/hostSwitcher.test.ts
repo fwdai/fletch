@@ -1,13 +1,14 @@
-// The Home header's host switcher: the chip names the live host, and its
-// dropdown lists every paired one, a tap from switching, with adding a host
-// and the Host sheet (where the active one is unpaired) below. The store's actions are stubbed; what
-// they do is multiHost.test's business.
+// The Home header's host switcher: the chip names the host on screen, and its
+// dropdown lists every paired one with its own connection, a tap from
+// switching, with adding a host and the Host sheet (where the one on screen is
+// unpaired) below. The store's actions are stubbed; what they do is
+// multiHost.test's business.
 
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { HostSwitcher } from "../src/screens/Home/HostSwitcher";
-import { appStore, liveHost } from "../src/store";
+import { appStore, hostOnScreen, hostStoreOf } from "../src/store";
 
 const HOSTS = [
   { hostKey: "mini", name: "Mac mini", host: "10.0.0.5", port: 47285, pairedAt: "2026-01-01" },
@@ -30,7 +31,8 @@ let unmount: () => void;
 beforeEach(async () => {
   vi.clearAllMocks();
   appStore.setState({ ...actions, hosts: HOSTS, hostKey: "mini" });
-  liveHost().setState({ connection: "connected" });
+  hostOnScreen().setState({ connection: "connected" });
+  hostStoreOf("studio").setState({ connection: "connecting" });
   host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -51,11 +53,25 @@ test("the chip names the live host and opens a list of every paired one", async 
   await open();
   const rows = [...host.querySelectorAll('[role="menuitemradio"]')];
   expect(rows.map((r) => r.querySelector(".lbl")?.textContent)).toEqual(["Mac mini", "Studio Mac"]);
-  // The live host carries the connection dot and state; the other is unknown.
+  // The host on screen spells its connection out; every row's dot is its own
+  // host's, each being connected on a link of its own.
   expect(rows[0].getAttribute("aria-checked")).toBe("true");
   expect(rows[0].textContent).toContain("Connected");
+  expect(rows[0].querySelector(".dot.running")).not.toBeNull();
   expect(rows[1].getAttribute("aria-checked")).toBe("false");
-  expect(rows[1].querySelector(".dot.idle")).not.toBeNull();
+  expect(rows[1].querySelector(".dot.waiting")).not.toBeNull();
+  expect(rows[1].textContent).not.toContain("Connecting");
+});
+
+test("a host off screen shows its own connection as it changes", async () => {
+  await open();
+  const studio = () => host.querySelectorAll('[role="menuitemradio"]')[1];
+  await act(async () => hostStoreOf("studio").setState({ connection: "connected" }));
+  expect(studio().querySelector(".dot.running")).not.toBeNull();
+  await act(async () => hostStoreOf("studio").setState({ connection: "error" }));
+  expect(studio().querySelector(".dot.error")).not.toBeNull();
+  // …and the host on screen is untouched by it.
+  expect(host.querySelector(".host .dot.running")).not.toBeNull();
 });
 
 test("tapping another host switches to it and closes the list", async () => {
@@ -66,7 +82,7 @@ test("tapping another host switches to it and closes the list", async () => {
 });
 
 test("switching still works while the live host cannot be reached", async () => {
-  await act(async () => liveHost().setState({ connection: "error" }));
+  await act(async () => hostOnScreen().setState({ connection: "error" }));
   expect(host.querySelector(".host .dot.error")).not.toBeNull();
   await open();
   await act(async () => button(host, "Studio Mac")?.click());
@@ -81,7 +97,8 @@ test("adds a host, or opens the Host sheet, from below the list", async () => {
 
   await open();
   await act(async () => button(host, "Host details")?.click());
-  expect(actions.openSheet).toHaveBeenCalledWith("host");
+  // The sheet of the host on screen, by name: it stays that host's sheet.
+  expect(actions.openSheet).toHaveBeenCalledWith("host", { hostKey: "mini" });
 });
 
 test("tapping outside closes the list without doing anything", async () => {

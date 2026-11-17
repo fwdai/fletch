@@ -1,9 +1,10 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { PrPill } from "../../components/ui";
+import { useHostNav } from "../../host/useHost";
 import { refLabel } from "../../lib/agents";
 import { STATUS_LETTER } from "../../lib/diff";
-import { useApp, useHostStore } from "../../store";
+import { useHostStore } from "../../store";
 import { ShipFooter } from "./ShipTab/ShipFooter";
 import { useShipView } from "./ShipTab/useShipView";
 import { testsEvidence, testsText } from "./ShipTab/verification";
@@ -21,7 +22,7 @@ export function ChangesTab({
 }) {
   const git = useHostStore((s) => s.gitStates[agent.id]);
   const pr = useHostStore((s) => s.prStates[agent.id]);
-  const push = useApp((s) => s.push);
+  const { push } = useHostNav();
   const tests = useHostStore((s) => testsEvidence(s.verificationReports[agent.id]));
   const view = useShipView(agent);
   const files = git?.files ?? [];

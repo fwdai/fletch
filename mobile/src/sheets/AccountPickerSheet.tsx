@@ -3,9 +3,10 @@ import { spentWindow } from "@desktop/data/providerLimits";
 import { useEffect, useState } from "react";
 import { PickerSheet } from "../components/ui";
 import { Notice } from "../components/ui/Notice";
+import { useHost } from "../host/useHost";
 import { useAgentAccount } from "../lib/agentAccount";
 import { providerLabel } from "../lib/agents";
-import { agentOf, appStore, useHostStore } from "../store";
+import { agentOf, appStore, hostOf, useHostStore } from "../store";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -31,6 +32,7 @@ export function AccountPickerSheet({
   const limits = useHostStore((s) => (agent ? s.providerLimits[agent.provider] : undefined));
   const load = useHostStore((s) => s.loadProviderAccounts);
   const switchAccount = useHostStore((s) => s.switchAgentAccount);
+  const { hostKey } = useHost();
   const [error, setError] = useState<string | null>(null);
   const enabled = view !== null;
 
@@ -71,12 +73,18 @@ export function AccountPickerSheet({
     setError(null);
     const forAgent = agent.id;
     // The host's answer can land after this sheet was dismissed and opened
-    // again for another agent — the one component serves every picker — so
-    // only the picker the pick was made from closes or shows the refusal.
-    // The store finishes the switch either way.
+    // again for another agent — the one component serves every picker, on
+    // every host — so only the picker the pick was made from closes or shows
+    // the refusal. The store finishes the switch either way.
     const stillAsking = () => {
-      const sheet = appStore.getState().sheet;
-      return !!sheet?.open && sheet.name === "accountPicker" && sheet.props.agentId === forAgent;
+      const app = appStore.getState();
+      const sheet = app.sheet;
+      return (
+        !!sheet?.open &&
+        sheet.name === "accountPicker" &&
+        sheet.props.agentId === forAgent &&
+        hostOf(app, sheet.props) === hostKey
+      );
     };
     switchAccount(forAgent, id)
       .then((record) => {

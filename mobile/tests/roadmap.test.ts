@@ -12,10 +12,10 @@ import type { RemoteClient } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { roadmapItem } from "../src/remote/mock/fixtures";
 import { RoadmapPane } from "../src/screens/Project/Roadmap";
-import { appStore, liveHost } from "../src/store";
+import { appStore, hostOnScreen } from "../src/store";
 
 const app = () => appStore.getState();
-const host = () => liveHost().getState();
+const host = () => hostOnScreen().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;

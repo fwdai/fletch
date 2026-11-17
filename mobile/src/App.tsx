@@ -1,5 +1,6 @@
 import { useCallback, useEffect } from "react";
 import { Stack } from "./components/Stack";
+import { OnHost } from "./host/OnHost";
 import { usePoll, useSystemTheme } from "./lib/hooks";
 import { AgentScreen } from "./screens/Agent";
 import { CodeScreen } from "./screens/Code";
@@ -86,33 +87,64 @@ export function App() {
   const props = (name: string) => (sheet?.name === name ? sheet.props : {});
   const isOpen = (name: string) => !!(sheet?.name === name && sheet.open);
   const dimmed = !!sheet?.open && FULL_SHEETS.has(sheet.name);
+  /** The host a sheet acts on, as its props name it. */
+  const on = (name: string) => props(name).hostKey;
 
   return (
     <div className={`m-app theme-${resolved}`}>
       {!ready ? null : hostKey && !addingHost ? (
         <>
-          <Stack dimmed={dimmed} render={(item) => <Screen item={item} />} />
-          <HostSheet open={isOpen("host")} onClose={closeSheet} />
-          <NewAgentSheet open={isOpen("newAgent")} onClose={closeSheet} {...props("newAgent")} />
-          <NewPlanSheet open={isOpen("newPlan")} onClose={closeSheet} {...props("newPlan")} />
-          <AddProjectSheet
-            open={isOpen("addProject")}
-            onClose={closeSheet}
-            {...props("addProject")}
+          <Stack
+            dimmed={dimmed}
+            render={(item) => (
+              <OnHost hostKey={item.props.hostKey}>
+                <Screen item={item} />
+              </OnHost>
+            )}
           />
-          <AgentMoreSheet open={isOpen("agentMore")} onClose={closeSheet} {...props("agentMore")} />
-          <ShipMoreSheet open={isOpen("shipMore")} onClose={closeSheet} {...props("shipMore")} />
-          <ModelPickerSheet
-            open={isOpen("modelPicker")}
-            onClose={closeSheet}
-            {...props("modelPicker")}
-          />
-          <AccountPickerSheet
-            open={isOpen("accountPicker")}
-            onClose={closeSheet}
-            {...props("accountPicker")}
-          />
-          <PrSheet open={isOpen("pr")} onClose={closeSheet} {...props("pr")} />
+          <OnHost hostKey={on("host")}>
+            <HostSheet open={isOpen("host")} onClose={closeSheet} />
+          </OnHost>
+          <OnHost hostKey={on("newAgent")}>
+            <NewAgentSheet open={isOpen("newAgent")} onClose={closeSheet} {...props("newAgent")} />
+          </OnHost>
+          <OnHost hostKey={on("newPlan")}>
+            <NewPlanSheet open={isOpen("newPlan")} onClose={closeSheet} {...props("newPlan")} />
+          </OnHost>
+          <OnHost hostKey={on("addProject")}>
+            <AddProjectSheet
+              open={isOpen("addProject")}
+              onClose={closeSheet}
+              {...props("addProject")}
+            />
+          </OnHost>
+          <OnHost hostKey={on("agentMore")}>
+            <AgentMoreSheet
+              open={isOpen("agentMore")}
+              onClose={closeSheet}
+              {...props("agentMore")}
+            />
+          </OnHost>
+          <OnHost hostKey={on("shipMore")}>
+            <ShipMoreSheet open={isOpen("shipMore")} onClose={closeSheet} {...props("shipMore")} />
+          </OnHost>
+          <OnHost hostKey={on("modelPicker")}>
+            <ModelPickerSheet
+              open={isOpen("modelPicker")}
+              onClose={closeSheet}
+              {...props("modelPicker")}
+            />
+          </OnHost>
+          <OnHost hostKey={on("accountPicker")}>
+            <AccountPickerSheet
+              open={isOpen("accountPicker")}
+              onClose={closeSheet}
+              {...props("accountPicker")}
+            />
+          </OnHost>
+          <OnHost hostKey={on("pr")}>
+            <PrSheet open={isOpen("pr")} onClose={closeSheet} {...props("pr")} />
+          </OnHost>
         </>
       ) : (
         <PairScreen />

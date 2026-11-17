@@ -10,10 +10,10 @@ import { linkOf } from "../src/host";
 import type { RemoteClient } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { prChecks as fixtureChecks, prStates as fixtureStates } from "../src/remote/mock/fixtures";
-import { appStore, liveHost } from "../src/store";
+import { appStore, hostOnScreen } from "../src/store";
 
 const app = () => appStore.getState();
-const host = () => liveHost().getState();
+const host = () => hostOnScreen().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;
@@ -66,13 +66,13 @@ beforeAll(async () => {
   ({ api, client } = linkOf(MOCK_HOST_KEY));
   const protocol = host().protocol;
   // The mock host predates the threads read; the race is the same either way.
-  liveHost().setState({
+  hostOnScreen().setState({
     protocol: protocol && { ...protocol, ops: [...protocol.ops, "get_pr_threads"] },
   });
 });
 
 beforeEach(() => {
-  liveHost().setState((s) => ({
+  hostOnScreen().setState((s) => ({
     prStates: forget(s.prStates),
     prChecks: forget(s.prChecks),
     prComments: forget(s.prComments),

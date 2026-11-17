@@ -14,7 +14,7 @@ import {
   subagentLabel,
   visibleSubagents,
 } from "../src/lib/subagents";
-import { agentOf, appStore, type HostState, liveHost } from "../src/store";
+import { agentOf, appStore, type HostState, hostOnScreen } from "../src/store";
 import { dropTasks, foldTaskEvent } from "../src/store/backgroundTasks";
 
 const NOW = 1_700_000_000_000;
@@ -145,7 +145,7 @@ describe("store helpers", () => {
 
 describe("over the mock host", () => {
   const app = () => appStore.getState();
-  const host = () => liveHost().getState();
+  const host = () => hostOnScreen().getState();
 
   beforeAll(async () => {
     await app().init();
@@ -179,7 +179,7 @@ describe("over the mock host", () => {
   });
 
   it("empties the map on a fresh handshake", async () => {
-    liveHost().setState({ backgroundTasks: { x: { t: {} as BackgroundTask } } });
+    hostOnScreen().setState({ backgroundTasks: { x: { t: {} as BackgroundTask } } });
     await host().reconnect();
     await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
     expect(host().backgroundTasks).toEqual({});

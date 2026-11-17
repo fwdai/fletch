@@ -13,11 +13,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChatItem } from "../src/adapters";
 import { linkOf } from "../src/host";
 import type { HostTarget } from "../src/remote";
-import { appStore, liveHost } from "../src/store";
+import { appStore, hostOnScreen } from "../src/store";
 import { loadSettings } from "../src/store/persist";
 
 const app = () => appStore.getState();
-const host = () => liveHost().getState();
+const host = () => hostOnScreen().getState();
 const keys = () => app().hosts.map((h) => h.hostKey);
 const savedKeys = async () => (await loadSettings()).hosts?.map((h) => h.hostKey);
 
@@ -103,7 +103,7 @@ describe("adding a host from a pairing link", () => {
 describe("switching hosts", () => {
   it("drops what was on screen and greets the chosen host with hello", async () => {
     const studioLog: ChatItem[] = [{ kind: "user_message", text: "on the studio", turnId: "t" }];
-    liveHost().setState({ logs: { arabia: studioLog } });
+    hostOnScreen().setState({ logs: { arabia: studioLog } });
     const connect = vi.spyOn(linkOf(MINI).client, "connect");
 
     const switching = app().switchHost(MINI);

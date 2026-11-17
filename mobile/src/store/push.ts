@@ -1,11 +1,12 @@
 // Push registration — the phone's side of docs/remote-protocol.md, "Push
 // notifications". Two jobs: ask iOS for permission once per paired host, and
-// make sure the host always holds this phone's current APNs token. A tap on an
-// alert is routed by the store's own `openFromPush`, because navigation is the
-// router's business, not the plugin's.
+// make sure every paired host always holds this phone's current APNs token,
+// each told over its own link. A tap on an alert is routed by the store's own
+// `openFromPush`, because navigation is the router's business, not the
+// plugin's.
 
 import { inTauri } from "@desktop/remote/ws";
-import type { HostLink } from "../host";
+import { type HostLink, linkOf } from "../host";
 import { ignore } from "../lib/ignore";
 import { withTimeout } from "../lib/timeout";
 import {
@@ -35,8 +36,6 @@ export const pushTab = (kind: string | undefined): AgentTab | undefined =>
   SHIP_PUSH_KINDS.has(kind ?? "") ? "ship" : undefined;
 
 export interface PushDeps {
-  /** The link of the host the app is live on, asked for at every call. */
-  link: () => HostLink;
   get: () => AppState;
 }
 
@@ -56,7 +55,7 @@ export async function startPush(next: PushDeps): Promise<void> {
   deps = next;
   await onPushToken((fresh) => {
     token = fresh;
-    void report();
+    for (const { hostKey } of next.get().hosts) void report(linkOf(hostKey));
   });
   await onPushOpened((opened) => next.get().openFromPush(opened.fletch));
 
@@ -70,26 +69,25 @@ export async function startPush(next: PushDeps): Promise<void> {
   }
 }
 
-/** Called after every successful `pair` and `hello`. */
-export async function syncPush(): Promise<void> {
+/** Called after every successful `pair` and `hello` on `link`. */
+export async function syncPush(link: HostLink): Promise<void> {
   if (!deps) return;
-  const hostKey = deps.link().client.hostKey ?? deps.get().hostKey;
+  const hostKey = link.client.hostKey ?? link.hostKey;
   if (!hostKey) return;
   // A refusal is final: nothing is sent, so the host keeps no token for this
   // device and never asks the relay to reach it.
   if ((await permissionFor(hostKey)) !== "granted") return;
   await registerPush().catch(ignore);
-  await report();
+  await report(link);
 }
 
-/** Called when the active host is forgotten, while the authenticated link is
- *  still up: the host only drops this phone's token on an explicit
- *  `{ token: null }`, so leaving without one would let a Mac this phone has
- *  forgotten keep alerting it. Best effort — forgetting must not be blocked by
- *  a host that is already gone. */
-export async function forgetPush(): Promise<void> {
-  const link = deps?.link();
-  if (link?.client.state !== "connected") return;
+/** Called when a host is forgotten, over its link while that is still up: the
+ *  host only drops this phone's token on an explicit `{ token: null }`, so
+ *  leaving without one would let a Mac this phone has forgotten keep alerting
+ *  it. Best effort — forgetting must not be blocked by a host that is already
+ *  gone. */
+export async function forgetPush(link: HostLink): Promise<void> {
+  if (!deps || link.client.state !== "connected") return;
   // Bounded: remote calls have no timeout, and a host that has stopped
   // answering without closing the socket must not hold the unpair hostage.
   await withTimeout(link.api.registerPush(null).catch(ignore), FORGET_PUSH_TIMEOUT_MS);
@@ -113,12 +111,15 @@ async function permissionFor(hostKey: string): Promise<PushPermission> {
  *  token that does not look like one is dropped here rather than sent. */
 const isDeviceToken = (value: string) => /^[0-9a-f]+$/.test(value);
 
-/** Hand the host the token it should have the relay send to. There is nothing
- *  to say until iOS has given us one, and no way to say it until the link is
- *  up — the next handshake calls `syncPush` again. */
-async function report(): Promise<void> {
-  const link = deps?.link();
-  if (!link || !token || link.client.state !== "connected") return;
-  if (!isDeviceToken(token.token)) return;
-  await link.api.registerPush(token.token, token.environment).catch(ignore);
+/** Hand `link`'s host the token it should have the relay send to. There is
+ *  nothing to say until iOS has given us one, no way to say it until the link
+ *  is up — the next handshake calls `syncPush` again — and nothing to say to a
+ *  host whose alerts the user refused. */
+async function report(link: HostLink): Promise<void> {
+  const fresh = token;
+  const hostKey = link.client.hostKey ?? link.hostKey;
+  if (!fresh || !hostKey || link.client.state !== "connected") return;
+  if (!isDeviceToken(fresh.token)) return;
+  if ((await loadSettings()).pushPermission?.[hostKey] !== "granted") return;
+  await link.api.registerPush(fresh.token, fresh.environment).catch(ignore);
 }

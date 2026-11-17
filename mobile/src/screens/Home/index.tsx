@@ -1,10 +1,11 @@
 import { Icon } from "@desktop/components/Icon";
 import { AgentRow } from "../../components/AgentRow";
 import { ProjectIcon } from "../../components/ui";
+import { useHostNav } from "../../host/useHost";
 import { useOrderedProjects } from "../../lib/activeProjects";
 import { agentsOfProject, baseOf, isActive, isBusy } from "../../lib/agents";
 import { type Project, repoLabel } from "../../lib/projects";
-import { useApp, useHostStore } from "../../store";
+import { useHostStore } from "../../store";
 import { AutoArchivedNotice } from "./AutoArchivedNotice";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { EmptyProjects } from "./EmptyProjects";
@@ -19,7 +20,7 @@ function ProjectCard({ project }: { project: Project }) {
   const workspace = useHostStore((s) => s.workspace);
   const agents = agentsOfProject(workspace, project.id);
   const openAgent = useHostStore((s) => s.openAgent);
-  const push = useApp((s) => s.push);
+  const { push } = useHostNav();
   const active = agents.filter(isActive);
   const running = agents.filter(isBusy).length;
   const rest = agents.length - active.length;
@@ -96,8 +97,7 @@ export function HomeScreen() {
   const pendingTotal = useHostStore((s) =>
     Object.values(s.pendingToolUse).reduce((n, m) => n + Object.keys(m).length, 0),
   );
-  const openSheet = useApp((s) => s.openSheet);
-  const push = useApp((s) => s.push);
+  const { openSheet, push } = useHostNav();
   const connection = useHostStore((s) => s.connection);
   // The host's provider accounts, one tap from the host chip — on a Mac whose
   // Fletch can list them. An older one shows the chip alone, as before.

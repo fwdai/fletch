@@ -10,10 +10,11 @@ import { useEffect, useRef, useState } from "react";
 import { AttachButton, StagedChips, useAttachments } from "../../../attachments";
 import { ProviderMark } from "../../../components/ui";
 import { useDictation, VoiceRow } from "../../../dictation";
+import { useHostNav } from "../../../host/useHost";
 import { isAgentBusy, modelLabel } from "../../../lib/agents";
 import { autosize } from "../../../lib/autosize";
 import { ignore } from "../../../lib/ignore";
-import { useApp, useHostStore } from "../../../store";
+import { useHostStore } from "../../../store";
 import { PrimaryPair } from "./PrimaryPair";
 
 /** Stop ignores taps this long after send, so a double-tap can't kill the run
@@ -52,7 +53,7 @@ export function Composer({
 }) {
   const send = useHostStore((s) => s.send);
   const stop = useHostStore((s) => s.stop);
-  const openSheet = useApp((s) => s.openSheet);
+  const { openSheet } = useHostNav();
   const [text, setText] = useState("");
   // Read inside the dictation callback, which arrives whenever the host
   // answers, against whatever the box holds by then.

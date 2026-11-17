@@ -20,13 +20,13 @@ import {
   PENDING_TOOL_USE_ID,
   PM_CUSTOM_AGENT_ID,
 } from "../src/remote/mock/fixtures";
-import { agentOf, appStore, liveHost, projectOf } from "../src/store";
+import { agentOf, appStore, hostOnScreen, projectOf } from "../src/store";
 import { isReplayed, replayLiveTurn } from "../src/store/liveTurn";
 import { forgetHost, loadSettings, saveHost, saveSettings } from "../src/store/persist";
 import { pastHistory } from "../src/store/transcript";
 
 const app = () => appStore.getState();
-const host = () => liveHost().getState();
+const host = () => hostOnScreen().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;
@@ -116,7 +116,7 @@ describe("event folding", () => {
     });
     // A send of ours: the host answers it with `running`, or failing that the
     // turn's `idle` — a status is what discharges it, never a transcript event.
-    liveHost().setState((s) => ({ sending: { ...s.sending, arabia: true } }));
+    hostOnScreen().setState((s) => ({ sending: { ...s.sending, arabia: true } }));
     await vi.waitFor(() => expect(agentOf(host(), "arabia")?.status).toBe("idle"), {
       timeout: 5000,
     });
@@ -289,7 +289,7 @@ describe("transcripts through the desktop adapters", () => {
  *  has: a chat always has messages, so an empty screen is never the answer. */
 describe("history load state", () => {
   it("is loading from the moment the read starts, and ready once it lands", async () => {
-    liveHost().setState((s) => {
+    hostOnScreen().setState((s) => {
       const logLoads = { ...s.logLoads };
       delete logLoads.pamukkale;
       return { logLoads };
@@ -389,7 +389,7 @@ describe("paged transcripts", () => {
   /** The log a host without pages builds: the whole history, read at once. */
   async function wholeLog(agentId: string): Promise<ChatItem[]> {
     const protocol = host().protocol;
-    liveHost().setState({
+    hostOnScreen().setState({
       protocol: protocol && {
         ...protocol,
         ops: protocol.ops.filter((o) => o !== "read_session_page"),
@@ -398,7 +398,7 @@ describe("paged transcripts", () => {
     try {
       await host().rebuildLog(agentId);
     } finally {
-      liveHost().setState({ protocol });
+      hostOnScreen().setState({ protocol });
     }
     return host().logs[agentId] ?? [];
   }
@@ -464,7 +464,7 @@ describe("paged transcripts", () => {
     await withSmallPages(async () => {
       await host().rebuildLog("caspian");
       const live: ChatItem = { kind: "queued_message", text: "and the docs", turnId: "t-live" };
-      liveHost().setState((s) => ({
+      hostOnScreen().setState((s) => ({
         logs: { ...s.logs, caspian: [...(s.logs.caspian ?? []), live] },
       }));
       await host().loadOlderLog("caspian");
@@ -541,7 +541,7 @@ describe("git and PR state", () => {
     const checks = vi.spyOn(api, "getPrChecks");
     const git = vi.spyOn(api, "getGitState");
     try {
-      liveHost().setState((s) => {
+      hostOnScreen().setState((s) => {
         const { kamakura: _, ...gitStates } = s.gitStates;
         return { gitStates };
       });
@@ -656,7 +656,7 @@ describe("git and PR state", () => {
   it("loadPrThreads stores the threads once the host lists the op", async () => {
     const protocol = host().protocol;
     const spy = vi.spyOn(api, "getPrThreads").mockResolvedValue({ unresolved: [] });
-    liveHost().setState({
+    hostOnScreen().setState({
       protocol: protocol && { ...protocol, ops: [...protocol.ops, "get_pr_threads"] },
     });
     try {
@@ -664,7 +664,7 @@ describe("git and PR state", () => {
       expect(spy).toHaveBeenCalledWith("kamakura");
       expect(host().prComments.kamakura).toEqual({ unresolved: [] });
     } finally {
-      liveHost().setState({ protocol });
+      hostOnScreen().setState({ protocol });
       spy.mockRestore();
     }
   });
@@ -680,7 +680,7 @@ describe("git and PR state", () => {
   });
 
   it("writes a line of ship activity when a PR opens, read against the record it replaces", () => {
-    liveHost().setState((s) => ({
+    hostOnScreen().setState((s) => ({
       prStates: { ...s.prStates, pamukkale: null },
       shipActivity: { ...s.shipActivity, pamukkale: [] },
     }));
@@ -707,7 +707,7 @@ describe("git and PR state", () => {
   });
 
   it("takes the watcher's checks and writes a line when they settle", () => {
-    liveHost().setState((s) => ({
+    hostOnScreen().setState((s) => ({
       prChecks: { ...s.prChecks, pamukkale: null },
       shipActivity: { ...s.shipActivity, pamukkale: [] },
     }));
@@ -741,7 +741,7 @@ describe("git and PR state", () => {
   });
 
   it("takes the watcher's review threads and names the new one's author", () => {
-    liveHost().setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
+    hostOnScreen().setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
     const thread = (id: string, author: string) => ({
       id,
       author,
@@ -785,7 +785,7 @@ describe("git and PR state", () => {
   });
 
   it("caps an agent's ship activity at 20, newest first", () => {
-    liveHost().setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
+    hostOnScreen().setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
     for (let i = 0; i < 25; i += 1) {
       hostEvent("agent:git-action", { agent_id: "pamukkale", op: `op${i}` });
     }
@@ -821,7 +821,7 @@ describe("git and PR state", () => {
     // An agent the next sweep does not name keeps its state: absence is
     // "nothing to say", not "no PR".
     const elsewhere = { ...pr, number: 7 };
-    liveHost().setState((s) => ({ prStates: { ...s.prStates, pamukkale: elsewhere } }));
+    hostOnScreen().setState((s) => ({ prStates: { ...s.prStates, pamukkale: elsewhere } }));
     const spy = vi.spyOn(api, "getAllPrStatus").mockResolvedValue({
       // The CI read didn't resolve this round: fresh state, last tint.
       kamakura: { state: { ...pr, title: "renamed on GitHub" }, checks: null },
@@ -841,7 +841,7 @@ describe("git and PR state", () => {
       expect(host().prChecks.kamakura?.failed).toBe(1);
     } finally {
       spy.mockRestore();
-      liveHost().setState((s) => {
+      hostOnScreen().setState((s) => {
         const { pamukkale: _, ...prStates } = s.prStates;
         return { prStates };
       });
@@ -851,7 +851,7 @@ describe("git and PR state", () => {
   it("loadPrStatus asks nothing of a host without get_all_pr_status", async () => {
     const protocol = host().protocol;
     const spy = vi.spyOn(api, "getAllPrStatus");
-    liveHost().setState({
+    hostOnScreen().setState({
       protocol: protocol && {
         ...protocol,
         ops: protocol.ops.filter((o) => o !== "get_all_pr_status"),
@@ -862,7 +862,7 @@ describe("git and PR state", () => {
       await host().loadPrStatus();
       expect(spy).not.toHaveBeenCalled();
     } finally {
-      liveHost().setState({ protocol });
+      hostOnScreen().setState({ protocol });
       spy.mockRestore();
     }
   });
@@ -893,7 +893,7 @@ describe("git and PR state", () => {
       // files see pamukkale without a PR, as before.
       delete fixturePrStates.pamukkale;
       delete fixturePrChecks.pamukkale;
-      liveHost().setState((s) => {
+      hostOnScreen().setState((s) => {
         const { pamukkale: _state, ...prStates } = s.prStates;
         const { pamukkale: _checks, ...prChecks } = s.prChecks;
         const { pamukkale: _comments, ...prComments } = s.prComments;
@@ -974,7 +974,7 @@ describe("answering a gated publish", () => {
 
     expect(host().pendingPublishApprovals.map((r) => r.id)).toEqual([waiting.id, raised.id]);
     list.mockRestore();
-    liveHost().setState({ pendingPublishApprovals: [] });
+    hostOnScreen().setState({ pendingPublishApprovals: [] });
   });
 
   it("lets the newest of two overlapping loads own the queue", async () => {
@@ -1003,7 +1003,7 @@ describe("answering a gated publish", () => {
       raised.id,
     ]);
     list.mockRestore();
-    liveHost().setState({ pendingPublishApprovals: [] });
+    hostOnScreen().setState({ pendingPublishApprovals: [] });
   });
 });
 
@@ -1114,7 +1114,7 @@ describe("spawn flow", () => {
     }));
     const read = vi.spyOn(api, "readSessionPage").mockResolvedValue({ records: [], older: null });
     const readTurns = vi.spyOn(api, "readUserTurns").mockResolvedValue(turns);
-    liveHost().setState((s) => ({ logs: { ...s.logs, [id]: [] } }));
+    hostOnScreen().setState((s) => ({ logs: { ...s.logs, [id]: [] } }));
     try {
       // Back to the list, then into the agent again: what openAgent runs.
       app().pop();
@@ -1135,7 +1135,7 @@ describe("spawn flow", () => {
     await vi.waitFor(() => expect(agentOf(host(), id)?.status).toBe("idle"), {
       timeout: 10_000,
     });
-    liveHost().setState((s) => ({ logs: { ...s.logs, [id]: (s.logs[id] ?? []).slice(0, 1) } }));
+    hostOnScreen().setState((s) => ({ logs: { ...s.logs, [id]: (s.logs[id] ?? []).slice(0, 1) } }));
     await host().loadAgent(id);
     expect((host().logs[id] ?? []).some((i) => i.kind === "tool_call")).toBe(true);
   }, 30_000);
@@ -1149,7 +1149,7 @@ describe("spawn flow", () => {
       .spyOn(api, "readSessionPage")
       .mockResolvedValue({ records: records.slice(0, 1), older: null });
     const readLive = vi.spyOn(api, "readLiveTurn");
-    liveHost().setState({
+    hostOnScreen().setState({
       protocol: protocol && {
         ...protocol,
         ops: protocol.ops.filter((o) => o !== "read_live_turn"),
@@ -1159,7 +1159,7 @@ describe("spawn flow", () => {
       app().pop();
       await host().loadAgent(id);
     } finally {
-      liveHost().setState({ protocol });
+      hostOnScreen().setState({ protocol });
       read.mockRestore();
       readLive.mockRestore();
     }
@@ -1209,7 +1209,7 @@ describe("spawn flow", () => {
  *  "working" for an agent that finished while the phone was away. */
 describe("sending flag", () => {
   it("clears against a fresh snapshot when the turn ended off-socket", async () => {
-    liveHost().setState((s) => ({ sending: { ...s.sending, caspian: true } }));
+    hostOnScreen().setState((s) => ({ sending: { ...s.sending, caspian: true } }));
     await host().refreshWorkspace();
     expect(agentOf(host(), "caspian")?.status).not.toBe("running");
     expect(host().sending.caspian).toBeUndefined();
@@ -1244,7 +1244,7 @@ describe("sending flag", () => {
  *  through `agentOf`'s fallback. */
 describe("planning chats", () => {
   const projectId = "prj-fletch";
-  const repoPath = () => liveHost().getState().workspace?.projects[0].path ?? "";
+  const repoPath = () => hostOnScreen().getState().workspace?.projects[0].path ?? "";
 
   it("is offered only by a host that lists them", () => {
     expect(host().hostSupports("list_project_chats")).toBe(true);
@@ -1390,7 +1390,7 @@ describe("planning chats", () => {
   it("resolves a chat from its id alone — all a tapped notification carries", async () => {
     // A cold launch: the snapshot never named the chat and nothing has listed
     // it, so the agent screen has an id and an empty registry behind it.
-    liveHost().setState({ chats: {} });
+    hostOnScreen().setState({ chats: {} });
     await host().ensureAgent("sakura");
     expect(agentOf(host(), "sakura")?.purpose).toBe(ROADMAP_PM_PURPOSE);
     // An id the host does not know registers nothing, rather than a placeholder.
@@ -1507,7 +1507,7 @@ describe("delegations", () => {
 
   it("hands an idle agent's playbook to the host, which runs it and reports the outcome", async () => {
     await idle();
-    liveHost().setState((s) => ({ shipActivity: { ...s.shipActivity, [AGENT]: [] } }));
+    hostOnScreen().setState((s) => ({ shipActivity: { ...s.shipActivity, [AGENT]: [] } }));
 
     await host().delegateGit(AGENT, "commit-pr", { base: "main" });
     // The strip turns at once, off the host's record.
@@ -1521,7 +1521,7 @@ describe("delegations", () => {
 
   it("holds a playbook asked of a running agent until its turn ends, then runs it as its own", async () => {
     await idle();
-    liveHost().setState((s) => ({ shipActivity: { ...s.shipActivity, [AGENT]: [] } }));
+    hostOnScreen().setState((s) => ({ shipActivity: { ...s.shipActivity, [AGENT]: [] } }));
     await host().send(AGENT, "keep going");
     await vi.waitFor(() => expect(agentOf(host(), AGENT)?.status).toBe("running"), {
       timeout: 5000,
@@ -1546,7 +1546,7 @@ describe("delegations", () => {
   it("sends the trigger as a plain message to a host without delegate_git", async () => {
     await idle();
     const protocol = host().protocol;
-    liveHost().setState({
+    hostOnScreen().setState({
       protocol: protocol && { ...protocol, ops: protocol.ops.filter((o) => o !== "delegate_git") },
     });
     const delegate = vi.spyOn(api, "delegateGit");
@@ -1557,7 +1557,7 @@ describe("delegations", () => {
       expect(send).toHaveBeenCalledWith(AGENT, expect.any(String), "[app-action] commit", []);
       expect(lines()[0]).toBe("Asked the agent to commit");
     } finally {
-      liveHost().setState({ protocol });
+      hostOnScreen().setState({ protocol });
       delegate.mockRestore();
       send.mockRestore();
       await idle();
@@ -1576,7 +1576,7 @@ describe("delegations", () => {
       expect(host().delegations).toEqual({ [AGENT]: rows[0] });
 
       spy.mockClear();
-      liveHost().setState({
+      hostOnScreen().setState({
         protocol: protocol && {
           ...protocol,
           ops: protocol.ops.filter((o) => o !== "get_delegations"),
@@ -1585,7 +1585,7 @@ describe("delegations", () => {
       await host().loadDelegations();
       expect(spy).not.toHaveBeenCalled();
     } finally {
-      liveHost().setState({ protocol, delegations: {} });
+      hostOnScreen().setState({ protocol, delegations: {} });
       spy.mockRestore();
     }
   });
@@ -1609,7 +1609,7 @@ describe("autopilot", () => {
   });
 
   it("re-reads the host's state and log on every handshake", async () => {
-    liveHost().setState({ autopilot: {}, shipActivity: {} });
+    hostOnScreen().setState({ autopilot: {}, shipActivity: {} });
     await host().reconnect();
     await vi.waitFor(() => expect(host().autopilot[AGENT]?.cycle).not.toBeNull());
     expect(host().autopilot[AGENT]).toMatchObject({
@@ -1651,7 +1651,9 @@ describe("autopilot", () => {
 
   it("takes the host's switches whole, though no row changed", () => {
     const rows = host().autopilot;
-    liveHost().setState({ autopilotSwitches: { disabled_projects: [], paused_agents: [AGENT] } });
+    hostOnScreen().setState({
+      autopilotSwitches: { disabled_projects: [], paused_agents: [AGENT] },
+    });
 
     // A project with no agents switched off on the Mac: no `autopilot:state`.
     hostEvent("autopilot:switches", { disabled_projects: ["empty"], paused_agents: [] });
@@ -1694,7 +1696,7 @@ describe("autopilot", () => {
     const read = vi.spyOn(api, "getAutopilotState");
     const log = vi.spyOn(api, "getAutopilotLog");
     const flip = vi.spyOn(api, "setAutopilot");
-    liveHost().setState({
+    hostOnScreen().setState({
       protocol: protocol && {
         ...protocol,
         ops: protocol.ops.filter((o) => !o.startsWith("autopilot_")),
@@ -1707,7 +1709,7 @@ describe("autopilot", () => {
       expect(log).not.toHaveBeenCalled();
       expect(flip).not.toHaveBeenCalled();
     } finally {
-      liveHost().setState({ protocol });
+      hostOnScreen().setState({ protocol });
       read.mockRestore();
       log.mockRestore();
       flip.mockRestore();

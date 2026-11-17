@@ -1,22 +1,22 @@
 import { Icon } from "@desktop/components/Icon";
+import { useStore } from "zustand";
 import { CONNECTION_TEXT, connectionDot } from "../../../lib/connection";
-import type { ConnectionState } from "../../../remote";
+import { hostStoreOf } from "../../../store";
 import type { SavedHost } from "../../../store/persist";
 
-/** One paired host in the switcher. `connection` is set for the active host
- *  only — the one link there is — and drives its dot and status line; the
- *  others show a hollow dot, since nothing is known about them until they are
- *  switched to. */
+/** One paired host in the switcher. Its dot is its own connection, each host
+ *  being connected on a link of its own; the host on screen (`active`) also
+ *  spells it out, and carries the check. */
 export function HostRow({
   host,
-  connection,
+  active,
   onSelect,
 }: {
   host: SavedHost;
-  connection: ConnectionState | null;
+  active: boolean;
   onSelect: () => void;
 }) {
-  const active = connection !== null;
+  const connection = useStore(hostStoreOf(host.hostKey), (s) => s.connection);
   return (
     <button
       type="button"
@@ -26,7 +26,7 @@ export function HostRow({
       onClick={onSelect}
     >
       <span className="hm-mark">
-        <span className={`dot ${active ? connectionDot(connection) : "idle"}`} />
+        <span className={`dot ${connectionDot(connection)}`} />
       </span>
       <div className="main">
         <div className="lbl">{host.name}</div>

@@ -1,12 +1,14 @@
 // The app store: what belongs to the phone itself — the theme, navigation and
 // sheets, the hosts it is paired with, which one is on screen, and a pairing in
 // progress. Everything about a host lives in that host's store (store/host),
-// one per link; this one decides which link is live and dials it.
+// one per link; this one dials every paired host, each on its own link, and
+// they stay connected for as long as they are paired.
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { RawEvent } from "../adapters";
 import { dropLink, type HostLink, linkOf, pairingLink } from "../host";
+import { useHost } from "../host/useHost";
 import { ignore } from "../lib/ignore";
 import { withTimeout } from "../lib/timeout";
 import {
@@ -18,10 +20,11 @@ import {
 } from "../remote";
 import type { PushFletch } from "../remote/push";
 import {
-  type HostState,
   type HostStore,
   hostStoreOf,
   refreshChats,
+  refreshOpenAgent,
+  refreshProviders,
   storeOfLink,
   useHostStore,
 } from "./host";
@@ -75,6 +78,8 @@ export type SheetName =
 export interface NavItem {
   key: number;
   screen: ScreenName;
+  /** What the screen shows. `hostKey`, when set, names the host it acts on
+   *  (`hostOf`). */
   props: Record<string, string>;
   phase: "enter" | "idle" | "leave";
 }
@@ -84,6 +89,7 @@ export type AgentTab = "chat" | "changes" | "ship";
 
 export interface SheetState {
   name: SheetName;
+  /** As a screen's: `hostKey` names the host the sheet acts on. */
   props: Record<string, string>;
   open: boolean;
 }
@@ -106,26 +112,21 @@ export interface AppState {
    *  show which Mac it is pairing with rather than an empty form — and keep
    *  the details for a one-tap retry if it fails. */
   pairTarget: HostTarget | null;
-  /** Every host this phone is paired with (store/persist). One is live at a
-   *  time — `hostKey` — and the Home header switches between them. */
+  /** Every host this phone is paired with (store/persist), each connected on
+   *  its own link. One is on screen — `hostKey` — and the Home header switches
+   *  between them. */
   hosts: SavedHost[];
-  /** The active host's public key — pinned on first contact, and what makes
-   *  the app paired at all. */
+  /** The public key of the host on screen — pinned on first contact, and what
+   *  makes the app paired at all. */
   hostKey: string | null;
   /** The Pair screen is up to add another host over a paired one, rather than
    *  because there is none. Cleared by a pairing that lands, or by cancelling
-   *  back to the active host. */
+   *  back to the host on screen. */
   addingHost: boolean;
-  /** The link the app is live on: the one `connect` last dialled, and the only
-   *  one with a connection — going live on another drops this one's first
-   *  (`goLive`). Its store (`liveHost`) is the one on screen.
-   *
-   *  Not always the active host's link: between a pairing's handshake and
-   *  `adopt` it is the link of the host that answered while `hostKey` still
-   *  names the one before it, and while the Pair screen is up it is the
-   *  pairing's. Before the first dial it is a link to no host, whose calls
-   *  fail as a dropped link's do. */
-  liveLink: HostLink;
+  /** The link of the pairing the Pair screen shows: the one `connect` last
+   *  dialled, or a link to no host yet — whose calls fail as a dropped link's
+   *  do. A pairing that lands makes it its host's link (host/index). */
+  pairLink: HostLink;
 
   theme: ThemeMode;
   systemTheme: "light" | "dark";
@@ -134,25 +135,30 @@ export interface AppState {
   activeFirst: boolean;
   nav: NavItem[];
   sheet: SheetState | null;
+  /** The last failed action, on whichever host it ran: one banner for all. */
   lastError: string | null;
 
   init(): Promise<void>;
+  /** Pair with the host `target` names, on the Pair screen's link: the host
+   *  that answers is added to the paired hosts (or updated there) and put on
+   *  screen. The hosts already paired stay connected throughout. */
   connect(target: HostTarget): Promise<void>;
   /** Pair from a `fletch://pair` deep link: show it on the Pair screen and
    *  connect. The host it names is added (or updated, if already paired) and
-   *  becomes active. Ignores a repeat of the link already being paired. */
+   *  put on screen. Ignores a repeat of the link already being paired. */
   pairFromLink(target: HostTarget): void;
-  /** Make a paired host the live one: drop the current connection and greet
-   *  `hostKey` with `hello` — this device is already registered there. */
+  /** Put a paired host on screen, back on Home. Nothing is dropped and nothing
+   *  redialled — every paired host is connected already — except a host that
+   *  is down with no retry coming, which is dialled again. */
   switchHost(hostKey: string): Promise<void>;
-  /** Forget the active host (the Host sheet's Unpair): it is told to drop the
-   *  push token first, and the app moves on to the next paired host, if any.
-   *  Only the active host can be forgotten, because only it can be told. */
-  unpair(): Promise<void>;
-  /** Open the Pair screen to add another host. */
+  /** Forget a paired host — the one on screen unless another is named. It is
+   *  told to drop the push token first, over its own link; if it was on
+   *  screen, the next paired host takes its place, else the Pair screen. */
+  unpair(hostKey?: string): Promise<void>;
+  /** Open the Pair screen to add another host, on a link of its own. */
   addHost(): void;
-  /** Leave the Pair screen without adding one, back on the active host. */
-  cancelAddHost(): Promise<void>;
+  /** Leave the Pair screen without adding one, back on the host on screen. */
+  cancelAddHost(): void;
   setTheme(theme: ThemeMode): void;
   setSystemTheme(t: "light" | "dark"): void;
   setActiveFirst(on: boolean): void;
@@ -172,19 +178,19 @@ export interface AppState {
 
 let initialized = false;
 
-/** The links the app listens to. Each is listened to once, however often it
- *  goes live: a second registration would act on every handshake twice. */
-const listened = new WeakSet<HostLink>();
+/** The links the app watches (`watch`). Each is watched once, however often it
+ *  is dialled: a second registration would act on every handshake twice. */
+const watched = new WeakSet<HostLink>();
 
-/** How long a foregrounded app waits for the host to answer the workspace
- *  read before treating the socket as dead and reconnecting. `get_workspace`
- *  is one database read and answers in well under a second even over the
- *  relay, so a miss this long is the socket, not the host being busy. */
+/** How long a foregrounded app waits for a host to answer the workspace read
+ *  before treating the socket as dead and reconnecting. `get_workspace` is one
+ *  database read and answers in well under a second even over the relay, so a
+ *  miss this long is the socket, not the host being busy. */
 export const RESUME_PROBE_TIMEOUT_MS = 6_000;
 
 /** A tapped alert that arrived before `init` finished. It cannot be acted on
- *  yet: which screen it opens depends on the host key, which is still being
- *  read off disk. */
+ *  yet: which screen it opens depends on the paired hosts, which are still
+ *  being read off disk. */
 let queuedPush: PushFletch | null = null;
 
 /** A pairing link that arrived before `init` finished — the usual case, in
@@ -192,35 +198,49 @@ let queuedPush: PushFletch | null = null;
  *  two plugin calls to wait on where `init` has the push registration and the
  *  settings read.
  *
- *  It cannot be acted on yet either, for two reasons. `init` finishes by
- *  reconnecting the saved host, which would tear this pairing down mid-flight
- *  and spend a code that is single use; and it publishes the settings it read
- *  before that, which on a fresh install means a null host key written over
- *  the one a pairing that got in first had just pinned. */
+ *  It cannot be acted on yet either, for two reasons. `init` dials the paired
+ *  hosts, and dialling the one the link names on the link they share would
+ *  tear this pairing down mid-flight and spend a code that is single use; and
+ *  it publishes the settings it read before that, which on a fresh install
+ *  means a null host key written over the one a pairing that got in first had
+ *  just pinned. */
 let queuedLink: HostTarget | null = null;
 
 const homeItem = (): NavItem => ({ key: Date.now(), screen: "home", props: {}, phase: "idle" });
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** The active host's saved entry, or null when there is none (or it has just
- *  been forgotten). Returns the entry itself, so it is a stable selector. */
-export const activeHostOf = (s: Pick<AppState, "hosts" | "hostKey">): SavedHost | null =>
-  s.hosts.find((h) => h.hostKey === s.hostKey) ?? null;
+/** The host a screen or sheet acts on: the one its props name, else the one
+ *  on screen. */
+export const hostOf = (
+  s: Pick<AppState, "hostKey">,
+  props: Record<string, string>,
+): string | null => props.hostKey ?? s.hostKey;
 
-/** What to call the active host. The saved name first: the client's idea of
- *  the host lags a switch until the new one has answered, and the saved one is
- *  kept current by every handshake. */
-export function useActiveHostName(): string | null {
-  const saved = useApp((s) => activeHostOf(s)?.name);
+/** The link of what is on screen where nothing names a host: the pairing's
+ *  while the Pair screen is up, else the host on screen's. The same link for
+ *  the same state, so it is a stable selector. */
+export const linkOnScreen = (s: Pick<AppState, "hostKey" | "addingHost" | "pairLink">): HostLink =>
+  s.hostKey && !s.addingHost ? linkOf(s.hostKey) : s.pairLink;
+
+/** What to call the host this component acts on (`useHost`). The saved name
+ *  first: the client's idea of the host lags a pairing until it has answered,
+ *  and the saved one is kept current by every handshake. */
+export function useHostName(): string | null {
+  const { hostKey } = useHost();
+  const saved = useApp((s) => s.hosts.find((h) => h.hostKey === hostKey)?.name);
   const answered = useHostStore((s) => s.hostInfo?.name);
   return saved ?? answered ?? null;
 }
 
-/** Whether `agentId`'s screen is on the stack — the one case a transcript read
- *  for it has anyone to show it to. */
-export const isAgentOpen = (s: Pick<AppState, "nav">, agentId: string): boolean =>
-  s.nav.some((n) => n.props.agentId === agentId);
+/** Whether the screen of `hostKey`'s agent `agentId` is on the stack — the one
+ *  case a transcript read for it has anyone to show it to. Agent ids recur
+ *  across hosts, so the host has to match as well as the id. */
+export const isAgentOpen = (
+  s: Pick<AppState, "nav" | "hostKey">,
+  hostKey: string | null,
+  agentId: string,
+): boolean => s.nav.some((n) => n.props.agentId === agentId && hostOf(s, n.props) === hostKey);
 
 /** Where to dial a saved host. Its key is the whole credential: `hello`
  *  authenticates with the device key the Rust layer holds, and the relay is
@@ -233,37 +253,19 @@ const targetOf = (saved: SavedHost): HostTarget => ({
   relay: saved.relay,
 });
 
-/** The log of an open thread is kept current by live events, which a dropped
- *  socket or a backgrounded webview silently misses — so every reconnect and
- *  every return to the foreground re-reads it from the host. */
-function refreshOpenAgent(host: HostState): void {
-  const agentId = [...appStore.getState().nav].reverse().find((n) => n.props.agentId)
-    ?.props.agentId;
-  if (agentId) void host.loadAgent(agentId).catch(ignore);
-}
-
-/** The Providers screen, when it is up: its selection and meters follow
- *  `settings:changed`, which a dropped socket or a suspended app misses like
- *  any other event, and the handshake carries none of it. */
-function refreshProviders(host: HostState): void {
-  if (appStore.getState().nav.some((n) => n.screen === "providers")) {
-    void host.loadProviderAccounts().catch(ignore);
-  }
-}
-
 type Set = (partial: Partial<AppState> | ((s: AppState) => Partial<AppState>)) => void;
 type Get = () => AppState;
 
 /** Everything that makes the app paired with the host it has just greeted: the
  *  pinned key, the path the link came in on, and the durable record of both —
- *  added to the paired hosts, or updated there, and made the active one.
+ *  added to the paired hosts, or updated there, and put on screen.
  *
- *  Shared by `connect` and the snapshot subscription because a first
- *  connection can complete through either. A pairing that is answered and then
- *  loses the socket before the workspace arrives has already spent its code,
- *  and the client retries it on its own with the key it pinned — that retry
- *  has no `connect` above it, and without this the app would sit on the Pair
- *  screen holding a working connection. */
+ *  Shared by `connect` and `watch` because a first connection can complete
+ *  through either. A pairing that is answered and then loses the socket before
+ *  the workspace arrives has already spent its code, and the client retries it
+ *  on its own with the key it pinned — that retry has no `connect` above it,
+ *  and without this the app would sit on the Pair screen holding a working
+ *  connection. */
 async function adopt(set: Set, get: Get, link: HostLink, host: HostInfo): Promise<void> {
   const { client } = link;
   // The client owns the target: the spent pairing token is gone from it and
@@ -297,79 +299,120 @@ async function adopt(set: Set, get: Get, link: HostLink, host: HostInfo): Promis
   await saveHost(entry);
 }
 
-/** Make `link` the live one: listened to, and the only link with a
- *  connection. Listened to before it is live, so nothing its subscription
- *  hears in between is taken for news. */
-function goLive(set: Set, get: Get, link: HostLink): void {
-  if (!listened.has(link)) {
-    listened.add(link);
-    listen(set, get, link);
-  }
-  const left = get().liveLink;
-  if (link === left) return;
-  set({ liveLink: link });
-  left.client.disconnect();
-}
-
-/** What `link`'s pairing steps and handshakes mean for the app. Only the live
- *  link speaks for the screen: a link stops being live by being disconnected,
- *  so all it can still say is that disconnect — which must not land over the
- *  state of the link taking its place. Its host events and connection state
- *  are its store's own (store/host). */
-function listen(set: Set, get: Get, link: HostLink): void {
+/** What `link`'s pairing steps and handshakes mean for the app, whichever host
+ *  is on screen: the Pair screen's progress while it is the link pairing, the
+ *  host adopted when a pairing lands, a paired host's saved name and relay kept
+ *  current, and the push token handed over. Everything about the host itself
+ *  is its store's, handshakes included (store/host). */
+function watch(set: Set, get: Get, link: HostLink): void {
+  if (watched.has(link)) return;
+  watched.add(link);
   const { client } = link;
-  const isLive = () => link === get().liveLink;
-  // Only while a `connect` owns the flow: a background reconnect is the
-  // connection banner's business, and moving the Pair screen's progress on
-  // behalf of one would be describing a connection the user did not ask for.
+  // Only while a `connect` owns the flow on this link: a background reconnect
+  // is the connection banner's business, and moving the Pair screen's progress
+  // on behalf of one would be describing a connection the user did not ask
+  // for.
+  const pairing = () => link === get().pairLink && get().pairStep !== null;
   client.onStep((step) => {
-    if (isLive() && get().pairStep) set({ pairStep: step });
+    if (pairing()) set({ pairStep: step });
   });
   client.onConfirmCode((code) => {
-    if (isLive() && get().pairStep) set({ pairCode: code });
+    if (pairing()) set({ pairCode: code });
   });
   client.onSnapshot((snapshot) => {
-    if (!isLive()) return;
-    const host = storeOfLink(link);
-    // A host other than the one on screen answered — a pairing that adds
-    // one, or the retry that completes it. Nothing its store holds is to be
-    // shown, and `adopt` (in `connect`, or below) makes it the active host.
-    const newHost = client.hostKey !== get().hostKey;
-    if (newHost) {
-      host.getState().clear();
-      host.setState({ via: client.via });
-    }
-    host.getState().applyHandshake(snapshot);
-    // The client has folded the host's relay into its target; a reconnect
-    // that never passes through `adopt` still has to keep it — and the name
-    // the host answers to now, for the header.
-    const relay = client.target?.relay ?? null;
-    const saved = newHost ? null : activeHostOf(get());
+    const saved = get().hosts.find((h) => h.hostKey === client.hostKey);
     if (saved) {
-      if (relay !== host.getState().relay) host.setState({ relay });
-      const patch = { relay: relay ?? undefined, name: snapshot.host.name || saved.name };
+      // The client has folded the host's relay into its target; a reconnect
+      // keeps it on the saved entry — and the name the host answers to now,
+      // for the switcher and the header.
+      const patch = { relay: client.target?.relay, name: snapshot.host.name || saved.name };
       if (patch.relay !== saved.relay || patch.name !== saved.name) {
-        set((s) => ({ hosts: s.hosts.map((h) => (h === saved ? { ...h, ...patch } : h)) }));
+        set((s) => ({
+          hosts: s.hosts.map((h) => (h.hostKey === saved.hostKey ? { ...h, ...patch } : h)),
+        }));
         if (!mockEnabled()) void updateHost(saved.hostKey, patch);
       }
+    } else if (!get().pairStep) {
+      // A host not paired yet. `connect` adopts the one it pairs itself, so
+      // this is for the retry that completes a pairing whose first attempt
+      // died after the code was spent. Guarded on `pairStep` so the two never
+      // race.
+      void adopt(set, get, link, snapshot.host).catch(ignore);
     }
-    refreshOpenAgent(host.getState());
-    refreshProviders(host.getState());
     // Every handshake — the first pairing and every reconnect — is when the
     // host is told the APNs token again.
-    void syncPush().catch(ignore);
-    // A handshake from a host that is not the active one (or with none
-    // active yet) is the one that pairs it: `connect` does this itself, so
-    // this is for the retry that completes a pairing whose first attempt died
-    // after the code was spent. Guarded on `pairStep` so the two never race.
-    if (newHost && !get().pairStep) void adopt(set, get, link, snapshot.host).catch(ignore);
+    void syncPush(link).catch(ignore);
   });
+}
+
+/** Connect a paired host's link, greeting it with `hello` — this device is
+ *  already registered there. Its store shows how far the dial has got and how
+ *  it failed; from then on the client keeps the link up on its own, retrying
+ *  with backoff for as long as the host is paired. */
+async function dial(set: Set, get: Get, saved: SavedHost): Promise<void> {
+  const link = linkOf(saved.hostKey);
+  const host = storeOfLink(link);
+  watch(set, get, link);
+  host.setState({ connectionError: null, dialStep: "connecting" });
+  const off = link.client.onStep((dialStep) => host.setState({ dialStep }));
+  try {
+    await link.client.connect(targetOf(saved));
+  } catch (e) {
+    host.setState({ connectionError: message(e) });
+    throw e;
+  } finally {
+    off();
+    host.setState({ dialStep: null });
+  }
+}
+
+/** Stop the pairing the Pair screen shows if it is still running — unless its
+ *  link is a paired host's, which stays connected like every other. */
+function callOffPairing(get: Get): void {
+  const { pairLink, hosts } = get();
+  if (!hosts.some((h) => h.hostKey === pairLink.hostKey)) pairLink.client.disconnect();
+}
+
+/** Back in the foreground: refresh what the background missed on `link`'s
+ *  host — once its socket has shown it is still alive. iOS freezes a suspended
+ *  app's sockets, and when the app returns one can read as connected for a
+ *  while longer with every request on it hanging. So the refresh doubles as
+ *  the probe: a workspace read the host does not answer in time, or that the
+ *  socket refuses outright, means the socket is dead, and the reconnect it
+ *  triggers does the refreshing instead, through the handshake's snapshot. The
+ *  transport's own pings catch the same death for an idle foreground app, more
+ *  slowly. */
+function wake(link: HostLink): void {
+  const { client } = link;
+  const store = storeOfLink(link);
+  // A retry waiting out its backoff was scheduled while the phone was away;
+  // the user looking at the app is reason enough to dial now.
+  if (client.retrying) {
+    void store.getState().reconnect().catch(ignore);
+    return;
+  }
+  if (client.state !== "connected") return;
+  void (async () => {
+    const alive = await withTimeout(
+      store.getState().refreshWorkspace(),
+      RESUME_PROBE_TIMEOUT_MS,
+      false,
+    );
+    const host = store.getState();
+    if (!alive) {
+      void host.reconnect().catch(ignore);
+      return;
+    }
+    void host.loadShortstats();
+    // A `pr:*` event that reached a suspended app may never have been read.
+    void host.loadPrStatus();
+    refreshOpenAgent(link.hostKey, host);
+    refreshProviders(link.hostKey, host);
+    refreshChats(host);
+  })();
 }
 
 export const appStore = createStore<AppState>()((set, get) => {
-  /** The link the app is live on (`liveLink`). */
-  const hostLink = (): HostLink => get().liveLink;
-
   return {
     ready: false,
     pairStep: null,
@@ -378,7 +421,7 @@ export const appStore = createStore<AppState>()((set, get) => {
     hosts: [],
     hostKey: null,
     addingHost: false,
-    liveLink: pairingLink(),
+    pairLink: pairingLink(),
 
     theme: "dark",
     systemTheme: "dark",
@@ -395,47 +438,11 @@ export const appStore = createStore<AppState>()((set, get) => {
       // Early, and awaited: the plugin holds the APNs token — and a tap that
       // launched the app — until it is asked to register, and hands both over
       // through events these listeners have to be in place for.
-      await startPush({ link: hostLink, get }).catch(ignore);
-      // Back in the foreground: refresh what the background missed — once the
-      // socket has shown it is still alive. iOS freezes a suspended app's
-      // socket, and when the app returns it can read as connected for a while
-      // longer with every request on it hanging. So the refresh doubles as the
-      // probe: a workspace read the host does not answer in time, or that the
-      // socket refuses outright, means the socket is dead, and the reconnect it
-      // triggers does the refreshing instead, through the handshake's snapshot.
-      // The transport's own pings catch the same death for an idle foreground
-      // app, more slowly. Whatever follows the probe acts on the host live by
-      // then.
-      const resume = async () => {
-        const alive = await withTimeout(
-          liveHost().getState().refreshWorkspace(),
-          RESUME_PROBE_TIMEOUT_MS,
-          false,
-        );
-        const host = liveHost().getState();
-        if (!alive) {
-          void host.reconnect().catch(ignore);
-          return;
-        }
-        void host.loadShortstats();
-        // A `pr:*` event that reached a suspended app may never have been read.
-        void host.loadPrStatus();
-        refreshOpenAgent(host);
-        refreshProviders(host);
-        refreshChats(host);
-      };
+      await startPush({ get }).catch(ignore);
       if (typeof document !== "undefined") {
         document.addEventListener("visibilitychange", () => {
           if (document.hidden) return;
-          const { client } = hostLink();
-          // A retry waiting out its backoff was scheduled while the phone was
-          // away; the user looking at the app is reason enough to dial now.
-          if (client.retrying) {
-            void liveHost().getState().reconnect().catch(ignore);
-            return;
-          }
-          if (client.state !== "connected") return;
-          void resume();
+          for (const { hostKey } of get().hosts) wake(linkOf(hostKey));
         });
       }
       const saved = await loadSettings();
@@ -444,10 +451,14 @@ export const appStore = createStore<AppState>()((set, get) => {
       const hosts = mockEnabled() ? [] : (saved.hosts ?? []);
       const active = hosts.find((h) => h.hostKey === saved.activeHostKey) ?? hosts[0] ?? null;
       const hostKey = active?.hostKey ?? null;
-      // The pinned key comes back before `ready`, because it is what a queued
-      // notification tap has to be checked against — a tap must not wait out a
-      // connection attempt to open its agent.
-      if (active) hostStoreOf(active.hostKey).setState({ relay: active.relay ?? null });
+      // What each host's store is seeded with from disk, before `ready`: a
+      // queued notification tap may open an agent on any of them.
+      for (const h of hosts) {
+        hostStoreOf(h.hostKey).setState({
+          relay: h.relay ?? null,
+          lastDestParent: saved.destParents?.[h.hostKey] ?? null,
+        });
+      }
       set({
         ready: true,
         theme: saved.theme ?? "dark",
@@ -460,33 +471,24 @@ export const appStore = createStore<AppState>()((set, get) => {
         queuedPush = null;
         get().openFromPush(fletch);
       }
-      // Before the saved host, and instead of it: a scanned link says to pair
-      // with *this* Mac, which is an instruction, where reconnecting the last
-      // one is only a default. Racing them would supersede the pairing and burn
-      // its code. Over a paired host the Pair screen shows it as an addition,
-      // with a way back to that host if it fails.
-      if (queuedLink) {
-        const target = queuedLink;
-        queuedLink = null;
+      const link = queuedLink;
+      queuedLink = null;
+      // Every paired host at once, each on its own link: one that does not
+      // answer holds up none of the others, and its store says why. A host the
+      // queued link names is left to the link — see `queuedLink`.
+      const dials = hosts.filter((h) => h.hostKey !== link?.hostKey).map((h) => dial(set, get, h));
+      if (link) {
+        // A scanned link says to pair with *this* Mac. Over a paired host the
+        // Pair screen shows it as an addition, with a way back to that host if
+        // it fails.
         set({ addingHost: hostKey !== null });
-        await get().connect(target).catch(ignore);
-        return;
-      }
-      if (mockEnabled()) {
+        await get().connect(link).catch(ignore);
+      } else if (mockEnabled()) {
         // The mock host has no pairing step worth clicking through every reload;
         // its fixed key is pinned by `connect` like any other.
         await get().connect({ host: "mock", port: DEFAULT_PORT }).catch(ignore);
-        return;
       }
-      // Stood down while a pairing is running, for the same reason the queued
-      // link goes first: a link that arrived in the moment between `ready` and
-      // here is already connecting, and this would replace it.
-      if (active && !get().pairStep) {
-        hostStoreOf(active.hostKey).setState({
-          lastDestParent: saved.destParents?.[active.hostKey] ?? null,
-        });
-        await get().connect(targetOf(active)).catch(ignore);
-      }
+      await Promise.allSettled(dials);
     },
 
     async connect(target) {
@@ -497,14 +499,13 @@ export const appStore = createStore<AppState>()((set, get) => {
       const host = storeOfLink(link);
       // The client owns the target from here: it strips the spent pairing token
       // and pins the host key the handshake authenticated.
-      set({ pairStep: "connecting", pairCode: null });
+      set({ pairStep: "connecting", pairCode: null, pairLink: link });
       host.setState({ connectionError: null });
-      goLive(set, get, link);
+      // Watched before it dials, so nothing it says in between is missed.
+      watch(set, get, link);
       try {
         const snapshot = await link.client.connect(target);
         await adopt(set, get, link, snapshot.host);
-        host.setState({ workspace: snapshot.workspace });
-        if (!snapshot.workspace) await host.getState().refreshWorkspace();
       } catch (e) {
         host.setState({ connectionError: message(e) });
         throw e;
@@ -533,7 +534,6 @@ export const appStore = createStore<AppState>()((set, get) => {
       // ask. Over a paired host the Pair screen comes up to show the link and how
       // far it has got; before `init` there is no telling yet, and it decides.
       set({ pairTarget: target, addingHost: get().hostKey !== null });
-      liveHost().setState({ connectionError: null });
       if (!get().ready) {
         // Held until `init` has read what is on disk — see `queuedLink`. The
         // step is set anyway: the screen is already showing this link, and a
@@ -547,21 +547,12 @@ export const appStore = createStore<AppState>()((set, get) => {
 
     async switchHost(hostKey) {
       const saved = get().hosts.find((h) => h.hostKey === hostKey);
-      // Already the live one: there is nothing to drop, and a link that is down
-      // has its own Retry.
-      if (!saved || (hostKey === get().hostKey && hostLink().client.target?.hostKey === hostKey)) {
-        return;
-      }
-      // Nothing awaits between here and the dial (`connect` drops the link being
-      // left first thing): an answer from the host being left that landed in
-      // between would read as a new host and be adopted over this one. The
-      // clone destination is resolved by `adopt`, once the host has answered.
-      // The chosen host is shown from nothing, as if never seen: whatever its
-      // store kept from an earlier visit is gone, and so is any PR read it had
-      // out. The store being left keeps what it has, off screen.
-      const host = hostStoreOf(hostKey);
-      host.getState().clear();
-      host.setState({ relay: saved.relay ?? null, connectionError: null });
+      // Already on screen: there is nothing to do, and a host that is down has
+      // its own Retry.
+      if (!saved || (hostKey === get().hostKey && !get().addingHost)) return;
+      // Leaving the Pair screen for it: a pairing still running would land on
+      // screen over the host chosen here.
+      if (get().addingHost) callOffPairing(get);
       set({
         hostKey,
         addingHost: false,
@@ -572,60 +563,69 @@ export const appStore = createStore<AppState>()((set, get) => {
       // The user's choice, so the next launch starts here even if this host
       // does not answer now.
       if (!mockEnabled()) void setActiveHost(hostKey);
-      await get().connect(targetOf(saved));
-    },
-
-    async unpair() {
-      const { hostKey } = get();
-      if (!hostKey) return;
-      // Before the link drops: the host keeps the push token until told
-      // otherwise.
-      await forgetPush();
-      // Its link goes with it, so a later pairing with this host starts afresh
-      // — with a store of its own, the one kept by this link going too.
-      dropLink(hostKey);
-      if (!mockEnabled()) await forgetSavedHost(hostKey);
-      const hosts = get().hosts.filter((h) => h.hostKey !== hostKey);
-      set({ hosts });
-      // Still paired elsewhere: carry on there, straight from this host to the
-      // next, rather than by way of the Pair screen.
-      const next = hosts[0];
-      if (next) {
-        await get().switchHost(next.hostKey).catch(ignore);
+      const { state, retrying } = linkOf(hostKey).client;
+      if (state === "connected") {
+        // Kept current off screen by its events, all but the working-tree stats,
+        // which only the on-screen host's poll reads (App).
+        void hostStoreOf(hostKey).getState().loadShortstats();
         return;
       }
-      const left = liveHost();
-      left.getState().clear();
-      left.setState({ relay: null });
-      set({
-        hostKey: null,
-        sheet: null,
-        nav: [homeItem()],
-        // The link that paired this host carried a code that is long spent;
-        // leaving it on the Pair screen would offer the user a dead retry.
-        pairTarget: null,
-      });
+      // Down with no retry coming — never dialled, or refused — so it is
+      // dialled again. One retrying is left to its retry, and one connecting to
+      // its attempt.
+      if (state === "disconnected" || (state === "error" && !retrying)) await dial(set, get, saved);
+    },
+
+    async unpair(hostKey) {
+      const forgotten = hostKey ?? get().hostKey;
+      if (!forgotten) return;
+      // Over its own link, while it is still up: the host keeps the push token
+      // until told otherwise.
+      await forgetPush(linkOf(forgotten));
+      if (!mockEnabled()) await forgetSavedHost(forgotten);
+      const hosts = get().hosts.filter((h) => h.hostKey !== forgotten);
+      // Nothing left on screen names it: whatever does would reach for its link
+      // after it has gone.
+      set((s) => ({
+        hosts,
+        nav: s.nav.filter((n) => n.props.hostKey !== forgotten),
+        sheet: s.sheet?.props.hostKey === forgotten ? null : s.sheet,
+      }));
+      let next: Promise<void> | undefined;
+      if (forgotten === get().hostKey) {
+        if (hosts[0]) {
+          // Still paired elsewhere: carry on there, straight from this host to
+          // the next, rather than by way of the Pair screen.
+          next = get().switchHost(hosts[0].hostKey).catch(ignore);
+        } else {
+          set({
+            hostKey: null,
+            sheet: null,
+            nav: [homeItem()],
+            // The link that paired this host carried a code that is long spent;
+            // leaving it on the Pair screen would offer the user a dead retry.
+            pairTarget: null,
+            pairLink: pairingLink(),
+          });
+        }
+      }
+      // Its link goes with it, so a later pairing with this host starts afresh —
+      // with a store of its own, the one kept by this link going too. Dropped
+      // only once it is off screen.
+      dropLink(forgotten);
+      await next;
     },
 
     addHost() {
-      // The live link stops while the Pair screen is up: a pairing replaces it
-      // anyway, and its retries would otherwise report errors on a screen about
-      // another Mac. Cancelling dials it again.
-      hostLink().client.disconnect();
-      set({ addingHost: true, pairTarget: null, sheet: null });
-      liveHost().setState({ connectionError: null });
+      // A link of its own for the pairing: the hosts already paired stay
+      // connected while the Pair screen is up, and nothing of theirs shows on it.
+      set({ addingHost: true, pairTarget: null, sheet: null, pairLink: pairingLink() });
     },
 
-    async cancelAddHost() {
+    cancelAddHost() {
+      // Back to the host the Pair screen was opened over, connected all along.
+      callOffPairing(get);
       set({ addingHost: false, pairTarget: null });
-      liveHost().setState({ connectionError: null });
-      const active = activeHostOf(get());
-      const { client } = hostLink();
-      // Back to the host the Pair screen was opened over, which `addHost` or a
-      // pairing attempt has left.
-      if (active && !(client.target?.hostKey === active.hostKey && client.state === "connected")) {
-        await get().connect(targetOf(active)).catch(ignore);
-      }
     },
 
     setTheme(theme) {
@@ -674,23 +674,21 @@ export const appStore = createStore<AppState>()((set, get) => {
         queuedPush = fletch;
         return;
       }
-      set({ nav: [homeItem()], sheet: null });
       // An alert from a Mac this phone is not paired with — an old token, or a
       // host it has since forgotten — gets no deep link. Home is the Pair screen
       // when there is no pairing, which is the honest answer.
       const { agentId, hostId } = fletch;
-      if (!agentId || !hostId || !get().hosts.some((h) => h.hostKey === hostId)) return;
-      // An alert about the PR is answered on the Ship tab; a turn ending or a
-      // held prompt, in the chat. The agent is opened on the host that sent it.
-      const tab = pushTab(fletch.kind);
-      const open = () => hostStoreOf(hostId).getState().openAgent(agentId, tab);
-      if (hostId === get().hostKey) {
-        open();
-        return;
-      }
+      const paired = get().hosts.some((h) => h.hostKey === hostId);
       // Every paired Mac holds the token, so an alert can come from one that is
-      // not the live one: switch to it, then open the agent it names.
-      void get().switchHost(hostId).then(open, ignore);
+      // not on screen: it is put there, connected all along (or dialling, if it
+      // was down), and nothing is dropped.
+      if (hostId && paired && hostId !== get().hostKey) void get().switchHost(hostId).catch(ignore);
+      set({ nav: [homeItem()], sheet: null });
+      if (!agentId || !hostId || !paired) return;
+      // An alert about the PR is answered on the Ship tab; a turn ending or a
+      // held prompt, in the chat. The agent is opened on the host that sent it,
+      // at once: a host still connecting re-reads it when it answers.
+      hostStoreOf(hostId).getState().openAgent(agentId, pushTab(fletch.kind));
     },
 
     openSheet(name, props = {}) {
@@ -710,8 +708,9 @@ export function useApp<T>(selector: (s: AppState) => T): T {
   return useStore(appStore, selector);
 }
 
-/** The store of the link the app is live on: the one on screen. For code
- *  outside a component; a component reads it through `useHostStore`. */
-export const liveHost = (): HostStore => storeOfLink(appStore.getState().liveLink);
+/** The store of what is on screen (`linkOnScreen`): the host on screen's, or
+ *  the pairing's on the Pair screen. For code outside a component; a component
+ *  reads the store of the host it acts on through `useHostStore`. */
+export const hostOnScreen = (): HostStore => storeOfLink(linkOnScreen(appStore.getState()));
 
 export type { RawEvent };

@@ -2,12 +2,13 @@ import type { AgentRecord } from "@desktop/api/types/agent";
 import { endsInSteps } from "@desktop/components/Workspace/messages/rows";
 import { type MutableRefObject, useEffect, useMemo } from "react";
 import { type ChatItem, getAdapter } from "../../adapters";
+import { useHostNav } from "../../host/useHost";
 import { isAgentBusy, providerLabel } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { ignore } from "../../lib/ignore";
 import { tasksByToolUse } from "../../lib/thread";
 import { useStickyScroll } from "../../lib/useStickyScroll";
-import { useApp, useHostStore } from "../../store";
+import { useHostStore } from "../../store";
 import { ApprovalCard, ErrorCard, PublishApprovalCard } from "./ApprovalCard";
 import { LoadOlder } from "./LoadOlder";
 import { LogPlaceholder } from "./LogState";
@@ -39,7 +40,7 @@ export function ChatTab({
   // not a decision *this* conversation raised.
   const proposals = useHostStore((s) => s.proposals[agent.project_id]);
   const loadProposals = useHostStore((s) => s.loadProposals);
-  const push = useApp((s) => s.push);
+  const { push } = useHostNav();
   const send = useHostStore((s) => s.send);
   const connected = useHostStore((s) => s.connection === "connected");
   const planning = !!agent.purpose;

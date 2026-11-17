@@ -13,11 +13,11 @@ import { HOME } from "../src/remote/mock/fixtures";
 import { AddProjectSheet } from "../src/sheets/AddProjectSheet";
 import { CloneForm } from "../src/sheets/AddProjectSheet/CloneForm";
 import { OpenFolderForm } from "../src/sheets/AddProjectSheet/OpenFolderForm";
-import { appStore, liveHost } from "../src/store";
+import { appStore, hostOnScreen } from "../src/store";
 import { loadDestParent } from "../src/store/persist";
 
 const app = () => appStore.getState();
-const host = () => liveHost().getState();
+const host = () => hostOnScreen().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;

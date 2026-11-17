@@ -2,6 +2,7 @@ import { Icon } from "@desktop/components/Icon";
 import { agentTitle } from "@desktop/util/agentTitle";
 import { useEffect, useRef, useState } from "react";
 import { Nav, ProviderMark, Segmented } from "../../components/ui";
+import { useHostNav } from "../../host/useHost";
 import { baseOf, branchOf, isBusy, STATUS_LABEL } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { subagentCounts, subagentLabel } from "../../lib/subagents";
@@ -109,7 +110,7 @@ export function AgentScreen({ agentId, tab: initialTab }: { agentId: string; tab
   const agent = useHostStore((s) => agentOf(s, agentId));
   const project = useHostStore((s) => projectOf(s, agentId));
   const pop = useApp((s) => s.pop);
-  const openSheet = useApp((s) => s.openSheet);
+  const { openSheet } = useHostNav();
   const git = useHostStore((s) => s.gitStates[agentId]);
   const ensureAgent = useHostStore((s) => s.ensureAgent);
   const connected = useHostStore((s) => s.connection === "connected");

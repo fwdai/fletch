@@ -13,7 +13,7 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import type { HostTarget } from "../src/remote";
 import { PairScreen } from "../src/screens/Pair";
-import { appStore, liveHost } from "../src/store";
+import { appStore, hostOnScreen } from "../src/store";
 
 const app = () => appStore.getState();
 
@@ -77,7 +77,7 @@ describe("the Pair screen adding a host", () => {
   it("offers Cancel, which goes back to the paired host", async () => {
     const cancelAddHost = vi.fn(async () => {});
     appStore.setState({ cancelAddHost, addingHost: true, pairStep: null, pairTarget: null });
-    liveHost().setState({ connectionError: null });
+    hostOnScreen().setState({ connectionError: null });
     const host = document.createElement("div");
     document.body.append(host);
     const root = createRoot(host);

@@ -3,6 +3,7 @@ import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { AgentRow } from "../../components/AgentRow";
 import { Nav, ProjectIcon, Segmented } from "../../components/ui";
+import { useHostNav } from "../../host/useHost";
 import { type AgentStage, agentsOfProject, baseOf, stageOf } from "../../lib/agents";
 import { projectById, repoLabel } from "../../lib/projects";
 import { useApp, useHostStore } from "../../store";
@@ -24,7 +25,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
   const prStates = useHostStore((s) => s.prStates);
   const pop = useApp((s) => s.pop);
   const openAgent = useHostStore((s) => s.openAgent);
-  const openSheet = useApp((s) => s.openSheet);
+  const { openSheet } = useHostNav();
   // Indexed straight out of the store: the registry's array is a stable
   // reference, where a `?? []` inside the selector would be a fresh one.
   const chats = useHostStore((s) => s.chats[projectId]);

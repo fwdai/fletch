@@ -13,10 +13,10 @@ import type { RemoteClient } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { AccountPickerSheet } from "../src/sheets/AccountPickerSheet";
 import { AgentMoreSheet } from "../src/sheets/AgentMoreSheet";
-import { agentOf, appStore, liveHost } from "../src/store";
+import { agentOf, appStore, hostOnScreen } from "../src/store";
 
 const app = () => appStore.getState();
-const host = () => liveHost().getState();
+const host = () => hostOnScreen().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;
@@ -308,7 +308,7 @@ describe("the More sheet's account row and its picker", () => {
     await act(async () => app().closeSheet());
     await openPickerFor("arabia");
     await act(async () => {
-      settle.resolve({ ...agentOf(liveHost().getState(), "kamakura"), account: "work" });
+      settle.resolve({ ...agentOf(hostOnScreen().getState(), "kamakura"), account: "work" });
     });
     expect(app().sheet).toMatchObject({
       name: "accountPicker",

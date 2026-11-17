@@ -45,8 +45,8 @@ import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import { dischargeSending } from "@desktop/helpers/sending";
 import type { PrWriteOrder } from "@desktop/store/prWriteOrder";
 import { getAdapter, type RawEvent } from "../adapters";
+import type { HostLink } from "../host";
 import { ignore } from "../lib/ignore";
-import type { RemoteClient } from "../remote";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
 import { type ChatLists, patchChatIn } from "./chats";
 import { agentOf, type HostState } from "./host";
@@ -156,13 +156,13 @@ export function foldAgentEvent(s: HostState, agentId: string, raw: RawEvent): Pa
 }
 
 export function registerRemoteEvents(
-  client: RemoteClient,
+  link: HostLink,
   set: Set,
   get: Get,
   { workspaceReads, chatLists, prWrites }: EventOrders,
 ): void {
   const on = <T>(event: string, cb: (payload: T) => void) =>
-    client.on(event, (payload) => cb(payload as T));
+    link.client.on(event, (payload) => cb(payload as T));
 
   on<AgentManagedEvent>("agent:event", (e) => {
     // A frame a replayed turn already holds is not drawn twice.
@@ -176,9 +176,9 @@ export function registerRemoteEvents(
   // agent whose screen is open: the transcript is the heaviest read on the
   // wire, every turn that ends on the Mac raises this whether or not the phone
   // is looking, and opening an agent re-reads its history anyway (`loadAgent`).
-  // Which screens are open is the app's.
+  // Which screens are open, and on which host, is the app's.
   on<SessionRecordsAppendedEvent>("session:records-appended", (e) => {
-    if (!isAgentOpen(appStore.getState(), e.agent_id)) return;
+    if (!isAgentOpen(appStore.getState(), link.hostKey, e.agent_id)) return;
     void get().rebuildLog(e.agent_id).catch(ignore);
   });
 

@@ -3,7 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gitFollowMs, useGitFollow } from "../src/screens/Agent/useGitFollow";
-import { liveHost } from "../src/store";
+import { hostOnScreen } from "../src/store";
 
 describe("gitFollowMs", () => {
   it("reads briskly behind Changes and Ship, slowly behind the chat", () => {
@@ -30,7 +30,7 @@ describe("useGitFollow", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     loadGitState.mockClear();
-    liveHost().setState({
+    hostOnScreen().setState({
       loadGitState,
       connection: "connected",
       workspace: { projects: [], agents: [agent()] } as unknown as Workspace,
@@ -60,11 +60,11 @@ describe("useGitFollow", () => {
   });
 
   it("reads nothing while disconnected or for a planning chat", async () => {
-    liveHost().setState({ connection: "connecting" });
+    hostOnScreen().setState({ connection: "connecting" });
     await render("changes");
     vi.advanceTimersByTime(30_000);
 
-    liveHost().setState({
+    hostOnScreen().setState({
       connection: "connected",
       workspace: { projects: [], agents: [agent({ purpose: "pm" })] } as unknown as Workspace,
     });
