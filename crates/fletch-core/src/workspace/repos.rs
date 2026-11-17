@@ -485,7 +485,7 @@ impl WorkspaceManager {
             .map_err(|_| Error::Other(format!("project not found: {project_id}")))?;
         let mut stmt = conn.prepare(
             "SELECT COALESCE(home_id, id), path, label FROM repos
-             WHERE project_id = ?1 ORDER BY created_at, rowid",
+             WHERE project_id = ?1 AND dropped_at IS NULL ORDER BY created_at, rowid",
         )?;
         let repos = stmt
             .query_map([project_id], |row| {
@@ -547,9 +547,11 @@ impl WorkspaceManager {
     ///   is kept: when each was cloned here says nothing about it.
     /// - A recorded repository `def` no longer names leaves the project once
     ///   nothing here borrows from its clone ([`Self::clone_in_use`]). Until
-    ///   then it is a repository of the project on this host like any other,
-    ///   so nothing that reads the project has a second kind of repository to
-    ///   know about.
+    ///   then it is marked dropped: still the project's for what was started
+    ///   with it, so every reader of the project sees it as before, but not
+    ///   given to a new workspace ([`Self::project_repo_paths`]) and refused
+    ///   a new checkout (`insert_worktree`). Nothing new can borrow from it,
+    ///   so it does leave.
     ///
     /// A project this host owns is never touched.
     pub fn reconcile_copy(
@@ -594,7 +596,7 @@ impl WorkspaceManager {
                     ],
                 )?,
                 None => tx.execute(
-                    "UPDATE repos SET label = ?1, created_at = ?2
+                    "UPDATE repos SET label = ?1, created_at = ?2, dropped_at = NULL
                      WHERE home_id = ?3 AND project_id = ?4",
                     rusqlite::params![repo.label, position, repo.id, def.project_id],
                 )?,
@@ -623,8 +625,9 @@ impl WorkspaceManager {
             }
             if Self::clone_in_use(&tx, &repo_id, &path)? {
                 tx.execute(
-                    "UPDATE repos SET created_at = ?1 WHERE id = ?2",
-                    rusqlite::params![after, repo_id],
+                    "UPDATE repos SET created_at = ?1, dropped_at = COALESCE(dropped_at, ?2)
+                     WHERE id = ?3",
+                    rusqlite::params![after, now, repo_id],
                 )?;
                 after += 1;
             } else {
@@ -705,11 +708,28 @@ impl WorkspaceManager {
         }
     }
 
+    /// Where a copy's clones of the project `project_id` are recorded, the
+    /// ones of repositories its home has dropped included: what
+    /// `commands::prune_copy` keeps on disk.
+    pub fn copy_clones(&self, project_id: &str) -> Vec<PathBuf> {
+        let conn = self.db.lock();
+        let Ok(mut stmt) = conn.prepare("SELECT path FROM repos WHERE project_id = ?1") else {
+            return Vec::new();
+        };
+        stmt.query_map([project_id], |row| row.get::<_, String>(0))
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).map(PathBuf::from).collect())
+            .unwrap_or_default()
+    }
+
+    /// The repositories a new workspace of `project_id` is given, the first
+    /// being its primary: the project's, less any its home has dropped.
     pub fn project_repo_paths(&self, project_id: &str) -> Vec<PathBuf> {
         let conn = self.db.lock();
-        let mut stmt = match conn
-            .prepare("SELECT path FROM repos WHERE project_id = ?1 ORDER BY created_at")
-        {
+        let mut stmt = match conn.prepare(
+            "SELECT path FROM repos
+             WHERE project_id = ?1 AND dropped_at IS NULL ORDER BY created_at",
+        ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };

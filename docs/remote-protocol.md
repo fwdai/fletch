@@ -1117,8 +1117,9 @@ and each repository's `label` follow the home, a repository
 the home has added is cloned, and one the home has removed leaves the copy
 once nothing on the host borrows from its clone: no agent, live or archived,
 has a checkout of it and no saved workflow run was started from it. Its clone
-is removed with it. Until then it stays a repository of the project on that host,
-after the ones the home names. Deleting the copy on the host (`delete_project`)
+is removed with it. Until then it stays the project's on that host for what
+was started with it, after the ones the home names, but no new workspace is
+given it and none can be started on it, so nothing new keeps it there. Deleting the copy on the host (`delete_project`)
 removes its clones too. What is not
 followed: a repository
 whose folder the home renamed or whose `origin` the home repointed keeps the

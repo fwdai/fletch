@@ -210,7 +210,7 @@ pub async fn prune_copy(workspace: &WorkspaceManager, project_id: &str) {
 /// nothing left that reads it.
 async fn prune_copy_under(workspace: &WorkspaceManager, projects_root: &Path, project_id: &str) {
     let root = copy_root(projects_root, project_id);
-    let recorded = workspace.project_repo_paths(project_id);
+    let recorded = workspace.copy_clones(project_id);
     let Ok(mut slots) = tokio::fs::read_dir(&root).await else {
         return;
     };
@@ -678,9 +678,9 @@ mod tests {
         assert!(clone_of(&root, &whole, 1).join("README.md").is_file());
     }
 
-    /// The rule the home is held to when it detaches a repository: one an
-    /// agent has a checkout of stays, here as a repository of the project
-    /// after the ones the home names, and leaves once that agent is gone.
+    /// A repository the home dropped while an agent here has a checkout of it
+    /// stays the project's for that agent, is given to no new workspace, and
+    /// leaves once that agent is gone.
     #[tokio::test]
     async fn a_removed_repository_an_agent_here_uses_stays_until_the_agent_is_gone() {
         let td = tempfile::tempdir().unwrap();
@@ -709,13 +709,32 @@ mod tests {
             .await
             .unwrap();
 
-        // Still a repository of the project, behind the one the home names:
-        // the primary is the home's.
-        assert_eq!(copied(&ws, &whole).len(), 2);
+        // Still listed with the project, behind the one the home names, so
+        // the agent on it keeps the project's name and settings.
+        let listed: Vec<PathBuf> = copied(&ws, &whole).into_iter().map(|(p, _)| p).collect();
+        assert_eq!(listed, [clone_of(&root, &whole, 1), app_clone.clone()]);
+        // But no new workspace is given it, and none can be started on it:
+        // nothing new borrows from it, so it can leave.
         assert_eq!(
             sup.workspace.project_repo_paths(&whole.project_id),
-            [clone_of(&root, &whole, 1), app_clone.clone()]
+            [clone_of(&root, &whole, 1)]
         );
+        let mut late = crate::workspace::new_agent_record(
+            "matterhorn".into(),
+            "b".into(),
+            "claude".into(),
+            crate::workspace::tests::mk_repo(app_clone.to_str().unwrap()),
+            "".into(),
+            crate::workspace::AgentView::Custom,
+        );
+        let refused = sup.workspace.add_agent(&mut late).unwrap_err().to_string();
+        assert!(
+            refused.contains("no longer part of this project"),
+            "{refused}"
+        );
+        // A copy asked to describe the project names what the home does.
+        let (_, _, described) = sup.workspace.project_outline(&whole.project_id).unwrap();
+        assert_eq!(described.len(), 1);
         assert_eq!(
             ws.agents.iter().map(|a| &a.id).collect::<Vec<_>>(),
             [&agent.id]
@@ -764,8 +783,20 @@ mod tests {
         assert!(api_clone.is_dir());
         assert_eq!(
             sup.workspace.project_repo_paths(&def.project_id),
-            [clone_of(&root, &def, 0), api_clone.clone()]
+            [clone_of(&root, &def, 0)]
         );
+
+        // The home takes it back: the same clone, for new workspaces again.
+        ensure_project_under(&sup, whole.clone(), &root)
+            .await
+            .unwrap();
+        assert_eq!(
+            sup.workspace.project_repo_paths(&whole.project_id),
+            [clone_of(&root, &whole, 0), api_clone.clone()]
+        );
+        ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
 
         // The run is gone: so is what it borrowed from, on the next sync.
         sup.workspace
@@ -777,6 +808,29 @@ mod tests {
             .await
             .unwrap();
         assert!(!api_clone.exists());
+    }
+
+    /// What is left of a path once its repository has gone from a copy: not
+    /// a folder to pin as a project of this host's own.
+    #[test]
+    fn a_clone_with_no_record_is_not_added_as_a_project() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = host(td.path());
+        let stale = copy_root(&crate::workspace::projects_root().unwrap(), "p1")
+            .join("r1")
+            .join("app");
+
+        let refused = sup
+            .workspace
+            .project_id_for_repo(&stale.to_string_lossy())
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            refused.contains("no longer part of its project"),
+            "{refused}"
+        );
+        assert!(sup.workspace.current().unwrap().projects.is_empty());
     }
 
     #[tokio::test]

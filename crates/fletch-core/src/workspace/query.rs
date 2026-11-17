@@ -360,6 +360,14 @@ impl WorkspaceManager {
 
         // Create project + repo.
         let repo_path = Path::new(path_str);
+        // A folder under this host's own copies is a clone it made for
+        // another device's project. Without a row it is one whose repository
+        // has left that project, never a folder of the user's to add as one.
+        if super::projects_root().is_ok_and(|root| repo_path.starts_with(root)) {
+            return Err(Error::Other(
+                "This repository is no longer part of its project on this device.".into(),
+            ));
+        }
         let project_name = repo_path
             .file_name()
             .and_then(|n| n.to_str())
@@ -384,11 +392,25 @@ impl WorkspaceManager {
         let path_str = repo.repo_path.to_string_lossy().to_string();
 
         // Look up repo_id from repos table.
-        let repo_id: String = conn
-            .query_row("SELECT id FROM repos WHERE path = ?1", [&path_str], |row| {
-                row.get(0)
-            })
+        let (repo_id, dropped): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT id, dropped_at FROM repos WHERE path = ?1",
+                [&path_str],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .map_err(|_| Error::Other(format!("repo not found in database: {path_str}")))?;
+        // The one place a checkout is recorded, so the one place this is
+        // asked: a repository its home has dropped gets no new borrower, which
+        // is what lets it leave once the ones it has are gone.
+        if dropped.is_some() {
+            return Err(Error::Other(format!(
+                "{} is no longer part of this project. Start the workspace from the project.",
+                repo.repo_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or(path_str)
+            )));
+        }
 
         let wt_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
