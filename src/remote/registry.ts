@@ -184,14 +184,14 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
       transport: new RemoteTransport(client),
     });
     const dial = client.connect(target);
-    // `4003` (this device is no longer paired) and `4004` (remote access off)
-    // arrive here like any other failure — `error` with the reason
-    // `CLOSE_REASONS` gives, the same words the phone shows. What differs is
-    // that the client schedules no retry behind them, which is what
-    // `client.retrying` tells the pane.
+    // `4003` (this device is no longer paired) arrives here like any other
+    // failure — `error` with the reason `CLOSE_REASONS` gives, the same words
+    // the phone shows. What differs is that the client schedules no retry
+    // behind it, which is what `client.retrying` tells the pane. `4004`
+    // (remote access off) is retried like a Mac that is offline.
     client.onState((state, error) =>
       // `retrying` rides along so a host's chip can tell "reconnecting" from
-      // "offline" — the client schedules no retry behind 4003/4004, and that
+      // "offline" — the client schedules no retry behind 4003, and that
       // difference is the only thing that says whether waiting will help.
       writers.setEnvironmentConnection(
         record.hostKey,

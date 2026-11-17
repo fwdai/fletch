@@ -319,8 +319,7 @@ describe("the paired-host lifecycle", () => {
     client.moveTo("error", "Your Mac is offline");
     expect(entry()?.retrying).toBe(true);
 
-    // 4003 / 4004: the client schedules nothing, because only the user can
-    // clear it.
+    // 4003: the client schedules nothing, because only the user can clear it.
     client.retrying = false;
     client.moveTo("error", "This device is not paired with the host any more");
     expect(entry()?.retrying).toBe(false);

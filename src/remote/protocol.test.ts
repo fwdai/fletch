@@ -14,6 +14,7 @@ import {
   CLOSE_HOST_OFFLINE,
   CLOSE_REASONS,
   CLOSE_RELAY_THROTTLED,
+  CLOSE_REMOTE_DISABLED,
   CLOSE_TOO_MANY_DEVICES,
   CLOSE_UNAUTHENTICATED,
   CONNECTION_LOST,
@@ -683,6 +684,37 @@ describe("reconnect", () => {
     expect(client.state).toBe("error");
     // Not retrying: the failure is one only the user can clear.
     expect(client.retrying).toBe(false);
+  });
+
+  it("retries after a 4004 close, and says remote access is off", async () => {
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const reported: (string | undefined)[] = [];
+    client.onState((_state, error) => reported.push(error));
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply(helloOk(fake.sent[0].id as string));
+    await connected;
+
+    // Nothing will say when the owner switches it back on, so the client keeps
+    // dialling, as it does for a Mac that is offline — and says why it dropped.
+    fake.hangup(CLOSE_REMOTE_DISABLED);
+    expect(client.state).toBe("error");
+    expect(reported.at(-1)).toBe("Remote access is switched off on the host");
+    expect(client.retrying).toBe(true);
+    expect(timers.map((t) => t.ms)).toEqual([1000]);
+
+    // Switched back on: the retry is answered.
+    timers[0].fn();
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    fake.reply(helloOk(fake.sent[1].id as string));
+    await vi.waitFor(() => expect(client.state).toBe("connected"));
   });
 
   it("rejects in-flight calls when the socket drops", async () => {

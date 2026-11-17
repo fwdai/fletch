@@ -468,7 +468,7 @@ export function providerReason(env: EnvironmentEntry, providerId: string): strin
  *
  *  `retrying` is what separates a host that will come back on its own from one
  *  only the user can fix: the client schedules no retry behind "this device is
- *  not paired any more" or "remote access is switched off". */
+ *  not paired any more". */
 export function connectionLabel(env: EnvironmentEntry): string {
   if (env.kind === "local") return "this machine";
   switch (env.connection) {

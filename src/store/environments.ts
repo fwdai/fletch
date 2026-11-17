@@ -41,7 +41,7 @@ export interface EnvironmentEntry {
   /** Remote only. Mirrors `RemoteClient.retrying`: a retry is scheduled behind
    *  this failure, so a host's chip says "reconnecting" rather than "offline".
    *  False with a non-`connected` state is a failure only the user can clear
-   *  (unpaired, remote access off, a changed host key). */
+   *  (unpaired, a changed host key). */
   retrying?: boolean;
   /** Remote only. The local environment's transport is the module-level
    *  `localTransport`. */

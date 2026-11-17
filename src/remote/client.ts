@@ -9,7 +9,6 @@ import type { Socket, SocketFactory, SocketHandlers } from "./socket";
 import {
   type CallOptions,
   CLOSE_REASONS,
-  CLOSE_REMOTE_DISABLED,
   CLOSE_UNAUTHENTICATED,
   CONNECTION_LOST,
   type CodeHandler,
@@ -34,9 +33,11 @@ import {
   type Via,
 } from "./types";
 
-/** Close codes that mean "do not retry" — the device has to be paired again,
- *  or the host's remote-access switch turned back on. */
-const FATAL_CLOSE = new Set([CLOSE_UNAUTHENTICATED, CLOSE_REMOTE_DISABLED]);
+/** Close codes that mean "do not retry" — the device has to be paired again.
+ *  Remote access switched off on the host (4004) is not one: nothing tells a
+ *  device when it is switched back on, so it keeps dialling on the normal
+ *  backoff, exactly as it does for a Mac that is offline. */
+const FATAL_CLOSE = new Set([CLOSE_UNAUTHENTICATED]);
 
 /** Bound on the first frames after the socket opens: `pair` or `hello`, and
  *  the snapshot that follows a `pair`. The transport's open budget stops once

@@ -1953,8 +1953,12 @@ Auth failures are WebSocket close codes, not error responses: `4001` failed
 handshake, text frame, or bad first frame; `4003` unauthenticated, unknown
 device key or revoked; `4004` host has remote access disabled. `4003` also arrives unprompted when the host revokes the device this
 connection is authenticated as, and `4004` when the host turns remote access
-off — in both cases the credential is gone or dormant, so the client should
-stop reconnecting until it is paired or the host is enabled again. `1012`
+off. After `4003` the credential is gone, so the client should stop
+reconnecting until it is paired again. After `4004` the credential is still
+good but dormant, and nothing tells the client when the host is enabled again,
+so it keeps reconnecting on its normal backoff, as it does for a host that is
+offline (while remote access is off, a dial is refused, or closed by the relay
+with `4404`), and comes back by itself once it is on. `1012`
 (service restart) arrives when the host moves its listener to another port, and
 when this device re-paired into a different scope set (see "Scopes") — in both
 cases the credential is still good, so it is retryable and the client comes
