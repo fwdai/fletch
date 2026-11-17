@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Notice } from "../../components/ui/Notice";
 import { NO_CONFIRMER_ERROR, parseAddress, parsePairUrl } from "../../remote";
 import type { NearbyHost } from "../../remote/nearby";
-import { useApp, useHostStore } from "../../store";
+import { useApp } from "../../store";
 import { Wordmark } from "../Home/Wordmark";
 import { ConfirmCode } from "./ConfirmCode";
 import { NearbyList } from "./NearbyList";
@@ -34,7 +34,7 @@ export function PairScreen() {
   const connect = useApp((s) => s.connect);
   const step = useApp((s) => s.pairStep);
   const linked = useApp((s) => s.pairTarget);
-  const error = useHostStore((s) => s.connectionError);
+  const error = useApp((s) => s.pairError);
   const code = useApp((s) => s.pairCode);
   const adding = useApp((s) => s.addingHost);
   const cancel = useApp((s) => s.cancelAddHost);

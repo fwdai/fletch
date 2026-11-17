@@ -216,11 +216,10 @@ describe("unpairing", () => {
   it("still unpairs when the host never answers the clear", async () => {
     await app().connect({ host: "mock", port: 1 });
     await vi.waitFor(() => expect(host().connection).toBe("connected"));
+    const link = mock();
     // A host that has gone silent without closing the socket: the request
     // would hang forever, and the unpair must not hang with it.
-    const registerPush = vi
-      .spyOn(mock().api, "registerPush")
-      .mockReturnValue(new Promise(() => {}));
+    const registerPush = vi.spyOn(link.api, "registerPush").mockReturnValue(new Promise(() => {}));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const unpairing = app().unpair();
@@ -231,6 +230,6 @@ describe("unpairing", () => {
       registerPush.mockRestore();
     }
     expect(app().hostKey).toBeNull();
-    expect(host().connection).not.toBe("connected");
+    expect(link.client.state).not.toBe("connected");
   });
 });

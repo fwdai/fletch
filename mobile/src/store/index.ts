@@ -110,6 +110,10 @@ export interface AppState {
    *  show which Mac it is pairing with rather than an empty form — and keep
    *  the details for a one-tap retry if it fails. */
   pairTarget: HostTarget | null;
+  /** Why the last pairing failed, for the Pair screen. Cleared when a pairing
+   *  starts, and on the way into or out of the Pair screen (`addHost`,
+   *  `cancelAddHost`, `switchHost`). */
+  pairError: string | null;
   /** Every host this phone is paired with (store/persist), each connected on
    *  its own link. One is on screen — `hostKey` — and the Home header switches
    *  between them. */
@@ -121,10 +125,6 @@ export interface AppState {
    *  because there is none. Cleared by a pairing that lands, or by cancelling
    *  back to the host on screen. */
   addingHost: boolean;
-  /** The link of the pairing the Pair screen shows: the one `connect` last
-   *  dialled, or a link to no host yet — whose calls fail as a dropped link's
-   *  do. A pairing that lands makes it its host's link (host/index). */
-  pairLink: HostLink;
 
   theme: ThemeMode;
   systemTheme: "light" | "dark";
@@ -137,9 +137,10 @@ export interface AppState {
   lastError: string | null;
 
   init(): Promise<void>;
-  /** Pair with the host `target` names, on the Pair screen's link: the host
-   *  that answers is added to the paired hosts (or updated there) and put on
-   *  screen. The hosts already paired stay connected throughout. */
+  /** Pair with the host `target` names, on that host's link, or on a link of
+   *  its own for an address typed by hand: the host that answers is added to
+   *  the paired hosts (or updated there) and put on screen. The hosts already
+   *  paired stay connected throughout. */
   connect(target: HostTarget): Promise<void>;
   /** Pair from a `fletch://pair` deep link: show it on the Pair screen and
    *  connect. The host it names is added (or updated, if already paired) and
@@ -153,7 +154,7 @@ export interface AppState {
    *  told to drop the push token first, over its own link; if it was on
    *  screen, the next paired host takes its place, else the Pair screen. */
   unpair(hostKey?: string): Promise<void>;
-  /** Open the Pair screen to add another host, on a link of its own. */
+  /** Open the Pair screen to add another host. */
   addHost(): void;
   /** Leave the Pair screen without adding one, back on the host on screen. */
   cancelAddHost(): void;
@@ -204,6 +205,11 @@ let queuedPush: PushFletch | null = null;
  *  just pinned. */
 let queuedLink: HostTarget | null = null;
 
+/** The link of the pairing the Pair screen shows: the one `connect` last
+ *  dialled, until it lands (`adopt`) or is called off (`callOffPairing`). A
+ *  failed one stays, in case its client is still retrying. */
+let pairing: HostLink | null = null;
+
 const homeItem = (): NavItem => ({ key: Date.now(), screen: "home", props: {}, phase: "idle" });
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -215,11 +221,10 @@ export const hostOf = (
   props: Record<string, string>,
 ): string | null => props.hostKey ?? s.hostKey;
 
-/** The link of what is on screen where nothing names a host: the pairing's
- *  while the Pair screen is up, else the host on screen's. The same link for
- *  the same state, so it is a stable selector. */
-export const linkOnScreen = (s: Pick<AppState, "hostKey" | "addingHost" | "pairLink">): HostLink =>
-  s.hostKey && !s.addingHost ? linkOf(s.hostKey) : s.pairLink;
+/** The link of the host on screen, for what names no host; null when none is
+ *  paired. The same link for the same state, so it is a stable selector. */
+export const linkOnScreen = (s: Pick<AppState, "hostKey">): HostLink | null =>
+  s.hostKey ? linkOf(s.hostKey) : null;
 
 /** What to call the host this component acts on (`useHost`). The saved name
  *  first: the client's idea of the host lags a pairing until it has answered,
@@ -265,6 +270,8 @@ type Get = () => AppState;
  *  and without this the app would sit on the Pair screen holding a working
  *  connection. */
 async function adopt(set: Set, get: Get, link: HostLink, host: HostInfo): Promise<void> {
+  // Landed: the link is its host's from here, and the pairing is over.
+  if (link === pairing) pairing = null;
   const { client } = link;
   // The client owns the target: the spent pairing token is gone from it and
   // the host key the handshake authenticated is pinned in.
@@ -309,12 +316,12 @@ function watch(set: Set, get: Get, link: HostLink): void {
   // is the connection banner's business, and moving the Pair screen's progress
   // on behalf of one would be describing a connection the user did not ask
   // for.
-  const pairing = () => link === get().pairLink && get().pairStep !== null;
+  const isPairing = () => link === pairing && get().pairStep !== null;
   client.onStep((step) => {
-    if (pairing()) set({ pairStep: step });
+    if (isPairing()) set({ pairStep: step });
   });
   client.onConfirmCode((code) => {
-    if (pairing()) set({ pairCode: code });
+    if (isPairing()) set({ pairCode: code });
   });
   client.onSnapshot((snapshot) => {
     const saved = get().hosts.find((h) => h.hostKey === client.hostKey);
@@ -366,8 +373,9 @@ async function dial(set: Set, get: Get, saved: SavedHost): Promise<void> {
 /** Stop the pairing the Pair screen shows if it is still running — unless its
  *  link is a paired host's, which stays connected like every other. */
 function callOffPairing(get: Get): void {
-  const { pairLink, hosts } = get();
-  if (!hosts.some((h) => h.hostKey === pairLink.hostKey)) pairLink.client.disconnect();
+  const link = pairing;
+  pairing = null;
+  if (link && !get().hosts.some((h) => h.hostKey === link.hostKey)) link.client.disconnect();
 }
 
 /** Back in the foreground: refresh what the background missed on `link`'s
@@ -416,9 +424,9 @@ export const appStore = createStore<AppState>()((set, get) => {
     pairCode: null,
     pairTarget: null,
     hosts: [],
+    pairError: null,
     hostKey: null,
     addingHost: false,
-    pairLink: pairingLink(),
 
     theme: "dark",
     systemTheme: "dark",
@@ -440,8 +448,9 @@ export const appStore = createStore<AppState>()((set, get) => {
         document.addEventListener("visibilitychange", () => {
           if (document.hidden) return;
           // Every paired host, and a pairing the Pair screen is still waiting
-          // on — the same link once it has landed.
-          const links = new Set([...get().hosts.map((h) => linkOf(h.hostKey)), get().pairLink]);
+          // on.
+          const links = new Set(get().hosts.map((h) => linkOf(h.hostKey)));
+          if (pairing) links.add(pairing);
           for (const link of links) wake(link);
         });
       }
@@ -498,18 +507,20 @@ export const appStore = createStore<AppState>()((set, get) => {
       // a fresh one, which becomes that host's link once it answers — and its
       // store that host's store.
       const link = target.hostKey ? linkOf(target.hostKey) : pairingLink();
-      const host = storeOfLink(link);
+      pairing = link;
       // The client owns the target from here: it strips the spent pairing token
       // and pins the host key the handshake authenticated.
-      set({ pairStep: "connecting", pairCode: null, pairLink: link });
-      host.setState({ connectionError: null });
-      // Watched before it dials, so nothing it says in between is missed.
+      set({ pairStep: "connecting", pairCode: null, pairError: null });
+      // Its store and the app's watch, both before it dials, so nothing it
+      // says in between is missed — the handshake included, which the store
+      // takes (store/host).
+      storeOfLink(link);
       watch(set, get, link);
       try {
         const snapshot = await link.client.connect(target);
         await adopt(set, get, link, snapshot.host);
       } catch (e) {
-        host.setState({ connectionError: message(e) });
+        set({ pairError: message(e) });
         throw e;
       } finally {
         // Cleared here and nowhere else: everything the user is waiting for has
@@ -559,6 +570,7 @@ export const appStore = createStore<AppState>()((set, get) => {
         hostKey,
         addingHost: false,
         pairTarget: null,
+        pairError: null,
         sheet: null,
         nav: [homeItem()],
       });
@@ -607,7 +619,6 @@ export const appStore = createStore<AppState>()((set, get) => {
             // The link that paired this host carried a code that is long spent;
             // leaving it on the Pair screen would offer the user a dead retry.
             pairTarget: null,
-            pairLink: pairingLink(),
           });
         }
       }
@@ -619,15 +630,16 @@ export const appStore = createStore<AppState>()((set, get) => {
     },
 
     addHost() {
-      // A link of its own for the pairing: the hosts already paired stay
-      // connected while the Pair screen is up, and nothing of theirs shows on it.
-      set({ addingHost: true, pairTarget: null, sheet: null, pairLink: pairingLink() });
+      // The hosts already paired stay connected while the Pair screen is up,
+      // and nothing of theirs shows on it; a pairing gets its link when it
+      // starts (`connect`).
+      set({ addingHost: true, pairTarget: null, pairError: null, sheet: null });
     },
 
     cancelAddHost() {
       // Back to the host the Pair screen was opened over, connected all along.
       callOffPairing(get);
-      set({ addingHost: false, pairTarget: null });
+      set({ addingHost: false, pairTarget: null, pairError: null });
     },
 
     setTheme(theme) {

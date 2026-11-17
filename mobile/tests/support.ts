@@ -2,10 +2,12 @@
 // events delivered as a socket would, paired hosts seeded on disk, and the
 // waits and hand-released answers the cases are built from.
 
+import { createElement, type ReactElement } from "react";
 import { expect, vi } from "vitest";
 import { type HostLink, linkOf } from "../src/host";
+import { OnHost } from "../src/host/OnHost";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { appStore, type HostStore, linkOnScreen, storeOfLink } from "../src/store";
+import { appStore, type HostStore, hostStoreOf } from "../src/store";
 import type { SavedHost } from "../src/store/persist";
 
 /** Two hosts the mock answers as themselves once `registerMockHost` has given
@@ -29,9 +31,16 @@ export const PAIRED_STUDIO: SavedHost = {
   pairedAt: "2026-02-01",
 };
 
-/** The store of what is on screen: the host on screen's, or the pairing's on
- *  the Pair screen. */
-export const hostOnScreen = (): HostStore => storeOfLink(linkOnScreen(appStore.getState()));
+/** The store of the host on screen. */
+export function hostOnScreen(): HostStore {
+  const { hostKey } = appStore.getState();
+  if (!hostKey) throw new Error("no host is on screen");
+  return hostStoreOf(hostKey);
+}
+
+/** `element` acting on `hostKey`'s host, as the app renders a screen or sheet. */
+export const onHost = (hostKey: string, element: ReactElement): ReactElement =>
+  createElement(OnHost, { hostKey }, element);
 
 /** `init` in the suite's mock mode, once the mock host it pairs with has
  *  connected: that host's link. */

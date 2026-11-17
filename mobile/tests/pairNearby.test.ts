@@ -17,7 +17,6 @@ vi.mock("../src/remote/nearby", () => ({
 
 const { PairScreen } = await import("../src/screens/Pair");
 const { appStore } = await import("../src/store");
-const { hostOnScreen } = await import("./support");
 
 /** What React reads from a controlled input: the native setter, then `input`. */
 function type(input: HTMLInputElement, value: string) {
@@ -36,8 +35,7 @@ afterEach(() => unmount?.());
 
 async function mount() {
   const connect = vi.fn(async (_target: HostTarget) => {});
-  appStore.setState({ connect, pairStep: null, pairTarget: null });
-  hostOnScreen().setState({ connectionError: null });
+  appStore.setState({ connect, pairStep: null, pairTarget: null, pairError: null });
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -84,7 +82,7 @@ test("the one-time code is a tap away, and pairs with the code instead", async (
 
 test("a host that cannot confirm sends the phone to the code", async () => {
   const { host } = await mount();
-  await act(async () => hostOnScreen().setState({ connectionError: NO_CONFIRMER_ERROR }));
+  await act(async () => appStore.setState({ pairError: NO_CONFIRMER_ERROR }));
   expect(host.querySelector("#pair-token")).not.toBeNull();
 });
 

@@ -14,7 +14,7 @@ import { CloneForm } from "../src/sheets/AddProjectSheet/CloneForm";
 import { OpenFolderForm } from "../src/sheets/AddProjectSheet/OpenFolderForm";
 import { appStore } from "../src/store";
 import { loadDestParent } from "../src/store/persist";
-import { hostOnScreen, launchMock } from "./support";
+import { hostOnScreen, launchMock, onHost } from "./support";
 
 const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();
@@ -154,7 +154,7 @@ describe("the sheet", () => {
 
   it("offers both flows, and tells the user about git init", () => {
     const html = renderToStaticMarkup(
-      createElement(AddProjectSheet, { open: true, onClose: () => {} }),
+      onHost(MOCK_HOST_KEY, createElement(AddProjectSheet, { open: true, onClose: () => {} })),
     );
     expect(html).toContain("Open folder");
     expect(html).toContain("Clone");
@@ -166,7 +166,10 @@ describe("the sheet", () => {
     // A render-only harness reads zustand's *initial* state, so this is the
     // nothing-remembered case; the remembered one is asserted on the store.
     const html = renderToStaticMarkup(
-      createElement(CloneForm, { busy: false, error: null, setError: () => {}, run: noop }),
+      onHost(
+        MOCK_HOST_KEY,
+        createElement(CloneForm, { busy: false, error: null, setError: () => {}, run: noop }),
+      ),
     );
     expect(html).toContain("Choose a folder");
     expect(html).toContain('class="btn primary block ap-use" disabled=""');
@@ -174,12 +177,15 @@ describe("the sheet", () => {
 
   it("shows a failed op's own text, in place", () => {
     const html = renderToStaticMarkup(
-      createElement(OpenFolderForm, {
-        busy: false,
-        error: "a folder already exists at /Users/alex/Code/relay",
-        setError: () => {},
-        run: noop,
-      }),
+      onHost(
+        MOCK_HOST_KEY,
+        createElement(OpenFolderForm, {
+          busy: false,
+          error: "a folder already exists at /Users/alex/Code/relay",
+          setError: () => {},
+          run: noop,
+        }),
+      ),
     );
     expect(html).toContain("a folder already exists at /Users/alex/Code/relay");
   });

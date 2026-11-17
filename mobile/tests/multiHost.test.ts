@@ -191,8 +191,7 @@ describe("forgetting hosts", () => {
     const connect = vi.spyOn(linkOf(MINI).client, "connect");
     app().addHost();
     expect(app().addingHost).toBe(true);
-    // The Pair screen has a link of its own; the paired hosts stay up.
-    expect(host().connection).toBe("disconnected");
+    // The Pair screen dials nothing until asked; the paired hosts stay up.
     expect(linkOf(MINI).client.state).toBe("connected");
     expect(linkOf(STUDIO).client.state).toBe("connected");
 
@@ -232,7 +231,6 @@ describe("forgetting hosts", () => {
     await app().unpair();
     expect(app().hostKey).toBeNull();
     expect(keys()).toEqual([]);
-    expect(host().connection).not.toBe("connected");
     expect(mini.client.state).toBe("disconnected");
     const saved = await loadSettings();
     expect(saved.hosts).toEqual([]);

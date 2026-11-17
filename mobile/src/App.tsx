@@ -55,6 +55,19 @@ function Screen({ item }: { item: NavItem }) {
   }
 }
 
+/** One fleet-wide poll for the host on screen, like the desktop's — every agent
+ *  row on every screen reads the maps these fill, so no row polls for itself.
+ *  Working-tree stats are local git on the host, with no event for them, so
+ *  they poll. PR state does not: it is seeded on every handshake and return to
+ *  the foreground (store/index) and the host watcher's `pr:*` events keep it
+ *  current between. */
+function ShortstatsPoll() {
+  const connected = useHostStore((s) => s.connection === "connected");
+  const loadShortstats = useHostStore((s) => s.loadShortstats);
+  usePoll(loadShortstats, 10_000, connected);
+  return null;
+}
+
 export function App() {
   const ready = useApp((s) => s.ready);
   const init = useApp((s) => s.init);
@@ -67,21 +80,11 @@ export function App() {
   // Pair screen also comes up over a paired host, to add another.
   const hostKey = useApp((s) => s.hostKey);
   const addingHost = useApp((s) => s.addingHost);
-  const connected = useHostStore((s) => s.connection === "connected");
-  const loadShortstats = useHostStore((s) => s.loadShortstats);
 
   useEffect(() => {
     void init();
   }, [init]);
   useSystemTheme(useCallback((t) => setSystemTheme(t), [setSystemTheme]));
-  // One fleet-wide poll for the whole app, like the desktop's — every agent row
-  // on every screen reads the maps these fill, so no row polls for itself. The
-  // PR sweep is network-bound on the host, so it runs at the Ship tab's cadence.
-  // Working-tree stats are local git on the host, with no event for them, so
-  // they poll. PR state does not: it is seeded on every handshake and return to
-  // the foreground (store/index) and the host watcher's `pr:*` events keep it
-  // current between.
-  usePoll(loadShortstats, 10_000, connected);
 
   const resolved = theme === "system" ? systemTheme : theme;
   const props = (name: string) => (sheet?.name === name ? sheet.props : {});
@@ -94,6 +97,9 @@ export function App() {
     <div className={`m-app theme-${resolved}`}>
       {!ready ? null : hostKey && !addingHost ? (
         <>
+          <OnHost hostKey={hostKey}>
+            <ShortstatsPoll />
+          </OnHost>
           <Stack
             dimmed={dimmed}
             render={(item) => (

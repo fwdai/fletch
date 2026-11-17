@@ -13,9 +13,10 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import { linkOf } from "../src/host";
 import type { HostTarget } from "../src/remote";
+import { registerMockHost } from "../src/remote/mock";
 import { PairScreen } from "../src/screens/Pair";
 import { appStore } from "../src/store";
-import { hostOnScreen, MINI as PAIRED, PAIRED_MINI, pairedOnDisk } from "./support";
+import { MINI as PAIRED, PAIRED_MINI, pairedOnDisk } from "./support";
 
 const app = () => appStore.getState();
 
@@ -65,8 +66,13 @@ describe("a link that launched the app over a paired host", () => {
 describe("the Pair screen adding a host", () => {
   it("offers Cancel, which goes back to the paired host", async () => {
     const cancelAddHost = vi.fn(async () => {});
-    appStore.setState({ cancelAddHost, addingHost: true, pairStep: null, pairTarget: null });
-    hostOnScreen().setState({ connectionError: null });
+    appStore.setState({
+      cancelAddHost,
+      addingHost: true,
+      pairStep: null,
+      pairTarget: null,
+      pairError: null,
+    });
     const host = document.createElement("div");
     document.body.append(host);
     const root = createRoot(host);
@@ -84,5 +90,25 @@ describe("the Pair screen adding a host", () => {
       false,
     );
     act(() => root.unmount());
+  });
+
+  it("says why a pairing failed until the screen is left, which calls the pairing off", async () => {
+    const ASLEEP = "YXNsZWVw";
+    registerMockHost(ASLEEP, { unreachable: true });
+    const { connect, cancelAddHost } = appStore.getInitialState();
+    appStore.setState({ connect, cancelAddHost });
+    app().addHost();
+
+    const pairing = app().connect({ ...LINK, hostKey: ASLEEP });
+    await expect(pairing).rejects.toThrow("No answer from your Mac");
+    expect(app().pairError).toContain("No answer from your Mac");
+    expect(app().pairStep).toBeNull();
+    // The paired host was never touched.
+    expect(linkOf(PAIRED).client.state).toBe("connected");
+
+    app().cancelAddHost();
+    expect(app().pairError).toBeNull();
+    expect(app().addingHost).toBe(false);
+    expect(linkOf(ASLEEP).client.state).toBe("disconnected");
   });
 });
