@@ -28,11 +28,11 @@
  *  The phone's store (mobile/src/store) follows the same watcher and orders its
  *  one-shot reads against its events through this module too.
  *
- *  One order covers one host's keys. The functions exported at the bottom are
- *  one shared order — this desktop's own engine's; the desktop gives each
- *  paired host another (`prWriteOrderOf` in ./prEvents), and the phone one per
- *  host store (mobile/src/store/host), since agent ids recur across hosts and
- *  one host's stamp must not refuse another's read. */
+ *  One order covers one host's keys. `sharedPrWriteOrder` at the bottom is this
+ *  desktop's own engine's; the desktop gives each paired host another
+ *  (`prWriteOrderOf` in ./prEvents), and the phone one per host store
+ *  (mobile/src/store/host), since agent ids recur across hosts and one host's
+ *  stamp must not refuse another's read. */
 
 export type PrSlice = "prStates" | "prChecks" | "prComments" | "prSets";
 
@@ -109,11 +109,3 @@ export function createPrWriteOrder(): PrWriteOrder {
 
 /** The shared order: this desktop's own engine's. */
 export const sharedPrWriteOrder = createPrWriteOrder();
-
-export const {
-  issue: issuePrWrite,
-  accept: acceptPrWrite,
-  stamp: stampPrWrite,
-  fence: fencePrWrites,
-  reset: resetPrWriteOrder,
-} = sharedPrWriteOrder;

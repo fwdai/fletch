@@ -33,21 +33,16 @@ export function dischargeSending(
   return rest;
 }
 
-/** Sends still on the wire from this client. A flag set by one of these is
- *  younger than any snapshot the backend can answer with, so the snapshot rule
- *  leaves it alone. The default for a caller that names no set: the desktop
- *  keeps one per host (store/sendOrder) and the phone one per host store
- *  (mobile/src/store/host), since agent ids recur across hosts. */
-export const inFlightSends = new Set<string>();
-
-/** Run a send with its agent marked in-flight in `inFlight`, so a snapshot
- *  landing in the optimistic window can't clear the flag the send just set.
- *  Covers the whole hand-off a caller passes, including any wait for the agent
- *  to come up. */
+/** Run a send with its agent marked in-flight in `inFlight` — the host's sends
+ *  still on the wire from this client — so a snapshot landing in the
+ *  optimistic window can't clear the flag the send just set. Covers the whole
+ *  hand-off a caller passes, including any wait for the agent to come up. The
+ *  desktop keeps one set per host (store/sendOrder) and the phone one per host
+ *  store (mobile/src/store/host), since agent ids recur across hosts. */
 export async function whileSending<T>(
   agentId: string,
   fn: () => Promise<T>,
-  inFlight: Set<string> = inFlightSends,
+  inFlight: Set<string>,
 ): Promise<T> {
   inFlight.add(agentId);
   try {
@@ -62,12 +57,12 @@ export async function whileSending<T>(
  *  silently — which would strand a flag on `true` for the rest of the session,
  *  every surface reading "working" for an agent that finished. A snapshot
  *  saying the agent is at rest is the authority that the gap is over; one
- *  saying it is busy, or a send still on the wire, is not. Returns the same
- *  object when nothing changes. */
+ *  saying it is busy, or a send still on the wire (`inFlight`, see
+ *  `whileSending`), is not. Returns the same object when nothing changes. */
 export function reconcileSending(
   sending: SendingMap,
   records: readonly { id: string; status: AgentStatus }[],
-  inFlight: ReadonlySet<string> = inFlightSends,
+  inFlight: ReadonlySet<string>,
 ): SendingMap {
   let next = sending;
   for (const a of records) {

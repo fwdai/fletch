@@ -16,7 +16,7 @@ vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 import type { PrChecks, PrSetEntry, PrState } from "@/api";
 import { activeEngine } from "@/api/engine";
 import { createGitSlice } from "./git";
-import { resetPrWriteOrder, stampPrWrite } from "./prWriteOrder";
+import { sharedPrWriteOrder } from "./prWriteOrder";
 import type { AppState } from "./types";
 
 const pr = (state: PrState["state"], number: number, title = "t"): PrState => ({
@@ -59,7 +59,7 @@ const makeStore = () => {
 };
 
 beforeEach(() => {
-  resetPrWriteOrder();
+  sharedPrWriteOrder.reset();
   getPrLive.mockReset();
   getPrState.mockReset();
   getPrChecks.mockReset();
@@ -121,8 +121,8 @@ describe("focused-PR reads keep the set's focused entry current", () => {
     const before = store.getState().prSets;
     getPrLive.mockImplementation(async () => {
       // The watcher's event lands while the read is in flight.
-      stampPrWrite("prStates", "a1");
-      stampPrWrite("prChecks", "a1");
+      sharedPrWriteOrder.stamp("prStates", "a1");
+      sharedPrWriteOrder.stamp("prChecks", "a1");
       return { state: pr("open", 650, "stale"), checks: checks("failing") };
     });
     await store.getState().fetchPrLive("a1");

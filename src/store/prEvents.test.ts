@@ -6,7 +6,7 @@ import {
   applyPrStateChanged,
   applyPrThreadsChanged,
 } from "./prEvents";
-import { acceptPrWrite, issuePrWrite, resetPrWriteOrder, sharedPrWriteOrder } from "./prWriteOrder";
+import { sharedPrWriteOrder } from "./prWriteOrder";
 
 const pr = (state: PrState["state"], number = 650): PrState => ({
   number,
@@ -46,7 +46,7 @@ const threads = (...ids: string[]): PrComments => ({
 describe("applyPrStateChanged", () => {
   /** The legacy checks and threads maps, empty. */
   const none = { prChecks: {}, prComments: {} };
-  beforeEach(() => resetPrWriteOrder());
+  beforeEach(() => sharedPrWriteOrder.reset());
 
   it("lands a secondary repo's state under agentId::subdir and leaves the primary alone", () => {
     const primary = pr("open", 650);
@@ -80,15 +80,15 @@ describe("applyPrStateChanged", () => {
   /** The stamp is per checkout: a read in flight for the primary still lands
    *  after a secondary's event, while one for the secondary does not. */
   it("stamps the checkout it wrote", () => {
-    const primaryRead = issuePrWrite();
-    const secondaryRead = issuePrWrite();
+    const primaryRead = sharedPrWriteOrder.issue();
+    const secondaryRead = sharedPrWriteOrder.issue();
     applyPrStateChanged(
       sharedPrWriteOrder,
       { prStates: {}, ...none, prSets: {} },
       { agent_id: "arabia", subdir: "api", state: null },
     );
-    expect(acceptPrWrite("prStates", "arabia::api", secondaryRead)).toBe(false);
-    expect(acceptPrWrite("prStates", "arabia", primaryRead)).toBe(true);
+    expect(sharedPrWriteOrder.accept("prStates", "arabia::api", secondaryRead)).toBe(false);
+    expect(sharedPrWriteOrder.accept("prStates", "arabia", primaryRead)).toBe(true);
   });
 
   it("writes the focused PR to both the legacy map and the set, keeping the entry's checks", () => {
@@ -247,13 +247,13 @@ describe("applyPrStateChanged", () => {
     });
 
     it("outranks a read issued for the previous PR", () => {
-      const before = issuePrWrite();
+      const before = sharedPrWriteOrder.issue();
       applyPrStateChanged(sharedPrWriteOrder, focusedOn651(null), {
         agent_id: "arabia",
         state: pr("open", 650),
       });
-      expect(acceptPrWrite("prChecks", "arabia", before)).toBe(false);
-      expect(acceptPrWrite("prComments", "arabia", before)).toBe(false);
+      expect(sharedPrWriteOrder.accept("prChecks", "arabia", before)).toBe(false);
+      expect(sharedPrWriteOrder.accept("prComments", "arabia", before)).toBe(false);
     });
 
     it("leaves checks and threads alone for the same PR, or a cold checkout", () => {
@@ -274,7 +274,7 @@ describe("applyPrStateChanged", () => {
 });
 
 describe("applyPrChecksChanged", () => {
-  beforeEach(() => resetPrWriteOrder());
+  beforeEach(() => sharedPrWriteOrder.reset());
 
   it("keys checks by checkout too", () => {
     const next = applyPrChecksChanged(
@@ -299,22 +299,22 @@ describe("applyPrChecksChanged", () => {
 });
 
 describe("applyPrThreadsChanged", () => {
-  beforeEach(() => resetPrWriteOrder());
+  beforeEach(() => sharedPrWriteOrder.reset());
 
   it("replaces the focused PR's threads and stamps them", () => {
-    const read = issuePrWrite();
+    const read = sharedPrWriteOrder.issue();
     const next = applyPrThreadsChanged(
       sharedPrWriteOrder,
       { prComments: { arabia: threads("t1") } },
       { agent_id: "arabia", subdir: null, comments: threads("t1", "t2"), new_thread_ids: ["t2"] },
     );
     expect(next.prComments?.arabia).toEqual(threads("t1", "t2"));
-    expect(acceptPrWrite("prComments", "arabia", read)).toBe(false);
+    expect(sharedPrWriteOrder.accept("prComments", "arabia", read)).toBe(false);
   });
 });
 
 describe("applyPrSetEntryChanged", () => {
-  beforeEach(() => resetPrWriteOrder());
+  beforeEach(() => sharedPrWriteOrder.reset());
 
   const focused = pr("open", 650);
   const s = { prSets: { arabia: [entry(pr("open", 651)), entry(focused, checks("passing"))] } };
@@ -322,7 +322,7 @@ describe("applyPrSetEntryChanged", () => {
   /** Another PR of the set: its entry moves, the legacy maps (the focused
    *  PR's) are not even in the result, and only the set is stamped. */
   it("upserts the sibling's entry and touches nothing else", () => {
-    const read = issuePrWrite();
+    const read = sharedPrWriteOrder.issue();
     const next = applyPrSetEntryChanged(sharedPrWriteOrder, s, {
       agent_id: "arabia",
       subdir: null,
@@ -333,9 +333,9 @@ describe("applyPrSetEntryChanged", () => {
       entry(pr("open", 651), checks("failing")),
       entry(focused, checks("passing")),
     ]);
-    expect(acceptPrWrite("prStates", "arabia", read)).toBe(true);
-    expect(acceptPrWrite("prChecks", "arabia", read)).toBe(true);
-    expect(acceptPrWrite("prSets", "arabia", read)).toBe(false);
+    expect(sharedPrWriteOrder.accept("prStates", "arabia", read)).toBe(true);
+    expect(sharedPrWriteOrder.accept("prChecks", "arabia", read)).toBe(true);
+    expect(sharedPrWriteOrder.accept("prSets", "arabia", read)).toBe(false);
   });
 
   it("keeps the entry's checks on a state-only change and files a new PR newest first", () => {
