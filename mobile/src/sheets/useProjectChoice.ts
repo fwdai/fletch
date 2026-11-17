@@ -1,8 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useHost } from "../host/useHost";
 import { entryOf, type Project, type ProjectEntry } from "../lib/projects";
 import { type SheetName, useProjectEntries } from "../store";
-import { openSheetOn } from "../store/hostNav";
+import { copyProjectTo } from "../store/copyProject";
+import { openSheetOn, sheetOf } from "../store/hostNav";
 
 /** What a sheet that starts something in a project is acting on. */
 export interface ProjectChoice {
@@ -14,10 +15,17 @@ export interface ProjectChoice {
   hostKey: string;
   /** The picked project as that host has it: its repos are that host's. */
   project: Project | undefined;
+  /** The host a copy of the picked project is being made on for the sheet
+   *  (`setHostKey`), while one is; else null. */
+  preparing: string | null;
   /** Pick a project, and move the sheet to its speaking host. */
   pick(entry: ProjectEntry): void;
-  /** Move the sheet to another host, keeping the project picked. */
-  setHostKey(hostKey: string): void;
+  /** Move the sheet to another host, keeping the project picked. A host
+   *  without the project is given a copy first (`copyProjectTo`), and the
+   *  sheet moves once that host lists it, if it is still up here on the same
+   *  project. A pick while a copy is being made is ignored. Rejects, the sheet
+   *  where it was, when the copy can't be made. */
+  setHostKey(hostKey: string): Promise<void>;
 }
 
 /** The project the `name` sheet starts something in, and the host it acts on.
@@ -32,6 +40,7 @@ export function useProjectChoice(
 ): ProjectChoice {
   const entries = useProjectEntries();
   const { hostKey } = useHost();
+  const [preparing, setPreparing] = useState<string | null>(null);
   const entry = entryOf(entries, hostKey, projectId) ?? entries[0];
   const moveTo = (to: string, e: ProjectEntry | undefined) =>
     openSheetOn(to, name, e ? { projectId: e.project.id } : {});
@@ -48,7 +57,20 @@ export function useProjectChoice(
     entry,
     hostKey,
     project: entry?.hosts.find((h) => h.hostKey === hostKey)?.project,
+    preparing,
     pick: (e) => moveTo(e.hostKey, e),
-    setHostKey: (to) => moveTo(to, entry),
+    setHostKey: async (to) => {
+      if (preparing || !entry || to === hostKey) return;
+      if (entry.hosts.some((h) => h.hostKey === to)) return moveTo(to, entry);
+      setPreparing(to);
+      try {
+        await copyProjectTo(to, entry);
+      } finally {
+        setPreparing(null);
+      }
+      // A sheet closed, moved or on another project since stays as the user
+      // left it.
+      if (sheetOf(hostKey, name)?.props.projectId === entry.project.id) moveTo(to, entry);
+    },
   };
 }

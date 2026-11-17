@@ -1,12 +1,15 @@
 // Reading every paired host at once, for what is listed across them — Home's
-// projects, the header's counts, the host list: each host's store read with
-// one selector, and the hosts' projects merged into one list.
+// projects, the header's counts, the host list and what each host can run:
+// each host's store read with one selector, and the hosts' projects merged into
+// one list.
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { type ProjectEntry, projectEntries } from "../lib/projects";
+import type { RunsOnHost } from "../lib/runsOn";
+import type { HostProtocol } from "../remote";
 import { type HostState, hostStoreOf } from "./host";
-import { useApp } from "./index";
+import { appStore, useApp } from "./index";
 import type { SavedHost } from "./persist";
 
 /** The paired hosts' keys, in saved order. */
@@ -59,4 +62,35 @@ export function useConnectedHosts(): SavedHost[] {
   const hosts = useApp((s) => s.hosts);
   const connected = useEveryHost(isConnected);
   return useMemo(() => hosts.filter((_, i) => connected[i]), [hosts, connected]);
+}
+
+/** What a connected host said it answers; undefined for one that is not. */
+const connectedProtocol = (s: HostState) => (s.connection === "connected" ? s.protocol : undefined);
+
+/** `hosts` as the "Runs on" rules weigh them (lib/runsOn), with `protocols`
+ *  read off their stores in the same order: the connected ones only. */
+const weigh = (
+  hosts: readonly SavedHost[],
+  protocols: readonly (HostProtocol | null | undefined)[],
+): RunsOnHost[] =>
+  hosts.flatMap((h, i) => {
+    const protocol = protocols[i];
+    return protocol === undefined ? [] : [{ hostKey: h.hostKey, name: h.name, protocol }];
+  });
+
+/** The connected paired hosts as the "Runs on" rules weigh them, in saved
+ *  order. */
+export function useRunsOnHosts(): RunsOnHost[] {
+  const hosts = useApp((s) => s.hosts);
+  const protocols = useEveryHost(connectedProtocol);
+  return useMemo(() => weigh(hosts, protocols), [hosts, protocols]);
+}
+
+/** The same, read once: what an action weighs at the moment it runs. */
+export function runsOnHostsNow(): RunsOnHost[] {
+  const { hosts } = appStore.getState();
+  return weigh(
+    hosts,
+    hosts.map((h) => connectedProtocol(hostStoreOf(h.hostKey).getState())),
+  );
 }

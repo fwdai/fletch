@@ -875,6 +875,10 @@ button.kv {
   font-size: 12.5px;
   color: var(--fg-2);
 }
+/* A line under the hosts: why one is greyed, or what is under way on one. */
+.host-note {
+  margin: -4px 0 12px;
+}
 .eff {
   display: flex;
   gap: 4px;
