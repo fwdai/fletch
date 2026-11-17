@@ -172,8 +172,9 @@ describe("loadModels", () => {
 
   it("reads models.dev once for every host within an expiry, and again after it", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    // Past whatever an earlier case read.
-    vi.advanceTimersByTime(2 * HOUR);
+    // Well past whatever an earlier case read: one of them reads an hour
+    // into its own clock, and this clock starts over from the real time.
+    vi.advanceTimersByTime(3 * HOUR);
     const a = freshHost();
     const b = freshHost();
     discovering(a, CLAUDE);
