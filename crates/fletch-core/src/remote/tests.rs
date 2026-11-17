@@ -1762,9 +1762,10 @@ async fn connect_plain(port: u16) -> WebSocketStream<TcpStream> {
 }
 
 /// A connection past the Noise handshake, as the phone's Rust layer has it: the
-/// WebSocket plus the transport state every frame goes through.
-struct SecureWs {
-    ws: WebSocketStream<TcpStream>,
+/// WebSocket plus the transport state every frame goes through. Over a socket,
+/// unless a test pipes it (see [`piped`]).
+struct SecureWs<S = TcpStream> {
+    ws: WebSocketStream<S>,
     channel: SecureChannel,
 }
 
@@ -1785,9 +1786,14 @@ async fn legacy_connect(port: u16, device: &Device) -> SecureWs {
     .await
 }
 
-async fn handshake_over(port: u16, mut handshake: Handshake) -> SecureWs {
-    let mut ws = connect_plain(port).await;
+async fn handshake_over(port: u16, handshake: Handshake) -> SecureWs {
+    handshake_on(connect_plain(port).await, handshake).await
+}
 
+async fn handshake_on<S: Pipe>(
+    mut ws: WebSocketStream<S>,
+    mut handshake: Handshake,
+) -> SecureWs<S> {
     ws.send(Message::Binary(Bytes::from(handshake.write().unwrap())))
         .await
         .unwrap();
@@ -1803,7 +1809,31 @@ async fn handshake_over(port: u16, mut handshake: Handshake) -> SecureWs {
     SecureWs { ws, channel }
 }
 
-async fn next_binary(ws: &mut WebSocketStream<TcpStream>) -> Bytes {
+/// What a test connection can run over: a socket, or an in-memory pipe.
+trait Pipe: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static {}
+
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> Pipe for S {}
+
+/// A WebSocket to `state`'s connection handler over an in-memory pipe instead
+/// of a socket. Nothing on it waits on the network, so a test on the paused
+/// clock (`start_paused`) moves time only when every task is idle, and a
+/// deadline of many seconds passes at once and in order.
+async fn pipe_to(state: &Arc<RemoteState>) -> WebSocketStream<tokio::io::DuplexStream> {
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    let (ours, theirs) = tokio::io::duplex(64 * 1024);
+    let host_end = WebSocketStream::from_raw_socket(theirs, Role::Server, None).await;
+    let peer = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+    tokio::spawn(super::server::serve(state.clone(), host_end, peer));
+    WebSocketStream::from_raw_socket(ours, Role::Client, None).await
+}
+
+/// [`secure_connect`] over [`pipe_to`].
+async fn piped(state: &Arc<RemoteState>, device: &Device) -> SecureWs<tokio::io::DuplexStream> {
+    let handshake = Handshake::new(&device.key, true).unwrap();
+    handshake_on(pipe_to(state).await, handshake).await
+}
+
+async fn next_binary<S: Pipe>(ws: &mut WebSocketStream<S>) -> Bytes {
     loop {
         match ws
             .next()
@@ -1818,7 +1848,7 @@ async fn next_binary(ws: &mut WebSocketStream<TcpStream>) -> Bytes {
     }
 }
 
-impl SecureWs {
+impl<S: Pipe> SecureWs<S> {
     async fn request(&mut self, id: &str, op: &str, args: Value) {
         let frame = json!({ "id": id, "op": op, "args": args }).to_string();
         self.send_json(frame.as_bytes()).await;
@@ -1867,7 +1897,7 @@ impl SecureWs {
     }
 }
 
-async fn close_code(ws: &mut WebSocketStream<TcpStream>) -> u16 {
+async fn close_code<S: Pipe>(ws: &mut WebSocketStream<S>) -> u16 {
     while let Some(msg) = ws.next().await {
         match msg {
             Ok(Message::Close(Some(frame))) => return u16::from(frame.code),
@@ -2409,6 +2439,21 @@ async fn bad_pairing_token_closes_4003() {
         .await;
     assert_eq!(ws.close_code().await, 4003);
     assert!(host.state.status().devices.is_empty());
+}
+
+/// A stranger who finishes the handshake and then says nothing is hung up on
+/// 15 s later, with the 4001 a client retries. Its pongs do not keep it: on
+/// the relay they come from the host's own end of the virtual connection.
+#[tokio::test(start_paused = true)]
+async fn a_connection_that_never_authenticates_closes_4001() {
+    let host = boot();
+    let mut ws = piped(&host.state, &device()).await;
+    let started = tokio::time::Instant::now();
+    let code = tokio::time::timeout(Duration::from_secs(120), ws.close_code())
+        .await
+        .expect("closed, not kept open by answering pings");
+    assert_eq!(code, 4001);
+    assert_eq!(started.elapsed().as_secs(), 15);
 }
 
 /// Registered before the handshake has to mean reachable during it: turning
@@ -4222,7 +4267,7 @@ fn boot_confirming() -> (Host, Arc<crate::host::sink::RecordingSink>) {
 
 /// The phone's half up to the prompt: commit, read the host's nonce, reveal.
 /// Returns the code the phone would show.
-async fn request_and_reveal(ws: &mut SecureWs) -> String {
+async fn request_and_reveal<S: Pipe>(ws: &mut SecureWs<S>) -> String {
     let nonce = secure::pairing::nonce().unwrap();
     let commit = secure::encode_key(&secure::pairing::commitment(&nonce));
     ws.request(
@@ -4521,6 +4566,28 @@ async fn a_phone_that_hangs_up_withdraws_its_prompt() {
         sink.events().last().map(|(n, _)| n.clone()).as_deref(),
         Some(super::confirm::PAIR_REQUEST_ENDED_EVENT)
     );
+}
+
+/// The 15 s a connection has to authenticate do not run out under the person
+/// at the Mac: the prompt has its own minute. A decline that comes after them
+/// still reaches the phone, and only then is the connection closed.
+#[tokio::test(start_paused = true)]
+async fn the_macs_prompt_outlasts_the_authentication_deadline() {
+    let (host, _sink) = boot_confirming();
+    host.state.pairing().mint(&Scope::ALL);
+    let mut ws = piped(&host.state, &device()).await;
+    request_and_reveal(&mut ws).await;
+    let prompt = prompt_of(&host.state).await;
+
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert!(
+        host.state.prompts().answer(&prompt.id, false),
+        "the prompt is still up"
+    );
+    let answer = ws.next_json().await;
+    assert_eq!(answer["id"], "2");
+    assert_eq!(answer["error"], "Pairing was declined on your Mac.");
+    assert_eq!(ws.close_code().await, 4001);
 }
 
 /// The grinding bound: a party in the middle learns its digits from the host's

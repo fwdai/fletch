@@ -95,8 +95,9 @@ const OUTBOUND_BUFFER: usize = 64;
 /// call each.
 const MAX_IN_FLIGHT: usize = 8;
 
-/// A failed Noise handshake, a text frame, or a first frame that was neither
-/// `pair` nor `hello` — the three things the doc gives 4001.
+/// A failed Noise handshake, a text frame, a first frame that was neither
+/// `pair` nor `hello`, or no authentication within `AUTH_TIMEOUT` — the things
+/// the doc gives 4001.
 const CLOSE_BAD_FIRST_FRAME: CloseCode = CloseCode::Library(4001);
 /// Unauthenticated, or a bad/revoked credential.
 const CLOSE_UNAUTHENTICATED: CloseCode = CloseCode::Library(4003);
@@ -117,6 +118,15 @@ const CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
 /// `read_loop` does, so this is what bounds a socket that opens and then says
 /// nothing.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a connection has, from the end of the Noise handshake, to
+/// authenticate with `pair` or `hello` (or a confirmed pairing). Pings only drop
+/// a peer that stops answering them, and on a relayed connection the host's
+/// pings are answered locally (see `relay::VirtualConn`), so without this a
+/// stranger who finished the handshake could hold a LAN socket, or one of the
+/// relay's device slots for this host, for as long as it liked. Not counted
+/// while the Mac's prompt is up, which has its own `CONFIRM_TIMEOUT`. The
+/// client's own bound on its first frame is the same 15 s.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
 
 type Ws = WebSocketStream<TcpStream>;
 
@@ -440,6 +450,9 @@ async fn read_loop<S: WsTransport>(
     let mut ping = tokio::time::interval(PING_INTERVAL);
     // `interval` fires immediately; the first real ping belongs one period out.
     ping.tick().await;
+    // Counted from here, where the Noise handshake has just finished.
+    let auth_deadline = tokio::time::sleep(AUTH_TIMEOUT);
+    tokio::pin!(auth_deadline);
 
     loop {
         tokio::select! {
@@ -495,6 +508,17 @@ async fn read_loop<S: WsTransport>(
                     break;
                 }
                 authenticated = Some(record.device_id);
+            }
+            // See `AUTH_TIMEOUT`. 4001, which a client retries, and not 4003,
+            // which tells it the device is no longer paired and stops it for
+            // good: a slow honest client must be able to come back. Held off
+            // while the Mac is deciding; a decline or no answer that comes
+            // after the deadline is answered by the arm above first, so the
+            // phone reads why before the close.
+            _ = &mut auth_deadline, if authenticated.is_none() && decision.is_none() => {
+                tracing::debug!(%peer, "remote: not authenticated in time");
+                out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "authentication timed out"));
+                break;
             }
             _ = ping.tick() => {
                 if missed_pongs >= MAX_MISSED_PONGS {

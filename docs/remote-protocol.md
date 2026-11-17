@@ -557,7 +557,11 @@ The first frame after the handshake MUST be `pair`, `hello` or `pair_request`
 (see "Confirmed pairing"). Any other first frame closes the connection with code
 `4001`. Any request before a successful `pair` or `hello` (or a confirmed
 pairing) closes with `4003`, except `pair_confirm` after `pair_request`. A `hello` from a device key the host does
-not have on record (never paired, or revoked) closes with `4003`.
+not have on record (never paired, or revoked) closes with `4003`. A connection
+that has not authenticated 15 s after the handshake closes with `4001`, which
+the client retries; the time the Mac's prompt is up for a confirmed pairing
+does not count, and an answer to `pair_confirm` that comes later is sent before
+the close.
 
 ### `pair`
 
