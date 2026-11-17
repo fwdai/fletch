@@ -25,6 +25,7 @@ import {
   type HostProtocol,
   type HostTarget,
   hostSupports,
+  PAIRING_CODE_REFUSED,
   type PairStep,
   V2_DEFAULT_OPS,
 } from "./types";
@@ -730,11 +731,43 @@ describe("reconnect", () => {
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;
+    const reported: (string | undefined)[] = [];
+    client.onState((_state, error) => reported.push(error));
     fake.hangup(CLOSE_UNAUTHENTICATED);
     expect(timers).toHaveLength(0);
     expect(client.state).toBe("error");
+    expect(reported.at(-1)).toBe(CLOSE_REASONS[CLOSE_UNAUTHENTICATED]);
     // Not retrying: the failure is one only the user can clear.
     expect(client.retrying).toBe(false);
+  });
+
+  it("says a 4003 that ends a pairing by code is the code refused, not this device unpaired", async () => {
+    // The host answers a mistyped or expired code with the same close as a
+    // device it no longer knows.
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const reported: (string | undefined)[] = [];
+    client.onState((_state, error) => reported.push(error));
+    const pairing = client.connect({
+      host: "h",
+      port: 1,
+      hostKey: HOST_KEY,
+      pairingToken: "K7PQ2M9X",
+    });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    expect(fake.sent[0].op).toBe("pair");
+    fake.hangup(CLOSE_UNAUTHENTICATED);
+
+    await expect(pairing).rejects.toThrow(PAIRING_CODE_REFUSED);
+    expect(reported.at(-1)).toBe(PAIRING_CODE_REFUSED);
+    expect(client.retrying).toBe(false);
+    expect(timers).toHaveLength(0);
   });
 
   it("retries after a 4004 close, and says remote access is off", async () => {

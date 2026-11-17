@@ -13,15 +13,16 @@ import {
 } from "@/store/environments";
 import type { AppState } from "@/store/types";
 import { createHostRegistry, type HostRecord } from "./registry";
-import type {
-  ConnectionState,
-  DeviceInfo,
-  HelloResult,
-  HostInfo,
-  HostProtocol,
-  HostTarget,
-  RemoteClient,
-  StateHandler,
+import {
+  type ConnectionState,
+  type DeviceInfo,
+  type HelloResult,
+  type HostInfo,
+  type HostProtocol,
+  type HostTarget,
+  PAIRING_CODE_REFUSED,
+  type RemoteClient,
+  type StateHandler,
 } from "./types";
 
 const DEVICE: DeviceInfo = { name: "Fletch desktop", platform: "macos", appVersion: "0.7.31" };
@@ -429,9 +430,9 @@ describe("the paired-host lifecycle", () => {
       pairingToken: "K7PQ2M9X",
     });
     await settled();
-    client.fail("This device is not paired with the host any more");
+    client.fail(PAIRING_CODE_REFUSED);
 
-    await expect(paired).rejects.toThrow("not paired with the host any more");
+    await expect(paired).rejects.toThrow(PAIRING_CODE_REFUSED);
     expect(entry()).toBeUndefined();
     expect(registry.get(HOST_KEY)).toBeUndefined();
     expect(Object.keys(store.getState().environments)).toEqual([LOCAL_ENVIRONMENT_ID]);

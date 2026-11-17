@@ -617,6 +617,10 @@ connection is authenticated as if `hello` had succeeded and the host starts
 forwarding events. The host does NOT push a snapshot; the client issues
 `get_workspace` itself right after a successful `pair`.
 
+The host refuses a wrong or expired code by closing with `4003`, so a client
+whose `pair` ends that way reads it as the code refused (the user needs a new
+one from the host), not as this device having been unpaired.
+
 ### Confirmed pairing
 
 A device that found the host by discovery (see "Discovery") pairs without a

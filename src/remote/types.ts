@@ -203,6 +203,12 @@ export const CLOSE_REASONS: Record<number, string> = {
   [CLOSE_LISTENER_RESTARTING]: "Your Mac is restarting remote access",
 };
 
+/** What a `4003` means when it ends a pairing by code. The host refuses a code
+ *  that is wrong or expired with the same close as a device it no longer
+ *  knows, but this device was never paired by it: the code is what failed. */
+export const PAIRING_CODE_REFUSED =
+  "That pairing code didn't work. It may be wrong or expired. Generate a new one on the host.";
+
 /** What a host with nobody at its screen answers `pair_request` with
  *  (docs/remote-protocol.md, "Confirmed pairing"). Matched exactly: it is the
  *  signal to pair with the code instead. The host's copy is

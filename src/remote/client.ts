@@ -24,6 +24,7 @@ import {
   type HostProtocol,
   type HostTarget,
   isEventFrame,
+  PAIRING_CODE_REFUSED,
   type PairResult,
   type PairStep,
   type RemoteClient,
@@ -608,8 +609,12 @@ export class ProtocolClient implements RemoteClient {
 
   private onClose(code: number) {
     // The code and the transport's reason (`pong timeout`, …) are for a log,
-    // not a screen.
-    const message = CLOSE_REASONS[code] ?? CONNECTION_LOST;
+    // not a screen. A target still holding its pairing code has not paired
+    // yet, so a 4003 now is that code refused, not this device unpaired.
+    const message =
+      code === CLOSE_UNAUTHENTICATED && this._target?.pairingToken
+        ? PAIRING_CODE_REFUSED
+        : (CLOSE_REASONS[code] ?? CONNECTION_LOST);
     this.teardown(message);
     if (this.closedByUs) return;
     this.fail(message, !FATAL_CLOSE.has(code));
