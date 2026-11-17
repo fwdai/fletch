@@ -3619,6 +3619,12 @@ fn allocate_subdir_never_claims_a_reserved_name() {
             allocate_repo_subdir(Path::new(&format!("/foo/{reserved}")), &[]),
             format!("{reserved}-2"),
         );
+        // The same folder on a filesystem that ignores case.
+        let shouted = reserved.to_uppercase();
+        assert_eq!(
+            allocate_repo_subdir(Path::new(&format!("/foo/{shouted}")), &[]),
+            format!("{shouted}-2"),
+        );
     }
 }
 
