@@ -103,7 +103,7 @@ static ENSURING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// host does not have yet is cloned from its `origin`, and the copy is brought
 /// in line with the definition (`WorkspaceManager::reconcile_copy`): its name
 /// and labels follow the home, and a repository the home has removed leaves
-/// the project for every new workspace.
+/// the project once no agent here has a checkout of it.
 ///
 /// All or nothing: a repository with no `origin` fails the call before
 /// anything is cloned, and the clones are made in a staging folder and only
@@ -159,7 +159,8 @@ async fn ensure_project_under(
         for repo in missing {
             let slot = root.join(&repo.id);
             // Not recorded, so nothing refers to it: what an earlier call
-            // moved into place before it failed to record the project.
+            // moved into place before it failed to record the project, or the
+            // clone of a repository that has since left it.
             if slot.exists() {
                 tokio::fs::remove_dir_all(&slot).await?;
             }
@@ -589,6 +590,15 @@ mod tests {
         assert!(ensure_project_under(&sup, twice, &root).await.is_err());
     }
 
+    /// The copy's repositories, as the project list has them.
+    fn copied(ws: &Workspace, def: &ProjectDefinition) -> Vec<(PathBuf, Option<String>)> {
+        ws.projects
+            .iter()
+            .filter(|p| p.project_id == def.project_id)
+            .map(|p| (p.path.clone(), p.label.clone()))
+            .collect()
+    }
+
     #[tokio::test]
     async fn a_copy_follows_the_homes_labels_and_removals() {
         let td = tempfile::tempdir().unwrap();
@@ -599,15 +609,6 @@ mod tests {
         ensure_project_under(&sup, whole.clone(), &root)
             .await
             .unwrap();
-        let api_clone = clone_of(&root, &whole, 1);
-        std::fs::write(api_clone.join("marker"), "kept").unwrap();
-        let of_project = |ws: &Workspace| -> Vec<(PathBuf, Option<String>)> {
-            ws.projects
-                .iter()
-                .filter(|p| p.project_id == whole.project_id)
-                .map(|p| (p.path.clone(), p.label.clone()))
-                .collect()
-        };
 
         // On the home: the first repository is labelled, the second removed.
         let mut def = whole.clone();
@@ -618,23 +619,69 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            of_project(&ws),
+            copied(&ws, &def),
             [(clone_of(&root, &def, 0), Some("Frontend".to_string()))]
         );
-        // Out of the project for whatever is started next, its clone kept for
-        // what was started with it.
         assert_eq!(
             sup.workspace.project_repo_paths(&def.project_id),
             [clone_of(&root, &def, 0)]
         );
-        assert!(api_clone.is_dir());
 
-        // The home has it again: the same clone is part of the project again.
+        // The home has it again: it is cloned again.
         let ws = ensure_project_under(&sup, whole.clone(), &root)
             .await
             .unwrap();
-        assert_eq!(of_project(&ws).len(), 2);
-        assert!(api_clone.join("marker").is_file(), "it was cloned again");
+        assert_eq!(copied(&ws, &whole).len(), 2);
+        assert!(clone_of(&root, &whole, 1).join("README.md").is_file());
+    }
+
+    /// The rule the home is held to when it detaches a repository: one an
+    /// agent has a checkout of stays, here as a repository of the project like
+    /// any other, and leaves once that agent is gone.
+    #[tokio::test]
+    async fn a_removed_repository_an_agent_here_uses_stays_until_the_agent_is_gone() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, root) = host(td.path());
+        let app = origin_repo(td.path(), "app");
+        let api = origin_repo(td.path(), "api");
+        let whole = definition(vec![repo("app", Some(&app)), repo("api", Some(&api))]);
+        ensure_project_under(&sup, whole.clone(), &root)
+            .await
+            .unwrap();
+        // An agent started in the first repository, the one the home removes.
+        let app_clone = clone_of(&root, &whole, 0);
+        let mut agent = crate::workspace::new_agent_record(
+            "dolomites".into(),
+            "a".into(),
+            "claude".into(),
+            crate::workspace::tests::mk_repo(app_clone.to_str().unwrap()),
+            "".into(),
+            crate::workspace::AgentView::Custom,
+        );
+        sup.workspace.add_agent(&mut agent).unwrap();
+
+        let mut def = whole.clone();
+        def.repos.remove(0);
+        let ws = ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+
+        // Still the project's first repository to everything that reads it.
+        assert_eq!(copied(&ws, &whole).len(), 2);
+        assert_eq!(
+            sup.workspace.project_repo_paths(&whole.project_id),
+            [app_clone.clone(), clone_of(&root, &whole, 1)]
+        );
+        assert_eq!(
+            ws.agents.iter().map(|a| &a.id).collect::<Vec<_>>(),
+            [&agent.id]
+        );
+
+        sup.workspace.remove_agent(&agent.id).unwrap();
+        let ws = ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+        assert_eq!(copied(&ws, &def), [(clone_of(&root, &def, 0), None)]);
     }
 
     #[tokio::test]

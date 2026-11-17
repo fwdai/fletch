@@ -1113,10 +1113,11 @@ its own login.
 GitHub login, and records the project as a copy under the same `project_id`.
 Called again for a copy, it brings the copy in line with the definition: the
 project's `name` and each repository's `label` follow the home, a repository
-the home has added is cloned, and one the home has removed is retired: it
-leaves the project, for the snapshot and for every new workspace, while its
-clone stays for the workspaces and runs started with it (and it is part of the
-project again if the home adds it back). What is not followed: a repository
+the home has added is cloned, and one the home has removed leaves the copy
+under the rule the home itself is held to when detaching a repository: once no
+agent on the host, live or archived, has a checkout of it. Until then it stays
+a repository of the project on that host, the same as any other. What is not
+followed: a repository
 whose folder the home renamed or whose `origin` the home repointed keeps the
 folder and remote it was cloned with; delete the copy on the host to have it
 made again.

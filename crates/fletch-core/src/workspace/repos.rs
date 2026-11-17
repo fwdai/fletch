@@ -269,12 +269,7 @@ impl WorkspaceManager {
             ));
         }
 
-        let checkouts: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM worktrees WHERE repo_id = ?1",
-            [&repo_id],
-            |row| row.get(0),
-        )?;
-        if checkouts > 0 {
+        if Self::has_checkouts(&conn, &repo_id)? {
             return Err(Error::Other(format!(
                 "{path_str} is used by existing agents (including archived ones). \
                  Delete those agents before detaching it."
@@ -490,7 +485,7 @@ impl WorkspaceManager {
             .map_err(|_| Error::Other(format!("project not found: {project_id}")))?;
         let mut stmt = conn.prepare(
             "SELECT COALESCE(home_id, id), path, label FROM repos
-             WHERE project_id = ?1 AND retired_at IS NULL ORDER BY created_at, rowid",
+             WHERE project_id = ?1 ORDER BY created_at, rowid",
         )?;
         let repos = stmt
             .query_map([project_id], |row| {
@@ -522,8 +517,8 @@ impl WorkspaceManager {
             .ok()
     }
 
-    /// The ids, as the home knows them, of every repository this host has a
-    /// clone of for `project_id`, retired ones included.
+    /// The ids, as the home knows them, of the repositories of `project_id`
+    /// on this host.
     pub fn project_repo_ids(&self, project_id: &str) -> HashSet<String> {
         let conn = self.db.lock();
         let Ok(mut stmt) =
@@ -545,12 +540,12 @@ impl WorkspaceManager {
     ///   brought up to the name the home has for it now.
     /// - Each of `cloned` (a repository's home id and where its new clone is)
     ///   is recorded; every repository already recorded takes the label the
-    ///   home has for it now, and is part of the project again if it had been
-    ///   retired.
-    /// - A recorded repository `def` no longer names is retired: it leaves
-    ///   the project, for the snapshot and for every new workspace, while its
-    ///   row and its clone stay for the workspaces and runs that were started
-    ///   with it.
+    ///   home has for it now.
+    /// - A recorded repository `def` no longer names leaves the project under
+    ///   the rule [`Self::detach_repo_from_project`] holds the home to: once
+    ///   no agent here has a checkout of it. Until then it is a repository of
+    ///   the project on this host like any other, so nothing that reads the
+    ///   project has a second kind of repository to know about.
     ///
     /// A project this host owns is never touched.
     pub fn reconcile_copy(
@@ -590,33 +585,42 @@ impl WorkspaceManager {
                     ],
                 )?,
                 None => tx.execute(
-                    "UPDATE repos SET label = ?1, retired_at = NULL
-                     WHERE home_id = ?2 AND project_id = ?3",
+                    "UPDATE repos SET label = ?1 WHERE home_id = ?2 AND project_id = ?3",
                     rusqlite::params![repo.label, repo.id, def.project_id],
                 )?,
             };
         }
 
-        let recorded: Vec<String> = {
+        let recorded: Vec<(String, String)> = {
             let mut stmt = tx.prepare(
-                "SELECT home_id FROM repos
-                 WHERE project_id = ?1 AND home_id IS NOT NULL AND retired_at IS NULL",
+                "SELECT id, home_id FROM repos WHERE project_id = ?1 AND home_id IS NOT NULL",
             )?;
             let rows = stmt
-                .query_map([&def.project_id], |row| row.get(0))?
+                .query_map([&def.project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?;
             rows
         };
-        for home_id in recorded {
-            if !def.repos.iter().any(|r| r.id == home_id) {
-                tx.execute(
-                    "UPDATE repos SET retired_at = ?1 WHERE home_id = ?2 AND project_id = ?3",
-                    rusqlite::params![now, home_id, def.project_id],
-                )?;
+        for (repo_id, home_id) in recorded {
+            let named = def.repos.iter().any(|r| r.id == home_id);
+            if !named && !Self::has_checkouts(&tx, &repo_id)? {
+                tx.execute("DELETE FROM repos WHERE id = ?1", [&repo_id])?;
             }
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Whether any agent, live or archived, has a checkout of the repository
+    /// `repo_id`. One that does cannot leave its project: the
+    /// `worktrees.repo_id` cascade would take those agents' tracked branches,
+    /// PRs and archive snapshots with it.
+    fn has_checkouts(conn: &Connection, repo_id: &str) -> Result<bool> {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM worktrees WHERE repo_id = ?1",
+            [repo_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     /// Refuse a change to the structure of a project this host only runs: a
@@ -660,10 +664,9 @@ impl WorkspaceManager {
 
     pub fn project_repo_paths(&self, project_id: &str) -> Vec<PathBuf> {
         let conn = self.db.lock();
-        let mut stmt = match conn.prepare(
-            "SELECT path FROM repos
-                 WHERE project_id = ?1 AND retired_at IS NULL ORDER BY created_at",
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT path FROM repos WHERE project_id = ?1 ORDER BY created_at")
+        {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };

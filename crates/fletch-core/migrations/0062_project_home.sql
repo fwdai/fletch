@@ -17,10 +17,4 @@ ALTER TABLE projects ADD COLUMN home_name TEXT;
 -- project's home, which is what tells one repository from another when the
 -- home relabels or removes one; the row's own `id` stays this host's. NULL for
 -- a repository of a project this host owns.
---
--- `retired_at` is set when the home no longer has the repository: it leaves
--- the project (the snapshot, and every new workspace) while the row, which the
--- checkouts of earlier workspaces refer to, stays. NULL while it is part of
--- the project.
 ALTER TABLE repos ADD COLUMN home_id TEXT;
-ALTER TABLE repos ADD COLUMN retired_at INTEGER;
