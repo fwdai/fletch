@@ -231,6 +231,7 @@ describe("Runs on, with two hosts paired", () => {
     });
     try {
       await mount();
+      const ensures = vi.spyOn(linkOf(STUDIO).api, "ensureProject");
       await openNewAgent("atlas");
       await type("Map the atlas tiles");
       await click(chip("Studio Mac"));
@@ -245,6 +246,12 @@ describe("Runs on, with two hosts paired", () => {
       expect(notes()).toEqual([]);
       expect(start()?.hasAttribute("disabled")).toBe(false);
       expect(projectById(studio().workspace, "prj-atlas")).toBeUndefined();
+
+      // Picking it again asks again.
+      await click(chip("Studio Mac"));
+      await act(settle);
+      expect(ensures).toHaveBeenCalledTimes(2);
+      expect(app().sheet?.props).toEqual({ hostKey: MINI, projectId: "prj-atlas" });
     } finally {
       await redialStudio(STUDIO_SPEC);
     }
