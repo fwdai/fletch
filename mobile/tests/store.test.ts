@@ -1313,12 +1313,12 @@ describe("planning chats", () => {
   });
 
   it("patches a chat record in place, and ignores an id it does not hold", () => {
-    host().patchChat("sakura", { task: "Offline queue, sliced" });
+    host().patchAgent("sakura", { task: "Offline queue, sliced" });
     expect(host().chats[projectId]?.find((c) => c.id === "sakura")?.task).toBe(
       "Offline queue, sliced",
     );
     const before = host().chats;
-    host().patchChat("arabia", { task: "not a chat" });
+    host().patchAgent("nobody", { task: "not a chat" });
     expect(host().chats).toBe(before);
   });
 

@@ -72,25 +72,11 @@ export interface EventOrders {
   prWrites: PrWriteOrder;
 }
 
-/** One record patched in the snapshot — and noted for any workspace read out
- *  right now, which the event outranks (store/workspaceReads). */
-const patchAgent = (
-  reads: WorkspaceReads,
-  ws: Workspace,
-  agentId: string,
-  patch: Partial<Workspace["agents"][number]>,
-): Workspace => {
-  reads.noteAgentPatch(agentId, patch);
-  return {
-    ...ws,
-    agents: ws.agents.map((a) => (a.id === agentId ? { ...a, ...patch } : a)),
-  };
-};
-
-/** One record changed by a function rather than a patch of whole fields —
- *  for an edit inside a list (one repo's branch, one repo added), which a
- *  read in flight replays against *its* list rather than the phone's, which
- *  may lack a repo the host has since added (store/workspaceReads). */
+/** One record changed in the snapshot — and noted for any workspace read out
+ *  right now, which the event outranks. The read replays `change` against
+ *  *its* record rather than the phone's, so an edit inside a list (one repo's
+ *  branch, one repo added) keeps a repo the host has since added
+ *  (store/workspaceReads). */
 const updateAgent = (
   reads: WorkspaceReads,
   ws: Workspace,
@@ -195,10 +181,11 @@ export function registerRemoteEvents(
       }
       return {
         workspace: ws
-          ? patchAgent(workspaceReads, ws, e.agent_id, {
+          ? updateAgent(workspaceReads, ws, e.agent_id, (a) => ({
+              ...a,
               status: e.status,
               last_error: e.last_error ?? undefined,
-            })
+            }))
           : ws,
         // A planning chat's record is not in the snapshot, so it is patched in
         // its own registry — this is what lets `waitForSpawn` and the status
@@ -237,31 +224,23 @@ export function registerRemoteEvents(
     set((s) => ({ turnStartedAt: { ...s.turnStartedAt, [e.agent_id]: e.started_at } }));
   });
 
+  // The task is a chat's title, and the composer's model picker reads the
+  // selection off the record, so these reach a chat the snapshot hides as well
+  // as a sidebar agent (`patchAgent`).
   on<AgentTaskEvent>("agent:task", (e) => {
-    // The task is a chat's title, so it is patched in both registries too.
-    get().patchChat(e.agent_id, { task: e.task });
-    const ws = get().workspace;
-    if (ws) set({ workspace: patchAgent(workspaceReads, ws, e.agent_id, { task: e.task }) });
+    get().patchAgent(e.agent_id, { task: e.task });
   });
 
   on<AgentTitleEvent>("agent:title", (e) => {
-    get().patchChat(e.agent_id, { title: e.title });
-    const ws = get().workspace;
-    if (ws) set({ workspace: patchAgent(workspaceReads, ws, e.agent_id, { title: e.title }) });
+    get().patchAgent(e.agent_id, { title: e.title });
   });
 
   on<AgentModelEvent>("agent:model", (e) => {
-    // The composer's model picker reads the selection off the record, so a chat
-    // has to be patched in its own registry too — the snapshot never holds it.
-    get().patchChat(e.agent_id, { model: e.model });
-    const ws = get().workspace;
-    if (ws) set({ workspace: patchAgent(workspaceReads, ws, e.agent_id, { model: e.model }) });
+    get().patchAgent(e.agent_id, { model: e.model });
   });
 
   on<AgentEffortEvent>("agent:effort", (e) => {
-    get().patchChat(e.agent_id, { effort: e.effort });
-    const ws = get().workspace;
-    if (ws) set({ workspace: patchAgent(workspaceReads, ws, e.agent_id, { effort: e.effort }) });
+    get().patchAgent(e.agent_id, { effort: e.effort });
   });
 
   on<AgentBranchEvent>("agent:branch", (e) => {

@@ -43,7 +43,7 @@ import {
   type PairStep,
 } from "../remote";
 import { type AutopilotMap, autopilotFromSnapshot, checkoutKey, switchesOf } from "./autopilot";
-import { type ChatsSlice, createChatLists, createChatsSlice } from "./chats";
+import { type ChatsSlice, createChatLists, createChatsSlice, patchChatIn } from "./chats";
 import { registerRemoteEvents } from "./events";
 import { closeSheetOf, isScreenOpen, openAgentOf, popAgent, pushOn } from "./hostNav";
 import { type AgentTab, appStore } from "./index";
@@ -184,6 +184,12 @@ export interface HostState extends ChatsSlice, ProposalsSlice, ProviderAccountsS
    *  the foreground probe reads that, everything else ignores it. Never
    *  rejects — a failed read is best effort and the next resync recovers. */
   refreshWorkspace(): Promise<boolean>;
+  /** Change fields of an agent's record wherever it is kept — the workspace
+   *  snapshot, or the planning chats for a chat the snapshot hides — in one
+   *  update, and note the change for every read of either out right now,
+   *  which it outranks (store/workspaceReads, store/chats). A no-op for an
+   *  agent neither holds. */
+  patchAgent(agentId: string, fields: Partial<AgentRecord>): void;
   /** Open an agent's screen, on `tab` when given (an alert about its PR lands
    *  on Ship rather than the chat). */
   openAgent(agentId: string, tab?: AgentTab): void;
@@ -654,6 +660,18 @@ export function createHostStore(link: HostLink): HostStore {
       } finally {
         read.finish();
       }
+    },
+
+    patchAgent(agentId, fields) {
+      workspaceReads.noteAgentPatch(agentId, fields);
+      chatLists.noteChatPatch(agentId, fields);
+      set((s) => ({
+        workspace: s.workspace && {
+          ...s.workspace,
+          agents: s.workspace.agents.map((a) => (a.id === agentId ? { ...a, ...fields } : a)),
+        },
+        chats: patchChatIn(s.chats, agentId, fields),
+      }));
     },
 
     openAgent(agentId, tab) {
@@ -1254,7 +1272,7 @@ export function createHostStore(link: HostLink): HostStore {
 
     ...createRoadmapSlice(set, get, link),
 
-    ...createProviderAccountsSlice(set, get, { link, chatLists, workspaceReads }),
+    ...createProviderAccountsSlice(set, get, link),
   }));
 
   registerRemoteEvents(link, store.setState, store.getState, {

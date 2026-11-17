@@ -40,9 +40,6 @@ export interface ChatsSlice {
    *  chat is in neither the snapshot nor `list_project_chats`, so nothing on the
    *  phone could ever list it again. Needs `discard_agent`. */
   deleteChat(agentId: string): Promise<void>;
-  /** Apply a live event to a chat record. A no-op for an agent that is not in
-   *  the registry, so the event handlers can call it unconditionally. */
-  patchChat(agentId: string, fields: Partial<AgentRecord>): void;
   /** Make an agent id resolvable before a screen mounts on it. A tapped
    *  notification (or a deep link) carries nothing but an id, and on a cold
    *  launch both registries are empty — so the record is fetched by id, which
@@ -143,8 +140,8 @@ export interface ChatLists {
    *  it will replay. The caller `finish`es it however the list ends. */
   begin(projectId: string): ChatList;
   /** Record a live patch to a chat for every list in flight. Called wherever a
-   *  chat record is patched from an event — the slice's `patchChat`, and the
-   *  status fold that patches inline for atomicity. */
+   *  chat record is patched — the store's `patchAgent`, and the status fold
+   *  that patches inline for atomicity. */
   noteChatPatch(agentId: string, fields: Partial<AgentRecord>): void;
   /** Record a chat put into the registry outside a list (a spawn, a record
    *  resolved by id), so a list read before it existed does not drop it. */
@@ -316,14 +313,6 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
           if (chat) await get().loadChats(chat.project_id);
           throw e;
         }
-      });
-    },
-
-    patchChat(agentId, fields) {
-      lists.noteChatPatch(agentId, fields);
-      set((s) => {
-        const chats = patchChatIn(s.chats, agentId, fields);
-        return chats === s.chats ? {} : { chats };
       });
     },
   };

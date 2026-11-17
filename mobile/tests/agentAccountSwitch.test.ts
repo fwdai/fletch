@@ -106,7 +106,7 @@ describe("switchAgentAccount over the mock host", () => {
       return list(projectId, purpose);
     });
     const atlas = host().loadChats("prj-atlas");
-    host().patchChat("sakura", { account: "stale" });
+    host().patchAgent("sakura", { account: "stale" });
     await host().loadChats("prj-fletch");
     const fresh = host().chats["prj-fletch"].find((c) => c.id === "sakura")?.account;
     expect(fresh).not.toBe("stale");

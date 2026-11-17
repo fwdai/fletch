@@ -26,10 +26,8 @@ import {
   withLimitsChange,
 } from "@desktop/data/providerLimits";
 import type { HostLink } from "../host";
-import { type ChatLists, patchChatIn } from "./chats";
 import type { HostState } from "./host";
 import type { LogLoad } from "./transcript";
-import type { WorkspaceReads } from "./workspaceReads";
 
 type Set = (partial: Partial<HostState> | ((s: HostState) => Partial<HostState>)) => void;
 type Get = () => HostState;
@@ -78,14 +76,6 @@ export interface ProviderAccountsSlice {
   switchAgentAccount(agentId: string, account: string): Promise<AgentRecord | null>;
 }
 
-export interface ProviderAccountsDeps {
-  /** The link of the host the slice acts on. */
-  link: HostLink;
-  /** That host's reads in flight, which a switch's restamp outranks. */
-  chatLists: ChatLists;
-  workspaceReads: WorkspaceReads;
-}
-
 /** `accounts` grouped by provider, in the order the host listed them. */
 export function groupByProvider(accounts: ProviderAccount[]): Record<string, ProviderAccount[]> {
   const out: Record<string, ProviderAccount[]> = {};
@@ -126,13 +116,12 @@ export function canSwitchAgentAccount(s: Pick<HostState, "hostSupports">): boole
   return s.hostSupports("switch_agent_account") && s.hostSupports("list_provider_accounts");
 }
 
+/** `link` is the link of the host the slice acts on. */
 export function createProviderAccountsSlice(
   set: Set,
   get: Get,
-  deps: ProviderAccountsDeps,
+  link: HostLink,
 ): ProviderAccountsSlice {
-  const { link, chatLists, workspaceReads } = deps;
-
   // The read in flight, and the writes the host announced while it was out.
   // A list is probed on the host (a Keychain check per account), so an event
   // can overtake the answer it is newer than; it is replayed over the answer
@@ -260,16 +249,7 @@ export function createProviderAccountsSlice(
         // an `agent:status` that landed before this answer is newer than the
         // record's. No optimistic stamp either, so a refusal never leaves the
         // row naming an account the agent isn't on.
-        const fields = { account: record.account ?? null };
-        chatLists.noteChatPatch(agentId, fields);
-        workspaceReads.noteAgentPatch(agentId, fields);
-        set((s) => ({
-          workspace: s.workspace && {
-            ...s.workspace,
-            agents: s.workspace.agents.map((a) => (a.id === agentId ? { ...a, ...fields } : a)),
-          },
-          chats: patchChatIn(s.chats, agentId, fields),
-        }));
+        get().patchAgent(agentId, { account: record.account ?? null });
         return record;
       } finally {
         switching(false);
