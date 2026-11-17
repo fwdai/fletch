@@ -41,17 +41,19 @@ pub async fn project_definition_impl(
         },
     };
     let mut described = Vec::with_capacity(repos.len());
-    let mut taken = std::collections::HashSet::new();
-    for (path, label) in repos {
-        let folder = path
+    for (id, path, label) in repos {
+        let dir = path
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?;
+            .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?
+            .to_string();
+        // A repository whose origin cannot be read is described without one:
+        // the device asked to clone it says why it cannot.
+        let origin = crate::git::origin_url(&path).await.ok().flatten();
         described.push(RepoDefinition {
-            dir: distinct_dir(folder, &mut taken),
-            // A repository whose origin cannot be read is described without
-            // one: the device asked to clone it says why it cannot.
-            origin: crate::git::origin_url(&path).await.ok().flatten(),
+            id,
+            dir,
+            origin: origin.as_deref().map(without_credentials),
             label,
         });
     }
@@ -63,19 +65,29 @@ pub async fn project_definition_impl(
     })
 }
 
-/// `folder`, or `folder-2`, `folder-3`, … when an earlier repository of the
-/// project already has that name. Two repositories of one project may share a
-/// folder name on their home (`client/app` and `server/app`) but not in a
-/// copy, where they sit side by side; names that differ only by case count as
-/// the same, since the device that makes the copy may not tell them apart.
-fn distinct_dir(folder: &str, taken: &mut std::collections::HashSet<String>) -> String {
-    let mut dir = folder.to_string();
-    let mut n = 2;
-    while !taken.insert(dir.to_lowercase()) {
-        dir = format!("{folder}-{n}");
-        n += 1;
+/// `origin` as another device may be told it. A definition is readable by any
+/// paired device and kept by clients, and the device that clones signs in with
+/// its own login, so a credential the home keeps in the URL
+/// (`https://user:token@host/…`) never leaves it: an http(s) URL loses its
+/// whole userinfo, any other `scheme://` URL its password. An scp-style
+/// remote (`git@host:path`) has no place for one.
+fn without_credentials(origin: &str) -> String {
+    let Some((scheme, rest)) = origin.split_once("://") else {
+        return origin.to_string();
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(at) => rest.split_at(at),
+        None => (rest, ""),
+    };
+    let Some((userinfo, host)) = authority.rsplit_once('@') else {
+        return origin.to_string();
+    };
+    let user = userinfo.split(':').next().unwrap_or_default();
+    if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
+        format!("{scheme}://{host}{path}")
+    } else {
+        format!("{scheme}://{user}@{host}{path}")
     }
-    dir
 }
 
 /// One `ensure_project` at a time: two spawns into a project this host does
@@ -85,10 +97,11 @@ static ENSURING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Make sure this host can run workspaces of `def`, and answer with the
 /// project list.
 ///
-/// A project this host already has, its own or a copy, costs nothing beyond
-/// bringing a copy's name up to date and cloning a repository the home has
-/// added since. Otherwise each repository is cloned from its `origin` and the
-/// project is recorded as a copy.
+/// A project this host owns is left as it is. Otherwise each repository this
+/// host does not have yet is cloned from its `origin`, and the copy is brought
+/// in line with the definition (`WorkspaceManager::reconcile_copy`): its name
+/// and labels follow the home, and a repository the home has removed is
+/// dropped with its clone once no workspace here uses it.
 ///
 /// All or nothing: a repository with no `origin` fails the call before
 /// anything is cloned, and the clones are made in a staging folder and only
@@ -116,15 +129,10 @@ async fn ensure_project_under(
 
     if workspace.owns_project(&def.project_id) != Some(true) {
         let root = copy_root(projects_root, &def.project_id);
-        let have = workspace.project_repo_paths(&def.project_id);
-        let missing: Vec<(usize, &RepoDefinition, PathBuf)> = def
-            .repos
-            .iter()
-            .enumerate()
-            .map(|(i, repo)| (i, repo, root.join(&repo.dir)))
-            .filter(|(_, _, target)| !have.contains(target))
-            .collect();
-        for (_, repo, _) in &missing {
+        let have = workspace.project_repo_ids(&def.project_id);
+        let missing: Vec<&RepoDefinition> =
+            def.repos.iter().filter(|r| !have.contains(&r.id)).collect();
+        for repo in &missing {
             if repo.origin.is_none() {
                 return Err(Error::Other(format!(
                     "{} has no remote to clone from. Publish it from {} first.",
@@ -136,9 +144,9 @@ async fn ensure_project_under(
         let project_dir = projects_root.join(&def.project_id);
         clear_staging(&project_dir).await;
         let staging = project_dir.join(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4()));
-        for (_, repo, _) in &missing {
+        for repo in &missing {
             let origin = repo.origin.as_deref().expect("checked above");
-            let staged = staging.join(&repo.dir);
+            let staged = staging.join(&repo.id).join(&repo.dir);
             if let Err(e) = crate::github::repo_clone(clone_spec(origin), &staged).await {
                 let _ = tokio::fs::remove_dir_all(&staging).await;
                 return Err(e);
@@ -146,25 +154,34 @@ async fn ensure_project_under(
         }
 
         let mut cloned = Vec::with_capacity(missing.len());
-        for (order, repo, target) in missing {
+        for repo in missing {
+            let slot = root.join(&repo.id);
             // Not recorded, so nothing refers to it: what an earlier call
             // moved into place before it failed to record the project.
-            if target.exists() {
-                tokio::fs::remove_dir_all(&target).await?;
+            if slot.exists() {
+                tokio::fs::remove_dir_all(&slot).await?;
             }
             tokio::fs::create_dir_all(&root).await?;
-            tokio::fs::rename(staging.join(&repo.dir), &target).await?;
-            cloned.push((target, repo.label.clone(), order));
+            tokio::fs::rename(staging.join(&repo.id), &slot).await?;
+            cloned.push((repo.id.clone(), slot.join(&repo.dir)));
         }
         let _ = tokio::fs::remove_dir_all(&staging).await;
-        workspace.record_copy(&def, &cloned)?;
+        for clone in workspace.reconcile_copy(&def, &cloned)? {
+            // Only ever a slot of this copy: `<root>/<repo id>`.
+            if let Some(slot) = clone.parent().filter(|s| s.parent() == Some(&*root)) {
+                let _ = tokio::fs::remove_dir_all(slot).await;
+            }
+        }
         workspace.detect_icon(&def.project_id);
     }
 
     Ok(workspace.current().expect("workspace initialized"))
 }
 
-/// Where a copy's repositories are cloned: `<projects root>/<project id>/repos`.
+/// Where a copy's repositories are cloned: `<projects root>/<project id>/repos`,
+/// each in a slot of its own, `<repo id>/<folder name>`. The id keeps two
+/// repositories apart whatever their folders are called; the folder keeps the
+/// name the home knows it by.
 fn copy_root(projects_root: &Path, project_id: &str) -> PathBuf {
     projects_root.join(project_id).join("repos")
 }
@@ -204,8 +221,8 @@ async fn clear_staging(project_dir: &Path) {
 }
 
 /// A definition arrives off the wire and names paths: the project id and each
-/// repository's folder become path components under [`copy_root`], so neither
-/// may be anything but one plain component.
+/// repository's id and folder become path components under [`copy_root`], so
+/// none may be anything but one plain component.
 fn validate(def: &ProjectDefinition) -> Result<()> {
     if uuid::Uuid::parse_str(&def.project_id).is_err() {
         return Err(Error::InvalidPath(format!(
@@ -236,11 +253,18 @@ fn validate(def: &ProjectDefinition) -> Result<()> {
                 repo.dir
             )));
         }
-        // Case-insensitively: the default macOS filesystem would put `App`
-        // and `app` in one folder.
-        if !seen.insert(dir.to_lowercase()) {
+        let id = repo.id.as_str();
+        let plain_id = !id.is_empty()
+            && id.len() <= 64
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if !plain_id {
+            return Err(Error::InvalidPath(format!("not a repository id: {id}")));
+        }
+        if !seen.insert(id) {
             return Err(Error::InvalidPath(format!(
-                "two repositories share the folder name {dir}"
+                "two repositories share the id {id}"
             )));
         }
         if let Some(origin) = &repo.origin {
@@ -295,8 +319,16 @@ mod tests {
         }
     }
 
+    /// Where the copy of `def` under `root` keeps its `i`th repository.
+    fn clone_of(root: &Path, def: &ProjectDefinition, i: usize) -> PathBuf {
+        copy_root(root, &def.project_id)
+            .join(&def.repos[i].id)
+            .join(&def.repos[i].dir)
+    }
+
     fn repo(dir: &str, origin: Option<&Path>) -> RepoDefinition {
         RepoDefinition {
+            id: uuid::Uuid::new_v4().to_string(),
             dir: dir.into(),
             origin: origin.map(url),
             label: None,
@@ -321,12 +353,11 @@ mod tests {
             .filter(|p| p.project_id == def.project_id)
             .collect();
         // Both repositories, in the home's order, under the copy root.
-        let clones = copy_root(&root, &def.project_id);
         assert_eq!(
             refs.iter().map(|p| p.path.clone()).collect::<Vec<_>>(),
-            [clones.join("app"), clones.join("api")]
+            [clone_of(&root, &def, 0), clone_of(&root, &def, 1)]
         );
-        assert!(clones.join("app").join("README.md").is_file());
+        assert!(clone_of(&root, &def, 0).join("README.md").is_file());
         for p in refs {
             assert_eq!(p.name, "Fletch");
             assert_eq!(p.home.as_ref(), Some(&def.home));
@@ -342,7 +373,7 @@ mod tests {
         ensure_project_under(&sup, def.clone(), &root)
             .await
             .unwrap();
-        let clone = copy_root(&root, &def.project_id).join("app");
+        let clone = clone_of(&root, &def, 0);
         std::fs::write(clone.join("marker"), "kept").unwrap();
 
         def.name = "Fletch 2".into();
@@ -463,14 +494,9 @@ mod tests {
             .unwrap();
         assert_eq!(def.home.device, "dGhpcy1ob3N0");
         assert_eq!(def.name, "app");
-        assert_eq!(
-            def.repos,
-            [RepoDefinition {
-                dir: "app".into(),
-                origin: Some(url(&upstream)),
-                label: None,
-            }]
-        );
+        assert_eq!(def.repos.len(), 1);
+        assert_eq!(def.repos[0].dir, "app");
+        assert_eq!(def.repos[0].origin, Some(url(&upstream)));
 
         // A copy: its home is whoever it came from, not this host.
         let theirs = definition(vec![repo("upstream", Some(&upstream))]);
@@ -480,9 +506,9 @@ mod tests {
         let again = project_definition_impl(&ctx, &sup, &theirs.project_id)
             .await
             .unwrap();
-        assert_eq!(again.home, theirs.home);
-        assert_eq!(again.repos.len(), 1);
-        assert_eq!(again.repos[0].dir, "upstream");
+        // Read back off the copy, it is the definition the home wrote: the
+        // repository keeps the home's id.
+        assert_eq!(again, theirs);
     }
 
     #[tokio::test]
@@ -498,7 +524,7 @@ mod tests {
             .is_err());
 
         assert!(sup.workspace.owns_project(&def.project_id).is_none());
-        assert!(!copy_root(&root, &def.project_id).join("app").exists());
+        assert!(!copy_root(&root, &def.project_id).exists());
         let left: Vec<_> = std::fs::read_dir(root.join(&def.project_id))
             .map(|d| d.flatten().map(|e| e.file_name()).collect())
             .unwrap_or_default();
@@ -527,7 +553,7 @@ mod tests {
         let def = definition(vec![repo("app", Some(&app))]);
         // An unfinished clone where the copy goes, and a staging folder beside
         // it: neither is recorded.
-        let target = copy_root(&root, &def.project_id).join("app");
+        let target = clone_of(&root, &def, 0);
         std::fs::create_dir_all(target.join(".git")).unwrap();
         let stale = root
             .join(&def.project_id)
@@ -541,32 +567,137 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repositories_sharing_a_folder_name_get_distinct_ones() {
+    async fn repositories_sharing_a_folder_name_are_cloned_side_by_side() {
         let td = tempfile::tempdir().unwrap();
         let (sup, root) = host(td.path());
-        let (ctx, _sink, _db) = crate::host::ctx::test_ctx();
-        ctx.set_host_id("dGhpcy1ob3N0".into());
         let client = origin_repo(&td.path().join("client"), "app");
-        let server = origin_repo(&td.path().join("server"), "App");
-        sup.workspace.add_workspace_repo(client).unwrap();
-        let project_id = sup.current_workspace().unwrap().projects[0]
-            .project_id
-            .clone();
-        sup.workspace
-            .attach_repo_to_project(&project_id, &server)
-            .unwrap();
+        let server = origin_repo(&td.path().join("server"), "app");
+        std::fs::write(server.join("server.txt"), "").unwrap();
+        git(&server, &["add", "-A"]);
+        git(&server, &["commit", "-q", "-m", "server"]);
+        // The second differs from the first only by case, which the default
+        // macOS filesystem does not tell apart.
+        let def = definition(vec![repo("app", Some(&client)), repo("App", Some(&server))]);
 
-        let def = project_definition_impl(&ctx, &sup, &project_id)
+        ensure_project_under(&sup, def.clone(), &root)
             .await
             .unwrap();
-        let dirs: Vec<_> = def.repos.iter().map(|r| r.dir.as_str()).collect();
-        assert_eq!(dirs, ["app", "App-2"]);
 
-        // And a definition that names two folders differing only by case is
-        // refused rather than cloned into one.
-        let app = origin_repo(td.path(), "one");
-        let clash = definition(vec![repo("app", Some(&app)), repo("App", Some(&app))]);
-        assert!(ensure_project_under(&sup, clash, &root).await.is_err());
+        assert!(!clone_of(&root, &def, 0).join("server.txt").exists());
+        assert!(clone_of(&root, &def, 1).join("server.txt").is_file());
+
+        // One id named twice is one repository named twice.
+        let mut twice = definition(vec![repo("a", Some(&client)), repo("b", Some(&server))]);
+        twice.repos[1].id = twice.repos[0].id.clone();
+        assert!(ensure_project_under(&sup, twice, &root).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_copy_follows_the_homes_labels_and_removals() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, root) = host(td.path());
+        let app = origin_repo(td.path(), "app");
+        let api = origin_repo(td.path(), "api");
+        let mut def = definition(vec![repo("app", Some(&app)), repo("api", Some(&api))]);
+        ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+        let api_clone = clone_of(&root, &def, 1);
+
+        // On the home: the first repository is labelled, the second removed.
+        def.repos[0].label = Some("Frontend".into());
+        def.repos.truncate(1);
+        let ws = ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+
+        let refs: Vec<_> = ws
+            .projects
+            .iter()
+            .filter(|p| p.project_id == def.project_id)
+            .collect();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].path, clone_of(&root, &def, 0));
+        assert_eq!(refs[0].label.as_deref(), Some("Frontend"));
+        assert!(!api_clone.exists(), "the removed clone was left on disk");
+    }
+
+    #[tokio::test]
+    async fn a_removed_repository_stays_while_a_workspace_here_uses_it() {
+        use crate::workspace::{new_agent_record, AgentView, TrackedRepo};
+        let td = tempfile::tempdir().unwrap();
+        let (sup, root) = host(td.path());
+        let app = origin_repo(td.path(), "app");
+        let api = origin_repo(td.path(), "api");
+        let mut def = definition(vec![repo("app", Some(&app)), repo("api", Some(&api))]);
+        ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+        let api_clone = clone_of(&root, &def, 1);
+        let tracked = TrackedRepo {
+            repo_path: api_clone.clone(),
+            subdir: "api".into(),
+            branch: None,
+            parent_branch: None,
+            pr_base: None,
+            base_sha: None,
+            pr_number: None,
+            pr_url: None,
+            pr_title: None,
+            pr_state: None,
+            label: None,
+            adopted_checkout: None,
+        };
+        let mut record = new_agent_record(
+            "fuji".into(),
+            "agent".into(),
+            "claude".into(),
+            tracked,
+            "task".into(),
+            AgentView::Custom,
+        );
+        sup.workspace.add_agent(&mut record).unwrap();
+
+        def.repos.truncate(1);
+        let ws = ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+
+        assert!(ws.projects.iter().any(|p| p.path == api_clone));
+        assert!(api_clone.is_dir());
+        assert_eq!(ws.agents.len(), 1);
+    }
+
+    #[test]
+    fn a_definition_carries_no_credentials() {
+        for (origin, told) in [
+            (
+                "https://alice:token@example.com/org/repo.git",
+                "https://example.com/org/repo.git",
+            ),
+            (
+                "https://token@example.com/org/repo.git",
+                "https://example.com/org/repo.git",
+            ),
+            (
+                "ssh://git:secret@example.com/org/repo.git",
+                "ssh://git@example.com/org/repo.git",
+            ),
+            (
+                "https://example.com/org/a@b.git",
+                "https://example.com/org/a@b.git",
+            ),
+            (
+                "ssh://git@github.com/fwdai/fletch",
+                "ssh://git@github.com/fwdai/fletch",
+            ),
+            (
+                "git@github.com:fwdai/fletch.git",
+                "git@github.com:fwdai/fletch.git",
+            ),
+        ] {
+            assert_eq!(without_credentials(origin), told);
+        }
     }
 
     #[tokio::test]
@@ -578,7 +709,7 @@ mod tests {
         ensure_project_under(&sup, def.clone(), &root)
             .await
             .unwrap();
-        let clone = copy_root(&root, &def.project_id).join("app");
+        let clone = clone_of(&root, &def, 0);
         let other = origin_repo(td.path(), "other");
         let ws = &sup.workspace;
         const REFUSAL: &str = "This project belongs to MacBook. Change it there.";

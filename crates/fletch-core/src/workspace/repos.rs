@@ -468,13 +468,17 @@ impl WorkspaceManager {
     /// All repo paths attached to a project, in creation order (the first is
     /// the primary). Used at spawn to provision one checkout per project repo.
     /// A project's name, whose it is when it is a copy, and its repositories
-    /// (path and label) in the project's own order: what
+    /// (id, path and label) in the project's own order: what
     /// `commands::project_definition_impl` describes to another device.
     #[allow(clippy::type_complexity)]
     pub fn project_outline(
         &self,
         project_id: &str,
-    ) -> Result<(String, Option<ProjectHome>, Vec<(PathBuf, Option<String>)>)> {
+    ) -> Result<(
+        String,
+        Option<ProjectHome>,
+        Vec<(String, PathBuf, Option<String>)>,
+    )> {
         let conn = self.db.lock();
         let (name, home_device, home_name): (String, Option<String>, Option<String>) = conn
             .query_row(
@@ -484,11 +488,15 @@ impl WorkspaceManager {
             )
             .map_err(|_| Error::Other(format!("project not found: {project_id}")))?;
         let mut stmt = conn.prepare(
-            "SELECT path, label FROM repos WHERE project_id = ?1 ORDER BY created_at, rowid",
+            "SELECT id, path, label FROM repos WHERE project_id = ?1 ORDER BY created_at, rowid",
         )?;
         let repos = stmt
             .query_map([project_id], |row| {
-                Ok((PathBuf::from(row.get::<_, String>(0)?), row.get(1)?))
+                Ok((
+                    row.get(0)?,
+                    PathBuf::from(row.get::<_, String>(1)?),
+                    row.get(2)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let home = home_device.map(|device| ProjectHome {
@@ -512,16 +520,39 @@ impl WorkspaceManager {
             .ok()
     }
 
-    /// Record a copy of `def`, with the clones in `repos` (path, label, and
-    /// the repository's place in the home's order) as its repositories, in one
-    /// transaction. The project row is created on first sight and on every
-    /// later one brought up to the name the home has for it now; a project
-    /// this host owns is never touched.
-    pub fn record_copy(
+    /// The ids of the repositories recorded for `project_id`.
+    pub fn project_repo_ids(&self, project_id: &str) -> HashSet<String> {
+        let conn = self.db.lock();
+        let Ok(mut stmt) = conn.prepare("SELECT id FROM repos WHERE project_id = ?1") else {
+            return HashSet::new();
+        };
+        stmt.query_map([project_id], |row| row.get(0))
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Bring the copy of `def` in line with it, in one transaction. A
+    /// repository keeps the id it has on its home, which is what tells one
+    /// from another across calls.
+    ///
+    /// - The project row is created on first sight, and on every later one
+    ///   brought up to the name the home has for it now.
+    /// - Each of `cloned` (a repository's id and where its new clone is) is
+    ///   recorded; every repository already recorded takes the label the home
+    ///   has for it now.
+    /// - A recorded repository `def` no longer names is dropped, unless a
+    ///   workspace here (live or archived) has a checkout of it: dropping the
+    ///   row would take those checkouts' branches and PRs with it, so it
+    ///   stays until they are gone and a later call drops it.
+    ///
+    /// Answers with the clones of the repositories it dropped, for the caller
+    /// to remove. A project this host owns is never touched.
+    pub fn reconcile_copy(
         &self,
         def: &ProjectDefinition,
-        repos: &[(PathBuf, Option<String>, usize)],
-    ) -> Result<()> {
+        cloned: &[(String, PathBuf)],
+    ) -> Result<Vec<PathBuf>> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
         let now = now_millis();
@@ -538,22 +569,51 @@ impl WorkspaceManager {
                 def.home.name
             ],
         )?;
-        for (path, label, order) in repos {
-            tx.execute(
-                "INSERT INTO repos (id, project_id, path, label, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![
-                    uuid::Uuid::new_v4().to_string(),
-                    def.project_id,
-                    path.to_string_lossy(),
-                    label,
-                    // Keeps the home's order among rows written together.
-                    now + *order as i64
-                ],
+        for (order, repo) in def.repos.iter().enumerate() {
+            match cloned.iter().find(|(id, _)| *id == repo.id) {
+                Some((_, path)) => tx.execute(
+                    "INSERT INTO repos (id, project_id, path, label, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        repo.id,
+                        def.project_id,
+                        path.to_string_lossy(),
+                        repo.label,
+                        // Keeps the home's order among rows written together.
+                        now + order as i64
+                    ],
+                )?,
+                None => tx.execute(
+                    "UPDATE repos SET label = ?1 WHERE id = ?2 AND project_id = ?3",
+                    rusqlite::params![repo.label, repo.id, def.project_id],
+                )?,
+            };
+        }
+
+        let recorded: Vec<(String, String)> = {
+            let mut stmt = tx.prepare("SELECT id, path FROM repos WHERE project_id = ?1")?;
+            let rows = stmt
+                .query_map([&def.project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        let mut dropped = Vec::new();
+        for (id, path) in recorded {
+            if def.repos.iter().any(|r| r.id == id) {
+                continue;
+            }
+            let checkouts: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM worktrees WHERE repo_id = ?1",
+                [&id],
+                |row| row.get(0),
             )?;
+            if checkouts == 0 {
+                tx.execute("DELETE FROM repos WHERE id = ?1", [&id])?;
+                dropped.push(PathBuf::from(path));
+            }
         }
         tx.commit()?;
-        Ok(())
+        Ok(dropped)
     }
 
     /// Refuse a change to the structure of a project this host only runs: a

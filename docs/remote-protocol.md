@@ -1092,22 +1092,30 @@ ProjectDefinition {
   project_id: string            // the home's id, kept by every copy
   name: string
   home: { device: string, name: string }
-  repos: { dir: string, origin: string | null, label: string | null }[]
+  repos: { id: string, dir: string, origin: string | null, label: string | null }[]
 }
 ```
 
 `home.device` is the home's host id, the key a client that paired with it
 already holds, so a client can tell which of its hosts a project belongs to.
-`repos` is in the project's own order. `dir` is the repository's folder name,
-made distinct within the project (`app`, `app-2`) when two repositories share
-one, compared without regard to case.
+`repos` is in the project's own order. `id` is the repository's id on its
+home, kept by every copy: it is what tells one repository of a project from
+another when the home relabels or removes one. `dir` is its folder name.
+`origin` never carries credentials: an http(s) URL is sent without its
+userinfo and any other `scheme://` URL without its password, since the
+definition is readable with `observe` and the device that clones signs in with
+its own login.
 
-`ensure_project` on a device that already has the project, as its own or as a
-copy, clones nothing: it brings a copy's `name` up to date and clones any
-repository the home has added since. Otherwise each repository is cloned from
-its `origin` into the host's own state (`~/.fletch/projects/<project_id>/repos/<dir>`)
-with the host's GitHub login, and the project is recorded as a copy under the
-same `project_id`. A GitHub ssh `origin` is cloned over https with that login,
+`ensure_project` clones each repository the host does not have yet from its
+`origin` into the host's own state
+(`~/.fletch/projects/<project_id>/repos/<repo id>/<dir>`) with the host's
+GitHub login, and records the project as a copy under the same `project_id`.
+Called again for a copy, it brings the copy in line with the definition: the
+project's `name` and each repository's `label` follow the home, a repository
+the home has added is cloned, and one the home has removed is dropped with its
+clone, unless a workspace on the host (live or archived) still has a checkout
+of it, in which case it stays until those are gone and a later call drops it.
+A GitHub ssh `origin` is cloned over https with that login,
 since the home's ssh key is the home's. A repository with `origin: null`
 refuses the whole call before anything is cloned: a project runs with all of
 its repositories or not at all. For the same reason the clones are made in a

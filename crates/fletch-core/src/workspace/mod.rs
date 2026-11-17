@@ -496,10 +496,15 @@ pub struct ProjectDefinition {
 /// One repository of a [`ProjectDefinition`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoDefinition {
+    /// The repository's id on its home, kept by every copy: what tells one
+    /// repository of a project from another when the home renames, relabels
+    /// or removes one.
+    pub id: String,
     /// The folder name the repository has on its home, and gets in a copy.
     pub dir: String,
-    /// Its `origin` URL. `None` for a repository that has no remote, which no
-    /// other device can clone.
+    /// Its `origin` URL, without any credentials it carried on the home.
+    /// `None` for a repository that has no remote, which no other device can
+    /// clone.
     pub origin: Option<String>,
     pub label: Option<String>,
 }

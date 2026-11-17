@@ -217,9 +217,12 @@ export interface ProjectDefinition {
 }
 
 export interface RepoDefinition {
+  /** The repository's id on its home, kept by every copy. */
+  id: string;
   /** The repository's folder name. */
   dir: string;
-  /** Its `origin` URL; null for a repository no other device can clone. */
+  /** Its `origin` URL, without credentials; null for a repository no other
+   *  device can clone. */
   origin: string | null;
   label: string | null;
 }
