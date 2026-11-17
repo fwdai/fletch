@@ -139,11 +139,15 @@ type Get = () => AppState;
  *  failed through the client's own report — which a dial superseded by a newer
  *  attempt on the link (a pairing link naming this host) never makes, so the
  *  newer one's outcome is what shows. From then on the client keeps the link
- *  up on its own, retrying with backoff for as long as the host is paired. */
-async function dial(set: Set, get: Get, saved: SavedHost): Promise<void> {
+ *  up on its own, retrying with backoff for as long as the host is paired.
+ *
+ *  `force` dials it whatever it is doing: for a link a pairing has taken over
+ *  (store/pairing), whose client holds that pairing's address and code until
+ *  it is pointed back at the saved record. */
+export async function dial(set: Set, get: Get, saved: SavedHost, force = false): Promise<void> {
   const link = linkOf(saved.hostKey);
   const { state, retrying } = link.client;
-  if (!(state === "disconnected" || (state === "error" && !retrying))) return;
+  if (!force && !(state === "disconnected" || (state === "error" && !retrying))) return;
   const host = storeOfLink(link);
   watch(set, get, link);
   host.setState({ connectionError: null, dialStep: "connecting" });
@@ -243,7 +247,7 @@ export const appStore = createStore<AppState>()((set, get) => {
       if (!saved || (hostKey === get().hostKey && !get().addingHost)) return;
       // Leaving the Pair screen for it: a pairing still running would land on
       // screen over the host chosen here.
-      if (get().addingHost) callOffPairing(get);
+      if (get().addingHost) callOffPairing(set, get);
       set({
         hostKey,
         addingHost: false,
