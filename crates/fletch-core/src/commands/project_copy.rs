@@ -204,9 +204,10 @@ pub async fn prune_copy(workspace: &WorkspaceManager, project_id: &str) {
 }
 
 /// [`prune_copy`] with the projects root given and the caller holding
-/// [`ENSURING`]. A clone is of use only through the row that records it: the
-/// checkouts forked from it refer to that row, so one with no row has nothing
-/// left that borrows from it.
+/// [`ENSURING`]. A clone's row is kept for as long as anything borrows from
+/// the clone (`WorkspaceManager::reconcile_copy`), and deleting a project
+/// deletes its agents and workflow runs with it, so a clone with no row has
+/// nothing left that reads it.
 async fn prune_copy_under(workspace: &WorkspaceManager, projects_root: &Path, project_id: &str) {
     let root = copy_root(projects_root, project_id);
     let recorded = workspace.project_repo_paths(project_id);
@@ -729,6 +730,53 @@ mod tests {
             .unwrap();
         assert_eq!(copied(&ws, &def), [(clone_of(&root, &def, 0), None)]);
         assert!(!app_clone.exists());
+    }
+
+    /// A saved run's tree shares the git objects of the clone it was started
+    /// from, with no agent checkout left to say so.
+    #[tokio::test]
+    async fn a_removed_repository_a_saved_workflow_run_borrows_from_stays() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, root) = host(td.path());
+        let app = origin_repo(td.path(), "app");
+        let api = origin_repo(td.path(), "api");
+        let whole = definition(vec![repo("app", Some(&app)), repo("api", Some(&api))]);
+        ensure_project_under(&sup, whole.clone(), &root)
+            .await
+            .unwrap();
+        let api_clone = clone_of(&root, &whole, 1);
+        sup.workspace
+            .db()
+            .lock()
+            .execute(
+                "INSERT INTO wf_run (id,name,spec_json,task,project_id,repo_path,run_dir,branch,
+                    base_sha,status,budgets_json,spent_json,created_at,updated_at)
+                 VALUES ('r1','n','{}','t',?1,?2,'/d','wf/x','sha','done','{}','{}',0,0)",
+                [&whole.project_id, &api_clone.to_string_lossy().to_string()],
+            )
+            .unwrap();
+
+        let mut def = whole.clone();
+        def.repos.truncate(1);
+        ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+        assert!(api_clone.is_dir());
+        assert_eq!(
+            sup.workspace.project_repo_paths(&def.project_id),
+            [clone_of(&root, &def, 0), api_clone.clone()]
+        );
+
+        // The run is gone: so is what it borrowed from, on the next sync.
+        sup.workspace
+            .db()
+            .lock()
+            .execute("DELETE FROM wf_run WHERE id = 'r1'", [])
+            .unwrap();
+        ensure_project_under(&sup, def.clone(), &root)
+            .await
+            .unwrap();
+        assert!(!api_clone.exists());
     }
 
     #[tokio::test]

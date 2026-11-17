@@ -1115,9 +1115,9 @@ Called again for a copy, it brings the copy in line with the definition: the
 project's `name`, the order of its repositories (the first is its primary)
 and each repository's `label` follow the home, a repository
 the home has added is cloned, and one the home has removed leaves the copy
-under the rule the home itself is held to when detaching a repository: once no
-agent on the host, live or archived, has a checkout of it, and its clone is
-removed with it. Until then it stays a repository of the project on that host,
+once nothing on the host borrows from its clone: no agent, live or archived,
+has a checkout of it and no saved workflow run was started from it. Its clone
+is removed with it. Until then it stays a repository of the project on that host,
 after the ones the home names. Deleting the copy on the host (`delete_project`)
 removes its clones too. What is not
 followed: a repository

@@ -545,11 +545,11 @@ impl WorkspaceManager {
     ///   home's. A project's repositories are read in `created_at` order
     ///   everywhere, the first being its primary, so that is where the order
     ///   is kept: when each was cloned here says nothing about it.
-    /// - A recorded repository `def` no longer names leaves the project under
-    ///   the rule [`Self::detach_repo_from_project`] holds the home to: once
-    ///   no agent here has a checkout of it. Until then it is a repository of
-    ///   the project on this host like any other, so nothing that reads the
-    ///   project has a second kind of repository to know about.
+    /// - A recorded repository `def` no longer names leaves the project once
+    ///   nothing here borrows from its clone ([`Self::clone_in_use`]). Until
+    ///   then it is a repository of the project on this host like any other,
+    ///   so nothing that reads the project has a second kind of repository to
+    ///   know about.
     ///
     /// A project this host owns is never touched.
     pub fn reconcile_copy(
@@ -601,24 +601,27 @@ impl WorkspaceManager {
             };
         }
 
-        let recorded: Vec<(String, String)> = {
+        let recorded: Vec<(String, String, String)> = {
             let mut stmt = tx.prepare(
-                "SELECT id, home_id FROM repos WHERE project_id = ?1 AND home_id IS NOT NULL
+                "SELECT id, home_id, path FROM repos
+                 WHERE project_id = ?1 AND home_id IS NOT NULL
                  ORDER BY created_at, rowid",
             )?;
             let rows = stmt
-                .query_map([&def.project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .query_map([&def.project_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
                 .collect::<rusqlite::Result<_>>()?;
             rows
         };
-        // One the home dropped while an agent here still uses it comes after
+        // One the home dropped while something here still uses it comes after
         // every repository the home names, so it is never the primary.
         let mut after = first + def.repos.len() as i64;
-        for (repo_id, home_id) in recorded {
+        for (repo_id, home_id, path) in recorded {
             if def.repos.iter().any(|r| r.id == home_id) {
                 continue;
             }
-            if Self::has_checkouts(&tx, &repo_id)? {
+            if Self::clone_in_use(&tx, &repo_id, &path)? {
                 tx.execute(
                     "UPDATE repos SET created_at = ?1 WHERE id = ?2",
                     rusqlite::params![after, repo_id],
@@ -630,6 +633,24 @@ impl WorkspaceManager {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Whether anything on this host still borrows from the clone of the
+    /// copied repository `repo_id` at `path`: an agent's checkout, or a saved
+    /// workflow run, whose tree shares the clone's git objects and names it
+    /// by path. The clone is this host's to remove once its row is gone
+    /// (`commands::prune_copy`), so unlike a folder on the home, which is
+    /// never deleted, its row has to outlive every borrower.
+    fn clone_in_use(conn: &Connection, repo_id: &str, path: &str) -> Result<bool> {
+        if Self::has_checkouts(conn, repo_id)? {
+            return Ok(true);
+        }
+        let runs: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM wf_run WHERE repo_path = ?1",
+            [path],
+            |row| row.get(0),
+        )?;
+        Ok(runs > 0)
     }
 
     /// Whether any agent, live or archived, has a checkout of the repository
