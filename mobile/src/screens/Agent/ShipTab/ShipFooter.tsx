@@ -1,7 +1,7 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import type { ActionTone } from "@desktop/components/RightPanel/primaryActions";
-import { useHostNav } from "../../../host/useHost";
+import { useHostNav } from "../../../store";
 import { COMMIT_KEYS, MANUAL_KEY } from "./actions";
 import type { ShipView } from "./derive";
 import { useShipActions } from "./useShipActions";

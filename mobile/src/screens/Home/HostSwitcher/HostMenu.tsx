@@ -1,7 +1,6 @@
 import { Icon } from "@desktop/components/Icon";
-import { useHostNav } from "../../../host/useHost";
 import { ignore } from "../../../lib/ignore";
-import { useApp } from "../../../store";
+import { useApp, useHostNav } from "../../../store";
 import { HostRow } from "./HostRow";
 
 /** The dropdown under the host chip: every paired host, a tap away, then

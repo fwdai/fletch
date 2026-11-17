@@ -1,6 +1,5 @@
 import { Icon } from "@desktop/components/Icon";
-import { useHostNav } from "../../host/useHost";
-import { useHostName } from "../../store";
+import { useHostName, useHostNav } from "../../store";
 
 /** Home with a live host and nothing on it. The two ways a project gets here
  *  from the phone are the actions, each opening Add project on its own tab;

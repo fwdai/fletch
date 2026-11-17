@@ -1,10 +1,9 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { PrPill } from "../../components/ui";
-import { useHostNav } from "../../host/useHost";
 import { refLabel } from "../../lib/agents";
 import { STATUS_LETTER } from "../../lib/diff";
-import { useHostStore } from "../../store";
+import { useHostNav, useHostStore } from "../../store";
 import { ShipFooter } from "./ShipTab/ShipFooter";
 import { useShipView } from "./ShipTab/useShipView";
 import { testsEvidence, testsText } from "./ShipTab/verification";

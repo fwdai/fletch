@@ -1,10 +1,9 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { useEffect } from "react";
-import { useHostNav } from "../../host/useHost";
 import { useAgentAccount } from "../../lib/agentAccount";
 import { ignore } from "../../lib/ignore";
-import { useHostStore } from "../../store";
+import { useHostNav, useHostStore } from "../../store";
 
 /** The account the agent runs under, and the way into moving it onto another
  *  of its provider's: the account picker, which takes this sheet's place.

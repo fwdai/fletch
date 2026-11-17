@@ -1,11 +1,10 @@
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useMemo, useState } from "react";
 import { Nav } from "../../components/ui";
-import { useHostNav } from "../../host/useHost";
 import { branchOf, refLabel } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";
 import { buildTree, defaultOpen, flattenTree } from "../../lib/tree";
-import { agentOf, useApp, useHostStore } from "../../store";
+import { agentOf, useApp, useHostNav, useHostStore } from "../../store";
 
 /** Read-only checkout browser: `list_checkout_tree` folded into a tree, files
  *  open in the file viewer. No writes are exposed to the phone. Pushed from the

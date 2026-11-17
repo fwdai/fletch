@@ -20,12 +20,11 @@ import { agentTitle } from "@desktop/util/agentTitle";
 import { useMemo } from "react";
 import { type ChatItem, getAdapter } from "../../adapters";
 import { Nav } from "../../components/ui";
-import { useHostNav } from "../../host/useHost";
 import { isAgentBusy } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { joinThreadPath, splitThreadPath, tasksByToolUse, threadStatus } from "../../lib/thread";
 import { useStickyScroll } from "../../lib/useStickyScroll";
-import { agentOf, useApp, useHostStore } from "../../store";
+import { agentOf, useApp, useHostNav, useHostStore } from "../../store";
 import { LogPlaceholder } from "../Agent/LogState";
 import { Dots, Transcript, useVisibleItems } from "../Agent/Transcript";
 

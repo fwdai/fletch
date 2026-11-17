@@ -1,7 +1,7 @@
 import { Icon } from "@desktop/components/Icon";
-import { useHost, useHostNav } from "../../host/useHost";
+import { useHost } from "../../host/useHost";
 import { ignore } from "../../lib/ignore";
-import { useHostName, useHostStore } from "../../store";
+import { useHostName, useHostNav, useHostStore } from "../../store";
 import { STEP_LABELS, Working } from "../Pair/Progress";
 
 /** Home's whole body while there is no workspace to show: the link to the Mac

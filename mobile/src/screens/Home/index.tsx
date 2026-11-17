@@ -1,11 +1,10 @@
 import { Icon } from "@desktop/components/Icon";
 import { AgentRow } from "../../components/AgentRow";
 import { ProjectIcon } from "../../components/ui";
-import { useHostNav } from "../../host/useHost";
 import { useOrderedProjects } from "../../lib/activeProjects";
 import { agentsOfProject, baseOf, isActive, isBusy } from "../../lib/agents";
 import { type Project, repoLabel } from "../../lib/projects";
-import { useHostStore } from "../../store";
+import { useHostNav, useHostStore } from "../../store";
 import { AutoArchivedNotice } from "./AutoArchivedNotice";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { EmptyProjects } from "./EmptyProjects";

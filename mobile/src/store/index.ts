@@ -51,6 +51,7 @@ export {
   storeOfLink,
   useHostStore,
 } from "./host";
+export { useHostNav } from "./hostNav";
 
 export type ThemeMode = "system" | "light" | "dark";
 export type ScreenName =

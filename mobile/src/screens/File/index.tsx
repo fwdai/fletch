@@ -2,8 +2,8 @@ import type { CheckoutFileContents } from "@desktop/api/types/checkout";
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { CodeLine, Nav } from "../../components/ui";
-import { useHost, useHostNav } from "../../host/useHost";
-import { useApp, useHostStore } from "../../store";
+import { useHost } from "../../host/useHost";
+import { useApp, useHostNav, useHostStore } from "../../store";
 
 /** Read-only file viewer. `chg_add` / `chg_mod` are the 1-indexed lines the
  *  agent added / modified, which is what tints the gutter. */

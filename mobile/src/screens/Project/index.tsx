@@ -3,10 +3,9 @@ import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { AgentRow } from "../../components/AgentRow";
 import { Nav, ProjectIcon, Segmented } from "../../components/ui";
-import { useHostNav } from "../../host/useHost";
 import { type AgentStage, agentsOfProject, baseOf, stageOf } from "../../lib/agents";
 import { projectById, repoLabel } from "../../lib/projects";
-import { useApp, useHostStore } from "../../store";
+import { useApp, useHostNav, useHostStore } from "../../store";
 import { RoadmapPane } from "./Roadmap";
 
 /** Tab order, which is also the order the screen falls through when picking

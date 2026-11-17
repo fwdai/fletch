@@ -1,11 +1,10 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import type { FooterAction } from "@desktop/components/RightPanel/GitPanel/footerModel";
 import { useEffect, useState } from "react";
-import { useHostNav } from "../../../host/useHost";
 import { baseOf, isAgentBusy } from "../../../lib/agents";
 import { ignore } from "../../../lib/ignore";
 import { openExternal } from "../../../lib/links";
-import { useHostStore } from "../../../store";
+import { useHostNav, useHostStore } from "../../../store";
 import { type ShipFacts, shipOp } from "./actions";
 
 /** How long an armed merge waits for its second tap. */

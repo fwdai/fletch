@@ -4,13 +4,39 @@
 // one, ask what of its own is up, close or pop its own — is decided here by
 // that one name, and never touches what another host has open.
 
-import { appStore, type NavItem, type ScreenName, type SheetName, type SheetState } from "./index";
+import { useMemo } from "react";
+import { useHost } from "../host/useHost";
+import {
+  type AppState,
+  appStore,
+  type NavItem,
+  type ScreenName,
+  type SheetName,
+  type SheetState,
+  useApp,
+} from "./index";
 
 type Props = Record<string, string>;
 
 /** `props` naming `hostKey`'s host, for a screen or sheet opened on it: it acts
  *  on that host whichever is on screen by then. */
 export const withHost = (hostKey: string, props: Props = {}): Props => ({ ...props, hostKey });
+
+/** The app's `push` and `openSheet`, naming in what they open the host this
+ *  component acts on (`useHost`) — so the screen or sheet acts on that host
+ *  too, whichever is on screen by then. */
+export function useHostNav(): Pick<AppState, "push" | "openSheet"> {
+  const { hostKey } = useHost();
+  const push = useApp((s) => s.push);
+  const openSheet = useApp((s) => s.openSheet);
+  return useMemo(
+    () => ({
+      push: (screen, props) => push(screen, withHost(hostKey, props)),
+      openSheet: (name, props) => openSheet(name, withHost(hostKey, props)),
+    }),
+    [hostKey, push, openSheet],
+  );
+}
 
 /** Whether a screen on the stack, or the sheet, is `hostKey`'s. */
 const isOn = (hostKey: string | null, item: { props: Props } | null | undefined): boolean =>

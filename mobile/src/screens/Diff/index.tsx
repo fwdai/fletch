@@ -1,9 +1,9 @@
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useMemo, useState } from "react";
 import { CodeLine, Nav } from "../../components/ui";
-import { useHost, useHostNav } from "../../host/useHost";
+import { useHost } from "../../host/useHost";
 import { parseUnifiedDiff, STATUS_LETTER } from "../../lib/diff";
-import { useApp, useHostStore } from "../../store";
+import { useApp, useHostNav, useHostStore } from "../../store";
 
 /** One file's diff, with prev/next across the agent's changed files. */
 export function DiffScreen({ agentId, path }: { agentId: string; path: string }) {
