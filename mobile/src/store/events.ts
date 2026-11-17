@@ -43,13 +43,14 @@ import type {
 import type { VerificationReportEvent } from "@desktop/api/types/verify";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import { dischargeSending } from "@desktop/helpers/sending";
-import { stampPrWrite } from "@desktop/store/prWriteOrder";
+import type { PrWriteOrder } from "@desktop/store/prWriteOrder";
 import { getAdapter, type RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
-import { noteChatPatch, patchChatIn } from "./chats";
-import { agentOf, isAgentOpen, type MobileState } from "./index";
+import { type ChatLists, patchChatIn } from "./chats";
+import { agentOf, type HostState } from "./host";
+import { appStore, isAgentOpen } from "./index";
 import { isReplayed } from "./liveTurn";
 import {
   appendActivity,
@@ -58,19 +59,28 @@ import {
   prTransitionText,
 } from "./shipActivity";
 import { applyLiveEvent } from "./transcript";
-import { noteAgentChange, noteAgentPatch } from "./workspaceReads";
+import type { WorkspaceReads } from "./workspaceReads";
 
-type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
-type Get = () => MobileState;
+type Set = (partial: Partial<HostState> | ((s: HostState) => Partial<HostState>)) => void;
+type Get = () => HostState;
+
+/** The orders of the host the events come from that an event outranks: its
+ *  workspace reads and chat lists in flight, and its PR writes. */
+export interface EventOrders {
+  workspaceReads: WorkspaceReads;
+  chatLists: ChatLists;
+  prWrites: PrWriteOrder;
+}
 
 /** One record patched in the snapshot — and noted for any workspace read out
  *  right now, which the event outranks (store/workspaceReads). */
 const patchAgent = (
+  reads: WorkspaceReads,
   ws: Workspace,
   agentId: string,
   patch: Partial<Workspace["agents"][number]>,
 ): Workspace => {
-  noteAgentPatch(agentId, patch);
+  reads.noteAgentPatch(agentId, patch);
   return {
     ...ws,
     agents: ws.agents.map((a) => (a.id === agentId ? { ...a, ...patch } : a)),
@@ -82,11 +92,12 @@ const patchAgent = (
  *  read in flight replays against *its* list rather than the phone's, which
  *  may lack a repo the host has since added (store/workspaceReads). */
 const updateAgent = (
+  reads: WorkspaceReads,
   ws: Workspace,
   agentId: string,
   change: (record: AgentRecord) => AgentRecord,
 ): Workspace => {
-  noteAgentChange(agentId, change);
+  reads.noteAgentChange(agentId, change);
   return {
     ...ws,
     agents: ws.agents.map((a) => (a.id === agentId ? change(a) : a)),
@@ -97,10 +108,10 @@ const updateAgent = (
  *  tool_use id → request id so the approval card can answer it, and never feed
  *  it to the reducer. Null when `ev` is not a control request at all. */
 function foldControlRequest(
-  s: MobileState,
+  s: HostState,
   agentId: string,
   ev: RawEvent,
-): Partial<MobileState> | null {
+): Partial<HostState> | null {
   if (ev.type !== "control_request") return null;
   const request = ev.request as Record<string, unknown> | undefined;
   const requestId = ev.request_id;
@@ -120,10 +131,10 @@ function foldControlRequest(
  *  patch on `s`. Pure, so the live stream and a replayed turn (`read_live_turn`)
  *  go through the identical path and render the identical log. */
 export function foldAgentEvent(
-  s: MobileState,
+  s: HostState,
   agentId: string,
   raw: RawEvent,
-): Partial<MobileState> {
+): Partial<HostState> {
   const control = foldControlRequest(s, agentId, raw);
   if (control) return control;
   // Background sub-agent bookkeeping (`system` task events). The chat
@@ -134,7 +145,7 @@ export function foldAgentEvent(
   // A provider without those events (cursor) derives the same lifecycle from
   // its own tool events — same fold, and the event still reaches the chat
   // below as the tool call it is. Mirrors the desktop's eventListeners.
-  let next: MobileState = s;
+  let next: HostState = s;
   for (const task of getAdapter(provider).taskEvents?.(raw) ?? []) {
     next = { ...next, ...foldTaskEvent(next, agentId, task) };
   }
@@ -148,7 +159,12 @@ export function foldAgentEvent(
   };
 }
 
-export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): void {
+export function registerRemoteEvents(
+  client: RemoteClient,
+  set: Set,
+  get: Get,
+  { workspaceReads, chatLists, prWrites }: EventOrders,
+): void {
   const on = <T>(event: string, cb: (payload: T) => void) =>
     client.on(event, (payload) => cb(payload as T));
 
@@ -164,14 +180,15 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // agent whose screen is open: the transcript is the heaviest read on the
   // wire, every turn that ends on the Mac raises this whether or not the phone
   // is looking, and opening an agent re-reads its history anyway (`loadAgent`).
+  // Which screens are open is the app's.
   on<SessionRecordsAppendedEvent>("session:records-appended", (e) => {
-    if (!isAgentOpen(get(), e.agent_id)) return;
+    if (!isAgentOpen(appStore.getState(), e.agent_id)) return;
     void get().rebuildLog(e.agent_id).catch(ignore);
   });
 
   on<AgentStatusEvent>("agent:status", (e) => {
     // Noted for any chat list out right now, which this status outranks.
-    noteChatPatch(e.agent_id, { status: e.status, last_error: e.last_error ?? null });
+    chatLists.noteChatPatch(e.agent_id, { status: e.status, last_error: e.last_error ?? null });
     set((s) => {
       // Read before either registry changes: the discharge rule below needs
       // the status the agent is leaving.
@@ -183,7 +200,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
       }
       return {
         workspace: ws
-          ? patchAgent(ws, e.agent_id, {
+          ? patchAgent(workspaceReads, ws, e.agent_id, {
               status: e.status,
               last_error: e.last_error ?? undefined,
             })
@@ -229,13 +246,13 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     // The task is a chat's title, so it is patched in both registries too.
     get().patchChat(e.agent_id, { task: e.task });
     const ws = get().workspace;
-    if (ws) set({ workspace: patchAgent(ws, e.agent_id, { task: e.task }) });
+    if (ws) set({ workspace: patchAgent(workspaceReads, ws, e.agent_id, { task: e.task }) });
   });
 
   on<AgentTitleEvent>("agent:title", (e) => {
     get().patchChat(e.agent_id, { title: e.title });
     const ws = get().workspace;
-    if (ws) set({ workspace: patchAgent(ws, e.agent_id, { title: e.title }) });
+    if (ws) set({ workspace: patchAgent(workspaceReads, ws, e.agent_id, { title: e.title }) });
   });
 
   on<AgentModelEvent>("agent:model", (e) => {
@@ -243,20 +260,20 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     // has to be patched in its own registry too — the snapshot never holds it.
     get().patchChat(e.agent_id, { model: e.model });
     const ws = get().workspace;
-    if (ws) set({ workspace: patchAgent(ws, e.agent_id, { model: e.model }) });
+    if (ws) set({ workspace: patchAgent(workspaceReads, ws, e.agent_id, { model: e.model }) });
   });
 
   on<AgentEffortEvent>("agent:effort", (e) => {
     get().patchChat(e.agent_id, { effort: e.effort });
     const ws = get().workspace;
-    if (ws) set({ workspace: patchAgent(ws, e.agent_id, { effort: e.effort }) });
+    if (ws) set({ workspace: patchAgent(workspaceReads, ws, e.agent_id, { effort: e.effort }) });
   });
 
   on<AgentBranchEvent>("agent:branch", (e) => {
     const ws = get().workspace;
     if (!ws?.agents.some((a) => a.id === e.agent_id)) return;
     set({
-      workspace: updateAgent(ws, e.agent_id, (a) => ({
+      workspace: updateAgent(workspaceReads, ws, e.agent_id, (a) => ({
         ...a,
         repos: a.repos.map((r) => (r.subdir === e.subdir ? { ...r, branch: e.branch } : r)),
       })),
@@ -268,7 +285,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     const ws = get().workspace;
     if (!ws?.agents.some((a) => a.id === e.agent_id)) return;
     set({
-      workspace: updateAgent(ws, e.agent_id, (a) =>
+      workspace: updateAgent(workspaceReads, ws, e.agent_id, (a) =>
         a.repos.some((r) => r.repo_path === e.repo.repo_path)
           ? a
           : { ...a, repos: [...a.repos, e.repo] },
@@ -317,7 +334,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // saw earlier (@desktop/store/prWriteOrder).
   on<PrStateChangedEvent>("pr:state_changed", (e) => {
     if (e.subdir) return;
-    stampPrWrite("prStates", e.agent_id);
+    prWrites.stamp("prStates", e.agent_id);
     set((s) => {
       // The transition is read against the record being replaced, so the line
       // says what changed ("opened", "merged", "closed") and not merely that
@@ -335,7 +352,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // The host-side PR watcher's reads.
   on<PrChecksChangedEvent>("pr:checks_changed", (e) => {
     if (e.subdir) return;
-    stampPrWrite("prChecks", e.agent_id);
+    prWrites.stamp("prChecks", e.agent_id);
     set((s) => {
       const line = checksSettledText(s.prChecks[e.agent_id], e.checks);
       return {
@@ -347,7 +364,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   on<PrThreadsChangedEvent>("pr:threads_changed", (e) => {
     if (e.subdir) return;
-    stampPrWrite("prComments", e.agent_id);
+    prWrites.stamp("prComments", e.agent_id);
     set((s) => {
       const line = newThreadsText(e.comments, e.new_thread_ids);
       return {

@@ -11,10 +11,10 @@ import type { ProjectSettingsChangedEvent } from "@desktop/api/types/settings";
 import { upsertLatest } from "@desktop/components/RoadmapScreen/Roadmap/NeedsYou/select";
 import { applyRowEvent } from "@desktop/rowSync";
 import type { HostLink } from "../host";
-import type { MobileState } from "./index";
+import type { HostState } from "./host";
 
-type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
-type Get = () => MobileState;
+type Set = (partial: Partial<HostState> | ((s: HostState) => Partial<HostState>)) => void;
+type Get = () => HostState;
 
 export interface RoadmapBoard {
   /** Every row, in the host's order, rows that arrive live appended. */
@@ -42,8 +42,8 @@ export interface RoadmapSlice {
   applyProjectSetting(change: ProjectSettingsChangedEvent): void;
 }
 
-/** `link` is the link of the host the slice acts on, asked for at every call. */
-export function createRoadmapSlice(set: Set, get: Get, link: () => HostLink): RoadmapSlice {
+/** `link` is the link of the host the slice acts on. */
+export function createRoadmapSlice(set: Set, get: Get, link: HostLink): RoadmapSlice {
   /** Change one board that has been read, leaving every other at its reference. */
   const patch = (projectId: string, change: (board: RoadmapBoard) => Partial<RoadmapBoard>) =>
     set((s) => {
@@ -61,7 +61,7 @@ export function createRoadmapSlice(set: Set, get: Get, link: () => HostLink): Ro
 
     async loadBoard(projectId) {
       try {
-        const { api } = link();
+        const { api } = link;
         const [items, latest, settings] = await Promise.all([
           api.roadmapListItems(projectId),
           // Both only shade the Inbox's wording; neither is worth the lists.
@@ -78,7 +78,7 @@ export function createRoadmapSlice(set: Set, get: Get, link: () => HostLink): Ro
     async captureRoadmapItem(projectId, text) {
       // Folded in on the answer rather than on its `roadmap:item`, so the row
       // is in the Inbox by the time the field clears.
-      applyBoardRow(await link().api.roadmapCapture(projectId, text));
+      applyBoardRow(await link.api.roadmapCapture(projectId, text));
     },
 
     applyBoardRow,

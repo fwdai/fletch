@@ -10,7 +10,7 @@ import type { AgentManagedEvent } from "@desktop/api/types/agent";
 import type { LiveTurn, UserTurn } from "@desktop/api/types/session";
 import type { ChatItem, RawEvent } from "../adapters";
 import { foldAgentEvent } from "./events";
-import type { MobileState } from "./index";
+import type { HostState } from "./host";
 
 /** When the running turn began, for the live timer a missed `turn:started`
  *  would have anchored. */
@@ -41,12 +41,12 @@ export function isReplayed(liveSeq: Record<string, number>, e: AgentManagedEvent
  *  from the turn it hands back, so the replay is the whole set of prompts still
  *  held — anything this client remembered predates the frames it missed. */
 export function replayLiveTurn(
-  s: MobileState,
+  s: HostState,
   agentId: string,
   base: ChatItem[],
   live: LiveTurn,
   late: AgentManagedEvent[] = [],
-): Partial<MobileState> {
+): Partial<HostState> {
   const head: ChatItem[] =
     live.dropped > 0
       ? [
@@ -58,7 +58,7 @@ export function replayLiveTurn(
           },
         ]
       : base;
-  let next: MobileState = {
+  let next: HostState = {
     ...s,
     logs: { ...s.logs, [agentId]: head },
     pendingToolUse: { ...s.pendingToolUse, [agentId]: {} },

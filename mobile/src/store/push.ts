@@ -16,7 +16,7 @@ import {
   registerPush,
   requestPushPermission,
 } from "../remote/push";
-import type { AgentTab, MobileState } from "./index";
+import type { AgentTab, AppState } from "./index";
 import { loadSettings, saveSettings } from "./persist";
 
 /** Push `kind`s about the agent's PR (docs/remote-protocol.md, "Push
@@ -37,7 +37,7 @@ export const pushTab = (kind: string | undefined): AgentTab | undefined =>
 export interface PushDeps {
   /** The link of the host the app is live on, asked for at every call. */
   link: () => HostLink;
-  get: () => MobileState;
+  get: () => AppState;
 }
 
 /** Set by `startPush`, and left null when there is no plugin to talk to — which

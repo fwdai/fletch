@@ -5,17 +5,17 @@
 
 import { applyTaskEvent, type BackgroundTaskMap } from "@desktop/adapters/shared/backgroundTasks";
 import type { RawEvent } from "../adapters";
-import type { MobileState } from "./index";
+import type { HostState } from "./host";
 
 const EMPTY: BackgroundTaskMap = {};
 
 /** The state patch for one task event; empty when the event changed nothing. */
 export function foldTaskEvent(
-  s: MobileState,
+  s: HostState,
   agentId: string,
   ev: RawEvent,
   now = Date.now(),
-): Partial<MobileState> {
+): Partial<HostState> {
   const prev = s.backgroundTasks[agentId] ?? EMPTY;
   const next = applyTaskEvent(prev, ev, now);
   if (next === prev) return {};
@@ -23,7 +23,7 @@ export function foldTaskEvent(
 }
 
 /** Forget an agent's tasks: its process is gone (stopped, errored, deleted). */
-export function dropTasks(s: MobileState, agentId: string): Partial<MobileState> {
+export function dropTasks(s: HostState, agentId: string): Partial<HostState> {
   if (!s.backgroundTasks[agentId]) return {};
   const { [agentId]: _, ...rest } = s.backgroundTasks;
   return { backgroundTasks: rest };

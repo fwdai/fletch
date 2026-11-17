@@ -14,10 +14,11 @@ import type { Api } from "../api";
 import type { HostLink } from "../host";
 import { primaryPath, projectById } from "../lib/projects";
 import { dropTasks } from "./backgroundTasks";
-import { agentOf, type MobileState } from "./index";
+import { agentOf, type HostState } from "./host";
+import { appStore } from "./index";
 
-type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
-type Get = () => MobileState;
+type Set = (partial: Partial<HostState> | ((s: HostState) => Partial<HostState>)) => void;
+type Get = () => HostState;
 
 export interface PlanningChatInput {
   projectId: string;
@@ -53,8 +54,13 @@ export interface ChatsSlice {
 /** What the slice borrows from the store it composes into, so it can be a
  *  module of its own without importing the store back. */
 export interface ChatsDeps {
-  /** The link of the host the slice acts on, asked for at every call. */
-  link(): HostLink;
+  /** The link of the host the slice acts on. */
+  link: HostLink;
+  /** That host's chat lists in flight (`createChatLists`). */
+  lists: ChatLists;
+  /** That host's sends still on the wire (see `whileSending` in
+   *  helpers/sending), which a fresh list must not settle. */
+  sends: ReadonlySet<string>;
   /** Record a failure where the error UI can see it, then rethrow. */
   guard<T>(fn: () => Promise<T>): Promise<T>;
   /** The optimistic-turn → wait-for-spawn → first-message path a spawn takes,
@@ -107,19 +113,6 @@ async function projectManager(api: Api) {
   };
 }
 
-/** Per project, the order of its chat lists: a handshake, a workspace change
- *  and a return to the foreground can each start one, and only the newest
- *  lands (util/newestWins). */
-const chatLists = new Map<string, ReturnType<typeof newestWins>>();
-const claimChatList = (projectId: string) => {
-  let order = chatLists.get(projectId);
-  if (!order) {
-    order = newestWins();
-    chatLists.set(projectId, order);
-  }
-  return order.claim();
-};
-
 /** One change made to the registry while a list was out, as a replay over the
  *  list's answer for `projectId`: a patch to a row the answer holds, a record
  *  added that the answer lacks, or a record removed that the answer still
@@ -127,73 +120,109 @@ const claimChatList = (projectId: string) => {
  *  project's chats is older than that project's own list may be by now. */
 type Replay = (projectId: string, list: AgentRecord[]) => AgentRecord[];
 
-/** The lists out right now, each with every change made to the registry since
- *  it was sent. A list is answered off the host's records as they were when it
- *  was read, and an `agent:status`, a chat resolved by id or a delete can reach
- *  the phone first; they are replayed over the answer, as `approvals_list`
- *  replays its events, so a chat that finished while its list was out stays
- *  finished, one found meanwhile stays, and one deleted stays gone. */
-const listsInFlight = new Set<Replay[]>();
-
-function noteChatChange(replay: Replay): void {
-  for (const replays of listsInFlight) replays.push(replay);
+/** One list in flight. */
+export interface ChatList {
+  /** False once a later list of the same project was started. */
+  current(): boolean;
+  /** The answer with every change made to the registry meanwhile replayed. */
+  apply(list: AgentRecord[]): AgentRecord[];
+  finish(): void;
 }
 
-/** Record a live patch to a chat for every list in flight. Called wherever a
- *  chat record is patched from an event — the slice's `patchChat`, and the
- *  status fold that patches inline for atomicity. */
-export function noteChatPatch(agentId: string, fields: Partial<AgentRecord>): void {
-  noteChatChange((_, list) =>
-    list.some((c) => c.id === agentId)
-      ? list.map((c) => (c.id === agentId ? { ...c, ...fields } : c))
-      : list,
-  );
+/** One host's chat lists: the order of each project's, and the changes made
+ *  to the registry while any is out. A list is answered off the host's records
+ *  as they were when it was read, and an `agent:status`, a chat resolved by id
+ *  or a delete can reach the phone first; they are replayed over the answer,
+ *  as `approvals_list` replays its events, so a chat that finished while its
+ *  list was out stays finished, one found meanwhile stays, and one deleted
+ *  stays gone. One per host store: agent ids recur across hosts. */
+export interface ChatLists {
+  /** Start a list of `projectId`'s chats: its claim on that project's order —
+   *  a handshake, a workspace change and a return to the foreground can each
+   *  start one, and only the newest lands (util/newestWins) — and the changes
+   *  it will replay. The caller `finish`es it however the list ends. */
+  begin(projectId: string): ChatList;
+  /** Record a live patch to a chat for every list in flight. Called wherever a
+   *  chat record is patched from an event — the slice's `patchChat`, and the
+   *  status fold that patches inline for atomicity. */
+  noteChatPatch(agentId: string, fields: Partial<AgentRecord>): void;
+  /** Record a chat put into the registry outside a list (a spawn, a record
+   *  resolved by id), so a list read before it existed does not drop it. */
+  noteChatAdded(record: AgentRecord): void;
+  /** Record a chat taken out of the registry, so a list read before the delete
+   *  does not bring it back. */
+  noteChatRemoved(agentId: string): void;
 }
 
-/** Record a chat put into the registry outside a list (a spawn, a record
- *  resolved by id), so a list read before it existed does not drop it. */
-export function noteChatAdded(record: AgentRecord): void {
-  noteChatChange((projectId, list) =>
-    projectId === record.project_id && !list.some((c) => c.id === record.id)
-      ? [record, ...list]
-      : list,
-  );
-}
-
-/** Record a chat taken out of the registry, so a list read before the delete
- *  does not bring it back. */
-export function noteChatRemoved(agentId: string): void {
-  noteChatChange((_, list) => list.filter((c) => c.id !== agentId));
+export function createChatLists(): ChatLists {
+  const orders = new Map<string, ReturnType<typeof newestWins>>();
+  const inFlight = new Set<Replay[]>();
+  const note = (replay: Replay) => {
+    for (const replays of inFlight) replays.push(replay);
+  };
+  return {
+    begin(projectId) {
+      let order = orders.get(projectId);
+      if (!order) {
+        order = newestWins();
+        orders.set(projectId, order);
+      }
+      const claim = order.claim();
+      const replays: Replay[] = [];
+      inFlight.add(replays);
+      return {
+        current: () => claim.current(),
+        apply: (list) => replays.reduce((acc, replay) => replay(projectId, acc), list),
+        finish: () => {
+          inFlight.delete(replays);
+        },
+      };
+    },
+    noteChatPatch(agentId, fields) {
+      note((_, list) =>
+        list.some((c) => c.id === agentId)
+          ? list.map((c) => (c.id === agentId ? { ...c, ...fields } : c))
+          : list,
+      );
+    },
+    noteChatAdded(record) {
+      note((projectId, list) =>
+        projectId === record.project_id && !list.some((c) => c.id === record.id)
+          ? [record, ...list]
+          : list,
+      );
+    },
+    noteChatRemoved(agentId) {
+      note((_, list) => list.filter((c) => c.id !== agentId));
+    },
+  };
 }
 
 export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlice {
-  const { link, guard, firstTurn } = deps;
+  const { link, lists, sends, guard, firstTurn } = deps;
   return {
     chats: {},
 
     async loadChats(projectId) {
       // Nothing to ask an older host, and asking would answer "unknown op".
       if (!get().hostSupports("list_project_chats")) return;
-      const claim = claimChatList(projectId);
-      const overtaken: Replay[] = [];
-      listsInFlight.add(overtaken);
+      const read = lists.begin(projectId);
       try {
-        const rows = await link().api.listProjectChats(projectId, ROADMAP_PM_PURPOSE);
-        if (!claim.current()) return;
+        const rows = await link.api.listProjectChats(projectId, ROADMAP_PM_PURPOSE);
+        if (!read.current()) return;
         // A fresh read of these records settles their `sending` bridge the way
         // a workspace snapshot settles a sidebar agent's (see helpers/sending):
         // chats are absent from that snapshot, so this is their only authority.
-        let list = rows;
-        for (const replay of overtaken) list = replay(projectId, list);
+        const list = read.apply(rows);
         set((s) => ({
           chats: { ...s.chats, [projectId]: list },
-          sending: reconcileSending(s.sending, list),
+          sending: reconcileSending(s.sending, list, sends),
         }));
       } catch {
         // Advisory, like the other list reads: the section stays as it was and
         // the next mount or reconnect tries again.
       } finally {
-        listsInFlight.delete(overtaken);
+        read.finish();
       }
     },
 
@@ -202,15 +231,15 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         const project = projectById(get().workspace, projectId);
         if (!project) throw new Error("that project is not on the host");
         const repoPath = primaryPath(project);
-        const pm = await projectManager(link().api);
-        const { api } = link();
+        const { api } = link;
+        const pm = await projectManager(api);
         const [name, forkBase] = await Promise.all([
           // The chat was never a sidebar draft, but the spawn op still wants a
           // name, so one is drawn here exactly as `spawn` draws it.
           api.allocateDraftName([]),
           api.repoDefaultBranch(repoPath).catch(() => "main"),
         ]);
-        const record = await link().api.spawnAgent(
+        const record = await api.spawnAgent(
           repoPath,
           pm.provider,
           name,
@@ -227,7 +256,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         );
         // Registered before the screen opens: `agentOf` resolves from here, and
         // the agent screen mounts on the very next frame.
-        noteChatAdded(record);
+        lists.noteChatAdded(record);
         set((s) => ({ chats: upsert(s.chats, record) }));
         await firstTurn({
           record,
@@ -243,14 +272,14 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
       if (agentOf(get(), agentId)) return;
       if (!get().hostSupports("get_agent")) return;
       try {
-        const record = await link().api.getAgent(agentId);
+        const record = await link.api.getAgent(agentId);
         if (!record) return;
         // A purpose tag is exactly what keeps a record out of the snapshot, so
         // it is this registry's to hold. An untagged record is a sidebar agent
         // that was spawned after the snapshot was read — the workspace is what
         // has to catch up there, not this list.
         if (record.purpose) {
-          noteChatAdded(record);
+          lists.noteChatAdded(record);
           set((s) => ({ chats: upsert(s.chats, record) }));
         } else {
           await get().refreshWorkspace();
@@ -269,7 +298,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         // still-mounted chat would refetch the history of an agent that is
         // being deleted under it.
         if (chat) {
-          noteChatRemoved(agentId);
+          lists.noteChatRemoved(agentId);
           set((s) => ({
             chats: {
               ...s.chats,
@@ -278,13 +307,13 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
             ...dropTasks(s, agentId),
           }));
         }
-        get().closeSheet();
-        const top = get()
-          .nav.filter((i) => i.phase !== "leave")
-          .at(-1);
-        if (top?.screen === "agent" && top.props.agentId === agentId) get().pop();
+        // The sheet and the screen are the app's.
+        const app = appStore.getState();
+        app.closeSheet();
+        const top = app.nav.filter((i) => i.phase !== "leave").at(-1);
+        if (top?.screen === "agent" && top.props.agentId === agentId) app.pop();
         try {
-          await link().api.discardAgent(agentId);
+          await link.api.discardAgent(agentId);
         } catch (e) {
           // The removal was wrong — put the host's truth back on screen.
           if (chat) await get().loadChats(chat.project_id);
@@ -294,7 +323,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
     },
 
     patchChat(agentId, fields) {
-      noteChatPatch(agentId, fields);
+      lists.noteChatPatch(agentId, fields);
       set((s) => {
         const chats = patchChatIn(s.chats, agentId, fields);
         return chats === s.chats ? {} : { chats };

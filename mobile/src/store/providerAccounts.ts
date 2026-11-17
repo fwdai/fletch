@@ -26,13 +26,13 @@ import {
   withLimitsChange,
 } from "@desktop/data/providerLimits";
 import type { HostLink } from "../host";
-import { noteChatPatch, patchChatIn } from "./chats";
-import type { MobileState } from "./index";
+import { type ChatLists, patchChatIn } from "./chats";
+import type { HostState } from "./host";
 import type { LogLoad } from "./transcript";
-import { noteAgentPatch } from "./workspaceReads";
+import type { WorkspaceReads } from "./workspaceReads";
 
-type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
-type Get = () => MobileState;
+type Set = (partial: Partial<HostState> | ((s: HostState) => Partial<HostState>)) => void;
+type Get = () => HostState;
 
 /** `settings` key prefix naming the active account per provider. Mirrors
  *  `ACTIVE_SETTING_PREFIX` in the engine's `agent::accounts`; the value is a
@@ -79,8 +79,11 @@ export interface ProviderAccountsSlice {
 }
 
 export interface ProviderAccountsDeps {
-  /** The link of the host the slice acts on, asked for at every call. */
-  link(): HostLink;
+  /** The link of the host the slice acts on. */
+  link: HostLink;
+  /** That host's reads in flight, which a switch's restamp outranks. */
+  chatLists: ChatLists;
+  workspaceReads: WorkspaceReads;
 }
 
 /** `accounts` grouped by provider, in the order the host listed them. */
@@ -119,7 +122,7 @@ export function withActiveAccount(
 
 /** Whether the host can both list an agent's accounts and move it between
  *  them: the per-agent switch needs the list to offer anything at all. */
-export function canSwitchAgentAccount(s: Pick<MobileState, "hostSupports">): boolean {
+export function canSwitchAgentAccount(s: Pick<HostState, "hostSupports">): boolean {
   return s.hostSupports("switch_agent_account") && s.hostSupports("list_provider_accounts");
 }
 
@@ -128,7 +131,7 @@ export function createProviderAccountsSlice(
   get: Get,
   deps: ProviderAccountsDeps,
 ): ProviderAccountsSlice {
-  const { link } = deps;
+  const { link, chatLists, workspaceReads } = deps;
 
   // The read in flight, and the writes the host announced while it was out.
   // A list is probed on the host (a Keychain check per account), so an event
@@ -158,12 +161,12 @@ export function createProviderAccountsSlice(
       const seq = ++loadSeq;
       set({ providerAccountsLoad: { status: "loading" } });
       try {
-        const accounts = groupByProvider(await link().api.listProviderAccounts());
+        const accounts = groupByProvider(await link.api.listProviderAccounts());
         const providers = Object.keys(accounts);
         // A limits read that fails fails the whole read: an empty map would
         // show every account as never read, which is a claim, not a failure.
         const rows: Record<string, AccountLimits>[] = await Promise.all(
-          providers.map((p) => link().api.getProviderLimits(p)),
+          providers.map((p) => link.api.getProviderLimits(p)),
         );
         if (seq !== loadSeq) return;
         const limits: LimitsByProvider = {};
@@ -192,7 +195,7 @@ export function createProviderAccountsSlice(
     },
 
     async setActiveProviderAccount(provider, id) {
-      await link().api.setActiveProviderAccount(provider, id);
+      await link.api.setActiveProviderAccount(provider, id);
       // The host announces the key it wrote, but an event only reaches the
       // devices connected when it fired; the re-list is the sure answer.
       await get().loadProviderAccounts();
@@ -204,7 +207,7 @@ export function createProviderAccountsSlice(
       refreshes.set(key, [...(refreshes.get(key) ?? []), flight]);
       let row: AccountLimits;
       try {
-        row = await link().api.refreshProviderLimits(provider, account);
+        row = await link.api.refreshProviderLimits(provider, account);
       } finally {
         const rest = (refreshes.get(key) ?? []).filter((f) => f !== flight);
         if (rest.length > 0) refreshes.set(key, rest);
@@ -252,14 +255,14 @@ export function createProviderAccountsSlice(
         set((s) => ({ switchingAccount: { ...s.switchingAccount, [agentId]: on } }));
       switching(true);
       try {
-        const record = await link().api.switchAgentAccount(agentId, account);
+        const record = await link.api.switchAgentAccount(agentId, account);
         // Only the stamp, as on the desktop: the host relaunches the agent, and
         // an `agent:status` that landed before this answer is newer than the
         // record's. No optimistic stamp either, so a refusal never leaves the
         // row naming an account the agent isn't on.
         const fields = { account: record.account ?? null };
-        noteChatPatch(agentId, fields);
-        noteAgentPatch(agentId, fields);
+        chatLists.noteChatPatch(agentId, fields);
+        workspaceReads.noteAgentPatch(agentId, fields);
         set((s) => ({
           workspace: s.workspace && {
             ...s.workspace,
