@@ -860,6 +860,18 @@ button.kv {
 .chip .sep {
   color: var(--fg-3);
 }
+/* Which host something happens on (`HostPicker`): a label, then the hosts. */
+.host-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 12px;
+}
+.host-pick .lbl {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
 .eff {
   display: flex;
   gap: 4px;
