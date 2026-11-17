@@ -13,7 +13,7 @@ import {
 } from "@desktop/components/Workspace/AccountPicker/choices";
 import { foldTerminalLogin, listedAccountId } from "@desktop/data/providerAccounts";
 import { supportsAccounts } from "@desktop/data/providerDetail";
-import { useStore } from "../store";
+import { useHostStore } from "../store";
 import { canSwitchAgentAccount } from "../store/providerAccounts";
 import { isAgentBusy } from "./agents";
 
@@ -34,12 +34,12 @@ export interface AgentAccountView {
 /** Null where there is no account to show at all: a provider without
  *  accounts, or a host that can't both list and switch them. */
 export function useAgentAccount(agent: AgentRecord | undefined): AgentAccountView | null {
-  const supported = useStore(canSwitchAgentAccount);
-  const listedByHost = useStore((s) =>
+  const supported = useHostStore(canSwitchAgentAccount);
+  const listedByHost = useHostStore((s) =>
     agent ? (s.providerAccounts[agent.provider] ?? NO_ACCOUNTS) : NO_ACCOUNTS,
   );
-  const busy = useStore((s) => !!agent && isAgentBusy(s, agent));
-  const switching = useStore((s) => !!agent && s.switchingAccount[agent.id] === true);
+  const busy = useHostStore((s) => !!agent && isAgentBusy(s, agent));
+  const switching = useHostStore((s) => !!agent && s.switchingAccount[agent.id] === true);
   if (!agent || !supported || !supportsAccounts(agent.provider)) return null;
   // No stamp is the CLI's own login, as the host reads it: the radio restamps
   // every agent when it moves, so an unstamped agent is on the default.

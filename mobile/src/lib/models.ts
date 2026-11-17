@@ -8,12 +8,20 @@
 //
 // models.dev is a phone-side fetch, so a device with no WAN keeps the small
 // static list below as a stand-in.
+//
+// Every paired host has a catalog of its own: half of one is that host's
+// installed CLIs, and with every host connected at once a picker on one must
+// neither show another's lists nor throw away another's catalog to build its
+// own. Each is the desktop's catalog cache (@desktop/data/modelCatalog) — its
+// expiry, its storage and its in-flight rebuild — under a key of the host's.
 
-import { loadCachedCatalog, refreshCatalog } from "@desktop/data/modelCatalog";
+import { CATALOG_CACHE_KEY, loadCachedCatalog, refreshCatalog } from "@desktop/data/modelCatalog";
 import type { ModelMeta } from "@desktop/data/modelCatalog/types";
 import { PROVIDERS } from "@desktop/data/providers";
-import { useEffect, useState } from "react";
-import { api, useStore } from "../store";
+import { useEffect, useMemo, useState } from "react";
+import type { KeyedLink } from "../host";
+import { useHost } from "../host/useHost";
+import { useHostStore } from "../store";
 
 /** A provider's selectable models, keyed by agent id — the catalog's `byAgent`
  *  view, which is all the pickers need. */
@@ -40,74 +48,60 @@ export const STATIC_MODELS: ModelsByAgent = {
   codex: [{ id: "gpt-5-codex", name: "GPT-5 Codex", contextWindow: 0, reasoning: true }],
 };
 
-// Last catalog this run, so a picker mounted later starts from the freshest
-// value rather than re-reading (and re-parsing) the localStorage cache.
-let current: ModelsByAgent = loadCachedCatalog().byAgent;
+/** Where `hostKey`'s catalog is cached. */
+const cacheKeyOf = (hostKey: string) => `${CATALOG_CACHE_KEY}:${hostKey}`;
 
-// Which host the cached catalog was built from. Half of it is that host's
-// installed CLIs, so a phone re-paired to another Mac must not go on offering
-// the previous one's lists — a mismatch rebuilds instead of waiting out the
-// TTL. Persisted beside the catalog: holding it in memory only would force a
-// full rebuild (and its multi-megabyte models.dev fetch) on every launch.
-const HOST_KEY = "modelCatalog.host";
+// Where earlier builds kept the phone's catalogs: all of them under one key,
+// or (the bare desktop key) whichever host built last. Nothing reads them now.
+try {
+  for (const key of ["modelCatalog.host", "modelCatalog.byHost", CATALOG_CACHE_KEY]) {
+    localStorage.removeItem(key);
+  }
+} catch {
+  // Storage unavailable — there is nothing to clear either.
+}
 
-function builtForHost(): string | null {
+/** `hostKey`'s catalog as last built, or nothing yet. */
+export const modelsOf = (hostKey: string): ModelsByAgent =>
+  loadCachedCatalog(cacheKeyOf(hostKey)).byAgent;
+
+/** The catalog for `link`'s host: its own, rebuilt when it has none or it has
+ *  aged out — one rebuild at a time per host, shared by every picker on it.
+ *  Null when the rebuild failed and the caller should keep what it has. */
+export async function loadModels({ hostKey, api }: KeyedLink): Promise<ModelsByAgent | null> {
+  const catalog = await refreshCatalog(api.discoverSupportedModels, false, cacheKeyOf(hostKey));
+  return catalog?.byAgent ?? null;
+}
+
+/** Forget `hostKey`'s catalog: the host has been unpaired. */
+export function forgetModels(hostKey: string): void {
   try {
-    return localStorage.getItem(HOST_KEY);
+    localStorage.removeItem(cacheKeyOf(hostKey));
   } catch {
-    return null;
+    // Storage unavailable — nothing was kept.
   }
 }
 
-function rememberHost(hostKey: string | null): void {
-  try {
-    if (hostKey) localStorage.setItem(HOST_KEY, hostKey);
-    else localStorage.removeItem(HOST_KEY);
-  } catch {
-    // Storage unavailable — the catalog just rebuilds again next launch.
-  }
-}
-
-// Refreshes run one at a time. `refreshCatalog` dedupes by a single global
-// in-flight promise, with no notion of who asked: a host swapped mid-rebuild
-// would be handed the *previous* host's result and stamp it as its own. Queuing
-// means each host's rebuild starts only once the last one has settled and that
-// dedupe has cleared.
-let queue: Promise<unknown> = Promise.resolve();
-
-/** The catalog for `hostKey`, rebuilt when the cache belongs to another host or
- *  has aged out, else served from it. Null when the rebuild failed and the
- *  caller should keep what it has. */
-export function loadModels(hostKey: string | null): Promise<ModelsByAgent | null> {
-  const run = queue.then(async () => {
-    const catalog = await refreshCatalog(api.discoverSupportedModels, builtForHost() !== hostKey);
-    if (!catalog) return null;
-    rememberHost(hostKey);
-    current = catalog.byAgent;
-    return current;
-  });
-  // A failed refresh must not wedge the queue for every later one.
-  queue = run.catch(() => null);
-  return run;
-}
-
-/** The catalog's per-agent model lists, refreshed when the connection comes up
- *  (discovery is a host round-trip) and whenever the paired host changes. */
+/** The per-agent model lists of the host this component acts on, refreshed
+ *  when its connection comes up (discovery is a host round-trip). */
 export function useModels(): ModelsByAgent {
-  const connection = useStore((s) => s.connection);
-  const hostKey = useStore((s) => s.hostKey);
-  const [models, setModels] = useState<ModelsByAgent>(current);
+  const connection = useHostStore((s) => s.connection);
+  const link = useHost();
+  // Bumped when a load lands. The lists themselves are read by host, so a
+  // picker never shows another host's.
+  const [landed, bump] = useState(0);
   useEffect(() => {
     if (connection !== "connected") return;
     let live = true;
-    void loadModels(hostKey).then((byAgent) => {
-      if (live && byAgent) setModels(byAgent);
+    void loadModels(link).then((byAgent) => {
+      if (live && byAgent) bump((n) => n + 1);
     });
     return () => {
       live = false;
     };
-  }, [connection, hostKey]);
-  return models;
+  }, [connection, link]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `landed` is the re-read trigger: a load has stored a newer catalog.
+  return useMemo(() => modelsOf(link.hostKey), [link.hostKey, landed]);
 }
 
 /** A provider's rows for a picker: the default first, then its models. An empty

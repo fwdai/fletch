@@ -11,24 +11,28 @@
 // signing in are the operator's, on the host — so all it does is say so.
 
 import { useEffect, useState } from "react";
+import type { Api } from "../api";
+import { useHost } from "../host/useHost";
 import type { HostProvider } from "../remote";
-import { api, useStore } from "../store";
+import { useHostStore } from "../store";
 
-/** The host's provider rows while `active`, or null when the host has not been
- *  asked, cannot be asked, or did not answer. Re-read whenever `active` goes
- *  true, so a sign-in done on the host between two openings of the sheet shows
- *  up on the second. */
+/** The provider rows of the host this component acts on while `active`, or
+ *  null when that host has not been asked, cannot be asked, or did not answer.
+ *  Re-read whenever `active` goes true, so a sign-in done on the host between
+ *  two openings of the sheet shows up on the second. Rows another host gave
+ *  are never answered for this one. */
 export function useHostProviders(active: boolean): HostProvider[] | null {
-  const supported = useStore((s) => s.hostSupports("host_providers"));
-  const [rows, setRows] = useState<HostProvider[] | null>(null);
+  const supported = useHostStore((s) => s.hostSupports("host_providers"));
+  const { api } = useHost();
+  const [read, setRead] = useState<{ api: Api; rows: HostProvider[] } | null>(null);
 
   useEffect(() => {
     if (!active || !supported) return;
     let live = true;
     void api
       .hostProviders()
-      .then((next) => {
-        if (live) setRows(next);
+      .then((rows) => {
+        if (live) setRead({ api, rows });
       })
       .catch(() => {
         // Advisory, like the branch list beside it: the picker stays as it was.
@@ -36,9 +40,9 @@ export function useHostProviders(active: boolean): HostProvider[] | null {
     return () => {
       live = false;
     };
-  }, [active, supported]);
+  }, [api, active, supported]);
 
-  return supported ? rows : null;
+  return supported && read?.api === api ? read.rows : null;
 }
 
 /** Why `providerId` cannot be spawned on the host, in the few words a chip can

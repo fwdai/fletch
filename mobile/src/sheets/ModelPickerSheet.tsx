@@ -2,7 +2,7 @@ import { PickerSheet } from "../components/ui";
 import { providerLabel } from "../lib/agents";
 import { ignore } from "../lib/ignore";
 import { contextLabel, modelsFor, useModels } from "../lib/models";
-import { agentOf, useStore } from "../store";
+import { agentOf, useHostStore } from "../store";
 
 export function ModelPickerSheet({
   open,
@@ -13,8 +13,8 @@ export function ModelPickerSheet({
   onClose: () => void;
   agentId?: string;
 }) {
-  const agent = useStore((s) => (agentId ? agentOf(s, agentId) : undefined));
-  const setModel = useStore((s) => s.setModel);
+  const agent = useHostStore((s) => (agentId ? agentOf(s, agentId) : undefined));
+  const setModel = useHostStore((s) => s.setModel);
   const models = useModels();
   if (!agent) return null;
   const list = modelsFor(models, agent.provider);

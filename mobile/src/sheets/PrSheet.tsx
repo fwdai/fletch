@@ -2,7 +2,7 @@ import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { Sheet } from "../components/ui";
 import { baseOf, branchOf } from "../lib/agents";
-import { agentOf, useStore } from "../store";
+import { agentOf, useHostStore } from "../store";
 
 type Stage = "form" | "run" | "done" | "error";
 
@@ -19,11 +19,11 @@ export function PrSheet({
   onClose: () => void;
   agentId?: string;
 }) {
-  const agent = useStore((s) => (agentId ? agentOf(s, agentId) : undefined));
-  const git = useStore((s) => (agentId ? s.gitStates[agentId] : undefined));
-  const pr = useStore((s) => (agentId ? (s.prStates[agentId] ?? null) : null));
-  const publish = useStore((s) => s.publish);
-  const pushToPr = useStore((s) => s.pushToPr);
+  const agent = useHostStore((s) => (agentId ? agentOf(s, agentId) : undefined));
+  const git = useHostStore((s) => (agentId ? s.gitStates[agentId] : undefined));
+  const pr = useHostStore((s) => (agentId ? (s.prStates[agentId] ?? null) : null));
+  const publish = useHostStore((s) => s.publish);
+  const pushToPr = useHostStore((s) => s.pushToPr);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [stage, setStage] = useState<Stage>("form");

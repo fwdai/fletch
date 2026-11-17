@@ -3,7 +3,12 @@
 // thin `call(op, args)` with the desktop's own argument keys — no arg is
 // renamed or reshaped anywhere in mobile.
 
-import type { AgentRecord, ProjectIconData, Workspace } from "@desktop/api/types/agent";
+import type {
+  AgentRecord,
+  ProjectDefinition,
+  ProjectIconData,
+  Workspace,
+} from "@desktop/api/types/agent";
 import type {
   CheckoutFile,
   CheckoutFileContents,
@@ -274,6 +279,18 @@ export function createApi(client: RemoteClient) {
      *  that sends a hash answers this op. */
     projectIconGet: (projectId: string) =>
       read<ProjectIconData | null>("project_icon_get", { projectId }),
+    /** The project as another device needs it to run one of its workspaces
+     *  (docs/remote-protocol.md, "Projects on another device"). Asked of a
+     *  host that has the project. Gated on `hostSupports("project_definition")`. */
+    projectDefinition: (projectId: string) =>
+      read<ProjectDefinition>("project_definition", { projectId }),
+    /** Make sure this host can run workspaces of `definition`'s project: a no-op
+     *  for one it has, else its repositories are cloned from their remotes and
+     *  recorded as a copy. Resolves to the host's workspace, the copy among its
+     *  projects under the same `project_id`. A write: a clone takes as long as
+     *  it takes. Gated on `hostSupports("ensure_project")`. */
+    ensureProject: (definition: ProjectDefinition) =>
+      call<Workspace>("ensure_project", { definition }),
 
     /** A project's whole roadmap. The phone reads it for the PM's `proposed`
      *  ghosts, which a planning chat draws as decision cards, and for the

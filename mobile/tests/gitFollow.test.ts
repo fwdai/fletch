@@ -3,7 +3,11 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gitFollowMs, useGitFollow } from "../src/screens/Agent/useGitFollow";
-import { useStore } from "../src/store";
+import { hostStoreOf } from "../src/store";
+import { onHost } from "./support";
+
+const HOST = "follow-host";
+const store = hostStoreOf(HOST);
 
 describe("gitFollowMs", () => {
   it("reads briskly behind Changes and Ship, slowly behind the chat", () => {
@@ -25,12 +29,13 @@ describe("useGitFollow", () => {
     useGitFollow("a", pane);
     return null;
   };
-  const render = (pane: string) => act(async () => root.render(createElement(Probe, { pane })));
+  const render = (pane: string) =>
+    act(async () => root.render(onHost(HOST, createElement(Probe, { pane }))));
 
   beforeEach(() => {
     vi.useFakeTimers();
     loadGitState.mockClear();
-    useStore.setState({
+    store.setState({
       loadGitState,
       connection: "connected",
       workspace: { projects: [], agents: [agent()] } as unknown as Workspace,
@@ -60,11 +65,11 @@ describe("useGitFollow", () => {
   });
 
   it("reads nothing while disconnected or for a planning chat", async () => {
-    useStore.setState({ connection: "connecting" });
+    store.setState({ connection: "connecting" });
     await render("changes");
     vi.advanceTimersByTime(30_000);
 
-    useStore.setState({
+    store.setState({
       connection: "connected",
       workspace: { projects: [], agents: [agent({ purpose: "pm" })] } as unknown as Workspace,
     });

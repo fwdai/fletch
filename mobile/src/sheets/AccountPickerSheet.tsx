@@ -3,9 +3,11 @@ import { spentWindow } from "@desktop/data/providerLimits";
 import { useEffect, useState } from "react";
 import { PickerSheet } from "../components/ui";
 import { Notice } from "../components/ui/Notice";
+import { useHost } from "../host/useHost";
 import { useAgentAccount } from "../lib/agentAccount";
 import { providerLabel } from "../lib/agents";
-import { agentOf, useStore } from "../store";
+import { agentOf, useHostStore } from "../store";
+import { sheetOf } from "../store/hostNav";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -26,11 +28,12 @@ export function AccountPickerSheet({
   onClose: () => void;
   agentId?: string;
 }) {
-  const agent = useStore((s) => (agentId ? agentOf(s, agentId) : undefined));
+  const agent = useHostStore((s) => (agentId ? agentOf(s, agentId) : undefined));
   const view = useAgentAccount(agent);
-  const limits = useStore((s) => (agent ? s.providerLimits[agent.provider] : undefined));
-  const load = useStore((s) => s.loadProviderAccounts);
-  const switchAccount = useStore((s) => s.switchAgentAccount);
+  const limits = useHostStore((s) => (agent ? s.providerLimits[agent.provider] : undefined));
+  const load = useHostStore((s) => s.loadProviderAccounts);
+  const switchAccount = useHostStore((s) => s.switchAgentAccount);
+  const { hostKey } = useHost();
   const [error, setError] = useState<string | null>(null);
   const enabled = view !== null;
 
@@ -71,13 +74,10 @@ export function AccountPickerSheet({
     setError(null);
     const forAgent = agent.id;
     // The host's answer can land after this sheet was dismissed and opened
-    // again for another agent — the one component serves every picker — so
-    // only the picker the pick was made from closes or shows the refusal.
-    // The store finishes the switch either way.
-    const stillAsking = () => {
-      const sheet = useStore.getState().sheet;
-      return !!sheet?.open && sheet.name === "accountPicker" && sheet.props.agentId === forAgent;
-    };
+    // again for another agent — the one component serves every picker, on
+    // every host — so only the picker the pick was made from closes or shows
+    // the refusal. The store finishes the switch either way.
+    const stillAsking = () => sheetOf(hostKey, "accountPicker")?.props.agentId === forAgent;
     switchAccount(forAgent, id)
       .then((record) => {
         if (record && stillAsking()) onClose();

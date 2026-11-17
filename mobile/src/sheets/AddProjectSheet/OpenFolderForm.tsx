@@ -1,4 +1,4 @@
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 import { FolderPicker } from "./FolderPicker";
 import type { RunAddProject } from "./useAddProject";
 
@@ -14,7 +14,7 @@ export function OpenFolderForm({
   setError: (e: string | null) => void;
   run: RunAddProject;
 }) {
-  const addWorkspaceRepo = useStore((s) => s.addWorkspaceRepo);
+  const addWorkspaceRepo = useHostStore((s) => s.addWorkspaceRepo);
   return (
     <FolderPicker
       actionLabel="Use this folder"

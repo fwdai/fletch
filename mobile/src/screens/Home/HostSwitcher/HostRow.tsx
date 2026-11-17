@@ -1,38 +1,39 @@
 import { Icon } from "@desktop/components/Icon";
-import { CONNECTION_TEXT, connectionDot } from "../../../lib/connection";
-import type { ConnectionState } from "../../../remote";
+import { useStore } from "zustand";
+import { CONNECTION_TEXT, connectionLook, isInactive } from "../../../lib/connection";
+import { hostStoreOf } from "../../../store";
 import type { SavedHost } from "../../../store/persist";
 
-/** One paired host in the switcher. `connection` is set for the active host
- *  only — the one link there is — and drives its dot and status line; the
- *  others show a hollow dot, since nothing is known about them until they are
- *  switched to. */
+/** One paired host in the host list, with its own connection, each host being
+ *  connected on a link of its own; one out of reach is greyed. `checked` makes it a choice — the host on
+ *  screen carrying the check — and leaving it out an action. */
 export function HostRow({
   host,
-  connection,
+  checked,
   onSelect,
 }: {
   host: SavedHost;
-  connection: ConnectionState | null;
+  checked?: boolean;
   onSelect: () => void;
 }) {
-  const active = connection !== null;
+  const connection = useStore(hostStoreOf(host.hostKey), (s) => s.connection);
+  const retrying = useStore(hostStoreOf(host.hostKey), (s) => s.retrying);
   return (
     <button
       type="button"
-      className="row"
-      role="menuitemradio"
-      aria-checked={active}
+      className={isInactive(connection, retrying) ? "row inactive" : "row"}
+      role={checked === undefined ? "menuitem" : "menuitemradio"}
+      aria-checked={checked}
       onClick={onSelect}
     >
       <span className="hm-mark">
-        <span className={`dot ${active ? connectionDot(connection) : "idle"}`} />
+        <span className={`dot ${connectionLook(connection, retrying).dot}`} />
       </span>
       <div className="main">
         <div className="lbl">{host.name}</div>
-        {active && <div className="sub">{CONNECTION_TEXT[connection]}</div>}
+        <div className="sub">{CONNECTION_TEXT[connection]}</div>
       </div>
-      {active && <Icon name="check" size={18} strokeWidth={2} className="check-ic" />}
+      {checked && <Icon name="check" size={18} strokeWidth={2} className="check-ic" />}
     </button>
   );
 }

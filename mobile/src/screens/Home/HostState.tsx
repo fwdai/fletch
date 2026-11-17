@@ -1,28 +1,30 @@
 import { Icon } from "@desktop/components/Icon";
+import { useHost } from "../../host/useHost";
 import { ignore } from "../../lib/ignore";
-import { activeHostName, client, useStore } from "../../store";
+import { useHostName, useHostNav, useHostStore } from "../../store";
 import { STEP_LABELS, Working } from "../Pair/Progress";
 
-/** Home's whole body while there is no workspace to show: the link to the Mac
- *  is down, coming up, or up with the snapshot still on its way. There is
- *  nothing to add and no agent to start until it is, so nothing here offers
- *  to — the screen says what the connection is doing and what, if anything,
- *  the user can do about it.
+/** Home's whole body while no paired host has anything to show, said of the
+ *  host on screen: the link to the Mac is down, coming up, or up with the
+ *  snapshot still on its way. There is nothing to add and no agent to start
+ *  until it is, so nothing here offers to — the screen says what the
+ *  connection is doing and what, if anything, the user can do about it.
  *
  *  The one case that needs care is `error`: the client retries most failures
  *  on its own (a dropped socket, the Mac asleep), and those read as
  *  "reconnecting"; the few it cannot clear (this device unpaired, remote
  *  access switched off, a changed host key) are stated as they are and point
- *  at the Host sheet, where the fix lives. Another paired Mac is always a tap
- *  away in the header's host switcher. */
+ *  at the Host sheet, where the fix lives. Every paired Mac is a tap away in
+ *  the header's host list. */
 export function HostState() {
-  const connection = useStore((s) => s.connection);
-  const error = useStore((s) => s.connectionError);
-  const retrying = useStore((s) => s.retrying);
-  const step = useStore((s) => s.pairStep);
-  const hostName = useStore(activeHostName);
-  const reconnect = useStore((s) => s.reconnect);
-  const openSheet = useStore((s) => s.openSheet);
+  const connection = useHostStore((s) => s.connection);
+  const error = useHostStore((s) => s.connectionError);
+  const retrying = useHostStore((s) => s.retrying);
+  const step = useHostStore((s) => s.dialStep);
+  const hostName = useHostName();
+  const reconnect = useHostStore((s) => s.reconnect);
+  const { openSheet } = useHostNav();
+  const { client } = useHost();
   const host = hostName ?? client.target?.name ?? "your Mac";
 
   const tryNow = () => void reconnect().catch(ignore);
@@ -46,7 +48,7 @@ export function HostState() {
     title = connection === "pairing" ? `Pairing with ${host}` : `Connecting to ${host}`;
     body = <Working>{step ? STEP_LABELS[step] : "This usually takes a moment…"}</Working>;
   } else if (connection === "error" && retrying) {
-    dot = "waiting";
+    dot = "stopped";
     title = `Can't reach ${host}`;
     body = (
       <>

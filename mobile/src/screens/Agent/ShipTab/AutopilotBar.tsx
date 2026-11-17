@@ -1,16 +1,16 @@
 import { useMemo, useState } from "react";
 import { Toggle } from "../../../components/ui";
 import { ignore } from "../../../lib/ignore";
-import { useStore } from "../../../store";
+import { useHostStore } from "../../../store";
 import { agentCheckouts } from "../../../store/autopilot";
 import { describeAutopilot } from "./autopilot";
 
 /** Under the strip: what the host's autopilot is doing for this agent, and the
  *  switch that pauses it. Renders nothing on a host without autopilot. */
 export function AutopilotBar({ agentId }: { agentId: string }) {
-  const autopilot = useStore((s) => s.autopilot);
-  const canSet = useStore((s) => s.hostSupports("autopilot_set"));
-  const setAgentAutopilot = useStore((s) => s.setAgentAutopilot);
+  const autopilot = useHostStore((s) => s.autopilot);
+  const canSet = useHostStore((s) => s.hostSupports("autopilot_set"));
+  const setAgentAutopilot = useHostStore((s) => s.setAgentAutopilot);
   // One flip at a time: the switch settles on the host's answer, not the tap.
   const [pending, setPending] = useState(false);
   const view = useMemo(

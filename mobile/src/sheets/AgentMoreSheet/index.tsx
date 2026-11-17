@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Sheet } from "../../components/ui";
 import { isBusy } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";
-import { agentOf, useStore } from "../../store";
+import { agentOf, useHostStore } from "../../store";
 import { AccountRow } from "./AccountRow";
 
 /** Stop, the provider account the agent runs under, and then archive or
@@ -24,11 +24,11 @@ export function AgentMoreSheet({
   onClose: () => void;
   agentId?: string;
 }) {
-  const agent = useStore((s) => (agentId ? agentOf(s, agentId) : undefined));
-  const stop = useStore((s) => s.stop);
-  const archive = useStore((s) => s.archive);
-  const deleteChat = useStore((s) => s.deleteChat);
-  const canDiscard = useStore((s) => s.hostSupports("discard_agent"));
+  const agent = useHostStore((s) => (agentId ? agentOf(s, agentId) : undefined));
+  const stop = useHostStore((s) => s.stop);
+  const archive = useHostStore((s) => s.archive);
+  const deleteChat = useHostStore((s) => s.deleteChat);
+  const canDiscard = useHostStore((s) => s.hostSupports("discard_agent"));
   // A delete cannot be undone, so the row arms on the first tap and only
   // deletes on the second. It holds the agent it was armed for — the sheet is
   // never unmounted, so an arming must not carry to the next agent — and

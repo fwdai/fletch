@@ -189,6 +189,7 @@ describe("Sidebar", () => {
     const chip = rowTitled("Theirs").querySelector(".host-chip");
     expect(chip?.textContent).toBe("Studio");
     expect(chip?.getAttribute("data-tip")).toBe("Runs on Studio · offline");
-    expect(chip?.querySelector(".env-dot")?.getAttribute("data-state")).toBe("error");
+    expect(chip?.classList).toContain("inactive");
+    expect(chip?.querySelector(".env-dot")?.getAttribute("data-state")).toBe("inactive");
   });
 });

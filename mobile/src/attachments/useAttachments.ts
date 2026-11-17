@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ERROR_TTL_MS } from "../dictation/useDictation";
-import { api } from "../store";
+import { useHost } from "../host/useHost";
 import { prepareFile } from "./prepare";
 import { UploadAborted, uploadAttachment } from "./upload";
 
@@ -22,6 +22,7 @@ const newId = () =>
  *  `uploading` holds the send until every chip has one. A failed upload drops
  *  its chip and reports in `error`, which clears on its own like dictation's. */
 export function useAttachments() {
+  const { api } = useHost();
   const [items, setItems] = useState<StagedAttachment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const errorTimer = useRef<number | null>(null);
@@ -83,7 +84,7 @@ export function useAttachments() {
         })();
       }
     },
-    [fail],
+    [api, fail],
   );
 
   const remove = useCallback((id: string) => {
@@ -99,6 +100,15 @@ export function useAttachments() {
     inFlight.current.clear();
     setItems([]);
   }, []);
+
+  // A staged path is a file on the host that took it, so a composer that moves
+  // to another host (a sheet picking a project there) starts with none.
+  const stagedOn = useRef(api);
+  useEffect(() => {
+    if (stagedOn.current === api) return;
+    stagedOn.current = api;
+    clear();
+  }, [api, clear]);
 
   return {
     items,

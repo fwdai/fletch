@@ -7,6 +7,7 @@
 import { DEFAULT_PORT } from "@desktop/remote/types";
 import { inTauri } from "@desktop/remote/ws";
 import { BaseDirectory, exists, mkdir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import type { PushPermission } from "../remote/push";
 
 const FILE = "settings.json";
 const DIR = "fletch";
@@ -43,7 +44,7 @@ export interface Persisted {
   /** Host public key → what iOS answered when we asked for notification
    *  permission for it. Keyed by host because the prompt belongs to a pairing,
    *  and remembered so no host is ever asked twice. */
-  pushPermission?: Record<string, "granted" | "denied" | "prompt">;
+  pushPermission?: Record<string, PushPermission>;
   theme?: "system" | "light" | "dark";
   /** Float projects with recent agent activity to the top of Home. Absent
    *  means on — the desktop sidebar's default. */
@@ -199,6 +200,14 @@ export async function forgetHost(hostKey: string): Promise<SavedHost[]> {
 export async function loadDestParent(hostKey: string | null): Promise<string | null> {
   if (!hostKey) return null;
   return (await readAll()).destParents?.[hostKey] ?? null;
+}
+
+/** Record what iOS answered when asked to notify for `hostKey`'s host. */
+export async function savePushPermission(hostKey: string, answer: PushPermission): Promise<void> {
+  await mutate((current) => ({
+    ...current,
+    pushPermission: { ...current.pushPermission, [hostKey]: answer },
+  }));
 }
 
 export async function saveDestParent(hostKey: string | null, parent: string): Promise<void> {

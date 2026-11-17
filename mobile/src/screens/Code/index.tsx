@@ -4,18 +4,18 @@ import { Nav } from "../../components/ui";
 import { branchOf, refLabel } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";
 import { buildTree, defaultOpen, flattenTree } from "../../lib/tree";
-import { agentOf, useStore } from "../../store";
+import { agentOf, useApp, useHostNav, useHostStore } from "../../store";
 
 /** Read-only checkout browser: `list_checkout_tree` folded into a tree, files
  *  open in the file viewer. No writes are exposed to the phone. Pushed from the
  *  Changes tab's "Browse all files" row. */
 export function CodeScreen({ agentId }: { agentId: string }) {
-  const agent = useStore((s) => agentOf(s, agentId));
-  const git = useStore((s) => s.gitStates[agentId]);
-  const files = useStore((s) => s.trees[agentId]);
-  const loadTree = useStore((s) => s.loadTree);
-  const push = useStore((s) => s.push);
-  const pop = useStore((s) => s.pop);
+  const agent = useHostStore((s) => agentOf(s, agentId));
+  const git = useHostStore((s) => s.gitStates[agentId]);
+  const files = useHostStore((s) => s.trees[agentId]);
+  const loadTree = useHostStore((s) => s.loadTree);
+  const { push } = useHostNav();
+  const pop = useApp((s) => s.pop);
   const [open, setOpen] = useState<Set<string> | null>(null);
 
   useEffect(() => {

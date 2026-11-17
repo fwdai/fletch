@@ -5,7 +5,7 @@
 import { inTauri } from "@desktop/remote/ws";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { parsePairUrl } from "./remote";
-import { useStore } from "./store";
+import { appStore } from "./store";
 
 /** Pair from the first `fletch://pair` link in `urls`, ignoring anything else
  *  the app may have been opened with. */
@@ -13,7 +13,7 @@ function handle(urls: string[]): void {
   for (const url of urls) {
     const target = parsePairUrl(url);
     if (target) {
-      useStore.getState().pairFromLink(target);
+      appStore.getState().pairFromLink(target);
       return;
     }
   }

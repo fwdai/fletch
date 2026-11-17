@@ -41,9 +41,10 @@ const DEVICE: DeviceInfo = {
   appVersion: "0.1.0",
 };
 
-export function createClient(mock = mockEnabled()): RemoteClient {
-  return new ProtocolClient({
-    openSocket: mock ? mockSocket({ speed: mockSpeed() }) : openWebSocket,
-    device: DEVICE,
-  });
+/** What builds the app's clients. The transport is chosen here, once — the mock
+ *  host at the pace the URL asks for, or the network — so every client it
+ *  builds talks to the same kind of host. */
+export function clientFactory(): () => RemoteClient {
+  const openSocket = mockEnabled() ? mockSocket({ speed: mockSpeed() }) : openWebSocket;
+  return () => new ProtocolClient({ openSocket, device: DEVICE });
 }

@@ -1,19 +1,27 @@
 import { Icon } from "@desktop/components/Icon";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAttachments } from "../../attachments";
 import { PromptField } from "../../components/PromptField";
 import { PickerSheet, ProjectIcon, ProviderMark, Sheet } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
+import { useHost } from "../../host/useHost";
 import { modelLabel, providerLabel } from "../../lib/agents";
 import { hostProviderBlock, useHostProviders } from "../../lib/hostProviders";
 import { ignore } from "../../lib/ignore";
 import { modelsFor, useModels } from "../../lib/models";
-import { primaryPath, projectsOf } from "../../lib/projects";
-import { api, useStore } from "../../store";
+import { primaryPath } from "../../lib/projects";
+import { severalHosts, useApp, useHostName, useHostStore } from "../../store";
+import { ProjectPickerSheet } from "../ProjectPickerSheet";
+import { useProjectChoice } from "../useProjectChoice";
 import { RunnerSheet } from "./RunnerSheet";
+import { RunsOn } from "./RunsOn";
 
 type Picker = "project" | "branch" | "runner" | null;
 
+/** Start an agent in a project of any paired host, on the host the sheet acts
+ *  on (`useProjectChoice`): the picked project's speaking host, or the one
+ *  picked under "Runs on". The name, branches, providers and models are that
+ *  host's, and the agent is spawned there. */
 export function NewAgentSheet({
   open,
   onClose,
@@ -23,20 +31,21 @@ export function NewAgentSheet({
   onClose: () => void;
   projectId?: string;
 }) {
-  // Derived from the snapshot, not selected: `projectsOf` is stable per
-  // snapshot, so neither the render nor the reset effect below loops.
-  const workspace = useStore((s) => s.workspace);
-  const projects = projectsOf(workspace);
-  const spawn = useStore((s) => s.spawn);
-  const lastError = useStore((s) => s.lastError);
-  const clearError = useStore((s) => s.clearError);
+  const choice = useProjectChoice("newAgent", open, projectId);
+  const { entries, entry, project } = choice;
+  const spawn = useHostStore((s) => s.spawn);
+  const lastError = useApp((s) => s.lastError);
+  const clearError = useApp((s) => s.clearError);
+  const { api } = useHost();
+  // Which Mac the agent starts on, said once more than one is paired.
+  const hostName = useHostName();
+  const onHost = useApp(severalHosts) && hostName ? hostName : "the host";
   const models = useModels();
   // Which agents the Mac can actually start, re-read each time the sheet
   // opens. Null until it answers (or forever, on a host too old for the op),
   // and null blocks nothing.
   const hostProviders = useHostProviders(open);
 
-  const [pid, setPid] = useState(projectId ?? projects[0]?.id ?? "");
   const [prompt, setPrompt] = useState("");
   const [provider, setProvider] = useState("claude");
   const [model, setModel] = useState("");
@@ -53,24 +62,31 @@ export function NewAgentSheet({
   const [dictating, setDictating] = useState(false);
   const attachments = useAttachments();
 
-  const project = projects.find((p) => p.id === pid) ?? projects[0];
-  // The phone spawns in the project's primary repo (single-repo for now).
+  // The phone spawns in the project's primary repo (single-repo for now), as
+  // the host the sheet acts on has it.
   const repoPath = project ? primaryPath(project) : null;
 
-  const allocate = useCallback(async (taken: string[]) => {
-    const next = await api.allocateDraftName(taken).catch(() => "");
-    if (next) setName(next);
-  }, []);
+  // A name is drawn by the host it is for: one that lands after the sheet has
+  // moved to another host is not offered there.
+  const acting = useRef(api);
+  acting.current = api;
+  const allocate = useCallback(
+    async (taken: string[]) => {
+      const next = await api.allocateDraftName(taken).catch(() => "");
+      if (next && acting.current === api) setName(next);
+    },
+    [api],
+  );
 
-  const firstProjectId = projects[0]?.id;
+  // On opening, and on moving to another host: a name and a base branch are
+  // the host's, so neither carries over.
   useEffect(() => {
     if (!open) return;
-    setPid(projectId ?? firstProjectId ?? "");
     setBase(null);
     setStarting(false);
     clearError();
     void allocate([]);
-  }, [open, projectId, firstProjectId, allocate, clearError]);
+  }, [open, allocate, clearError]);
 
   useEffect(() => {
     if (!open || !repoPath) return;
@@ -86,7 +102,7 @@ export function NewAgentSheet({
     return () => {
       live = false;
     };
-  }, [open, repoPath]);
+  }, [api, open, repoPath]);
 
   if (!project || !repoPath) {
     return (
@@ -106,9 +122,15 @@ export function NewAgentSheet({
   // The chosen agent is one the host cannot start: hold the button rather than
   // let the spawn reach the host and fail there. The selection is left alone —
   // switching it for the user would start a different agent than the one they
-  // picked.
+  // picked. A copy of the project still being made for another host holds it
+  // too: the agent is to start there, not here.
   const providerBlocked = hostProviderBlock(hostProviders, provider);
-  const held = starting || dictating || attachments.uploading || providerBlocked !== null;
+  const held =
+    starting ||
+    dictating ||
+    attachments.uploading ||
+    providerBlocked !== null ||
+    choice.preparing !== null;
   const start = () => {
     if (!hasDraft || held) return;
     setStarting(true);
@@ -179,12 +201,13 @@ export function NewAgentSheet({
           do?
         </h1>
         <p className="na-sub">
-          A worktree and branch are created on the host from{" "}
+          A worktree and branch are created on {onHost} from{" "}
           <button type="button" className="mono lnk" onClick={() => setPicker("branch")}>
             {chosenBase}
           </button>
           .
         </p>
+        <RunsOn choice={choice} />
         <PromptField
           value={prompt}
           onChange={setPrompt}
@@ -223,19 +246,13 @@ export function NewAgentSheet({
           </button>
         </div>
       </Sheet>
-      <PickerSheet
+      <ProjectPickerSheet
         open={picker === "project"}
         onClose={() => setPicker(null)}
-        title="Project"
-        items={projects.map((p) => ({
-          id: p.id,
-          label: p.name,
-          sub: primaryPath(p),
-          icon: <ProjectIcon project={p} />,
-        }))}
-        value={pid}
-        onChange={(id) => {
-          setPid(id);
+        entries={entries}
+        value={entry}
+        onPick={(picked) => {
+          choice.pick(picked);
           setBase(null);
         }}
       />

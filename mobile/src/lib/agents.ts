@@ -58,16 +58,29 @@ export const refLabel = (git: GitState | undefined | null) =>
 
 export const baseOf = (a: AgentRecord) => primaryRepo(a)?.parent_branch ?? "main";
 
-/** A project's live agents, newest first. The host hands the snapshot back in
- *  `created_at` order, so the list has to be reversed here or the most recent
- *  agent lands at the bottom — same ordering the desktop sidebar applies.
- *  Agents spawned in the same millisecond (a workflow's fan-out) break the tie
- *  on id, so the order is total rather than left to the sort's discretion —
- *  the tie-break `deriveStepChildren` already uses. */
-export const agentsOfProject = (ws: Workspace | null, projectId: string) =>
-  (ws?.agents ?? [])
-    .filter((a) => a.project_id === projectId && !a.archive)
-    .sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
+/** Newest first. The host hands the snapshot back in `created_at` order, so a
+ *  list has to be reversed or the most recent agent lands at the bottom — same
+ *  ordering the desktop sidebar applies. Agents spawned in the same millisecond
+ *  (a workflow's fan-out) break the tie on id, so the order is total rather
+ *  than left to the sort's discretion — the tie-break `deriveStepChildren`
+ *  already uses. */
+export const newestFirst = (a: AgentRecord, b: AgentRecord) =>
+  b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id);
+
+/** A project's live agents, newest first. */
+export const agentsOfProject = (ws: Workspace | null | undefined, projectId: string) =>
+  (ws?.agents ?? []).filter((a) => a.project_id === projectId && !a.archive).sort(newestFirst);
+
+/** An agent and the host that runs it. Agent ids recur across hosts, so a list
+ *  of several hosts' agents carries the host with each. */
+export interface HostAgent {
+  hostKey: string;
+  agent: AgentRecord;
+}
+
+/** What tells one host's agent from another's of the same id: a React key, or
+ *  the key of anything kept per agent across hosts. */
+export const hostAgentKey = ({ hostKey, agent }: HostAgent) => `${hostKey}:${agent.id}`;
 
 export const providerLabel = (id: string) => PROVIDERS.find((p) => p.id === id)?.label ?? id;
 

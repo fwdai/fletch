@@ -4,7 +4,7 @@ import { getPresenter } from "@desktop/components/Workspace/messages/presenters"
 import type { ChatItem } from "../../adapters";
 import { providerLabel } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 
 type ToolCall = Extract<ChatItem, { kind: "tool_call" }>;
 
@@ -23,7 +23,7 @@ export function ApprovalCard({
   toolUseId: string;
   call: ToolCall | undefined;
 }) {
-  const answerToolUse = useStore((s) => s.answerToolUse);
+  const answerToolUse = useHostStore((s) => s.answerToolUse);
   const answer = (behavior: "allow" | "deny") =>
     void answerToolUse(agentId, toolUseId, call?.input ?? {}, behavior).catch(ignore);
   return (
@@ -57,8 +57,8 @@ export function ApprovalCard({
  *  from here (an older host, or a device paired without `publish`), where
  *  saying so beats a silent stall. */
 export function PublishApprovalCard({ request }: { request: PublishApproval }) {
-  const answer = useStore((s) => s.answerPublishApproval);
-  const canAnswer = useStore((s) => s.hostSupports("answer_publish_approval"));
+  const answer = useHostStore((s) => s.answerPublishApproval);
+  const canAnswer = useHostStore((s) => s.hostSupports("answer_publish_approval"));
   const decide = (approved: boolean) => void answer(request.id, approved).catch(ignore);
   return (
     <div className="appr rise">
@@ -90,7 +90,7 @@ export function PublishApprovalCard({ request }: { request: PublishApproval }) {
 
 /** An errored run: `resume_agent` picks the session back up. */
 export function ErrorCard({ agentId, message }: { agentId: string; message: string | null }) {
-  const resume = useStore((s) => s.resume);
+  const resume = useHostStore((s) => s.resume);
   return (
     <div className="appr err rise">
       <div className="h">

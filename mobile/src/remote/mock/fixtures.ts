@@ -680,6 +680,8 @@ export const protocol: HostProtocol = {
     "get_provider_limits",
     "refresh_provider_limits",
     "switch_agent_account",
+    "project_definition",
+    "ensure_project",
   ],
   events: [
     "agent:event",

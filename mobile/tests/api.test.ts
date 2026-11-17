@@ -53,6 +53,25 @@ describe("api facade", () => {
     }
   });
 
+  it("reads a project's definition and leaves the copy it makes, a clone, unbounded", async () => {
+    const definition = {
+      project_id: "prj-atlas",
+      name: "atlas",
+      home: { device: "mini", name: "Mac mini" },
+      repos: [
+        { id: "r1", dir: "atlas", origin: "https://github.com/fwdai/atlas.git", label: null },
+      ],
+    };
+    await api.projectDefinition("prj-atlas");
+    await api.ensureProject(definition);
+    expect(client.call).toHaveBeenCalledWith(
+      "project_definition",
+      { projectId: "prj-atlas" },
+      { timeoutMs: READ_TIMEOUT_MS },
+    );
+    expect(client.call).toHaveBeenLastCalledWith("ensure_project", { definition });
+  });
+
   it("sends a per-agent switch with the desktop command's argument keys", async () => {
     await api.switchAgentAccount("a", "default");
     expect(client.call).toHaveBeenLastCalledWith("switch_agent_account", {

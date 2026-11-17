@@ -21,7 +21,7 @@ const { getCurrent, onOpenUrl, pairFromLink, delivered } = vi.hoisted(() => {
 });
 
 vi.mock("@tauri-apps/plugin-deep-link", () => ({ getCurrent, onOpenUrl }));
-vi.mock("../src/store", () => ({ useStore: { getState: () => ({ pairFromLink }) } }));
+vi.mock("../src/store", () => ({ appStore: { getState: () => ({ pairFromLink }) } }));
 
 const { registerDeepLinks } = await import("../src/deeplink");
 

@@ -5,7 +5,7 @@ import { useState } from "react";
 import { ProviderMark } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { providerLabel } from "../../lib/agents";
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 import { AccountCard } from "./AccountCard";
 
 /** One provider's accounts: its mark and name, a Refresh that reads every
@@ -22,8 +22,8 @@ export function ProviderSection({
   // As the desktop lists them: the terminal's login and a managed account
   // that is the same login are one card.
   const accounts = foldTerminalLogin(listedByHost);
-  const limits = useStore((s) => s.providerLimits[providerId]);
-  const refreshLimits = useStore((s) => s.refreshProviderLimits);
+  const limits = useHostStore((s) => s.providerLimits[providerId]);
+  const refreshLimits = useHostStore((s) => s.refreshProviderLimits);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

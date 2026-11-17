@@ -1,11 +1,18 @@
-import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
-import { AgentRow } from "../../components/AgentRow";
+import { HostAgentRow } from "../../components/AgentRow/HostAgentRow";
 import { Nav, ProjectIcon, Segmented } from "../../components/ui";
-import { type AgentStage, agentsOfProject, baseOf, stageOf } from "../../lib/agents";
-import { projectById, repoLabel } from "../../lib/projects";
-import { useStore } from "../../store";
+import { useHost } from "../../host/useHost";
+import { type AgentStage, baseOf, type HostAgent, hostAgentKey, stageOf } from "../../lib/agents";
+import { entryOf, repoLabel } from "../../lib/projects";
+import {
+  useApp,
+  useEveryHost,
+  useHostKeys,
+  useHostNav,
+  useHostStore,
+  useProjectEntries,
+} from "../../store";
 import { RoadmapPane } from "./Roadmap";
 
 /** Tab order, which is also the order the screen falls through when picking
@@ -15,29 +22,37 @@ const STAGES: AgentStage[] = ["running", "yours", "prs"];
 /** The agent stages, then the project's roadmap — never the tab it opens on. */
 type Tab = AgentStage | "roadmap";
 
+const NONE: HostAgent[] = [];
+
+/** A project with the agents of every host that has it, each row its own
+ *  host's. The rest — the roadmap, the planning chats, starting an agent — is
+ *  the host the screen was opened on: the project's speaking host. */
 export function ProjectScreen({ projectId }: { projectId: string }) {
-  // Derived outside the selector: a selector that builds a new array on every
-  // call re-renders forever under zustand v5.
-  const workspace = useStore((s) => s.workspace);
-  const project = projectById(workspace, projectId);
-  const agents = agentsOfProject(workspace, projectId);
-  const prStates = useStore((s) => s.prStates);
-  const pop = useStore((s) => s.pop);
-  const openAgent = useStore((s) => s.openAgent);
-  const openSheet = useStore((s) => s.openSheet);
+  // Derived outside the selectors: a selector that builds a new array on
+  // every call re-renders forever under zustand v5.
+  const { hostKey } = useHost();
+  const entry = entryOf(useProjectEntries(), hostKey, projectId);
+  const agents = entry?.agents ?? NONE;
+  const hostKeys = useHostKeys();
+  const prStates = useEveryHost((s) => s.prStates);
+  const pop = useApp((s) => s.pop);
+  const { openSheet } = useHostNav();
   // Indexed straight out of the store: the registry's array is a stable
   // reference, where a `?? []` inside the selector would be a fresh one.
-  const chats = useStore((s) => s.chats[projectId]);
-  const loadChats = useStore((s) => s.loadChats);
-  const connected = useStore((s) => s.connection === "connected");
-  const canPlan = useStore((s) => s.hostSupports("list_project_chats"));
-  const hasRoadmap = useStore((s) => s.hostSupports("roadmap_list_items"));
+  const chats = useHostStore((s) => s.chats[projectId]);
+  const loadChats = useHostStore((s) => s.loadChats);
+  const connected = useHostStore((s) => s.connection === "connected");
+  const canPlan = useHostStore((s) => s.hostSupports("list_project_chats"));
+  const hasRoadmap = useHostStore((s) => s.hostSupports("roadmap_list_items"));
 
-  // The live PR state wins over the record's persisted snapshot when it is
-  // known; most rows only have the snapshot.
-  const prStateOf = (a: AgentRecord) => prStates[a.id]?.state ?? a.repos[0]?.pr_state ?? null;
-  const stage = (a: AgentRecord) => stageOf(a, prStateOf(a));
-  const count = (s: AgentStage) => agents.filter((a) => stage(a) === s).length;
+  // The live PR state, as the agent's own host has it, wins over the record's
+  // persisted snapshot when it is known; most rows only have the snapshot.
+  const prStateOf = (h: HostAgent) =>
+    prStates[hostKeys.indexOf(h.hostKey)]?.[h.agent.id]?.state ??
+    h.agent.repos[0]?.pr_state ??
+    null;
+  const stage = (h: HostAgent) => stageOf(h.agent, prStateOf(h));
+  const count = (s: AgentStage) => agents.filter((h) => stage(h) === s).length;
 
   // Opens on what is running; when nothing is, on the first tab with something
   // to act on, rather than an empty list. Picked once, so a turn finishing
@@ -51,13 +66,14 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
     if (connected) void loadChats(projectId);
   }, [connected, projectId, loadChats]);
 
-  if (!project) return null;
+  if (!entry) return null;
+  const { project } = entry;
 
-  // Open PRs, still to merge, above the merged and closed ones the host's
+  // Open PRs, still to merge, above the merged and closed ones the hosts'
   // auto-archive is about to clear. The sort is stable, so newest-first holds
   // within each.
   const list = agents
-    .filter((a) => stage(a) === filter)
+    .filter((h) => stage(h) === filter)
     .sort((a, b) => Number(prStateOf(a) !== "open") - Number(prStateOf(b) !== "open"));
 
   return (
@@ -86,7 +102,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
       <div className="proj-sum">
         <span className="pill mono">
           <Icon name="branch" size={11} />
-          {agents[0] ? baseOf(agents[0]) : "main"}
+          {agents[0] ? baseOf(agents[0].agent) : "main"}
         </span>
         <span className="pill mono">
           {agents.length} agent{agents.length === 1 ? "" : "s"}
@@ -109,8 +125,8 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
           <RoadmapPane projectId={projectId} />
         ) : (
           <div className="card pane" key={filter}>
-            {list.map((a) => (
-              <AgentRow key={a.id} agent={a} project={project} onClick={() => openAgent(a.id)} />
+            {list.map((h) => (
+              <HostAgentRow key={hostAgentKey(h)} {...h} />
             ))}
             {list.length === 0 && (
               <div className="empty">
@@ -134,7 +150,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
             </div>
             <div className="card">
               {chats.map((c) => (
-                <AgentRow key={c.id} agent={c} project={project} onClick={() => openAgent(c.id)} />
+                <HostAgentRow key={c.id} hostKey={hostKey} agent={c} />
               ))}
             </div>
           </>

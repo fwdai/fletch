@@ -5,7 +5,7 @@
 
 import { Icon } from "@desktop/components/Icon";
 import { ignore } from "../../lib/ignore";
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 import type { LogLoad } from "../../store/transcript";
 import { Dots } from "./Transcript";
 
@@ -38,9 +38,9 @@ export function ChatSkeleton() {
  *  Either way the conversation exists on the host; this offers to read again
  *  rather than inviting a "first" message into a chat that already has some. */
 export function LogUnavailable({ agentId, error }: { agentId: string; error: string | null }) {
-  const loadAgent = useStore((s) => s.loadAgent);
-  const connected = useStore((s) => s.connection === "connected");
-  const host = useStore((s) => s.hostInfo?.name) ?? "your Mac";
+  const loadAgent = useHostStore((s) => s.loadAgent);
+  const connected = useHostStore((s) => s.connection === "connected");
+  const host = useHostStore((s) => s.hostInfo?.name) ?? "your Mac";
   return (
     <div className="blank log-fail fade">
       <div className="glyph danger">

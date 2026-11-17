@@ -7,7 +7,7 @@ import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { ignore } from "../../lib/ignore";
 import { tasksByToolUse } from "../../lib/thread";
 import { useStickyScroll } from "../../lib/useStickyScroll";
-import { useStore } from "../../store";
+import { useHostNav, useHostStore } from "../../store";
 import { ApprovalCard, ErrorCard, PublishApprovalCard } from "./ApprovalCard";
 import { LoadOlder } from "./LoadOlder";
 import { LogPlaceholder } from "./LogState";
@@ -25,25 +25,25 @@ export function ChatTab({
 }) {
   // No `?? []` inside a selector: a fresh empty value on every call is a new
   // reference and re-renders forever under zustand v5.
-  const log = useStore((s) => s.logs[agent.id]);
-  const load = useStore((s) => s.logLoads[agent.id]);
-  const loadAgent = useStore((s) => s.loadAgent);
-  const pending = useStore((s) => s.pendingToolUse[agent.id]);
-  const startedAt = useStore((s) => s.turnStartedAt[agent.id]);
-  const tasks = useStore((s) => s.backgroundTasks[agent.id]);
+  const log = useHostStore((s) => s.logs[agent.id]);
+  const load = useHostStore((s) => s.logLoads[agent.id]);
+  const loadAgent = useHostStore((s) => s.loadAgent);
+  const pending = useHostStore((s) => s.pendingToolUse[agent.id]);
+  const startedAt = useHostStore((s) => s.turnStartedAt[agent.id]);
+  const tasks = useHostStore((s) => s.backgroundTasks[agent.id]);
   // Selected whole and filtered below: a selector that filters returns a fresh
   // array every call, which re-renders forever under zustand v5.
-  const publishApprovals = useStore((s) => s.pendingPublishApprovals);
+  const publishApprovals = useHostStore((s) => s.pendingPublishApprovals);
   // Indexed straight out of the store, like `log` above. Only a planning chat
   // has any — an agent's project may well have ghosts on its board, but they are
   // not a decision *this* conversation raised.
-  const proposals = useStore((s) => s.proposals[agent.project_id]);
-  const loadProposals = useStore((s) => s.loadProposals);
-  const push = useStore((s) => s.push);
-  const send = useStore((s) => s.send);
-  const connected = useStore((s) => s.connection === "connected");
+  const proposals = useHostStore((s) => s.proposals[agent.project_id]);
+  const loadProposals = useHostStore((s) => s.loadProposals);
+  const { push } = useHostNav();
+  const send = useHostStore((s) => s.send);
+  const connected = useHostStore((s) => s.connection === "connected");
   const planning = !!agent.purpose;
-  const busy = useStore((s) => isAgentBusy(s, agent));
+  const busy = useHostStore((s) => isAgentBusy(s, agent));
   const elapsed = useElapsed(startedAt, busy);
 
   // The ghosts can predate this session — a chat resumed tomorrow has to show

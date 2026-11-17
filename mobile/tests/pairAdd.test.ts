@@ -11,13 +11,15 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
+import { linkOf } from "../src/host";
 import type { HostTarget } from "../src/remote";
+import { registerMockHost } from "../src/remote/mock";
 import { PairScreen } from "../src/screens/Pair";
-import { useStore } from "../src/store";
+import { appStore } from "../src/store";
+import { MINI as PAIRED, PAIRED_MINI, pairedOnDisk } from "./support";
 
-const state = () => useStore.getState();
+const app = () => appStore.getState();
 
-const PAIRED = "aG9zdC1vbmU";
 const LINK: HostTarget = {
   host: "192.168.1.24",
   port: 47285,
@@ -27,48 +29,36 @@ const LINK: HostTarget = {
 };
 
 describe("a link that launched the app over a paired host", () => {
-  it("pairs with the link instead of dialling the saved host, as an addition", async () => {
-    localStorage.setItem(
-      "fletch-mobile-settings",
-      JSON.stringify({
-        hosts: [
-          {
-            hostKey: PAIRED,
-            name: "Alex's Mac mini",
-            host: "10.0.0.5",
-            port: 47285,
-            pairedAt: "2026-01-01T00:00:00Z",
-          },
-        ],
-        activeHostKey: PAIRED,
-      }),
-    );
+  it("pairs with the link as an addition, the saved host dialled on a link of its own", async () => {
+    // Out of the suite's `?mock=1`, so `init` reads the saved host rather than
+    // keeping to the mock one.
+    const restoreUrl = pairedOnDisk([PAIRED_MINI], PAIRED);
     const targets: HostTarget[] = [];
-    useStore.setState({
+    appStore.setState({
       connect: async (target: HostTarget) => {
         targets.push(target);
       },
     });
     const confirm = vi.spyOn(window, "confirm");
-    // Out of the suite's `?mock=1`, so `init` reads the saved host rather than
-    // keeping to the mock one.
-    const url = window.location.href;
-    window.history.replaceState({}, "", "/");
 
-    state().pairFromLink(LINK);
+    app().pairFromLink(LINK);
     expect(targets, "held until init has read what is on disk").toEqual([]);
-    await state().init();
+    await app().init();
 
-    // The link, once — dialling the saved host too would supersede it and burn
-    // its single-use code.
+    // The link, once: a second pairing would supersede it and burn its
+    // single-use code.
     expect(targets).toEqual([LINK]);
     expect(confirm).not.toHaveBeenCalled();
+    // The saved host is another host, on another link: it is dialled as on any
+    // launch, and the pairing never touches it.
+    await vi.waitFor(() => expect(linkOf(PAIRED).client.state).toBe("connected"));
+    expect(linkOf(PAIRED).client.target?.hostKey).toBe(PAIRED);
     // The saved host stays paired, and the Pair screen shows the link as an
     // addition over it.
-    expect(state().hostKey).toBe(PAIRED);
-    expect(state().hosts.map((h) => h.hostKey)).toEqual([PAIRED]);
-    expect(state().addingHost).toBe(true);
-    window.history.replaceState({}, "", url);
+    expect(app().hostKey).toBe(PAIRED);
+    expect(app().hosts.map((h) => h.hostKey)).toEqual([PAIRED]);
+    expect(app().addingHost).toBe(true);
+    restoreUrl();
     confirm.mockRestore();
   });
 });
@@ -76,12 +66,12 @@ describe("a link that launched the app over a paired host", () => {
 describe("the Pair screen adding a host", () => {
   it("offers Cancel, which goes back to the paired host", async () => {
     const cancelAddHost = vi.fn(async () => {});
-    useStore.setState({
+    appStore.setState({
       cancelAddHost,
       addingHost: true,
       pairStep: null,
       pairTarget: null,
-      connectionError: null,
+      pairError: null,
     });
     const host = document.createElement("div");
     document.body.append(host);
@@ -94,11 +84,54 @@ describe("the Pair screen adding a host", () => {
     expect(cancelAddHost).toHaveBeenCalledOnce();
 
     // A first pairing has nowhere to go back to.
-    await act(async () => useStore.setState({ addingHost: false }));
+    await act(async () => appStore.setState({ addingHost: false }));
     expect(host.querySelector("h1")?.textContent).toBe("Pair with your Mac");
     expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Cancel")).toBe(
       false,
     );
     act(() => root.unmount());
+  });
+
+  it("says why a pairing failed until the screen is left, which calls the pairing off", async () => {
+    const ASLEEP = "YXNsZWVw";
+    registerMockHost(ASLEEP, { unreachable: true });
+    const { connect, cancelAddHost } = appStore.getInitialState();
+    appStore.setState({ connect, cancelAddHost });
+    app().addHost();
+
+    const pairing = app().connect({ ...LINK, hostKey: ASLEEP });
+    await expect(pairing).rejects.toThrow("No answer from your Mac");
+    expect(app().pairError).toContain("No answer from your Mac");
+    expect(app().pairStep).toBeNull();
+    // The paired host was never touched.
+    expect(linkOf(PAIRED).client.state).toBe("connected");
+
+    app().cancelAddHost();
+    expect(app().pairError).toBeNull();
+    expect(app().addingHost).toBe(false);
+    expect(linkOf(ASLEEP).client.state).toBe("disconnected");
+  });
+
+  it("stops a pairing that another replaces, and leaves the screen to the newer one", async () => {
+    const ASLEEP = "c2xlZXBpbmc";
+    const AWAKE = "YXdha2U";
+    registerMockHost(ASLEEP, { unreachable: true });
+    registerMockHost(AWAKE, {});
+    const { connect } = appStore.getInitialState();
+    appStore.setState({ connect });
+    app().addHost();
+
+    const first = app().connect({ ...LINK, hostKey: ASLEEP });
+    const second = app().connect({ ...LINK, hostKey: AWAKE });
+    await expect(first).rejects.toThrow();
+    // The first one's ending is not the Pair screen's business any more.
+    expect(app().pairError).toBeNull();
+    expect(app().pairStep).not.toBeNull();
+    // And its client is not left retrying behind the second.
+    expect(linkOf(ASLEEP).client.state).toBe("disconnected");
+
+    await second;
+    expect(app().hostKey).toBe(AWAKE);
+    expect(app().pairStep).toBeNull();
   });
 });

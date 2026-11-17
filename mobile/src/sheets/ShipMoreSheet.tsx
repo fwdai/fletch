@@ -4,7 +4,7 @@ import { Fragment } from "react";
 import { Sheet } from "../components/ui";
 import { useShipActions } from "../screens/Agent/ShipTab/useShipActions";
 import { useShipView } from "../screens/Agent/ShipTab/useShipView";
-import { agentOf, useStore } from "../store";
+import { agentOf, useHostStore } from "../store";
 
 /** The Ship footer's overflow: the desktop footer's menu, in its groups, less
  *  what the phone can't run — and the manual PR sheet behind a commit playbook.
@@ -18,7 +18,7 @@ export function ShipMoreSheet({
   onClose: () => void;
   agentId?: string;
 }) {
-  const agent = useStore((s) => (agentId ? agentOf(s, agentId) : undefined));
+  const agent = useHostStore((s) => (agentId ? agentOf(s, agentId) : undefined));
   if (!agent) return null;
   return <Rows agent={agent} open={open} onClose={onClose} />;
 }

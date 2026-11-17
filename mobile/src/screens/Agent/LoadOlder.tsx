@@ -1,6 +1,6 @@
 import { type RefObject, useState } from "react";
 import { Notice } from "../../components/ui/Notice";
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 
 /** The head of a paged transcript: offered while the host has older pages
  *  than the ones loaded, and gone once the history is exhausted (or on a host
@@ -13,8 +13,8 @@ export function LoadOlder({
   /** The log's scroll container, held still across the prepend. */
   scroller: RefObject<HTMLDivElement>;
 }) {
-  const older = useStore((s) => s.histories[agentId]?.older);
-  const loadOlderLog = useStore((s) => s.loadOlderLog);
+  const older = useHostStore((s) => s.histories[agentId]?.older);
+  const loadOlderLog = useHostStore((s) => s.loadOlderLog);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   if (!older) return null;
