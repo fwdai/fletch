@@ -7,9 +7,10 @@ import { createRoot } from "react-dom/client";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Api } from "../src/api";
 import { roadmapLists } from "../src/lib/roadmap";
+import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { roadmapItem } from "../src/remote/mock/fixtures";
 import { RoadmapPane } from "../src/screens/Project/Roadmap";
-import { hostEvent, hostOnScreen, launchMock } from "./support";
+import { hostEvent, hostOnScreen, launchMock, onHost } from "./support";
 
 const host = () => hostOnScreen().getState();
 
@@ -102,7 +103,9 @@ describe("capturing from the phone", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const root = createRoot(host);
-    await act(async () => root.render(createElement(RoadmapPane, { projectId: PROJECT })));
+    await act(async () =>
+      root.render(onHost(MOCK_HOST_KEY, createElement(RoadmapPane, { projectId: PROJECT }))),
+    );
     const field = host.querySelector("textarea");
     if (!field) throw new Error("no capture field");
     await act(async () => {

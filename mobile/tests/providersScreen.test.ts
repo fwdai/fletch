@@ -7,9 +7,10 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Api } from "../src/api";
+import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { providerLimits } from "../src/remote/mock/fixtures";
 import { ProvidersScreen } from "../src/screens/Providers";
-import { hostEvent, hostOnScreen, launchMock } from "./support";
+import { hostEvent, hostOnScreen, launchMock, onHost } from "./support";
 
 const live = () => hostOnScreen().getState();
 
@@ -25,7 +26,7 @@ beforeAll(async () => {
   document.body.append(host);
   root = createRoot(host);
   await act(async () => {
-    root.render(createElement(ProvidersScreen));
+    root.render(onHost(MOCK_HOST_KEY, createElement(ProvidersScreen)));
   });
   await vi.waitFor(() => expect(host.querySelectorAll(".pv-acct").length).toBe(4));
 });

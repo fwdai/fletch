@@ -15,7 +15,7 @@ import type { HostLink } from "../host";
 import { primaryPath, projectById } from "../lib/projects";
 import { dropTasks } from "./backgroundTasks";
 import { agentOf, type HostState } from "./host";
-import { appStore, hostOf } from "./index";
+import { closeSheetOf, popAgent } from "./hostNav";
 
 type Set = (partial: Partial<HostState> | ((s: HostState) => Partial<HostState>)) => void;
 type Get = () => HostState;
@@ -307,15 +307,8 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
             ...dropTasks(s, agentId),
           }));
         }
-        // The sheet and the screen are the app's.
-        const app = appStore.getState();
-        app.closeSheet();
-        const top = app.nav.filter((i) => i.phase !== "leave").at(-1);
-        const onTop =
-          top?.screen === "agent" &&
-          top.props.agentId === agentId &&
-          hostOf(app, top.props) === link.hostKey;
-        if (onTop) app.pop();
+        closeSheetOf(link.hostKey);
+        popAgent(link.hostKey, agentId);
         try {
           await link.api.discardAgent(agentId);
         } catch (e) {

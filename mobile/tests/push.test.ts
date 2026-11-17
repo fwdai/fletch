@@ -202,7 +202,7 @@ describe("unpairing", () => {
   it("clears the token on the host before the link drops", async () => {
     const registerPush = vi.spyOn(mock().api, "registerPush");
     const disconnect = vi.spyOn(mock().client, "disconnect");
-    await app().unpair();
+    await app().unpair(MOCK_HOST_KEY);
     // The clear goes out while still connected, or the host would keep alerting
     // a phone that has forgotten it.
     expect(registerPush).toHaveBeenCalledWith(null);
@@ -222,7 +222,7 @@ describe("unpairing", () => {
     const registerPush = vi.spyOn(link.api, "registerPush").mockReturnValue(new Promise(() => {}));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const unpairing = app().unpair();
+      const unpairing = app().unpair(MOCK_HOST_KEY);
       await vi.advanceTimersByTimeAsync(FORGET_PUSH_TIMEOUT_MS);
       await unpairing;
     } finally {

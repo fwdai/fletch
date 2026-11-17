@@ -213,7 +213,7 @@ describe("forgetting hosts", () => {
 
     const seen: (string | null)[] = [];
     const off = appStore.subscribe((s) => seen.push(s.hostKey));
-    await app().unpair();
+    await app().unpair(STUDIO);
     await liveOn(MINI);
     off();
     // Straight to the next host: an unpaired moment would flash the Pair screen.
@@ -228,7 +228,7 @@ describe("forgetting hosts", () => {
 
   it("forgetting the last one leaves the phone unpaired, with its preferences", async () => {
     const mini = linkOf(MINI);
-    await app().unpair();
+    await app().unpair(MINI);
     expect(app().hostKey).toBeNull();
     expect(keys()).toEqual([]);
     expect(mini.client.state).toBe("disconnected");

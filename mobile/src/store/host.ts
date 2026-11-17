@@ -44,7 +44,8 @@ import {
 import { type AutopilotMap, autopilotFromSnapshot, checkoutKey, switchesOf } from "./autopilot";
 import { type ChatsSlice, createChatLists, createChatsSlice } from "./chats";
 import { registerRemoteEvents } from "./events";
-import { type AgentTab, appStore, hostOf } from "./index";
+import { closeSheetOf, isScreenOpen, openAgentOf, popAgent, pushOn } from "./hostNav";
+import { type AgentTab, appStore } from "./index";
 import { replayLiveTurn, runningTurnStart } from "./liveTurn";
 import { saveDestParent } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
@@ -323,10 +324,7 @@ export function refreshChats(s: HostState): void {
  *  every return to the foreground re-reads it from the host. The top-most
  *  agent screen open on `hostKey`'s host, if any. */
 export function refreshOpenAgent(hostKey: string | null, s: HostState): void {
-  const app = appStore.getState();
-  const agentId = [...app.nav]
-    .reverse()
-    .find((n) => n.props.agentId && hostOf(app, n.props) === hostKey)?.props.agentId;
+  const agentId = openAgentOf(hostKey);
   if (agentId) void s.loadAgent(agentId).catch(ignore);
 }
 
@@ -334,10 +332,7 @@ export function refreshOpenAgent(hostKey: string | null, s: HostState): void {
  *  meters follow `settings:changed`, which a dropped socket or a suspended app
  *  misses like any other event, and the handshake carries none of it. */
 export function refreshProviders(hostKey: string | null, s: HostState): void {
-  const app = appStore.getState();
-  if (app.nav.some((n) => n.screen === "providers" && hostOf(app, n.props) === hostKey)) {
-    void s.loadProviderAccounts().catch(ignore);
-  }
+  if (isScreenOpen(hostKey, "providers")) void s.loadProviderAccounts().catch(ignore);
 }
 
 const newId = () =>
@@ -387,11 +382,10 @@ function waitForSpawn(get: () => HostState, agentId: string, timeoutMs = 30_000)
 export function createHostStore(link: HostLink): HostStore {
   const { client, api } = link;
 
-  /** `props` naming this host, for a screen opened on it: it acts on this host
-   *  whichever is on screen by then. Read when called — a pairing's link learns
-   *  its host on the first answer. */
-  const onThisHost = (props: Record<string, string>): Record<string, string> =>
-    link.hostKey ? { ...props, hostKey: link.hostKey } : props;
+  /** This host's key, for what the store opens on it. Read when called: a
+   *  pairing's link learns its host on the first answer, and nothing can be
+   *  opened on it before that. */
+  const hostKey = () => link.hostKey as string;
 
   /** The order of this host's PR writes against its watcher's events
    *  (@desktop/store/prWriteOrder). */
@@ -477,10 +471,9 @@ export function createHostStore(link: HostLink): HostStore {
       },
       sending: { ...s.sending, [record.id]: true },
     }));
-    // The sheet that asked closes, and the agent opens: the app's screens.
-    const app = appStore.getState();
-    app.closeSheet();
-    app.push("agent", onThisHost({ agentId: record.id }));
+    // The sheet that asked closes, and the agent opens.
+    closeSheetOf(hostKey());
+    pushOn(hostKey(), "agent", { agentId: record.id });
     try {
       await whileSending(
         record.id,
@@ -625,7 +618,7 @@ export function createHostStore(link: HostLink): HostStore {
     },
 
     openAgent(agentId, tab) {
-      appStore.getState().push("agent", onThisHost(tab ? { agentId, tab } : { agentId }));
+      pushOn(hostKey(), "agent", tab ? { agentId, tab } : { agentId });
       void get().loadAgent(agentId).catch(ignore);
     },
 
@@ -1025,10 +1018,9 @@ export function createHostStore(link: HostLink): HostStore {
         // path can strand one.
         if (agent?.purpose) throw new Error("a planning chat is deleted, not archived");
         await api.archiveAgent(agentId);
-        // Off its sheet and its screen, both the app's.
-        const app = appStore.getState();
-        app.closeSheet();
-        app.pop();
+        // Off its sheet and its screen.
+        closeSheetOf(link.hostKey);
+        popAgent(link.hostKey, agentId);
         await get().refreshWorkspace();
       });
     },
@@ -1184,13 +1176,13 @@ export function createHostStore(link: HostLink): HostStore {
     /** Both add-project ops answer with the whole new `Workspace`, which is
      *  applied here rather than waited for as a `workspace:changed`: it replaces
      *  the workspace wholesale, exactly as `refreshWorkspace` does, so an event
-     *  landing either side of this leaves the same state. Only the Add Project
-     *  sheet is closed on success — a slow clone must not dismiss a sheet the user
-     *  opened in the meantime. */
+     *  landing either side of this leaves the same state. Only this host's Add
+     *  Project sheet is closed on success — a slow clone must not dismiss a
+     *  sheet the user opened in the meantime, here or on another host. */
     async addWorkspaceRepo(repoPath) {
       return guard(async () => {
         set({ workspace: await api.addWorkspaceRepo(repoPath) });
-        appStore.getState().closeSheetIf("addProject");
+        closeSheetOf(link.hostKey, "addProject");
       });
     },
 
@@ -1199,7 +1191,7 @@ export function createHostStore(link: HostLink): HostStore {
         const workspace = await api.cloneRepo(spec, destParent);
         set({ workspace, lastDestParent: destParent });
         await saveDestParent(link.hostKey, destParent);
-        appStore.getState().closeSheetIf("addProject");
+        closeSheetOf(link.hostKey, "addProject");
       });
     },
 

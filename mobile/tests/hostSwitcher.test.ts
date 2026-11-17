@@ -9,7 +9,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { HostSwitcher } from "../src/screens/Home/HostSwitcher";
 import { appStore, hostStoreOf } from "../src/store";
-import { hostOnScreen } from "./support";
+import { hostOnScreen, onHost } from "./support";
 
 const HOSTS = [
   { hostKey: "mini", name: "Mac mini", host: "10.0.0.5", port: 47285, pairedAt: "2026-01-01" },
@@ -37,7 +37,7 @@ beforeEach(async () => {
   host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
-  await act(async () => root.render(createElement(HostSwitcher)));
+  await act(async () => root.render(onHost("mini", createElement(HostSwitcher))));
   unmount = () => act(() => root.unmount());
 });
 

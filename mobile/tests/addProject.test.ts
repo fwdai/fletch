@@ -13,6 +13,7 @@ import { AddProjectSheet } from "../src/sheets/AddProjectSheet";
 import { CloneForm } from "../src/sheets/AddProjectSheet/CloneForm";
 import { OpenFolderForm } from "../src/sheets/AddProjectSheet/OpenFolderForm";
 import { appStore } from "../src/store";
+import { withHost } from "../src/store/hostNav";
 import { loadDestParent } from "../src/store/persist";
 import { hostOnScreen, launchMock, onHost } from "./support";
 
@@ -125,16 +126,31 @@ describe("clone from GitHub", () => {
     const spy = vi
       .spyOn(api, "cloneRepo")
       .mockReturnValue(new Promise((resolve) => (finish = resolve)));
-    app().openSheet("addProject");
+    app().openSheet("addProject", withHost(MOCK_HOST_KEY));
     const cloning = host().cloneRepo("fwdai/other", await codeDir());
 
     // The user gave up waiting and opened something else.
     app().closeSheet();
-    app().openSheet("host");
+    app().openSheet("host", withHost(MOCK_HOST_KEY));
     finish(host().workspace as NonNullable<ReturnType<typeof host>["workspace"]>);
     await cloning;
 
     expect(app().sheet).toMatchObject({ name: "host", open: true });
+    spy.mockRestore();
+  });
+
+  it("leaves another host's Add Project sheet open when this host's clone finishes", async () => {
+    const spy = vi
+      .spyOn(api, "cloneRepo")
+      .mockResolvedValue(host().workspace as NonNullable<ReturnType<typeof host>["workspace"]>);
+    app().openSheet("addProject", withHost("another-mac"));
+    await host().cloneRepo("fwdai/other", await codeDir());
+    expect(app().sheet).toMatchObject({ name: "addProject", open: true });
+
+    // …and closes its own.
+    app().openSheet("addProject", withHost(MOCK_HOST_KEY));
+    await host().cloneRepo("fwdai/other", await codeDir());
+    expect(app().sheet).toMatchObject({ name: "addProject", open: false });
     spy.mockRestore();
   });
 

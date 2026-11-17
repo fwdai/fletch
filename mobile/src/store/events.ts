@@ -50,7 +50,7 @@ import { ignore } from "../lib/ignore";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
 import { type ChatLists, patchChatIn } from "./chats";
 import { agentOf, type HostState } from "./host";
-import { appStore, isAgentOpen } from "./index";
+import { isAgentOpen } from "./hostNav";
 import { isReplayed } from "./liveTurn";
 import {
   appendActivity,
@@ -176,9 +176,8 @@ export function registerRemoteEvents(
   // agent whose screen is open: the transcript is the heaviest read on the
   // wire, every turn that ends on the Mac raises this whether or not the phone
   // is looking, and opening an agent re-reads its history anyway (`loadAgent`).
-  // Which screens are open, and on which host, is the app's.
   on<SessionRecordsAppendedEvent>("session:records-appended", (e) => {
-    if (!isAgentOpen(appStore.getState(), link.hostKey, e.agent_id)) return;
+    if (!isAgentOpen(link.hostKey, e.agent_id)) return;
     void get().rebuildLog(e.agent_id).catch(ignore);
   });
 

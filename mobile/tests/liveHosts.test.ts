@@ -20,11 +20,10 @@ import {
   agentOf,
   appStore,
   type HostState,
-  hostOf,
   hostStoreOf,
-  isAgentOpen,
   RESUME_PROBE_TIMEOUT_MS,
 } from "../src/store";
+import { isAgentOpen } from "../src/store/hostNav";
 import { loadSettings } from "../src/store/persist";
 import {
   foreground,
@@ -192,8 +191,8 @@ describe("every paired host, live at once", () => {
     // Open on the studio — with the mini on screen — and open there only.
     studio().openAgent("arabia");
     expect(top().props).toEqual({ agentId: "arabia", hostKey: STUDIO });
-    expect(isAgentOpen(app(), STUDIO, "arabia")).toBe(true);
-    expect(isAgentOpen(app(), MINI, "arabia")).toBe(false);
+    expect(isAgentOpen(STUDIO, "arabia")).toBe(true);
+    expect(isAgentOpen(MINI, "arabia")).toBe(false);
 
     // A turn ending on the mini's `arabia` has no screen open to re-read for;
     // one on the studio's has.
@@ -293,7 +292,6 @@ describe("a screen names the host it was opened for", () => {
     );
     await act(async () => row?.click());
     expect(push).toHaveBeenCalledWith("agent", { agentId: "pamukkale", hostKey: MINI });
-    expect(hostOf(app(), push.mock.calls[0][1])).toBe(MINI);
 
     act(() => root.unmount());
     node.remove();

@@ -15,6 +15,11 @@ export interface HostLink {
   readonly api: Api;
 }
 
+/** A link that knows its host: every one `linkOf` hands back. */
+export interface KeyedLink extends HostLink {
+  readonly hostKey: string;
+}
+
 interface Link extends HostLink {
   hostKey: string | null;
 }
@@ -31,13 +36,15 @@ function build(hostKey: string | null): Link {
 
 /** The link for `hostKey`: the same one every time, built the first time it is
  *  asked for. */
-export function linkOf(hostKey: string): HostLink {
+export function linkOf(hostKey: string): KeyedLink {
   let link = links.get(hostKey);
   if (!link) {
     link = build(hostKey);
     links.set(hostKey, link);
   }
-  return link;
+  // Kept under its host's key only once it has one: built for it, or a
+  // pairing's taken over when its host answered.
+  return link as KeyedLink;
 }
 
 /** A link for a pairing that does not know its host yet — an address typed by

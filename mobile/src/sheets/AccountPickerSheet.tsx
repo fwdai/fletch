@@ -6,7 +6,8 @@ import { Notice } from "../components/ui/Notice";
 import { useHost } from "../host/useHost";
 import { useAgentAccount } from "../lib/agentAccount";
 import { providerLabel } from "../lib/agents";
-import { agentOf, appStore, hostOf, useHostStore } from "../store";
+import { agentOf, useHostStore } from "../store";
+import { sheetOf } from "../store/hostNav";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -76,16 +77,7 @@ export function AccountPickerSheet({
     // again for another agent — the one component serves every picker, on
     // every host — so only the picker the pick was made from closes or shows
     // the refusal. The store finishes the switch either way.
-    const stillAsking = () => {
-      const app = appStore.getState();
-      const sheet = app.sheet;
-      return (
-        !!sheet?.open &&
-        sheet.name === "accountPicker" &&
-        sheet.props.agentId === forAgent &&
-        hostOf(app, sheet.props) === hostKey
-      );
-    };
+    const stillAsking = () => sheetOf(hostKey, "accountPicker")?.props.agentId === forAgent;
     switchAccount(forAgent, id)
       .then((record) => {
         if (record && stillAsking()) onClose();

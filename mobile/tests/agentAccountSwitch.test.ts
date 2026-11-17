@@ -8,10 +8,12 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Api } from "../src/api";
+import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { AccountPickerSheet } from "../src/sheets/AccountPickerSheet";
 import { AgentMoreSheet } from "../src/sheets/AgentMoreSheet";
 import { agentOf, appStore } from "../src/store";
-import { deferred, hostEvent, hostOnScreen, launchMock } from "./support";
+import { withHost } from "../src/store/hostNav";
+import { deferred, hostEvent, hostOnScreen, launchMock, onHost } from "./support";
 
 const app = () => appStore.getState();
 const host = () => hostOnScreen().getState();
@@ -196,15 +198,18 @@ describe("the More sheet's account row and its picker", () => {
   const render = async (agentId: string) => {
     await act(async () => {
       root.render(
-        createElement(
-          "div",
-          null,
-          createElement(AgentMoreSheet, { open: true, onClose: () => {}, agentId }),
-          createElement(AccountPickerSheet, {
-            open: app().sheet?.name === "accountPicker" && !!app().sheet?.open,
-            onClose: () => app().closeSheet(),
-            agentId,
-          }),
+        onHost(
+          MOCK_HOST_KEY,
+          createElement(
+            "div",
+            null,
+            createElement(AgentMoreSheet, { open: true, onClose: () => {}, agentId }),
+            createElement(AccountPickerSheet, {
+              open: app().sheet?.name === "accountPicker" && !!app().sheet?.open,
+              onClose: () => app().closeSheet(),
+              agentId,
+            }),
+          ),
         ),
       );
     });
@@ -275,7 +280,7 @@ describe("the More sheet's account row and its picker", () => {
     // another agent's before it does.
     const rows = () => [...host.querySelectorAll<HTMLButtonElement>(".sheet.stacked .row")];
     const openPickerFor = async (agentId: string) => {
-      await act(async () => app().openSheet("accountPicker", { agentId }));
+      await act(async () => app().openSheet("accountPicker", withHost(MOCK_HOST_KEY, { agentId })));
       await render(agentId);
       await vi.waitFor(() => expect(rows().length).toBe(2));
     };

@@ -103,7 +103,7 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
           className="btn danger block"
           onClick={() => {
             onClose();
-            void unpair(hostKey ?? undefined);
+            void unpair(hostKey);
           }}
         >
           <Icon name="trash" size={16} />

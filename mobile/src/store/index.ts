@@ -76,8 +76,8 @@ export type SheetName =
 export interface NavItem {
   key: number;
   screen: ScreenName;
-  /** What the screen shows. `hostKey`, when set, names the host it acts on
-   *  (`hostOf`). */
+  /** What the screen shows. `hostKey` names the host it acts on (`withHost`
+   *  in store/hostNav); Home, which names none, acts on the host on screen. */
   props: Record<string, string>;
   phase: "enter" | "idle" | "leave";
 }
@@ -150,10 +150,10 @@ export interface AppState {
    *  redialled — every paired host is connected already — except a host that
    *  is down with no retry coming, which is dialled again. */
   switchHost(hostKey: string): Promise<void>;
-  /** Forget a paired host — the one on screen unless another is named. It is
-   *  told to drop the push token first, over its own link; if it was on
-   *  screen, the next paired host takes its place, else the Pair screen. */
-  unpair(hostKey?: string): Promise<void>;
+  /** Forget a paired host. It is told to drop the push token first, over its
+   *  own link; if it was on screen, the next paired host takes its place, else
+   *  the Pair screen. */
+  unpair(hostKey: string): Promise<void>;
   /** Open the Pair screen to add another host. */
   addHost(): void;
   /** Leave the Pair screen without adding one, back on the host on screen. */
@@ -170,9 +170,6 @@ export interface AppState {
   /** Close whatever sheet is open. Safe to hand straight to an `onClose` or
    *  `onClick`: it ignores its arguments. */
   closeSheet(): void;
-  /** Close the sheet only if `name` is the one showing: for an async action
-   *  finishing late, which must not dismiss whatever the user opened since. */
-  closeSheetIf(name: SheetName): void;
 }
 
 let initialized = false;
@@ -214,18 +211,6 @@ const homeItem = (): NavItem => ({ key: Date.now(), screen: "home", props: {}, p
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** The host a screen or sheet acts on: the one its props name, else the one
- *  on screen. */
-export const hostOf = (
-  s: Pick<AppState, "hostKey">,
-  props: Record<string, string>,
-): string | null => props.hostKey ?? s.hostKey;
-
-/** The link of the host on screen, for what names no host; null when none is
- *  paired. The same link for the same state, so it is a stable selector. */
-export const linkOnScreen = (s: Pick<AppState, "hostKey">): HostLink | null =>
-  s.hostKey ? linkOf(s.hostKey) : null;
-
 /** What to call the host this component acts on (`useHost`). The saved name
  *  first: the client's idea of the host lags a pairing until it has answered,
  *  and the saved one is kept current by every handshake. */
@@ -235,15 +220,6 @@ export function useHostName(): string | null {
   const answered = useHostStore((s) => s.hostInfo?.name);
   return saved ?? answered ?? null;
 }
-
-/** Whether the screen of `hostKey`'s agent `agentId` is on the stack — the one
- *  case a transcript read for it has anyone to show it to. Agent ids recur
- *  across hosts, so the host has to match as well as the id. */
-export const isAgentOpen = (
-  s: Pick<AppState, "nav" | "hostKey">,
-  hostKey: string | null,
-  agentId: string,
-): boolean => s.nav.some((n) => n.props.agentId === agentId && hostOf(s, n.props) === hostKey);
 
 /** Where to dial a saved host. Its key is the whole credential: `hello`
  *  authenticates with the device key the Rust layer holds, and the relay is
@@ -449,7 +425,7 @@ export const appStore = createStore<AppState>()((set, get) => {
           if (document.hidden) return;
           // Every paired host, and a pairing the Pair screen is still waiting
           // on.
-          const links = new Set(get().hosts.map((h) => linkOf(h.hostKey)));
+          const links = new Set<HostLink>(get().hosts.map((h) => linkOf(h.hostKey)));
           if (pairing) links.add(pairing);
           for (const link of links) wake(link);
         });
@@ -590,9 +566,7 @@ export const appStore = createStore<AppState>()((set, get) => {
       if (state === "disconnected" || (state === "error" && !retrying)) await dial(set, get, saved);
     },
 
-    async unpair(hostKey) {
-      const forgotten = hostKey ?? get().hostKey;
-      if (!forgotten) return;
+    async unpair(forgotten) {
       // Over its own link, while it is still up: the host keeps the push token
       // until told otherwise.
       await forgetPush(linkOf(forgotten));
@@ -710,9 +684,6 @@ export const appStore = createStore<AppState>()((set, get) => {
     },
     closeSheet() {
       set((s) => (s.sheet ? { sheet: { ...s.sheet, open: false } } : s));
-    },
-    closeSheetIf(name) {
-      if (get().sheet?.name === name) get().closeSheet();
     },
   };
 });

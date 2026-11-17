@@ -90,7 +90,8 @@ export function App() {
   const props = (name: string) => (sheet?.name === name ? sheet.props : {});
   const isOpen = (name: string) => !!(sheet?.name === name && sheet.open);
   const dimmed = !!sheet?.open && FULL_SHEETS.has(sheet.name);
-  /** The host a sheet acts on, as its props name it. */
+  /** The host a sheet acts on, as its props name it; one that names none acts
+   *  on the host on screen. */
   const on = (name: string) => props(name).hostKey;
 
   return (
@@ -103,52 +104,52 @@ export function App() {
           <Stack
             dimmed={dimmed}
             render={(item) => (
-              <OnHost hostKey={item.props.hostKey}>
+              <OnHost hostKey={item.props.hostKey ?? hostKey}>
                 <Screen item={item} />
               </OnHost>
             )}
           />
-          <OnHost hostKey={on("host")}>
+          <OnHost hostKey={on("host") ?? hostKey}>
             <HostSheet open={isOpen("host")} onClose={closeSheet} />
           </OnHost>
-          <OnHost hostKey={on("newAgent")}>
+          <OnHost hostKey={on("newAgent") ?? hostKey}>
             <NewAgentSheet open={isOpen("newAgent")} onClose={closeSheet} {...props("newAgent")} />
           </OnHost>
-          <OnHost hostKey={on("newPlan")}>
+          <OnHost hostKey={on("newPlan") ?? hostKey}>
             <NewPlanSheet open={isOpen("newPlan")} onClose={closeSheet} {...props("newPlan")} />
           </OnHost>
-          <OnHost hostKey={on("addProject")}>
+          <OnHost hostKey={on("addProject") ?? hostKey}>
             <AddProjectSheet
               open={isOpen("addProject")}
               onClose={closeSheet}
               {...props("addProject")}
             />
           </OnHost>
-          <OnHost hostKey={on("agentMore")}>
+          <OnHost hostKey={on("agentMore") ?? hostKey}>
             <AgentMoreSheet
               open={isOpen("agentMore")}
               onClose={closeSheet}
               {...props("agentMore")}
             />
           </OnHost>
-          <OnHost hostKey={on("shipMore")}>
+          <OnHost hostKey={on("shipMore") ?? hostKey}>
             <ShipMoreSheet open={isOpen("shipMore")} onClose={closeSheet} {...props("shipMore")} />
           </OnHost>
-          <OnHost hostKey={on("modelPicker")}>
+          <OnHost hostKey={on("modelPicker") ?? hostKey}>
             <ModelPickerSheet
               open={isOpen("modelPicker")}
               onClose={closeSheet}
               {...props("modelPicker")}
             />
           </OnHost>
-          <OnHost hostKey={on("accountPicker")}>
+          <OnHost hostKey={on("accountPicker") ?? hostKey}>
             <AccountPickerSheet
               open={isOpen("accountPicker")}
               onClose={closeSheet}
               {...props("accountPicker")}
             />
           </OnHost>
-          <OnHost hostKey={on("pr")}>
+          <OnHost hostKey={on("pr") ?? hostKey}>
             <PrSheet open={isOpen("pr")} onClose={closeSheet} {...props("pr")} />
           </OnHost>
         </>
