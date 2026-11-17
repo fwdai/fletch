@@ -175,10 +175,6 @@
 .run-bar.v2 .run-other-ports {
   margin-left: auto;
 }
-.run-bar.v2 .run-other-ports .run-link {
-  cursor: default;
-  color: var(--fg-2);
-}
 .run-bar.v2 .run-port-item {
   font-family: var(--font-mono);
   text-decoration: none;

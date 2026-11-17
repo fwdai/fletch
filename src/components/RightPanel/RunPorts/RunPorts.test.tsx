@@ -31,7 +31,9 @@ describe("RunPorts", () => {
   it("keeps the ports the run does not listen on behind a menu", () => {
     render(<RunPorts ports={[web, worker, postgres, agentServer]} runGuestPort={3000} />);
     expect(hrefs("link")).toEqual(["http://localhost:8788"]);
+    // An icon alone: the count is its name and tip, not text in the bar.
     const trigger = screen.getByRole("button", { name: "2 other ports" });
+    expect(trigger.textContent).toBe("");
     expect(screen.queryByRole("menu")).toBeNull();
 
     fireEvent.click(trigger);
