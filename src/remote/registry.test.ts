@@ -154,7 +154,9 @@ const settled = async () => {
   }
 };
 
-function harness() {
+/** `before` are handed out first, one per client built, then `client` for
+ *  every client after them. */
+function harness(before: RemoteClient[] = []) {
   const store = create<AppState>()(
     (set, get) => ({ ...createEnvironmentsSlice(set, get, activeEngine) }) as AppState,
   );
@@ -174,7 +176,7 @@ function harness() {
       environmentReconnected: reconnected,
     },
     device,
-    newClient: () => client,
+    newClient: () => before.shift() ?? client,
     onRelayChange: relayChanged,
     // The retry exists; how long it waits is not what these tests check.
     retryDelayMs: 0,
@@ -436,6 +438,28 @@ describe("the paired-host lifecycle", () => {
     expect(entry()).toBeUndefined();
     expect(registry.get(HOST_KEY)).toBeUndefined();
     expect(Object.keys(store.getState().environments)).toEqual([LOCAL_ENVIRONMENT_ID]);
+  });
+
+  it("leaves a newer pairing with the same host running when the older one fails", async () => {
+    const older = fakeClient();
+    const { registry, entry, client: newer } = harness([older]);
+    const target = { host: "10.0.0.4", port: 47285, hostKey: HOST_KEY, pairingToken: "K7PQ2M9X" };
+
+    const first = registry.pair(target);
+    await settled();
+    // Cancelled and picked again, or a pasted link beside the nearby list:
+    // the second replaces the first, which only now hears it is over.
+    const second = registry.pair(target);
+    await settled();
+    expect(older.disconnected).toBe(1);
+    older.fail("Disconnected");
+    await expect(first).rejects.toThrow("Disconnected");
+
+    expect(registry.get(HOST_KEY)).toBe(newer);
+    expect(newer.disconnected).toBe(0);
+    newer.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    await expect(second).resolves.toMatchObject({ hostKey: HOST_KEY, name: "Cloud box" });
+    expect(entry()).toMatchObject({ connection: "connected" });
   });
 
   it("adopts a host once, however many times it is asked", async () => {

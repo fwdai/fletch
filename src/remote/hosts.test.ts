@@ -13,6 +13,7 @@ vi.mock("@/storage/remoteHosts", () => ({
   forgetHost: vi.fn(async () => {}),
 }));
 
+import { loadHosts } from "@/storage/remoteHosts";
 import { useAppStore } from "@/store";
 import { addHost, hosts, offerPairBack, pairWithOfferedLink } from "./hosts";
 
@@ -104,6 +105,29 @@ describe("after a confirmed pairing, this Mac asks whether the host may control 
   it("rejects with the host's words when it refuses", async () => {
     call.mockRejectedValue(new Error("forbidden"));
     await expect(offerPairBack("mac-b")).rejects.toThrow("forbidden");
+  });
+});
+
+/** Pairing again with a host that is saved — an expired link pasted for it, or
+ *  one that changes its access — first takes its live connection down. */
+describe("a failed pairing with a host already saved", () => {
+  it("dials the host again from its saved record", async () => {
+    const saved = { ...RECORD, pairedAt: "2026-01-01T00:00:00Z" };
+    vi.mocked(loadHosts).mockResolvedValue([saved]);
+    pair.mockRejectedValue(new Error("That pairing code didn't work."));
+    const adopt = vi.spyOn(hosts, "adopt").mockResolvedValue();
+
+    await expect(addHost(LINK)).rejects.toThrow("didn't work");
+    expect(adopt).toHaveBeenCalledWith(saved);
+  });
+
+  it("leaves nothing behind for a host that was never saved", async () => {
+    vi.mocked(loadHosts).mockResolvedValue([]);
+    pair.mockRejectedValue(new Error("That pairing code didn't work."));
+    const adopt = vi.spyOn(hosts, "adopt").mockResolvedValue();
+
+    await expect(addHost(LINK)).rejects.toThrow("didn't work");
+    expect(adopt).not.toHaveBeenCalled();
   });
 });
 

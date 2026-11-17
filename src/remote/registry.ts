@@ -93,7 +93,9 @@ export interface HostRegistry {
   adopt(record: HostRecord): Promise<void>;
   /** Pair from a parsed link, and answer with the record to save. On failure
    *  the entry and its client are dropped — nothing was saved, so nothing
-   *  should be left behind — and the reason is rethrown for the pane.
+   *  should be left behind — and the reason is rethrown for the pane. A host
+   *  that was saved before is the caller's to adopt again: the registry keeps
+   *  no record.
    *  `onCode` hears the six digits of a confirmed pairing (`confirm`). */
   pair(target: PairTarget, onCode?: CodeHandler): Promise<HostRecord>;
   /** Stop for good, and drop the environment. */
@@ -299,7 +301,10 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
           relay: client.target ? client.target.relay : record.relay,
         };
       } catch (e) {
-        forget(target.hostKey);
+        // Only while the client under this key is still this attempt's own: a
+        // second pairing with the same host (picked again after a cancel, or a
+        // pasted link beside the nearby list) has replaced it, and is running.
+        if (clients.get(target.hostKey) === client) forget(target.hostKey);
         throw e;
       } finally {
         offCode?.();
