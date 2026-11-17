@@ -15,9 +15,8 @@ import {
 import { setSetting } from "@/storage/settings";
 import { track } from "@/util/track";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
-import { carryDraft } from "./carryDraft";
-import { draftRunsOn } from "./draftHosts";
 import { type EnvironmentId, environmentEntry } from "./environments";
+import { moveDraft } from "./moveDraft";
 import { refreshWorkspace } from "./refreshWorkspace";
 import { sendOrder, sendsInFlight } from "./sendOrder";
 import { activeSurface } from "./surface";
@@ -72,23 +71,18 @@ export interface DraftAgent {
    *  (`draftAfterProjectAdd`). `seeded` = its composer was prefilled with the
    *  suggested first task. Only read for telemetry at spawn. */
   afterProjectAdd?: { seeded: boolean };
-  /** The host picked on the new-workspace row for this draft's agent to run
-   *  on (the run-target picker); undefined runs it on the draft's own host.
-   *  Never remembered past the draft. Read through `draftRunsOn`. */
-  runsOn?: EnvironmentId;
-  /** Set while the draft's project is carried to the host it runs on, which
-   *  can take a while (`carryDraft`): what the composer says in place of
-   *  taking a message. */
+  /** Set while the draft is being moved to another host, whose copy of the
+   *  project can take a while to make (`moveDraft`): what the new-workspace
+   *  screen says in place of its controls. Nothing is sent meanwhile. */
   preparing?: string;
 }
 
-/** A draft handed to this host to spawn from (`carryDraft`): the draft as this
- *  host reads it, with no row in its drafts, and what to do the moment its
- *  agent exists here. */
-export interface HandedDraft {
-  draft: DraftAgent;
-  onSpawned: (agentId: string) => void;
-}
+/** What of a draft goes with it to another host (`moveDraft`): the choices
+ *  that mean the same on any device. Everything else a draft holds names
+ *  something of its own host (its name, a custom agent, an account, a
+ *  workspace type) and is the new host's to decide, as for any draft opened
+ *  there. */
+export type CarriedDraft = Pick<DraftAgent, "provider" | "model" | "base" | "issueRef">;
 
 export interface DraftsSlice {
   drafts: DraftAgent[];
@@ -113,12 +107,24 @@ export interface DraftsSlice {
    *  agent should do — a roadmap item, a template — lands the user ready to
    *  launch rather than at an empty box. `roadmapItemId` tags the draft as a
    *  roadmap hand-off, which stamps the item once the agent is spawned. `kind`
-   *  defaults to an agent. Resolves to the new draft's id, or `null` if it
-   *  couldn't be created (the error is already surfaced). */
+   *  defaults to an agent. `carried` are the choices of a draft moved here
+   *  from another host, taken in place of this host's defaults. Resolves to
+   *  the new draft's id, or `null` if it couldn't be created (the error is
+   *  already surfaced). */
   createDraft: (
     repoPath: string,
-    opts?: { seedPrompt?: string; roadmapItemId?: string; kind?: DraftKind },
+    opts?: {
+      seedPrompt?: string;
+      roadmapItemId?: string;
+      kind?: DraftKind;
+      carried?: CarriedDraft;
+    },
   ) => Promise<string | null>;
+  /** Move a draft to `target`, the host its workspace is to run on (the
+   *  run-target picker): a draft runs on the host it lives on. Its project is
+   *  made ready there first, and a failure leaves the draft where it was with
+   *  the reason in `lastError` (`moveDraft`). */
+  moveDraft: (id: string, target: EnvironmentId) => Promise<void>;
   /** The hand-off after a project is added: open a draft on it, so the user
    *  lands one keypress from a running agent instead of back where they were
    *  with a new sidebar row. The user's first project (`first`) also gets the
@@ -146,9 +152,7 @@ export interface DraftsSlice {
    *  resolve) are granted from the agent's first launch. Sent again while
    *  the spawn is in flight, the message goes to that agent after the first.
    *  Resolves false when the spawn failed (`lastError` says why), so the
-   *  composer can put the draft back. A draft picked to run on another host
-   *  is carried there and spawned by that host (`carryDraft`), which hands it
-   *  back in as `handed`. */
+   *  composer can put the draft back. */
   spawnFromDraft: (
     id: string,
     text: string,
@@ -158,7 +162,6 @@ export interface DraftsSlice {
     thinking?: string,
     customAgentId?: string,
     folders?: FolderGrant[] | Promise<FolderGrant[]>,
-    handed?: HandedDraft,
   ) => Promise<boolean>;
 }
 
@@ -199,6 +202,7 @@ async function prepareDraft(
   repoPath: string,
   roadmapItemId?: string,
   kind: DraftKind = "agent",
+  carried?: CarriedDraft,
 ): Promise<DraftAgent | null> {
   const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
   // Name allocation is a backend call; if it fails there's no draft to
@@ -212,13 +216,19 @@ async function prepareDraft(
     get().setLastError(`Couldn't start a new agent: ${String(e)}`);
     return null;
   }
-  const base = await get().resolveDraftBase(repoPath);
-  const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
+  // A draft moved here keeps its base as picked: this host forks from the
+  // branch as its remote has it, and fails the spawn for one never pushed.
+  const base = carried?.base ?? (await get().resolveDraftBase(repoPath));
+  const selection = carried
+    ? normalizeDraftSelection(carried.provider, carried.model, modelsByAgent)
+    : normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
   // Carry the sticky custom-agent pick onto the new draft, but only if it
-  // still exists (it may have been deleted since it was last persisted).
-  const customAgentId = get().customAgents.some((a) => a.id === newDraftCustomAgentId)
-    ? newDraftCustomAgentId
-    : undefined;
+  // still exists (it may have been deleted since it was last persisted). A
+  // draft moved here brings its own provider and model instead.
+  const customAgentId =
+    !carried && get().customAgents.some((a) => a.id === newDraftCustomAgentId)
+      ? newDraftCustomAgentId
+      : undefined;
   return {
     id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     kind,
@@ -228,6 +238,7 @@ async function prepareDraft(
     model: selection.model,
     customAgentId,
     base,
+    issueRef: carried?.issueRef,
     roadmapItemId,
   };
 }
@@ -301,11 +312,20 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
 
     // ── drafts ─────────────────────────────────────────────────────────────────
     createDraft: async (repoPath, opts = {}) => {
-      const draft = await prepareDraft(api, get, repoPath, opts.roadmapItemId, opts.kind);
+      const draft = await prepareDraft(
+        api,
+        get,
+        repoPath,
+        opts.roadmapItemId,
+        opts.kind,
+        opts.carried,
+      );
       if (!draft) return null;
       openDraft(set, get, draft, opts.seedPrompt);
       return draft.id;
     },
+
+    moveDraft: (id, target) => moveDraft({ engine, get, set }, id, target),
 
     draftAfterProjectAdd: async (repoPath, first) => {
       // Automatic, unlike every other way a draft opens: it may only take the
@@ -394,7 +414,6 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
       thinking?,
       customAgentId?,
       folders = [],
-      handed?,
     ) => {
       // Sent again while this draft's agent is still being spawned: the message
       // follows the first prompt to that agent, in order, rather than spawning a
@@ -404,16 +423,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
         const agentId = await spawning;
         return agentId ? get().sendUserMessage(agentId, text, attachments, folders) : false;
       }
-      const draft = handed?.draft ?? get().drafts.find((d) => d.id === id);
-      if (!draft) return false;
-      // Picked to run on another host: that host spawns it once it has the
-      // project (./carryDraft). The composer is shut while that is under way.
-      const target = handed ? hostId : draftRunsOn(draft, hostId, get().environments);
-      if (target !== hostId) {
-        if (draft.preparing) return false;
-        const message = { text, provider, model, attachments, thinking, customAgentId };
-        return carryDraft({ engine, get, set }, draft, target, message);
-      }
+      const draft = get().drafts.find((d) => d.id === id);
+      // On its way to another host (`moveDraft`): it spawns there, once it is.
+      if (!draft || draft.preparing) return false;
       let settle: (agentId: string | null) => void = () => {};
       draftSpawns.set(
         id,
@@ -421,9 +433,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
           settle = resolve;
         }),
       );
-      // A handed draft's path is this host's copy; the project was started in
-      // on the draft's own host, which has already recorded it.
-      if (!handed) get().setLastRepoPath(draft.repoPath);
+      get().setLastRepoPath(draft.repoPath);
       set({ busy: true, lastError: null });
       const turnId = crypto.randomUUID();
       try {
@@ -562,8 +572,6 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
           };
           return patches;
         });
-        // The agent exists: a draft handed over from another host can leave it.
-        handed?.onSpawned(rec.id);
         // The first prompt takes the new agent's first place in line before
         // anything sent meanwhile is let through to it (`draftSpawns`), so it is
         // the first message the agent gets.

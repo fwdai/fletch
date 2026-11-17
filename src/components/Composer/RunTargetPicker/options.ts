@@ -1,6 +1,6 @@
 // Where a new workspace can run: the options of the run-target picker on the
 // new-workspace row, and the words around them. Pure, and free of the store,
-// so the spawn checks a pick by the same rule the picker greys it by.
+// so the move checks a pick by the same rule the picker greys it by.
 //
 // Each source contributes the places of one kind. Today that is the hosts this
 // window knows, This Mac first and then each paired host by name; a provider
@@ -9,7 +9,7 @@
 
 import type { ProjectDefinition, ProjectHome } from "@/api";
 import { type EnvironmentEntry, type EnvironmentId, hostOrder } from "@/store/environments";
-import { connectionLabel, gateReason, providerReason } from "@/store/gates";
+import { connectionLabel, gateReason } from "@/store/gates";
 
 export type RunTargetKind = "local" | "host";
 
@@ -28,12 +28,8 @@ export interface RunTargetOption {
 /** What the options are decided from. */
 export interface RunTargetFacts {
   environments: Record<EnvironmentId, EnvironmentEntry>;
-  /** The host whose project the draft is opened in. Always available: it is
-   *  where the draft runs without a pick, the way it always has. */
+  /** The host the draft is on, which is where it runs. Always available. */
   draftHost: EnvironmentId;
-  /** The draft's provider, which has to be able to run where the workspace
-   *  does. */
-  provider: string;
   /** The draft's project as its host describes it, once read; null until
    *  then, which blocks nothing. */
   definition: ProjectDefinition | null;
@@ -46,14 +42,12 @@ export function travelReason(definition: ProjectDefinition | null): string | nul
   return stuck ? `${stuck.label || stuck.dir} has no remote. Publish it first.` : null;
 }
 
-/** Why a host other than the draft's own can't run its workspace, or null. */
+/** Why the draft can't move to a host other than its own, or null. Which
+ *  agents that host can run is not asked here: once the draft is there, its
+ *  composer offers that host's own, as for any draft opened on it. */
 function refusal(facts: RunTargetFacts, env: EnvironmentEntry): string | null {
   if (env.connection !== "connected") return `${env.name} · ${connectionLabel(env)}`;
-  return (
-    gateReason(env, "projectCopy") ??
-    travelReason(facts.definition) ??
-    providerReason(env, facts.provider)
-  );
+  return gateReason(env, "projectCopy") ?? travelReason(facts.definition);
 }
 
 /** This Mac and every paired host. */
@@ -86,24 +80,22 @@ export const RUN_TARGET_SECTIONS: Record<RunTargetKind, string> = {
   host: "Paired hosts",
 };
 
-/** The device a project's unpushed commits live on: its home, by the name
- *  this window knows it by, else the host the draft is on. */
+/** The device a copied project's unpushed commits live on: its home, by the
+ *  name this window knows it by, else the one it gave itself. */
 export function homeName(
   environments: Record<EnvironmentId, EnvironmentEntry>,
-  draftHost: EnvironmentId,
-  home: ProjectHome | undefined,
+  home: ProjectHome,
 ): string {
-  if (home) return environments[home.device]?.name ?? home.name;
-  return environments[draftHost]?.name ?? "This Mac";
+  return environments[home.device]?.name ?? home.name;
 }
 
-/** The note under the row while the workspace runs on a host other than the
- *  draft's own: the copy there is cloned from the remote. */
+/** The note under the row of a draft on a host that runs the project from a
+ *  copy: the copy is cloned from the remote. */
 export function pushedNote(home: string): string {
   return `Starts from the branch as pushed. Commits not pushed from ${home} are not included.`;
 }
 
-/** What the composer says while the project is carried to `host`. */
+/** What the new-workspace screen says while a draft is moved to `host`. */
 export function preparingLabel(host: string): string {
   return `Preparing the project on ${host}…`;
 }

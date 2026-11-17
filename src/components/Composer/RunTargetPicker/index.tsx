@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { WorkspaceKind } from "@/api";
 import { Scrim } from "@/components/ui/Scrim";
 import { useAppStore, useHostId } from "@/store";
@@ -11,30 +11,27 @@ import { TargetPill } from "./TargetPill";
 import { useProjectDefinition } from "./useProjectDefinition";
 
 interface Props {
-  /** The draft's repo on its own host, which This Mac's workspace types are
+  /** The draft's repo and provider, which This Mac's workspace types are
    *  read for. */
   repoPath: string;
-  /** The draft's provider: it has to be able to run where the workspace
-   *  does. */
   provider: string;
   /** The draft's project, read for whether it can run on another device. */
   projectId: string;
   /** The workspace type picked for This Mac, kept as clicked. */
   workspaceType?: WorkspaceKind;
-  /** Where the workspace runs now (`draftRunsOn`). */
-  runsOn: EnvironmentId;
   /** Only the draft's own host is offered: a roadmap hand-off. */
   pinned?: boolean;
-  /** A place, and for This Mac the workspace type clicked with it. */
-  onPick: (runsOn: EnvironmentId, workspaceType?: WorkspaceKind) => void;
+  /** A place, and for This Mac the workspace type clicked with it. A place
+   *  other than the draft's host is where the draft is to move. */
+  onPick: (host: EnvironmentId, workspaceType?: WorkspaceKind) => void;
 }
 
 /** Where a new workspace runs, on the new-workspace row beside the project and
  *  the branch: This Mac, in the workspace type picked for it, or a paired host
- *  by name. Scoped to the draft's own host, which is where it runs without a
- *  pick. With nowhere else to run it is the workspace-type pill as it always
- *  was on This Mac, and nothing on a paired host (whose spawn carries no
- *  workspace type). */
+ *  by name. Scoped to the draft's host, which is where it runs and so the
+ *  place shown as picked. With nowhere else to run it is the workspace-type
+ *  pill as it always was on This Mac, and nothing on a paired host (whose
+ *  spawn carries no workspace type). */
 export function RunTargetPicker(props: Props) {
   const hostId = useHostId();
   const paired = useAppStore((s) => Object.keys(s.environments).length > 1);
@@ -59,9 +56,7 @@ function WithWorkspaceTypes(props: Props) {
 }
 
 function RunTargetControl({
-  provider,
   projectId,
-  runsOn,
   onPick,
   types,
   loadTypes,
@@ -70,16 +65,9 @@ function RunTargetControl({
   const environments = useAppStore((s) => s.environments);
   const { definition, check } = useProjectDefinition(projectId);
   const [open, setOpen] = useState(false);
-  const elsewhere = runsOn !== hostId;
-  // A place other than the draft's own host is checked for whether the
-  // project can go there as soon as it is picked, as well as on every open.
-  useEffect(() => {
-    if (elsewhere) check();
-  }, [elsewhere, check]);
 
-  const options = runTargetOptions({ environments, draftHost: hostId, provider, definition });
-  const picked =
-    options.find((o) => o.hostId === runsOn) ?? options.find((o) => o.hostId === hostId);
+  const options = runTargetOptions({ environments, draftHost: hostId, definition });
+  const picked = options.find((o) => o.hostId === hostId);
   if (!picked) return null;
 
   return (

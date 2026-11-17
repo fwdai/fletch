@@ -8,8 +8,7 @@
 //
 // The first question is always *which machine the agent would run on*, because
 // the answer decides which facts are even relevant. An agent spawns on the host
-// the composer is scoped to, or on the one its draft was picked to run on (the
-// run-target picker), so:
+// the composer is scoped to, so:
 //
 //   - This Mac: this Mac's probe (`providerPaths`).
 //   - A paired host: the host's own `host_providers` answer, and nothing else.
@@ -19,7 +18,7 @@
 
 import { useAppStore, useHostId } from "@/store";
 import { entryOf, providerReason } from "@/store/capabilities";
-import type { EnvironmentEntry, EnvironmentId } from "@/store/environments";
+import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 
 export interface Availability {
   /** Why this agent can't be spawned right now, or null when it can. Rendered
@@ -111,14 +110,15 @@ export function blockedSentence(a: Availability): string | null {
 }
 
 /** [`agentAvailability`] bound to the live store: for the host the calling
- *  component is scoped to, where an agent would spawn, or for the host
- *  `where` names — `"local"` for This Mac whatever that host is (the machine
- *  its provider accounts and their limits belong to), or the host a draft was
- *  picked to run on. */
-export function useAgentAvailability(where?: EnvironmentId): (providerId: string) => Availability {
+ *  component is scoped to, where an agent would spawn, or with `"local"` for
+ *  This Mac whatever that host is — the machine its provider accounts and
+ *  their limits belong to. */
+export function useAgentAvailability(
+  where: "active" | "local" = "active",
+): (providerId: string) => Availability {
   const hostId = useHostId();
   const facts: AvailabilityFacts = {
-    env: useAppStore((s) => entryOf(s, where ?? hostId)),
+    env: useAppStore((s) => entryOf(s, where === "local" ? LOCAL_ENVIRONMENT_ID : hostId)),
     providerPaths: useAppStore((s) => s.providerPaths),
     providerVersions: useAppStore((s) => s.providerVersions),
     providersProbed: useAppStore((s) => s.providersProbed),

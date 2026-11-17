@@ -43,15 +43,9 @@ const studio = (over: Partial<EnvironmentEntry> = {}): EnvironmentEntry => ({
   ...over,
 });
 
-function picker(onPick = vi.fn(), runsOn = LOCAL_ENVIRONMENT_ID) {
+function picker(onPick = vi.fn()) {
   return render(
-    <RunTargetPicker
-      repoPath="/w/app"
-      provider="claude"
-      projectId="p1"
-      runsOn={runsOn}
-      onPick={onPick}
-    />,
+    <RunTargetPicker repoPath="/w/app" provider="claude" projectId="p1" onPick={onPick} />,
   );
 }
 
@@ -167,17 +161,19 @@ describe("RunTargetPicker with a paired host", () => {
     expect(host.title).toBe("Studio · offline");
   });
 
-  it("names the host picked, and why the project can't go there once it is read", async () => {
+  it("says why the project can't go to a host once it is read", async () => {
     useAppStore.getState().upsertEnvironment(studio());
     projectDefinition.mockResolvedValue({
       ...DEFINITION,
       repos: [{ ...DEFINITION.repos[0], origin: null }],
     });
-    picker(vi.fn(), "studio");
+    picker();
 
-    const pill = await screen.findByRole("button", { name: /on\s*Studio/ });
-    await vi.waitFor(() =>
-      expect(pill.getAttribute("data-tip")).toBe("app has no remote. Publish it first."),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: /This Mac/ }));
+    await vi.waitFor(() => {
+      const host = screen.getByRole("menuitemradio", { name: "Studio" }) as HTMLButtonElement;
+      expect(host.disabled).toBe(true);
+      expect(host.title).toBe("app has no remote. Publish it first.");
+    });
   });
 });

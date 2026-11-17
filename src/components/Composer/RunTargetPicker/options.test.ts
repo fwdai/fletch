@@ -70,7 +70,6 @@ function facts(
       EnvironmentEntry
     >,
     draftHost: LOCAL_ENVIRONMENT_ID,
-    provider: "claude",
     definition: definition(["https://github.com/acme/fletch.git"]),
     ...over,
   };
@@ -120,14 +119,9 @@ describe("runTargetOptions", () => {
     });
   });
 
-  it("refuses a host where the draft's provider is not installed or not signed in", () => {
-    const missing = host("studio", { providers: [{ ...signedIn, installed: false, auth: null }] });
-    expect(option(facts([THIS_MAC, missing]), "studio")?.reason).toBe("Not installed on Studio");
-
-    const out = host("studio", { providers: [{ ...signedIn, auth: "signed_out" }] });
-    expect(option(facts([THIS_MAC, out]), "studio")?.reason).toMatch(/^Not signed in on Studio/);
-    // Another provider's state is not this draft's business.
-    expect(option(facts([THIS_MAC, out], { provider: "codex" }), "studio")?.available).toBe(true);
+  it("does not ask which agents the host can run: its own composer says, once the draft is there", () => {
+    const out = host("studio", { providers: [{ ...signedIn, installed: false, auth: null }] });
+    expect(option(facts([THIS_MAC, out]), "studio")).toMatchObject({ available: true });
   });
 
   it("refuses every other device for a project with a repository no one else can clone", () => {
@@ -175,14 +169,8 @@ describe("the words around the picker", () => {
 
   it("names the home by the name this window knows it by", () => {
     const envs = { [LOCAL_ENVIRONMENT_ID]: THIS_MAC, studio: host("studio") };
-    expect(homeName(envs, LOCAL_ENVIRONMENT_ID, undefined)).toBe("This Mac");
-    expect(homeName(envs, "studio", undefined)).toBe("Studio");
-    expect(homeName(envs, LOCAL_ENVIRONMENT_ID, { device: "studio", name: "Mac Studio" })).toBe(
-      "Studio",
-    );
-    expect(homeName(envs, LOCAL_ENVIRONMENT_ID, { device: "gone", name: "Old Mini" })).toBe(
-      "Old Mini",
-    );
+    expect(homeName(envs, { device: "studio", name: "Mac Studio" })).toBe("Studio");
+    expect(homeName(envs, { device: "gone", name: "Old Mini" })).toBe("Old Mini");
     expect(pushedNote("This Mac")).toBe(
       "Starts from the branch as pushed. Commits not pushed from This Mac are not included.",
     );

@@ -1,40 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectRef } from "@/api";
-import { draftRunsOn, newDraftHost } from "./draftHosts";
-import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "./environments";
-
-const ENVS: Record<string, EnvironmentEntry> = {
-  [LOCAL_ENVIRONMENT_ID]: {
-    id: LOCAL_ENVIRONMENT_ID,
-    name: "This Mac",
-    kind: "local",
-    connection: "connected",
-  },
-  studio: { id: "studio", name: "Studio", kind: "remote", connection: "connected" },
-};
+import { newDraftHost } from "./draftHosts";
+import { LOCAL_ENVIRONMENT_ID } from "./environments";
 
 const ref = (path: string, projectId: string): ProjectRef => ({
   path,
   name: projectId,
   project_id: projectId,
   label: null,
-});
-
-describe("draftRunsOn", () => {
-  it("is the draft's own host without a pick", () => {
-    expect(draftRunsOn({}, LOCAL_ENVIRONMENT_ID, ENVS)).toBe(LOCAL_ENVIRONMENT_ID);
-  });
-
-  it("is the host picked while it is still paired", () => {
-    expect(draftRunsOn({ runsOn: "studio" }, LOCAL_ENVIRONMENT_ID, ENVS)).toBe("studio");
-    expect(draftRunsOn({ runsOn: "gone" }, LOCAL_ENVIRONMENT_ID, ENVS)).toBe(LOCAL_ENVIRONMENT_ID);
-  });
-
-  it("keeps a roadmap hand-off on its own host", () => {
-    expect(
-      draftRunsOn({ runsOn: "studio", roadmapItemId: "item-1" }, LOCAL_ENVIRONMENT_ID, ENVS),
-    ).toBe(LOCAL_ENVIRONMENT_ID);
-  });
 });
 
 describe("newDraftHost", () => {

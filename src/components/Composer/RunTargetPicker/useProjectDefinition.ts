@@ -6,7 +6,7 @@ import { useEngine } from "@/api/engine";
  *  (`project_definition`), read on `check`: whether it can run on another
  *  device turns on its repositories' remotes, which change as they are
  *  published. Null until a read for this project lands; a failed read keeps
- *  what was there. Knowing nothing blocks nothing, and the spawn reads it
+ *  what was there. Knowing nothing blocks nothing, and the move reads it
  *  again anyway. */
 export function useProjectDefinition(projectId: string): {
   definition: ProjectDefinition | null;

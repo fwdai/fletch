@@ -174,7 +174,7 @@ export function useOnHost(): (act?: (s: AppState) => void) => void {
 // The engine lookup and the host settings read the environments straight off
 // the store, outside React (see ./environments).
 setEnvironmentsSource(store.getState);
-// A draft run on another host is spawned by that host's actions (./otherHosts).
+// A draft moved to another host is opened by that host's actions (./otherHosts).
 setOtherHosts({ hostStore, onHost });
 
 export type { ChatItem } from "@/adapters";

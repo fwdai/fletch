@@ -131,8 +131,8 @@
 .empty-meta .pill .v {
   color: var(--fg-0);
 }
-/* The row's one note (the run-target picker's, while a host other than the
-   draft's own is picked): the page's note under the pills it is about. */
+/* The row's one note (on a host that runs the project from a copy): the
+   page's note under the pills it is about. */
 .empty-meta-note {
   margin: 12px auto 0;
 }

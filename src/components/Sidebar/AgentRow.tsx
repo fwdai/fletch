@@ -11,9 +11,7 @@ import { Badge } from "@/components/ui/Badge";
 import { providerChip, providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import type { DraftAgent } from "@/store";
-import { useAppStore, useHostId } from "@/store";
-import { draftRunsOn } from "@/store/draftHosts";
-import { EngineScope } from "@/store/EngineScope";
+import { useAppStore } from "@/store";
 import { formatAge, formatElapsed } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import { useAgentPrs } from "@/util/prState";
@@ -353,8 +351,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
 
 function DraftRow({ draft, active, onClick }: DraftRowProps) {
   const removeDraft = useAppStore((s) => s.removeDraft);
-  const hostId = useHostId();
-  const runsOn = useAppStore((s) => draftRunsOn(draft, hostId, s.environments));
   const workflow = draft.kind === "workflow";
 
   function onDiscard(e: React.MouseEvent) {
@@ -378,8 +374,8 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
         </span>
         <span className="ag-slot iflex-center">
           <span className="ag-meta wide">
-            {/* Its project being carried to the host it runs on: the spawn's
-                spinner, saying so. */}
+            {/* Being moved to another host, whose copy of the project is
+                being made: the spawn's spinner, saying so. */}
             {draft.preparing ? (
               <span className="ag-loader" aria-label={draft.preparing} title={draft.preparing} />
             ) : (
@@ -403,9 +399,7 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
           after the paired host it will spawn on, if any. */}
       <div className="agent-sub flex-center">
         <span className="a-task a-codename">{draft.name}</span>
-        <EngineScope hostId={runsOn}>
-          <HostChip />
-        </EngineScope>
+        <HostChip />
         {workflow ? (
           <span className="ag-prov-chip tip" data-tip="Workflow run">
             <Icon name="combine" size={12} />

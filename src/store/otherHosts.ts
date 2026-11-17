@@ -1,8 +1,8 @@
 // How a slice reaches a host other than its own. A slice drives its own host
 // through the `get` / `set` it was built over and cannot import the store it
 // is part of, so store/index.ts hands these in once, the way it hands its
-// getter to ./environments. The one slice that needs them hands a draft to the
-// host it runs on (./carryDraft).
+// getter to ./environments. The one slice that needs them moves a draft to the
+// host it is to run on (./moveDraft).
 
 import type { EnvironmentId } from "./environments";
 import type { HostStore } from "./hostScope";

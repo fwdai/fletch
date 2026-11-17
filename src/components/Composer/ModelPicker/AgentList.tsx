@@ -3,9 +3,8 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
 import { FlyoutGlyph, FlyoutRow, FlyoutSection } from "@/components/ui/FlyoutMenu";
 import type { PROVIDERS } from "@/data/providers";
-import { useAppStore, useHostId } from "@/store";
-import { entryOf } from "@/store/capabilities";
-import type { EnvironmentId } from "@/store/environments";
+import type { useAppStore } from "@/store";
+import { useHostEntry } from "@/store/capabilities";
 import type { useAgentAvailability } from "../availability";
 import { CUSTOM_FLY, useSelectableCustomAgents } from "./CustomAgentOptions";
 
@@ -21,7 +20,6 @@ export function AgentList({
   enabled,
   installedCount,
   availability,
-  runsOn,
   hovered,
   setHovered,
   onPickModel,
@@ -33,15 +31,12 @@ export function AgentList({
   enabled: Provider[];
   installedCount: number;
   availability: ReturnType<typeof useAgentAvailability>;
-  /** The host the agent will run on, when not the one the list is scoped to. */
-  runsOn?: EnvironmentId;
   hovered: string | null;
   setHovered: (id: string | null) => void;
   onPickModel: (providerId: string, model: string | undefined) => void;
   onOpenSettings: OpenSettings;
 }) {
-  const hostId = useHostId();
-  const env = useAppStore((s) => entryOf(s, runsOn ?? hostId));
+  const env = useHostEntry();
   const selectableCustom = useSelectableCustomAgents();
   // Looked up in the offered list: one whose base is switched off is still the
   // chip's identity, but the row has nothing to open for it.

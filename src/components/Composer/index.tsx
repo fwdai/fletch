@@ -8,7 +8,6 @@ import type {
   RoadmapItem,
   TrackerIssue,
 } from "@/api";
-import type { Engine } from "@/api/engine";
 import { lookupModel, lookupModelInList } from "@/data/modelCatalog";
 import {
   PROVIDER_DETAIL,
@@ -117,11 +116,6 @@ interface Props {
   /** Folders can be attached — from the `@` listing or a drop — and are given
    *  to the agent live, at their own paths, through `onSend`'s `folders`. */
   folders?: boolean;
-  /** The engine of the host the agent will run on, when that is not the one
-   *  the composer is scoped to (a draft picked to run on another host):
-   *  attached files are staged there, and the agents offered are the ones
-   *  that host can run. */
-  runsOn?: Pick<Engine, "api" | "hostId">;
   /** The folders the agent can already use, listed beside the add menu
    *  (`FolderAccess`) with their mode and a way to take each back. Omit for
    *  a new agent (none yet). */
@@ -234,7 +228,6 @@ export function Composer({
   listDir,
   listPrs,
   folders,
-  runsOn,
   grantedFolders,
   onChangeGrantedFolder,
   onRevokeFolder,
@@ -324,7 +317,7 @@ export function Composer({
   // spawn path can never disagree about the draft on screen. An existing
   // session spawned under its own settings and keeps a locked picker, so it is
   // exempt; whatever the agent is already running with is what it keeps.
-  const availability = useAgentAvailability(runsOn?.hostId);
+  const availability = useAgentAvailability();
   const sendBlocked =
     (existingSession ? null : blockedSentence(availability(provider))) ?? undefined;
 
@@ -382,7 +375,6 @@ export function Composer({
     listDir,
     listPrs,
     folders,
-    stagingEngine: runsOn,
     draftKey,
     autoFocus,
     seed,
@@ -519,7 +511,6 @@ export function Composer({
               customAgentId={customAgentId}
               modelOnly={existingSession}
               account={account}
-              runsOn={runsOn?.hostId}
               onChange={(nextProvider, nextModel, nextCustomAgentId) => {
                 // Effort follows from the selection via the effect above (a custom
                 // agent's reasoning budget, else the per-provider default).
