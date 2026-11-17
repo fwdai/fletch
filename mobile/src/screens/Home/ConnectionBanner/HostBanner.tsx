@@ -1,16 +1,11 @@
-import { Notice } from "../../components/ui/Notice";
-import { ignore } from "../../lib/ignore";
-import { useHostStore } from "../../store";
+import { Notice } from "../../../components/ui/Notice";
+import { ignore } from "../../../lib/ignore";
+import { useHostStore } from "../../../store";
 
-/** The slim status line over a cached project list while the link to the Mac
- *  is down or coming back. Persistent by nature — it is the connection state,
- *  not a message about it — so there is no dismiss; it goes when the link is
- *  up. The client reconnects on its own; Retry is for the impatient, and is
- *  withheld while an attempt is already running.
- *
- *  Home shows it only over a list. With nothing cached the whole body is the
- *  connection state instead (`HostState`). */
-export function ConnectionBanner() {
+/** The connection banner of a phone paired with one Mac: the link to it down
+ *  or coming back. The client reconnects on its own; Retry is for the
+ *  impatient, and is withheld while an attempt is already running. */
+export function HostBanner() {
   const connection = useHostStore((s) => s.connection);
   const error = useHostStore((s) => s.connectionError);
   const retrying = useHostStore((s) => s.retrying);
