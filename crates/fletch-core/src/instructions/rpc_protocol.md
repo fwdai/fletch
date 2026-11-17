@@ -141,7 +141,9 @@ already finished when the command is a short one; setup runs first the one
 time it has never completed), `app_status` (`phase` idle,
 setup, running or stopped, the `port` the dev server launched on, the last
 error, and `ports`: every port listening in a VM workspace, each with the
-port on the user's machine that reaches it), `app_log` (the last `args.lines` lines of its output, default 200, max
+port on the user's machine that reaches it and `run`, whether the run
+command listens there; a server you start yourself is among them only on a
+port below 32768), `app_log` (the last `args.lines` lines of its output, default 200, max
 2000, escapes stripped; `args.raw: true` keeps them) and `app_stop`. The start
 returns at once: poll `app_status` until the phase is `running` and the port is
 known, then talk to the app on that port. Stop what you started when you are

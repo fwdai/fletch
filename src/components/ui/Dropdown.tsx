@@ -26,12 +26,13 @@ interface ItemState {
   danger?: boolean;
 }
 
-/** `div` (click-only rows) by default; `button` for menus/options. The rest of
- *  the props (onClick, style, title, role, …) pass straight through to the
- *  element, typed accordingly. */
+/** `div` (click-only rows) by default; `button` for menus/options; `a` for a
+ *  row that is a link. The rest of the props (onClick, style, title, role,
+ *  href, …) pass straight through to the element, typed accordingly. */
 type DropdownItemProps =
   | (ItemState & { as?: "div" } & Omit<ComponentPropsWithoutRef<"div">, keyof ItemState>)
-  | (ItemState & { as: "button" } & Omit<ComponentPropsWithoutRef<"button">, keyof ItemState>);
+  | (ItemState & { as: "button" } & Omit<ComponentPropsWithoutRef<"button">, keyof ItemState>)
+  | (ItemState & { as: "a" } & Omit<ComponentPropsWithoutRef<"a">, keyof ItemState>);
 
 /** A menu row. Owns the `.dd-item` structure + state classes; children carry
  *  the row content (`.di-i` icon / `.di-l` label / `.di-m` meta, etc.). */
@@ -64,6 +65,20 @@ export function DropdownItem({
       >
         {children}
       </button>
+    );
+  }
+  if (as === "a") {
+    const { href, onClick, ...linkProps } = rest as ComponentPropsWithoutRef<"a">;
+    return (
+      <a
+        {...linkProps}
+        className={cls}
+        href={disabled ? undefined : href}
+        aria-disabled={disabled || undefined}
+        onClick={disabled ? undefined : onClick}
+      >
+        {children}
+      </a>
     );
   }
   const divProps = rest as ComponentPropsWithoutRef<"div">;

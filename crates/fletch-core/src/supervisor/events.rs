@@ -835,11 +835,12 @@ mod tests {
         session.set_forwarded(&[ForwardedPort {
             guest_port: 3000,
             port: 3002,
+            run: true,
         }]);
         emit_run_state(&sink, "fuji", &session);
         session.mark_stopped(gen, Some("Run exited: 1".to_string()));
         emit_run_state(&sink, "fuji", &session);
-        let forwarded = json!([{ "guest_port": 3000, "port": 3002 }]);
+        let forwarded = json!([{ "guest_port": 3000, "port": 3002, "run": true }]);
         let state = |phase: &str, last_error: Value, port: Value, guest_port: Value, ports| {
             (
                 "run:state".to_string(),

@@ -504,10 +504,12 @@ mod tests {
                 ForwardedPort {
                     guest_port: 3000,
                     port: 3001,
+                    run: true,
                 },
                 ForwardedPort {
                     guest_port: 5432,
                     port: 5432,
+                    run: false,
                 },
             ];
         }
@@ -520,8 +522,8 @@ mod tests {
         assert_eq!(
             out["ports"],
             json!([
-                { "guest_port": 3000, "port": 3001 },
-                { "guest_port": 5432, "port": 5432 }
+                { "guest_port": 3000, "port": 3001, "run": true },
+                { "guest_port": 5432, "port": 5432, "run": false }
             ])
         );
     }

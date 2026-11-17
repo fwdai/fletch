@@ -163,9 +163,9 @@ check T-docker-proxies "forget-0.5.0-docker-proxies takes back the docker client
 check T-apt "apt reaches its https sources through the egress proxy" -- \
   runroot sh -c 'set -e; apt-config dump | grep -qF "Acquire::https::Proxy \"http://127.0.0.1:8899\";"; apt-config dump | grep -qF "Acquire::http::Proxy \"http://127.0.0.1:8899\";"
 schemes=$(apt-get update --print-uris | cut -c2-9 | sort -u); test "$schemes" = https://; echo "proxy 127.0.0.1:8899; every source $schemes"'
-check T-guest-listeners "fletch-guest listeners prints a loopback server when it starts and again when it stops" -- \
-  agent_sh 'node -e "setTimeout(() => { const s = require(\"net\").createServer().listen(39123, \"127.0.0.1\"); setTimeout(() => s.close(), 1500); }, 1200)" &
-out=$(timeout 5 /opt/fletch/bin/fletch-guest listeners); echo $out; echo "$out" | grep -q 39123 && ! echo "$out" | tail -1 | grep -q 39123'
+check T-guest-listeners "fletch-guest listeners prints a loopback server when it starts and again when it stops, and never one on a port the kernel assigns from" -- \
+  agent_sh 'node -e "setTimeout(() => { const net = require(\"net\"); const s = net.createServer().listen(3912, \"127.0.0.1\"); const e = net.createServer().listen(39123, \"127.0.0.1\"); setTimeout(() => { s.close(); e.close(); }, 1500); }, 1200)" &
+out=$(timeout 5 /opt/fletch/bin/fletch-guest listeners); echo $out; echo "$out" | grep -q ":3912}" && ! echo "$out" | tail -1 | grep -q 3912 && ! echo "$out" | grep -q 39123'
 check T-guest-reclaim "sudo -n fletch-guest reclaim, as the host runs it, exits 0" -- \
   agent_sh 'sudo -n /opt/fletch/bin/fletch-guest reclaim 2>&1 && echo reclaimed'
 check T-nollvm-files "Mesa/LLVM files are excluded; libgbm stays" -- \

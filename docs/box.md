@@ -402,11 +402,27 @@ ports (loopback or every address) once and on each change; each gets a free
 port on the host — the same number when it is free there, else the next free
 one, noted in the panel — over `ssh -N -L 127.0.0.1:<host>:localhost:<guest>`
 on a connection of its own (`Channel::forward`), and loses it when it stops
-listening or the box stops; at most 16 per box. The watcher is not a launch:
+listening or the box stops; at most 16 per box. A port nobody chose is not
+named, so not forwarded: one in the range the kernel assigns from when a
+process binds port 0 (`ip_local_port_range`, 32768–60999), where a debugger,
+a bundler's worker or a tool's local server puts a socket only it connects
+to. Root's listeners are named whatever the port — a container's published
+port is the engine's proxy's, and whoever published it named it — so a Run
+pinned to a port in that range is the one thing lost (its link stays
+pending). The watcher is not a launch:
 it never boots a box nor holds one against its idle stop. `run:state`, the
 run snapshot and the agent's `app_status` carry them all as `ports`
-(`{guest_port, port}`), in any phase; the panel lists those besides the
-Run's own. The panel's link and the sidebar show the host port: `port` on
+(`{guest_port, port, run}`), in any phase. `run` says a Run listens there:
+the guest traces each listener up its parents to the `fletch-guest exec`
+that waits on a confined launch and names that launch's env file, which the
+host knows for a Run's (`BoxEngine::is_run`). The panel links the Run's
+ports besides its own and keeps the rest behind one menu: a server the
+agent or the workspace terminal started, a container's published port, a
+tenant's own launch. The trace reads `/proc/<pid>` as the guest user, so
+root's listeners have no launch, nor has any listener of an image before
+0.5.2, which names ports alone and filters none; and a Run is a box's, not
+an agent's, so a tenant's panel counts the Run of every agent in its box.
+The panel's link and the sidebar show the host port: `port` on
 `run:state` and the run snapshot, the port this Mac reaches as the field has
 always meant, with the guest's beside it as `guest_port`; the agent's
 `app_status` reports the guest port as `port`, which is where the agent is,

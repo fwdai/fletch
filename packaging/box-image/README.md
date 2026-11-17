@@ -120,7 +120,7 @@ database in a container recovers as after a crash.
 | Command | What |
 | --- | --- |
 | `exec --env-file … [--read-only …] [--hide <path>]… -- <cmd>` | the launch path; each `--hide` file or socket that exists (never a directory) is covered by a bind of `/dev/null` in the confined view, so `--hide /run/docker.sock` leaves the command no route to the daemon. A socket recreated at the path after the launch is not covered |
-| `listeners` | prints the sorted TCP ports listened on at `127.0.0.1`, `::1`, `0.0.0.0` or `::` in the guest's network namespace as one JSON array line (`[3000,5432]`), at once and on every change (polled each second), until killed; never 8899. A published container port shows up through Docker's userland proxy. Needs no root |
+| `listeners` | prints the TCP ports listened on at `127.0.0.1`, `::1`, `0.0.0.0` or `::` in the guest's network namespace as one JSON array line sorted by port (`[{"port":3000,"exec":"/data/run/<id>.env"},{"port":5432}]`), at once and on every change (polled each second), until killed; never 8899, and never a port in the range the kernel assigns from (`ip_local_port_range`) unless root listens there. `exec` is the env file of the confined `exec` the listening process descends from, when it has one this user can see. A published container port shows up through Docker's userland proxy, root's, with no `exec`. Needs no root |
 | `sudo -n /opt/fletch/bin/fletch-guest reclaim` | syncs, drops the page cache, compacts memory, so the guest's file cache goes back to the host; exits 0 |
 
 ## Tools disks

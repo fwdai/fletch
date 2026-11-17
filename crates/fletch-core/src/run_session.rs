@@ -51,10 +51,11 @@ pub struct RunStateSnapshot {
     /// `app_status` names. `None` for a server on the host, where `port` is
     /// that port. Set and cleared with the run's port.
     pub guest_port: Option<u16>,
-    /// Every port something listens on in the box that holds the checkout,
-    /// with the port on this host that reaches it: the box's, whatever
-    /// started it, so kept across the run's starts and stops. Empty for a
-    /// checkout on this host, where nothing needs forwarding.
+    /// Every port the box that holds the checkout forwards, with the port
+    /// on this host that reaches it and whether a Run listens there: the
+    /// box's, whatever started it, so kept across the run's starts and
+    /// stops. Empty for a checkout on this host, where nothing needs
+    /// forwarding.
     pub ports: Vec<ForwardedPort>,
     /// Which state this is: moved on by every change to the phase, the error
     /// or the ports, never back. `run:state` carries it too, so a client takes
@@ -566,7 +567,11 @@ mod tests {
     fn forwarded(pairs: &[(u16, u16)]) -> Vec<ForwardedPort> {
         pairs
             .iter()
-            .map(|&(guest_port, port)| ForwardedPort { guest_port, port })
+            .map(|&(guest_port, port)| ForwardedPort {
+                guest_port,
+                port,
+                run: false,
+            })
             .collect()
     }
 

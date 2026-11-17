@@ -64,7 +64,9 @@ usage: fletch-guest <subcommand> ...
   relay <mailbox dir>                        requests out as JSON lines, responses in
   tail <dir> [--offsets <json>]              follow *.jsonl under <dir> as JSON lines
   listeners                                  the TCP ports listened on at a loopback or wildcard
-                                             address, as a JSON array line, again on each change
+                                             address, as a JSON array line, again on each change:
+                                             each with the env file of the exec it descends from
+                                             when known; none the kernel assigned, bar root's
   reclaim                                    (root) sync, drop the page cache, compact memory
   wait-stop <vsock port>                     return once the host sends `stop`";
 
