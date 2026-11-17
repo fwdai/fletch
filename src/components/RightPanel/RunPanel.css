@@ -170,6 +170,29 @@
   flex-wrap: wrap;
   padding: 6px 12px;
 }
+/* The ports the run does not listen on: one trigger at the bar's end, where
+   its menu, which opens leftwards, stays inside the panel. */
+.run-bar.v2 .run-other-ports {
+  margin-left: auto;
+}
+.run-bar.v2 .run-other-ports .run-link {
+  cursor: default;
+  color: var(--fg-2);
+}
+.run-bar.v2 .run-port-item {
+  font-family: var(--font-mono);
+  text-decoration: none;
+}
+.run-bar.v2 .run-port-item .colon,
+.run-bar.v2 .run-port-item .mac-port {
+  color: var(--fg-3);
+}
+.run-bar.v2 .run-port-item .mac-port {
+  margin-left: 6px;
+}
+.run-bar.v2 .run-port-item svg {
+  opacity: 0.55;
+}
 
 /* One muted line under the bar, e.g. why detection came back empty. */
 .run-hint {

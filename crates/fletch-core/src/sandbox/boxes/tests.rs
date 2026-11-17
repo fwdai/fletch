@@ -505,12 +505,13 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
                 .insert(agent_id.to_string(), ports.to_vec());
         });
     }
-    let host_port_of = |agent_id: &str, guest_port: u16| -> Option<u16> {
+    let forward_of = |agent_id: &str, guest_port: u16| -> Option<ForwardedPort> {
         let forwarded = forwarded.lock();
         let ports = forwarded.get(agent_id)?;
-        let port = ports.iter().find(|p| p.guest_port == guest_port)?;
-        Some(port.port)
+        ports.iter().find(|p| p.guest_port == guest_port).copied()
     };
+    let host_port_of =
+        |agent_id: &str, guest_port: u16| forward_of(agent_id, guest_port).map(|p| p.port);
     // Both bind the guest's own 3000: each VM's loopback is its own. Each
     // answer also reports the Run's view of the guest: whether `/data` (the
     // launch env files, the agent's token among them) is in sight, and
@@ -607,6 +608,10 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
         )
         .await;
         let host_port = host_port_of(&agent_id, port).unwrap();
+        assert!(
+            forward_of(&agent_id, port).unwrap().run,
+            "[{name}] the guest traces the listener to the Run's launch"
+        );
         if n == 0 {
             assert_eq!(
                 host_port, free_on_host,
@@ -705,6 +710,10 @@ async fn the_run_panel_serves_a_guest_app_on_a_host_port() {
     )
     .await;
     let other_host_port = host_port_of(&other.agent_id, OTHER_PORT).unwrap();
+    assert!(
+        !forward_of(&other.agent_id, OTHER_PORT).unwrap().run,
+        "a server started outside the Run is not the Run's"
+    );
     let body = fetch(other_host_port);
     assert!(body.contains("other server"), "{body}");
 

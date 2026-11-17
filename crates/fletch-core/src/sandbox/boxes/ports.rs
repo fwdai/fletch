@@ -3,25 +3,30 @@
 //! host's own Run bumps a taken port. `fletch-guest listeners` names the
 //! ports listening in the guest, once and again on every change; each new one
 //! gets a forward of its own (`Channel::forward`, an `ssh -L` connection), and
-//! one that stops listening loses it. The watcher runs beside the box's
+//! one that stops listening loses it. The guest leaves out the ports nobody
+//! chose (a helper's private socket on a port the kernel assigned), and says
+//! which launch listens where it can, so a forward tells whether it is a
+//! Run's ([`ForwardedPort::run`]). The watcher runs beside the box's
 //! relays from its boot to its stop (`relay::Relays::forward_ports`), so it
 //! never boots a box and never holds one against its idle stop. Whoever
 //! follows the forwards hears every change ([`on_change`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use fletch_box::channel::Forward;
 use fletch_box::{guest, Channel};
 use parking_lot::RwLock;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::watch;
 
 use super::registry::BoxRegistry;
+use super::BoxEngine;
 use crate::error::{Error, Result};
 
 /// The most ports of one box forwarded at once: each is an ssh connection.
@@ -41,6 +46,11 @@ const RETRY_EVERY: Duration = Duration::from_secs(5);
 pub struct ForwardedPort {
     pub guest_port: u16,
     pub port: u16,
+    /// Whether a Run listens there: the Run panel's command or anything it
+    /// started, as against everything else in the box (a server the agent
+    /// started, a container's published port). False for a guest that does
+    /// not say who listens (before image 0.5.2).
+    pub run: bool,
 }
 
 type Listener = Arc<dyn Fn(&str, &[ForwardedPort]) + Send + Sync>;
@@ -104,13 +114,15 @@ async fn pump_listeners(
         agent_id,
         open: BTreeMap::new(),
     };
-    let mut listening = BTreeSet::new();
+    let mut listening = BTreeMap::new();
     let mut retry = tokio::time::interval(RETRY_EVERY);
     loop {
         tokio::select! {
             line = lines.next_line() => match line? {
                 Some(line) => match parse_listeners(&line) {
-                    Ok(ports) => listening = ports,
+                    Ok(listeners) => listening = runs_ports(listeners, |env_file| {
+                        BoxEngine::shared().is_run(Path::new(env_file))
+                    }),
                     Err(e) => tracing::warn!(error = %e, %line, "box ports: bad listeners line"),
                 },
                 None => return Ok(()),
@@ -125,9 +137,31 @@ async fn pump_listeners(
     }
 }
 
-/// One line of `fletch-guest listeners`: the guest ports listening now.
-fn parse_listeners(line: &str) -> serde_json::Result<BTreeSet<u16>> {
+/// One listener of a `fletch-guest listeners` line: a port and, where the
+/// guest knows it, the env file of the launch that listens there. A guest
+/// from before image 0.5.2 names the port alone, as a number.
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum Listening {
+    Port(u16),
+    Owned { port: u16, exec: Option<String> },
+}
+
+/// One line of `fletch-guest listeners`: what listens in the guest now.
+fn parse_listeners(line: &str) -> serde_json::Result<Vec<Listening>> {
     serde_json::from_str(line)
+}
+
+/// The guest ports of `listeners`, each with whether a Run listens there:
+/// `is_run` says so of the env file of the launch that does.
+fn runs_ports(listeners: Vec<Listening>, is_run: impl Fn(&str) -> bool) -> BTreeMap<u16, bool> {
+    listeners
+        .into_iter()
+        .map(|listener| match listener {
+            Listening::Port(port) => (port, false),
+            Listening::Owned { port, exec } => (port, exec.as_deref().is_some_and(&is_run)),
+        })
+        .collect()
 }
 
 /// What makes the forwards of a box follow what its guest listens on.
@@ -162,23 +196,27 @@ struct Forwards {
 }
 
 impl Forwards {
-    fn ports(&self) -> Vec<ForwardedPort> {
+    /// The live forwards, each a Run's or not as `listening` says.
+    fn ports(&self, listening: &BTreeMap<u16, bool>) -> Vec<ForwardedPort> {
         self.open
             .iter()
             .map(|(&guest_port, forward)| ForwardedPort {
                 guest_port,
                 port: forward.host_port,
+                run: listening.get(&guest_port).copied().unwrap_or(false),
             })
             .collect()
     }
 
-    /// Open and close forwards so the live ones follow `listening`, then
-    /// tell the listener what is forwarded. A port that cannot be forwarded
-    /// now is tried again the next time round.
-    async fn follow(&mut self, channel: &Channel, listening: &BTreeSet<u16>) {
+    /// Open and close forwards so the live ones follow `listening`, the
+    /// guest's listening ports and whether each is a Run's, then tell the
+    /// listener what is forwarded. A port that cannot be forwarded now is
+    /// tried again the next time round.
+    async fn follow(&mut self, channel: &Channel, listening: &BTreeMap<u16, bool>) {
         self.open.retain(|_, forward| forward.alive());
         let forwarded = self.open.keys().copied().collect();
-        let change = reconcile(&forwarded, listening, MAX_FORWARDS);
+        let wanted = listening.keys().copied().collect();
+        let change = reconcile(&forwarded, &wanted, MAX_FORWARDS);
         for guest_port in change.close {
             self.open.remove(&guest_port);
         }
@@ -195,7 +233,7 @@ impl Forwards {
                 ),
             }
         }
-        tell(&self.agent_id, &self.ports());
+        tell(&self.agent_id, &self.ports(listening));
     }
 }
 
@@ -264,6 +302,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_listener_is_a_runs_when_its_launch_is_a_run() {
+        let line = r#"[{"port":3000,"exec":"/data/run/run.env"},{"port":5432},{"port":8080,"exec":"/data/run/review.env"}]"#;
+        let listeners = parse_listeners(line).unwrap();
+        assert_eq!(
+            runs_ports(listeners, |env_file| env_file == "/data/run/run.env"),
+            BTreeMap::from([(3000, true), (5432, false), (8080, false)])
+        );
+    }
+
+    /// A guest from before image 0.5.2 names ports alone: none is known to
+    /// be a Run's.
+    #[test]
+    fn a_line_of_bare_ports_is_read_with_no_run_among_them() {
+        let listeners = parse_listeners("[3000,5432]").unwrap();
+        assert_eq!(listeners, [Listening::Port(3000), Listening::Port(5432)]);
+        assert_eq!(
+            runs_ports(listeners, |_| true),
+            BTreeMap::from([(3000, false), (5432, false)])
+        );
+        assert!(parse_listeners("[]").unwrap().is_empty());
+    }
+
     /// What a retry rests on: with the guest's listeners unchanged, a port
     /// whose forward never opened or has died (so is no longer among the
     /// forwarded) is opened again.
@@ -318,10 +379,8 @@ mod tests {
     }
 
     #[test]
-    fn a_listeners_line_is_a_json_array_of_ports() {
-        assert_eq!(parse_listeners("[3000,5432]").unwrap(), set(&[3000, 5432]));
-        assert_eq!(parse_listeners("[]").unwrap(), set(&[]));
-        assert_eq!(parse_listeners(" [80] ").unwrap(), set(&[80]));
+    fn a_listeners_line_is_a_json_array_of_listeners() {
+        assert_eq!(parse_listeners(" [80] ").unwrap(), [Listening::Port(80)]);
         for bad in [
             "",
             "3000",
@@ -329,6 +388,8 @@ mod tests {
             "[-1]",
             "{\"ports\":[]}",
             "[\"3000\"]",
+            "[{\"exec\":\"/data/run/run.env\"}]",
+            "[{\"port\":70000}]",
         ] {
             assert!(parse_listeners(bad).is_err(), "{bad:?}");
         }
@@ -339,10 +400,11 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ForwardedPort {
                 guest_port: 3000,
-                port: 3001
+                port: 3001,
+                run: true,
             })
             .unwrap(),
-            serde_json::json!({ "guest_port": 3000, "port": 3001 })
+            serde_json::json!({ "guest_port": 3000, "port": 3001, "run": true })
         );
     }
 }

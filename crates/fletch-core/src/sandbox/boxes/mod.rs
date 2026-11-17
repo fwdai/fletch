@@ -530,6 +530,17 @@ impl BoxEngine {
             .unwrap_or_else(|p| p.into_inner())
             .insert(launch_id.to_string(), stores);
     }
+
+    /// Whether `env_file`, a launch's in its guest, is a live Run's: how a
+    /// listener the guest traces to a launch is told to be a Run's
+    /// ([`ports`]).
+    fn is_run(&self, env_file: &Path) -> bool {
+        self.runs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .keys()
+            .any(|launch_id| launch_files::env_file(launch_id) == env_file)
+    }
 }
 
 /// A launch plan step over the launch's credential files: the box's channel,

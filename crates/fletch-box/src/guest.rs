@@ -124,9 +124,14 @@ pub const EXEC_CONFINE_FAILED: i32 = 125;
 pub const RELAY: &str = "relay";
 pub const TAIL: &str = "tail";
 /// `fletch-guest listeners`: prints the TCP ports something listens on in the
-/// guest on a loopback or wildcard address as one JSON line, a sorted array
-/// (`[3000,5432]`), at once and again whenever the set changes, until its
-/// session ends. The guest's own egress port is not among them.
+/// guest on a loopback or wildcard address as one JSON line, an array sorted
+/// by port (`[{"port":3000,"exec":"/data/run/<id>.env"},{"port":5432}]`), at
+/// once and again whenever the set changes, until its session ends. `exec`
+/// is the env file of the confined [`EXEC`] the listening process descends
+/// from, when there is one. The guest's own egress port is not among them,
+/// nor is a port in the range the kernel assigns from unless root listens
+/// there. A guest from before image 0.5.2 prints the ports alone
+/// (`[3000,5432]`), those in that range included.
 pub const LISTENERS: &str = "listeners";
 /// `sudo -n fletch-guest reclaim`: the guest drops its file cache and compacts
 /// its memory, so the host gets the memory back. A guest that predates it

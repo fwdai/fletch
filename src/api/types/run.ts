@@ -5,6 +5,11 @@ export type RunPhase = "idle" | "setup" | "running" | "stopped";
 export interface ForwardedPort {
   guest_port: number;
   port: number;
+  /** Whether the run listens there: the run command or anything it started,
+   *  as against everything else in the VM (a server the agent started, a
+   *  container's published port). Absent from a host from before the field,
+   *  and false on a VM image that does not say who listens. */
+  run?: boolean;
 }
 
 /** An agent's run as the backend holds it, fetched by a panel on mount. It
@@ -23,9 +28,11 @@ export interface RunStateSnapshot {
    *  forward from `port` reaches; null on the host, where `port` is that
    *  port. Set and cleared with `port`. */
   guest_port?: number | null;
-  /** Every port listening in a VM workspace's guest, the run command's own
-   *  among them, in any phase: an agent may start a server itself. Always
-   *  empty on the host. Absent from a host from before the field. */
+  /** Every port listening in a VM workspace's guest that someone chose (not
+   *  a helper's private socket on a port the kernel assigned), the run
+   *  command's own among them, in any phase: an agent may start a server
+   *  itself. Always empty on the host. Absent from a host from before the
+   *  field. */
   ports?: ForwardedPort[];
   /** The run's revision when this was taken, as on `RunStateEvent.revision`;
    *  0 for an agent that never ran. Absent from a host from before it. */
