@@ -34,7 +34,7 @@ vi.mock("@tauri-apps/api/event", async (importOriginal) => ({
 
 import { linkOf } from "../src/host";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { appStore, hostOnScreen } from "../src/store";
+import { appStore, hostOnScreen, hostStoreOf } from "../src/store";
 import { loadSettings, saveSettings } from "../src/store/persist";
 import { FORGET_PUSH_TIMEOUT_MS, pushTab } from "../src/store/push";
 
@@ -96,6 +96,72 @@ describe("registration", () => {
     expect(registerPush).not.toHaveBeenCalled();
     expect(plugin.invoked.slice(before)).not.toContain("plugin:push|register");
     registerPush.mockRestore();
+  });
+});
+
+describe("a second paired host", () => {
+  /** Added the Pair screen's way; the mock answers under its key. */
+  const STUDIO = "c3R1ZGlv";
+  const studio = () => linkOf(STUDIO);
+
+  it("is asked about once, and the token goes to every host, each over its own link", async () => {
+    await saveSettings({ pushPermission: { [MOCK_HOST_KEY]: "granted" } });
+    await app().connect({ host: "mock", port: 1, hostKey: STUDIO, pairingToken: "ABCD2345" });
+    await vi.waitFor(async () =>
+      expect((await loadSettings()).pushPermission?.[STUDIO]).toBe("granted"),
+    );
+    expect(asked()).toBe(2);
+    expect(mock().client.state).toBe("connected");
+
+    const onMock = vi.spyOn(mock().api, "registerPush");
+    const onStudio = vi.spyOn(studio().api, "registerPush");
+    emit("push://token", { token: "0d0e0f", environment: "sandbox" });
+    await vi.waitFor(() => {
+      expect(onMock).toHaveBeenCalledWith("0d0e0f", "sandbox");
+      expect(onStudio).toHaveBeenCalledWith("0d0e0f", "sandbox");
+    });
+
+    // …and again on each host's own handshake, to that host alone.
+    onMock.mockClear();
+    onStudio.mockClear();
+    await hostStoreOf(STUDIO).getState().reconnect();
+    await vi.waitFor(() => expect(onStudio).toHaveBeenCalledWith("0d0e0f", "sandbox"));
+    expect(onMock).not.toHaveBeenCalled();
+    expect(asked()).toBe(2);
+    onMock.mockRestore();
+    onStudio.mockRestore();
+  });
+
+  it("gives the token to no host whose alerts were refused", async () => {
+    await saveSettings({ pushPermission: { [MOCK_HOST_KEY]: "granted", [STUDIO]: "denied" } });
+    const onMock = vi.spyOn(mock().api, "registerPush");
+    const onStudio = vi.spyOn(studio().api, "registerPush");
+    emit("push://token", { token: "0a0b0c", environment: "sandbox" });
+    await vi.waitFor(() => expect(onMock).toHaveBeenCalledWith("0a0b0c", "sandbox"));
+    await settle();
+    expect(onStudio).not.toHaveBeenCalled();
+    onMock.mockRestore();
+    onStudio.mockRestore();
+  });
+
+  it("is unpaired off screen over its own link, the host on screen untouched", async () => {
+    await app().switchHost(MOCK_HOST_KEY);
+    const link = studio();
+    const clear = vi.spyOn(link.api, "registerPush");
+    const drop = vi.spyOn(link.client, "disconnect");
+    const onMock = vi.spyOn(mock().api, "registerPush");
+
+    await app().unpair(STUDIO);
+
+    expect(clear).toHaveBeenCalledWith(null);
+    expect(clear.mock.invocationCallOrder[0]).toBeLessThan(drop.mock.invocationCallOrder[0]);
+    expect(onMock).not.toHaveBeenCalled();
+    expect(app().hostKey).toBe(MOCK_HOST_KEY);
+    expect(app().hosts.map((h) => h.hostKey)).toEqual([MOCK_HOST_KEY]);
+    expect(mock().client.state).toBe("connected");
+    clear.mockRestore();
+    drop.mockRestore();
+    onMock.mockRestore();
   });
 });
 
