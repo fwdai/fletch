@@ -1,0 +1,11 @@
+-- A repository of a copied project that its home has since dropped, while
+-- something on this host still borrows from its clone (an agent checkout, a
+-- saved workflow run).
+--
+-- It is still the project's for everything that was started with it: the row
+-- those checkouts refer to, listed with the project so they keep their name,
+-- icon and settings. What it is no longer is part of what a new workspace is
+-- given: no new checkout is forked from it, so once its last borrower is gone
+-- the next sync removes the row and the clone. NULL for every repository that
+-- is part of its project, which is every row from before this migration.
+ALTER TABLE repos ADD COLUMN dropped_at INTEGER;

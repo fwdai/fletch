@@ -1112,11 +1112,15 @@ its own login.
 (`~/.fletch/projects/<project_id>/repos/<repo id>/<dir>`) with the host's
 GitHub login, and records the project as a copy under the same `project_id`.
 Called again for a copy, it brings the copy in line with the definition: the
-project's `name` and each repository's `label` follow the home, a repository
+project's `name`, the order of its repositories (the first is its primary)
+and each repository's `label` follow the home, a repository
 the home has added is cloned, and one the home has removed leaves the copy
-under the rule the home itself is held to when detaching a repository: once no
-agent on the host, live or archived, has a checkout of it. Until then it stays
-a repository of the project on that host, the same as any other. What is not
+once nothing on the host borrows from its clone: no agent, live or archived,
+has a checkout of it and no saved workflow run was started from it. Its clone
+is removed with it. Until then it stays the project's on that host for what
+was started with it, after the ones the home names, but no new workspace is
+given it and none can be started on it, so nothing new keeps it there. Deleting the copy on the host (`delete_project`)
+removes its clones too. What is not
 followed: a repository
 whose folder the home renamed or whose `origin` the home repointed keeps the
 folder and remote it was cloned with; delete the copy on the host to have it

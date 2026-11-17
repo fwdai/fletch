@@ -773,6 +773,12 @@ impl Supervisor {
             });
         }
 
+        // A copy's clones of its repositories, which only its rows gave a
+        // use. Detached for the same reasons.
+        let workspace = self.workspace.clone();
+        let copy = project_id.to_string();
+        crate::host::spawn(async move { crate::commands::prune_copy(&workspace, &copy).await });
+
         Ok(ProjectDeleteResult {
             workspace: self.current_workspace().expect("workspace initialized"),
             deleted_agent_ids,
