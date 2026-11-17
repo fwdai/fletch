@@ -48,6 +48,20 @@ function sink() {
 }
 
 describe("createRunSync", () => {
+  it("settles a failed reload over the rows already shown, not over nothing", () => {
+    const held = [run({ id: "a" }), run({ id: "b" })];
+    let rows: WfRun[] = held;
+    const sync = createRunSync((next) => {
+      rows = next;
+    }, held);
+
+    // An event heard while the list is read again, then the read fails.
+    sync.push({ kind: "upsert", row: run({ id: "c", updated_at: 9 }) });
+    sync.settle();
+
+    expect(rows.map((r) => r.id).sort()).toEqual(["a", "b", "c"]);
+  });
+
   it("keeps a terminal flip that arrived while the snapshot was in flight", () => {
     const s = sink();
 
