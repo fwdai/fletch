@@ -314,14 +314,17 @@ function watch(set: Set, get: Get, link: HostLink): void {
 }
 
 /** Connect a paired host's link, greeting it with `hello` — this device is
- *  already registered there. Its store shows how far the dial has got, and
- *  how it failed through the client's own report — which a dial superseded by
- *  a newer attempt on the link (a pairing link naming this host) never makes,
- *  so the newer one's outcome is what shows. From then on the client keeps the
- *  link up on its own, retrying with backoff for as long as the host is
- *  paired. */
+ *  already registered there — if it is down with no retry coming: never
+ *  dialled, or refused. One that is up, on its way up or waiting on its own
+ *  retry is left to it. Its store shows how far the dial has got, and how it
+ *  failed through the client's own report — which a dial superseded by a newer
+ *  attempt on the link (a pairing link naming this host) never makes, so the
+ *  newer one's outcome is what shows. From then on the client keeps the link
+ *  up on its own, retrying with backoff for as long as the host is paired. */
 async function dial(set: Set, get: Get, saved: SavedHost): Promise<void> {
   const link = linkOf(saved.hostKey);
+  const { state, retrying } = link.client;
+  if (!(state === "disconnected" || (state === "error" && !retrying))) return;
   const host = storeOfLink(link);
   watch(set, get, link);
   host.setState({ connectionError: null, dialStep: "connecting" });
@@ -502,17 +505,9 @@ export const appStore = createStore<AppState>()((set, get) => {
       // The user's choice, so the next launch starts here even if this host
       // does not answer now.
       if (!mockEnabled()) void setActiveHost(hostKey);
-      const { state, retrying } = linkOf(hostKey).client;
-      if (state === "connected") {
-        // Kept current off screen by its events, all but the working-tree stats,
-        // which only the on-screen host's poll reads (App).
-        void hostStoreOf(hostKey).getState().loadShortstats();
-        return;
-      }
-      // Down with no retry coming — never dialled, or refused — so it is
-      // dialled again. One retrying is left to its retry, and one connecting to
-      // its attempt.
-      if (state === "disconnected" || (state === "error" && !retrying)) await dial(set, get, saved);
+      // Connected all along unless it is down with no retry coming, which is
+      // dialled again.
+      await dial(set, get, saved);
     },
 
     async unpair(forgotten) {

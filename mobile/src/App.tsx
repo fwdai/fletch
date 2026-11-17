@@ -75,9 +75,11 @@ function Screen({ item }: { item: NavItem }) {
 /** One fleet-wide poll for the host on screen, like the desktop's — every agent
  *  row on every screen reads the maps these fill, so no row polls for itself.
  *  Working-tree stats are local git on the host, with no event for them, so
- *  they poll. PR state does not: it is seeded on every handshake and return to
- *  the foreground (store/index) and the host watcher's `pr:*` events keep it
- *  current between. */
+ *  they poll; a host off screen is kept current by its events, all but these,
+ *  so the poll is keyed by the host on screen and reads at once when another
+ *  is put there. PR state does not poll: it is seeded on every handshake and
+ *  return to the foreground (`resync` in store/host) and the host watcher's
+ *  `pr:*` events keep it current between. */
 function ShortstatsPoll() {
   const connected = useHostStore((s) => s.connection === "connected");
   const loadShortstats = useHostStore((s) => s.loadShortstats);
@@ -113,7 +115,7 @@ export function App() {
       {!ready ? null : hostKey && !addingHost ? (
         <>
           <OnHost hostKey={hostKey}>
-            <ShortstatsPoll />
+            <ShortstatsPoll key={hostKey} />
           </OnHost>
           <Stack
             dimmed={dimmed}

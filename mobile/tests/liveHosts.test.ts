@@ -299,6 +299,21 @@ describe("a screen names the host it was opened for", () => {
   });
 });
 
+describe("the working-tree poll", () => {
+  it("reads the host put on screen at once, connected all along", async () => {
+    const node = document.createElement("div");
+    const root = createRoot(node);
+    await act(async () => root.render(createElement(App)));
+    const studioStats = vi.spyOn(linkOf(STUDIO).api, "getAllShortstats");
+
+    await act(async () => app().switchHost(STUDIO));
+    expect(studioStats).toHaveBeenCalledOnce();
+
+    act(() => root.unmount());
+    await app().switchHost(MINI);
+  });
+});
+
 describe("forgetting a host", () => {
   it("forgets one that is not on screen, and leaves the one on screen alone", async () => {
     expect(app().hostKey).toBe(MINI);
