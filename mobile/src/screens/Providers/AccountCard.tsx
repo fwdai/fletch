@@ -3,7 +3,7 @@ import { Icon } from "@desktop/components/Icon";
 import { accountLabel } from "@desktop/data/providerAccounts";
 import { useState } from "react";
 import { Notice } from "../../components/ui/Notice";
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 import { Limits } from "./Limits";
 
 /** One account: the check that makes it the one every agent of the provider
@@ -22,7 +22,7 @@ export function AccountCard({
   limits: AccountLimits | undefined;
   nowMs: number;
 }) {
-  const setActive = useStore((s) => s.setActiveProviderAccount);
+  const setActive = useHostStore((s) => s.setActiveProviderAccount);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { Sheet } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { childPath } from "../../lib/paths";
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 
 /** Browse the Mac over `list_dir`, on the browser the desktop's own remote
  *  folder picker uses (`useFolderBrowser`). Directories only — everything this
@@ -32,7 +32,7 @@ export function FolderPicker({
    *  dismiss: it stands until they browse somewhere that reads. */
   onDismissError?: () => void;
 }) {
-  const listDir = useStore((s) => s.listDir);
+  const listDir = useHostStore((s) => s.listDir);
   // A failed read drops the listing with it, so the crumb and the action point
   // at the folder that failed rather than at the last one that worked.
   const {

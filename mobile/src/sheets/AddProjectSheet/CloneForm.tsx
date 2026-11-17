@@ -4,7 +4,7 @@ import { parseRepoSpec } from "@desktop/util/repoSpec";
 import { useEffect, useState } from "react";
 import { Notice } from "../../components/ui/Notice";
 import { childPath } from "../../lib/paths";
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 import { FolderPickerSheet } from "./FolderPicker";
 import type { RunAddProject } from "./useAddProject";
 
@@ -21,10 +21,10 @@ export function CloneForm({
   setError: (text: string | null) => void;
   run: RunAddProject;
 }) {
-  const ghStatus = useStore((s) => s.ghStatus);
-  const ghRepoList = useStore((s) => s.ghRepoList);
-  const cloneRepo = useStore((s) => s.cloneRepo);
-  const lastDestParent = useStore((s) => s.lastDestParent);
+  const ghStatus = useHostStore((s) => s.ghStatus);
+  const ghRepoList = useHostStore((s) => s.ghRepoList);
+  const cloneRepo = useHostStore((s) => s.cloneRepo);
+  const lastDestParent = useHostStore((s) => s.lastDestParent);
 
   const [gh, setGh] = useState<GhStatus | null>(null);
   const [probing, setProbing] = useState(true);

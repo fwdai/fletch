@@ -13,7 +13,7 @@ import { useDictation, VoiceRow } from "../../../dictation";
 import { isAgentBusy, modelLabel } from "../../../lib/agents";
 import { autosize } from "../../../lib/autosize";
 import { ignore } from "../../../lib/ignore";
-import { useStore } from "../../../store";
+import { useApp, useHostStore } from "../../../store";
 import { PrimaryPair } from "./PrimaryPair";
 
 /** Stop ignores taps this long after send, so a double-tap can't kill the run
@@ -50,9 +50,9 @@ export function Composer({
   /** Fires as the message goes out, so the screen can re-pin the log. */
   onSend?: () => void;
 }) {
-  const send = useStore((s) => s.send);
-  const stop = useStore((s) => s.stop);
-  const openSheet = useStore((s) => s.openSheet);
+  const send = useHostStore((s) => s.send);
+  const stop = useHostStore((s) => s.stop);
+  const openSheet = useApp((s) => s.openSheet);
   const [text, setText] = useState("");
   // Read inside the dictation callback, which arrives whenever the host
   // answers, against whatever the box holds by then.
@@ -63,7 +63,7 @@ export function Composer({
   const freshTimer = useRef<number | null>(null);
   const [armed, setArmed] = useState(true);
   const armTimer = useRef<number | null>(null);
-  const busy = useStore((s) => isAgentBusy(s, agent));
+  const busy = useHostStore((s) => isAgentBusy(s, agent));
   const attachments = useAttachments();
 
   // The transcript lands once, appended to whatever was typed — the same join

@@ -13,21 +13,22 @@ import { HOME } from "../src/remote/mock/fixtures";
 import { AddProjectSheet } from "../src/sheets/AddProjectSheet";
 import { CloneForm } from "../src/sheets/AddProjectSheet/CloneForm";
 import { OpenFolderForm } from "../src/sheets/AddProjectSheet/OpenFolderForm";
-import { useStore } from "../src/store";
+import { appStore, liveHost } from "../src/store";
 import { loadDestParent } from "../src/store/persist";
 
-const state = () => useStore.getState();
+const app = () => appStore.getState();
+const host = () => liveHost().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;
 
 /** Where the picker would land after browsing to `~/Code` — the absolute base
  *  the host reports, not the string it was asked for. */
-const codeDir = async () => (await state().listDir("~/Code")).base;
+const codeDir = async () => (await host().listDir("~/Code")).base;
 
 beforeAll(async () => {
-  await state().init();
-  await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  await app().init();
+  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
   ({ api } = linkOf(MOCK_HOST_KEY));
 });
 
@@ -50,7 +51,7 @@ describe("path arithmetic", () => {
 
 describe("browsing the host", () => {
   it("reports the absolute base for a tilde path, and directories to walk", async () => {
-    const listing = await state().listDir("~");
+    const listing = await host().listDir("~");
     expect(listing.base).toBe(`${HOME}/`);
     expect(listing.entries).toContainEqual({ name: "Code", is_dir: true });
     // Files come back too; the picker is what filters them out.
@@ -58,8 +59,8 @@ describe("browsing the host", () => {
   });
 
   it("records a failed listing in lastError and rethrows it", async () => {
-    await expect(state().listDir("/nope")).rejects.toThrow("no such directory");
-    expect(state().lastError).toContain("no such directory");
+    await expect(host().listDir("/nope")).rejects.toThrow("no such directory");
+    expect(app().lastError).toContain("no such directory");
   });
 });
 
@@ -67,84 +68,84 @@ describe("open an existing folder", () => {
   it("sends the picked absolute path and takes the workspace the host returns", async () => {
     const spy = vi.spyOn(api, "addWorkspaceRepo");
     const picked = childPath(await codeDir(), "playground");
-    await state().addWorkspaceRepo(picked);
+    await host().addWorkspaceRepo(picked);
     expect(spy).toHaveBeenCalledWith("/Users/alex/Code/playground");
     // No `workspace:changed` follows these ops, so the returned workspace is
     // the only thing that puts the project on the home screen.
-    expect(state().workspace?.projects.map((p) => p.path)).toContain(picked);
+    expect(host().workspace?.projects.map((p) => p.path)).toContain(picked);
     spy.mockRestore();
   });
 
   it("pinning a folder that is already a project changes nothing", async () => {
     const picked = childPath(await codeDir(), "playground");
-    const before = state().workspace;
-    await state().addWorkspaceRepo(picked);
-    expect(state().workspace?.projects).toEqual(before?.projects);
+    const before = host().workspace;
+    await host().addWorkspaceRepo(picked);
+    expect(host().workspace?.projects).toEqual(before?.projects);
   });
 
   it("records the host's refusal in lastError and rethrows it", async () => {
     // The host refuses a folder nested inside an existing repository rather
     // than running `git init` in it.
     const nested = childPath(childPath(await codeDir(), "playground"), "src");
-    await expect(state().addWorkspaceRepo(nested)).rejects.toThrow("inside the git repository");
-    expect(state().lastError).toContain("inside the git repository");
+    await expect(host().addWorkspaceRepo(nested)).rejects.toThrow("inside the git repository");
+    expect(app().lastError).toContain("inside the git repository");
   });
 });
 
 describe("clone from GitHub", () => {
   it("knows whether gh is signed in, and lists the user's repos", async () => {
-    expect(await state().ghStatus()).toMatchObject({
+    expect(await host().ghStatus()).toMatchObject({
       authenticated: true,
       login: "alexchaplinsky",
     });
-    expect((await state().ghRepoList()).map((r) => r.name_with_owner)).toContain("fwdai/fletch");
+    expect((await host().ghRepoList()).map((r) => r.name_with_owner)).toContain("fwdai/fletch");
   });
 
   it("clones into the chosen parent and remembers it for this host", async () => {
-    expect(state().lastDestParent).toBeNull();
+    expect(host().lastDestParent).toBeNull();
     const parent = await codeDir();
-    await state().cloneRepo("https://github.com/fwdai/relay.git", parent);
-    expect(state().workspace?.projects.map((p) => p.path)).toContain(`${parent}/relay`);
-    expect(state().lastDestParent).toBe(parent);
+    await host().cloneRepo("https://github.com/fwdai/relay.git", parent);
+    expect(host().workspace?.projects.map((p) => p.path)).toContain(`${parent}/relay`);
+    expect(host().lastDestParent).toBe(parent);
     // What the next session would hydrate as the clone form's default.
     expect(await loadDestParent(MOCK_HOST_KEY)).toBe(parent);
   });
 
   it("reuses the remembered parent, and surfaces the collision it causes", async () => {
     const spy = vi.spyOn(api, "cloneRepo");
-    const remembered = state().lastDestParent ?? "";
-    await expect(state().cloneRepo("fwdai/relay", remembered)).rejects.toThrow(
+    const remembered = host().lastDestParent ?? "";
+    await expect(host().cloneRepo("fwdai/relay", remembered)).rejects.toThrow(
       `a folder already exists at ${remembered}/relay`,
     );
     expect(spy).toHaveBeenCalledWith("fwdai/relay", remembered);
-    expect(state().lastError).toContain("a folder already exists at");
+    expect(app().lastError).toContain("a folder already exists at");
     spy.mockRestore();
   });
 
   it("closes only the Add Project sheet when a slow clone finishes", async () => {
-    let finish: (w: NonNullable<ReturnType<typeof state>["workspace"]>) => void = () => {};
+    let finish: (w: NonNullable<ReturnType<typeof host>["workspace"]>) => void = () => {};
     const spy = vi
       .spyOn(api, "cloneRepo")
       .mockReturnValue(new Promise((resolve) => (finish = resolve)));
-    state().openSheet("addProject");
-    const cloning = state().cloneRepo("fwdai/other", await codeDir());
+    app().openSheet("addProject");
+    const cloning = host().cloneRepo("fwdai/other", await codeDir());
 
     // The user gave up waiting and opened something else.
-    state().closeSheet();
-    state().openSheet("host");
-    finish(state().workspace as NonNullable<ReturnType<typeof state>["workspace"]>);
+    app().closeSheet();
+    app().openSheet("host");
+    finish(host().workspace as NonNullable<ReturnType<typeof host>["workspace"]>);
     await cloning;
 
-    expect(state().sheet).toMatchObject({ name: "host", open: true });
+    expect(app().sheet).toMatchObject({ name: "host", open: true });
     spy.mockRestore();
   });
 
   it("closeSheet still closes when wired straight to a click handler", () => {
-    state().openSheet("host");
+    app().openSheet("host");
     // React hands an onClick/onClose callback its event; the unconditional
     // closer must ignore it rather than read it as a sheet name.
-    (state().closeSheet as (e: unknown) => void)({ type: "click" });
-    expect(state().sheet).toMatchObject({ name: "host", open: false });
+    (app().closeSheet as (e: unknown) => void)({ type: "click" });
+    expect(app().sheet).toMatchObject({ name: "host", open: false });
   });
 });
 

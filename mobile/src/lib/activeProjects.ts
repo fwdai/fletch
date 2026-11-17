@@ -11,7 +11,7 @@ import {
   stampProjectActivity,
 } from "@desktop/storage/projectActivity";
 import { useEffect, useMemo, useState } from "react";
-import { useStore } from "../store";
+import { useApp, useHostStore } from "../store";
 import { agentsOfProject } from "./agents";
 import { useTick } from "./hooks";
 import { type Project, projectsOf } from "./projects";
@@ -37,9 +37,9 @@ export function orderProjects(
  *  the stamps locally, the way the desktop sidebar does, so a message sent to
  *  an idle agent counts as activity and survives a relaunch. */
 export function useOrderedProjects(): Project[] {
-  const workspace = useStore((s) => s.workspace);
-  const turnStartedAt = useStore((s) => s.turnStartedAt);
-  const activeFirst = useStore((s) => s.activeFirst);
+  const workspace = useHostStore((s) => s.workspace);
+  const turnStartedAt = useHostStore((s) => s.turnStartedAt);
+  const activeFirst = useApp((s) => s.activeFirst);
   const [turns, setTurns] = useState(loadProjectActivity);
   useEffect(() => {
     const stamps: ProjectActivity = {};

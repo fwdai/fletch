@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { baseOf, isAgentBusy } from "../../../lib/agents";
 import { ignore } from "../../../lib/ignore";
 import { openExternal } from "../../../lib/links";
-import { useStore } from "../../../store";
+import { useApp, useHostStore } from "../../../store";
 import { type ShipFacts, shipOp } from "./actions";
 
 /** How long an armed merge waits for its second tap. */
@@ -16,16 +16,16 @@ export const ARM_MS = 4000;
  *  and merges on the second; the arming holds the agent it was armed for and
  *  lapses on its own. */
 export function useShipActions(agent: AgentRecord, onDelegated?: () => void) {
-  const pr = useStore((s) => s.prStates[agent.id] ?? null);
-  const checks = useStore((s) => s.prChecks[agent.id] ?? null);
-  const comments = useStore((s) => s.prComments[agent.id] ?? null);
-  const openSheet = useStore((s) => s.openSheet);
-  const delegateGit = useStore((s) => s.delegateGit);
-  const mergePr = useStore((s) => s.mergePr);
-  const archive = useStore((s) => s.archive);
+  const pr = useHostStore((s) => s.prStates[agent.id] ?? null);
+  const checks = useHostStore((s) => s.prChecks[agent.id] ?? null);
+  const comments = useHostStore((s) => s.prComments[agent.id] ?? null);
+  const openSheet = useApp((s) => s.openSheet);
+  const delegateGit = useHostStore((s) => s.delegateGit);
+  const mergePr = useHostStore((s) => s.mergePr);
+  const archive = useHostStore((s) => s.archive);
   // A trigger sent mid-turn folds into the running turn instead of running as
   // its own (the desktop queues it until idle); v1 on the phone simply waits.
-  const busy = useStore((s) => isAgentBusy(s, agent));
+  const busy = useHostStore((s) => isAgentBusy(s, agent));
   const [armed, setArmed] = useState<string | null>(null);
   const [merging, setMerging] = useState(false);
   useEffect(() => {

@@ -20,12 +20,13 @@ import {
   PENDING_TOOL_USE_ID,
   PM_CUSTOM_AGENT_ID,
 } from "../src/remote/mock/fixtures";
-import { agentOf, projectOf, useStore } from "../src/store";
+import { agentOf, appStore, liveHost, projectOf } from "../src/store";
 import { isReplayed, replayLiveTurn } from "../src/store/liveTurn";
 import { forgetHost, loadSettings, saveHost, saveSettings } from "../src/store/persist";
 import { pastHistory } from "../src/store/transcript";
 
-const state = () => useStore.getState();
+const app = () => appStore.getState();
+const host = () => liveHost().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;
@@ -39,29 +40,29 @@ const hostEvent = (event: string, payload: unknown) =>
   ).dispatchEvent({ event, payload });
 
 beforeAll(async () => {
-  await state().init();
-  await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  await app().init();
+  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
   ({ api, client } = linkOf(MOCK_HOST_KEY));
 });
 
 describe("connection and snapshot", () => {
   it("pins the host key the transport reports — which is what paired means", () => {
-    expect(state().hostKey).toBe(MOCK_HOST_KEY);
+    expect(app().hostKey).toBe(MOCK_HOST_KEY);
   });
 
   it("hello carries the host identity and the workspace", () => {
-    expect(state().hostInfo?.name).toBe("Alex's MacBook Pro");
-    expect(state().workspace?.projects.map((p) => p.name)).toEqual(["fletch", "atlas"]);
-    expect(state().workspace?.agents).toHaveLength(4);
+    expect(host().hostInfo?.name).toBe("Alex's MacBook Pro");
+    expect(host().workspace?.projects.map((p) => p.name)).toEqual(["fletch", "atlas"]);
+    expect(host().workspace?.agents).toHaveLength(4);
   });
 
   it("mirrors which path the connection is on", () => {
     // The mock host has no network under it, so it is the near path.
-    expect(state().via).toBe("lan");
+    expect(host().via).toBe("lan");
   });
 
   it("covers a running, a waiting, a finished and an errored agent", () => {
-    const byId = Object.fromEntries((state().workspace?.agents ?? []).map((a) => [a.id, a]));
+    const byId = Object.fromEntries((host().workspace?.agents ?? []).map((a) => [a.id, a]));
     expect(byId.arabia.status).toBe("running");
     expect(byId.kamakura.status).toBe("idle");
     expect(byId.caspian.status).toBe("error");
@@ -91,82 +92,83 @@ describe("relay setting", () => {
 
   it("follows the relay the host answers, with no setting of its own", () => {
     // The mock was dialled with no relay; the handshake supplied it.
-    expect(state().relay).toBe(fixtureRelay);
+    expect(host().relay).toBe(fixtureRelay);
     expect(client.target?.relay).toBe(fixtureRelay);
-    expect("setRelay" in state()).toBe(false);
+    expect("setRelay" in app()).toBe(false);
+    expect("setRelay" in host()).toBe(false);
   });
 });
 
 describe("event folding", () => {
   it("records a held can_use_tool prompt instead of putting it in the log", async () => {
     await vi.waitFor(() =>
-      expect(state().pendingToolUse.pamukkale?.[PENDING_TOOL_USE_ID]).toBe(PENDING_REQUEST_ID),
+      expect(host().pendingToolUse.pamukkale?.[PENDING_TOOL_USE_ID]).toBe(PENDING_REQUEST_ID),
     );
     // Control-plane events never reach the transcript reducer.
-    expect(state().logs.pamukkale ?? []).not.toContainEqual(
+    expect(host().logs.pamukkale ?? []).not.toContainEqual(
       expect.objectContaining({ kind: "notice" }),
     );
   });
 
   it("agent:status drives the record and discharges this device's send", async () => {
-    await vi.waitFor(() => expect(agentOf(state(), "arabia")?.status).toBe("running"), {
+    await vi.waitFor(() => expect(agentOf(host(), "arabia")?.status).toBe("running"), {
       timeout: 5000,
     });
     // A send of ours: the host answers it with `running`, or failing that the
     // turn's `idle` — a status is what discharges it, never a transcript event.
-    useStore.setState((s) => ({ sending: { ...s.sending, arabia: true } }));
-    await vi.waitFor(() => expect(agentOf(state(), "arabia")?.status).toBe("idle"), {
+    liveHost().setState((s) => ({ sending: { ...s.sending, arabia: true } }));
+    await vi.waitFor(() => expect(agentOf(host(), "arabia")?.status).toBe("idle"), {
       timeout: 5000,
     });
-    expect(state().sending.arabia).toBeUndefined();
+    expect(host().sending.arabia).toBeUndefined();
   });
 
   it("turn:started anchors the live timer", () => {
     expect(
-      typeof state().turnStartedAt.arabia === "number" ||
-        agentOf(state(), "arabia")?.status !== "running",
+      typeof host().turnStartedAt.arabia === "number" ||
+        agentOf(host(), "arabia")?.status !== "running",
     ).toBe(true);
   });
 
   it("does not draw our own send twice when the host echoes it as turn:sent", async () => {
-    await state().rebuildLog("kamakura");
-    const before = (state().logs.kamakura ?? []).length;
-    await state().send("kamakura", "one more thing from the phone");
+    await host().rebuildLog("kamakura");
+    const before = (host().logs.kamakura ?? []).length;
+    await host().send("kamakura", "one more thing from the phone");
     // The echo arrived with the response; the optimistic bubble carries the
     // same turn id, so the log grew by exactly one user-side item — whether we
     // are looking at that bubble or at the canonical rebuild that replaced it.
-    const mine = (state().logs.kamakura ?? []).filter(
+    const mine = (host().logs.kamakura ?? []).filter(
       (i) =>
         (i.kind === "queued_message" || i.kind === "user_message") &&
         i.text === "one more thing from the phone",
     );
     expect(mine).toHaveLength(1);
-    expect((state().logs.kamakura ?? []).length).toBe(before + 1);
+    expect((host().logs.kamakura ?? []).length).toBe(before + 1);
   });
 
   it("sends attachments alone, carries them on the bubble, and the echo still draws once", async () => {
-    await state().rebuildLog("kamakura");
-    const before = (state().logs.kamakura ?? []).length;
+    await host().rebuildLog("kamakura");
+    const before = (host().logs.kamakura ?? []).length;
     const send = vi.spyOn(api, "sendUserMessage");
     const path = "/Users/alex/Library/Application Support/sh.fletch.app/attachments/up-1/shot.png";
     try {
-      await state().send("kamakura", "", [path]);
+      await host().send("kamakura", "", [path]);
       expect(send).toHaveBeenCalledWith("kamakura", expect.any(String), "", [path]);
     } finally {
       send.mockRestore();
     }
-    const mine = (state().logs.kamakura ?? []).filter(
+    const mine = (host().logs.kamakura ?? []).filter(
       (i) =>
         (i.kind === "queued_message" || i.kind === "user_message") && i.attachments?.includes(path),
     );
     expect(mine).toHaveLength(1);
-    expect((state().logs.kamakura ?? []).length).toBe(before + 1);
+    expect((host().logs.kamakura ?? []).length).toBe(before + 1);
   });
 
   it("a send with neither text nor attachments is a no-op", async () => {
     const send = vi.spyOn(api, "sendUserMessage");
     try {
-      await state().send("kamakura", "   ", []);
+      await host().send("kamakura", "   ", []);
       expect(send).not.toHaveBeenCalled();
     } finally {
       send.mockRestore();
@@ -194,7 +196,7 @@ describe("replaying the running turn", () => {
       { agent_id: id, event: text(2), seq: 1 },
       { agent_id: id, event: text(3), seq: 2 },
     ];
-    const patch = replayLiveTurn(state(), id, [], live, late);
+    const patch = replayLiveTurn(host(), id, [], live, late);
     expect(texts(patch.logs?.[id] ?? [])).toEqual(["message 1", "message 2", "message 3"]);
     expect(patch.liveSeq?.[id]).toBe(2);
   });
@@ -209,7 +211,7 @@ describe("replaying the running turn", () => {
   });
 
   it("says so when the host dropped the head of the turn", () => {
-    const patch = replayLiveTurn(state(), "zanskar", [], {
+    const patch = replayLiveTurn(host(), "zanskar", [], {
       events: [text(9)],
       dropped: 8,
       next_seq: 9,
@@ -245,8 +247,8 @@ describe("the log past its history", () => {
 
 describe("transcripts through the desktop adapters", () => {
   it("renders claude records as user, assistant and tool items", async () => {
-    await state().rebuildLog("pamukkale");
-    const log = state().logs.pamukkale ?? [];
+    await host().rebuildLog("pamukkale");
+    const log = host().logs.pamukkale ?? [];
     expect(log.find((i) => i.kind === "user_message")).toMatchObject({
       text: expect.stringContaining("not-ready flashes"),
     });
@@ -256,8 +258,8 @@ describe("transcripts through the desktop adapters", () => {
   });
 
   it("renders codex rollout records too", async () => {
-    await state().rebuildLog("caspian");
-    const log = state().logs.caspian ?? [];
+    await host().rebuildLog("caspian");
+    const log = host().logs.caspian ?? [];
     expect(log.some((i) => i.kind === "user_message")).toBe(true);
     expect(log.some((i) => i.kind === "tool_call")).toBe(true);
   });
@@ -266,19 +268,19 @@ describe("transcripts through the desktop adapters", () => {
     const read = vi.spyOn(api, "readSessionPage");
     const home = { key: Date.now(), screen: "home" as const, props: {}, phase: "idle" as const };
     try {
-      useStore.setState({ nav: [home] });
+      appStore.setState({ nav: [home] });
       hostEvent("session:records-appended", { agent_id: "pamukkale" });
       await new Promise((r) => setTimeout(r, 20));
       expect(read).not.toHaveBeenCalled();
 
-      state().openAgent("pamukkale");
+      host().openAgent("pamukkale");
       await vi.waitFor(() => expect(read).toHaveBeenCalledWith("pamukkale"));
       read.mockClear();
       hostEvent("session:records-appended", { agent_id: "pamukkale" });
       await vi.waitFor(() => expect(read).toHaveBeenCalledWith("pamukkale"));
     } finally {
       read.mockRestore();
-      useStore.setState({ nav: [home] });
+      appStore.setState({ nav: [home] });
     }
   });
 });
@@ -287,27 +289,27 @@ describe("transcripts through the desktop adapters", () => {
  *  has: a chat always has messages, so an empty screen is never the answer. */
 describe("history load state", () => {
   it("is loading from the moment the read starts, and ready once it lands", async () => {
-    useStore.setState((s) => {
+    liveHost().setState((s) => {
       const logLoads = { ...s.logLoads };
       delete logLoads.pamukkale;
       return { logLoads };
     });
-    const read = state().rebuildLog("pamukkale");
-    expect(state().logLoads.pamukkale).toEqual({ status: "loading" });
+    const read = host().rebuildLog("pamukkale");
+    expect(host().logLoads.pamukkale).toEqual({ status: "loading" });
     await read;
-    expect(state().logLoads.pamukkale).toEqual({ status: "ready" });
+    expect(host().logLoads.pamukkale).toEqual({ status: "ready" });
   });
 
   it("records a failed read on the chat, not in lastError, and rethrows", async () => {
     const read = vi.spyOn(api, "readSessionPage").mockRejectedValue(new Error("timed out"));
-    useStore.setState({ lastError: null });
+    appStore.setState({ lastError: null });
     try {
-      await expect(state().rebuildLog("pamukkale")).rejects.toThrow("timed out");
+      await expect(host().rebuildLog("pamukkale")).rejects.toThrow("timed out");
     } finally {
       read.mockRestore();
     }
-    expect(state().logLoads.pamukkale).toEqual({ status: "error", error: "timed out" });
-    expect(state().lastError).toBeNull();
+    expect(host().logLoads.pamukkale).toEqual({ status: "error", error: "timed out" });
+    expect(app().lastError).toBeNull();
   });
 
   it("lets only the newest read say how loading went", async () => {
@@ -318,14 +320,14 @@ describe("history load state", () => {
       .mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)))
       .mockImplementation((...args) => real.apply(api, args));
     try {
-      const older = state().rebuildLog("pamukkale");
-      await state().rebuildLog("pamukkale");
+      const older = host().rebuildLog("pamukkale");
+      await host().rebuildLog("pamukkale");
       fail(new Error("socket closed"));
       await expect(older).rejects.toThrow("socket closed");
     } finally {
       read.mockRestore();
     }
-    expect(state().logLoads.pamukkale).toEqual({ status: "ready" });
+    expect(host().logLoads.pamukkale).toEqual({ status: "ready" });
   });
 
   it("drops an older read that succeeds last: log and cursor stay the newest read's", async () => {
@@ -344,19 +346,19 @@ describe("history load state", () => {
       )
       .mockImplementation((...args) => real.apply(api, args));
     try {
-      const older = state().rebuildLog("pamukkale");
-      await state().rebuildLog("pamukkale");
-      const log = state().logs.pamukkale;
-      const history = state().histories.pamukkale;
+      const older = host().rebuildLog("pamukkale");
+      await host().rebuildLog("pamukkale");
+      const log = host().logs.pamukkale;
+      const history = host().histories.pamukkale;
       resolve();
       await older;
-      expect(state().logs.pamukkale).toBe(log);
-      expect(state().histories.pamukkale).toBe(history);
-      expect(state().histories.pamukkale?.older).not.toBe("stale-cursor");
+      expect(host().logs.pamukkale).toBe(log);
+      expect(host().histories.pamukkale).toBe(history);
+      expect(host().histories.pamukkale?.older).not.toBe("stale-cursor");
     } finally {
       read.mockRestore();
     }
-    expect(state().logLoads.pamukkale).toEqual({ status: "ready" });
+    expect(host().logLoads.pamukkale).toEqual({ status: "ready" });
   });
 });
 
@@ -386,36 +388,36 @@ describe("paged transcripts", () => {
 
   /** The log a host without pages builds: the whole history, read at once. */
   async function wholeLog(agentId: string): Promise<ChatItem[]> {
-    const protocol = state().protocol;
-    useStore.setState({
+    const protocol = host().protocol;
+    liveHost().setState({
       protocol: protocol && {
         ...protocol,
         ops: protocol.ops.filter((o) => o !== "read_session_page"),
       },
     });
     try {
-      await state().rebuildLog(agentId);
+      await host().rebuildLog(agentId);
     } finally {
-      useStore.setState({ protocol });
+      liveHost().setState({ protocol });
     }
-    return state().logs[agentId] ?? [];
+    return host().logs[agentId] ?? [];
   }
 
   it("opens an agent on its newest page, with a cursor for the rest", async () => {
     const whole = vi.spyOn(api, "readSessionRecords");
     try {
       await withSmallPages(async (read) => {
-        await state().rebuildLog("caspian");
+        await host().rebuildLog("caspian");
         expect(read).toHaveBeenCalledTimes(1);
       });
       expect(whole).not.toHaveBeenCalled();
     } finally {
       whole.mockRestore();
     }
-    const history = state().histories.caspian;
+    const history = host().histories.caspian;
     expect(history?.records).toHaveLength(PAGE);
     expect(history?.older).not.toBeNull();
-    const log = state().logs.caspian ?? [];
+    const log = host().logs.caspian ?? [];
     // The newest turn's tail is there; its prompt is still on an older page.
     expect(log.some((i) => i.kind === "tool_call")).toBe(true);
     expect(log.some((i) => i.kind === "user_message")).toBe(false);
@@ -423,14 +425,14 @@ describe("paged transcripts", () => {
 
   it("prepends older pages until the log is the whole history, in order", async () => {
     const whole = await wholeLog("caspian");
-    expect(state().histories.caspian?.older).toBeNull();
+    expect(host().histories.caspian?.older).toBeNull();
 
     await withSmallPages(async () => {
-      await state().rebuildLog("caspian");
-      const sizes = [state().logs.caspian?.length ?? 0];
-      while (state().histories.caspian?.older) {
-        await state().loadOlderLog("caspian");
-        sizes.push(state().logs.caspian?.length ?? 0);
+      await host().rebuildLog("caspian");
+      const sizes = [host().logs.caspian?.length ?? 0];
+      while (host().histories.caspian?.older) {
+        await host().loadOlderLog("caspian");
+        sizes.push(host().logs.caspian?.length ?? 0);
       }
       // Seven records by three: the newest page and two older ones. The
       // oldest holds only the session header, which renders nothing.
@@ -440,8 +442,8 @@ describe("paged transcripts", () => {
     });
     // Re-reduced across the page boundaries, the pages render exactly what the
     // whole read does: the call with its output, the prompt before both.
-    expect(state().histories.caspian?.records).toHaveLength(RECORDS);
-    expect(state().logs.caspian).toEqual(whole);
+    expect(host().histories.caspian?.records).toHaveLength(RECORDS);
+    expect(host().logs.caspian).toEqual(whole);
     expect(whole.findIndex((i) => i.kind === "user_message")).toBeLessThan(
       whole.findIndex((i) => i.kind === "tool_call"),
     );
@@ -449,45 +451,45 @@ describe("paged transcripts", () => {
 
   it("offers nothing older once the history is exhausted", async () => {
     await withSmallPages(async (read) => {
-      await state().rebuildLog("caspian");
-      while (state().histories.caspian?.older) await state().loadOlderLog("caspian");
+      await host().rebuildLog("caspian");
+      while (host().histories.caspian?.older) await host().loadOlderLog("caspian");
       read.mockClear();
-      await state().loadOlderLog("caspian");
+      await host().loadOlderLog("caspian");
       expect(read).not.toHaveBeenCalled();
     });
-    expect(state().histories.caspian?.older).toBeNull();
+    expect(host().histories.caspian?.older).toBeNull();
   });
 
   it("keeps a running turn's live tail when an older page is prepended", async () => {
     await withSmallPages(async () => {
-      await state().rebuildLog("caspian");
+      await host().rebuildLog("caspian");
       const live: ChatItem = { kind: "queued_message", text: "and the docs", turnId: "t-live" };
-      useStore.setState((s) => ({
+      liveHost().setState((s) => ({
         logs: { ...s.logs, caspian: [...(s.logs.caspian ?? []), live] },
       }));
-      await state().loadOlderLog("caspian");
-      expect(state().logs.caspian?.at(-1)).toEqual(live);
-      expect(state().logs.caspian?.filter((i) => i.kind === "queued_message")).toHaveLength(1);
+      await host().loadOlderLog("caspian");
+      expect(host().logs.caspian?.at(-1)).toEqual(live);
+      expect(host().logs.caspian?.filter((i) => i.kind === "queued_message")).toHaveLength(1);
     });
   });
 
   it("rejects a failed older page to its caller, leaving the log and lastError alone", async () => {
     await withSmallPages(async (read) => {
-      await state().rebuildLog("caspian");
-      const before = state().histories.caspian;
-      const log = state().logs.caspian;
-      useStore.setState({ lastError: null });
+      await host().rebuildLog("caspian");
+      const before = host().histories.caspian;
+      const log = host().logs.caspian;
+      appStore.setState({ lastError: null });
       read.mockRejectedValueOnce(new Error("socket closed"));
-      await expect(state().loadOlderLog("caspian")).rejects.toThrow("socket closed");
-      expect(state().histories.caspian).toBe(before);
-      expect(state().logs.caspian).toBe(log);
-      expect(state().lastError).toBeNull();
+      await expect(host().loadOlderLog("caspian")).rejects.toThrow("socket closed");
+      expect(host().histories.caspian).toBe(before);
+      expect(host().logs.caspian).toBe(log);
+      expect(app().lastError).toBeNull();
     });
   });
 
   it("drops an older page a rebuild overtook", async () => {
     await withSmallPages(async (read) => {
-      await state().rebuildLog("caspian");
+      await host().rebuildLog("caspian");
       let release = () => {};
       read.mockImplementationOnce(async (agentId, before) => {
         await new Promise<void>((r) => {
@@ -495,13 +497,13 @@ describe("paged transcripts", () => {
         });
         return realPage(agentId, before, PAGE);
       });
-      const older = state().loadOlderLog("caspian");
-      await state().rebuildLog("caspian");
-      const rebuilt = state().logs.caspian;
+      const older = host().loadOlderLog("caspian");
+      await host().rebuildLog("caspian");
+      const rebuilt = host().logs.caspian;
       release();
       await older;
-      expect(state().logs.caspian).toBe(rebuilt);
-      expect(state().histories.caspian?.records).toHaveLength(PAGE);
+      expect(host().logs.caspian).toBe(rebuilt);
+      expect(host().histories.caspian?.records).toHaveLength(PAGE);
     });
   });
 
@@ -512,8 +514,8 @@ describe("paged transcripts", () => {
       const log = await wholeLog("caspian");
       expect(page).not.toHaveBeenCalled();
       expect(records).toHaveBeenCalledWith("caspian");
-      expect(state().histories.caspian).toMatchObject({ older: null });
-      expect(state().histories.caspian?.records).toHaveLength(RECORDS);
+      expect(host().histories.caspian).toMatchObject({ older: null });
+      expect(host().histories.caspian?.records).toHaveLength(RECORDS);
       expect(log.some((i) => i.kind === "user_message")).toBe(true);
     } finally {
       page.mockRestore();
@@ -524,36 +526,36 @@ describe("paged transcripts", () => {
 
 describe("git and PR state", () => {
   it("loads git state and the PR lazily per agent", async () => {
-    await state().loadGit("kamakura");
-    expect(state().gitStates.kamakura?.branch).toBe("fix/dictation-followups");
-    expect(state().prStates.kamakura?.number).toBe(642);
-    expect(state().prChecks.kamakura?.passed).toBe(14);
-    await state().loadGit("arabia");
-    expect(state().gitStates.arabia?.files).toHaveLength(3);
+    await host().loadGit("kamakura");
+    expect(host().gitStates.kamakura?.branch).toBe("fix/dictation-followups");
+    expect(host().prStates.kamakura?.number).toBe(642);
+    expect(host().prChecks.kamakura?.passed).toBe(14);
+    await host().loadGit("arabia");
+    expect(host().gitStates.arabia?.files).toHaveLength(3);
   });
 
   it("loadGitState reads the working tree alone and keeps it when a read fails", async () => {
-    const prStates = state().prStates;
-    const prChecks = state().prChecks;
+    const prStates = host().prStates;
+    const prChecks = host().prChecks;
     const pr = vi.spyOn(api, "getPrState");
     const checks = vi.spyOn(api, "getPrChecks");
     const git = vi.spyOn(api, "getGitState");
     try {
-      useStore.setState((s) => {
+      liveHost().setState((s) => {
         const { kamakura: _, ...gitStates } = s.gitStates;
         return { gitStates };
       });
-      await state().loadGitState("kamakura");
-      const read = state().gitStates.kamakura;
+      await host().loadGitState("kamakura");
+      const read = host().gitStates.kamakura;
       expect(read?.branch).toBe("fix/dictation-followups");
       expect(pr).not.toHaveBeenCalled();
       expect(checks).not.toHaveBeenCalled();
-      expect(state().prStates).toBe(prStates);
-      expect(state().prChecks).toBe(prChecks);
+      expect(host().prStates).toBe(prStates);
+      expect(host().prChecks).toBe(prChecks);
 
       git.mockRejectedValueOnce(new Error("host went away"));
-      await state().loadGitState("kamakura");
-      expect(state().gitStates.kamakura).toBe(read);
+      await host().loadGitState("kamakura");
+      expect(host().gitStates.kamakura).toBe(read);
     } finally {
       pr.mockRestore();
       checks.mockRestore();
@@ -572,20 +574,20 @@ describe("git and PR state", () => {
     });
     try {
       // The opener's read and the follow poll's first tick, both on open.
-      const opener = state().loadGitState("kamakura");
-      const tick = state().loadGitState("kamakura");
+      const opener = host().loadGitState("kamakura");
+      const tick = host().loadGitState("kamakura");
       expect(tick).toBe(opener);
       release();
       await Promise.all([opener, tick]);
       expect(git).toHaveBeenCalledTimes(1);
-      expect(state().gitStates.kamakura?.branch).toBe("fix/dictation-followups");
+      expect(host().gitStates.kamakura?.branch).toBe("fix/dictation-followups");
     } finally {
       git.mockRestore();
     }
   });
 
   it("loadGitState lets a slow read finish before the next starts, even when it fails", async () => {
-    const before = state().gitStates.kamakura;
+    const before = host().gitStates.kamakura;
     let fail!: (e: Error) => void;
     const git = vi
       .spyOn(api, "getGitState")
@@ -593,27 +595,27 @@ describe("git and PR state", () => {
     try {
       // A tick while the older read is out gets no request of its own, so
       // there is no newer answer for the older one to land over.
-      const older = state().loadGitState("kamakura");
-      const tick = state().loadGitState("kamakura");
+      const older = host().loadGitState("kamakura");
+      const tick = host().loadGitState("kamakura");
       expect(git).toHaveBeenCalledTimes(1);
       fail(new Error("relay timed out"));
       await Promise.all([older, tick]);
-      expect(state().gitStates.kamakura).toBe(before);
+      expect(host().gitStates.kamakura).toBe(before);
 
       // Settled, even by failing, the read is no longer out: the next is sent.
       git.mockResolvedValueOnce({ ...before, branch: "fix/newer" } as never);
-      await state().loadGitState("kamakura");
+      await host().loadGitState("kamakura");
       expect(git).toHaveBeenCalledTimes(2);
-      expect(state().gitStates.kamakura?.branch).toBe("fix/newer");
+      expect(host().gitStates.kamakura?.branch).toBe("fix/newer");
     } finally {
       git.mockRestore();
     }
   });
 
   it("loadPrLive keeps the last checks when the live read has none, replaces them when it does", async () => {
-    await state().loadGit("kamakura");
-    const before = state().prChecks.kamakura;
-    const pr = state().prStates.kamakura;
+    await host().loadGit("kamakura");
+    const before = host().prChecks.kamakura;
+    const pr = host().prStates.kamakura;
     expect(before).toBeTruthy();
     expect(pr).toBeTruthy();
     if (!before || !pr) return;
@@ -622,47 +624,47 @@ describe("git and PR state", () => {
       // The CI read didn't resolve this round: the state is fresh, the tint
       // is whatever it was.
       spy.mockResolvedValueOnce({ state: { ...pr, title: "renamed on GitHub" }, checks: null });
-      await state().loadPrLive("kamakura");
-      expect(state().prStates.kamakura?.title).toBe("renamed on GitHub");
-      expect(state().prChecks.kamakura).toBe(before);
+      await host().loadPrLive("kamakura");
+      expect(host().prStates.kamakura?.title).toBe("renamed on GitHub");
+      expect(host().prChecks.kamakura).toBe(before);
       // A real rollup replaces it.
       spy.mockResolvedValueOnce({ state: pr, checks: { ...before, passed: 13, failed: 1 } });
-      await state().loadPrLive("kamakura");
-      expect(state().prChecks.kamakura?.failed).toBe(1);
+      await host().loadPrLive("kamakura");
+      expect(host().prChecks.kamakura?.failed).toBe(1);
       // Nothing to say at all leaves both alone.
       spy.mockResolvedValueOnce(null);
-      await state().loadPrLive("kamakura");
-      expect(state().prChecks.kamakura?.failed).toBe(1);
-      expect(state().prStates.kamakura?.title).toBe(pr.title);
+      await host().loadPrLive("kamakura");
+      expect(host().prChecks.kamakura?.failed).toBe(1);
+      expect(host().prStates.kamakura?.title).toBe(pr.title);
     } finally {
       spy.mockRestore();
     }
   });
 
   it("loadPrThreads asks nothing of a host without get_pr_threads", async () => {
-    expect(state().hostSupports("get_pr_threads")).toBe(false);
+    expect(host().hostSupports("get_pr_threads")).toBe(false);
     const spy = vi.spyOn(api, "getPrThreads");
     try {
-      await state().loadPrThreads("kamakura");
+      await host().loadPrThreads("kamakura");
       expect(spy).not.toHaveBeenCalled();
-      expect(state().prComments.kamakura).toBeUndefined();
+      expect(host().prComments.kamakura).toBeUndefined();
     } finally {
       spy.mockRestore();
     }
   });
 
   it("loadPrThreads stores the threads once the host lists the op", async () => {
-    const protocol = state().protocol;
+    const protocol = host().protocol;
     const spy = vi.spyOn(api, "getPrThreads").mockResolvedValue({ unresolved: [] });
-    useStore.setState({
+    liveHost().setState({
       protocol: protocol && { ...protocol, ops: [...protocol.ops, "get_pr_threads"] },
     });
     try {
-      await state().loadPrThreads("kamakura");
+      await host().loadPrThreads("kamakura");
       expect(spy).toHaveBeenCalledWith("kamakura");
-      expect(state().prComments.kamakura).toEqual({ unresolved: [] });
+      expect(host().prComments.kamakura).toEqual({ unresolved: [] });
     } finally {
-      useStore.setState({ protocol });
+      liveHost().setState({ protocol });
       spy.mockRestore();
     }
   });
@@ -672,13 +674,13 @@ describe("git and PR state", () => {
       checks: [{ name: "test", command: "bun test", outcome: "passed", duration_ms: 1, tail: [] }],
     };
     hostEvent("verify:report", { agent_id: "arabia", report });
-    expect(state().verificationReports.arabia).toEqual(report);
+    expect(host().verificationReports.arabia).toEqual(report);
     hostEvent("verify:report", { agent_id: "arabia", report: { checks: [] } });
-    expect(state().verificationReports.arabia).toEqual({ checks: [] });
+    expect(host().verificationReports.arabia).toEqual({ checks: [] });
   });
 
   it("writes a line of ship activity when a PR opens, read against the record it replaces", () => {
-    useStore.setState((s) => ({
+    liveHost().setState((s) => ({
       prStates: { ...s.prStates, pamukkale: null },
       shipActivity: { ...s.shipActivity, pamukkale: [] },
     }));
@@ -690,22 +692,22 @@ describe("git and PR state", () => {
       mergeable: "unknown",
     };
     hostEvent("pr:state_changed", { agent_id: "pamukkale", state: opened });
-    expect(state().shipActivity.pamukkale?.map((e) => e.text)).toEqual(["PR #650 opened"]);
+    expect(host().shipActivity.pamukkale?.map((e) => e.text)).toEqual(["PR #650 opened"]);
     // The same state again is not a transition.
     hostEvent("pr:state_changed", { agent_id: "pamukkale", state: opened });
-    expect(state().shipActivity.pamukkale).toHaveLength(1);
+    expect(host().shipActivity.pamukkale).toHaveLength(1);
     // A secondary repo's PR is not this agent's PR on the phone.
     hostEvent("pr:state_changed", {
       agent_id: "pamukkale",
       subdir: "api",
       state: { ...opened, number: 12, state: "merged" },
     });
-    expect(state().prStates.pamukkale?.state).toBe("open");
-    expect(state().shipActivity.pamukkale).toHaveLength(1);
+    expect(host().prStates.pamukkale?.state).toBe("open");
+    expect(host().shipActivity.pamukkale).toHaveLength(1);
   });
 
   it("takes the watcher's checks and writes a line when they settle", () => {
-    useStore.setState((s) => ({
+    liveHost().setState((s) => ({
       prChecks: { ...s.prChecks, pamukkale: null },
       shipActivity: { ...s.shipActivity, pamukkale: [] },
     }));
@@ -720,26 +722,26 @@ describe("git and PR state", () => {
       runs: [],
     };
     hostEvent("pr:checks_changed", { agent_id: "pamukkale", subdir: null, checks });
-    expect(state().prChecks.pamukkale).toEqual(checks);
-    expect(state().shipActivity.pamukkale?.map((e) => e.text)).toEqual(["Checks failing: unit"]);
+    expect(host().prChecks.pamukkale).toEqual(checks);
+    expect(host().shipActivity.pamukkale?.map((e) => e.text)).toEqual(["Checks failing: unit"]);
     // The same verdict with another failing name refreshes the list, not the log.
     hostEvent("pr:checks_changed", {
       agent_id: "pamukkale",
       subdir: null,
       checks: { ...checks, required_failing: ["lint"] },
     });
-    expect(state().shipActivity.pamukkale).toHaveLength(1);
+    expect(host().shipActivity.pamukkale).toHaveLength(1);
     // A secondary repo's checks are not this agent's PR on the phone.
     hostEvent("pr:checks_changed", {
       agent_id: "pamukkale",
       subdir: "api",
       checks: { ...checks, rollup: "passing" },
     });
-    expect(state().prChecks.pamukkale?.rollup).toBe("failing");
+    expect(host().prChecks.pamukkale?.rollup).toBe("failing");
   });
 
   it("takes the watcher's review threads and names the new one's author", () => {
-    useStore.setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
+    liveHost().setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
     const thread = (id: string, author: string) => ({
       id,
       author,
@@ -758,8 +760,8 @@ describe("git and PR state", () => {
       comments,
       new_thread_ids: ["t2"],
     });
-    expect(state().prComments.pamukkale).toEqual(comments);
-    expect(state().shipActivity.pamukkale?.map((e) => e.text)).toEqual([
+    expect(host().prComments.pamukkale).toEqual(comments);
+    expect(host().shipActivity.pamukkale?.map((e) => e.text)).toEqual([
       "New review comment from alex",
     ]);
     hostEvent("pr:threads_changed", {
@@ -768,58 +770,58 @@ describe("git and PR state", () => {
       comments,
       new_thread_ids: ["t1", "t2"],
     });
-    expect(state().shipActivity.pamukkale?.[0].text).toBe("2 new review comments");
+    expect(host().shipActivity.pamukkale?.[0].text).toBe("2 new review comments");
   });
 
   it("lands a tapped checks alert on the agent's Ship tab", () => {
-    state().openFromPush({ hostId: MOCK_HOST_KEY, agentId: "pamukkale", kind: "checks_settled" });
-    const top = state().nav[state().nav.length - 1];
+    app().openFromPush({ hostId: MOCK_HOST_KEY, agentId: "pamukkale", kind: "checks_settled" });
+    const top = app().nav[app().nav.length - 1];
     expect(top.screen).toBe("agent");
     expect(top.props).toMatchObject({ agentId: "pamukkale", tab: "ship" });
     // A turn ending is answered in the chat, as before.
-    state().openFromPush({ hostId: MOCK_HOST_KEY, agentId: "pamukkale", kind: "turn_complete" });
-    const chat = state().nav[state().nav.length - 1];
+    app().openFromPush({ hostId: MOCK_HOST_KEY, agentId: "pamukkale", kind: "turn_complete" });
+    const chat = app().nav[app().nav.length - 1];
     expect(chat.props.tab).toBeUndefined();
   });
 
   it("caps an agent's ship activity at 20, newest first", () => {
-    useStore.setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
+    liveHost().setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
     for (let i = 0; i < 25; i += 1) {
       hostEvent("agent:git-action", { agent_id: "pamukkale", op: `op${i}` });
     }
-    const lines = state().shipActivity.pamukkale ?? [];
+    const lines = host().shipActivity.pamukkale ?? [];
     expect(lines).toHaveLength(20);
     expect(lines[0].text).toBe("Agent ran op24");
     expect(lines.at(-1)?.text).toBe("Agent ran op5");
   });
 
   it("polls working-tree stats for the whole fleet, and replaces them wholesale", async () => {
-    await state().loadShortstats();
-    expect(state().shortstats.arabia?.additions).toBe(136);
+    await host().loadShortstats();
+    expect(host().shortstats.arabia?.additions).toBe(136);
     // kamakura's tree is clean, so the host never names it.
-    expect(state().shortstats.kamakura).toBeUndefined();
+    expect(host().shortstats.kamakura).toBeUndefined();
     // A later poll that drops an agent drops its numbers with it, rather than
     // leaving a stale count on a row whose work has been committed away.
     const spy = vi
       .spyOn(api, "getAllShortstats")
       .mockResolvedValue({ pamukkale: { additions: 42, deletions: 17, file_count: 1 } });
-    await state().loadShortstats();
-    expect(state().shortstats.arabia).toBeUndefined();
-    expect(state().shortstats.pamukkale?.additions).toBe(42);
+    await host().loadShortstats();
+    expect(host().shortstats.arabia).toBeUndefined();
+    expect(host().shortstats.pamukkale?.additions).toBe(42);
     spy.mockRestore();
   });
 
   it("loadPrStatus tints every primary repo from one sweep, keeping what the sweep is silent on", async () => {
-    await state().loadPrStatus();
-    expect(state().prStates.kamakura?.number).toBe(642);
-    expect(state().prChecks.kamakura?.passed).toBe(14);
-    const pr = state().prStates.kamakura;
-    const before = state().prChecks.kamakura;
+    await host().loadPrStatus();
+    expect(host().prStates.kamakura?.number).toBe(642);
+    expect(host().prChecks.kamakura?.passed).toBe(14);
+    const pr = host().prStates.kamakura;
+    const before = host().prChecks.kamakura;
     if (!pr || !before) throw new Error("the mock host binds a PR to kamakura");
     // An agent the next sweep does not name keeps its state: absence is
     // "nothing to say", not "no PR".
     const elsewhere = { ...pr, number: 7 };
-    useStore.setState((s) => ({ prStates: { ...s.prStates, pamukkale: elsewhere } }));
+    liveHost().setState((s) => ({ prStates: { ...s.prStates, pamukkale: elsewhere } }));
     const spy = vi.spyOn(api, "getAllPrStatus").mockResolvedValue({
       // The CI read didn't resolve this round: fresh state, last tint.
       kamakura: { state: { ...pr, title: "renamed on GitHub" }, checks: null },
@@ -827,19 +829,19 @@ describe("git and PR state", () => {
       "kamakura::packages/app": { state: { ...pr, number: 9 }, checks: { ...before, failed: 3 } },
     });
     try {
-      await state().loadPrStatus();
-      expect(state().prStates.kamakura?.title).toBe("renamed on GitHub");
-      expect(state().prChecks.kamakura).toBe(before);
-      expect(state().prStates["kamakura::packages/app"]).toBeUndefined();
-      expect(state().prChecks["kamakura::packages/app"]).toBeUndefined();
-      expect(state().prStates.pamukkale).toBe(elsewhere);
+      await host().loadPrStatus();
+      expect(host().prStates.kamakura?.title).toBe("renamed on GitHub");
+      expect(host().prChecks.kamakura).toBe(before);
+      expect(host().prStates["kamakura::packages/app"]).toBeUndefined();
+      expect(host().prChecks["kamakura::packages/app"]).toBeUndefined();
+      expect(host().prStates.pamukkale).toBe(elsewhere);
       // A real rollup replaces the tint.
       spy.mockResolvedValue({ kamakura: { state: pr, checks: { ...before, failed: 1 } } });
-      await state().loadPrStatus();
-      expect(state().prChecks.kamakura?.failed).toBe(1);
+      await host().loadPrStatus();
+      expect(host().prChecks.kamakura?.failed).toBe(1);
     } finally {
       spy.mockRestore();
-      useStore.setState((s) => {
+      liveHost().setState((s) => {
         const { pamukkale: _, ...prStates } = s.prStates;
         return { prStates };
       });
@@ -847,39 +849,39 @@ describe("git and PR state", () => {
   });
 
   it("loadPrStatus asks nothing of a host without get_all_pr_status", async () => {
-    const protocol = state().protocol;
+    const protocol = host().protocol;
     const spy = vi.spyOn(api, "getAllPrStatus");
-    useStore.setState({
+    liveHost().setState({
       protocol: protocol && {
         ...protocol,
         ops: protocol.ops.filter((o) => o !== "get_all_pr_status"),
       },
     });
     try {
-      expect(state().hostSupports("get_all_pr_status")).toBe(false);
-      await state().loadPrStatus();
+      expect(host().hostSupports("get_all_pr_status")).toBe(false);
+      await host().loadPrStatus();
       expect(spy).not.toHaveBeenCalled();
     } finally {
-      useStore.setState({ protocol });
+      liveHost().setState({ protocol });
       spy.mockRestore();
     }
   });
 
   it("reads the checkout tree", async () => {
-    await state().loadTree("arabia");
-    expect(state().trees.arabia?.some((f) => f.status === "M")).toBe(true);
+    await host().loadTree("arabia");
+    expect(host().trees.arabia?.some((f) => f.status === "M")).toBe(true);
   });
 
   it("follows a new PR's checks and review threads from the host's events, polling neither", async () => {
     const live = vi.spyOn(api, "getPrLive");
     const threads = vi.spyOn(api, "getPrThreads");
     try {
-      await state().publish("pamukkale", "feat: watch me", "");
-      expect(state().prChecks.pamukkale?.rollup).toBe("pending");
+      await host().publish("pamukkale", "feat: watch me", "");
+      expect(host().prChecks.pamukkale?.rollup).toBe("pending");
       // The mock host plays the watcher: CI settles, then a reviewer writes.
-      await vi.waitFor(() => expect(state().prChecks.pamukkale?.rollup).toBe("passing"));
-      await vi.waitFor(() => expect(state().prComments.pamukkale?.unresolved).toHaveLength(1));
-      const lines = state().shipActivity.pamukkale?.map((e) => e.text) ?? [];
+      await vi.waitFor(() => expect(host().prChecks.pamukkale?.rollup).toBe("passing"));
+      await vi.waitFor(() => expect(host().prComments.pamukkale?.unresolved).toHaveLength(1));
+      const lines = host().shipActivity.pamukkale?.map((e) => e.text) ?? [];
       expect(lines).toContain("Checks passed");
       expect(lines).toContain("New review comment from greptile");
       expect(live).not.toHaveBeenCalled();
@@ -891,7 +893,7 @@ describe("git and PR state", () => {
       // files see pamukkale without a PR, as before.
       delete fixturePrStates.pamukkale;
       delete fixturePrChecks.pamukkale;
-      useStore.setState((s) => {
+      liveHost().setState((s) => {
         const { pamukkale: _state, ...prStates } = s.prStates;
         const { pamukkale: _checks, ...prChecks } = s.prChecks;
         const { pamukkale: _comments, ...prComments } = s.prComments;
@@ -903,30 +905,30 @@ describe("git and PR state", () => {
 
 describe("auto-archive notice", () => {
   it("gathers what the host's idle sweep archived until Home dismisses it", () => {
-    expect(state().autoArchived).toBeNull();
+    expect(host().autoArchived).toBeNull();
     hostEvent("workspace:auto-archived", { agent_ids: ["a1"], names: ["fuji"] });
     hostEvent("workspace:auto-archived", { agent_ids: ["a2", "a3"], names: ["kyoto", "nara"] });
-    expect(state().autoArchived).toEqual(["fuji", "kyoto", "nara"]);
-    state().dismissAutoArchived();
-    expect(state().autoArchived).toBeNull();
+    expect(host().autoArchived).toEqual(["fuji", "kyoto", "nara"]);
+    host().dismissAutoArchived();
+    expect(host().autoArchived).toBeNull();
     // A pass that archived nothing says nothing.
     hostEvent("workspace:auto-archived", { agent_ids: [], names: [] });
-    expect(state().autoArchived).toBeNull();
+    expect(host().autoArchived).toBeNull();
   });
 });
 
 describe("answering a tool-use prompt", () => {
   it("clears the held prompt and resumes the turn", async () => {
     await vi.waitFor(() =>
-      expect(state().pendingToolUse.pamukkale?.[PENDING_TOOL_USE_ID]).toBeTruthy(),
+      expect(host().pendingToolUse.pamukkale?.[PENDING_TOOL_USE_ID]).toBeTruthy(),
     );
-    await state().answerToolUse("pamukkale", PENDING_TOOL_USE_ID, { command: "git push" }, "allow");
-    expect(state().pendingToolUse.pamukkale?.[PENDING_TOOL_USE_ID]).toBeUndefined();
+    await host().answerToolUse("pamukkale", PENDING_TOOL_USE_ID, { command: "git push" }, "allow");
+    expect(host().pendingToolUse.pamukkale?.[PENDING_TOOL_USE_ID]).toBeUndefined();
     // The host answers with a tool_result, which lands in the rebuilt log.
     await vi.waitFor(
       () =>
         expect(
-          (state().logs.pamukkale ?? []).some(
+          (host().logs.pamukkale ?? []).some(
             (i) => i.kind === "tool_result" && i.tool_use_id === PENDING_TOOL_USE_ID,
           ),
         ).toBe(true),
@@ -944,16 +946,16 @@ describe("answering a gated publish", () => {
   };
 
   it("gates on what the host reported it answers, not on its version", () => {
-    expect(state().protocol?.version).toBe(2);
-    expect(state().hostSupports("answer_publish_approval")).toBe(true);
-    expect(state().hostSupports("open_agent_shell")).toBe(false);
+    expect(host().protocol?.version).toBe(2);
+    expect(host().hostSupports("answer_publish_approval")).toBe(true);
+    expect(host().hostSupports("open_agent_shell")).toBe(false);
   });
 
   it("holds the prompt until it is answered, then drops it", async () => {
-    state().receivePublishApproval(request);
-    expect(state().pendingPublishApprovals).toContainEqual(request);
-    await state().answerPublishApproval(request.id, true);
-    expect(state().pendingPublishApprovals).toHaveLength(0);
+    host().receivePublishApproval(request);
+    expect(host().pendingPublishApprovals).toContainEqual(request);
+    await host().answerPublishApproval(request.id, true);
+    expect(host().pendingPublishApprovals).toHaveLength(0);
   });
 
   it("keeps a prompt raised while `approvals_list` was in flight", async () => {
@@ -964,15 +966,15 @@ describe("answering a gated publish", () => {
     const waiting = { ...request, id: "pub-already-waiting" };
     const raised = { ...request, id: "pub-mid-flight" };
     const list = vi.spyOn(api, "listPublishApprovals").mockImplementation(async () => {
-      state().receivePublishApproval(raised);
+      host().receivePublishApproval(raised);
       return [waiting];
     });
 
-    await state().loadPendingApprovals();
+    await host().loadPendingApprovals();
 
-    expect(state().pendingPublishApprovals.map((r) => r.id)).toEqual([waiting.id, raised.id]);
+    expect(host().pendingPublishApprovals.map((r) => r.id)).toEqual([waiting.id, raised.id]);
     list.mockRestore();
-    useStore.setState({ pendingPublishApprovals: [] });
+    liveHost().setState({ pendingPublishApprovals: [] });
   });
 
   it("lets the newest of two overlapping loads own the queue", async () => {
@@ -984,32 +986,32 @@ describe("answering a gated publish", () => {
       .spyOn(api, "listPublishApprovals")
       .mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
 
-    const older = state().loadPendingApprovals();
-    const newer = state().loadPendingApprovals();
+    const older = host().loadPendingApprovals();
+    const newer = host().loadPendingApprovals();
     // Raised while both are out: it belongs to the newer read, the only one
     // whose snapshot will be written.
     const raised = { ...request, id: "pub-mid-flight" };
-    state().receivePublishApproval(raised);
+    host().receivePublishApproval(raised);
 
     answers[1]([{ ...request, id: "pub-from-the-newer-read" }]);
     await newer;
     answers[0]([{ ...request, id: "pub-from-the-older-read" }]);
     await older;
 
-    expect(state().pendingPublishApprovals.map((r) => r.id)).toEqual([
+    expect(host().pendingPublishApprovals.map((r) => r.id)).toEqual([
       "pub-from-the-newer-read",
       raised.id,
     ]);
     list.mockRestore();
-    useStore.setState({ pendingPublishApprovals: [] });
+    liveHost().setState({ pendingPublishApprovals: [] });
   });
 });
 
 describe("spawn flow", () => {
   it("spawns under the name the sheet showed, waits for spawning to clear, then sends the prompt", async () => {
-    const before = state().workspace?.agents.length ?? 0;
-    await state().spawn({
-      repoPath: state().workspace?.projects[0].path ?? "",
+    const before = host().workspace?.agents.length ?? 0;
+    await host().spawn({
+      repoPath: host().workspace?.projects[0].path ?? "",
       provider: "claude",
       model: "claude-opus-5",
       effort: "high",
@@ -1017,15 +1019,15 @@ describe("spawn flow", () => {
       prompt: "Add a settings row for the dictation engine",
       name: "zermatt",
     });
-    expect(state().workspace?.agents.length).toBe(before + 1);
-    const fresh = state().workspace?.agents[0];
+    expect(host().workspace?.agents.length).toBe(before + 1);
+    const fresh = host().workspace?.agents[0];
     // The sheet's name, not a fresh allocation (which would have been "tasman").
     expect(fresh?.name).toBe("zermatt");
     expect(fresh?.status).not.toBe("spawning");
     await vi.waitFor(
       () =>
         expect(
-          (state().logs[fresh?.id ?? ""] ?? []).some(
+          (host().logs[fresh?.id ?? ""] ?? []).some(
             (i) => i.kind === "user_message" && i.text.includes("dictation engine"),
           ),
         ).toBe(true),
@@ -1037,8 +1039,8 @@ describe("spawn flow", () => {
     const send = vi.spyOn(api, "sendUserMessage");
     const path = "/Users/alex/Library/Application Support/sh.fletch.app/attachments/up-2/spec.pdf";
     try {
-      await state().spawn({
-        repoPath: state().workspace?.projects[0].path ?? "",
+      await host().spawn({
+        repoPath: host().workspace?.projects[0].path ?? "",
         provider: "claude",
         model: "claude-opus-5",
         effort: "high",
@@ -1056,13 +1058,13 @@ describe("spawn flow", () => {
     } finally {
       send.mockRestore();
     }
-    expect(state().logs.skye?.[0]).toMatchObject({ kind: "user_message", attachments: [path] });
+    expect(host().logs.skye?.[0]).toMatchObject({ kind: "user_message", attachments: [path] });
   });
 
   it("allocates a name itself only when the sheet had none", async () => {
-    const before = new Set((state().workspace?.agents ?? []).map((a) => a.id));
-    await state().spawn({
-      repoPath: state().workspace?.projects[0].path ?? "",
+    const before = new Set((host().workspace?.agents ?? []).map((a) => a.id));
+    await host().spawn({
+      repoPath: host().workspace?.projects[0].path ?? "",
       provider: "claude",
       model: "claude-opus-5",
       effort: "high",
@@ -1070,14 +1072,14 @@ describe("spawn flow", () => {
       prompt: "The sheet never got a name for this one",
       name: "",
     });
-    const fresh = (state().workspace?.agents ?? []).find((a) => !before.has(a.id));
+    const fresh = (host().workspace?.agents ?? []).find((a) => !before.has(a.id));
     expect(fresh?.name).toBeTruthy();
   });
 
   /** Spawn an agent and wait until its first turn has a tool call streaming. */
   async function spawnMidTurn(name: string, prompt: string) {
-    await state().spawn({
-      repoPath: state().workspace?.projects[0].path ?? "",
+    await host().spawn({
+      repoPath: host().workspace?.projects[0].path ?? "",
       provider: "claude",
       model: "claude-opus-5",
       effort: "high",
@@ -1085,11 +1087,11 @@ describe("spawn flow", () => {
       prompt,
       name,
     });
-    const id = state().workspace?.agents[0]?.id ?? "";
+    const id = host().workspace?.agents[0]?.id ?? "";
     await vi.waitFor(
       () => {
-        expect(agentOf(state(), id)?.status).toBe("running");
-        expect((state().logs[id] ?? []).some((i) => i.kind === "tool_call")).toBe(true);
+        expect(agentOf(host(), id)?.status).toBe("running");
+        expect((host().logs[id] ?? []).some((i) => i.kind === "tool_call")).toBe(true);
       },
       { timeout: 10_000 },
     );
@@ -1099,7 +1101,7 @@ describe("spawn flow", () => {
   it("replays the running turn from the host when the agent is re-opened mid-turn", async () => {
     const prompt = "Wire the dictation engine picker";
     const id = await spawnMidTurn("lofoten", prompt);
-    const live = state().logs[id] ?? [];
+    const live = host().logs[id] ?? [];
     // A real host has ingested nothing of the running turn: no record of it
     // yet, and its user turn still unmatched. The mock persists every step, so
     // hold both back. And the phone's socket died in the background, so its
@@ -1112,16 +1114,16 @@ describe("spawn flow", () => {
     }));
     const read = vi.spyOn(api, "readSessionPage").mockResolvedValue({ records: [], older: null });
     const readTurns = vi.spyOn(api, "readUserTurns").mockResolvedValue(turns);
-    useStore.setState((s) => ({ logs: { ...s.logs, [id]: [] } }));
+    liveHost().setState((s) => ({ logs: { ...s.logs, [id]: [] } }));
     try {
       // Back to the list, then into the agent again: what openAgent runs.
-      state().pop();
-      await state().loadAgent(id);
+      app().pop();
+      await host().loadAgent(id);
     } finally {
       read.mockRestore();
       readTurns.mockRestore();
     }
-    const after = state().logs[id] ?? [];
+    const after = host().logs[id] ?? [];
     // The prompt opens the replayed turn, then everything the stream drew.
     expect(after[0]).toMatchObject({ kind: "user_message", text: prompt });
     for (const item of live.filter((i) => i.kind !== "user_message")) {
@@ -1130,44 +1132,44 @@ describe("spawn flow", () => {
 
     // Once the turn ends the host's records are complete and authoritative:
     // re-opening then does rebuild from them.
-    await vi.waitFor(() => expect(agentOf(state(), id)?.status).toBe("idle"), {
+    await vi.waitFor(() => expect(agentOf(host(), id)?.status).toBe("idle"), {
       timeout: 10_000,
     });
-    useStore.setState((s) => ({ logs: { ...s.logs, [id]: (s.logs[id] ?? []).slice(0, 1) } }));
-    await state().loadAgent(id);
-    expect((state().logs[id] ?? []).some((i) => i.kind === "tool_call")).toBe(true);
+    liveHost().setState((s) => ({ logs: { ...s.logs, [id]: (s.logs[id] ?? []).slice(0, 1) } }));
+    await host().loadAgent(id);
+    expect((host().logs[id] ?? []).some((i) => i.kind === "tool_call")).toBe(true);
   }, 30_000);
 
   it("keeps the live log mid-turn on a host without read_live_turn", async () => {
     const id = await spawnMidTurn("senja", "Add the relay setting to the host sheet");
-    const live = state().logs[id] ?? [];
-    const protocol = state().protocol;
+    const live = host().logs[id] ?? [];
+    const protocol = host().protocol;
     const { records } = await api.readSessionPage(id);
     const read = vi
       .spyOn(api, "readSessionPage")
       .mockResolvedValue({ records: records.slice(0, 1), older: null });
     const readLive = vi.spyOn(api, "readLiveTurn");
-    useStore.setState({
+    liveHost().setState({
       protocol: protocol && {
         ...protocol,
         ops: protocol.ops.filter((o) => o !== "read_live_turn"),
       },
     });
     try {
-      state().pop();
-      await state().loadAgent(id);
+      app().pop();
+      await host().loadAgent(id);
     } finally {
-      useStore.setState({ protocol });
+      liveHost().setState({ protocol });
       read.mockRestore();
       readLive.mockRestore();
     }
     // Nothing to replay from, so rebuilding would have left the prompt alone:
     // the stream's log stays (and keeps growing with the stream).
     expect(readLive).not.toHaveBeenCalled();
-    const after = state().logs[id] ?? [];
+    const after = host().logs[id] ?? [];
     expect(after.length).toBeGreaterThanOrEqual(live.length);
     for (const item of live) expect(after).toContainEqual(item);
-    await vi.waitFor(() => expect(agentOf(state(), id)?.status).toBe("idle"), {
+    await vi.waitFor(() => expect(agentOf(host(), id)?.status).toBe("idle"), {
       timeout: 10_000,
     });
   }, 30_000);
@@ -1176,11 +1178,11 @@ describe("spawn flow", () => {
     const send = vi
       .spyOn(api, "sendUserMessage")
       .mockRejectedValueOnce(new Error("host refused the message"));
-    const before = new Set((state().workspace?.agents ?? []).map((a) => a.id));
+    const before = new Set((host().workspace?.agents ?? []).map((a) => a.id));
 
     await expect(
-      state().spawn({
-        repoPath: state().workspace?.projects[0].path ?? "",
+      host().spawn({
+        repoPath: host().workspace?.projects[0].path ?? "",
         provider: "claude",
         model: "claude-opus-5",
         effort: "high",
@@ -1190,13 +1192,13 @@ describe("spawn flow", () => {
       }),
     ).rejects.toThrow("host refused the message");
 
-    expect(state().lastError).toContain("host refused the message");
+    expect(app().lastError).toContain("host refused the message");
     // The agent exists on the host, but nothing optimistic is left behind.
-    const fresh = (state().workspace?.agents ?? []).find((a) => !before.has(a.id));
+    const fresh = (host().workspace?.agents ?? []).find((a) => !before.has(a.id));
     expect(fresh).toBeTruthy();
     const id = fresh?.id ?? "";
-    expect(state().sending[id]).toBeFalsy();
-    expect(state().logs[id]).toBeUndefined();
+    expect(host().sending[id]).toBeFalsy();
+    expect(host().logs[id]).toBeUndefined();
     send.mockRestore();
   });
 });
@@ -1207,10 +1209,10 @@ describe("spawn flow", () => {
  *  "working" for an agent that finished while the phone was away. */
 describe("sending flag", () => {
   it("clears against a fresh snapshot when the turn ended off-socket", async () => {
-    useStore.setState((s) => ({ sending: { ...s.sending, caspian: true } }));
-    await state().refreshWorkspace();
-    expect(agentOf(state(), "caspian")?.status).not.toBe("running");
-    expect(state().sending.caspian).toBeUndefined();
+    liveHost().setState((s) => ({ sending: { ...s.sending, caspian: true } }));
+    await host().refreshWorkspace();
+    expect(agentOf(host(), "caspian")?.status).not.toBe("running");
+    expect(host().sending.caspian).toBeUndefined();
   });
 
   it("leaves a send that is still in flight alone", async () => {
@@ -1222,12 +1224,12 @@ describe("sending flag", () => {
         }),
     );
     try {
-      const pending = state().send("caspian", "hold this one open");
-      expect(state().sending.caspian).toBe(true);
+      const pending = host().send("caspian", "hold this one open");
+      expect(host().sending.caspian).toBe(true);
       // The host cannot have flipped the agent to running yet — the snapshot
       // is older than the tap, so it must not clear the flag.
-      await state().refreshWorkspace();
-      expect(state().sending.caspian).toBe(true);
+      await host().refreshWorkspace();
+      expect(host().sending.caspian).toBe(true);
       release();
       await pending;
     } finally {
@@ -1242,26 +1244,26 @@ describe("sending flag", () => {
  *  through `agentOf`'s fallback. */
 describe("planning chats", () => {
   const projectId = "prj-fletch";
-  const repoPath = () => useStore.getState().workspace?.projects[0].path ?? "";
+  const repoPath = () => liveHost().getState().workspace?.projects[0].path ?? "";
 
   it("is offered only by a host that lists them", () => {
-    expect(state().hostSupports("list_project_chats")).toBe(true);
+    expect(host().hostSupports("list_project_chats")).toBe(true);
   });
 
   it("lists the chats the snapshot holds back, and resolves them like any agent", async () => {
-    expect((state().workspace?.agents ?? []).some((a) => a.id === "sakura")).toBe(false);
-    await state().loadChats(projectId);
-    expect(state().chats[projectId]?.map((c) => c.id)).toContain("sakura");
+    expect((host().workspace?.agents ?? []).some((a) => a.id === "sakura")).toBe(false);
+    await host().loadChats(projectId);
+    expect(host().chats[projectId]?.map((c) => c.id)).toContain("sakura");
     // The fallback is what makes the agent screen, the composer and the event
     // handlers work for a chat without knowing it is one.
-    expect(agentOf(state(), "sakura")?.purpose).toBe(ROADMAP_PM_PURPOSE);
-    expect(projectOf(state(), "sakura")?.name).toBe("fletch");
+    expect(agentOf(host(), "sakura")?.purpose).toBe(ROADMAP_PM_PURPOSE);
+    expect(projectOf(host(), "sakura")?.name).toBe("fletch");
   });
 
   it("spawns under the Mac's Project Manager, registers the chat, then sends the idea", async () => {
     const spawn = vi.spyOn(api, "spawnAgent");
     try {
-      await state().startPlanningChat({
+      await host().startPlanningChat({
         projectId,
         prompt: "An offline queue for messages typed underground",
       });
@@ -1281,11 +1283,11 @@ describe("planning chats", () => {
     } finally {
       spawn.mockRestore();
     }
-    const chat = state().chats[projectId]?.[0];
+    const chat = host().chats[projectId]?.[0];
     expect(chat?.purpose).toBe(ROADMAP_PM_PURPOSE);
     // The chat is prepended, and it is not in the snapshot the host answers.
-    expect(state().chats[projectId]?.map((c) => c.id)).toContain("sakura");
-    expect((state().workspace?.agents ?? []).some((a) => a.id === chat?.id)).toBe(false);
+    expect(host().chats[projectId]?.map((c) => c.id)).toContain("sakura");
+    expect((host().workspace?.agents ?? []).some((a) => a.id === chat?.id)).toBe(false);
     // The record came back `spawning`; only the live `agent:status` can have
     // cleared it, and for a chat that patch lands in the registry — which is
     // also what let `waitForSpawn` release the first message below.
@@ -1293,7 +1295,7 @@ describe("planning chats", () => {
     await vi.waitFor(
       () =>
         expect(
-          (state().logs[chat?.id ?? ""] ?? []).some(
+          (host().logs[chat?.id ?? ""] ?? []).some(
             (i) => i.kind === "user_message" && i.text.includes("offline queue"),
           ),
         ).toBe(true),
@@ -1305,7 +1307,7 @@ describe("planning chats", () => {
     const list = vi.spyOn(api, "listCustomAgents").mockResolvedValue([]);
     const spawn = vi.spyOn(api, "spawnAgent");
     try {
-      await state().startPlanningChat({ projectId, prompt: "Ship the widget" });
+      await host().startPlanningChat({ projectId, prompt: "Ship the widget" });
       expect(spawn).toHaveBeenCalledWith(
         repoPath(),
         PROJECT_MANAGER_PRESET.base,
@@ -1326,75 +1328,75 @@ describe("planning chats", () => {
   });
 
   it("patches a chat record in place, and ignores an id it does not hold", () => {
-    state().patchChat("sakura", { task: "Offline queue, sliced" });
-    expect(state().chats[projectId]?.find((c) => c.id === "sakura")?.task).toBe(
+    host().patchChat("sakura", { task: "Offline queue, sliced" });
+    expect(host().chats[projectId]?.find((c) => c.id === "sakura")?.task).toBe(
       "Offline queue, sliced",
     );
-    const before = state().chats;
-    state().patchChat("arabia", { task: "not a chat" });
-    expect(state().chats).toBe(before);
+    const before = host().chats;
+    host().patchChat("arabia", { task: "not a chat" });
+    expect(host().chats).toBe(before);
   });
 
   it("follows a model or effort change, which the composer reads off the record", async () => {
-    await state().loadChats(projectId);
-    await state().setModel("sakura", "opus");
-    await vi.waitFor(() => expect(agentOf(state(), "sakura")?.model).toBe("opus"));
-    await state().setEffort("sakura", "high");
-    await vi.waitFor(() => expect(agentOf(state(), "sakura")?.effort).toBe("high"));
+    await host().loadChats(projectId);
+    await host().setModel("sakura", "opus");
+    await vi.waitFor(() => expect(agentOf(host(), "sakura")?.model).toBe("opus"));
+    await host().setEffort("sakura", "high");
+    await vi.waitFor(() => expect(agentOf(host(), "sakura")?.effort).toBe("high"));
   });
 
   it("deletes a chat outright — the registry first, then the host", async () => {
-    await state().startPlanningChat({ projectId, prompt: "A queue nobody asked for" });
-    const id = state().chats[projectId]?.[0]?.id ?? "";
+    await host().startPlanningChat({ projectId, prompt: "A queue nobody asked for" });
+    const id = host().chats[projectId]?.[0]?.id ?? "";
     const discard = vi.spyOn(api, "discardAgent");
     try {
-      await state().deleteChat(id);
+      await host().deleteChat(id);
       expect(discard).toHaveBeenCalledWith(id);
     } finally {
       discard.mockRestore();
     }
-    expect(state().chats[projectId]?.some((c) => c.id === id)).toBe(false);
+    expect(host().chats[projectId]?.some((c) => c.id === id)).toBe(false);
     // Gone on the host too, not merely hidden: the list read no longer has it.
-    await state().loadChats(projectId);
-    expect(state().chats[projectId]?.some((c) => c.id === id)).toBe(false);
+    await host().loadChats(projectId);
+    expect(host().chats[projectId]?.some((c) => c.id === id)).toBe(false);
   });
 
   it("puts the list back when the host refuses the delete", async () => {
-    await state().loadChats(projectId);
+    await host().loadChats(projectId);
     const discard = vi.spyOn(api, "discardAgent").mockRejectedValue(new Error("chat is busy"));
     try {
-      await expect(state().deleteChat("sakura")).rejects.toThrow("chat is busy");
+      await expect(host().deleteChat("sakura")).rejects.toThrow("chat is busy");
     } finally {
       discard.mockRestore();
     }
     // The optimistic removal was wrong, so the host's own list is read back.
-    expect(state().chats[projectId]?.map((c) => c.id)).toContain("sakura");
-    expect(state().lastError).toContain("chat is busy");
+    expect(host().chats[projectId]?.map((c) => c.id)).toContain("sakura");
+    expect(app().lastError).toContain("chat is busy");
   });
 
   it("refuses to archive a chat — an archived one could never be listed again", async () => {
-    await state().loadChats(projectId);
-    const before = state().chats;
+    await host().loadChats(projectId);
+    const before = host().chats;
     const archive = vi.spyOn(api, "archiveAgent");
     try {
-      await expect(state().archive("sakura")).rejects.toThrow(/deleted, not archived/);
+      await expect(host().archive("sakura")).rejects.toThrow(/deleted, not archived/);
       expect(archive).not.toHaveBeenCalled();
     } finally {
       archive.mockRestore();
     }
-    expect(state().chats).toBe(before);
+    expect(host().chats).toBe(before);
   });
 
   it("resolves a chat from its id alone — all a tapped notification carries", async () => {
     // A cold launch: the snapshot never named the chat and nothing has listed
     // it, so the agent screen has an id and an empty registry behind it.
-    useStore.setState({ chats: {} });
-    await state().ensureAgent("sakura");
-    expect(agentOf(state(), "sakura")?.purpose).toBe(ROADMAP_PM_PURPOSE);
+    liveHost().setState({ chats: {} });
+    await host().ensureAgent("sakura");
+    expect(agentOf(host(), "sakura")?.purpose).toBe(ROADMAP_PM_PURPOSE);
     // An id the host does not know registers nothing, rather than a placeholder.
-    const before = state().chats;
-    await state().ensureAgent("no-such-agent");
-    expect(state().chats).toBe(before);
+    const before = host().chats;
+    await host().ensureAgent("no-such-agent");
+    expect(host().chats).toBe(before);
   });
 });
 
@@ -1404,24 +1406,24 @@ describe("planning chats", () => {
  *  keep the ghosts, fold the live rows, and rule. */
 describe("PM proposals", () => {
   const projectId = "prj-fletch";
-  const ghosts = () => state().proposals[projectId] ?? [];
+  const ghosts = () => host().proposals[projectId] ?? [];
   const ghost = (code: string) => ghosts().find((i) => i.code === code);
 
   it("keeps only the ghosts off the board, newest first", async () => {
-    await state().loadProposals(projectId);
+    await host().loadProposals(projectId);
     // FLT-198 is already open — an item, not a question.
     expect(ghosts().map((i) => i.code)).toEqual(["FLT-207", "FLT-209"]);
   });
 
   it("accepts as a conditional transition, and the card goes with the ruling", async () => {
-    await state().loadProposals(projectId);
+    await host().loadProposals(projectId);
     const item = ghost("FLT-207");
     if (!item) throw new Error("no ghost to rule on");
     const update = vi
       .spyOn(api, "roadmapUpdateItem")
       .mockResolvedValue({ applied: true, item: { ...item, status: "queued" } });
     try {
-      await state().acceptProposal(item, true);
+      await host().acceptProposal(item, true);
       // Exactly the desktop board's accept: `proposed → open`, conditional on
       // the row still being a proposal, with `queue` handing it straight on.
       expect(update).toHaveBeenCalledWith(item.id, { status: "open" }, "proposed", true);
@@ -1432,14 +1434,14 @@ describe("PM proposals", () => {
   });
 
   it("discards by deleting the row — it never made the board", async () => {
-    await state().loadProposals(projectId);
+    await host().loadProposals(projectId);
     const item = ghost("FLT-209");
     if (!item) throw new Error("no ghost to rule on");
     const discard = vi
       .spyOn(api, "roadmapDiscardProposal")
       .mockResolvedValue({ applied: true, item: null });
     try {
-      await state().discardProposal(item);
+      await host().discardProposal(item);
       expect(discard).toHaveBeenCalledWith(item.id);
     } finally {
       discard.mockRestore();
@@ -1448,7 +1450,7 @@ describe("PM proposals", () => {
   });
 
   it("deletes nothing when the row was accepted first, and still takes the card down", async () => {
-    await state().loadProposals(projectId);
+    await host().loadProposals(projectId);
     const item = ghost("FLT-209");
     if (!item) throw new Error("no ghost to rule on");
     // What the host answers for a row that has moved on: the discard is refused
@@ -1457,7 +1459,7 @@ describe("PM proposals", () => {
       .spyOn(api, "roadmapDiscardProposal")
       .mockResolvedValue({ applied: false, item: { ...item, status: "queued" } });
     try {
-      await state().discardProposal(item);
+      await host().discardProposal(item);
     } finally {
       discard.mockRestore();
     }
@@ -1468,7 +1470,7 @@ describe("PM proposals", () => {
   });
 
   it("replaces the card when a `roadmap:item` says the row is still proposed", async () => {
-    await state().loadProposals(projectId);
+    await host().loadProposals(projectId);
     // Written on the host, so only the event can carry it here — a PM revising
     // its own suggestion must replace the card rather than stack a second one.
     await api.roadmapUpdateItem("itm-offline-queue", { title: "Queue sends made underground" });
@@ -1477,14 +1479,14 @@ describe("PM proposals", () => {
   });
 
   it("takes the card down when a `roadmap:item` says the row was ruled on", async () => {
-    await state().loadProposals(projectId);
+    await host().loadProposals(projectId);
     await api.roadmapUpdateItem("itm-offline-queue", { status: "open" });
     await vi.waitFor(() => expect(ghost("FLT-207")).toBeUndefined());
     expect(ghosts().map((i) => i.code)).toEqual(["FLT-209"]);
   });
 
   it("takes the card down on `roadmap:item-deleted`, which carries the bare id", async () => {
-    await state().loadProposals(projectId);
+    await host().loadProposals(projectId);
     await api.roadmapDiscardProposal("itm-tunnel-banner");
     await vi.waitFor(() => expect(ghosts()).toHaveLength(0));
   });
@@ -1496,22 +1498,22 @@ describe("PM proposals", () => {
 describe("delegations", () => {
   const AGENT = "kamakura";
   const idle = () =>
-    vi.waitFor(() => expect(agentOf(state(), AGENT)?.status).toBe("idle"), { timeout: 5000 });
-  const lines = () => (state().shipActivity[AGENT] ?? []).map((e) => e.text);
+    vi.waitFor(() => expect(agentOf(host(), AGENT)?.status).toBe("idle"), { timeout: 5000 });
+  const lines = () => (host().shipActivity[AGENT] ?? []).map((e) => e.text);
   const sentTexts = () =>
-    (state().logs[AGENT] ?? []).flatMap((i) =>
+    (host().logs[AGENT] ?? []).flatMap((i) =>
       i.kind === "user_message" || i.kind === "queued_message" ? [i.text] : [],
     );
 
   it("hands an idle agent's playbook to the host, which runs it and reports the outcome", async () => {
     await idle();
-    useStore.setState((s) => ({ shipActivity: { ...s.shipActivity, [AGENT]: [] } }));
+    liveHost().setState((s) => ({ shipActivity: { ...s.shipActivity, [AGENT]: [] } }));
 
-    await state().delegateGit(AGENT, "commit-pr", { base: "main" });
+    await host().delegateGit(AGENT, "commit-pr", { base: "main" });
     // The strip turns at once, off the host's record.
-    expect(state().delegations[AGENT]?.kind).toBe("commit-pr");
+    expect(host().delegations[AGENT]?.kind).toBe("commit-pr");
 
-    await vi.waitFor(() => expect(state().delegations[AGENT]).toBeUndefined(), { timeout: 5000 });
+    await vi.waitFor(() => expect(host().delegations[AGENT]).toBeUndefined(), { timeout: 5000 });
     expect(sentTexts()).toContain('[app-action] commit-pr base="main"');
     expect(lines()).toContain("Asked the agent to commit & open a PR");
     expect(lines()[0]).toBe("Committed — PR is open");
@@ -1519,17 +1521,17 @@ describe("delegations", () => {
 
   it("holds a playbook asked of a running agent until its turn ends, then runs it as its own", async () => {
     await idle();
-    useStore.setState((s) => ({ shipActivity: { ...s.shipActivity, [AGENT]: [] } }));
-    await state().send(AGENT, "keep going");
-    await vi.waitFor(() => expect(agentOf(state(), AGENT)?.status).toBe("running"), {
+    liveHost().setState((s) => ({ shipActivity: { ...s.shipActivity, [AGENT]: [] } }));
+    await host().send(AGENT, "keep going");
+    await vi.waitFor(() => expect(agentOf(host(), AGENT)?.status).toBe("running"), {
       timeout: 5000,
     });
 
-    await state().delegateGit(AGENT, "fix-checks", { failing: "unit" });
-    expect(state().delegations[AGENT]?.phase).toBe("queued");
+    await host().delegateGit(AGENT, "fix-checks", { failing: "unit" });
+    expect(host().delegations[AGENT]?.phase).toBe("queued");
     expect(sentTexts()).not.toContain('[app-action] fix-checks failing="unit"');
 
-    await vi.waitFor(() => expect(state().delegations[AGENT]).toBeUndefined(), { timeout: 5000 });
+    await vi.waitFor(() => expect(host().delegations[AGENT]).toBeUndefined(), { timeout: 5000 });
     const sent = sentTexts();
     // Its own turn, after the one it waited behind — not folded into it.
     expect(sent.indexOf('[app-action] fix-checks failing="unit"')).toBeGreaterThan(
@@ -1543,19 +1545,19 @@ describe("delegations", () => {
 
   it("sends the trigger as a plain message to a host without delegate_git", async () => {
     await idle();
-    const protocol = state().protocol;
-    useStore.setState({
+    const protocol = host().protocol;
+    liveHost().setState({
       protocol: protocol && { ...protocol, ops: protocol.ops.filter((o) => o !== "delegate_git") },
     });
     const delegate = vi.spyOn(api, "delegateGit");
     const send = vi.spyOn(api, "sendUserMessage");
     try {
-      await state().delegateGit(AGENT, "commit");
+      await host().delegateGit(AGENT, "commit");
       expect(delegate).not.toHaveBeenCalled();
       expect(send).toHaveBeenCalledWith(AGENT, expect.any(String), "[app-action] commit", []);
       expect(lines()[0]).toBe("Asked the agent to commit");
     } finally {
-      useStore.setState({ protocol });
+      liveHost().setState({ protocol });
       delegate.mockRestore();
       send.mockRestore();
       await idle();
@@ -1568,22 +1570,22 @@ describe("delegations", () => {
       { agent_id: AGENT, subdir: "api", kind: "commit", phase: "queued", started_at: 6 },
     ] as const;
     const spy = vi.spyOn(api, "getDelegations").mockResolvedValue([...rows]);
-    const protocol = state().protocol;
+    const protocol = host().protocol;
     try {
-      await state().loadDelegations();
-      expect(state().delegations).toEqual({ [AGENT]: rows[0] });
+      await host().loadDelegations();
+      expect(host().delegations).toEqual({ [AGENT]: rows[0] });
 
       spy.mockClear();
-      useStore.setState({
+      liveHost().setState({
         protocol: protocol && {
           ...protocol,
           ops: protocol.ops.filter((o) => o !== "get_delegations"),
         },
       });
-      await state().loadDelegations();
+      await host().loadDelegations();
       expect(spy).not.toHaveBeenCalled();
     } finally {
-      useStore.setState({ protocol, delegations: {} });
+      liveHost().setState({ protocol, delegations: {} });
       spy.mockRestore();
     }
   });
@@ -1594,7 +1596,7 @@ describe("delegations", () => {
  *  agent's pause. The mock host has kamakura's PR mid-cycle. */
 describe("autopilot", () => {
   const AGENT = "kamakura";
-  const lines = () => (state().shipActivity[AGENT] ?? []).map((e) => e.text);
+  const lines = () => (host().shipActivity[AGENT] ?? []).map((e) => e.text);
   const entry = (over: Partial<AutopilotLogEntry>): AutopilotLogEntry => ({
     id: "ap-live",
     agent_id: AGENT,
@@ -1607,17 +1609,17 @@ describe("autopilot", () => {
   });
 
   it("re-reads the host's state and log on every handshake", async () => {
-    useStore.setState({ autopilot: {}, shipActivity: {} });
-    await state().reconnect();
-    await vi.waitFor(() => expect(state().autopilot[AGENT]?.cycle).not.toBeNull());
-    expect(state().autopilot[AGENT]).toMatchObject({
+    liveHost().setState({ autopilot: {}, shipActivity: {} });
+    await host().reconnect();
+    await vi.waitFor(() => expect(host().autopilot[AGENT]?.cycle).not.toBeNull());
+    expect(host().autopilot[AGENT]).toMatchObject({
       enrolled: true,
       paused: false,
       project_enabled: true,
       cycle: { rung: "fix-checks", attempt: 2, phase: "awaiting-evidence" },
     });
     // Every live agent has a row, on by default.
-    expect(state().autopilot.arabia).toMatchObject({ enrolled: true, cycle: null });
+    expect(host().autopilot.arabia).toMatchObject({ enrolled: true, cycle: null });
     await vi.waitFor(() =>
       expect(lines()).toEqual([
         "Autopilot started on the failing checks, try 2",
@@ -1638,46 +1640,46 @@ describe("autopilot", () => {
     );
     expect(lines()[0]).toBe("Autopilot gave up on the failing checks after 3 tries");
 
-    const row = state().autopilot[AGENT];
+    const row = host().autopilot[AGENT];
     hostEvent("autopilot:state", { ...row, cycle: null });
-    expect(state().autopilot[AGENT]?.cycle).toBeNull();
+    expect(host().autopilot[AGENT]?.cycle).toBeNull();
     // A secondary checkout is a row of its own, beside the primary's.
     hostEvent("autopilot:state", { ...row, subdir: "api" });
-    expect(state().autopilot[`${AGENT}::api`]?.cycle?.rung).toBe("fix-checks");
-    expect(state().autopilot[AGENT]?.cycle).toBeNull();
+    expect(host().autopilot[`${AGENT}::api`]?.cycle?.rung).toBe("fix-checks");
+    expect(host().autopilot[AGENT]?.cycle).toBeNull();
   });
 
   it("takes the host's switches whole, though no row changed", () => {
-    const rows = state().autopilot;
-    useStore.setState({ autopilotSwitches: { disabled_projects: [], paused_agents: [AGENT] } });
+    const rows = host().autopilot;
+    liveHost().setState({ autopilotSwitches: { disabled_projects: [], paused_agents: [AGENT] } });
 
     // A project with no agents switched off on the Mac: no `autopilot:state`.
     hostEvent("autopilot:switches", { disabled_projects: ["empty"], paused_agents: [] });
 
-    expect(state().autopilotSwitches).toEqual({ disabled_projects: ["empty"], paused_agents: [] });
-    expect(state().autopilot).toBe(rows);
+    expect(host().autopilotSwitches).toEqual({ disabled_projects: ["empty"], paused_agents: [] });
+    expect(host().autopilot).toBe(rows);
   });
 
   it("pauses and resumes an agent through the host, taking its answer as the state", async () => {
     const spy = vi.spyOn(api, "setAutopilot");
     try {
-      await state().reconnect();
-      await vi.waitFor(() => expect(state().autopilot[AGENT]?.cycle).not.toBeNull());
+      await host().reconnect();
+      await vi.waitFor(() => expect(host().autopilot[AGENT]?.cycle).not.toBeNull());
 
-      await state().setAgentAutopilot(AGENT, false);
+      await host().setAgentAutopilot(AGENT, false);
       expect(spy).toHaveBeenCalledWith({ agentId: AGENT }, false);
       // The pause drops the cycle on the host, and the answer says so.
-      expect(state().autopilot[AGENT]).toMatchObject({
+      expect(host().autopilot[AGENT]).toMatchObject({
         paused: true,
         enrolled: false,
         cycle: null,
       });
-      expect(state().autopilot.arabia?.paused).toBe(false);
-      expect(state().autopilotSwitches?.paused_agents).toEqual([AGENT]);
+      expect(host().autopilot.arabia?.paused).toBe(false);
+      expect(host().autopilotSwitches?.paused_agents).toEqual([AGENT]);
 
-      await state().setAgentAutopilot(AGENT, true);
+      await host().setAgentAutopilot(AGENT, true);
       expect(spy).toHaveBeenLastCalledWith({ agentId: AGENT }, true);
-      expect(state().autopilot[AGENT]).toMatchObject({
+      expect(host().autopilot[AGENT]).toMatchObject({
         paused: false,
         enrolled: true,
         cycle: null,
@@ -1688,24 +1690,24 @@ describe("autopilot", () => {
   });
 
   it("asks nothing of a host, or a pairing, without the ops", async () => {
-    const protocol = state().protocol;
+    const protocol = host().protocol;
     const read = vi.spyOn(api, "getAutopilotState");
     const log = vi.spyOn(api, "getAutopilotLog");
     const flip = vi.spyOn(api, "setAutopilot");
-    useStore.setState({
+    liveHost().setState({
       protocol: protocol && {
         ...protocol,
         ops: protocol.ops.filter((o) => !o.startsWith("autopilot_")),
       },
     });
     try {
-      await state().loadAutopilot();
-      await state().setAgentAutopilot(AGENT, false);
+      await host().loadAutopilot();
+      await host().setAgentAutopilot(AGENT, false);
       expect(read).not.toHaveBeenCalled();
       expect(log).not.toHaveBeenCalled();
       expect(flip).not.toHaveBeenCalled();
     } finally {
-      useStore.setState({ protocol });
+      liveHost().setState({ protocol });
       read.mockRestore();
       log.mockRestore();
       flip.mockRestore();
@@ -1720,17 +1722,17 @@ describe("pairing from a link", () => {
   const LINK = { host: "192.168.1.24", port: 47285, hostKey: "k", pairingToken: "K7PQ2M9X" };
 
   it("ignores a repeat of the link whose pairing is still running", () => {
-    const restore = { pairStep: state().pairStep, pairTarget: state().pairTarget };
-    useStore.setState({ pairStep: "relay", pairTarget: LINK });
+    const restore = { pairStep: app().pairStep, pairTarget: app().pairTarget };
+    appStore.setState({ pairStep: "relay", pairTarget: LINK });
     try {
       // The same link, with its pairing in flight: the attempt already
       // spending the code keeps it, rather than being restarted from
       // `connecting`.
-      state().pairFromLink({ ...LINK });
-      expect(state().pairTarget).toEqual(LINK);
-      expect(state().pairStep).toBe("relay");
+      app().pairFromLink({ ...LINK });
+      expect(app().pairTarget).toEqual(LINK);
+      expect(app().pairStep).toBe("relay");
     } finally {
-      useStore.setState(restore);
+      appStore.setState(restore);
     }
   });
 });

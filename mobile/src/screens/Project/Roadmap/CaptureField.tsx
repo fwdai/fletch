@@ -2,14 +2,14 @@ import { Icon } from "@desktop/components/Icon";
 import { useState } from "react";
 import { PromptField } from "../../../components/PromptField";
 import { Notice } from "../../../components/ui/Notice";
-import { useStore } from "../../../store";
+import { useHostStore } from "../../../store";
 
 /** The board's capture field, on the phone: type or dictate a note and it lands
  *  in the project's Inbox as a `captured` row for the PM to triage — the same
  *  `roadmap_capture` the Mac's field sends. A dictated note is a draft like a
  *  typed one; nothing goes out until Capture is tapped. */
 export function CaptureField({ projectId }: { projectId: string }) {
-  const capture = useStore((s) => s.captureRoadmapItem);
+  const capture = useHostStore((s) => s.captureRoadmapItem);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);

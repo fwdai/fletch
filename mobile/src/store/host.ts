@@ -61,11 +61,7 @@ import {
 import { type LoadedHistory, type LogLoad, pastHistory, renderHistory } from "./transcript";
 import { createWorkspaceReads } from "./workspaceReads";
 
-export interface HostState
-  extends ChatsSlice,
-    ProposalsSlice,
-    ProviderAccountsSlice,
-    RoadmapSlice {
+export interface HostState extends ChatsSlice, ProposalsSlice, ProviderAccountsSlice, RoadmapSlice {
   connection: ConnectionState;
   connectionError: string | null;
   /** Mirrors the client: an `error` with a retry scheduled behind it reads as
@@ -336,9 +332,7 @@ const withAttachments = (attachments: string[]) => (attachments.length > 0 ? { a
 
 /** The store's own setter, which also takes an updater — what any write that
  *  reads the current state has to be handed. */
-type StateSetter = (
-  partial: Partial<HostState> | ((s: HostState) => Partial<HostState>),
-) => void;
+type StateSetter = (partial: Partial<HostState> | ((s: HostState) => Partial<HostState>)) => void;
 
 /** Record the failure where the error UI can see it — the app's `lastError`,
  *  which the sheets that asked read — then rethrow: an action that swallows
@@ -587,7 +581,8 @@ export function createHostStore(link: HostLink): HostStore {
       // The handshake's snapshot is as authoritative as `refreshWorkspace`'s
       // read, so it settles the `sending` bridge the same way (helpers/sending)
       // — this is the path that clears a flag stranded by a reconnect.
-      if (ws) set((s) => ({ workspace: ws, sending: reconcileSending(s.sending, ws.agents, sends) }));
+      if (ws)
+        set((s) => ({ workspace: ws, sending: reconcileSending(s.sending, ws.agents, sends) }));
       else void get().refreshWorkspace();
       // A PR read still out was asked of the socket before this one, so none
       // of them may land. The reads below are issued after the fence and
@@ -944,7 +939,16 @@ export function createHostStore(link: HostLink): HostStore {
       });
     },
 
-    async spawn({ repoPath, provider, model, effort, base, prompt, attachments = [], name: shown }) {
+    async spawn({
+      repoPath,
+      provider,
+      model,
+      effort,
+      base,
+      prompt,
+      attachments = [],
+      name: shown,
+    }) {
       return guard(async () => {
         // The user has been looking at (and possibly rerolled) this name; the
         // agent must launch under it, not a fresh draw.

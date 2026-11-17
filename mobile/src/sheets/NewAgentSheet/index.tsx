@@ -10,7 +10,7 @@ import { hostProviderBlock, useHostProviders } from "../../lib/hostProviders";
 import { ignore } from "../../lib/ignore";
 import { modelsFor, useModels } from "../../lib/models";
 import { primaryPath, projectsOf } from "../../lib/projects";
-import { useStore } from "../../store";
+import { useApp, useHostStore } from "../../store";
 import { RunnerSheet } from "./RunnerSheet";
 
 type Picker = "project" | "branch" | "runner" | null;
@@ -26,11 +26,11 @@ export function NewAgentSheet({
 }) {
   // Derived from the snapshot, not selected: `projectsOf` is stable per
   // snapshot, so neither the render nor the reset effect below loops.
-  const workspace = useStore((s) => s.workspace);
+  const workspace = useHostStore((s) => s.workspace);
   const projects = projectsOf(workspace);
-  const spawn = useStore((s) => s.spawn);
-  const lastError = useStore((s) => s.lastError);
-  const clearError = useStore((s) => s.clearError);
+  const spawn = useHostStore((s) => s.spawn);
+  const lastError = useApp((s) => s.lastError);
+  const clearError = useApp((s) => s.clearError);
   const { api } = useHost();
   const models = useModels();
   // Which agents the Mac can actually start, re-read each time the sheet

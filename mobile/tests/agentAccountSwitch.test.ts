@@ -13,9 +13,10 @@ import type { RemoteClient } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { AccountPickerSheet } from "../src/sheets/AccountPickerSheet";
 import { AgentMoreSheet } from "../src/sheets/AgentMoreSheet";
-import { agentOf, useStore } from "../src/store";
+import { agentOf, appStore, liveHost } from "../src/store";
 
-const state = () => useStore.getState();
+const app = () => appStore.getState();
+const host = () => liveHost().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;
@@ -26,59 +27,59 @@ const hostEvent = (event: string, payload: unknown) =>
   (
     client as unknown as { dispatchEvent(frame: { event: string; payload: unknown }): void }
   ).dispatchEvent({ event, payload });
-const stampOf = (id: string) => agentOf(state(), id)?.account;
+const stampOf = (id: string) => agentOf(host(), id)?.account;
 
 beforeAll(async () => {
-  await state().init();
-  await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  await app().init();
+  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
   ({ api, client } = linkOf(MOCK_HOST_KEY));
-  await state().loadProviderAccounts();
+  await host().loadProviderAccounts();
 });
 
 describe("switchAgentAccount over the mock host", () => {
   it("restamps the agent with the account the host hands back", async () => {
     expect(stampOf("kamakura")).toBe("work");
 
-    const record = await state().switchAgentAccount("kamakura", "default");
+    const record = await host().switchAgentAccount("kamakura", "default");
 
     // The host spells the CLI's own login as no stamp.
     expect(record?.account).toBeNull();
     expect(stampOf("kamakura")).toBeNull();
-    expect(state().switchingAccount.kamakura).toBe(false);
+    expect(host().switchingAccount.kamakura).toBe(false);
     // Only this agent moved.
     expect(stampOf("arabia")).toBe("work");
   });
 
   it("refuses the account the agent already runs under", async () => {
-    await expect(state().switchAgentAccount("kamakura", "default")).rejects.toThrow(
+    await expect(host().switchAgentAccount("kamakura", "default")).rejects.toThrow(
       "This agent already runs under the `default` account.",
     );
   });
 
   it("refuses a signed-out target and leaves the stamp alone", async () => {
-    await expect(state().switchAgentAccount("caspian", "personal")).rejects.toThrow(
+    await expect(host().switchAgentAccount("caspian", "personal")).rejects.toThrow(
       "The `personal` account isn't signed in",
     );
     expect(stampOf("caspian")).toBeNull();
-    expect(state().switchingAccount.caspian).toBe(false);
+    expect(host().switchingAccount.caspian).toBe(false);
   });
 
   it("refuses mid-turn", async () => {
     // Held on a tool approval for the whole run, so it stays mid-turn.
-    expect(agentOf(state(), "pamukkale")?.status).toBe("running");
-    await expect(state().switchAgentAccount("pamukkale", "default")).rejects.toThrow(
+    expect(agentOf(host(), "pamukkale")?.status).toBe("running");
+    await expect(host().switchAgentAccount("pamukkale", "default")).rejects.toThrow(
       "Wait for the turn to finish before switching accounts.",
     );
     expect(stampOf("pamukkale")).toBe("work");
   });
 
   it("restamps a planning chat in the chat registry", async () => {
-    await state().loadChats("prj-fletch");
+    await host().loadChats("prj-fletch");
     expect(stampOf("sakura")).toBe("work");
 
-    await state().switchAgentAccount("sakura", "default");
+    await host().switchAgentAccount("sakura", "default");
 
-    expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBeNull();
+    expect(host().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBeNull();
   });
 
   it("keeps a chat that finished while its list was out finished", async () => {
@@ -94,11 +95,11 @@ describe("switchAgentAccount over the mock host", () => {
         c.id === "sakura" ? { ...c, status: "running" as const } : c,
       );
     });
-    const read = state().loadChats("prj-fletch");
+    const read = host().loadChats("prj-fletch");
     hostEvent("agent:status", { agent_id: "sakura", status: "idle" });
     release();
     await read;
-    expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.status).toBe("idle");
+    expect(host().chats["prj-fletch"].find((c) => c.id === "sakura")?.status).toBe("idle");
   });
 
   it("replays only its own project's patches over a list's answer", async () => {
@@ -112,14 +113,14 @@ describe("switchAgentAccount over the mock host", () => {
       });
       return list(projectId, purpose);
     });
-    const atlas = state().loadChats("prj-atlas");
-    state().patchChat("sakura", { account: "stale" });
-    await state().loadChats("prj-fletch");
-    const fresh = state().chats["prj-fletch"].find((c) => c.id === "sakura")?.account;
+    const atlas = host().loadChats("prj-atlas");
+    host().patchChat("sakura", { account: "stale" });
+    await host().loadChats("prj-fletch");
+    const fresh = host().chats["prj-fletch"].find((c) => c.id === "sakura")?.account;
     expect(fresh).not.toBe("stale");
     release();
     await atlas;
-    expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBe(fresh);
+    expect(host().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBe(fresh);
   });
 
   it("keeps a chat resolved by id while its project's list was out", async () => {
@@ -133,18 +134,18 @@ describe("switchAgentAccount over the mock host", () => {
       });
       return list(projectId, purpose);
     });
-    const sakura = state().chats["prj-fletch"].find((c) => c.id === "sakura");
+    const sakura = host().chats["prj-fletch"].find((c) => c.id === "sakura");
     const found = { ...(sakura as NonNullable<typeof sakura>), id: "found-later", name: "found" };
     vi.spyOn(api, "getAgent").mockResolvedValueOnce(found);
-    const read = state().loadChats("prj-fletch");
-    await state().ensureAgent("found-later");
-    expect(state().chats["prj-fletch"].some((c) => c.id === "found-later")).toBe(true);
+    const read = host().loadChats("prj-fletch");
+    await host().ensureAgent("found-later");
+    expect(host().chats["prj-fletch"].some((c) => c.id === "found-later")).toBe(true);
     release();
     await read;
-    expect(state().chats["prj-fletch"].some((c) => c.id === "found-later")).toBe(true);
+    expect(host().chats["prj-fletch"].some((c) => c.id === "found-later")).toBe(true);
     // Not a fixture of the mock host: the next real list drops it again.
-    await state().loadChats("prj-fletch");
-    expect(state().chats["prj-fletch"].some((c) => c.id === "found-later")).toBe(false);
+    await host().loadChats("prj-fletch");
+    expect(host().chats["prj-fletch"].some((c) => c.id === "found-later")).toBe(false);
   });
 
   it("lands only the newest of two chat lists in flight", async () => {
@@ -158,22 +159,22 @@ describe("switchAgentAccount over the mock host", () => {
         c.id === "sakura" ? { ...c, status: "running" as const } : c,
       );
     });
-    const first = state().loadChats("prj-fletch");
-    await state().loadChats("prj-fletch");
+    const first = host().loadChats("prj-fletch");
+    await host().loadChats("prj-fletch");
     releaseFirst();
     await first;
-    expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.status).toBe("idle");
+    expect(host().chats["prj-fletch"].find((c) => c.id === "sakura")?.status).toBe("idle");
   });
 
   it("holds only until the provider's selection next moves every agent", async () => {
-    await state().setActiveProviderAccount("claude", "default");
-    await state().setActiveProviderAccount("claude", "work");
+    await host().setActiveProviderAccount("claude", "default");
+    await host().setActiveProviderAccount("claude", "work");
 
     await vi.waitFor(() => expect(stampOf("kamakura")).toBe("work"));
     // A loaded planning chat follows too: it is absent from the snapshot the
     // radio's `workspace:changed` refreshes, so its own list is read again.
     await vi.waitFor(() =>
-      expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBe("work"),
+      expect(host().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBe("work"),
     );
   });
 
@@ -189,12 +190,12 @@ describe("switchAgentAccount over the mock host", () => {
       });
       return rows;
     });
-    const read = state().loadChats("prj-fletch");
-    await state().deleteChat("sakura");
-    expect(state().chats["prj-fletch"].some((c) => c.id === "sakura")).toBe(false);
+    const read = host().loadChats("prj-fletch");
+    await host().deleteChat("sakura");
+    expect(host().chats["prj-fletch"].some((c) => c.id === "sakura")).toBe(false);
     release();
     await read;
-    expect(state().chats["prj-fletch"].some((c) => c.id === "sakura")).toBe(false);
+    expect(host().chats["prj-fletch"].some((c) => c.id === "sakura")).toBe(false);
   });
 });
 
@@ -210,8 +211,8 @@ describe("the More sheet's account row and its picker", () => {
           null,
           createElement(AgentMoreSheet, { open: true, onClose: () => {}, agentId }),
           createElement(AccountPickerSheet, {
-            open: state().sheet?.name === "accountPicker" && !!state().sheet?.open,
-            onClose: () => state().closeSheet(),
+            open: app().sheet?.name === "accountPicker" && !!app().sheet?.open,
+            onClose: () => app().closeSheet(),
             agentId,
           }),
         ),
@@ -228,7 +229,7 @@ describe("the More sheet's account row and its picker", () => {
     document.body.append(host);
     root = createRoot(host);
   });
-  afterEach(() => act(() => state().closeSheet()));
+  afterEach(() => act(() => app().closeSheet()));
   afterAll(() => {
     act(() => root.unmount());
     host.remove();
@@ -257,7 +258,7 @@ describe("the More sheet's account row and its picker", () => {
     await render("kamakura");
     await vi.waitFor(() => expect(accountRow()?.disabled).toBe(false));
     await act(async () => accountRow()?.click());
-    expect(state().sheet).toMatchObject({ name: "accountPicker", props: { agentId: "kamakura" } });
+    expect(app().sheet).toMatchObject({ name: "accountPicker", props: { agentId: "kamakura" } });
     await render("kamakura");
 
     const options = () =>
@@ -276,7 +277,7 @@ describe("the More sheet's account row and its picker", () => {
     await act(async () => terminal.click());
 
     await vi.waitFor(() => expect(stampOf("kamakura")).toBeNull());
-    expect(state().sheet?.open).toBe(false);
+    expect(app().sheet?.open).toBe(false);
   });
 
   it("leaves another agent's picker alone when an earlier pick's answer lands", async () => {
@@ -284,7 +285,7 @@ describe("the More sheet's account row and its picker", () => {
     // another agent's before it does.
     const rows = () => [...host.querySelectorAll<HTMLButtonElement>(".sheet.stacked .row")];
     const openPickerFor = async (agentId: string) => {
-      await act(async () => state().openSheet("accountPicker", { agentId }));
+      await act(async () => app().openSheet("accountPicker", { agentId }));
       await render(agentId);
       await vi.waitFor(() => expect(rows().length).toBe(2));
     };
@@ -304,12 +305,12 @@ describe("the More sheet's account row and its picker", () => {
     await openPickerFor("kamakura");
     await act(async () => other().click());
     expect(first).toHaveBeenCalledTimes(1);
-    await act(async () => state().closeSheet());
+    await act(async () => app().closeSheet());
     await openPickerFor("arabia");
     await act(async () => {
-      settle.resolve({ ...agentOf(state(), "kamakura"), account: "work" });
+      settle.resolve({ ...agentOf(liveHost().getState(), "kamakura"), account: "work" });
     });
-    expect(state().sheet).toMatchObject({
+    expect(app().sheet).toMatchObject({
       name: "accountPicker",
       open: true,
       props: { agentId: "arabia" },
@@ -317,20 +318,20 @@ describe("the More sheet's account row and its picker", () => {
     expect(stampOf("kamakura")).toBe("work");
 
     // A refusal for kamakura must not show in arabia's picker.
-    await act(async () => state().closeSheet());
+    await act(async () => app().closeSheet());
     await openPickerFor("kamakura");
     const second = vi
       .spyOn(api, "switchAgentAccount")
       .mockImplementationOnce(() => held() as never);
     await act(async () => other().click());
     expect(second).toHaveBeenCalledTimes(2);
-    await act(async () => state().closeSheet());
+    await act(async () => app().closeSheet());
     await openPickerFor("arabia");
     await act(async () => {
       settle.reject(new Error("Wait for the turn to finish before switching accounts."));
     });
     expect(host.querySelector(".notice-bar.error")).toBeNull();
-    expect(state().sheet).toMatchObject({
+    expect(app().sheet).toMatchObject({
       name: "accountPicker",
       open: true,
       props: { agentId: "arabia" },
@@ -365,13 +366,13 @@ describe("a switch against the workspace reads around it", () => {
   it("is not undone by an older workspace read that answers after it", async () => {
     // In step with the host first: the picker tests above answered a held
     // switch with a record of their own.
-    await state().refreshWorkspace();
+    await host().refreshWorkspace();
     const was = stampOf("kamakura") ?? null;
     const target = was ? "default" : "work";
     const held = hold();
-    const stale = state().refreshWorkspace();
+    const stale = host().refreshWorkspace();
     await held.armed;
-    await state().switchAgentAccount("kamakura", target);
+    await host().switchAgentAccount("kamakura", target);
     const switched = stampOf("kamakura") ?? null;
     expect(switched).not.toBe(was);
     held.release();
@@ -381,13 +382,13 @@ describe("a switch against the workspace reads around it", () => {
 
   it("lands only the newest of two workspace reads in flight", async () => {
     const held = hold();
-    const first = state().refreshWorkspace();
+    const first = host().refreshWorkspace();
     await held.armed;
-    await state().refreshWorkspace();
-    const after = state().workspace;
+    await host().refreshWorkspace();
+    const after = host().workspace;
     held.release();
     await first;
-    expect(state().workspace).toBe(after);
+    expect(host().workspace).toBe(after);
   });
 
   it("replays a branch change onto the read's own repo list", async () => {
@@ -407,32 +408,32 @@ describe("a switch against the workspace reads around it", () => {
           ),
         },
     );
-    const primary = agentOf(state(), "kamakura")?.repos[0].subdir ?? "";
-    const pending = state().refreshWorkspace();
+    const primary = agentOf(host(), "kamakura")?.repos[0].subdir ?? "";
+    const pending = host().refreshWorkspace();
     await held.armed;
     hostEvent("agent:branch", { agent_id: "kamakura", subdir: primary, branch: "feat/overtook" });
     held.release();
     await pending;
-    const repos = agentOf(state(), "kamakura")?.repos ?? [];
+    const repos = agentOf(host(), "kamakura")?.repos ?? [];
     expect(repos.map((r) => r.subdir)).toContain("extra");
     expect(repos.find((r) => r.subdir === primary)?.branch).toBe("feat/overtook");
   });
 
   it("merges a repo added meanwhile by identity", async () => {
     const held = hold();
-    const base = agentOf(state(), "kamakura")?.repos[0];
+    const base = agentOf(host(), "kamakura")?.repos[0];
     const added = { ...(base as NonNullable<typeof base>), repo_path: "/x/added", subdir: "added" };
-    const pending = state().refreshWorkspace();
+    const pending = host().refreshWorkspace();
     await held.armed;
     hostEvent("agent:repo_added", { agent_id: "kamakura", repo: added });
     // Delivered twice, as a reconnect can: still one row.
     hostEvent("agent:repo_added", { agent_id: "kamakura", repo: added });
     held.release();
     await pending;
-    const repos = agentOf(state(), "kamakura")?.repos ?? [];
+    const repos = agentOf(host(), "kamakura")?.repos ?? [];
     expect(repos.filter((r) => r.repo_path === "/x/added")).toHaveLength(1);
     // Back in step with the host, which never had it.
-    await state().refreshWorkspace();
-    expect(agentOf(state(), "kamakura")?.repos.some((r) => r.subdir === "added")).toBe(false);
+    await host().refreshWorkspace();
+    expect(agentOf(host(), "kamakura")?.repos.some((r) => r.subdir === "added")).toBe(false);
   });
 });

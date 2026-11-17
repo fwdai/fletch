@@ -15,7 +15,7 @@ import { PROVIDERS } from "@desktop/data/providers";
 import { useEffect, useState } from "react";
 import type { HostLink } from "../host";
 import { useHost } from "../host/useHost";
-import { useStore } from "../store";
+import { useHostStore } from "../store";
 
 /** A provider's selectable models, keyed by agent id — the catalog's `byAgent`
  *  view, which is all the pickers need. */
@@ -96,7 +96,7 @@ export function loadModels({ hostKey, api }: HostLink): Promise<ModelsByAgent | 
 /** The catalog's per-agent model lists, refreshed when the connection comes up
  *  (discovery is a host round-trip) and whenever the paired host changes. */
 export function useModels(): ModelsByAgent {
-  const connection = useStore((s) => s.connection);
+  const connection = useHostStore((s) => s.connection);
   const link = useHost();
   const [models, setModels] = useState<ModelsByAgent>(current);
   useEffect(() => {

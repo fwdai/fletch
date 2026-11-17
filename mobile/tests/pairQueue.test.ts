@@ -11,9 +11,9 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { HostTarget } from "../src/remote";
-import { useStore } from "../src/store";
+import { appStore } from "../src/store";
 
-const state = () => useStore.getState();
+const app = () => appStore.getState();
 
 const LINK: HostTarget = {
   host: "192.168.1.24",
@@ -30,20 +30,20 @@ describe("a pairing link that arrives before init has finished", () => {
     const readyAt: boolean[] = [];
     const targets: HostTarget[] = [];
     const connect = vi.fn(async (target: HostTarget) => {
-      readyAt.push(state().ready);
+      readyAt.push(app().ready);
       targets.push(target);
     });
-    useStore.setState({ connect });
+    appStore.setState({ connect });
 
-    state().pairFromLink(LINK);
+    app().pairFromLink(LINK);
     expect(connect).not.toHaveBeenCalled();
-    expect(state().ready).toBe(false);
+    expect(app().ready).toBe(false);
     // Held, but not invisible: the Pair screen shows the link and reads as
     // busy rather than offering a button that would start a second pairing.
-    expect(state().pairTarget).toEqual(LINK);
-    expect(state().pairStep).toBe("connecting");
+    expect(app().pairTarget).toEqual(LINK);
+    expect(app().pairStep).toBe("connecting");
 
-    await state().init();
+    await app().init();
 
     // Once, with the link — not the mock host `init` would otherwise dial,
     // and not after being superseded by it.
@@ -55,8 +55,8 @@ describe("a pairing link that arrives before init has finished", () => {
 
   it("is spent: a second init has nothing held to pair with", async () => {
     const connect = vi.fn(async () => {});
-    useStore.setState({ connect });
-    await state().init();
+    appStore.setState({ connect });
+    await app().init();
     expect(connect).not.toHaveBeenCalled();
   });
 });

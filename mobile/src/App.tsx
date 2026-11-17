@@ -19,7 +19,7 @@ import { NewAgentSheet } from "./sheets/NewAgentSheet";
 import { NewPlanSheet } from "./sheets/NewPlanSheet";
 import { PrSheet } from "./sheets/PrSheet";
 import { ShipMoreSheet } from "./sheets/ShipMoreSheet";
-import { type NavItem, useStore } from "./store";
+import { type NavItem, useApp, useHostStore } from "./store";
 import "./styles/base.css";
 import "./styles/screens.css";
 import "@desktop/components/ui/Loader.css";
@@ -55,19 +55,19 @@ function Screen({ item }: { item: NavItem }) {
 }
 
 export function App() {
-  const ready = useStore((s) => s.ready);
-  const init = useStore((s) => s.init);
-  const theme = useStore((s) => s.theme);
-  const systemTheme = useStore((s) => s.systemTheme);
-  const setSystemTheme = useStore((s) => s.setSystemTheme);
-  const sheet = useStore((s) => s.sheet);
-  const closeSheet = useStore((s) => s.closeSheet);
+  const ready = useApp((s) => s.ready);
+  const init = useApp((s) => s.init);
+  const theme = useApp((s) => s.theme);
+  const systemTheme = useApp((s) => s.systemTheme);
+  const setSystemTheme = useApp((s) => s.setSystemTheme);
+  const sheet = useApp((s) => s.sheet);
+  const closeSheet = useApp((s) => s.closeSheet);
   // Paired means "we hold the host's key": there is no other credential. The
   // Pair screen also comes up over a paired host, to add another.
-  const hostKey = useStore((s) => s.hostKey);
-  const addingHost = useStore((s) => s.addingHost);
-  const connected = useStore((s) => s.connection === "connected");
-  const loadShortstats = useStore((s) => s.loadShortstats);
+  const hostKey = useApp((s) => s.hostKey);
+  const addingHost = useApp((s) => s.addingHost);
+  const connected = useHostStore((s) => s.connection === "connected");
+  const loadShortstats = useHostStore((s) => s.loadShortstats);
 
   useEffect(() => {
     void init();

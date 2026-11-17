@@ -24,20 +24,20 @@ import { isAgentBusy } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { joinThreadPath, splitThreadPath, tasksByToolUse, threadStatus } from "../../lib/thread";
 import { useStickyScroll } from "../../lib/useStickyScroll";
-import { agentOf, useStore } from "../../store";
+import { agentOf, useApp, useHostStore } from "../../store";
 import { LogPlaceholder } from "../Agent/LogState";
 import { Dots, Transcript, useVisibleItems } from "../Agent/Transcript";
 
 const EMPTY: ChatItem[] = [];
 
 export function SubagentScreen({ agentId, path: pathProp }: { agentId: string; path: string }) {
-  const agent = useStore((s) => agentOf(s, agentId));
-  const log = useStore((s) => s.logs[agentId]);
-  const load = useStore((s) => s.logLoads[agentId]);
-  const tasks = useStore((s) => s.backgroundTasks[agentId]);
-  const busy = useStore((s) => (agent ? isAgentBusy(s, agent) : false));
-  const push = useStore((s) => s.push);
-  const pop = useStore((s) => s.pop);
+  const agent = useHostStore((s) => agentOf(s, agentId));
+  const log = useHostStore((s) => s.logs[agentId]);
+  const load = useHostStore((s) => s.logLoads[agentId]);
+  const tasks = useHostStore((s) => s.backgroundTasks[agentId]);
+  const busy = useHostStore((s) => (agent ? isAgentBusy(s, agent) : false));
+  const push = useApp((s) => s.push);
+  const pop = useApp((s) => s.pop);
 
   const path = useMemo(() => splitThreadPath(pathProp), [pathProp]);
   const thread = useMemo(() => resolveThread(log, path), [log, path]);

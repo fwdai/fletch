@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useStore } from "../../store";
+import { useApp } from "../../store";
 
 export type AddProjectTab = "folder" | "clone";
 
@@ -13,7 +13,7 @@ export function useAddProject(open: boolean, initialTab: AddProjectTab = "folder
   const [tab, setTab] = useState<AddProjectTab>(initialTab);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const clearError = useStore((s) => s.clearError);
+  const clearError = useApp((s) => s.clearError);
 
   // A fresh sheet every time it opens: a failed attempt must not greet the
   // next one. The store's own `lastError` is cleared with it, since `guard`

@@ -4,7 +4,7 @@
 // screen is rendering runs on a timer.
 
 import { usePoll } from "../../lib/hooks";
-import { agentOf, useStore } from "../../store";
+import { agentOf, useHostStore } from "../../store";
 
 /** Brisk while Changes or Ship shows the diff, slow behind the chat, where only
  *  the header line uses it. Gentler than the desktop's 1 s: the phone reads
@@ -16,8 +16,8 @@ export const gitFollowMs = (pane: string) => (pane === "chat" ? 10_000 : 3_000);
  *  at once whenever the interval changes, so switching to Changes or Ship
  *  shows a fresh tree rather than waiting out the chat's interval. */
 export function useGitFollow(agentId: string, pane: string) {
-  const loadGitState = useStore((s) => s.loadGitState);
-  const active = useStore((s) => {
+  const loadGitState = useHostStore((s) => s.loadGitState);
+  const active = useHostStore((s) => {
     const agent = agentOf(s, agentId);
     return s.connection === "connected" && agent !== undefined && !agent.purpose;
   });

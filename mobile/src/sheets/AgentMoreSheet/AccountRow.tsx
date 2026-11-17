@@ -3,7 +3,7 @@ import { Icon } from "@desktop/components/Icon";
 import { useEffect } from "react";
 import { useAgentAccount } from "../../lib/agentAccount";
 import { ignore } from "../../lib/ignore";
-import { useStore } from "../../store";
+import { useApp, useHostStore } from "../../store";
 
 /** The account the agent runs under, and the way into moving it onto another
  *  of its provider's: the account picker, which takes this sheet's place.
@@ -14,8 +14,8 @@ import { useStore } from "../../store";
  *  is added on the Mac, whose login the phone can't drive. */
 export function AccountRow({ agent, open }: { agent: AgentRecord; open: boolean }) {
   const view = useAgentAccount(agent);
-  const load = useStore((s) => s.loadProviderAccounts);
-  const openSheet = useStore((s) => s.openSheet);
+  const load = useHostStore((s) => s.loadProviderAccounts);
+  const openSheet = useApp((s) => s.openSheet);
   const enabled = view !== null;
 
   // Re-read on every open, as the desktop composer does as it mounts: only

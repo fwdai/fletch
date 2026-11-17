@@ -1,7 +1,7 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { useEffect } from "react";
 import { baseOf } from "../../../lib/agents";
-import { useStore } from "../../../store";
+import { useHostStore } from "../../../store";
 import { Activity } from "./Activity";
 import { AutopilotBar } from "./AutopilotBar";
 import { Evidence } from "./Evidence";
@@ -25,15 +25,15 @@ export function ShipTab({
   /** The Changes evidence row: show the diff tab. */
   onShowChanges: () => void;
 }) {
-  const git = useStore((s) => s.gitStates[agent.id]);
-  const pr = useStore((s) => s.prStates[agent.id]);
-  const checks = useStore((s) => s.prChecks[agent.id]);
-  const comments = useStore((s) => s.prComments[agent.id]);
-  const report = useStore((s) => s.verificationReports[agent.id]);
-  const activity = useStore((s) => s.shipActivity[agent.id]);
-  const connected = useStore((s) => s.connection === "connected");
-  const loadPrLive = useStore((s) => s.loadPrLive);
-  const loadPrThreads = useStore((s) => s.loadPrThreads);
+  const git = useHostStore((s) => s.gitStates[agent.id]);
+  const pr = useHostStore((s) => s.prStates[agent.id]);
+  const checks = useHostStore((s) => s.prChecks[agent.id]);
+  const comments = useHostStore((s) => s.prComments[agent.id]);
+  const report = useHostStore((s) => s.verificationReports[agent.id]);
+  const activity = useHostStore((s) => s.shipActivity[agent.id]);
+  const connected = useHostStore((s) => s.connection === "connected");
+  const loadPrLive = useHostStore((s) => s.loadPrLive);
+  const loadPrThreads = useHostStore((s) => s.loadPrThreads);
   const view = useShipView(agent);
 
   // No timer: the host's PR watcher pushes state, checks and threads as they

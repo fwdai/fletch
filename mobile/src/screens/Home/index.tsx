@@ -4,7 +4,7 @@ import { ProjectIcon } from "../../components/ui";
 import { useOrderedProjects } from "../../lib/activeProjects";
 import { agentsOfProject, baseOf, isActive, isBusy } from "../../lib/agents";
 import { type Project, repoLabel } from "../../lib/projects";
-import { useStore } from "../../store";
+import { useApp, useHostStore } from "../../store";
 import { AutoArchivedNotice } from "./AutoArchivedNotice";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { EmptyProjects } from "./EmptyProjects";
@@ -16,10 +16,10 @@ function ProjectCard({ project }: { project: Project }) {
   // Selectors must return a stable reference — a fresh array on every call
   // re-renders forever under zustand v5's useSyncExternalStore. So the
   // workspace comes out of the store as-is and is filtered here.
-  const workspace = useStore((s) => s.workspace);
+  const workspace = useHostStore((s) => s.workspace);
   const agents = agentsOfProject(workspace, project.id);
-  const openAgent = useStore((s) => s.openAgent);
-  const push = useStore((s) => s.push);
+  const openAgent = useHostStore((s) => s.openAgent);
+  const push = useApp((s) => s.push);
   const active = agents.filter(isActive);
   const running = agents.filter(isBusy).length;
   const rest = agents.length - active.length;
@@ -90,21 +90,21 @@ function ProjectCard({ project }: { project: Project }) {
 }
 
 export function HomeScreen() {
-  const workspace = useStore((s) => s.workspace);
+  const workspace = useHostStore((s) => s.workspace);
   const projects = useOrderedProjects();
   const agents = workspace?.agents ?? [];
-  const pendingTotal = useStore((s) =>
+  const pendingTotal = useHostStore((s) =>
     Object.values(s.pendingToolUse).reduce((n, m) => n + Object.keys(m).length, 0),
   );
-  const openSheet = useStore((s) => s.openSheet);
-  const push = useStore((s) => s.push);
-  const connection = useStore((s) => s.connection);
+  const openSheet = useApp((s) => s.openSheet);
+  const push = useApp((s) => s.push);
+  const connection = useHostStore((s) => s.connection);
   // The host's provider accounts, one tap from the host chip — on a Mac whose
   // Fletch can list them. An older one shows the chip alone, as before.
-  const hasProviders = useStore((s) => s.hostSupports("list_provider_accounts"));
+  const hasProviders = useHostStore((s) => s.hostSupports("list_provider_accounts"));
   // Planning chats are listed by their own op; a Mac without it shows nothing
   // new (docs/remote-protocol.md, "Compatibility").
-  const canPlan = useStore((s) => s.hostSupports("list_project_chats"));
+  const canPlan = useHostStore((s) => s.hostSupports("list_project_chats"));
   const errored = agents.filter((a) => a.status === "error").length;
   const running = agents.filter(isBusy).length;
   const attention = pendingTotal + errored;

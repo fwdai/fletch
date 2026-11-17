@@ -2,7 +2,7 @@ import type { RoadmapItem } from "@desktop/api/types/roadmap";
 import { Icon } from "@desktop/components/Icon";
 import { useState } from "react";
 import { ignore } from "../../lib/ignore";
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 
 /** How many acceptance criteria are worth the height inline. Past this the list
  *  is a line the user can open — a ghost is a decision, not a spec review. */
@@ -19,8 +19,8 @@ const CRITERIA_SHOWN = 3;
  *  but a card left open while someone else accepted it must not take the row
  *  with it. */
 export function ProposalCard({ item }: { item: RoadmapItem }) {
-  const accept = useStore((s) => s.acceptProposal);
-  const discard = useStore((s) => s.discardProposal);
+  const accept = useHostStore((s) => s.acceptProposal);
+  const discard = useHostStore((s) => s.discardProposal);
   // Only how long a tap takes: a failure is the store's to report (`lastError`),
   // and a success takes the card away with it.
   const [busy, setBusy] = useState(false);

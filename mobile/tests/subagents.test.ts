@@ -14,7 +14,7 @@ import {
   subagentLabel,
   visibleSubagents,
 } from "../src/lib/subagents";
-import { agentOf, type MobileState, useStore } from "../src/store";
+import { agentOf, appStore, type HostState, liveHost } from "../src/store";
 import { dropTasks, foldTaskEvent } from "../src/store/backgroundTasks";
 
 const NOW = 1_700_000_000_000;
@@ -98,10 +98,10 @@ describe("store helpers", () => {
   };
 
   it("folds a task event into the agent's map and drops it with the agent", () => {
-    const s0 = { backgroundTasks: {} } as MobileState;
+    const s0 = { backgroundTasks: {} } as HostState;
     const patch = foldTaskEvent(s0, "a", started, NOW);
     expect(patch.backgroundTasks?.a.t1).toMatchObject({ status: "running", toolUseId: "toolu_1" });
-    const s1 = { ...s0, ...patch } as MobileState;
+    const s1 = { ...s0, ...patch } as HostState;
     // An unrelated frame is a no-op patch, not a fresh map.
     expect(foldTaskEvent(s1, "a", { type: "assistant" }, NOW)).toEqual({});
     expect(dropTasks(s1, "a")).toEqual({ backgroundTasks: {} });
@@ -127,9 +127,9 @@ describe("store helpers", () => {
     expect(taskEvents).toBeDefined();
     expect(getAdapter("claude").taskEvents).toBeUndefined();
 
-    const s0 = { backgroundTasks: {} } as MobileState;
+    const s0 = { backgroundTasks: {} } as HostState;
     const [started] = taskEvents?.(taskCall("started")) ?? [];
-    const s1 = { ...s0, ...foldTaskEvent(s0, "a", started, NOW) } as MobileState;
+    const s1 = { ...s0, ...foldTaskEvent(s0, "a", started, NOW) } as HostState;
     expect(s1.backgroundTasks.a.task_1).toMatchObject({
       status: "running",
       toolUseId: "task_1",
@@ -138,49 +138,50 @@ describe("store helpers", () => {
       backgrounded: false,
     });
     const [completed] = taskEvents?.(taskCall("completed", { error: { error: "aborted" } })) ?? [];
-    const s2 = { ...s1, ...foldTaskEvent(s1, "a", completed, NOW + 1) } as MobileState;
+    const s2 = { ...s1, ...foldTaskEvent(s1, "a", completed, NOW + 1) } as HostState;
     expect(s2.backgroundTasks.a.task_1).toMatchObject({ status: "failed", summary: "aborted" });
   });
 });
 
 describe("over the mock host", () => {
-  const state = () => useStore.getState();
+  const app = () => appStore.getState();
+  const host = () => liveHost().getState();
 
   beforeAll(async () => {
-    await state().init();
-    await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+    await app().init();
+    await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
   });
 
   it("keeps a sub-agent running after the turn, threads its turns, then ends it", async () => {
-    await state().send("kamakura", "delegate the store audit to a sub-agent");
-    const running = () => Object.values(state().backgroundTasks.kamakura ?? {})[0];
+    await host().send("kamakura", "delegate the store audit to a sub-agent");
+    const running = () => Object.values(host().backgroundTasks.kamakura ?? {})[0];
     // The main turn ends with the sub-agent still going: idle, yet working.
     await vi.waitFor(
       () => {
-        expect(agentOf(state(), "kamakura")?.status).toBe("idle");
+        expect(agentOf(host(), "kamakura")?.status).toBe("idle");
         expect(running()?.status).toBe("running");
       },
       { timeout: 5000, interval: 2 },
     );
-    expect(subagentCounts(state().backgroundTasks.kamakura, Date.now()).running).toBe(1);
+    expect(subagentCounts(host().backgroundTasks.kamakura, Date.now()).running).toBe(1);
     await vi.waitFor(() => expect(running()?.status).toBe("completed"), { timeout: 5000 });
     const done = running();
     expect(done.toolUses).toBe(2);
     expect(done.summary).toContain("turn:sent");
     // The sub-agent's own turns landed under the Agent row, not in the log.
-    const row = (state().logs.kamakura ?? []).find(
+    const row = (host().logs.kamakura ?? []).find(
       (i) => i.kind === "tool_call" && i.id === done.toolUseId,
     );
     expect(row?.kind === "tool_call" && (row.children?.length ?? 0)).toBeGreaterThan(0);
-    expect(state().logs.kamakura?.some((i) => i.kind === "tool_call" && i.name === "Grep")).toBe(
+    expect(host().logs.kamakura?.some((i) => i.kind === "tool_call" && i.name === "Grep")).toBe(
       false,
     );
   });
 
   it("empties the map on a fresh handshake", async () => {
-    useStore.setState({ backgroundTasks: { x: { t: {} as BackgroundTask } } });
-    await state().reconnect();
-    await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
-    expect(state().backgroundTasks).toEqual({});
+    liveHost().setState({ backgroundTasks: { x: { t: {} as BackgroundTask } } });
+    await host().reconnect();
+    await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
+    expect(host().backgroundTasks).toEqual({});
   });
 });

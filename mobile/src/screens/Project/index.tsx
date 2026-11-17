@@ -5,7 +5,7 @@ import { AgentRow } from "../../components/AgentRow";
 import { Nav, ProjectIcon, Segmented } from "../../components/ui";
 import { type AgentStage, agentsOfProject, baseOf, stageOf } from "../../lib/agents";
 import { projectById, repoLabel } from "../../lib/projects";
-import { useStore } from "../../store";
+import { useApp, useHostStore } from "../../store";
 import { RoadmapPane } from "./Roadmap";
 
 /** Tab order, which is also the order the screen falls through when picking
@@ -18,20 +18,20 @@ type Tab = AgentStage | "roadmap";
 export function ProjectScreen({ projectId }: { projectId: string }) {
   // Derived outside the selector: a selector that builds a new array on every
   // call re-renders forever under zustand v5.
-  const workspace = useStore((s) => s.workspace);
+  const workspace = useHostStore((s) => s.workspace);
   const project = projectById(workspace, projectId);
   const agents = agentsOfProject(workspace, projectId);
-  const prStates = useStore((s) => s.prStates);
-  const pop = useStore((s) => s.pop);
-  const openAgent = useStore((s) => s.openAgent);
-  const openSheet = useStore((s) => s.openSheet);
+  const prStates = useHostStore((s) => s.prStates);
+  const pop = useApp((s) => s.pop);
+  const openAgent = useHostStore((s) => s.openAgent);
+  const openSheet = useApp((s) => s.openSheet);
   // Indexed straight out of the store: the registry's array is a stable
   // reference, where a `?? []` inside the selector would be a fresh one.
-  const chats = useStore((s) => s.chats[projectId]);
-  const loadChats = useStore((s) => s.loadChats);
-  const connected = useStore((s) => s.connection === "connected");
-  const canPlan = useStore((s) => s.hostSupports("list_project_chats"));
-  const hasRoadmap = useStore((s) => s.hostSupports("roadmap_list_items"));
+  const chats = useHostStore((s) => s.chats[projectId]);
+  const loadChats = useHostStore((s) => s.loadChats);
+  const connected = useHostStore((s) => s.connection === "connected");
+  const canPlan = useHostStore((s) => s.hostSupports("list_project_chats"));
+  const hasRoadmap = useHostStore((s) => s.hostSupports("roadmap_list_items"));
 
   // The live PR state wins over the record's persisted snapshot when it is
   // known; most rows only have the snapshot.

@@ -1,6 +1,6 @@
 import { type ReactNode, useRef } from "react";
 import { useSwipe } from "../../lib/swipe";
-import { type NavItem, useStore } from "../../store";
+import { type NavItem, useApp } from "../../store";
 
 /** How far in from the left a swipe-back may begin, like the iOS edge pan.
  *  Wide enough to catch a thumb, narrow enough to leave the transcript's
@@ -15,9 +15,9 @@ export function Stack({
   dimmed: boolean;
   render: (item: NavItem) => ReactNode;
 }) {
-  const nav = useStore((s) => s.nav);
-  const sheet = useStore((s) => s.sheet);
-  const pop = useStore((s) => s.pop);
+  const nav = useApp((s) => s.nav);
+  const sheet = useApp((s) => s.sheet);
+  const pop = useApp((s) => s.pop);
   const ref = useRef<HTMLDivElement>(null);
 
   const live = nav.filter((i) => i.phase !== "leave");

@@ -237,8 +237,8 @@ const targetOf = (saved: SavedHost): HostTarget => ({
  *  socket or a backgrounded webview silently misses — so every reconnect and
  *  every return to the foreground re-reads it from the host. */
 function refreshOpenAgent(host: HostState): void {
-  const agentId = [...appStore.getState().nav].reverse().find((n) => n.props.agentId)?.props
-    .agentId;
+  const agentId = [...appStore.getState().nav].reverse().find((n) => n.props.agentId)
+    ?.props.agentId;
   if (agentId) void host.loadAgent(agentId).catch(ignore);
 }
 

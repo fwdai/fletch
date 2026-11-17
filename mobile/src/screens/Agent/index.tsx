@@ -5,7 +5,7 @@ import { Nav, ProviderMark, Segmented } from "../../components/ui";
 import { baseOf, branchOf, isBusy, STATUS_LABEL } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { subagentCounts, subagentLabel } from "../../lib/subagents";
-import { agentOf, projectOf, useStore } from "../../store";
+import { agentOf, projectOf, useApp, useHostStore } from "../../store";
 import { ChangesTab } from "./ChangesTab";
 import { ChatTab } from "./ChatTab";
 import { Composer } from "./Composer";
@@ -39,12 +39,12 @@ function SpawnPane({ task, base, branch }: { task: string; base: string; branch:
 }
 
 function Subtitle({ agentId }: { agentId: string }) {
-  const agent = useStore((s) => agentOf(s, agentId));
-  const startedAt = useStore((s) => s.turnStartedAt[agentId]);
-  const pending = useStore((s) => Object.keys(s.pendingToolUse[agentId] ?? {}).length);
-  const git = useStore((s) => s.gitStates[agentId]);
-  const pr = useStore((s) => s.prStates[agentId]);
-  const tasks = useStore((s) => s.backgroundTasks[agentId]);
+  const agent = useHostStore((s) => agentOf(s, agentId));
+  const startedAt = useHostStore((s) => s.turnStartedAt[agentId]);
+  const pending = useHostStore((s) => Object.keys(s.pendingToolUse[agentId] ?? {}).length);
+  const git = useHostStore((s) => s.gitStates[agentId]);
+  const pr = useHostStore((s) => s.prStates[agentId]);
+  const tasks = useHostStore((s) => s.backgroundTasks[agentId]);
   const elapsed = useElapsed(startedAt, !!agent && isBusy(agent));
   if (!agent) return null;
   if (pending > 0) {
@@ -106,13 +106,13 @@ function Subtitle({ agentId }: { agentId: string }) {
 /** `tab` is the one to open on — a nav prop, so a push tap about the PR can land
  *  on Ship; anything unrecognized, or nothing, opens the chat. */
 export function AgentScreen({ agentId, tab: initialTab }: { agentId: string; tab?: string }) {
-  const agent = useStore((s) => agentOf(s, agentId));
-  const project = useStore((s) => projectOf(s, agentId));
-  const pop = useStore((s) => s.pop);
-  const openSheet = useStore((s) => s.openSheet);
-  const git = useStore((s) => s.gitStates[agentId]);
-  const ensureAgent = useStore((s) => s.ensureAgent);
-  const connected = useStore((s) => s.connection === "connected");
+  const agent = useHostStore((s) => agentOf(s, agentId));
+  const project = useHostStore((s) => projectOf(s, agentId));
+  const pop = useApp((s) => s.pop);
+  const openSheet = useApp((s) => s.openSheet);
+  const git = useHostStore((s) => s.gitStates[agentId]);
+  const ensureAgent = useHostStore((s) => s.ensureAgent);
+  const connected = useHostStore((s) => s.connection === "connected");
   const [tab, setTab] = useState<Tab>(isTab(initialTab) ? initialTab : "chat");
   const [dir, setDir] = useState(1);
   // Owned here so sending a message can re-pin the log to the bottom.

@@ -3,14 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 import { CodeLine, Nav } from "../../components/ui";
 import { useHost } from "../../host/useHost";
 import { parseUnifiedDiff, STATUS_LETTER } from "../../lib/diff";
-import { useStore } from "../../store";
+import { useApp, useHostStore } from "../../store";
 
 /** One file's diff, with prev/next across the agent's changed files. */
 export function DiffScreen({ agentId, path }: { agentId: string; path: string }) {
-  const pop = useStore((s) => s.pop);
-  const push = useStore((s) => s.push);
+  const pop = useApp((s) => s.pop);
+  const push = useApp((s) => s.push);
   // Selected as the whole git state, so the selector keeps a stable reference.
-  const git = useStore((s) => s.gitStates[agentId]);
+  const git = useHostStore((s) => s.gitStates[agentId]);
   const { api } = useHost();
   const files = git?.files ?? [];
   const [current, setCurrent] = useState(path);

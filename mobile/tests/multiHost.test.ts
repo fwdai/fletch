@@ -13,21 +13,22 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChatItem } from "../src/adapters";
 import { linkOf } from "../src/host";
 import type { HostTarget } from "../src/remote";
-import { useStore } from "../src/store";
+import { appStore, liveHost } from "../src/store";
 import { loadSettings } from "../src/store/persist";
 
-const state = () => useStore.getState();
-const keys = () => state().hosts.map((h) => h.hostKey);
+const app = () => appStore.getState();
+const host = () => liveHost().getState();
+const keys = () => app().hosts.map((h) => h.hostKey);
 const savedKeys = async () => (await loadSettings()).hosts?.map((h) => h.hostKey);
 
 /** Live on `hostKey`, with the connect that got there finished. */
 const liveOn = (hostKey: string) =>
   vi.waitFor(
     () => {
-      expect(state().hostKey).toBe(hostKey);
-      expect(state().connection).toBe("connected");
-      expect(state().pairStep).toBeNull();
-      expect(state().workspace).not.toBeNull();
+      expect(app().hostKey).toBe(hostKey);
+      expect(host().connection).toBe("connected");
+      expect(app().pairStep).toBeNull();
+      expect(host().workspace).not.toBeNull();
     },
     { timeout: 5000 },
   );
@@ -58,7 +59,7 @@ beforeAll(async () => {
     }),
   );
   window.history.replaceState({}, "", "/");
-  await state().init();
+  await app().init();
   await liveOn(MINI);
 });
 
@@ -82,14 +83,14 @@ describe("adding a host from a pairing link", () => {
   it("adds it and makes it active, without asking and without dropping the first", async () => {
     const confirm = vi.spyOn(window, "confirm");
 
-    state().pairFromLink(LINK);
+    app().pairFromLink(LINK);
     // The Pair screen comes up over Home to show the link and its progress.
-    expect(state().addingHost).toBe(true);
-    expect(state().pairTarget).toEqual(LINK);
+    expect(app().addingHost).toBe(true);
+    expect(app().pairTarget).toEqual(LINK);
     await liveOn(STUDIO);
 
     expect(confirm).not.toHaveBeenCalled();
-    expect(state().addingHost).toBe(false);
+    expect(app().addingHost).toBe(false);
     expect(keys()).toEqual([MINI, STUDIO]);
     expect(await savedKeys()).toEqual([MINI, STUDIO]);
     expect((await loadSettings()).activeHostKey).toBe(STUDIO);
@@ -102,15 +103,15 @@ describe("adding a host from a pairing link", () => {
 describe("switching hosts", () => {
   it("drops what was on screen and greets the chosen host with hello", async () => {
     const studioLog: ChatItem[] = [{ kind: "user_message", text: "on the studio", turnId: "t" }];
-    useStore.setState({ logs: { arabia: studioLog } });
+    liveHost().setState({ logs: { arabia: studioLog } });
     const connect = vi.spyOn(linkOf(MINI).client, "connect");
 
-    const switching = state().switchHost(MINI);
+    const switching = app().switchHost(MINI);
     // Agent ids recur across hosts: nothing of the studio's may show while the
     // mini answers.
-    expect(state().hostKey).toBe(MINI);
-    expect(state().logs).toEqual({});
-    expect(state().workspace).toBeNull();
+    expect(app().hostKey).toBe(MINI);
+    expect(host().logs).toEqual({});
+    expect(host().workspace).toBeNull();
     await switching;
     await liveOn(MINI);
 
@@ -126,7 +127,7 @@ describe("switching hosts", () => {
 
   it("leaves the live host alone when it is picked again", async () => {
     const connect = vi.spyOn(linkOf(MINI).client, "connect");
-    await state().switchHost(MINI);
+    await app().switchHost(MINI);
     expect(connect).not.toHaveBeenCalled();
     connect.mockRestore();
   });
@@ -135,51 +136,51 @@ describe("switching hosts", () => {
     const connect = vi
       .spyOn(linkOf(STUDIO).client, "connect")
       .mockRejectedValueOnce(new Error("Can't reach the Mac"));
-    await expect(state().switchHost(STUDIO)).rejects.toThrow("Can't reach the Mac");
-    expect(state().hostKey).toBe(STUDIO);
-    expect(state().connectionError).toBe("Can't reach the Mac");
+    await expect(app().switchHost(STUDIO)).rejects.toThrow("Can't reach the Mac");
+    expect(app().hostKey).toBe(STUDIO);
+    expect(host().connectionError).toBe("Can't reach the Mac");
 
-    await state().switchHost(MINI);
+    await app().switchHost(MINI);
     await liveOn(MINI);
     connect.mockRestore();
   });
 
   it("follows a tapped alert from the other host to the agent it names", async () => {
-    state().openFromPush({ hostId: STUDIO, agentId: "arabia", kind: "turn_complete" });
+    app().openFromPush({ hostId: STUDIO, agentId: "arabia", kind: "turn_complete" });
     await liveOn(STUDIO);
     await vi.waitFor(() => {
-      const top = state().nav[state().nav.length - 1];
+      const top = app().nav[app().nav.length - 1];
       expect(top.screen).toBe("agent");
       expect(top.props.agentId).toBe("arabia");
     });
-    await state().switchHost(MINI);
+    await app().switchHost(MINI);
     await liveOn(MINI);
   });
 });
 
 describe("forgetting hosts", () => {
   it("cancelling an addition goes back to the live host", async () => {
-    state().addHost();
-    expect(state().addingHost).toBe(true);
+    app().addHost();
+    expect(app().addingHost).toBe(true);
     // The live link stops while the Pair screen is up.
-    expect(state().connection).toBe("disconnected");
+    expect(host().connection).toBe("disconnected");
 
-    await state().cancelAddHost();
-    expect(state().addingHost).toBe(false);
+    await app().cancelAddHost();
+    expect(app().addingHost).toBe(false);
     await liveOn(MINI);
     expect(keys()).toEqual([MINI, STUDIO]);
   });
 
   it("forgets the live host and carries on with the next one", async () => {
     // Added back the Pair screen's way, by typing the code.
-    state().addHost();
-    await state().connect({ ...LINK, pairingToken: "ABCD2345" });
+    app().addHost();
+    await app().connect({ ...LINK, pairingToken: "ABCD2345" });
     await liveOn(STUDIO);
     expect(keys()).toEqual([MINI, STUDIO]);
 
     const seen: (string | null)[] = [];
-    const off = useStore.subscribe((s) => seen.push(s.hostKey));
-    await state().unpair();
+    const off = appStore.subscribe((s) => seen.push(s.hostKey));
+    await app().unpair();
     await liveOn(MINI);
     off();
     // Straight to the next host: an unpaired moment would flash the Pair screen.
@@ -190,10 +191,10 @@ describe("forgetting hosts", () => {
   });
 
   it("forgetting the last one leaves the phone unpaired, with its preferences", async () => {
-    await state().unpair();
-    expect(state().hostKey).toBeNull();
+    await app().unpair();
+    expect(app().hostKey).toBeNull();
     expect(keys()).toEqual([]);
-    expect(state().connection).not.toBe("connected");
+    expect(host().connection).not.toBe("connected");
     const saved = await loadSettings();
     expect(saved.hosts).toEqual([]);
     expect(saved.activeHostKey).toBeUndefined();

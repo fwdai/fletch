@@ -3,7 +3,7 @@ import { Icon } from "@desktop/components/Icon";
 import { PrPill } from "../../components/ui";
 import { refLabel } from "../../lib/agents";
 import { STATUS_LETTER } from "../../lib/diff";
-import { useStore } from "../../store";
+import { useApp, useHostStore } from "../../store";
 import { ShipFooter } from "./ShipTab/ShipFooter";
 import { useShipView } from "./ShipTab/useShipView";
 import { testsEvidence, testsText } from "./ShipTab/verification";
@@ -19,10 +19,10 @@ export function ChangesTab({
    *  show the chat where the agent's turn plays out. */
   onDelegated?: () => void;
 }) {
-  const git = useStore((s) => s.gitStates[agent.id]);
-  const pr = useStore((s) => s.prStates[agent.id]);
-  const push = useStore((s) => s.push);
-  const tests = useStore((s) => testsEvidence(s.verificationReports[agent.id]));
+  const git = useHostStore((s) => s.gitStates[agent.id]);
+  const pr = useHostStore((s) => s.prStates[agent.id]);
+  const push = useApp((s) => s.push);
+  const tests = useHostStore((s) => testsEvidence(s.verificationReports[agent.id]));
   const view = useShipView(agent);
   const files = git?.files ?? [];
 

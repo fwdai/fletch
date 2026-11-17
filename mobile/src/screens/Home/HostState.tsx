@@ -1,7 +1,7 @@
 import { Icon } from "@desktop/components/Icon";
 import { useHost } from "../../host/useHost";
 import { ignore } from "../../lib/ignore";
-import { activeHostName, useStore } from "../../store";
+import { useActiveHostName, useApp, useHostStore } from "../../store";
 import { STEP_LABELS, Working } from "../Pair/Progress";
 
 /** Home's whole body while there is no workspace to show: the link to the Mac
@@ -17,13 +17,13 @@ import { STEP_LABELS, Working } from "../Pair/Progress";
  *  at the Host sheet, where the fix lives. Another paired Mac is always a tap
  *  away in the header's host switcher. */
 export function HostState() {
-  const connection = useStore((s) => s.connection);
-  const error = useStore((s) => s.connectionError);
-  const retrying = useStore((s) => s.retrying);
-  const step = useStore((s) => s.pairStep);
-  const hostName = useStore(activeHostName);
-  const reconnect = useStore((s) => s.reconnect);
-  const openSheet = useStore((s) => s.openSheet);
+  const connection = useHostStore((s) => s.connection);
+  const error = useHostStore((s) => s.connectionError);
+  const retrying = useHostStore((s) => s.retrying);
+  const step = useApp((s) => s.pairStep);
+  const hostName = useActiveHostName();
+  const reconnect = useHostStore((s) => s.reconnect);
+  const openSheet = useApp((s) => s.openSheet);
   const { client } = useHost();
   const host = hostName ?? client.target?.name ?? "your Mac";
 

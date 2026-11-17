@@ -13,14 +13,14 @@
 import { useEffect, useState } from "react";
 import { useHost } from "../host/useHost";
 import type { HostProvider } from "../remote";
-import { useStore } from "../store";
+import { useHostStore } from "../store";
 
 /** The host's provider rows while `active`, or null when the host has not been
  *  asked, cannot be asked, or did not answer. Re-read whenever `active` goes
  *  true, so a sign-in done on the host between two openings of the sheet shows
  *  up on the second. */
 export function useHostProviders(active: boolean): HostProvider[] | null {
-  const supported = useStore((s) => s.hostSupports("host_providers"));
+  const supported = useHostStore((s) => s.hostSupports("host_providers"));
   const { api } = useHost();
   const [rows, setRows] = useState<HostProvider[] | null>(null);
 

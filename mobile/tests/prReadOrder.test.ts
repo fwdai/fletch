@@ -10,9 +10,10 @@ import { linkOf } from "../src/host";
 import type { RemoteClient } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { prChecks as fixtureChecks, prStates as fixtureStates } from "../src/remote/mock/fixtures";
-import { useStore } from "../src/store";
+import { appStore, liveHost } from "../src/store";
 
-const state = () => useStore.getState();
+const app = () => appStore.getState();
+const host = () => liveHost().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;
@@ -60,18 +61,18 @@ const forget = <T>(map: Record<string, T>) => {
 };
 
 beforeAll(async () => {
-  await state().init();
-  await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  await app().init();
+  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
   ({ api, client } = linkOf(MOCK_HOST_KEY));
-  const protocol = state().protocol;
+  const protocol = host().protocol;
   // The mock host predates the threads read; the race is the same either way.
-  useStore.setState({
+  liveHost().setState({
     protocol: protocol && { ...protocol, ops: [...protocol.ops, "get_pr_threads"] },
   });
 });
 
 beforeEach(() => {
-  useStore.setState((s) => ({
+  liveHost().setState((s) => ({
     prStates: forget(s.prStates),
     prChecks: forget(s.prChecks),
     prComments: forget(s.prComments),
@@ -86,7 +87,7 @@ describe("a PR read against the watcher's events", () => {
   it("keeps the threads an event delivered while loadPrThreads was out", async () => {
     const reply = deferred<PrComments>();
     vi.spyOn(api, "getPrThreads").mockReturnValueOnce(reply.promise);
-    const load = state().loadPrThreads(AGENT);
+    const load = host().loadPrThreads(AGENT);
 
     hostEvent("pr:threads_changed", {
       agent_id: AGENT,
@@ -97,21 +98,21 @@ describe("a PR read against the watcher's events", () => {
     reply.resolve(threads("older"));
     await load;
 
-    expect(state().prComments[AGENT]).toEqual(threads("newer"));
+    expect(host().prComments[AGENT]).toEqual(threads("newer"));
   });
 
   it("keeps the checks an event delivered while loadPrLive was out, taking its state", async () => {
     const reply = deferred<{ state: PrState; checks: PrChecks | null }>();
     vi.spyOn(api, "getPrLive").mockReturnValueOnce(reply.promise);
-    const load = state().loadPrLive(AGENT);
+    const load = host().loadPrLive(AGENT);
 
     hostEvent("pr:checks_changed", { agent_id: AGENT, subdir: null, number: 900, checks: red });
     reply.resolve({ state: { ...open, title: "renamed" }, checks: green });
     await load;
 
-    expect(state().prChecks[AGENT]).toEqual(red);
+    expect(host().prChecks[AGENT]).toEqual(red);
     // The event said nothing about the state, so the read's is the newest.
-    expect(state().prStates[AGENT]?.title).toBe("renamed");
+    expect(host().prStates[AGENT]?.title).toBe("renamed");
   });
 
   it("keeps the state an event delivered while loadPrLive was out", async () => {
@@ -120,19 +121,19 @@ describe("a PR read against the watcher's events", () => {
     vi.spyOn(api, "getPrChecks").mockResolvedValue(null);
     const reply = deferred<{ state: PrState; checks: PrChecks | null }>();
     vi.spyOn(api, "getPrLive").mockReturnValueOnce(reply.promise);
-    const load = state().loadPrLive(AGENT);
+    const load = host().loadPrLive(AGENT);
 
     hostEvent("pr:state_changed", { agent_id: AGENT, subdir: null, state: merged });
     reply.resolve({ state: open, checks: green });
     await load;
 
-    expect(state().prStates[AGENT]?.state).toBe("merged");
+    expect(host().prStates[AGENT]?.state).toBe("merged");
   });
 
   it("skips, row by row, the agents an event stamped while loadPrStatus was out", async () => {
     const reply = deferred<Record<string, AgentPrStatus>>();
     vi.spyOn(api, "getAllPrStatus").mockReturnValueOnce(reply.promise);
-    const load = state().loadPrStatus();
+    const load = host().loadPrStatus();
 
     hostEvent("pr:checks_changed", { agent_id: AGENT, subdir: null, number: 900, checks: red });
     // A PR gone, so no follow-up `loadGit` either.
@@ -144,10 +145,10 @@ describe("a PR read against the watcher's events", () => {
     await load;
 
     // Each agent keeps only what an event outran: its slice, not the row.
-    expect(state().prChecks[AGENT]).toEqual(red);
-    expect(state().prStates[AGENT]).toEqual(open);
-    expect(state().prStates[OTHER]).toBeNull();
-    expect(state().prChecks[OTHER]).toEqual(green);
+    expect(host().prChecks[AGENT]).toEqual(red);
+    expect(host().prStates[AGENT]).toEqual(open);
+    expect(host().prStates[OTHER]).toBeNull();
+    expect(host().prChecks[OTHER]).toEqual(green);
   });
 
   it("applies a read issued after the event — the event only outranks older reads", async () => {
@@ -164,13 +165,13 @@ describe("a PR read against the watcher's events", () => {
       [OTHER]: { state: merged, checks: null },
     });
 
-    await state().loadPrThreads(AGENT);
-    await state().loadPrLive(AGENT);
-    await state().loadPrStatus();
+    await host().loadPrThreads(AGENT);
+    await host().loadPrLive(AGENT);
+    await host().loadPrStatus();
 
-    expect(state().prComments[AGENT]).toEqual(threads("read"));
-    expect(state().prChecks[AGENT]).toEqual(green);
-    expect(state().prStates[OTHER]).toEqual(merged);
+    expect(host().prComments[AGENT]).toEqual(threads("read"));
+    expect(host().prChecks[AGENT]).toEqual(green);
+    expect(host().prStates[OTHER]).toEqual(merged);
   });
 
   it("drops a reply from before a handshake, and takes the new host's first read", async () => {
@@ -182,11 +183,11 @@ describe("a PR read against the watcher's events", () => {
       .spyOn(api, "getAllPrStatus")
       .mockReturnValueOnce(stale.promise)
       .mockResolvedValueOnce({ [AGENT]: { state: open, checks: green } });
-    const load = state().loadPrStatus();
+    const load = host().loadPrStatus();
 
-    await state().reconnect();
+    await host().reconnect();
     // The handshake's own seed, issued after the old host's stamp: it applies.
-    await vi.waitFor(() => expect(state().prChecks[AGENT]).toEqual(green));
+    await vi.waitFor(() => expect(host().prChecks[AGENT]).toEqual(green));
     expect(read).toHaveBeenCalledTimes(2);
 
     stale.resolve({
@@ -195,8 +196,8 @@ describe("a PR read against the watcher's events", () => {
     });
     await load;
 
-    expect(state().prStates[AGENT]).toEqual(open);
-    expect(state().prChecks[AGENT]).toEqual(green);
-    expect(state().prStates[OTHER]).toBeUndefined();
+    expect(host().prStates[AGENT]).toEqual(open);
+    expect(host().prChecks[AGENT]).toEqual(green);
+    expect(host().prStates[OTHER]).toBeUndefined();
   });
 });

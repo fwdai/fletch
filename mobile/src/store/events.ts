@@ -130,11 +130,7 @@ function foldControlRequest(
 /** Fold one `agent:event` payload into the store: the state after `raw`, as a
  *  patch on `s`. Pure, so the live stream and a replayed turn (`read_live_turn`)
  *  go through the identical path and render the identical log. */
-export function foldAgentEvent(
-  s: HostState,
-  agentId: string,
-  raw: RawEvent,
-): Partial<HostState> {
+export function foldAgentEvent(s: HostState, agentId: string, raw: RawEvent): Partial<HostState> {
   const control = foldControlRequest(s, agentId, raw);
   if (control) return control;
   // Background sub-agent bookkeeping (`system` task events). The chat

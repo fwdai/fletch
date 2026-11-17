@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentRow } from "../src/components/AgentRow";
 import { RECENT_FAILURE_MS, subagentTickMs } from "../src/lib/subagents";
 import { SubagentStrip } from "../src/screens/Agent/SubagentStrip";
-import { useStore } from "../src/store";
+import { liveHost } from "../src/store";
 
 const NOW = 1_700_000_000_000;
 
@@ -105,7 +105,7 @@ describe("rendered expiry", () => {
       created_at: "2026-01-01T00:00:00.000Z",
       repos: [],
     } as unknown as AgentRecord;
-    useStore.setState({ backgroundTasks: { a: map(failed()) } });
+    liveHost().setState({ backgroundTasks: { a: map(failed()) } });
     await act(async () => {
       root.render(createElement(AgentRow, { agent, onClick: () => {} }));
     });

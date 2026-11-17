@@ -10,19 +10,19 @@ import { Nav } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { useTick } from "../../lib/hooks";
 import { ignore } from "../../lib/ignore";
-import { useStore } from "../../store";
+import { useApp, useHostStore } from "../../store";
 import { ProviderSection } from "./ProviderSection";
 
 /** How often the reset countdowns are redrawn. */
 const CLOCK_MS = 30_000;
 
 export function ProvidersScreen() {
-  const hostName = useStore((s) => s.hostInfo?.name);
-  const supported = useStore((s) => s.hostSupports("list_provider_accounts"));
-  const accounts = useStore((s) => s.providerAccounts);
-  const load = useStore((s) => s.providerAccountsLoad);
-  const loadAccounts = useStore((s) => s.loadProviderAccounts);
-  const pop = useStore((s) => s.pop);
+  const hostName = useHostStore((s) => s.hostInfo?.name);
+  const supported = useHostStore((s) => s.hostSupports("list_provider_accounts"));
+  const accounts = useHostStore((s) => s.providerAccounts);
+  const load = useHostStore((s) => s.providerAccountsLoad);
+  const loadAccounts = useHostStore((s) => s.loadProviderAccounts);
+  const pop = useApp((s) => s.pop);
   useTick(CLOCK_MS);
 
   // Read whole on every open: a sign-in done on the Mac between two visits has

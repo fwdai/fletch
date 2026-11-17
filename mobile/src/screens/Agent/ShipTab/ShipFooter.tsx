@@ -1,7 +1,7 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import type { ActionTone } from "@desktop/components/RightPanel/primaryActions";
-import { useStore } from "../../../store";
+import { useApp } from "../../../store";
 import { COMMIT_KEYS, MANUAL_KEY } from "./actions";
 import type { ShipView } from "./derive";
 import { useShipActions } from "./useShipActions";
@@ -33,7 +33,7 @@ export function ShipFooter({
   onDelegated?: () => void;
   commitOnly?: boolean;
 }) {
-  const openSheet = useStore((s) => s.openSheet);
+  const openSheet = useApp((s) => s.openSheet);
   const { run, label, disabled, isDelegate, busy } = useShipActions(agent, onDelegated);
   const { footer } = view;
 

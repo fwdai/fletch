@@ -3,23 +3,23 @@ import { Segmented, Sheet, Toggle } from "../components/ui";
 import { CONNECTION_TEXT } from "../lib/connection";
 import { ignore } from "../lib/ignore";
 import { projectsOf } from "../lib/projects";
-import { activeHostName, useStore } from "../store";
+import { useActiveHostName, useApp, useHostStore } from "../store";
 
 /** The active Mac as the user knows it: its name, whether it is reachable, and
  *  what is on it. How the link is made — address, keys, relay, which path —
  *  is never shown: it connects on its own, and nothing here could change it.
  *  Unpair forgets this Mac only; the others stay in the host switcher. */
 export function HostSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const hostName = useStore(activeHostName);
-  const connection = useStore((s) => s.connection);
-  const theme = useStore((s) => s.theme);
-  const setTheme = useStore((s) => s.setTheme);
-  const activeFirst = useStore((s) => s.activeFirst);
-  const setActiveFirst = useStore((s) => s.setActiveFirst);
-  const reconnect = useStore((s) => s.reconnect);
-  const unpair = useStore((s) => s.unpair);
-  const projects = useStore((s) => projectsOf(s.workspace).length);
-  const agents = useStore((s) => s.workspace?.agents.length ?? 0);
+  const hostName = useActiveHostName();
+  const connection = useHostStore((s) => s.connection);
+  const theme = useApp((s) => s.theme);
+  const setTheme = useApp((s) => s.setTheme);
+  const activeFirst = useApp((s) => s.activeFirst);
+  const setActiveFirst = useApp((s) => s.setActiveFirst);
+  const reconnect = useHostStore((s) => s.reconnect);
+  const unpair = useApp((s) => s.unpair);
+  const projects = useHostStore((s) => projectsOf(s.workspace).length);
+  const agents = useHostStore((s) => s.workspace?.agents.length ?? 0);
 
   return (
     <Sheet

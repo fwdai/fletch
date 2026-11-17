@@ -1,16 +1,16 @@
 import { type ReactNode, useEffect, useMemo } from "react";
 import { roadmapLists } from "../../../lib/roadmap";
-import { useStore } from "../../../store";
+import { useHostStore } from "../../../store";
 import { CaptureField } from "./CaptureField";
 
 /** The project's roadmap as far as the phone takes it: a capture field over two
  *  read-only lists — the Inbox, and what is up next. Ruling on any of it is the
  *  Mac's board, or a planning chat's. */
 export function RoadmapPane({ projectId }: { projectId: string }) {
-  const board = useStore((s) => s.boards[projectId]);
-  const loadBoard = useStore((s) => s.loadBoard);
-  const connected = useStore((s) => s.connection === "connected");
-  const canCapture = useStore((s) => s.hostSupports("roadmap_capture"));
+  const board = useHostStore((s) => s.boards[projectId]);
+  const loadBoard = useHostStore((s) => s.loadBoard);
+  const connected = useHostStore((s) => s.connection === "connected");
+  const canCapture = useHostStore((s) => s.hostSupports("roadmap_capture"));
   const lists = useMemo(() => board && roadmapLists(board), [board]);
 
   // Read on open and again on every reconnect, like the planning chats: the

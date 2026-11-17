@@ -1,6 +1,6 @@
 import { Notice } from "../../components/ui/Notice";
 import { ignore } from "../../lib/ignore";
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 
 /** The slim status line over a cached project list while the link to the Mac
  *  is down or coming back. Persistent by nature — it is the connection state,
@@ -11,10 +11,10 @@ import { useStore } from "../../store";
  *  Home shows it only over a list. With nothing cached the whole body is the
  *  connection state instead (`HostState`). */
 export function ConnectionBanner() {
-  const connection = useStore((s) => s.connection);
-  const error = useStore((s) => s.connectionError);
-  const retrying = useStore((s) => s.retrying);
-  const reconnect = useStore((s) => s.reconnect);
+  const connection = useHostStore((s) => s.connection);
+  const error = useHostStore((s) => s.connectionError);
+  const retrying = useHostStore((s) => s.retrying);
+  const reconnect = useHostStore((s) => s.reconnect);
   if (connection === "connected") return null;
   const busy = connection === "connecting" || connection === "pairing";
   const text = busy

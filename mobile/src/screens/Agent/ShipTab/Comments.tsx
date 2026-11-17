@@ -5,7 +5,7 @@ import { commentLocation, formatCommentForChat } from "@desktop/components/Right
 import { htmlToMarkdown, markdownToText } from "@desktop/util/markdownText";
 import { isAgentBusy } from "../../../lib/agents";
 import { ignore } from "../../../lib/ignore";
-import { useStore } from "../../../store";
+import { useHostStore } from "../../../store";
 
 const EXCERPT = 160;
 
@@ -32,8 +32,8 @@ export function Comments({
   /** Called once a comment has been sent to the agent. */
   onDelegated?: () => void;
 }) {
-  const send = useStore((s) => s.send);
-  const busy = useStore((s) => isAgentBusy(s, agent));
+  const send = useHostStore((s) => s.send);
+  const busy = useHostStore((s) => isAgentBusy(s, agent));
   return (
     <div className="ship-comments">
       {botsFirst(threads).map((c) => {

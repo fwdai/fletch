@@ -7,7 +7,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { HostSwitcher } from "../src/screens/Home/HostSwitcher";
-import { useStore } from "../src/store";
+import { appStore, liveHost } from "../src/store";
 
 const HOSTS = [
   { hostKey: "mini", name: "Mac mini", host: "10.0.0.5", port: 47285, pairedAt: "2026-01-01" },
@@ -29,7 +29,8 @@ let unmount: () => void;
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  useStore.setState({ ...actions, hosts: HOSTS, hostKey: "mini", connection: "connected" });
+  appStore.setState({ ...actions, hosts: HOSTS, hostKey: "mini" });
+  liveHost().setState({ connection: "connected" });
   host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -65,7 +66,7 @@ test("tapping another host switches to it and closes the list", async () => {
 });
 
 test("switching still works while the live host cannot be reached", async () => {
-  await act(async () => useStore.setState({ connection: "error" }));
+  await act(async () => liveHost().setState({ connection: "error" }));
   expect(host.querySelector(".host .dot.error")).not.toBeNull();
   await open();
   await act(async () => button(host, "Studio Mac")?.click());

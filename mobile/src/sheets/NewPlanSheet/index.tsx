@@ -6,7 +6,7 @@ import { PickerSheet, ProjectIcon, Sheet } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { ignore } from "../../lib/ignore";
 import { primaryPath, projectsOf } from "../../lib/projects";
-import { useStore } from "../../store";
+import { useApp, useHostStore } from "../../store";
 
 /** The idea you had on the way somewhere: pick the project, say the thing, and
  *  the project's Project Manager picks it up from there.
@@ -26,11 +26,11 @@ export function NewPlanSheet({
 }) {
   // Derived from the snapshot, not selected: `projectsOf` is stable per
   // snapshot, so neither the render nor the reset effect below loops.
-  const workspace = useStore((s) => s.workspace);
+  const workspace = useHostStore((s) => s.workspace);
   const projects = projectsOf(workspace);
-  const startPlanningChat = useStore((s) => s.startPlanningChat);
-  const lastError = useStore((s) => s.lastError);
-  const clearError = useStore((s) => s.clearError);
+  const startPlanningChat = useHostStore((s) => s.startPlanningChat);
+  const lastError = useApp((s) => s.lastError);
+  const clearError = useApp((s) => s.clearError);
 
   const [pid, setPid] = useState(projectId ?? projects[0]?.id ?? "");
   const [prompt, setPrompt] = useState("");

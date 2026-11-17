@@ -5,7 +5,7 @@ import { PickerSheet } from "../components/ui";
 import { Notice } from "../components/ui/Notice";
 import { useAgentAccount } from "../lib/agentAccount";
 import { providerLabel } from "../lib/agents";
-import { agentOf, useStore } from "../store";
+import { agentOf, appStore, useHostStore } from "../store";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -26,11 +26,11 @@ export function AccountPickerSheet({
   onClose: () => void;
   agentId?: string;
 }) {
-  const agent = useStore((s) => (agentId ? agentOf(s, agentId) : undefined));
+  const agent = useHostStore((s) => (agentId ? agentOf(s, agentId) : undefined));
   const view = useAgentAccount(agent);
-  const limits = useStore((s) => (agent ? s.providerLimits[agent.provider] : undefined));
-  const load = useStore((s) => s.loadProviderAccounts);
-  const switchAccount = useStore((s) => s.switchAgentAccount);
+  const limits = useHostStore((s) => (agent ? s.providerLimits[agent.provider] : undefined));
+  const load = useHostStore((s) => s.loadProviderAccounts);
+  const switchAccount = useHostStore((s) => s.switchAgentAccount);
   const [error, setError] = useState<string | null>(null);
   const enabled = view !== null;
 
@@ -75,7 +75,7 @@ export function AccountPickerSheet({
     // only the picker the pick was made from closes or shows the refusal.
     // The store finishes the switch either way.
     const stillAsking = () => {
-      const sheet = useStore.getState().sheet;
+      const sheet = appStore.getState().sheet;
       return !!sheet?.open && sheet.name === "accountPicker" && sheet.props.agentId === forAgent;
     };
     switchAccount(forAgent, id)

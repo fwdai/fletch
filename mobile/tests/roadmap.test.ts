@@ -12,9 +12,10 @@ import type { RemoteClient } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { roadmapItem } from "../src/remote/mock/fixtures";
 import { RoadmapPane } from "../src/screens/Project/Roadmap";
-import { useStore } from "../src/store";
+import { appStore, liveHost } from "../src/store";
 
-const state = () => useStore.getState();
+const app = () => appStore.getState();
+const host = () => liveHost().getState();
 
 /** The mock host's link: the one `init` pairs with and the store stays live on. */
 let api: Api;
@@ -28,15 +29,15 @@ const hostEvent = (event: string, payload: unknown) =>
   ).dispatchEvent({ event, payload });
 
 const lists = () => {
-  const board = state().boards[PROJECT];
+  const board = host().boards[PROJECT];
   if (!board) throw new Error("the board was never read");
   return roadmapLists(board);
 };
 const chipOf = (code: string) => lists().inbox.find((e) => e.item.code === code)?.chip;
 
 beforeAll(async () => {
-  await state().init();
-  await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  await app().init();
+  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
   ({ api, client } = linkOf(MOCK_HOST_KEY));
 });
 
@@ -58,7 +59,7 @@ describe("the roadmap segment's lists", () => {
       }),
     ]);
     try {
-      await state().loadBoard(PROJECT);
+      await host().loadBoard(PROJECT);
     } finally {
       read.mockRestore();
     }
@@ -72,7 +73,7 @@ describe("the roadmap segment's lists", () => {
   });
 
   it("follows the triage dial and the drainer's word on a waiting capture", async () => {
-    await state().loadBoard(PROJECT);
+    await host().loadBoard(PROJECT);
     expect(chipOf("FLT-211")).toBe("Triaging…");
     hostEvent("project_settings:changed", {
       project_id: PROJECT,
@@ -98,7 +99,7 @@ describe("the roadmap segment's lists", () => {
   });
 
   it("follows `roadmap:item` into Next up and `roadmap:item-deleted` off the board", async () => {
-    await state().loadBoard(PROJECT);
+    await host().loadBoard(PROJECT);
     expect(lists().next.map((i) => i.code)).toEqual(["FLT-205"]);
     // Accepted on the Mac: the ghost becomes an open row in Next.
     await api.roadmapUpdateItem("itm-offline-queue", { status: "open" });

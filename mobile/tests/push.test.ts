@@ -34,7 +34,7 @@ vi.mock("@tauri-apps/api/event", async (importOriginal) => ({
 
 import { linkOf } from "../src/host";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { useStore } from "../src/store";
+import { appStore, liveHost } from "../src/store";
 import { loadSettings, saveSettings } from "../src/store/persist";
 import { FORGET_PUSH_TIMEOUT_MS, pushTab } from "../src/store/push";
 
@@ -42,7 +42,8 @@ import { FORGET_PUSH_TIMEOUT_MS, pushTab } from "../src/store/push";
 // are inside the app.
 (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {};
 
-const state = () => useStore.getState();
+const app = () => appStore.getState();
+const host = () => liveHost().getState();
 /** The mock host's link: the one the store is live on while paired with it. */
 const mock = () => linkOf(MOCK_HOST_KEY);
 const emit = (event: string, payload: unknown) => plugin.listeners.get(event)?.({ payload });
@@ -51,8 +52,8 @@ const asked = () => plugin.invoked.filter((c) => c === "plugin:push|request_perm
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 beforeAll(async () => {
-  await state().init();
-  await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
+  await app().init();
+  await vi.waitFor(() => expect(host().connection).toBe("connected"), { timeout: 5000 });
 });
 
 describe("registration", () => {
@@ -69,7 +70,7 @@ describe("registration", () => {
     await vi.waitFor(() => expect(registerPush).toHaveBeenCalledWith("0a1b2c", "sandbox"));
 
     registerPush.mockClear();
-    await state().reconnect();
+    await host().reconnect();
     await vi.waitFor(() => expect(registerPush).toHaveBeenCalledWith("0a1b2c", "sandbox"));
     // The token is resent on every handshake, but iOS is never asked twice.
     expect(asked()).toBe(1);
@@ -89,7 +90,7 @@ describe("registration", () => {
     const registerPush = vi.spyOn(mock().api, "registerPush");
     const before = plugin.invoked.length;
 
-    await state().reconnect();
+    await host().reconnect();
     await settle();
 
     expect(registerPush).not.toHaveBeenCalled();
@@ -104,7 +105,7 @@ describe("a tapped alert", () => {
       fletch: { hostId: MOCK_HOST_KEY, agentId: "arabia", kind: "turn_complete" },
     });
     await vi.waitFor(() => {
-      const top = state().nav[state().nav.length - 1];
+      const top = app().nav[app().nav.length - 1];
       expect(top.screen).toBe("agent");
       expect(top.props.agentId).toBe("arabia");
     });
@@ -115,7 +116,7 @@ describe("a tapped alert", () => {
       fletch: { hostId: MOCK_HOST_KEY, agentId: "kamakura", kind: "autopilot_gave_up" },
     });
     await vi.waitFor(() => {
-      const top = state().nav[state().nav.length - 1];
+      const top = app().nav[app().nav.length - 1];
       expect(top.screen).toBe("agent");
       expect(top.props).toEqual({ agentId: "kamakura", tab: "ship" });
     });
@@ -128,8 +129,8 @@ describe("a tapped alert", () => {
 
   it("goes no further than Home when it came from another host", () => {
     emit("push://opened", { fletch: { hostId: "another-mac", agentId: "arabia" } });
-    expect(state().nav).toHaveLength(1);
-    expect(state().nav[0].screen).toBe("home");
+    expect(app().nav).toHaveLength(1);
+    expect(app().nav[0].screen).toBe("home");
   });
 });
 
@@ -137,7 +138,7 @@ describe("unpairing", () => {
   it("clears the token on the host before the link drops", async () => {
     const registerPush = vi.spyOn(mock().api, "registerPush");
     const disconnect = vi.spyOn(mock().client, "disconnect");
-    await state().unpair();
+    await app().unpair();
     // The clear goes out while still connected, or the host would keep alerting
     // a phone that has forgotten it.
     expect(registerPush).toHaveBeenCalledWith(null);
@@ -149,8 +150,8 @@ describe("unpairing", () => {
   });
 
   it("still unpairs when the host never answers the clear", async () => {
-    await state().connect({ host: "mock", port: 1 });
-    await vi.waitFor(() => expect(state().connection).toBe("connected"));
+    await app().connect({ host: "mock", port: 1 });
+    await vi.waitFor(() => expect(host().connection).toBe("connected"));
     // A host that has gone silent without closing the socket: the request
     // would hang forever, and the unpair must not hang with it.
     const registerPush = vi
@@ -158,14 +159,14 @@ describe("unpairing", () => {
       .mockReturnValue(new Promise(() => {}));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const unpairing = state().unpair();
+      const unpairing = app().unpair();
       await vi.advanceTimersByTimeAsync(FORGET_PUSH_TIMEOUT_MS);
       await unpairing;
     } finally {
       vi.useRealTimers();
       registerPush.mockRestore();
     }
-    expect(state().hostKey).toBeNull();
-    expect(state().connection).not.toBe("connected");
+    expect(app().hostKey).toBeNull();
+    expect(host().connection).not.toBe("connected");
   });
 });

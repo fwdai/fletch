@@ -1,7 +1,7 @@
 import { Icon } from "@desktop/components/Icon";
 import { useState } from "react";
 import { connectionDot } from "../../../lib/connection";
-import { activeHostName, useStore } from "../../../store";
+import { useActiveHostName, useHostStore } from "../../../store";
 import { HostMenu } from "./HostMenu";
 
 /** The Home header's host chip: the active host and whether it is reachable,
@@ -10,8 +10,8 @@ import { HostMenu } from "./HostMenu";
  *  a Mac that is asleep. */
 export function HostSwitcher() {
   const [open, setOpen] = useState(false);
-  const name = useStore(activeHostName);
-  const connection = useStore((s) => s.connection);
+  const name = useActiveHostName();
+  const connection = useHostStore((s) => s.connection);
   return (
     <>
       <button

@@ -8,7 +8,7 @@ import type { Project } from "../../lib/projects";
 import { prPill } from "../../lib/shipPill";
 import { subagentLabel } from "../../lib/subagents";
 import { useSubagentClock } from "../../lib/useSubagentClock";
-import { useStore } from "../../store";
+import { useHostStore } from "../../store";
 import { ProviderMark, StatusDot } from "../ui";
 
 /** One agent line: status, name, what needs attention, live timer and diff. */
@@ -25,13 +25,13 @@ export function AgentRow({
    *  from also opening the project. */
   onClick: (e: MouseEvent<HTMLButtonElement>) => void;
 }) {
-  const pending = useStore((s) => Object.keys(s.pendingToolUse[agent.id] ?? {}).length);
-  const startedAt = useStore((s) => s.turnStartedAt[agent.id]);
-  const diff = useStore((s) => s.shortstats[agent.id]);
-  const pr = useStore((s) => s.prStates[agent.id]);
-  const checks = useStore((s) => s.prChecks[agent.id]);
-  const tasks = useStore((s) => s.backgroundTasks[agent.id]);
-  const busy = useStore((s) => isAgentBusy(s, agent));
+  const pending = useHostStore((s) => Object.keys(s.pendingToolUse[agent.id] ?? {}).length);
+  const startedAt = useHostStore((s) => s.turnStartedAt[agent.id]);
+  const diff = useHostStore((s) => s.shortstats[agent.id]);
+  const pr = useHostStore((s) => s.prStates[agent.id]);
+  const checks = useHostStore((s) => s.prChecks[agent.id]);
+  const tasks = useHostStore((s) => s.backgroundTasks[agent.id]);
+  const busy = useHostStore((s) => isAgentBusy(s, agent));
   // One clock drives the turn timer and the sub-agent cues, so a "sub-agent
   // failed" chip keeps re-rendering until it expires even after the row has
   // otherwise gone quiet.

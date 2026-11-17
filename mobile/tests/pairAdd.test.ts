@@ -13,9 +13,9 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import type { HostTarget } from "../src/remote";
 import { PairScreen } from "../src/screens/Pair";
-import { useStore } from "../src/store";
+import { appStore, liveHost } from "../src/store";
 
-const state = () => useStore.getState();
+const app = () => appStore.getState();
 
 const PAIRED = "aG9zdC1vbmU";
 const LINK: HostTarget = {
@@ -44,7 +44,7 @@ describe("a link that launched the app over a paired host", () => {
       }),
     );
     const targets: HostTarget[] = [];
-    useStore.setState({
+    appStore.setState({
       connect: async (target: HostTarget) => {
         targets.push(target);
       },
@@ -55,9 +55,9 @@ describe("a link that launched the app over a paired host", () => {
     const url = window.location.href;
     window.history.replaceState({}, "", "/");
 
-    state().pairFromLink(LINK);
+    app().pairFromLink(LINK);
     expect(targets, "held until init has read what is on disk").toEqual([]);
-    await state().init();
+    await app().init();
 
     // The link, once — dialling the saved host too would supersede it and burn
     // its single-use code.
@@ -65,9 +65,9 @@ describe("a link that launched the app over a paired host", () => {
     expect(confirm).not.toHaveBeenCalled();
     // The saved host stays paired, and the Pair screen shows the link as an
     // addition over it.
-    expect(state().hostKey).toBe(PAIRED);
-    expect(state().hosts.map((h) => h.hostKey)).toEqual([PAIRED]);
-    expect(state().addingHost).toBe(true);
+    expect(app().hostKey).toBe(PAIRED);
+    expect(app().hosts.map((h) => h.hostKey)).toEqual([PAIRED]);
+    expect(app().addingHost).toBe(true);
     window.history.replaceState({}, "", url);
     confirm.mockRestore();
   });
@@ -76,13 +76,8 @@ describe("a link that launched the app over a paired host", () => {
 describe("the Pair screen adding a host", () => {
   it("offers Cancel, which goes back to the paired host", async () => {
     const cancelAddHost = vi.fn(async () => {});
-    useStore.setState({
-      cancelAddHost,
-      addingHost: true,
-      pairStep: null,
-      pairTarget: null,
-      connectionError: null,
-    });
+    appStore.setState({ cancelAddHost, addingHost: true, pairStep: null, pairTarget: null });
+    liveHost().setState({ connectionError: null });
     const host = document.createElement("div");
     document.body.append(host);
     const root = createRoot(host);
@@ -94,7 +89,7 @@ describe("the Pair screen adding a host", () => {
     expect(cancelAddHost).toHaveBeenCalledOnce();
 
     // A first pairing has nowhere to go back to.
-    await act(async () => useStore.setState({ addingHost: false }));
+    await act(async () => appStore.setState({ addingHost: false }));
     expect(host.querySelector("h1")?.textContent).toBe("Pair with your Mac");
     expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Cancel")).toBe(
       false,
