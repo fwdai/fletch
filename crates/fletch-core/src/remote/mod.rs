@@ -238,6 +238,10 @@ struct Inner {
     /// Whether to announce at all. Off under test: the socket tests boot a
     /// host per test, and none of them should appear on the real network.
     discovery: bool,
+    /// Run once by `stop`, where it has let go of this lock: how a test puts a
+    /// `start` exactly where an overlapping one would land.
+    #[cfg(test)]
+    after_stop_unlock: Option<Box<dyn FnOnce() + Send>>,
 }
 
 struct ServerHandle {
@@ -304,6 +308,8 @@ impl RemoteState {
                 relay_timing: RelayTiming::default(),
                 advertiser: None,
                 discovery: !cfg!(test),
+                #[cfg(test)]
+                after_stop_unlock: None,
             }),
         })
     }
@@ -313,6 +319,12 @@ impl RemoteState {
     #[cfg(test)]
     pub(in crate::remote) fn set_relay_timing(&self, timing: RelayTiming) {
         self.inner.lock().relay_timing = timing;
+    }
+
+    /// See `Inner::after_stop_unlock`.
+    #[cfg(test)]
+    pub(in crate::remote) fn after_stop_unlock(&self, run: impl FnOnce() + Send + 'static) {
+        self.inner.lock().after_stop_unlock = Some(Box::new(run));
     }
 
     pub fn devices(&self) -> &Arc<DeviceStore> {
@@ -428,12 +440,14 @@ impl RemoteState {
         });
         inner.port = port;
         self.advertise(&mut inner, bound);
-        drop(inner);
         if let Some(old) = old {
             let _ = old.shutdown.send(());
             tracing::info!(from = old.port, to = bound, "remote: listener moved");
         }
+        // Under the lifecycle lock, like every sweep of the registry: see
+        // `stop`.
         self.sessions.close_all(CLOSE_RESTARTING);
+        drop(inner);
         Ok(bound)
     }
 
@@ -449,6 +463,13 @@ impl RemoteState {
     /// hangs up. The doc's ordering: the host's own 4004 goes out first over
     /// the virtual connections, and the relay's own 4404 follows from the link
     /// dropping.
+    ///
+    /// The whole transition happens under the lifecycle lock, as `start`'s
+    /// does, so the two never interleave: a `start` that got in between the
+    /// listener going and the registry being stopped would be left listening
+    /// and reported on, with the registry then closing every connection it
+    /// accepted and its new pairing codes cleared. Only the two handles are
+    /// let go after the lock, in the order above.
     pub fn stop(&self) {
         let mut inner = self.inner.lock();
         inner.enabled = false;
@@ -458,14 +479,21 @@ impl RemoteState {
         }
         let link = inner.relay.take();
         // Withdrawn with the listener: a phone must not list a Mac that will
-        // refuse it. Dropped outside the lock, since the goodbye is waited for.
+        // refuse it.
         let advertiser = inner.advertiser.take();
-        drop(inner);
-        drop(advertiser);
         self.sessions.stop();
-        drop(link);
         self.pairing.clear();
         crate::power::ActivityMonitor::global().set_remote_enabled(false);
+        #[cfg(test)]
+        let unlocked = inner.after_stop_unlock.take();
+        drop(inner);
+        #[cfg(test)]
+        if let Some(run) = unlocked {
+            run();
+        }
+        // Outside the lock, since the goodbye is waited for.
+        drop(advertiser);
+        drop(link);
     }
 
     /// Withdraw the LAN announcement and nothing else: the process is going

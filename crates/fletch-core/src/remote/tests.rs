@@ -2632,6 +2632,37 @@ async fn stopping_spends_the_outstanding_pairing_codes() {
     assert!(host.state.pairing().window().is_none());
 }
 
+/// A `start` that overlaps a `stop` lands after all of it, never between the
+/// listener going and the registry being stopped: the host is then on, and
+/// keeps both the connections it accepts and the code it mints. The window is
+/// real on a Mac, where `stop` waits on the LAN goodbye once it has let go of
+/// the lifecycle lock.
+#[tokio::test]
+async fn a_start_overlapping_a_stop_leaves_a_host_that_serves() {
+    let host = boot();
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public, &Scope::ALL)
+        .unwrap();
+    let state = host.state.clone();
+    host.state.after_stop_unlock(move || {
+        state.start(0).unwrap();
+        state.pairing().mint(&Scope::ALL);
+    });
+    host.state.stop();
+
+    let status = host.state.status();
+    assert!(status.enabled && status.listening);
+    assert!(
+        host.state.pairing().window().is_some(),
+        "the code minted once it was on again is still good"
+    );
+    let mut ws = secure_connect(status.port, &phone).await;
+    ws.request("1", "hello", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+}
+
 /// Moving the port is not a stop: live devices get the retryable 1012, not
 /// 4004, the new port answers a fresh handshake, and the status reports it.
 #[tokio::test]
