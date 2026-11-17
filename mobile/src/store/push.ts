@@ -18,7 +18,7 @@ import {
   requestPushPermission,
 } from "../remote/push";
 import type { AgentTab, AppState } from "./index";
-import { loadSettings, saveSettings } from "./persist";
+import { loadSettings, savePushPermission } from "./persist";
 
 /** Push `kind`s about the agent's PR (docs/remote-protocol.md, "Push
  *  notifications"): the ship loop's, and autopilot giving up on one. */
@@ -120,8 +120,7 @@ async function permissionFor(hostKey: string): Promise<PushPermission> {
   const saved = (await loadSettings()).pushPermission?.[hostKey];
   if (saved) return saved;
   const state = await requestPushPermission();
-  const settings = await loadSettings();
-  await saveSettings({ pushPermission: { ...settings.pushPermission, [hostKey]: state } });
+  await savePushPermission(hostKey, state);
   return state;
 }
 

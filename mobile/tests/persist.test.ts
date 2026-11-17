@@ -140,6 +140,19 @@ describe("the host list", () => {
     expect(saved.theme).toBe("light");
   });
 
+  it("keeps every host's notification answer when several are saved together", async () => {
+    const persist = await fresh();
+    // Every paired host handshakes at once on launch, each asking for its own.
+    await Promise.all([
+      persist.savePushPermission("studio", "granted"),
+      persist.savePushPermission("mini", "denied"),
+    ]);
+    expect((await persist.loadSettings()).pushPermission).toEqual({
+      studio: "granted",
+      mini: "denied",
+    });
+  });
+
   it("does not bring back a forgotten host by updating it", async () => {
     const persist = await fresh();
     await persist.updateHost("studio", { relay: "wss://relay.test" });

@@ -73,6 +73,10 @@ let queuedLink: HostTarget | null = null;
  *  failed one stays, in case its client is still retrying. */
 let pairing: HostLink | null = null;
 
+/** How many `connect`s have started: one that a later one replaced compares
+ *  its own number with this, and leaves the Pair screen to the later one. */
+let attempts = 0;
+
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** The pairing link held for `init` (`queuedLink`), handed over once. */
@@ -195,7 +199,13 @@ export function createPairingSlice(set: Set, get: Get): PairingSlice {
       // a fresh one, which becomes that host's link once it answers — and its
       // store that host's store.
       const link = target.hostKey ? linkOf(target.hostKey) : pairingLink();
+      // One pairing at a time. The one this replaces is stopped: its client may
+      // still be retrying, and a retry that landed later would take its host's
+      // link over from this one's (`pairingLink`) or put it on screen.
+      if (pairing !== link) callOffPairing(get);
       pairing = link;
+      const attempt = ++attempts;
+      const current = () => attempt === attempts;
       // The client owns the target from here: it strips the spent pairing token
       // and pins the host key the handshake authenticated.
       set({ pairStep: "connecting", pairCode: null, pairError: null });
@@ -208,13 +218,14 @@ export function createPairingSlice(set: Set, get: Get): PairingSlice {
         const snapshot = await link.client.connect(target);
         await adopt(set, get, link, snapshot.host);
       } catch (e) {
-        set({ pairError: message(e) });
+        if (current()) set({ pairError: message(e) });
         throw e;
       } finally {
         // Cleared here and nowhere else: everything the user is waiting for has
         // either happened or failed, which is not true at any earlier point the
-        // client reports.
-        set({ pairStep: null, pairCode: null });
+        // client reports. Unless a later pairing has the screen by now, whose
+        // progress this one's ending says nothing about.
+        if (current()) set({ pairStep: null, pairCode: null });
       }
     },
 

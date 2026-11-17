@@ -111,4 +111,27 @@ describe("the Pair screen adding a host", () => {
     expect(app().addingHost).toBe(false);
     expect(linkOf(ASLEEP).client.state).toBe("disconnected");
   });
+
+  it("stops a pairing that another replaces, and leaves the screen to the newer one", async () => {
+    const ASLEEP = "c2xlZXBpbmc";
+    const AWAKE = "YXdha2U";
+    registerMockHost(ASLEEP, { unreachable: true });
+    registerMockHost(AWAKE, {});
+    const { connect } = appStore.getInitialState();
+    appStore.setState({ connect });
+    app().addHost();
+
+    const first = app().connect({ ...LINK, hostKey: ASLEEP });
+    const second = app().connect({ ...LINK, hostKey: AWAKE });
+    await expect(first).rejects.toThrow();
+    // The first one's ending is not the Pair screen's business any more.
+    expect(app().pairError).toBeNull();
+    expect(app().pairStep).not.toBeNull();
+    // And its client is not left retrying behind the second.
+    expect(linkOf(ASLEEP).client.state).toBe("disconnected");
+
+    await second;
+    expect(app().hostKey).toBe(AWAKE);
+    expect(app().pairStep).toBeNull();
+  });
 });
