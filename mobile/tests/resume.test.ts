@@ -35,6 +35,23 @@ describe("returning to the foreground", () => {
     expect(host().connection).toBe("connected");
   });
 
+  it("re-reads approvals, delegations and autopilot when the host answers", async () => {
+    // The host drops events for a slow connection without closing it, so an
+    // approval request, a delegation or an autopilot change can be missed by a
+    // socket that is still up.
+    const approvals = vi.spyOn(api, "listPublishApprovals");
+    const delegations = vi.spyOn(api, "getDelegations");
+    const autopilot = vi.spyOn(api, "getAutopilotState");
+    const reconnect = vi.spyOn(client, "reconnect");
+    foreground();
+    await vi.waitFor(() => {
+      expect(approvals).toHaveBeenCalled();
+      expect(delegations).toHaveBeenCalled();
+      expect(autopilot).toHaveBeenCalled();
+    });
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
   it("reconnects when the host does not answer the probe in time", async () => {
     vi.useFakeTimers();
     // A socket iOS froze: the request goes out and nothing ever comes back.
