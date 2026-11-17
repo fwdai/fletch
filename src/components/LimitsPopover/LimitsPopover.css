@@ -25,16 +25,15 @@
   color: var(--danger);
 }
 
-/* The usage popover (LimitsPopover): a card pinned bottom-left, just
- * above the sidebar footer whose usage chip opens it. A head, one block per
- * account (its limits are the compact `.set-prov-limits` panel), and a foot
- * row into the usage report. */
+/* The usage popover (LimitsPopover): a card pinned to the bottom, centered over
+ * the sidebar (its `left` and `width` come from `cardBox`), just above the
+ * footer whose usage chip opens it. A head, one block per account (its limits
+ * are the compact `.set-prov-limits` panel), and a foot row into the usage
+ * report. */
 .lim-pop {
   position: fixed;
-  left: 8px;
   /* clears the 52px `.side-foot` */
   bottom: 58px;
-  width: 328px;
   max-height: calc(100vh - 110px);
   display: flex;
   flex-direction: column;

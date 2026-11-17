@@ -114,19 +114,23 @@ function AppShell() {
   const rightPaneContent = selectedAgent || selectedRunId;
   const rightPaneVisible = !rightCollapsed && !activeDraftId && rightPaneContent;
 
+  // A full-window screen, when one replaces the panes (and the sidebar).
+  const screen = settingsScreenOpen ? (
+    <SettingsScreen />
+  ) : usageScreenOpen ? (
+    <UsageScreen />
+  ) : projectRepoPath && view === "settings" ? (
+    <ProjectSettingsScreen repoPath={projectRepoPath} />
+  ) : projectRepoPath && view === "roadmap" ? (
+    <RoadmapScreen repoPath={projectRepoPath} />
+  ) : null;
+  const sidebarWidth = screen || leftCollapsed ? 0 : leftWidth;
+
   return (
     <div className="app">
       <TitleBar />
       <div className="main">
-        {settingsScreenOpen ? (
-          <SettingsScreen />
-        ) : usageScreenOpen ? (
-          <UsageScreen />
-        ) : projectRepoPath && view === "settings" ? (
-          <ProjectSettingsScreen repoPath={projectRepoPath} />
-        ) : projectRepoPath && view === "roadmap" ? (
-          <RoadmapScreen repoPath={projectRepoPath} />
-        ) : (
+        {screen ?? (
           <>
             <div
               className={`pane left ${leftCollapsed ? "collapsed" : ""}`}
@@ -184,7 +188,7 @@ function AppShell() {
       {historyOpen && <History />}
       <CommandPalette />
       <Settings />
-      <LimitsPopover />
+      <LimitsPopover sidebarWidth={sidebarWidth} />
       {onboardingOpen && <Onboarding />}
       <GithubConnectModal />
       {/* Answers `pickFolder` on a remote environment, from wherever it was
