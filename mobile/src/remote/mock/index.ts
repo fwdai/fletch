@@ -3,7 +3,12 @@
 // the difference, and the pairing/reconnect/envelope code is exercised for
 // real in mock mode and in tests.
 
-import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
+import type {
+  AgentRecord,
+  ProjectDefinition,
+  ProjectRef,
+  Workspace,
+} from "@desktop/api/types/agent";
 import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
 import type {
   AutopilotCheckout,
@@ -58,6 +63,9 @@ export interface MockHostSpec {
   /** A Mac that does not answer: every dial to it times out, as one to a Mac
    *  that is asleep does. */
   unreachable?: boolean;
+  /** What `ensure_project` fails with, as a clone the host cannot make does:
+   *  set, no project is copied here. */
+  failEnsure?: string;
 }
 
 /** The hosts given an identity of their own (`registerMockHost`), by key. */
@@ -146,13 +154,18 @@ export class MockHost {
   private uploads = new Map<string, string>();
   /** What `pair` and `hello` say this host is. */
   private readonly info: HostInfo;
+  private readonly failEnsure: string | undefined;
 
   constructor(
     private readonly emit: (frame: ResponseFrame | EventFrame) => void,
     private readonly opts: MockOptions = {},
     spec: MockHostSpec = {},
+    /** The key this host is dialled by: the device a project it owns names
+     *  as its home. */
+    private readonly hostKey = MOCK_HOST_KEY,
   ) {
     this.info = spec.host ?? fx.hostInfo;
+    this.failEnsure = spec.failEnsure;
     this.state = {
       workspace: structuredClone(spec.workspace ?? fx.workspace),
       records: structuredClone(spec.records ?? fx.records),
@@ -508,6 +521,53 @@ export class MockHost {
       ],
     };
     return this.state.workspace;
+  }
+
+  /** `project_definition`: the project as another device needs it. Its home is
+   *  this host unless the project is a copy, which names its own; each
+   *  repository's origin is the fake GitHub one named after its folder, and
+   *  its id is that folder, which every copy keeps. */
+  private projectDefinition(projectId: string): ProjectDefinition {
+    const refs = this.state.workspace.projects.filter((p) => p.project_id === projectId);
+    if (refs.length === 0) throw new Error(`no project ${projectId}`);
+    return {
+      project_id: projectId,
+      name: refs[0].name,
+      home: refs[0].home ?? { device: this.hostKey, name: this.info.name },
+      repos: refs.map((r) => ({
+        id: baseName(r.path),
+        dir: baseName(r.path),
+        origin: `https://github.com/fwdai/${baseName(r.path)}.git`,
+        label: r.label,
+      })),
+    };
+  }
+
+  /** `ensure_project`: nothing to do for a project the host has; else each
+   *  repository is "cloned" where the host keeps its copies and the project is
+   *  recorded as one, its refs naming the home. */
+  private ensureProject(definition: ProjectDefinition): Workspace {
+    if (this.failEnsure) throw new Error(this.failEnsure);
+    const ws = this.state.workspace;
+    if (ws.projects.some((p) => p.project_id === definition.project_id)) {
+      return this.visibleWorkspace();
+    }
+    const stuck = definition.repos.find((r) => !r.origin);
+    if (stuck) throw new Error(`${stuck.dir} has no remote to clone from`);
+    const refs: ProjectRef[] = definition.repos.map((r) => ({
+      path: `${fx.HOME}/.fletch/projects/${definition.project_id}/repos/${r.id}/${r.dir}`,
+      name: definition.name,
+      project_id: definition.project_id,
+      label: r.label,
+      home: definition.home,
+    }));
+    this.state.workspace = {
+      ...ws,
+      repos: [...ws.repos, ...refs.map((r) => r.path)],
+      projects: [...ws.projects, ...refs],
+    };
+    this.event("workspace:changed", null);
+    return this.visibleWorkspace();
   }
 
   /** Play a scripted turn: live `agent:event` frames, then the canonical
@@ -1176,6 +1236,10 @@ export class MockHost {
         ];
         return this.addProject(dest);
       }
+      case "project_definition":
+        return this.projectDefinition(String(args.projectId ?? ""));
+      case "ensure_project":
+        return this.ensureProject(args.definition as ProjectDefinition);
       case "gh_status":
         return fx.ghStatus;
       case "gh_repo_list":
@@ -1215,7 +1279,12 @@ export function mockSocket(opts: MockOptions = {}): SocketFactory {
     const spec = specs.get(hostKey);
     // Worded as the transport words it, so the client reports it as it would.
     if (spec?.unreachable) throw new Error(`cannot reach ${url}: timed out`);
-    const host = new MockHost((frame) => handlers.onMessage(JSON.stringify(frame)), opts, spec);
+    const host = new MockHost(
+      (frame) => handlers.onMessage(JSON.stringify(frame)),
+      opts,
+      spec,
+      hostKey,
+    );
     host.onClose = (code) => {
       host.close();
       handlers.onClose(code);
