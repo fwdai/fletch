@@ -281,33 +281,44 @@ describe("a screen names the host it was opened for", () => {
     // comes with every way of doing so, so the screen is still there to read.
     await act(async () => appStore.setState({ hostKey: STUDIO }));
     const project = screens().at(-1);
-    expect(project?.textContent).toContain("pamukkale");
-    expect(project?.textContent).not.toContain("lofoten");
+    // Its rows are every host's, each naming its own…
+    expect(project?.textContent).toContain("pamukkale · Mac mini");
 
-    // …and what it opens is the mini's too.
+    // …and opening on it, while what the screen starts is the mini's still.
     const push = vi.fn();
-    appStore.setState({ push });
+    const openSheet = vi.fn();
+    appStore.setState({ push, openSheet });
     const row = [...(project?.querySelectorAll<HTMLElement>(".ag") ?? [])].find((r) =>
       r.textContent?.includes("pamukkale"),
     );
     await act(async () => row?.click());
     expect(push).toHaveBeenCalledWith("agent", { agentId: "pamukkale", hostKey: MINI });
+    await act(async () => project?.querySelector<HTMLElement>('[aria-label="New agent"]')?.click());
+    expect(openSheet).toHaveBeenCalledWith("newAgent", { projectId: "prj-fletch", hostKey: MINI });
 
     act(() => root.unmount());
     node.remove();
-    appStore.setState({ push: appStore.getInitialState().push, hostKey: MINI, nav: [home()] });
+    appStore.setState({
+      push: appStore.getInitialState().push,
+      openSheet: appStore.getInitialState().openSheet,
+      hostKey: MINI,
+      nav: [home()],
+    });
   });
 });
 
 describe("the working-tree poll", () => {
-  it("reads the host put on screen at once, connected all along", async () => {
+  it("reads every connected host, whichever is on screen", async () => {
+    const stats = [MINI, STUDIO].map((key) => vi.spyOn(linkOf(key).api, "getAllShortstats"));
     const node = document.createElement("div");
     const root = createRoot(node);
     await act(async () => root.render(createElement(App)));
-    const studioStats = vi.spyOn(linkOf(STUDIO).api, "getAllShortstats");
+    expect(app().hostKey).toBe(MINI);
+    for (const read of stats) expect(read).toHaveBeenCalledOnce();
 
+    // Polled all along: put on screen, the studio is not read again for it.
     await act(async () => app().switchHost(STUDIO));
-    expect(studioStats).toHaveBeenCalledOnce();
+    expect(stats[1]).toHaveBeenCalledOnce();
 
     act(() => root.unmount());
     await app().switchHost(MINI);

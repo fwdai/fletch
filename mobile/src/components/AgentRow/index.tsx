@@ -4,23 +4,24 @@ import { agentTitle } from "@desktop/util/agentTitle";
 import type { MouseEvent } from "react";
 import { isAgentBusy, STATUS_LABEL } from "../../lib/agents";
 import { elapsedSec, fmtElapsed } from "../../lib/hooks";
-import type { Project } from "../../lib/projects";
 import { prPill } from "../../lib/shipPill";
 import { subagentLabel } from "../../lib/subagents";
 import { useSubagentClock } from "../../lib/useSubagentClock";
 import { useHostStore } from "../../store";
 import { ProviderMark, StatusDot } from "../ui";
 
-/** One agent line: status, name, what needs attention, live timer and diff. */
+/** One agent line: status, name, what needs attention, live timer and diff —
+ *  all read off the store of the host it acts on (`useHostStore`), which has
+ *  to be the agent's own. */
 export function AgentRow({
   agent,
-  project,
-  showProject,
+  host,
   onClick,
 }: {
   agent: AgentRecord;
-  project?: Project;
-  showProject?: boolean;
+  /** The name of the host the agent runs on, said after its codename when
+   *  set: where agents of several hosts share a list. */
+  host?: string | null;
   /** Gets the event so a row nested in a clickable project card can stop it
    *  from also opening the project. */
   onClick: (e: MouseEvent<HTMLButtonElement>) => void;
@@ -64,10 +65,16 @@ export function AgentRow({
   const changes = diff ?? { additions: 0, deletions: 0 };
   // As on the desktop sidebar: the row leads with what the agent is doing — its
   // own title, else the prompt's first line in a muted style — and the codename
-  // drops to the second line. An error keeps its message there too.
+  // drops to the second line, with the host when one is named. An error keeps
+  // its message there too, last, as the part that can run long.
   const title = agentTitle(agent);
-  const sub =
-    agent.status === "error" ? `${agent.name} · ${agent.last_error ?? "Run paused"}` : agent.name;
+  const sub = [
+    agent.name,
+    host,
+    agent.status === "error" ? (agent.last_error ?? "Run paused") : null,
+  ]
+    .filter((part) => part != null)
+    .join(" · ");
 
   return (
     <button type="button" className="ag" onClick={onClick}>
@@ -90,7 +97,6 @@ export function AgentRow({
                     : "working"}
             </span>
           )}
-          {showProject && project && <span className="sl">{project.name}</span>}
           {pill && !working && !badge && (
             <span className={`pill mono ${pill.tone}`}>
               <Icon name={pr?.state === "merged" ? "merge" : "pr"} size={11} />

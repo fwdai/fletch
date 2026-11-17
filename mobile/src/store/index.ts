@@ -1,8 +1,10 @@
 // The app store: what belongs to the phone itself — the theme, navigation and
 // sheets (store/nav), the hosts it is paired with, which one is on screen, and
 // a pairing in progress (store/pairing). Everything about a host lives in that
-// host's store (store/host), one per link; this one dials every paired host,
-// each on its own link, and they stay connected for as long as they are paired.
+// host's store (store/host), one per link, and what is listed across them is
+// read from all of them at once (store/everyHost); this one dials every paired
+// host, each on its own link, and they stay connected for as long as they are
+// paired.
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -32,6 +34,7 @@ import {
 } from "./persist";
 import { forgetPush, pushTab, startPush } from "./push";
 
+export { useConnectedHosts, useEveryHost, useHostKeys, useProjectEntries } from "./everyHost";
 export {
   type AgentSource,
   agentOf,
@@ -51,12 +54,13 @@ export type ThemeMode = "system" | "light" | "dark";
 
 export interface AppState extends NavSlice, PairingSlice {
   ready: boolean;
-  /** Every host this phone is paired with (store/persist), each connected on
-   *  its own link. One is on screen — `hostKey` — and the Home header switches
-   *  between them. */
+  /** Every host this phone is paired with (store/persist), in the order they
+   *  were paired, each connected on its own link. Home lists all of them at
+   *  once. */
   hosts: SavedHost[];
   /** The public key of the host on screen — pinned on first contact, and what
-   *  makes the app paired at all. */
+   *  makes the app paired at all. What acts on a host without naming one acts
+   *  on this one. */
   hostKey: string | null;
   /** The Pair screen is up to add another host over a paired one, rather than
    *  because there is none. Cleared by a pairing that lands, or by cancelling
@@ -66,7 +70,7 @@ export interface AppState extends NavSlice, PairingSlice {
   theme: ThemeMode;
   systemTheme: "light" | "dark";
   /** Home lists projects with recent agent activity first (see
-   *  `lib/activeProjects`). Off keeps the host's order. */
+   *  `lib/activeProjects`). Off keeps the hosts' order. */
   activeFirst: boolean;
   /** The last failed action, on whichever host it ran: one banner for all. */
   lastError: string | null;
@@ -93,6 +97,10 @@ let initialized = false;
  *  yet: which screen it opens depends on the paired hosts, which are still
  *  being read off disk. */
 let queuedPush: PushFletch | null = null;
+
+/** Whether the phone is paired with more than one host: what has an agent row
+ *  name its host, and the header list the hosts rather than name one. */
+export const severalHosts = (s: Pick<AppState, "hosts">): boolean => s.hosts.length > 1;
 
 /** What to call the host this component acts on (`useHost`). The saved name
  *  first: the client's idea of the host lags a pairing until it has answered,

@@ -1,124 +1,52 @@
 import { Icon } from "@desktop/components/Icon";
-import { AgentRow } from "../../components/AgentRow";
-import { ProjectIcon } from "../../components/ui";
+import { OnHost } from "../../host/OnHost";
 import { useOrderedProjects } from "../../lib/activeProjects";
-import { agentsOfProject, baseOf, isActive, isBusy } from "../../lib/agents";
-import { type Project, repoLabel } from "../../lib/projects";
-import { useHostNav, useHostStore } from "../../store";
+import {
+  severalHosts,
+  useApp,
+  useEveryHost,
+  useHostKeys,
+  useHostNav,
+  useHostStore,
+} from "../../store";
 import { AutoArchivedNotice } from "./AutoArchivedNotice";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { EmptyProjects } from "./EmptyProjects";
 import { HostState } from "./HostState";
 import { HostSwitcher } from "./HostSwitcher";
+import { ProjectCard } from "./ProjectCard";
+import { ProjectsHead } from "./ProjectsHead";
 import { Wordmark } from "./Wordmark";
 
-function ProjectCard({ project }: { project: Project }) {
-  // Selectors must return a stable reference — a fresh array on every call
-  // re-renders forever under zustand v5's useSyncExternalStore. So the
-  // workspace comes out of the store as-is and is filtered here.
-  const workspace = useHostStore((s) => s.workspace);
-  const agents = agentsOfProject(workspace, project.id);
-  const openAgent = useHostStore((s) => s.openAgent);
-  const { push } = useHostNav();
-  const active = agents.filter(isActive);
-  const running = agents.filter(isBusy).length;
-  const rest = agents.length - active.length;
-  return (
-    <div
-      className="pc"
-      role="button"
-      tabIndex={0}
-      onClick={() => push("project", { projectId: project.id })}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") push("project", { projectId: project.id });
-      }}
-    >
-      <div className="pc-h">
-        <ProjectIcon project={project} size={32} />
-        <div>
-          <div className="nm">{project.name}</div>
-          <div className="rp">
-            <Icon name="github" size={11} />
-            {repoLabel(project)}
-            <span>·</span>
-            <Icon name="branch" size={11} />
-            {agents[0] ? baseOf(agents[0]) : "main"}
-          </div>
-        </div>
-        <div className="cnt">
-          {running > 0 ? (
-            <>
-              <b>{running} running</b>
-              <span>· {agents.length}</span>
-            </>
-          ) : (
-            <span>
-              {agents.length} agent{agents.length === 1 ? "" : "s"}
-            </span>
-          )}
-          <Icon name="chevR" size={16} className="chev" />
-        </div>
-      </div>
-      {active.length > 0 && (
-        <div className="pc-list">
-          {active.slice(0, 3).map((a) => (
-            <AgentRow
-              key={a.id}
-              agent={a}
-              project={project}
-              // The whole card is clickable too; the row wins.
-              onClick={(e) => {
-                e.stopPropagation();
-                openAgent(a.id);
-              }}
-            />
-          ))}
-        </div>
-      )}
-      {rest > 0 && (
-        <div className="pc-more">
-          {rest} more {rest === 1 ? "agent" : "agents"}
-        </div>
-      )}
-      {agents.length === 0 && (
-        <div className="pc-more" style={{ paddingLeft: 14 }}>
-          No agents yet — start one
-        </div>
-      )}
-    </div>
-  );
-}
-
+/** Every paired host's projects in one list. */
 export function HomeScreen() {
-  const workspace = useHostStore((s) => s.workspace);
   const projects = useOrderedProjects();
-  const agents = workspace?.agents ?? [];
-  const pendingTotal = useHostStore((s) =>
-    Object.values(s.pendingToolUse).reduce((n, m) => n + Object.keys(m).length, 0),
-  );
-  const { openSheet, push } = useHostNav();
-  const connection = useHostStore((s) => s.connection);
-  // The host's provider accounts, one tap from the host chip — on a Mac whose
-  // Fletch can list them. An older one shows the chip alone, as before.
-  const hasProviders = useHostStore((s) => s.hostSupports("list_provider_accounts"));
-  // Planning chats are listed by their own op; a Mac without it shows nothing
+  const hostKeys = useHostKeys();
+  const workspaces = useEveryHost((s) => s.workspace);
+  const connections = useEveryHost((s) => s.connection);
+  // Planning chats are listed by their own op; a Mac without it offers nothing
   // new (docs/remote-protocol.md, "Compatibility").
-  const canPlan = useHostStore((s) => s.hostSupports("list_project_chats"));
-  const errored = agents.filter((a) => a.status === "error").length;
-  const running = agents.filter(isBusy).length;
-  const attention = pendingTotal + errored;
-  const connected = connection === "connected";
-  // What the body is: the list when there is one to show, the host's
-  // connection state when there is nothing behind it. A cached list survives a
-  // dropped link (read-only, with the status line over it); an empty one does
-  // not — "no projects" is only true of a host that has answered.
-  const showList = workspace !== null && (projects.length > 0 || connected);
+  const canPlan = useEveryHost((s) => s.hostSupports("list_project_chats")).includes(true);
+  const several = useApp(severalHosts);
+  const { openSheet, push } = useHostNav();
+  // The one paired host's provider accounts, a tap from the host chip — on a
+  // Mac whose Fletch can list them; an older one shows the chip alone. With
+  // several hosts, each one's are on its Host sheet instead.
+  const providers = useHostStore((s) => s.hostSupports("list_provider_accounts"));
+  const hasProviders = providers && !several;
+  const connected = connections.includes("connected");
+  // What the body is: the list when there is one to show, the connection state
+  // when no host has anything behind it. A cached list survives a dropped link
+  // (read-only, with the status line over it); an empty one does not — "no
+  // projects" is only true of a host that has answered.
+  const showList =
+    projects.length > 0 || workspaces.some((w, i) => w !== null && connections[i] === "connected");
   const body = !showList ? (
     <HostState />
   ) : projects.length === 0 ? (
     <EmptyProjects />
   ) : (
-    projects.map((p) => <ProjectCard key={p.id} project={p} />)
+    projects.map((p) => <ProjectCard key={p.key} entry={p} />)
   );
 
   return (
@@ -140,43 +68,15 @@ export function HomeScreen() {
         </div>
       </div>
       {showList && <ConnectionBanner />}
-      {showList && <AutoArchivedNotice />}
+      {showList &&
+        hostKeys.map((hostKey) => (
+          <OnHost key={hostKey} hostKey={hostKey}>
+            <AutoArchivedNotice />
+          </OnHost>
+        ))}
       <div className={`scroll home-body${showList && projects.length > 0 ? "" : " is-blank"}`}>
         {showList && projects.length > 0 && (
-          <div className="sect">
-            Projects <span className="n">{projects.length}</span>
-            {connected && (
-              <button type="button" className="sect-add" onClick={() => openSheet("addProject")}>
-                <Icon name="plus" size={12} strokeWidth={2.2} />
-                Add
-              </button>
-            )}
-            <span className="grow" />
-            {attention > 0 && (
-              <span
-                className="n"
-                style={{
-                  color: "var(--warn)",
-                  textTransform: "none",
-                  letterSpacing: 0,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                }}
-              >
-                <Icon name="hand" size={11} strokeWidth={1.8} />
-                {attention}
-              </span>
-            )}
-            {running > 0 && (
-              <span
-                className="n"
-                style={{ color: "var(--success)", textTransform: "none", letterSpacing: 0 }}
-              >
-                {running} running
-              </span>
-            )}
-          </div>
+          <ProjectsHead count={projects.length} canAdd={connected} />
         )}
         {body}
       </div>
