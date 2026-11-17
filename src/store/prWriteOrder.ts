@@ -29,9 +29,10 @@
  *  one-shot reads against its events through this module too.
  *
  *  One order covers one host's keys. The functions exported at the bottom are
- *  one shared order — the phone's, and this desktop's own engine's; the desktop
- *  gives each paired host another (`prWriteOrderOf` in ./prEvents), since agent
- *  ids recur across hosts and one host's stamp must not refuse another's read. */
+ *  one shared order — this desktop's own engine's; the desktop gives each
+ *  paired host another (`prWriteOrderOf` in ./prEvents), and the phone one per
+ *  host store (mobile/src/store/host), since agent ids recur across hosts and
+ *  one host's stamp must not refuse another's read. */
 
 export type PrSlice = "prStates" | "prChecks" | "prComments" | "prSets";
 
@@ -52,14 +53,13 @@ export interface PrWriteOrder {
    *  that observed the world before the PR existed, or before it merged — would
    *  still be accepted afterwards and overwrite it. */
   stamp: (slice: PrSlice, key: string) => void;
-  /** Refuse every write issued so far, for every key — for a store that has
-   *  just moved to another host (the phone's handshake), where an answer still
-   *  in flight describes the host it left, and agent ids recur across hosts.
-   *  Per-key marks cannot do this: a key the new host never stamped would take
-   *  it.
+  /** Refuse every write issued so far, for every key — for a store taking its
+   *  host up afresh (the phone's, on every handshake and when it is switched
+   *  back to), where an answer still in flight was asked of the socket before.
+   *  Per-key marks cannot do this: a key never stamped since would take it.
    *
-   *  Nothing issued afterwards is affected: the counter keeps rising, so the new
-   *  host's first read outranks the fence and every stamp the old host left. */
+   *  Nothing issued afterwards is affected: the counter keeps rising, so the
+   *  first read after the fence outranks it and every stamp left before it. */
   fence: () => void;
   /** Tests only: back to a fresh order. */
   reset: () => void;
@@ -107,7 +107,7 @@ export function createPrWriteOrder(): PrWriteOrder {
   };
 }
 
-/** The shared order: the phone's, and this desktop's own engine's. */
+/** The shared order: this desktop's own engine's. */
 export const sharedPrWriteOrder = createPrWriteOrder();
 
 export const {

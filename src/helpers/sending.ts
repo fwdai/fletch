@@ -35,9 +35,9 @@ export function dischargeSending(
 
 /** Sends still on the wire from this client. A flag set by one of these is
  *  younger than any snapshot the backend can answer with, so the snapshot rule
- *  leaves it alone. One set per engine: the phone drives one host, so this one
- *  serves it; the desktop keeps a set per host (store/sendOrder), since agent
- *  ids recur across hosts. */
+ *  leaves it alone. The default for a caller that names no set: the desktop
+ *  keeps one per host (store/sendOrder) and the phone one per host store
+ *  (mobile/src/store/host), since agent ids recur across hosts. */
 export const inFlightSends = new Set<string>();
 
 /** Run a send with its agent marked in-flight in `inFlight`, so a snapshot
