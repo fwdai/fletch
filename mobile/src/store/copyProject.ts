@@ -16,10 +16,10 @@ import { appStore } from "./index";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** How many times the target's workspace is read for the copy. A read the
- *  `workspace:changed` of `ensure_project` started meanwhile outranks this
- *  one (store/workspaceReads); it lists the copy too, and the next read here
- *  waits for nothing older. */
+/** How many times the target's workspace is read until it lists the copy. A
+ *  read is dropped when a newer one starts before it lands (store/
+ *  workspaceReads), such as the one `ensure_project`'s `workspace:changed`
+ *  starts, so the first answer is not taken as the last word. */
 const READS = 3;
 
 /** Give `target`, a paired host without `entry`'s project, a copy of it, asked
