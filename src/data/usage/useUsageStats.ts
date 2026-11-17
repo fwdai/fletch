@@ -91,7 +91,7 @@ const cache = new Map<EnvironmentId, HostUsageScan>();
 const inFlight = new Map<EnvironmentId, Promise<void>>();
 
 /** Which environments to ask. Local always — its transcripts are on this disk
- *  whatever environment the UI is driving. A remote host only when it is
+ *  whichever host is on screen. A remote host only when it is
  *  connected *and* says it answers the op: hosts that predate it would reply
  *  "unknown op", which is not a failure worth showing. Local first, then by
  *  name, so the filter's order is stable across reconnects. */

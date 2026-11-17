@@ -5,7 +5,7 @@ import { Icon } from "@/components/Icon";
 import { SetGroup } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
-import { useAppStore } from "@/store";
+import { useAppStore, useHostId } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { basename } from "@/util/format";
 
@@ -20,6 +20,7 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
   const attachRepoToProject = useAppStore((s) => s.attachRepoToProject);
   const detachRepoFromProject = useAppStore((s) => s.detachRepoFromProject);
   const relocateProject = useAppStore((s) => s.relocateProject);
+  const hostId = useHostId();
   // Closed on a host from before the project-settings ops; the Name row above
   // carries the reason, each dead control repeats it.
   const gate = useGate("projectAdmin");
@@ -42,11 +43,11 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
     }
   }
 
-  // Both pickers ask the environment the user is driving: the native dialog on
-  // this Mac, the in-app browser over `list_dir` on a paired host — the folder
+  // Both pickers ask the host the project is on: the native dialog on this
+  // Mac, the in-app browser over `list_dir` on a paired host — the folder
   // these ops take is one of the host's, not one of ours.
   async function onAttach() {
-    const picked = await pickFolder({ title: "Select a git repository to attach" });
+    const picked = await pickFolder({ hostId, title: "Select a git repository to attach" });
     if (!picked) return;
     await run(() => attachRepoToProject(projectId, picked));
   }
@@ -55,7 +56,7 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
     // No `start`: the old path is where the folder *was*, and handing a native
     // dialog a directory that no longer exists is how it opens somewhere
     // arbitrary. The host browser opens at `~`.
-    const picked = await pickFolder({ title: "Select the repository's new location" });
+    const picked = await pickFolder({ hostId, title: "Select the repository's new location" });
     if (!picked || picked === path) return;
     await run(() => relocateProject(path, picked));
   }

@@ -24,7 +24,7 @@ interface Props {
   onRange: (r: UsageRange) => void;
   /** Every host being asked, local first, each with its scan status. One of
    *  them means there is nothing to choose between and the host filter is not
-   *  rendered — the same rule the sidebar's environment switcher follows. */
+   *  rendered: with no paired host, nothing about hosts is shown anywhere. */
   hosts: UsageHost[];
   /** An environment id, or `ALL_HOSTS`. */
   host: string;

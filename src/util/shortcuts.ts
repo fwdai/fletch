@@ -5,8 +5,9 @@ import { openInPreferredEditor } from "@/components/TitleBar/OpenInEditor/editor
 import { escapeTaken } from "@/components/ui/useEscape";
 import type { FeatureFlags } from "@/storage/preferences";
 import type { AppState } from "@/store";
-import { hostStore, useAppStore } from "@/store";
+import { hostStore, onHost, useAppStore } from "@/store";
 import { activeGateReason, type GateName } from "@/store/capabilities";
+import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { focusNeedsRuns, isOnlyFocus, projectCount, surfaceProjectKey } from "@/store/projectFocus";
 import { activeSurface, surfaceAgent, surfaceRepoPath } from "@/store/surface";
 import type { RightPanelTab } from "@/store/types";
@@ -29,8 +30,8 @@ export function useShortcutKeys(id: string): string {
   return combo ? formatCombo(combo) : "";
 }
 
-/** The store as the environment on screen sees it: a chord acts on whatever
- *  the user is looking at. */
+/** The store as the host on screen sees it: a chord acts on whatever the user
+ *  is looking at. */
 const onScreen = (): AppState => hostStore(useAppStore.getState().activeEnvironmentId).getState();
 
 /** One global shortcut's behavior. `whileTyping` lets it fire with a text field
@@ -131,12 +132,12 @@ const ACTIONS: Record<string, Action> = {
     whileTyping: true,
     run: () => withSidebar(onScreen(), () => stepSelection(1)),
   },
+  // Home is This Mac's: a paired host's work is reached through its rows.
   home: {
     whileTyping: true,
     run: () => {
-      const s = onScreen();
-      closeScreens(s);
-      s.selectAgent(null);
+      closeScreens(onScreen());
+      onHost(LOCAL_ENVIRONMENT_ID, (s) => s.selectAgent(null));
     },
   },
   // Not while typing: Ctrl+Y is redo in a text field on Windows and Linux.
@@ -170,13 +171,13 @@ const ACTIONS: Record<string, Action> = {
       void s.createDraft(active);
     },
   },
+  // The sidebar's own popover, so This Mac's, whichever host is on screen.
   addProject: {
     whileTyping: true,
     run: () => {
-      const s = onScreen();
-      closeScreens(s);
-      // The store refuses this on an environment that can add nothing.
-      withSidebar(s, () => onScreen().openAddProject());
+      closeScreens(onScreen());
+      const s = useAppStore.getState();
+      withSidebar(s, () => useAppStore.getState().openAddProject());
     },
   },
   focusComposer: {

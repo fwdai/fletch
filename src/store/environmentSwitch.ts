@@ -1,8 +1,8 @@
-// Which environment the UI is scoped to, and what a host's handshake re-reads.
+// Which host is on screen, and what a host's handshake re-reads.
 //
 // Every connected host's state is live in the store at once (./hostState), so
-// switching is only a change of which one the app root is scoped to: nothing is
-// parked, restored or re-read, and no listener moves.
+// putting another one on screen is only a change of which one the main pane is
+// scoped to: nothing is parked, restored or re-read, and no listener moves.
 //
 // It lives beside ./environments rather than in it because it needs @/api, and
 // api/engine reads the environments out of that module — importing the other
@@ -15,9 +15,11 @@ import { refreshWorkspace } from "./refreshWorkspace";
 import type { SliceCreator } from "./types";
 
 export interface EnvironmentSwitchSlice {
-  /** Put another environment on screen. A no-op for the one already active,
-   *  and for an id that is not there — a host forgotten between the render and
-   *  the click. */
+  /** Put another host on screen: the main pane, and what decides what it
+   *  shows, move to its scope. The primitive under `onHost`, which every
+   *  selection that belongs to a host goes through. A no-op for the host
+   *  already there, and for an id that is not there — a host forgotten
+   *  between the render and the click. */
   switchEnvironment: (id: EnvironmentId) => void;
   /** A handshake landed for `id`: the first one, or a reconnect — both mean
    *  this client has been out of touch and the host's live events are behind,
@@ -54,8 +56,8 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
    *
    *  Each is best-effort on its own: a host that is not connected rejects at
    *  once (the client has no socket to write to), which leaves what it last
-   *  said on screen with the connection state beside it in the switcher,
-   *  rather than stopping the reads that follow. */
+   *  said on screen with the connection state on its rows' host chip, rather
+   *  than stopping the reads that follow. */
   const resyncEnvironment = async () => {
     await refreshWorkspace(engine, set).catch(() => {});
     // What this host is blocked on, which no event will tell a client that
@@ -90,10 +92,9 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     await get()
       .loadAllPrStatus(true)
       .catch(() => {});
-    // …and the settings it reads: Settings › General, Git, Sandbox and the
-    // provider binary paths show (and edit) them while it is on screen. Not awaited:
-    // nothing after it depends on it, and an answer older than a later read of
-    // the same host is dropped by `hydrateHostSettings` itself.
+    // …and the settings it reads (./hostSettings). Not awaited: nothing after
+    // it depends on it, and an answer older than a later read of the same host
+    // is dropped by `hydrateHostSettings` itself.
     // …and where its Linux VM stands, which its `box:*` events keep current
     // from here.
     void hydrateHostSettings(engine, set)

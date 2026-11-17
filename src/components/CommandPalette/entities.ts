@@ -1,68 +1,49 @@
-// The things to jump to: agents, drafts, runs, projects, settings sections,
-// archived agents and environments. Each is a row that selects or opens it.
+// The things to jump to: agents, drafts, runs, projects, settings sections and
+// archived agents. Each is a row that selects or opens it.
 
 import type { AgentRecord } from "@/api";
 import { settingsDestinations } from "@/components/SettingsScreen/nav";
 import { agentDotStatus, STATUS_LABEL } from "@/components/TitleBar/WorkspaceStatus/derive";
-import { activeEntry, connectionLabel } from "@/store/capabilities";
-import type { EnvironmentEntry } from "@/store/environments";
+import { activeEntry } from "@/store/capabilities";
 import { gateReason } from "@/store/gates";
 import type { AppState } from "@/store/types";
 import { basename, firstLine, formatAge } from "@/util/format";
 import { IS_MAC } from "@/util/platform";
 import {
+  agentItemId,
   agentTitle,
   byAttention,
   go,
   type PaletteContext,
+  type PaletteHost,
   projectName,
   SEC,
-  sidebarAgents,
 } from "./context";
 import type { PaletteItem } from "./types";
 
-function agentRow(ctx: PaletteContext, a: AgentRecord): PaletteItem {
-  const { s } = ctx;
+/** An agent on any host. Running it leaves whatever is in front, puts the
+ *  agent's host on screen and selects it there. */
+function agentRow(ctx: PaletteContext, host: PaletteHost, a: AgentRecord): PaletteItem {
+  const { s } = host;
   const status = agentDotStatus(a.status, s.pendingToolUse[a.id]);
   const repo = a.repos[0]?.repo_path;
   const branch = a.repos[0]?.branch;
   return {
-    id: `agent:${a.id}`,
+    id: agentItemId(host.id, a.id),
     label: agentTitle(a),
-    hint: [projectName(s, repo), branch].filter(Boolean).join(" · "),
+    hint: [projectName(s, repo), branch, host.name].filter(Boolean).join(" · "),
     meta: STATUS_LABEL[status],
     leading: { kind: "status", status },
     section: SEC.agents,
-    keywords: [a.name, firstLine(a.task, 120), branch, projectName(s, repo)]
+    keywords: [a.name, firstLine(a.task, 120), branch, projectName(s, repo), host.name]
       .filter(Boolean)
       .join("  "),
-    run: () => go(s, () => s.selectAgent(a.id)),
+    run: () =>
+      go(ctx.s, () => {
+        ctx.show(host.id);
+        s.selectAgent(a.id);
+      }),
   };
-}
-
-export function environmentRow(s: AppState, e: EnvironmentEntry): PaletteItem {
-  const current = e.id === s.activeEnvironmentId;
-  return {
-    id: `env:${e.id}`,
-    label: e.name,
-    hint: connectionLabel(e),
-    meta: current ? "Current" : undefined,
-    leading: { kind: "icon", name: e.kind === "local" ? "laptop" : "globe" },
-    section: SEC.environments,
-    keywords: "environment  host  switch  machine",
-    disabled: current ? "Already here" : null,
-    run: () => s.switchEnvironment(e.id),
-  };
-}
-
-/** This Mac first — it is always there — then the hosts by name, so the list
- *  doesn't reshuffle as connections come and go (as `EnvironmentMenu`). */
-export function environmentRows(s: AppState): PaletteItem[] {
-  const order = (a: EnvironmentEntry, b: EnvironmentEntry) =>
-    a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "local" ? -1 : 1;
-  return Object.values(s.environments)
-    .sort(order)
-    .map((e) => environmentRow(s, e));
 }
 
 /** Every settings section on this build, sub-tabs included. `prefix` is what
@@ -108,7 +89,7 @@ export function entityItems(ctx: PaletteContext): PaletteItem[] {
   const items: PaletteItem[] = [];
   const active = activeEntry(s);
 
-  for (const a of byAttention(s, sidebarAgents(s))) items.push(agentRow(ctx, a));
+  for (const { host, agent } of byAttention(ctx.hosts)) items.push(agentRow(ctx, host, agent));
 
   for (const d of s.drafts) {
     if (!s.workspace?.projects.some((p) => p.path === d.repoPath)) continue;
@@ -177,6 +158,5 @@ export function entityItems(ctx: PaletteContext): PaletteItem[] {
     });
   }
 
-  if (Object.keys(s.environments).length > 1) items.push(...environmentRows(s));
   return items;
 }

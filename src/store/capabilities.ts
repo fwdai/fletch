@@ -160,7 +160,7 @@ export function hostVersionLabel(env: EnvironmentEntry): string | null {
 /** How an environment's connection is doing, in words. Here beside the gate
  *  reasons because it is the same kind of thing — the short sentence a surface
  *  shows instead of the control it can't offer — and because several surfaces
- *  say it (the switcher, Settings' host picker, and the main pane while a host
+ *  say it (a host's chip, Settings' host picker, and the main pane while a host
  *  has nothing to show).
  *
  *  `retrying` is what separates a host that will come back on its own from one
@@ -178,8 +178,9 @@ export function connectionLabel(env: EnvironmentEntry): string {
   }
 }
 
-/** The entry the UI is driving, falling back to the local one — the same answer
- *  `activeEnvironment()` gives outside React, as a selector. */
+/** The entry of the host on screen, falling back to the local one — the same
+ *  answer `activeEnvironment()` gives outside React, as a selector. For what is
+ *  rendered in the on-screen host's scope (the palette), where the two agree. */
 export const activeEntry = (s: AppState): EnvironmentEntry =>
   s.environments[s.activeEnvironmentId] ?? s.environments[LOCAL_ENVIRONMENT_ID];
 
@@ -218,7 +219,7 @@ export function hostGateReason(hostId: EnvironmentId, gate: GateName): string | 
   return gateReason(environmentEntry(hostId), gate);
 }
 
-/** [`hostGateReason`] for the environment on screen — for a global keyboard
+/** [`hostGateReason`] for the host on screen — for a global keyboard
  *  shortcut, which acts on whatever the user is looking at. */
 export function activeGateReason(gate: GateName): string | null {
   return gateReason(activeEnvironment(), gate);

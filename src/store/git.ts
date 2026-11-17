@@ -116,12 +116,11 @@ export interface GitSlice {
   /** Seed the fleet's PR state + CI from one `get_all_pr_status` read: every
    *  repo with a known PR across every agent, keyed by `checkoutKey`, so the
    *  sidebar badges are right without opening a panel. A seed, not a poll —
-   *  run on GitHub connecting (`useGitSync`, which also runs it when the host
-   *  on screen changes), handshake and window focus; between those the host
-   *  watcher's `pr:*` events keep it current. `reverifyClosed` asks for an
-   *  immediate live look at closed PRs (launch, handshake and the host on
-   *  screen changing); the host watcher also does that on a slow cadence, so
-   *  a reopen converges with no client at all. */
+   *  run on the host's GitHub connecting (`useFleetGitSync`), handshake and
+   *  window focus; between those the host watcher's `pr:*` events keep it
+   *  current. `reverifyClosed` asks for an immediate live look at closed PRs
+   *  (launch and handshake); the host watcher also does that on a slow
+   *  cadence, so a reopen converges with no client at all. */
   loadAllPrStatus: (reverifyClosed?: boolean) => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
   /** PR state + CI in one backend pass over ETag-conditional REST, both from

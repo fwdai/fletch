@@ -1,5 +1,4 @@
 import { AddProject } from "./AddProject";
-import { EnvironmentSwitcher } from "./EnvironmentSwitcher";
 import { ListFilter } from "./ListFilter";
 import type { ProjectOption } from "./ProjectSelector";
 import type { ProjectFocus } from "./projectFocus";
@@ -25,7 +24,6 @@ export function SidebarHeader({
 
   return (
     <div className="side-head flex-center">
-      <EnvironmentSwitcher />
       {!empty && (
         <ListFilter
           projects={projects}

@@ -1,0 +1,47 @@
+/* A host's connection dot (`EnvironmentDot`). */
+.env-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  flex-shrink: 0;
+}
+.env-dot[data-state="connected"] {
+  background: var(--success);
+}
+.env-dot[data-state="connecting"] {
+  background: var(--warn);
+}
+.env-dot[data-state="error"] {
+  background: var(--danger);
+}
+
+/* Where a row runs, when that is a paired host (`HostChip`): a pill of the
+   PR pill's size, in the closed PR's grey, so it reads as a fact about the
+   row rather than a state of it. */
+.ag-badge.host-chip {
+  gap: 4px;
+  max-width: 96px;
+  color: var(--fg-2);
+  background: color-mix(in oklch, var(--fg-2), transparent 90%);
+  font-family: var(--font-sans);
+  font-weight: 500;
+}
+.host-chip .env-dot {
+  width: 5px;
+  height: 5px;
+}
+.host-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* On a project's header the chip keeps the header's own case and spacing out
+   of its name: a host is named as it is everywhere else. */
+.proj-h .host-chip {
+  flex-shrink: 1;
+  min-width: 0;
+  text-transform: none;
+  letter-spacing: normal;
+}

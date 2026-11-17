@@ -1,4 +1,6 @@
+import { useCallback } from "react";
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import type { AgentRecord } from "@/api"; // for EMPTY_AGENTS
 import { localEngine } from "@/api/engine";
 import { createAccountSlice } from "./account";
@@ -14,6 +16,8 @@ import { createDraftsSlice } from "./drafts";
 import { createEnvironmentSwitchSlice } from "./environmentSwitch";
 import {
   createEnvironmentsSlice,
+  type EnvironmentId,
+  hostOrder,
   LOCAL_ENVIRONMENT_ID,
   setEnvironmentsSource,
 } from "./environments";
@@ -110,6 +114,60 @@ export function useUnseenCount(): number {
  *  Stable for as long as the scope's host is. */
 export function useHostStore(): HostStore {
   return hostStore(useHostId());
+}
+
+/** `pick` over every host's view, This Mac's first and then each paired
+ *  host's (`hostOrder`), whatever scope the caller is in. Compared item by
+ *  item, so a list of the references or primitives `pick` returns is stable
+ *  while none of them changes. For the surfaces that show every host at once:
+ *  the sidebar, the palette, the prompts a host raises. */
+export function useEveryHost<U>(pick: (s: AppState, hostId: EnvironmentId) => U): U[] {
+  return store(
+    useShallow((state) => hostOrder(state.environments).map((id) => pick(viewOf(state, id), id))),
+  );
+}
+
+/** `selector` over the store as the host on screen sees it, whatever scope
+ *  the caller is in: for what follows the main pane from outside it. */
+export function useOnScreen<U>(selector: (s: AppState) => U): U {
+  return store((state) => selector(viewOf(state, state.activeEnvironmentId)));
+}
+
+/** What the main pane shows, and on which host: the one selection in the
+ *  window, which a row is highlighted for only when both match. */
+export interface OnScreenSelection {
+  hostId: EnvironmentId;
+  agentId: string | null;
+  draftId: string | null;
+  runId: string | null;
+}
+
+export function useOnScreenSelection(): OnScreenSelection {
+  return store(
+    useShallow((state) => {
+      const s = viewOf(state, state.activeEnvironmentId);
+      return {
+        hostId: state.activeEnvironmentId,
+        agentId: s.selectedAgentId,
+        draftId: s.activeDraftId,
+        runId: s.selectedRunId,
+      };
+    }),
+  );
+}
+
+/** Put `hostId` on screen, then run `act` with its state and its actions: how
+ *  anything that belongs to a host — a sidebar row, a palette entry, a prompt
+ *  it raised — selects or opens something there. */
+export function onHost(hostId: EnvironmentId, act?: (s: AppState) => void): void {
+  store.getState().switchEnvironment(hostId);
+  act?.(hostStore(hostId).getState());
+}
+
+/** `onHost` for the host the calling component is scoped to. */
+export function useOnHost(): (act?: (s: AppState) => void) => void {
+  const hostId = useHostId();
+  return useCallback((act?: (s: AppState) => void) => onHost(hostId, act), [hostId]);
 }
 
 // The engine lookup and the host settings read the environments straight off

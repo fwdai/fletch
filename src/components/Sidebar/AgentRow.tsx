@@ -2,6 +2,7 @@ import type { KeyboardEvent, MouseEvent } from "react";
 import { useRef, useState } from "react";
 import { contextPercent, resolveContextWindow } from "@/adapters/usage";
 import type { AgentRecord, AgentStatus, ShortStats } from "@/api";
+import { HostChip } from "@/components/HostChip";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { IsolationIcon } from "@/components/TitleBar/WorkspaceStatus/IsolationIcon";
@@ -278,9 +279,10 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
         </div>
         {/* Where it lives (sandbox + codename, as in the title bar; the glyph
             is the row's one hover target for the details: the sandbox, the
-            agent in it and what it has used), what came of it (PR / diff and
-            the conditional hints), then since when. The glyph is 11.5px: 12
-            outweighs the codename's small text, 11 gets lost beside it. */}
+            agent in it and what it has used; then the paired host it runs on,
+            if any), what came of it (PR / diff and the conditional hints),
+            then since when. The glyph is 11.5px: 12 outweighs the codename's
+            small text, 11 gets lost beside it. */}
         <div className="agent-sub flex-center">
           <span
             ref={sandboxRef}
@@ -299,6 +301,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             )}
           </span>
           <span className="a-task a-codename">{agent.name}</span>
+          <HostChip />
           {agentPrs.length > 0 ? (
             <PrPill prs={agentPrs} />
           ) : hasChanges ? (
@@ -386,9 +389,11 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
         </span>
       </div>
       {/* No sandbox glyph yet: where a draft runs is the composer's pick until
-          it spawns. What will run it sits where a real row's byline does. */}
+          it spawns. What will run it sits where a real row's byline does,
+          after the paired host it will spawn on, if any. */}
       <div className="agent-sub flex-center">
         <span className="a-task a-codename">{draft.name}</span>
+        <HostChip />
         {workflow ? (
           <span className="ag-prov-chip tip" data-tip="Workflow run">
             <Icon name="combine" size={12} />

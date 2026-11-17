@@ -3,15 +3,31 @@
 
 import type { AgentRecord, Api, DetectedEditor, WfRun } from "@/api";
 import { agentDotStatus } from "@/components/TitleBar/WorkspaceStatus/derive";
+import { type EnvironmentId, LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import type { AppState } from "@/store/types";
 import { basename, firstLine } from "@/util/format";
 import { closeScreens } from "@/util/shortcuts";
 
-/** What the rows are built from. `s` is a snapshot of the store; the rest is
+/** One host, as the rows that cover every host see it. */
+export interface PaletteHost {
+  id: EnvironmentId;
+  /** A paired host's name, for the rows that say where they run; null for
+   *  This Mac. */
+  name: string | null;
+  /** A snapshot of the store as this host sees it, with its own actions. */
+  s: AppState;
+}
+
+/** What the rows are built from. `s` is a snapshot of the store as the host on
+ *  screen sees it — the palette acts on what is in front — and `hosts` every
+ *  host's, This Mac's first, for the rows that cover them all; the rest is
  *  what the store does not hold. */
 export interface PaletteContext {
   s: AppState;
-  /** The engine the rows act on. */
+  hosts: readonly PaletteHost[];
+  /** Put a host on screen, before a row selects something there. */
+  show: (hostId: EnvironmentId) => void;
+  /** The engine of the host on screen. */
   api: Api;
   runs: readonly WfRun[];
   editors: DetectedEditor[];
@@ -37,7 +53,6 @@ export const SEC = {
   projects: "Projects",
   settings: "Settings",
   history: "History",
-  environments: "Environments",
   editors: "Editors",
   accent: "Accent",
   suggested: "Suggested",
@@ -48,6 +63,11 @@ export const SEC = {
 export const projectName = (s: AppState, repoPath: string | undefined): string =>
   (repoPath && s.workspace?.projects.find((p) => p.path === repoPath)?.name) ||
   (repoPath ? basename(repoPath) : "");
+
+/** The id of an agent's row. This Mac's agents keep the bare id the recents
+ *  list has always held; a paired host's carry the host, as ids repeat. */
+export const agentItemId = (hostId: EnvironmentId, agentId: string): string =>
+  hostId === LOCAL_ENVIRONMENT_ID ? `agent:${agentId}` : `agent:${hostId}:${agentId}`;
 
 /** The agent's row title, as the sidebar writes it: its own title, else the
  *  first line of the task, else the codename. */
@@ -62,14 +82,19 @@ export const isWorking = (a: AgentRecord) => a.status === "running" || a.status 
 export const isArchivable = (a: AgentRecord) =>
   a.status === "idle" || a.status === "stopped" || a.status === "error";
 
-/** Agents in the order someone would want them: a question waiting first,
- *  then whatever is working, then the rest newest first. */
-export function byAttention(s: AppState, agents: AgentRecord[]): AgentRecord[] {
-  const rank = (a: AgentRecord) => {
-    const status = agentDotStatus(a.status, s.pendingToolUse[a.id]);
+/** Every host's agents, each with its host, in the order someone would want
+ *  them whichever host they run on: a question waiting first, then whatever
+ *  is working, then the rest newest first. */
+export function byAttention(
+  hosts: readonly PaletteHost[],
+): { host: PaletteHost; agent: AgentRecord }[] {
+  const rank = ({ host, agent: a }: { host: PaletteHost; agent: AgentRecord }) => {
+    const status = agentDotStatus(a.status, host.s.pendingToolUse[a.id]);
     return status === "waiting" ? 0 : status === "running" ? 1 : status === "error" ? 2 : 3;
   };
-  return [...agents].sort((a, b) => rank(a) - rank(b) || (a.created_at < b.created_at ? 1 : -1));
+  return hosts
+    .flatMap((host) => sidebarAgents(host.s).map((agent) => ({ host, agent })))
+    .sort((a, b) => rank(a) - rank(b) || (a.agent.created_at < b.agent.created_at ? 1 : -1));
 }
 
 /** Run a row that takes the user somewhere: every takeover (Settings, a

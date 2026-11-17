@@ -190,7 +190,7 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
     // that the client schedules no retry behind them, which is what
     // `client.retrying` tells the pane.
     client.onState((state, error) =>
-      // `retrying` rides along so the switcher can tell "reconnecting" from
+      // `retrying` rides along so a host's chip can tell "reconnecting" from
       // "offline" — the client schedules no retry behind 4003/4004, and that
       // difference is the only thing that says whether waiting will help.
       writers.setEnvironmentConnection(

@@ -115,8 +115,11 @@ function state(over: Partial<AppState> = {}): AppState {
 }
 
 function ctx(over: Partial<AppState> = {}, extra: Partial<PaletteContext> = {}): PaletteContext {
+  const s = state(over);
   return {
-    s: state(over),
+    s,
+    hosts: [{ id: LOCAL_ENVIRONMENT_ID, name: null, s }],
+    show: vi.fn(),
     // No row under test reaches the engine.
     api: {} as PaletteContext["api"],
     runs: [],
@@ -287,7 +290,31 @@ describe("rootItems", () => {
     find(c, "agent:fuji").run?.();
     expect(c.s.closeSettingsScreen).toHaveBeenCalled();
     expect(c.s.togglePalette).toHaveBeenCalledWith(false);
+    expect(c.show).toHaveBeenCalledWith(LOCAL_ENVIRONMENT_ID);
     expect(c.s.selectAgent).toHaveBeenCalledWith("fuji");
+  });
+
+  it("lists every host's agents, and puts a paired host's on screen to select it there", () => {
+    const studio = state({ workspace: ws([agent({ id: "fuji", status: "running" })]) });
+    const c = ctx({ workspace: ws([agent({ id: "fuji" })]) });
+    const two = { ...c, hosts: [...c.hosts, { id: "h1", name: "Studio", s: studio }] };
+
+    const rows = rootItems(two).filter((it) => it.section === SEC.agents);
+    // The same id on two hosts is two rows, a paired host's named for where
+    // it runs, ranked together: the one working comes first wherever it is.
+    expect(rows.map((r) => r.id)).toEqual(["agent:h1:fuji", "agent:fuji"]);
+    expect(rows[0].hint).toBe("fletch · feat/fuji · Studio");
+    expect(rows[0].meta).toBe("Working");
+    expect(rows[1].hint).toBe("fletch · feat/fuji");
+
+    rows[0].run?.();
+    // What is in front closes first, then the host comes on screen and the
+    // agent is selected in its own scope, not this Mac's.
+    expect(c.s.closeSettingsScreen).toHaveBeenCalled();
+    expect(two.show).toHaveBeenCalledWith("h1");
+    expect(ranBefore(two.show, studio.selectAgent)).toBe(true);
+    expect(studio.selectAgent).toHaveBeenCalledWith("fuji");
+    expect(c.s.selectAgent).not.toHaveBeenCalled();
   });
 
   it("opens the project in front's settings or roadmap rather than leaving the view", () => {
@@ -327,7 +354,7 @@ describe("rootItems", () => {
     expect(ranBefore(c.s.closeProjectScreen, c.s.captureToRoadmap)).toBe(true);
   });
 
-  it("offers every settings section, sub-tabs included, and the environments only once there are two", () => {
+  it("offers every settings section, sub-tabs included, and no way to switch hosts", () => {
     const rows = rootItems(ctx());
     expect(rows.find((r) => r.id === "settings:providers")?.label).toBe("Settings › Providers");
     for (const [id, label, group] of [
@@ -340,9 +367,9 @@ describe("rootItems", () => {
       expect(row?.hint, id).toBe(group);
     }
     expect(rows.filter((r) => r.id === "settings:agents")).toHaveLength(1);
-    expect(rows.some((r) => r.section === SEC.environments)).toBe(false);
-    expect(ids(ctx())).not.toContain("environment");
 
+    // A host is on screen because something of it is selected; nothing here
+    // picks one.
     const two = ctx({
       environments: {
         [LOCAL_ENVIRONMENT_ID]: {
@@ -354,10 +381,8 @@ describe("rootItems", () => {
         h1: { id: "h1", name: "Studio", kind: "remote", connection: "connecting" },
       },
     });
-    const studio = find(two, "env:h1");
-    expect(studio.hint).toBe("connecting…");
-    expect(find(two, `env:${LOCAL_ENVIRONMENT_ID}`).disabled).toBe("Already here");
-    expect(find(two, "environment").page).toBe("environment");
+    expect(ids(two)).not.toContain("environment");
+    expect(ids(two).some((id) => id.startsWith("env:"))).toBe(false);
   });
 
   it("lists workflow runs and drafts with their project", () => {

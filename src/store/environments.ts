@@ -1,6 +1,7 @@
 // The environment dimension: which engines this client knows about, and which
-// one the UI is driving. An "environment" is one Fletch engine — the desktop's
-// own, or a paired host (docs/multi-host-plan.md §5.1).
+// one is on screen (the host of what the main pane shows). An "environment" is
+// one Fletch engine — the desktop's own, or a paired host
+// (docs/multi-host-plan.md §5.1).
 //
 // The local environment is a fixed client-side id, present from the first render
 // in state `connected`, with no async step and no dependency on the host key or
@@ -38,7 +39,7 @@ export interface EnvironmentEntry {
   /** Why the connection is in `error`, for the (later) environment status. */
   error?: string;
   /** Remote only. Mirrors `RemoteClient.retrying`: a retry is scheduled behind
-   *  this failure, so the switcher says "reconnecting" rather than "offline".
+   *  this failure, so a host's chip says "reconnecting" rather than "offline".
    *  False with a non-`connected` state is a failure only the user can clear
    *  (unpaired, remote access off, a changed host key). */
   retrying?: boolean;
@@ -66,6 +67,9 @@ export interface EnvironmentEntry {
 
 export interface EnvironmentsSlice {
   environments: Record<EnvironmentId, EnvironmentEntry>;
+  /** The host on screen: the host of what the main pane shows. Every
+   *  selection that belongs to a host puts it there (`onHost`); nothing asks
+   *  the user to pick it. */
   activeEnvironmentId: EnvironmentId;
   /** Each paired host's partition of the store, by environment id: its
    *  workspace and every map keyed by something that belongs to its engine
@@ -174,7 +178,7 @@ export function setEnvironmentsSource(source: () => EnvironmentsState) {
   read = source;
 }
 
-/** The active environment's id: the one the UI is scoped to at its root. */
+/** The id of the host on screen: the one the main pane is scoped to. */
 export function activeEnvironmentId(): EnvironmentId {
   return read().activeEnvironmentId;
 }
@@ -187,4 +191,15 @@ export function environmentEntry(id: EnvironmentId): EnvironmentEntry {
 
 export function activeEnvironment(): EnvironmentEntry {
   return environmentEntry(activeEnvironmentId());
+}
+
+/** Every environment's id, This Mac first (it is always there) and then the
+ *  paired hosts by name: the order of every surface that lists them all, so
+ *  none reshuffles as connections come and go. */
+export function hostOrder(environments: Record<EnvironmentId, EnvironmentEntry>): EnvironmentId[] {
+  return Object.values(environments)
+    .sort((a, b) =>
+      a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "local" ? -1 : 1,
+    )
+    .map((e) => e.id);
 }

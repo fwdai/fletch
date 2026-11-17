@@ -7,7 +7,8 @@
 import type { IconName } from "@/components/Icon";
 import { editorsFor, preferredEditor } from "@/components/TitleBar/OpenInEditor/editors";
 import { ACCENTS } from "@/data/providers";
-import { activeEntry } from "@/store/capabilities";
+import { activeEntry, entryOf } from "@/store/capabilities";
+import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { ADD_PROJECT_GATES, anyGateReason, gateReason } from "@/store/gates";
 import {
   focusedProjectCount,
@@ -79,7 +80,8 @@ const SHORTCUT_ROWS: ShortcutRow[] = [
     icon: "folder",
     section: SEC.create,
     hint: "Open a folder, clone, or create a repository",
-    disabled: (ctx) => anyGateReason(activeEntry(ctx.s), ADD_PROJECT_GATES),
+    // The sidebar's own way in, so This Mac's whichever host is on screen.
+    disabled: (ctx) => anyGateReason(entryOf(ctx.s, LOCAL_ENVIRONMENT_ID), ADD_PROJECT_GATES),
     keywords: "repo  repository  clone  open folder",
   },
   {
@@ -447,17 +449,6 @@ export function pageItems(ctx: PaletteContext): PaletteItem[] {
       disabled: gateReason(activeEntry(s), "roadmap"),
       run: () => go(s, () => s.openRoadmap(repo, "context")),
       remember: true,
-    });
-  }
-  if (Object.keys(s.environments).length > 1) {
-    items.push({
-      id: "environment",
-      label: "Switch environment…",
-      hint: `Now on ${activeEntry(s).name}`,
-      leading: { kind: "icon", name: "laptop" },
-      section: SEC.goto,
-      keywords: "host  machine  remote  mac  this mac",
-      page: "environment",
     });
   }
   items.push({

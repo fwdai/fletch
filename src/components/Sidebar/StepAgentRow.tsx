@@ -1,19 +1,20 @@
 import type { KeyboardEvent } from "react";
 import { AgentIdentityChip } from "@/components/AgentIdentityChip";
 import { Icon } from "@/components/Icon";
-import { useAppStore } from "@/store";
+import { useOnHost } from "@/store";
 import type { StepChild } from "./stepChildren";
 
 /** A run's step agent as a sidebar child of its RunRow — visually subordinate
  *  (indented, quieter) but speaking the same status vocabulary as `AgentRow`.
- *  Clicking focuses that step's chat in the run monitor. Step agents are
- *  capability-restricted and owned by the run, so this row carries no
- *  stop/archive actions — its lifecycle is the run's. */
+ *  Clicking puts the run's host on screen and focuses that step's chat in
+ *  the run monitor. Step agents are capability-restricted and owned by the
+ *  run, so this row carries no stop/archive actions — its lifecycle is the
+ *  run's. */
 export function StepAgentRow({ runId, child }: { runId: string; child: StepChild }) {
   const { agent, rail, working } = child;
-  const selectRunStep = useAppStore((s) => s.selectRunStep);
+  const onHost = useOnHost();
 
-  const onSelect = () => selectRunStep(runId, agent.id);
+  const onSelect = () => onHost((s) => s.selectRunStep(runId, agent.id));
 
   return (
     <div

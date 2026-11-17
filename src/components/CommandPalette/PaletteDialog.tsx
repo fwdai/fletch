@@ -8,11 +8,18 @@ import { developerUnlocked } from "@/components/SettingsScreen/nav";
 import { detectEditors } from "@/components/TitleBar/OpenInEditor/editors";
 import { Scrim } from "@/components/ui/Scrim";
 import { useFocusScope } from "@/components/ui/useFocusScope";
-import { useAppStore, useHostStore } from "@/store";
+import { useAppStore, useEveryHost, useHostStore, viewOf } from "@/store";
+import { hostOrder } from "@/store/environments";
 import { arrowTarget } from "@/util/arrowNav";
 import { effectiveCombos, matchesCombo, SHORTCUT_BY_ID } from "@/util/keymap";
 import { useRuns } from "@/workflows/run/useRuns";
-import { emptySections, type PaletteContext, pageRows, searchSections } from "./items";
+import {
+  emptySections,
+  type PaletteContext,
+  type PaletteHost,
+  pageRows,
+  searchSections,
+} from "./items";
 import { PaletteFooter } from "./PaletteFooter";
 import { PaletteRow } from "./PaletteRow";
 import { type Point, pointerMoved } from "./pointer";
@@ -69,7 +76,10 @@ export function PaletteDialog() {
   // The rows are rebuilt when anything they read changes. The picked fields
   // are the re-render trigger; the context itself is read whole, since the
   // builders ask `store/surface` what is in front the way the shortcuts do.
-  // `trigger` changes identity exactly when a field the builders read does.
+  // `trigger` changes identity exactly when a field the builders read does;
+  // the two lists likewise for the rows that cover every host.
+  const workspaces = useEveryHost((s) => s.workspace);
+  const pending = useEveryHost((s) => s.pendingToolUse);
   const trigger = useAppStore(
     useShallow((s) => [
       s.workspace,
@@ -97,11 +107,18 @@ export function PaletteDialog() {
       s.admin,
     ]),
   );
-  // biome-ignore lint/correctness/useExhaustiveDependencies: trigger is the re-run signal
+  // biome-ignore lint/correctness/useExhaustiveDependencies: trigger, workspaces and pending are the re-run signal
   const items = useMemo<PaletteItem[]>(() => {
     const s = store.getState();
+    const all = useAppStore.getState();
+    const hosts: PaletteHost[] = hostOrder(all.environments).map((id) => {
+      const entry = all.environments[id];
+      return { id, name: entry.kind === "local" ? null : entry.name, s: viewOf(all, id) };
+    });
     const ctx: PaletteContext = {
       s,
+      hosts,
+      show: (hostId) => useAppStore.getState().switchEnvironment(hostId),
       api,
       runs,
       editors,
@@ -112,7 +129,7 @@ export function PaletteDialog() {
         void navigator.clipboard.writeText(text).catch((e) => setLastError(String(e))),
     };
     return pageRows(ctx, page);
-  }, [trigger, page, runs, editors, setLastError, api, store]);
+  }, [trigger, workspaces, pending, page, runs, editors, setLastError, api, store]);
 
   const sections = useMemo(
     () =>

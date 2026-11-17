@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ContextOverview } from "@/api";
 import { useEngine } from "@/api/engine";
-import { useAppStore } from "@/store";
 
-/** One project's context overview, read from the engine the UI is driving and
- *  re-read on every `context:changed` for that project — a write from this
- *  tab, another client or the host's own pipeline all land the same way.
+/** One project's context overview, read from the host the caller is scoped to
+ *  and re-read on every `context:changed` for that project — a write from
+ *  this tab, another client or the host's own pipeline all land the same way.
  *
  *  `overview` is null until the first read lands; `error` is the last failed
  *  read's message. `reload` is for a caller that wants to be sure. */
@@ -17,9 +16,6 @@ export function useContextOverview(projectId: string): {
   const { api, events } = useEngine();
   const [overview, setOverview] = useState<ContextOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Re-read (and re-subscribe) on a switch: both are bound to the transport
-  // that was active when they were made.
-  const environmentId = useAppStore((s) => s.activeEnvironmentId);
   // Every read takes the next number; only the newest one asked may answer.
   // That covers a slow answer for the previous project landing as this
   // one's, and two reads of the same project (the first load, then a
@@ -43,7 +39,7 @@ export function useContextOverview(projectId: string): {
       });
   }, [projectId, api]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: environmentId is the intended re-run trigger, not an unused dep
+  // `reload` and `events` are the scope's host's: another host is a re-read.
   useEffect(() => {
     setOverview(null);
     setError(null);
@@ -63,7 +59,7 @@ export function useContextOverview(projectId: string): {
       latest.current += 1;
       unlisten?.();
     };
-  }, [projectId, environmentId, reload, events]);
+  }, [projectId, reload, events]);
 
   return { overview, error, reload };
 }

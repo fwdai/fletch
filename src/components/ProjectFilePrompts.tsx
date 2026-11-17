@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ProjectFileStatus } from "@/api";
 import { useEngine } from "@/api/engine";
-import { useAppStore } from "@/store";
+import { useAppStore, useOnHost } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { Icon } from "./Icon";
 import { Button } from "./ui/Button";
@@ -11,15 +11,15 @@ import { Button } from "./ui/Button";
 const promptKey = (s: ProjectFileStatus) => `${s.project_id}\n${s.egress.pending.join("\n")}`;
 
 /** Every project's `.fletch/settings.json` status whose file adds hosts the
- *  user has not approved yet, minus the prompts dismissed for this session.
- *  Read once per project on load and again on `project_file:changed`. */
+ *  user has not approved yet, minus the prompts dismissed for this session,
+ *  on the host the calling component is scoped to. Read once per project on
+ *  load and again on `project_file:changed`. */
 export function useProjectFilePrompts(): {
   prompts: ProjectFileStatus[];
   dismiss: (s: ProjectFileStatus) => void;
 } {
   const { api, events } = useEngine();
   const projects = useAppStore((s) => s.workspace?.projects);
-  const environmentId = useAppStore((s) => s.activeEnvironmentId);
   const gate = useGate("projectFile");
   const [statuses, setStatuses] = useState<Record<string, ProjectFileStatus>>({});
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
@@ -30,7 +30,6 @@ export function useProjectFilePrompts(): {
     [projects],
   );
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: environmentId is the intended re-run trigger, not an unused dep
   useEffect(() => {
     setStatuses({});
     if (gate || !idsKey) return;
@@ -46,7 +45,7 @@ export function useProjectFilePrompts(): {
       live = false;
       void unlisten.then((off) => off());
     };
-  }, [idsKey, environmentId, gate, api, events]);
+  }, [idsKey, gate, api, events]);
 
   const prompts = Object.values(statuses).filter(
     (s) => s.egress.pending.length > 0 && !dismissed.has(promptKey(s)),
@@ -66,7 +65,7 @@ export function ProjectFilePrompt({
   onDismiss: () => void;
 }) {
   const projects = useAppStore((s) => s.workspace?.projects);
-  const openProjectSettings = useAppStore((s) => s.openProjectSettings);
+  const onHost = useOnHost();
   const project = projects?.find((p) => p.project_id === status.project_id);
   const name = project?.name ?? "A project";
   const path = status.repo_path ?? project?.path;
@@ -90,7 +89,7 @@ export function ProjectFilePrompt({
             <Button
               variant="primary"
               onClick={() => {
-                openProjectSettings(path, "network");
+                onHost((s) => s.openProjectSettings(path, "network"));
                 onDismiss();
               }}
             >

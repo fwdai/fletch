@@ -8,6 +8,7 @@
 import { type KeyboardEvent, type MouseEvent, useState } from "react";
 import { useEngine } from "@/api/engine";
 import type { WfRun } from "../../api";
+import { HostChip } from "../../components/HostChip";
 import { Icon } from "../../components/Icon";
 import { StepAgentRow } from "../../components/Sidebar/StepAgentRow";
 import { deriveStepChildren } from "../../components/Sidebar/stepChildren";
@@ -185,6 +186,7 @@ export function RunRow({
         </div>
         <div className="agent-sub flex-center">
           <span className="a-task">{firstLine(run.task || "Workflow run")}</span>
+          <HostChip />
           <span className="a-time">{age}</span>
         </div>
       </div>

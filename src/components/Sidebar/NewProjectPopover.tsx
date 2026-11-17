@@ -2,7 +2,7 @@ import { pickFolder } from "@/components/FolderPicker";
 import { Icon, type IconName } from "@/components/Icon";
 import type { NewProjectMode } from "@/components/NewProject";
 import { Scrim } from "@/components/ui/Scrim";
-import { useAppStore } from "@/store";
+import { useAppStore, useHostId } from "@/store";
 import { useGate, useHostEntry } from "@/store/capabilities";
 
 /** Choose how to add a project to the sidebar: open a folder, clone from
@@ -16,6 +16,7 @@ export function NewProjectPopover({
   onChoose: (mode: NewProjectMode) => void;
 }) {
   const addWorkspaceRepo = useAppStore((s) => s.addWorkspaceRepo);
+  const hostId = useHostId();
   const remote = useHostEntry().kind === "remote";
   // A row each, because the three flows need different ops of the host: one
   // can be offered while another says why it cannot run here.
@@ -27,7 +28,7 @@ export function NewProjectPopover({
     // Close first: the picker is a modal on a remote environment, and this
     // popover's scrim has no business sitting under it.
     onClose();
-    const picked = await pickFolder({ title: "Select a git repository" });
+    const picked = await pickFolder({ hostId, title: "Select a git repository" });
     if (picked) await addWorkspaceRepo(picked);
   }
 

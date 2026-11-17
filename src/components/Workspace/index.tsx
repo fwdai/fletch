@@ -51,8 +51,8 @@ export function Workspace() {
   const agent = agents.find((a) => a.id === selectedId) ?? offSidebar;
   if (!workspace) {
     // A paired host that is not reachable has nothing to show and no reason to
-    // pretend it is still loading — the switcher says which host this is, so
-    // this says what is wrong with it. Never a spinner the user waits out.
+    // pretend it is still loading: this says which host it is and what is
+    // wrong with it. Never a spinner the user waits out.
     const offline = environment.kind === "remote" && environment.connection !== "connected";
     return (
       <div className="pane center">
