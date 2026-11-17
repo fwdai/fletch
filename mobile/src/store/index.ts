@@ -34,7 +34,13 @@ import {
 } from "./persist";
 import { forgetPush, pushTab, startPush } from "./push";
 
-export { useConnectedHosts, useEveryHost, useHostKeys, useProjectEntries } from "./everyHost";
+export {
+  useConnectedHosts,
+  useEveryHost,
+  useHostKeys,
+  useProjectEntries,
+  useRunsOnHosts,
+} from "./everyHost";
 export {
   type AgentSource,
   agentOf,

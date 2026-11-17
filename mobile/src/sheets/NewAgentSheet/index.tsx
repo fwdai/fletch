@@ -14,13 +14,14 @@ import { severalHosts, useApp, useHostName, useHostStore } from "../../store";
 import { ProjectPickerSheet } from "../ProjectPickerSheet";
 import { useProjectChoice } from "../useProjectChoice";
 import { RunnerSheet } from "./RunnerSheet";
+import { RunsOn } from "./RunsOn";
 
 type Picker = "project" | "branch" | "runner" | null;
 
 /** Start an agent in a project of any paired host, on the host the sheet acts
- *  on (`useProjectChoice`): the picked project's speaking host. The name,
- *  branches, providers and models are that host's, and the agent is spawned
- *  there. */
+ *  on (`useProjectChoice`): the picked project's speaking host, or the one
+ *  picked under "Runs on". The name, branches, providers and models are that
+ *  host's, and the agent is spawned there. */
 export function NewAgentSheet({
   open,
   onClose,
@@ -121,9 +122,15 @@ export function NewAgentSheet({
   // The chosen agent is one the host cannot start: hold the button rather than
   // let the spawn reach the host and fail there. The selection is left alone —
   // switching it for the user would start a different agent than the one they
-  // picked.
+  // picked. A copy of the project still being made for another host holds it
+  // too: the agent is to start there, not here.
   const providerBlocked = hostProviderBlock(hostProviders, provider);
-  const held = starting || dictating || attachments.uploading || providerBlocked !== null;
+  const held =
+    starting ||
+    dictating ||
+    attachments.uploading ||
+    providerBlocked !== null ||
+    choice.preparing !== null;
   const start = () => {
     if (!hasDraft || held) return;
     setStarting(true);
@@ -200,6 +207,7 @@ export function NewAgentSheet({
           </button>
           .
         </p>
+        <RunsOn choice={choice} />
         <PromptField
           value={prompt}
           onChange={setPrompt}
