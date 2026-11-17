@@ -1440,7 +1440,9 @@
   line-height: 0;
 }
 
-/* Connected indicator on a paired device row. */
+/* Connected indicator on a paired device row. A paired *host*'s row takes
+   its colours from the host dot (`HostDot`), and its size and spacing from
+   here. */
 .set-dev-dot {
   width: 7px;
   height: 7px;
@@ -1452,19 +1454,6 @@
 .set-dev-dot[data-on="1"] {
   background: var(--success);
 }
-/* Same dot for a paired *host*, which has states a device socket does not: a
-   client connection can be mid-dial, or stopped on a reason only the user can
-   clear. */
-.set-dev-dot[data-state="connected"] {
-  background: var(--success);
-}
-.set-dev-dot[data-state="connecting"] {
-  background: var(--warn);
-}
-.set-dev-dot[data-state="error"] {
-  background: var(--danger);
-}
-
 /* ── quick-popover "All settings" footer button ──────────────────────── */
 .sp-allbtn {
   gap: 9px;

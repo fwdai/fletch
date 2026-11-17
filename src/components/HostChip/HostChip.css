@@ -1,4 +1,5 @@
-/* A host's connection dot (`EnvironmentDot`). */
+/* A host's connection dot (`HostDot`), by its tone: grey unless it says
+   otherwise, so a host out of reach reads as inactive. */
 .env-dot {
   width: 7px;
   height: 7px;
@@ -12,7 +13,7 @@
 .env-dot[data-state="connecting"] {
   background: var(--warn);
 }
-.env-dot[data-state="error"] {
+.env-dot[data-state="problem"] {
   background: var(--danger);
 }
 
@@ -30,6 +31,9 @@
 .host-chip .env-dot {
   width: 5px;
   height: 5px;
+}
+.host-chip.inactive {
+  color: var(--fg-3);
 }
 .host-chip-name {
   min-width: 0;
