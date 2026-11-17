@@ -1,5 +1,5 @@
 import { useAppStore, useOnHost } from "@/store";
-import { useHostEntry } from "@/store/capabilities";
+import { useHostWhere } from "@/store/capabilities";
 import { EachHostScope } from "@/store/EngineScope";
 import { BoxEgressPrompt, promptsByAgent } from "./BoxEgressPrompt";
 import { Icon } from "./Icon";
@@ -42,7 +42,7 @@ function HostEgressToasts() {
   const dismiss = useAppStore((s) => s.dismissBoxEgress);
   const agents = useAppStore((s) => s.workspace?.agents);
   const pendingPrompts = useAppStore((s) => s.pendingEgressPrompts);
-  const env = useHostEntry();
+  const where = useHostWhere();
   const onHost = useOnHost();
   const { prompts, dismiss: dismissPrompt } = useProjectFilePrompts();
 
@@ -55,8 +55,6 @@ function HostEgressToasts() {
   const held = promptsByAgent(pendingPrompts);
 
   if (byAgent.size === 0 && prompts.length === 0 && held.size === 0) return null;
-  // A paired host's workspaces are named with the host they run on.
-  const where = env.kind === "remote" ? ` on ${env.name}` : "";
 
   return (
     <>

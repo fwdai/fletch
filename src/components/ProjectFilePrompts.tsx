@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ProjectFileStatus } from "@/api";
 import { useEngine } from "@/api/engine";
 import { useAppStore, useOnHost } from "@/store";
-import { useGate } from "@/store/capabilities";
+import { useGate, useHostWhere } from "@/store/capabilities";
 import { Icon } from "./Icon";
 import { Button } from "./ui/Button";
 
@@ -55,8 +55,8 @@ export function useProjectFilePrompts(): {
 }
 
 /** One project's settings file asks for hosts the user has not approved: say
- *  which project and how many, and lead to the project's settings where they
- *  are listed and approved. Rendered in the box network toast stack. */
+ *  which project (and which machine, for a paired host's) and how many, and
+ *  lead to the project's settings where they are listed and approved. Rendered in the box network toast stack. */
 export function ProjectFilePrompt({
   status,
   onDismiss,
@@ -66,6 +66,7 @@ export function ProjectFilePrompt({
 }) {
   const projects = useAppStore((s) => s.workspace?.projects);
   const onHost = useOnHost();
+  const where = useHostWhere();
   const project = projects?.find((p) => p.project_id === status.project_id);
   const name = project?.name ?? "A project";
   const path = status.repo_path ?? project?.path;
@@ -77,7 +78,7 @@ export function ProjectFilePrompt({
       <div className="update-toast-body">
         <div className="update-toast-text">
           <strong>
-            {name}&rsquo;s settings file asks to allow {n === 1 ? "a host" : `${n} hosts`}
+            {name}&rsquo;s settings file{where} asks to allow {n === 1 ? "a host" : `${n} hosts`}
           </strong>
           <span>
             Its .fletch/settings.json would let box agents reach{" "}

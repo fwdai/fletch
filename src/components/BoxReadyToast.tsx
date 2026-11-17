@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store";
-import { useHostEntry } from "@/store/capabilities";
+import { useHostWhere } from "@/store/capabilities";
 import { EachHostScope } from "@/store/EngineScope";
 import { Icon } from "./Icon";
 import { boxSetup } from "./SettingsScreen/Sandbox/boxSetup";
@@ -34,7 +34,7 @@ function HostBoxReady() {
   const probe = useAppStore((s) => s.boxProbe);
   const image = useAppStore((s) => s.boxImage);
   const tools = useAppStore((s) => s.boxTools);
-  const env = useHostEntry();
+  const where = useHostWhere();
   const [open, setOpen] = useState(false);
   // The image was seen on its way this session; the next "ready" is news. A
   // tools disk rebuilt after a CLI update (busy, image already in) is not:
@@ -63,7 +63,7 @@ function HostBoxReady() {
       <Icon name="cube" />
       <div className="update-toast-body">
         <div className="update-toast-text">
-          <strong>Linux VM is ready{env.kind === "remote" ? ` on ${env.name}` : ""}</strong>
+          <strong>Linux VM is ready{where}</strong>
           <span>New workspaces run in it. The ones you have stay where they are.</span>
         </div>
         <div className="update-toast-actions">

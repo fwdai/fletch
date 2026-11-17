@@ -1,6 +1,6 @@
 import { Button, Modal, ModalBody, ModalFooter } from "@/components/ui";
 import { useAppStore, useEveryHost } from "@/store";
-import { useHostEntry } from "@/store/capabilities";
+import { useHostWhere } from "@/store/capabilities";
 import { EngineScope } from "@/store/EngineScope";
 
 /** Approval prompt for an agent's publish — shown only when the
@@ -42,7 +42,7 @@ export function PublishApproval() {
 function ApprovalPrompt({ more }: { more: number }) {
   const request = useAppStore((s) => s.pendingPublishApprovals[0]);
   const answer = useAppStore((s) => s.answerPublishApproval);
-  const env = useHostEntry();
+  const where = useHostWhere();
   if (!request) return null;
 
   return (
@@ -56,7 +56,7 @@ function ApprovalPrompt({ more }: { more: number }) {
     >
       <ModalBody>
         <p className="text-base">
-          An agent{env.kind === "remote" ? ` on ${env.name}` : ""} wants to{" "}
+          An agent{where} wants to{" "}
           <strong>{request.detail}</strong> using your GitHub identity.
         </p>
         {more > 0 && (

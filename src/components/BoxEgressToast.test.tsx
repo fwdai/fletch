@@ -8,18 +8,34 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn(() => Promise.resolve(undef
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 
-import type { AgentRecord, EgressPrompt, Workspace } from "@/api";
+import type { AgentRecord, EgressPrompt, ProjectFileStatus, Workspace } from "@/api";
 import type { Transport } from "@/api/transport";
 import { hostStore, stopHost, useAppStore } from "@/store";
 import { GATES } from "@/store/gates";
 import { fireEvent, render, screen } from "@/test/render";
 import { BoxEgressToast } from "./BoxEgressToast";
 
+/** A project whose settings file asks for a host nobody has approved. */
+const asking: ProjectFileStatus = {
+  project_id: "p1",
+  repo_path: "/code/fletch",
+  error: null,
+  files: [],
+  egress: { applied: [], pending: ["example.com"], disabled: [] },
+  seed: {} as ProjectFileStatus["seed"],
+};
+/** Either host with that project in its list. */
+const withProject = {
+  repos: [],
+  projects: [{ project_id: "p1", name: "fletch", path: "/code/fletch" }],
+  agents: [],
+} as unknown as Workspace;
+
 const calls: { op: string; args?: Record<string, unknown> }[] = [];
 const studio: Transport = {
   call: <T,>(op: string, args?: Record<string, unknown>) => {
     calls.push({ op, args });
-    return Promise.resolve(undefined as T);
+    return Promise.resolve((op === "project_file_status" ? asking : undefined) as T);
   },
   on: () => Promise.resolve(() => {}),
 };
@@ -35,7 +51,8 @@ const held: EgressPrompt = {
 
 beforeEach(() => {
   calls.length = 0;
-  invoke.mockClear();
+  invoke.mockReset();
+  invoke.mockImplementation(() => Promise.resolve(undefined));
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.getState().upsertEnvironment({
     id: "studio",
@@ -44,7 +61,12 @@ beforeEach(() => {
     connection: "connected",
     transport: studio,
     // A host that answers the posture's ops.
-    protocol: { version: 3, ops: [...GATES.egressPrompt.op], events: [], features: [] },
+    protocol: {
+      version: 3,
+      ops: [...GATES.egressPrompt.op, ...GATES.projectFile.op],
+      events: [],
+      features: [],
+    },
   });
 });
 
@@ -72,5 +94,19 @@ describe("BoxEgressToast", () => {
     expect(calls).toEqual([{ op: "box_egress_answer", args: { id: "e1", answer: "project" } }]);
     expect(invoke).not.toHaveBeenCalledWith("box_egress_answer", expect.anything());
     expect(hostStore("studio").getState().pendingEgressPrompts).toEqual([]);
+  });
+
+  it("tells two hosts' settings file prompts for one project apart", async () => {
+    invoke.mockImplementation(((op: string) =>
+      Promise.resolve(op === "project_file_status" ? asking : undefined)) as typeof invoke);
+    useAppStore.setState({ workspace: withProject });
+    hostStore("studio").setState({ workspace: withProject });
+
+    render(<BoxEgressToast />);
+
+    expect(await screen.findByText("fletch\u2019s settings file asks to allow a host")).toBeTruthy();
+    expect(
+      await screen.findByText("fletch\u2019s settings file on Studio asks to allow a host"),
+    ).toBeTruthy();
   });
 });

@@ -194,6 +194,15 @@ export function useHostEntry(): EnvironmentEntry {
   return useAppStore((s) => entryOf(s, hostId));
 }
 
+/** How a notice says which machine it is about, on the host the calling
+ *  component is scoped to: " on Studio" for a paired host, nothing for This
+ *  Mac. Every host's notices share the window, so one about a paired host's
+ *  workspace or project names the host. */
+export function useHostWhere(): string {
+  const env = useHostEntry();
+  return env.kind === "remote" ? ` on ${env.name}` : "";
+}
+
 /** Why `gate` is closed on the host the calling component is scoped to, or
  *  null when it is open — the one thing a component needs to decide between
  *  rendering a control, rendering it disabled, or leaving it out. */
