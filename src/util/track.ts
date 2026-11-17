@@ -12,7 +12,7 @@
 // needs to check the opt-out flag. Properties stay categorical — enums, counts,
 // booleans; never paths, repo/branch names, prompts, or raw error strings.
 
-import { activeEngine } from "@/api/engine";
+import { localEngine } from "@/api/engine";
 import type { ConnectFailureReason } from "./connectFailure";
 
 /** The onboarding overlay's two screens (mirrors `Onboarding/index.tsx`). */
@@ -129,5 +129,5 @@ export type TrackedEvent = keyof EventMap;
 /** Record a product event. Fire-and-forget: telemetry must never break a user
  *  flow, so a failed IPC is swallowed. */
 export function track<E extends TrackedEvent>(event: E, props: EventMap[E]): void {
-  void activeEngine.api.trackEvent(event, props).catch(() => {});
+  void localEngine.api.trackEvent(event, props).catch(() => {});
 }

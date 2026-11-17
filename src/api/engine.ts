@@ -82,7 +82,7 @@ export function dropEngine(hostId: EnvironmentId): void {
 
 /** The engine of the environment on screen, resolved on every use — for the
  *  few callers outside React and outside the store that act on whatever the
- *  user is looking at (a global shortcut, telemetry, a provider sign-in). */
+ *  user is looking at (a global shortcut). */
 export const activeEngine: Engine = {
   get hostId() {
     return activeEnvironmentId();

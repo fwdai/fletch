@@ -1,4 +1,4 @@
-import { EnvironmentDot } from "@/components/Sidebar/EnvironmentSwitcher/EnvironmentDot";
+import { EnvironmentDot } from "@/components/HostChip/EnvironmentDot";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { useAppStore } from "@/store";
 import { connectionLabel } from "@/store/capabilities";

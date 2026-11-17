@@ -9,7 +9,7 @@
 // a login is opened, and keeping them here makes the feature self-contained.
 
 import type { ProviderLoginExitEvent } from "@/api";
-import { activeEngine } from "@/api/engine";
+import { localEngine } from "@/api/engine";
 import { DEFAULT_ACCOUNT_ID } from "@/api/types/providers";
 import { createPtyChannel, type OutputHandler } from "@/pty/channel";
 import { decodeBase64 } from "@/pty/decode";
@@ -89,8 +89,8 @@ let taps: Promise<void> | undefined;
  *  next sign-in retries instead of inheriting the rejected promise. */
 function ensureTaps(): Promise<void> {
   taps ??= Promise.all([
-    activeEngine.events.onProviderLoginOutput((e) => output.push(e.id, decodeBase64(e.bytes))),
-    activeEngine.events.onProviderLoginExit((e) => {
+    localEngine.events.onProviderLoginOutput((e) => output.push(e.id, decodeBase64(e.bytes))),
+    localEngine.events.onProviderLoginExit((e) => {
       // An exit during a Close is the flow being torn down — the kill landing,
       // or a natural exit racing it. It is not an outcome to show, and it must
       // not reach whatever sign-in the user starts next; it only tells the
@@ -170,7 +170,7 @@ async function openPty(id: string, cols: number, rows: number): Promise<void> {
     // exit that already came.
     spawned.add(id);
     const { providerId, accountId } = splitKey(id);
-    await activeEngine.api.openProviderLogin(providerId, cols, rows, accountId);
+    await localEngine.api.openProviderLogin(providerId, cols, rows, accountId);
   } catch (err) {
     // Nothing is attached, so report it through the same channel an exit uses.
     spawned.delete(id);
@@ -192,7 +192,7 @@ export function attachLogin(id: string, cols: number, rows: number) {
 
 export async function writeLogin(id: string, data: string) {
   await opening.get(id);
-  await activeEngine.api.writeProviderLogin(id, data).catch((err) => {
+  await localEngine.api.writeProviderLogin(id, data).catch((err) => {
     console.error("writeProviderLogin failed", err);
   });
 }
@@ -200,7 +200,7 @@ export async function writeLogin(id: string, data: string) {
 export async function resizeLogin(id: string, cols: number, rows: number) {
   await opening.get(id);
   // A resize that lands after the flow exited is expected, not an error.
-  await activeEngine.api.resizeProviderLogin(id, cols, rows).catch(() => {});
+  await localEngine.api.resizeProviderLogin(id, cols, rows).catch(() => {});
 }
 
 /** Kill a provider's sign-in and forget it — the explicit Close only. The next
@@ -231,7 +231,7 @@ export function closeLogin(id: string): Promise<void> {
     await open;
     // Only a PTY that actually came up owes us an exit event.
     const expectExit = spawned.delete(id);
-    await activeEngine.api.closeProviderLogin(id).catch((err) => {
+    await localEngine.api.closeProviderLogin(id).catch((err) => {
       console.error("closeProviderLogin failed", err);
     });
     if (expectExit) {
