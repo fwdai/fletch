@@ -11,7 +11,6 @@
 
 import { type Engine, engineOf } from "@/api/engine";
 import { preparingLabel, runTargetOptions } from "@/components/Composer/RunTargetPicker/options";
-import { resolveBaseBranch } from "@/helpers";
 import type { DraftAgent } from "./drafts";
 import type { EnvironmentId } from "./environments";
 import { otherHosts } from "./otherHosts";
@@ -90,13 +89,10 @@ export async function carryDraft(
     there.setState({ workspace });
     const repoPath = workspace.projects.find((p) => p.project_id === definition.project_id)?.path;
     if (!repoPath) throw new Error(`${host.name} has no copy of ${definition.name}.`);
-    // The copy is cloned from the remote, so a branch only the draft's host
-    // has is not there; forking another one instead would start the work
-    // somewhere the user did not pick.
-    const base = await resolveBaseBranch(api, repoPath, draft.base);
-    if (base !== draft.base) {
-      throw new Error(`${draft.base} isn't on ${host.name}. Push it, or pick a branch it has.`);
-    }
+    // The draft's base goes as it is. The host forks from the branch as its
+    // remote has it, and fails the spawn for one that was never pushed
+    // rather than start somewhere else; a branch list read here would only
+    // name the copy's local branches, which is one.
 
     await there
       .getState()

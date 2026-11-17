@@ -259,16 +259,14 @@ describe("a draft run on a paired host", () => {
     expect(s.activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
   });
 
-  it("refuses a base branch the copy does not have rather than forking another", async () => {
-    openDraft({ ...DRAFT, base: "wip/local-only", runsOn: "studio" });
+  it("hands the host the draft's base as picked, whatever branches its copy lists", async () => {
+    // A fresh copy has one local branch; the host forks from the remote's.
+    openDraft({ ...DRAFT, base: "develop", runsOn: "studio" });
 
-    await expect(spawnFromDraft()).resolves.toBe(false);
+    await expect(spawnFromDraft()).resolves.toBe(true);
 
-    expect(studio.ops()).not.toContain("spawn_agent");
-    expect(useAppStore.getState().lastError).toBe(
-      "wip/local-only isn't on Studio. Push it, or pick a branch it has.",
-    );
-    expect(useAppStore.getState().drafts.map((d) => d.id)).toEqual(["d1"]);
+    expect(argsOf(studio, "spawn_agent")).toMatchObject({ forkBase: "develop" });
+    expect(studio.ops()).not.toContain("list_repo_branches");
   });
 
   it("sends nothing of This Mac's own: no account, workspace type or folder", async () => {
