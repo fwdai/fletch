@@ -55,8 +55,10 @@ describe("with one host", () => {
   test("the chip names the host and whether it is reachable", async () => {
     expect(chip(host)?.textContent).toContain("Mac mini");
     expect(chip(host)?.querySelector(".dot.running")).not.toBeNull();
+    // The chip opens the host list; it is amber for anything short of
+    // connected, and never red.
     await act(async () => hostStoreOf(MINI).setState({ connection: "error" }));
-    expect(chip(host)?.querySelector(".dot.error")).not.toBeNull();
+    expect(chip(host)?.querySelector(".dot.waiting")).not.toBeNull();
     expect(menu(host)).toBeNull();
   });
 
@@ -120,8 +122,15 @@ describe("with several hosts", () => {
     const studio = () => hostRows(host)[1];
     await act(async () => hostStoreOf(STUDIO).setState({ connection: "connected" }));
     expect(studio().querySelector(".dot.running")).not.toBeNull();
-    await act(async () => hostStoreOf(STUDIO).setState({ connection: "error" }));
+    expect(studio().classList).not.toContain("inactive");
+    // Out of reach, with the client retrying on its own: greyed, not red.
+    await act(async () => hostStoreOf(STUDIO).setState({ connection: "error", retrying: true }));
+    expect(studio().querySelector(".dot.stopped")).not.toBeNull();
+    expect(studio().classList).toContain("inactive");
+    // Stopped on something only the user can clear: red.
+    await act(async () => hostStoreOf(STUDIO).setState({ connection: "error", retrying: false }));
     expect(studio().querySelector(".dot.error")).not.toBeNull();
+    expect(studio().classList).not.toContain("inactive");
     expect(hostRows(host)[0].querySelector(".dot.running")).not.toBeNull();
   });
 

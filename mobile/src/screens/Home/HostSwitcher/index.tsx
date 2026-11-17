@@ -1,19 +1,21 @@
 import { Icon } from "@desktop/components/Icon";
 import { useState } from "react";
-import { connectionDot } from "../../../lib/connection";
-import { severalHosts, useApp, useEveryHost, useHostName, useHostStore } from "../../../store";
+import { severalHosts, useApp, useEveryHost, useHostName } from "../../../store";
 import { HostMenu } from "./HostMenu";
 
-/** What the chip says: the one paired host's name and whether it is reachable,
- *  or how many hosts there are and whether every one of them is. */
+/** What the chip says: the one paired host's name, or how many hosts there
+ *  are, and whether every one of them is connected. It is the way to the host
+ *  list, not a host, so anything short of that is amber: which host is out of
+ *  reach, and which has a problem, is the list's to say. */
 function useChip(): { dot: string; label: string } {
   const several = useApp(severalHosts);
   const name = useHostName();
-  const connection = useHostStore((s) => s.connection);
   const connections = useEveryHost((s) => s.connection);
-  if (!several) return { dot: connectionDot(connection), label: name ?? "Host" };
   const allUp = connections.every((c) => c === "connected");
-  return { dot: allUp ? "running" : "waiting", label: `${connections.length} hosts` };
+  return {
+    dot: allUp ? "running" : "waiting",
+    label: several ? `${connections.length} hosts` : (name ?? "Host"),
+  };
 }
 
 /** The Home header's host chip, opening a dropdown of every paired host. It

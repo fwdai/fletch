@@ -90,6 +90,9 @@
   padding-top: 10px;
   padding-bottom: 10px;
 }
+.host-menu .row.inactive .lbl {
+  color: var(--fg-3);
+}
 .hm-mark {
   width: 16px;
   display: grid;

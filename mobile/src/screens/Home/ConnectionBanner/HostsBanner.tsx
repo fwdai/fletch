@@ -1,4 +1,5 @@
 import { Notice } from "../../../components/ui/Notice";
+import { isProblem } from "../../../lib/connection";
 import { ignore } from "../../../lib/ignore";
 import type { ConnectionState } from "../../../remote";
 import { hostStoreOf, useApp, useEveryHost } from "../../../store";
@@ -34,7 +35,7 @@ export function HostsBanner() {
   };
   return (
     <Notice
-      tone={down.every((d) => dialling(d.connection) || d.retrying) ? "warn" : "error"}
+      tone={down.some((d) => isProblem(d.connection, d.retrying)) ? "error" : "warn"}
       icon={
         busy ? (
           <span className="working-dots">
