@@ -43,7 +43,6 @@ import { forgetPush, pushTab, startPush, syncPush } from "./push";
 export {
   type AgentSource,
   agentOf,
-  createHostStore,
   type HostState,
   type HostStore,
   hostStoreOf,
@@ -272,7 +271,6 @@ async function adopt(set: Set, get: Get, link: HostLink, host: HostInfo): Promis
   const target = client.target;
   const hostKey = client.hostKey ?? get().hostKey;
   const relay = target?.relay ?? null;
-  const via = client.via;
   const entry =
     target && hostKey
       ? {
@@ -286,7 +284,7 @@ async function adopt(set: Set, get: Get, link: HostLink, host: HostInfo): Promis
   // The remembered clone destination is per host, so it can only be
   // resolved once the handshake says which host this is.
   const lastDestParent = await loadDestParent(hostKey);
-  storeOfLink(link).setState({ hostInfo: host, relay, via, lastDestParent });
+  storeOfLink(link).setState({ lastDestParent });
   set({
     hostKey,
     nav: [homeItem()],
@@ -453,13 +451,10 @@ export const appStore = createStore<AppState>()((set, get) => {
       const hosts = mockEnabled() ? [] : (saved.hosts ?? []);
       const active = hosts.find((h) => h.hostKey === saved.activeHostKey) ?? hosts[0] ?? null;
       const hostKey = active?.hostKey ?? null;
-      // What each host's store is seeded with from disk, before `ready`: a
-      // queued notification tap may open an agent on any of them.
+      // The one thing about a host its store cannot learn from the host: where
+      // its last clone landed, which only the disk remembers.
       for (const h of hosts) {
-        hostStoreOf(h.hostKey).setState({
-          relay: h.relay ?? null,
-          lastDestParent: saved.destParents?.[h.hostKey] ?? null,
-        });
+        hostStoreOf(h.hostKey).setState({ lastDestParent: saved.destParents?.[h.hostKey] ?? null });
       }
       set({
         ready: true,

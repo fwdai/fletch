@@ -47,11 +47,6 @@ describe("connection and snapshot", () => {
     expect(host().workspace?.agents).toHaveLength(4);
   });
 
-  it("mirrors which path the connection is on", () => {
-    // The mock host has no network under it, so it is the near path.
-    expect(host().via).toBe("lan");
-  });
-
   it("covers a running, a waiting, a finished and an errored agent", () => {
     const byId = Object.fromEntries((host().workspace?.agents ?? []).map((a) => [a.id, a]));
     expect(byId.arabia.status).toBe("running");
@@ -83,7 +78,6 @@ describe("relay setting", () => {
 
   it("follows the relay the host answers, with no setting of its own", () => {
     // The mock was dialled with no relay; the handshake supplied it.
-    expect(host().relay).toBe(fixtureRelay);
     expect(client.target?.relay).toBe(fixtureRelay);
     expect("setRelay" in app()).toBe(false);
     expect("setRelay" in host()).toBe(false);

@@ -40,7 +40,6 @@ import {
   type HostProtocol,
   hostSupports,
   type PairStep,
-  type Via,
 } from "../remote";
 import { type AutopilotMap, autopilotFromSnapshot, checkoutKey, switchesOf } from "./autopilot";
 import { type ChatsSlice, createChatLists, createChatsSlice } from "./chats";
@@ -77,12 +76,6 @@ export interface HostState extends ChatsSlice, ProposalsSlice, ProviderAccountsS
    *  host from before the field) or nothing is connected. Read through
    *  `hostSupports`, never compared against `hostInfo.appVersion`. */
   protocol: HostProtocol | null;
-  /** The host's relay base URL, when it has one; the fallback path. Set on
-   *  the Mac only — this mirrors what its last handshake answered. */
-  relay: string | null;
-  /** Which path the live connection took — mirrored from the client for the
-   *  Host sheet, and null when there is no connection. */
-  via: Via | null;
   /** Where the last clone landed on this host, so the next one is offered the
    *  same folder. Hydrated from the persist layer when the host is known. */
   lastDestParent: string | null;
@@ -164,9 +157,6 @@ export interface HostState extends ChatsSlice, ProposalsSlice, ProviderAccountsS
    *  "Compatibility"). Everything on the v1 allowlist is always true, so only a
    *  surface added after v2 was fixed needs to ask. */
   hostSupports(op: string): boolean;
-  /** Empty everything held of the host (`hostScopedState`), and refuse every
-   *  PR read still out. */
-  clear(): void;
   /** Take the snapshot a handshake answered with, then re-read what it does
    *  not carry and what the socket may have missed while it was down — the
    *  screens open on this host included. Every handshake of the link, whichever
@@ -376,49 +366,6 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Everything the store holds of its host, emptied. Fresh objects every call:
- *  they are about to be written into. */
-const hostScopedState = (): Partial<HostState> => ({
-  workspace: null,
-  hostInfo: null,
-  protocol: null,
-  via: null,
-  lastDestParent: null,
-  // Prompts belong to the host that raised them; it is no longer waiting on
-  // this screen for an answer.
-  pendingPublishApprovals: [],
-  pendingToolUse: {},
-  logs: {},
-  logLoads: {},
-  histories: {},
-  sending: {},
-  turnStartedAt: {},
-  backgroundTasks: {},
-  liveSeq: {},
-  gitStates: {},
-  shortstats: {},
-  prStates: {},
-  prChecks: {},
-  prComments: {},
-  verificationReports: {},
-  shipActivity: {},
-  autoArchived: null,
-  delegations: {},
-  autopilot: {},
-  autopilotSwitches: null,
-  trees: {},
-  // The chats belong to the host that holds their checkouts, and the ghosts
-  // to the boards those chats propose onto — as do the boards themselves.
-  chats: {},
-  proposals: {},
-  boards: {},
-  // …and the accounts and their meters are that host's logins.
-  providerAccounts: {},
-  providerLimits: {},
-  providerAccountsLoad: null,
-  switchingAccount: {},
-});
-
 /** Wait for a freshly spawned agent to leave `spawning` before the first
  *  message is sent — the spawn flow in docs/remote-protocol.md. */
 function waitForSpawn(get: () => HostState, agentId: string, timeoutMs = 30_000) {
@@ -566,8 +513,6 @@ export function createHostStore(link: HostLink): HostStore {
     dialStep: null,
     hostInfo: null,
     protocol: null,
-    relay: null,
-    via: null,
     lastDestParent: null,
 
     workspace: null,
@@ -602,11 +547,6 @@ export function createHostStore(link: HostLink): HostStore {
 
     hostSupports(op) {
       return hostSupports(get().protocol, op);
-    },
-
-    clear() {
-      prWrites.fence();
-      set(hostScopedState());
     },
 
     applyHandshake(snapshot) {
@@ -1291,11 +1231,7 @@ export function createHostStore(link: HostLink): HostStore {
     chatLists,
     prWrites,
   });
-  client.onSnapshot((snapshot) => {
-    // The client has folded the host's relay into its target.
-    store.setState({ relay: client.target?.relay ?? null });
-    store.getState().applyHandshake(snapshot);
-  });
+  client.onSnapshot((snapshot) => store.getState().applyHandshake(snapshot));
   client.onState((state, error) => {
     store.setState({
       connection: state,
@@ -1303,7 +1239,6 @@ export function createHostStore(link: HostLink): HostStore {
       retrying: client.retrying,
       hostInfo: client.host,
       protocol: client.protocol,
-      via: client.via,
     });
   });
   return store;

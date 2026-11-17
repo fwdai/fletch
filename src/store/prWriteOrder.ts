@@ -54,8 +54,8 @@ export interface PrWriteOrder {
    *  still be accepted afterwards and overwrite it. */
   stamp: (slice: PrSlice, key: string) => void;
   /** Refuse every write issued so far, for every key — for a store taking its
-   *  host up afresh (the phone's, on every handshake and when it is switched
-   *  back to), where an answer still in flight was asked of the socket before.
+   *  host up afresh (the phone's, on every handshake), where an answer still in
+   *  flight was asked of the socket before.
    *  Per-key marks cannot do this: a key never stamped since would take it.
    *
    *  Nothing issued afterwards is affected: the counter keeps rising, so the

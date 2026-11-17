@@ -9,8 +9,8 @@ import type { GitState } from "@desktop/api/types/git";
 import type { PrState } from "@desktop/api/types/pr";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type HostLink, linkOf, pairingLink } from "../src/host";
-import { DEFAULT_PORT, type HostProtocol } from "../src/remote";
+import { dropLink, type HostLink, linkOf, pairingLink } from "../src/host";
+import { DEFAULT_PORT, type HostInfo, type HostProtocol } from "../src/remote";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { type HostStore, hostStoreOf, storeOfLink } from "../src/store";
 import { deferred } from "./support";
@@ -24,6 +24,8 @@ const PROTOCOL: HostProtocol = {
   events: [],
   features: [],
 };
+
+const HOST: HostInfo = { name: "Studio Mac", appVersion: "0.7.23", os: "macos" };
 
 /** Two hosts' stores, each answering for its own host. */
 function twoHosts(): [HostStore, HostLink, HostStore, HostLink] {
@@ -86,12 +88,14 @@ describe("two hosts with the same agent id", () => {
     expect(storeB.getState().logs[AGENT]).toBeUndefined();
   });
 
-  it("clears one without touching the other", () => {
+  it("goes with its host's link, leaving the other's alone", () => {
     const [storeA, , storeB] = twoHosts();
     storeA.setState({ workspace: workspace("a") });
     storeB.setState({ workspace: workspace("b") });
-    storeB.getState().clear();
-    expect(storeB.getState().workspace).toBeNull();
+    dropLink("stores-host-b");
+    // The host's next link is a fresh one, and so is its store.
+    expect(hostStoreOf("stores-host-b")).not.toBe(storeB);
+    expect(hostStoreOf("stores-host-b").getState().workspace).toBeNull();
     expect(storeA.getState().workspace).toEqual(workspace("a"));
   });
 });
@@ -119,8 +123,8 @@ describe("the order of one host's reads is its own", () => {
     vi.spyOn(a.api, "getPrLive").mockReturnValue(live.promise as never);
 
     const read = storeA.getState().loadPrLive(AGENT);
-    // Clearing a store refuses every PR read it has out — its own.
-    storeB.getState().clear();
+    // A handshake refuses every PR read its store has out — its own.
+    storeB.getState().applyHandshake({ host: HOST, workspace: workspace("b"), protocol: PROTOCOL });
     live.resolve({ state: pr("from a"), checks: null });
     await read;
     expect(storeA.getState().prStates[AGENT]).toEqual(pr("from a"));
