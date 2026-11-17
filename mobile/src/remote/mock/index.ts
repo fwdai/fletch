@@ -54,6 +54,7 @@ export interface MockHostSpec {
   host?: HostInfo;
   workspace?: Workspace;
   records?: Record<string, SessionRecord[]>;
+  turns?: Record<string, UserTurn[]>;
 }
 
 /** The hosts given an identity of their own (`registerMockHost`), by key. */
@@ -152,7 +153,7 @@ export class MockHost {
     this.state = {
       workspace: structuredClone(spec.workspace ?? fx.workspace),
       records: structuredClone(spec.records ?? fx.records),
-      turns: structuredClone(fx.userTurns),
+      turns: structuredClone(spec.turns ?? fx.userTurns),
       liveTurns: {},
       liveSeq: {},
       pendingToolUse: { pamukkale: fx.PENDING_REQUEST_ID },

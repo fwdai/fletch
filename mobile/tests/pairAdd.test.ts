@@ -11,6 +11,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
+import { linkOf } from "../src/host";
 import type { HostTarget } from "../src/remote";
 import { PairScreen } from "../src/screens/Pair";
 import { appStore, hostOnScreen } from "../src/store";
@@ -27,7 +28,7 @@ const LINK: HostTarget = {
 };
 
 describe("a link that launched the app over a paired host", () => {
-  it("pairs with the link instead of dialling the saved host, as an addition", async () => {
+  it("pairs with the link as an addition, the saved host dialled on a link of its own", async () => {
     localStorage.setItem(
       "fletch-mobile-settings",
       JSON.stringify({
@@ -59,10 +60,14 @@ describe("a link that launched the app over a paired host", () => {
     expect(targets, "held until init has read what is on disk").toEqual([]);
     await app().init();
 
-    // The link, once — dialling the saved host too would supersede it and burn
-    // its single-use code.
+    // The link, once: a second pairing would supersede it and burn its
+    // single-use code.
     expect(targets).toEqual([LINK]);
     expect(confirm).not.toHaveBeenCalled();
+    // The saved host is another host, on another link: it is dialled as on any
+    // launch, and the pairing never touches it.
+    await vi.waitFor(() => expect(linkOf(PAIRED).client.state).toBe("connected"));
+    expect(linkOf(PAIRED).client.target?.hostKey).toBe(PAIRED);
     // The saved host stays paired, and the Pair screen shows the link as an
     // addition over it.
     expect(app().hostKey).toBe(PAIRED);
