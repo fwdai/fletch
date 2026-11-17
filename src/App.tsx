@@ -99,11 +99,15 @@ function AppShell() {
   }, [unseenCount]);
 
   // A host coming back on screen shows the agent it had selected, so whatever
-  // that agent finished meanwhile is seen. `markResultsSeen` is the scope's
-  // own, so this runs for the host that just came on screen.
+  // that agent finished meanwhile is seen — unless a screen that keeps the
+  // selection (Settings, Usage, a project screen, History) is covering its
+  // chat, in which case it is seen when that screen closes. `markResultsSeen`
+  // is the scope's own, so this runs for the host that just came on screen.
+  const chatCovered =
+    settingsScreenOpen || usageScreenOpen || projectRepoPath !== null || historyOpen;
   useEffect(() => {
-    if (selectedAgentId) markResultsSeen(selectedAgentId);
-  }, [selectedAgentId, markResultsSeen]);
+    if (selectedAgentId && !chatCovered) markResultsSeen(selectedAgentId);
+  }, [selectedAgentId, chatCovered, markResultsSeen]);
 
   // All git / GitHub polling lives in one place.
   useGitSync();
