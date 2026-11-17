@@ -7,7 +7,7 @@ import { type HostLink, linkOf, pairingLink } from "../host";
 import { ignore } from "../lib/ignore";
 import { type HostInfo, type HostTarget, mockEnabled, type PairStep } from "../remote";
 import { storeOfLink } from "./host";
-import type { AppState } from "./index";
+import { type AppState, dial } from "./index";
 import { homeItem } from "./nav";
 import { loadDestParent, saveHost, updateHost, upsertHost } from "./persist";
 import { syncPush } from "./push";
@@ -70,7 +70,8 @@ let queuedLink: HostTarget | null = null;
 
 /** The link of the pairing the Pair screen shows: the one `connect` last
  *  dialled, until it lands (`adopt`) or is called off (`callOffPairing`). A
- *  failed one stays, in case its client is still retrying. */
+ *  failed one stays, in case its client is still retrying — unless it is a
+ *  paired host's link, which is put back on its saved record instead. */
 let pairing: HostLink | null = null;
 
 /** How many `connect`s have started: one that a later one replaced compares
@@ -179,12 +180,21 @@ export function watch(set: Set, get: Get, link: HostLink): void {
   });
 }
 
-/** Stop the pairing the Pair screen shows if it is still running — unless its
- *  link is a paired host's, which stays connected like every other. */
-export function callOffPairing(get: Get): void {
+/** The saved record of the paired host `link` belongs to, if it is one's. */
+const savedOf = (get: Get, link: HostLink) => get().hosts.find((h) => h.hostKey === link.hostKey);
+
+/** Stop the pairing the Pair screen shows if it is still running. A paired
+ *  host's own link is not stopped but put back on its saved record, dialled
+ *  again from it whatever it is doing: the pairing left its own address and
+ *  code on the client, which every later reconnect would send again, and a
+ *  pairing still running there would otherwise land and take over the screen. */
+export function callOffPairing(set: Set, get: Get): void {
   const link = pairing;
   pairing = null;
-  if (link && !get().hosts.some((h) => h.hostKey === link.hostKey)) link.client.disconnect();
+  if (!link) return;
+  const saved = savedOf(get, link);
+  if (saved) void dial(set, get, saved, true).catch(ignore);
+  else link.client.disconnect();
 }
 
 export function createPairingSlice(set: Set, get: Get): PairingSlice {
@@ -202,7 +212,7 @@ export function createPairingSlice(set: Set, get: Get): PairingSlice {
       // One pairing at a time. The one this replaces is stopped: its client may
       // still be retrying, and a retry that landed later would take its host's
       // link over from this one's (`pairingLink`) or put it on screen.
-      if (pairing !== link) callOffPairing(get);
+      if (pairing !== link) callOffPairing(set, get);
       pairing = link;
       const attempt = ++attempts;
       const current = () => attempt === attempts;
@@ -218,7 +228,14 @@ export function createPairingSlice(set: Set, get: Get): PairingSlice {
         const snapshot = await link.client.connect(target);
         await adopt(set, get, link, snapshot.host);
       } catch (e) {
-        if (current()) set({ pairError: message(e) });
+        // Only while this pairing still has the Pair screen: one called off
+        // (`callOffPairing`) or replaced has nothing more to tell it.
+        if (current() && link === pairing) {
+          set({ pairError: message(e) });
+          // A paired host is not left on a failed pairing's dead code: it is
+          // put back on its saved record, and connects again with no tap.
+          if (savedOf(get, link)) callOffPairing(set, get);
+        }
         throw e;
       } finally {
         // Cleared here and nowhere else: everything the user is waiting for has
@@ -266,7 +283,7 @@ export function createPairingSlice(set: Set, get: Get): PairingSlice {
 
     cancelAddHost() {
       // Back to the host the Pair screen was opened over, connected all along.
-      callOffPairing(get);
+      callOffPairing(set, get);
       set({ addingHost: false, pairTarget: null, pairError: null });
     },
   };

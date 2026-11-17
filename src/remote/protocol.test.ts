@@ -14,6 +14,7 @@ import {
   CLOSE_HOST_OFFLINE,
   CLOSE_REASONS,
   CLOSE_RELAY_THROTTLED,
+  CLOSE_REMOTE_DISABLED,
   CLOSE_TOO_MANY_DEVICES,
   CLOSE_UNAUTHENTICATED,
   CONNECTION_LOST,
@@ -24,6 +25,7 @@ import {
   type HostProtocol,
   type HostTarget,
   hostSupports,
+  PAIRING_CODE_REFUSED,
   type PairStep,
   V2_DEFAULT_OPS,
 } from "./types";
@@ -45,8 +47,11 @@ function fakeSocket(hostKey = HOST_KEY, unreachable: Record<string, "reject" | "
   const urls: string[] = [];
   const budgets: (number | undefined)[] = [];
   let handlers: SocketHandlers | null = null;
+  let closes = 0;
   return {
     sent,
+    /** How many times the client closed a socket it opened. */
+    closes: () => closes,
     /** The expected host key handed to the factory on each attempt. */
     asked,
     /** Every URL dialled, in order. */
@@ -84,7 +89,9 @@ function fakeSocket(hostKey = HOST_KEY, unreachable: Record<string, "reject" | "
         send: (text) => {
           sent.push(JSON.parse(text));
         },
-        close: () => {},
+        close: () => {
+          closes += 1;
+        },
         // The Rust transport draws and keeps the nonce; this stands in for it.
         pairCommit: async () => "commit-1",
         pairCode: async (hostNonce: string) => ({
@@ -94,6 +101,8 @@ function fakeSocket(hostKey = HOST_KEY, unreachable: Record<string, "reject" | "
       };
     },
     reply: (frame: unknown) => handlers?.onMessage(JSON.stringify(frame)),
+    /** Deliver `text` as one decrypted frame, whatever it holds. */
+    replyText: (text: string) => handlers?.onMessage(text),
     hangup: (code: number) => handlers?.onClose(code),
   };
 }
@@ -316,6 +325,25 @@ describe("envelope", () => {
     await expect(call).rejects.toThrow("unknown op");
   });
 
+  it("refuses a call until the handshake has finished, and sends nothing for it", async () => {
+    const fake = fakeSocket();
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    // The socket is open and `hello` is out, unanswered: the host would close
+    // on anything else said now.
+    expect(client.state).toBe("connecting");
+    await expect(client.call("get_workspace")).rejects.toThrow("not connected");
+    expect(fake.sent).toHaveLength(1);
+
+    fake.reply(helloOk(fake.sent[0].id as string));
+    await connected;
+    const read = client.call<null>("get_workspace");
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(2));
+    fake.reply({ id: fake.sent[1].id, ok: true, result: null });
+    await expect(read).resolves.toBeNull();
+  });
+
   it("pins the host key on first contact when the target had none", async () => {
     const fake = fakeSocket();
     const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
@@ -479,6 +507,57 @@ describe("connection lifecycle", () => {
     expect(shown).not.toBe("");
   });
 
+  /** The relay refuses a device by accepting the socket and closing it at
+   *  once, which the transport meets mid-handshake and reports with the code. */
+  it.each([
+    ["the peer closed during the handshake (code 4404)", "Your Mac is offline", true],
+    [
+      "cannot reach wss://relay.test/v1/device/abc: the peer closed during the handshake (code 4429)",
+      "This Mac already has its 8 remote devices connected",
+      true,
+    ],
+    [
+      "the peer closed during the handshake (code 4003)",
+      CLOSE_REASONS[CLOSE_UNAUTHENTICATED],
+      false,
+    ],
+  ])("reads %j as the close it names", async (raw, shown, retried) => {
+    const seen: (string | undefined)[] = [];
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: async () => {
+        throw new Error(raw);
+      },
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    client.onState((_, error) => seen.push(error));
+    await expect(client.connect({ host: "h", port: 1, hostKey: HOST_KEY })).rejects.toThrow(shown);
+    expect(seen.at(-1)).toBe(shown);
+    // Retried or not as the same close would be once the socket is open.
+    expect(client.retrying).toBe(retried);
+    expect(timers.map((t) => t.ms)).toEqual(retried ? [1000] : []);
+  });
+
+  it("leaves a close during the handshake that names no code as it was", async () => {
+    const raw = "the peer closed during the handshake";
+    const seen: (string | undefined)[] = [];
+    const { setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: async () => {
+        throw new Error(raw);
+      },
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    client.onState((_, error) => seen.push(error));
+    await expect(client.connect({ host: "h", port: 1, hostKey: HOST_KEY })).rejects.toThrow(raw);
+    expect(seen.at(-1)).toBe(raw);
+    expect(client.retrying).toBe(true);
+  });
+
   it("gives up on a pairing the host never answers, instead of waiting for ever", async () => {
     // The relay accepts a device link whenever it believes a host link is up,
     // and a Mac that went to sleep leaves it believing that: the socket opens,
@@ -508,6 +587,38 @@ describe("connection lifecycle", () => {
     // single use, so the next attempt is the user's.
     expect(client.state).toBe("error");
     expect(timers.filter((t) => t.ms !== HANDSHAKE_TIMEOUT_MS)).toHaveLength(0);
+  });
+
+  it("frees the requests of attempts the host never answered, so a later one is sent", async () => {
+    // A relay forwarding into a Mac that has gone quiet: the socket opens, the
+    // `hello` goes out, nothing comes back, attempt after attempt.
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    /** Run the first live timer that `pick` matches, as if it had come due. */
+    const fire = (pick: (ms: number) => boolean) => {
+      const at = timers.findIndex((t) => pick(t.ms));
+      expect(at).toBeGreaterThanOrEqual(0);
+      const [timer] = timers.splice(at, 1);
+      timer.fn();
+    };
+    void client.connect({ host: "h", port: 1, hostKey: HOST_KEY }).catch(() => {});
+    for (let sent = 1; sent <= MAX_IN_FLIGHT; sent += 1) {
+      await vi.waitFor(() => expect(fake.sent).toHaveLength(sent));
+      fire((ms) => ms === HANDSHAKE_TIMEOUT_MS);
+      await vi.waitFor(() => expect(client.retrying).toBe(true));
+      fire((ms) => ms !== HANDSHAKE_TIMEOUT_MS);
+    }
+    // The host is back: the next attempt's `hello` has to reach it.
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(MAX_IN_FLIGHT + 1));
+    expect(fake.sent[MAX_IN_FLIGHT].op).toBe("hello");
+    fake.reply(helloOk(fake.sent[MAX_IN_FLIGHT].id as string));
+    await vi.waitFor(() => expect(client.state).toBe("connected"));
   });
 
   it("ignores a close from a socket it has already replaced", async () => {
@@ -627,11 +738,74 @@ describe("reconnect", () => {
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;
+    const reported: (string | undefined)[] = [];
+    client.onState((_state, error) => reported.push(error));
     fake.hangup(CLOSE_UNAUTHENTICATED);
     expect(timers).toHaveLength(0);
     expect(client.state).toBe("error");
+    expect(reported.at(-1)).toBe(CLOSE_REASONS[CLOSE_UNAUTHENTICATED]);
     // Not retrying: the failure is one only the user can clear.
     expect(client.retrying).toBe(false);
+  });
+
+  it("says a 4003 that ends a pairing by code is the code refused, not this device unpaired", async () => {
+    // The host answers a mistyped or expired code with the same close as a
+    // device it no longer knows.
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const reported: (string | undefined)[] = [];
+    client.onState((_state, error) => reported.push(error));
+    const pairing = client.connect({
+      host: "h",
+      port: 1,
+      hostKey: HOST_KEY,
+      pairingToken: "K7PQ2M9X",
+    });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    expect(fake.sent[0].op).toBe("pair");
+    fake.hangup(CLOSE_UNAUTHENTICATED);
+
+    await expect(pairing).rejects.toThrow(PAIRING_CODE_REFUSED);
+    expect(reported.at(-1)).toBe(PAIRING_CODE_REFUSED);
+    expect(client.retrying).toBe(false);
+    expect(timers).toHaveLength(0);
+  });
+
+  it("retries after a 4004 close, and says remote access is off", async () => {
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const reported: (string | undefined)[] = [];
+    client.onState((_state, error) => reported.push(error));
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply(helloOk(fake.sent[0].id as string));
+    await connected;
+
+    // Nothing will say when the owner switches it back on, so the client keeps
+    // dialling, as it does for a Mac that is offline — and says why it dropped.
+    fake.hangup(CLOSE_REMOTE_DISABLED);
+    expect(client.state).toBe("error");
+    expect(reported.at(-1)).toBe("Remote access is switched off on the host");
+    expect(client.retrying).toBe(true);
+    expect(timers.map((t) => t.ms)).toEqual([1000]);
+
+    // Switched back on: the retry is answered.
+    timers[0].fn();
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    fake.reply(helloOk(fake.sent[1].id as string));
+    await vi.waitFor(() => expect(client.state).toBe("connected"));
   });
 
   it("rejects in-flight calls when the socket drops", async () => {
@@ -649,6 +823,38 @@ describe("reconnect", () => {
     const pending = client.call("get_workspace");
     fake.hangup(1006);
     await expect(pending).rejects.toThrow();
+  });
+
+  it("drops a link that delivers a frame it cannot parse, and reconnects", async () => {
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply(helloOk(fake.sent[0].id as string));
+    await connected;
+    const pending = client.call("get_workspace");
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(2));
+
+    // Two encrypted messages merged on the way: the result decrypts, and both
+    // frames in it are lost. Carrying on would miss them for good.
+    fake.replyText(`{"id":"${fake.sent[1].id}","ok":true,"result":null}{"event":"agent:status"}`);
+    expect(client.state).toBe("error");
+    expect(fake.closes()).toBe(1);
+    await expect(pending).rejects.toThrow();
+    expect(timers.map((t) => t.ms)).toEqual([1000]);
+
+    // The reconnect's handshake is what catches up.
+    timers[0].fn();
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(3));
+    expect(fake.sent[2].op).toBe("hello");
+    fake.reply(helloOk(fake.sent[2].id as string));
+    await vi.waitFor(() => expect(client.state).toBe("connected"));
   });
 
   it("dials at once when asked to reconnect while a retry is scheduled", async () => {
@@ -1007,6 +1213,32 @@ describe("confirmed pairing", () => {
     await pairing;
     // Spent: a reconnect says `hello`, not `pair_request`.
     expect(client.target?.confirm).toBeUndefined();
+  });
+
+  it("says nothing else on the socket while the Mac decides", async () => {
+    const fake = fakeSocket();
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    const pairing = client.connect({ host: "h", port: 1, hostKey: HOST_KEY, confirm: true });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply({ id: fake.sent[0].id, ok: true, result: { nonce: "host-n" } });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    expect(fake.sent[1].op).toBe("pair_confirm");
+
+    // A window coming back into focus re-reads the workspace. The host would
+    // close the connection, and the pairing with it.
+    await expect(client.call("get_workspace")).rejects.toThrow("not connected");
+    expect(fake.sent).toHaveLength(2);
+
+    fake.reply({
+      id: fake.sent[1].id,
+      ok: true,
+      result: { deviceId: "d", host: { name: "Mac", appVersion: "1", os: "macos" }, relay: null },
+    });
+    // The handshake's own read still goes out.
+    await vi.waitFor(() => expect(fake.sent.length).toBe(3));
+    expect(fake.sent[2].op).toBe("get_workspace");
+    fake.reply({ id: fake.sent[2].id, ok: true, result: null });
+    await expect(pairing).resolves.toMatchObject({ host: { name: "Mac" } });
   });
 
   it("is not retried when the Mac says no — asking again is the user's call", async () => {

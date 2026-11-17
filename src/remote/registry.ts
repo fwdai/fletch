@@ -93,7 +93,9 @@ export interface HostRegistry {
   adopt(record: HostRecord): Promise<void>;
   /** Pair from a parsed link, and answer with the record to save. On failure
    *  the entry and its client are dropped — nothing was saved, so nothing
-   *  should be left behind — and the reason is rethrown for the pane.
+   *  should be left behind — and the reason is rethrown for the pane. A host
+   *  that was saved before is the caller's to adopt again: the registry keeps
+   *  no record.
    *  `onCode` hears the six digits of a confirmed pairing (`confirm`). */
   pair(target: PairTarget, onCode?: CodeHandler): Promise<HostRecord>;
   /** Stop for good, and drop the environment. */
@@ -184,14 +186,14 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
       transport: new RemoteTransport(client),
     });
     const dial = client.connect(target);
-    // `4003` (this device is no longer paired) and `4004` (remote access off)
-    // arrive here like any other failure — `error` with the reason
-    // `CLOSE_REASONS` gives, the same words the phone shows. What differs is
-    // that the client schedules no retry behind them, which is what
-    // `client.retrying` tells the pane.
+    // `4003` (this device is no longer paired) arrives here like any other
+    // failure — `error` with the reason `CLOSE_REASONS` gives, the same words
+    // the phone shows. What differs is that the client schedules no retry
+    // behind it, which is what `client.retrying` tells the pane. `4004`
+    // (remote access off) is retried like a Mac that is offline.
     client.onState((state, error) =>
       // `retrying` rides along so a host's chip can tell "reconnecting" from
-      // "offline" — the client schedules no retry behind 4003/4004, and that
+      // "offline" — the client schedules no retry behind 4003, and that
       // difference is the only thing that says whether waiting will help.
       writers.setEnvironmentConnection(
         record.hostKey,
@@ -299,7 +301,10 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
           relay: client.target ? client.target.relay : record.relay,
         };
       } catch (e) {
-        forget(target.hostKey);
+        // Only while the client under this key is still this attempt's own: a
+        // second pairing with the same host (picked again after a cancel, or a
+        // pasted link beside the nearby list) has replaced it, and is running.
+        if (clients.get(target.hostKey) === client) forget(target.hostKey);
         throw e;
       } finally {
         offCode?.();

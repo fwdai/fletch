@@ -8,8 +8,8 @@ import { type Candidate, candidatesFor } from "./candidates";
 import type { Socket, SocketFactory, SocketHandlers } from "./socket";
 import {
   type CallOptions,
+  CLOSE_BAD_FIRST_FRAME,
   CLOSE_REASONS,
-  CLOSE_REMOTE_DISABLED,
   CLOSE_UNAUTHENTICATED,
   CONNECTION_LOST,
   type CodeHandler,
@@ -25,6 +25,7 @@ import {
   type HostProtocol,
   type HostTarget,
   isEventFrame,
+  PAIRING_CODE_REFUSED,
   type PairResult,
   type PairStep,
   type RemoteClient,
@@ -34,9 +35,11 @@ import {
   type Via,
 } from "./types";
 
-/** Close codes that mean "do not retry" — the device has to be paired again,
- *  or the host's remote-access switch turned back on. */
-const FATAL_CLOSE = new Set([CLOSE_UNAUTHENTICATED, CLOSE_REMOTE_DISABLED]);
+/** Close codes that mean "do not retry" — the device has to be paired again.
+ *  Remote access switched off on the host (4004) is not one: nothing tells a
+ *  device when it is switched back on, so it keeps dialling on the normal
+ *  backoff, exactly as it does for a Mac that is offline. */
+const FATAL_CLOSE = new Set([CLOSE_UNAUTHENTICATED]);
 
 /** Bound on the first frames after the socket opens: `pair` or `hello`, and
  *  the snapshot that follows a `pair`. The transport's open budget stops once
@@ -95,6 +98,19 @@ export interface ClientOptions {
 const DIAL_FAILED = /^cannot reach \S+: (.+)$/s;
 /** And a failed Noise handshake as `handshake failed: {cause}`. */
 const HANDSHAKE_FAILED = /^handshake failed/i;
+/** And a close that arrived before the Noise handshake finished as `the peer
+ *  closed during the handshake (code {code})`, possibly inside a dial failure.
+ *  It is how the relay refuses a device (its Mac offline, or out of device
+ *  slots): it accepts the socket and closes it at once, so the code is the
+ *  whole reason. */
+const CLOSED_IN_HANDSHAKE = /closed during the handshake \(code (\d+)\)/;
+
+/** The close code a transport failure names, if it was such a close. */
+function handshakeCloseCode(message: string): number | null {
+  const closed = CLOSED_IN_HANDSHAKE.exec(message);
+  return closed ? Number(closed[1]) : null;
+}
+
 /** What a transport failure says when none of the usual causes fits. The raw
  *  text names protocol internals (handshake, frames, sockets), which are for
  *  a log and mean nothing on a phone screen. */
@@ -107,6 +123,9 @@ const COULD_NOT_CONNECT = "Couldn't connect to your Mac.";
  *  where it is one of the usual three. */
 function reportable(message: string): string {
   if (message.includes(HOST_KEY_MISMATCH)) return HOST_KEY_MISMATCH_REASON;
+  // Worded as the same close would be once the socket is open (`onClose`).
+  const closed = handshakeCloseCode(message);
+  if (closed !== null) return CLOSE_REASONS[closed] ?? CONNECTION_LOST;
   if (HANDSHAKE_FAILED.test(message)) return COULD_NOT_CONNECT;
   const dial = DIAL_FAILED.exec(message);
   if (!dial) return message;
@@ -266,7 +285,12 @@ export class ProtocolClient implements RemoteClient {
     args: Record<string, unknown> = {},
     opts: CallOptions = {},
   ): Promise<T> {
-    if (!this.socket) throw new Error("not connected");
+    // Not before the handshake has finished, though the socket is there: the
+    // host closes a connection that says anything else while `pair` or `hello`
+    // is unanswered, or while the person at the Mac decides on a confirmed
+    // pairing, so a request then would end the attempt it rode on. The
+    // handshake's own frames go through `request`.
+    if (!this.socket || this._state !== "connected") throw new Error("not connected");
     return this.request<T>(op, args, opts.timeoutMs ?? 0);
   }
 
@@ -406,18 +430,24 @@ export class ProtocolClient implements RemoteClient {
       const message = e instanceof Error ? e.message : String(e);
       // A pairing code is single use and short lived, so a refused pairing
       // attempt is the user's to retry. A host presenting the wrong identity
-      // is never worth retrying either: only re-pairing can clear it.
+      // is never worth retrying either: only re-pairing can clear it. Nor is a
+      // close the handshake met with a code that is final once the socket is
+      // open.
+      const closed = handshakeCloseCode(message);
       const retryable =
         !this._target?.pairingToken &&
         !this._target?.confirm &&
-        !message.includes(HOST_KEY_MISMATCH);
+        !message.includes(HOST_KEY_MISMATCH) &&
+        !(closed !== null && FATAL_CLOSE.has(closed));
       const shown = reportable(message);
       if (this.current(gen)) {
         // A socket whose handshake did not complete is no use, and after a
-        // timeout it is still open with the host yet to answer.
-        const socket = this.socket;
-        this.socket = null;
-        socket?.close();
+        // timeout it is still open with the host yet to answer. Closing it
+        // ourselves silences it, so nothing would ever answer the requests
+        // still out on it: they go with it, or every abandoned attempt would
+        // keep an in-flight slot and a later `hello` would queue behind them
+        // for ever.
+        this.teardown(shown);
         this.fail(shown, retryable);
       }
       throw shown === message && e instanceof Error ? e : new Error(shown);
@@ -515,7 +545,7 @@ export class ProtocolClient implements RemoteClient {
       // state above says `connected`, but there is nothing to show until this
       // answers, and over a relay it is not instant.
       this.step("workspace");
-      const workspace = await this.call<HelloResult["workspace"]>("get_workspace");
+      const workspace = await this.request<HelloResult["workspace"]>("get_workspace", {});
       return this.publishSnapshot({
         host: paired.host,
         workspace,
@@ -554,7 +584,13 @@ export class ProtocolClient implements RemoteClient {
     try {
       frame = JSON.parse(text) as HostFrame;
     } catch {
-      return; // A frame we can't parse is not worth tearing the link down for.
+      // It decrypted, so it is whole as far as the channel can tell: two of the
+      // host's messages merged on the way, perhaps, and whatever they held is
+      // lost. The link is dropped as the transport drops one whose frame does
+      // not decrypt (4001), so the reconnect's handshake catches up on it
+      // rather than this side carrying on without it.
+      this.onClose(CLOSE_BAD_FIRST_FRAME);
+      return;
     }
     if (isEventFrame(frame)) {
       this.dispatchEvent(frame);
@@ -580,8 +616,12 @@ export class ProtocolClient implements RemoteClient {
 
   private onClose(code: number) {
     // The code and the transport's reason (`pong timeout`, …) are for a log,
-    // not a screen.
-    const message = CLOSE_REASONS[code] ?? CONNECTION_LOST;
+    // not a screen. A target still holding its pairing code has not paired
+    // yet, so a 4003 now is that code refused, not this device unpaired.
+    const message =
+      code === CLOSE_UNAUTHENTICATED && this._target?.pairingToken
+        ? PAIRING_CODE_REFUSED
+        : (CLOSE_REASONS[code] ?? CONNECTION_LOST);
     this.teardown(message);
     if (this.closedByUs) return;
     this.fail(message, !FATAL_CLOSE.has(code));

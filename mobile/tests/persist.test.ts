@@ -7,6 +7,28 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { migrate, upsertHost } from "../src/store/persist";
 
+/** The settings file as the app keeps it under Tauri, faked: each write takes
+ *  as long as the test says, and records whether another was running. */
+const disk = vi.hoisted(() => ({
+  file: null as string | null,
+  delays: [] as number[],
+  running: 0,
+  overlapped: false,
+}));
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  BaseDirectory: { AppData: 0 },
+  exists: async () => disk.file !== null,
+  mkdir: async () => {},
+  readTextFile: async () => disk.file ?? "{}",
+  writeTextFile: async (_path: string, text: string) => {
+    disk.running += 1;
+    if (disk.running > 1) disk.overlapped = true;
+    await new Promise((resolve) => setTimeout(resolve, disk.delays.shift() ?? 0));
+    disk.file = text;
+    disk.running -= 1;
+  },
+}));
+
 const LS_KEY = "fletch-mobile-settings";
 
 const LEGACY = {
@@ -157,5 +179,28 @@ describe("the host list", () => {
     const persist = await fresh();
     await persist.updateHost("studio", { relay: "wss://relay.test" });
     expect((await persist.loadSettings()).hosts).toBeUndefined();
+  });
+});
+
+describe("the settings file in the app", () => {
+  const tauri = window as unknown as Record<string, unknown>;
+
+  it("writes one change after another, and ends holding the latest", async () => {
+    tauri.__TAURI_INTERNALS__ = {};
+    try {
+      const persist = await fresh();
+      // The first write is the slow one: run side by side, it would land last.
+      Object.assign(disk, { file: null, delays: [20, 0], running: 0, overlapped: false });
+      // Pairing a host saves it and its notification answer together.
+      const mini = { hostKey: "mini", name: "Mac mini", host: "10.0.0.3", port: 47285 };
+      await Promise.all([persist.saveHost(mini), persist.savePushPermission("mini", "granted")]);
+
+      expect(disk.overlapped).toBe(false);
+      const saved = JSON.parse(disk.file ?? "{}");
+      expect(saved.hosts.map((h: { hostKey: string }) => h.hostKey)).toEqual(["mini"]);
+      expect(saved.pushPermission).toEqual({ mini: "granted" });
+    } finally {
+      delete tauri.__TAURI_INTERNALS__;
+    }
   });
 });

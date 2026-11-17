@@ -12,8 +12,8 @@ import { STEP_LABELS, Working } from "../Pair/Progress";
  *
  *  The one case that needs care is `error`: the client retries most failures
  *  on its own (a dropped socket, the Mac asleep), and those read as
- *  "reconnecting"; the few it cannot clear (this device unpaired, remote
- *  access switched off, a changed host key) are stated as they are and point
+ *  "reconnecting"; the few it cannot clear (this device unpaired, a changed
+ *  host key) are stated as they are and point
  *  at the Host sheet, where the fix lives. Every paired Mac is a tap away in
  *  the header's host list. */
 export function HostState() {

@@ -63,7 +63,18 @@ export async function startSavedHosts(): Promise<void> {
  *  `onCode` hears the six digits of a confirmed pairing, after which the
  *  person here may be asked whether that host can control this Mac too. */
 export async function addHost(target: PairTarget, onCode?: CodeHandler): Promise<void> {
-  const record = await hosts.pair(target, onCode);
+  let record: HostRecord;
+  try {
+    record = await hosts.pair(target, onCode);
+  } catch (e) {
+    // Pairing again with a host already saved (an expired link, or one that
+    // changes its access) took its working connection down first. Its record
+    // is untouched, so it is dialled again from that, as at launch — unless a
+    // newer pairing with it is running, which `adopt` leaves alone.
+    const saved = (await loadHosts().catch(() => [])).find((h) => h.hostKey === target.hostKey);
+    if (saved) await hosts.adopt(saved).catch(() => {});
+    throw e;
+  }
   await saveHost({ ...record, pairedAt: new Date().toISOString() });
   if (target.confirm && !target.pairingToken) await askToPairBack(record);
 }

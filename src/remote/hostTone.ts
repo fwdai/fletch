@@ -5,8 +5,8 @@ import type { ConnectionState } from "./types";
  *  - `connected`: live.
  *  - `connecting`: a dial or a pairing is in flight.
  *  - `inactive`: not reachable now, which is not a fault. Never dialled, or
- *    down with the client retrying on its own: a Mac that is asleep or off the
- *    network.
+ *    down with the client retrying on its own: a Mac that is asleep, off the
+ *    network, or has remote access switched off.
  *  - `problem`: stopped on something only the user can clear, such as a
  *    pairing the host no longer honours. The client schedules no retry
  *    behind those. */

@@ -133,7 +133,8 @@ The `.p8` never belongs in the repo or in `wrangler.toml`; it lives in your
 password manager and in Cloudflare's secret store, nowhere else. One APNs key
 serves both environments, so `sandbox` (a development build) and `production`
 (TestFlight or the App Store) need no extra configuration — the phone reports
-which one its token belongs to.
+which one its token belongs to: the one its embedded provisioning profile
+names, or `production` for a TestFlight or App Store build, which embeds none.
 
 **Verify the first deploy with one real send.** APNs requires HTTP/2, which
 Cloudflare negotiates for outbound `fetch`, but nothing in the test suite can

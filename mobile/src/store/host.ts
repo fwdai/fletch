@@ -114,7 +114,8 @@ export interface HostState
   applyHandshake(snapshot: HelloResult): void;
   /** Re-read what the socket may have missed that a workspace snapshot does
    *  not carry: the rows' working-tree stats and PR state, the planning chats,
-   *  and whatever is open on this host's screens. After every handshake, and
+   *  whatever is open on this host's screens, the publishes the host is
+   *  blocked on, its delegations and its autopilot. After every handshake, and
    *  on return to the foreground (`wake`). */
   resync(): void;
   /** Back in the foreground: refresh what the background missed — once the
@@ -421,16 +422,6 @@ export function createHostStore(link: HostLink): HostStore {
         prComments: {},
       });
       get().resync();
-      // The publishes this host is blocked on. Every handshake, because the
-      // request event only reached the devices connected when it fired — and so
-      // did the resolution, whoever gave it.
-      void get().loadPendingApprovals().catch(ignore);
-      // …and the delegations it is running: the strip's `working` state is
-      // the host's, and the events that built it were lost with the socket.
-      void get().loadDelegations().catch(ignore);
-      // …and its autopilot, for the same reason: state and log are host facts,
-      // and the events are only the deltas.
-      void get().loadAutopilot().catch(ignore);
     },
 
     resync() {
@@ -447,6 +438,18 @@ export function createHostStore(link: HostLink): HostStore {
       // …and whatever is open on this host's screens.
       refreshOpenAgent(link.hostKey, s);
       refreshProviders(link.hostKey, s);
+      // The publishes this host is blocked on. After every handshake, because
+      // the request event only reached the devices connected when it fired —
+      // and so did the resolution, whoever gave it; and on return to the
+      // foreground, because the host drops events for a connection too slow to
+      // take them without closing it.
+      void s.loadPendingApprovals().catch(ignore);
+      // …and the delegations it is running: the strip's `working` state is
+      // the host's, and the events that built it may be lost.
+      void s.loadDelegations().catch(ignore);
+      // …and its autopilot, for the same reason: state and log are host facts,
+      // and the events are only the deltas.
+      void s.loadAutopilot().catch(ignore);
     },
 
     async wake() {

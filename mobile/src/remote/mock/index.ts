@@ -66,6 +66,9 @@ export interface MockHostSpec {
   /** What `ensure_project` fails with, as a clone the host cannot make does:
    *  set, no project is copied here. */
   failEnsure?: string;
+  /** A Mac that refuses every pairing code, as one does a code that is wrong
+   *  or has expired: it hangs up on `pair` with 4003. */
+  refusePairing?: boolean;
 }
 
 /** The hosts given an identity of their own (`registerMockHost`), by key. */
@@ -155,6 +158,7 @@ export class MockHost {
   /** What `pair` and `hello` say this host is. */
   private readonly info: HostInfo;
   private readonly failEnsure: string | undefined;
+  private readonly refusePairing: boolean;
 
   constructor(
     private readonly emit: (frame: ResponseFrame | EventFrame) => void,
@@ -166,6 +170,7 @@ export class MockHost {
   ) {
     this.info = spec.host ?? fx.hostInfo;
     this.failEnsure = spec.failEnsure;
+    this.refusePairing = spec.refusePairing ?? false;
     this.state = {
       workspace: structuredClone(spec.workspace ?? fx.workspace),
       records: structuredClone(spec.records ?? fx.records),
@@ -221,6 +226,10 @@ export class MockHost {
       return;
     }
     if (!this.authed && !OPENING_OPS.includes(frame.op)) {
+      this.onClose?.(CLOSE_UNAUTHENTICATED);
+      return;
+    }
+    if (!this.authed && frame.op === "pair" && this.refusePairing) {
       this.onClose?.(CLOSE_UNAUTHENTICATED);
       return;
     }

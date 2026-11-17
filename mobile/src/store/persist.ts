@@ -111,9 +111,22 @@ async function readAll(): Promise<Persisted> {
   return cache ?? {};
 }
 
+/** The file writes, one after another. `writeTextFile` truncates the file and
+ *  then writes it, so two at once can leave the end of the longer text behind
+ *  the shorter one: a file that does not parse, read on the next launch as no
+ *  hosts at all. */
+let writes: Promise<void> = Promise.resolve();
+
 async function writeAll(next: Persisted): Promise<void> {
   cache = next;
-  const text = JSON.stringify(next);
+  writes = writes.then(writeLatest);
+  await writes;
+}
+
+/** Write the settings as they are when this write's turn comes, not as they
+ *  were when it was queued: one behind another must not put older ones back. */
+async function writeLatest(): Promise<void> {
+  const text = JSON.stringify(cache ?? {});
   try {
     if (inTauri()) {
       if (!(await exists(DIR, { baseDir: BaseDirectory.AppData }))) {

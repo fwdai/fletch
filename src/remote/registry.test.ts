@@ -13,15 +13,16 @@ import {
 } from "@/store/environments";
 import type { AppState } from "@/store/types";
 import { createHostRegistry, type HostRecord } from "./registry";
-import type {
-  ConnectionState,
-  DeviceInfo,
-  HelloResult,
-  HostInfo,
-  HostProtocol,
-  HostTarget,
-  RemoteClient,
-  StateHandler,
+import {
+  type ConnectionState,
+  type DeviceInfo,
+  type HelloResult,
+  type HostInfo,
+  type HostProtocol,
+  type HostTarget,
+  PAIRING_CODE_REFUSED,
+  type RemoteClient,
+  type StateHandler,
 } from "./types";
 
 const DEVICE: DeviceInfo = { name: "Fletch desktop", platform: "macos", appVersion: "0.7.31" };
@@ -153,7 +154,9 @@ const settled = async () => {
   }
 };
 
-function harness() {
+/** `before` are handed out first, one per client built, then `client` for
+ *  every client after them. */
+function harness(before: RemoteClient[] = []) {
   const store = create<AppState>()(
     (set, get) => ({ ...createEnvironmentsSlice(set, get, activeEngine) }) as AppState,
   );
@@ -173,7 +176,7 @@ function harness() {
       environmentReconnected: reconnected,
     },
     device,
-    newClient: () => client,
+    newClient: () => before.shift() ?? client,
     onRelayChange: relayChanged,
     // The retry exists; how long it waits is not what these tests check.
     retryDelayMs: 0,
@@ -319,8 +322,7 @@ describe("the paired-host lifecycle", () => {
     client.moveTo("error", "Your Mac is offline");
     expect(entry()?.retrying).toBe(true);
 
-    // 4003 / 4004: the client schedules nothing, because only the user can
-    // clear it.
+    // 4003: the client schedules nothing, because only the user can clear it.
     client.retrying = false;
     client.moveTo("error", "This device is not paired with the host any more");
     expect(entry()?.retrying).toBe(false);
@@ -430,12 +432,34 @@ describe("the paired-host lifecycle", () => {
       pairingToken: "K7PQ2M9X",
     });
     await settled();
-    client.fail("This device is not paired with the host any more");
+    client.fail(PAIRING_CODE_REFUSED);
 
-    await expect(paired).rejects.toThrow("not paired with the host any more");
+    await expect(paired).rejects.toThrow(PAIRING_CODE_REFUSED);
     expect(entry()).toBeUndefined();
     expect(registry.get(HOST_KEY)).toBeUndefined();
     expect(Object.keys(store.getState().environments)).toEqual([LOCAL_ENVIRONMENT_ID]);
+  });
+
+  it("leaves a newer pairing with the same host running when the older one fails", async () => {
+    const older = fakeClient();
+    const { registry, entry, client: newer } = harness([older]);
+    const target = { host: "10.0.0.4", port: 47285, hostKey: HOST_KEY, pairingToken: "K7PQ2M9X" };
+
+    const first = registry.pair(target);
+    await settled();
+    // Cancelled and picked again, or a pasted link beside the nearby list:
+    // the second replaces the first, which only now hears it is over.
+    const second = registry.pair(target);
+    await settled();
+    expect(older.disconnected).toBe(1);
+    older.fail("Disconnected");
+    await expect(first).rejects.toThrow("Disconnected");
+
+    expect(registry.get(HOST_KEY)).toBe(newer);
+    expect(newer.disconnected).toBe(0);
+    newer.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    await expect(second).resolves.toMatchObject({ hostKey: HOST_KEY, name: "Cloud box" });
+    expect(entry()).toMatchObject({ connection: "connected" });
   });
 
   it("adopts a host once, however many times it is asked", async () => {

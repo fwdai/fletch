@@ -67,9 +67,10 @@ Two things in it are worth knowing about:
   `tauri_plugin::mobile::update_entitlements`, the same hook
   tauri-plugin-deep-link uses for associated domains. It writes `development`,
   which is what Xcode's own capability writes; Xcode substitutes `production`
-  when it signs with a distribution profile. Either way the phone reports the
-  environment the *embedded profile* names, so the relay always picks the right
-  APNs host.
+  when it signs with a distribution profile. A build installed from Xcode, or
+  ad hoc, reports the environment its *embedded profile* names; an App Store or
+  TestFlight build embeds no profile (Apple re-signs it) and reports
+  `production`; so the relay always picks the right APNs host.
 
 ### Manual Apple steps
 
