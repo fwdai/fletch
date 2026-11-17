@@ -24,14 +24,18 @@ export function MainPane() {
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
   const selectedRunId = useAppStore((s) => s.selectedRunId);
   const workspace = useAppStore((s) => s.workspace);
+  const historyOpen = useAppStore((s) => s.historyOpen);
   const markResultsSeen = useAppStore((s) => s.markResultsSeen);
 
   // A host coming back on screen shows the agent it had selected, so whatever
-  // that agent finished meanwhile is seen. `markResultsSeen` is the scope's
-  // own, so this runs for the host that just came on screen.
+  // that agent finished meanwhile is seen. This pane is not mounted under a
+  // full-window screen (Settings, Usage, a project's), so the chat is showing
+  // whenever this runs, unless History is over it: then it is seen when
+  // History closes. `markResultsSeen` is the scope's own, so this runs for
+  // the host that just came on screen.
   useEffect(() => {
-    if (selectedAgentId) markResultsSeen(selectedAgentId);
-  }, [selectedAgentId, markResultsSeen]);
+    if (selectedAgentId && !historyOpen) markResultsSeen(selectedAgentId);
+  }, [selectedAgentId, historyOpen, markResultsSeen]);
 
   useFocusedGitSync();
   const onRightDrag = useSplitter(rightWidth, setRightWidth, "right", commitRightWidth);
