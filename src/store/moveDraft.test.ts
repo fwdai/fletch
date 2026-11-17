@@ -73,8 +73,12 @@ const agent = (id: string, repoPath: string): AgentRecord =>
 
 /** A paired host behind a fake connection, with a copy of the project once
  *  it is asked to make one. `fail` makes one op refuse with the host's words;
- *  `hold` keeps `ensure_project` unanswered until it resolves. */
-function fakeHost(id: string, fail: Record<string, string> = {}, hold?: Promise<void>) {
+ *  `hold` keeps one op unanswered until its promise resolves. */
+function fakeHost(
+  id: string,
+  fail: Record<string, string> = {},
+  hold?: { op: string; until: Promise<void> },
+) {
   const calls: [string, Record<string, unknown> | undefined][] = [];
   let workspace: Workspace = { repos: [], projects: [], agents: [] } as unknown as Workspace;
   const answer = (op: string, args?: Record<string, unknown>): unknown => {
@@ -109,7 +113,7 @@ function fakeHost(id: string, fail: Record<string, string> = {}, hold?: Promise<
     call: async <T>(op: string, args?: Record<string, unknown>): Promise<T> => {
       calls.push([op, args]);
       if (fail[op]) throw new Error(fail[op]);
-      if (op === "ensure_project") await hold;
+      if (op === hold?.op) await hold.until;
       return answer(op, args) as T;
     },
     on: () => Promise.resolve(() => {}),
@@ -308,21 +312,18 @@ describe("a draft moved to a paired host", () => {
     expect(s.hostStates.studio.drafts).toEqual([]);
   });
 
-  describe("while its project is being made ready", () => {
-    let ready: () => void;
-
-    beforeEach(async () => {
-      await pair(
-        fakeHost(
-          "studio",
-          {},
-          new Promise<void>((resolve) => {
-            ready = resolve;
-          }),
-        ),
-      );
-      drafting(DRAFT);
+  /** Pair a host that holds `op` until `ready()`, with the draft open. */
+  let ready: () => void;
+  async function holding(op: string) {
+    const until = new Promise<void>((resolve) => {
+      ready = resolve;
     });
+    await pair(fakeHost("studio", {}, { op, until }));
+    drafting(DRAFT);
+  }
+
+  describe("while its project is being made ready", () => {
+    beforeEach(() => holding("ensure_project"));
 
     it("sends nothing and starts no second move", async () => {
       const moving = move();
@@ -378,5 +379,48 @@ describe("a draft moved to a paired host", () => {
       expect(s.drafts).toEqual([]);
       expect(s.activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
     });
+  });
+
+  describe("while the host names it, the last thing asked", () => {
+    beforeEach(() => holding("allocate_draft_name"));
+
+    it("opens nothing for a draft discarded then", async () => {
+      const moving = move();
+      await vi.waitFor(() => expect(studio.ops()).toContain("allocate_draft_name"));
+      useAppStore.getState().removeDraft("d1");
+
+      ready();
+      await moving;
+
+      const s = useAppStore.getState();
+      expect(s.hostStates.studio.drafts).toEqual([]);
+      expect(s.activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
+    });
+
+    it("does not take the screen from where the user went then", async () => {
+      const moving = move();
+      await vi.waitFor(() => expect(studio.ops()).toContain("allocate_draft_name"));
+      useAppStore.getState().selectDraft(null);
+
+      ready();
+      await moving;
+
+      const s = useAppStore.getState();
+      expect(s.hostStates.studio.drafts).toHaveLength(1);
+      expect(s.drafts).toEqual([]);
+      expect(s.activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
+    });
+  });
+
+  it("opens over a project page the host had up, and shows its copy through a refresh", async () => {
+    hostStore("studio").getState().openProjectSettings("/some/where");
+    drafting(DRAFT);
+
+    await move();
+
+    const there = useAppStore.getState().hostStates.studio;
+    expect(there.projectScreen).toBeNull();
+    expect(studio.ops()).toContain("get_workspace");
+    expect(there.workspace?.projects.map((p) => p.path)).toEqual([COPY_PATH]);
   });
 });

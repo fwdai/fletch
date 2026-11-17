@@ -28,6 +28,8 @@ const makeStore = () => {
     customAgents: [],
     modelsByAgent: {},
     composerDrafts: {},
+    // Opening a draft closes its host's project page (ui slice).
+    closeProjectScreen: () => {},
     // biome-ignore lint/suspicious/noExplicitAny: partial store seed
   } as any);
   return store;

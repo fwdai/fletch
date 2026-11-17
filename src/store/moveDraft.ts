@@ -17,6 +17,7 @@ import { type Engine, engineOf } from "@/api/engine";
 import { preparingLabel, runTargetOptions } from "@/components/Composer/RunTargetPicker/options";
 import type { EnvironmentId } from "./environments";
 import { otherHosts } from "./otherHosts";
+import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppState, SliceCreator } from "./types";
 
 type Set = Parameters<SliceCreator<AppState>>[0];
@@ -55,17 +56,14 @@ export async function moveDraft(
     if (option?.reason) throw new Error(option.reason);
 
     const there = hostStore(target);
-    const workspace = await engineOf(target).api.ensureProject(definition);
-    there.setState({ workspace });
-    const repoPath = workspace.projects.find((p) => p.project_id === definition.project_id)?.path;
+    const copy = await engineOf(target).api.ensureProject(definition);
+    const repoPath = copy.projects.find((p) => p.project_id === definition.project_id)?.path;
     if (!repoPath) throw new Error(`${host.name} has no copy of ${definition.name}.`);
+    // Shown through the one path that orders a host's snapshots.
+    await refreshWorkspace(engineOf(target), there.setState);
 
-    // The draft as it is now: discarded while the copy was made, there is
-    // nothing to move; edited, the edits go.
     const now = get().drafts.find((d) => d.id === id);
     if (!now) return;
-    // Still what the user is looking at, so the moved draft takes its place.
-    const onScreen = get().activeEnvironmentId === engine.hostId && get().activeDraftId === id;
     const moved = await there.getState().createDraft(repoPath, {
       seedPrompt: get().composerDrafts[id],
       kind: now.kind,
@@ -75,9 +73,17 @@ export async function moveDraft(
         base: now.base,
         issueRef: now.issueRef,
       },
+      // Asked as the target is about to open it: a draft discarded at any
+      // point of the move opens nothing there.
+      when: () => get().drafts.some((d) => d.id === id),
     });
-    // The target says why in the banner, which the window shares.
+    // Not opened: discarded, or the target says why in the banner, which the
+    // window shares.
     if (!moved) return;
+    // Read with the new draft just opened, so nothing the user did while
+    // the target was asked is overridden: the moved draft takes the screen
+    // only if the old one still has it.
+    const onScreen = get().activeEnvironmentId === engine.hostId && get().activeDraftId === id;
     get().removeDraft(id);
     if (onScreen) onHost(target);
   } catch (e) {

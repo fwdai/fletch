@@ -108,9 +108,10 @@ export interface DraftsSlice {
    *  launch rather than at an empty box. `roadmapItemId` tags the draft as a
    *  roadmap hand-off, which stamps the item once the agent is spawned. `kind`
    *  defaults to an agent. `carried` are the choices of a draft moved here
-   *  from another host, taken in place of this host's defaults. Resolves to
-   *  the new draft's id, or `null` if it couldn't be created (the error is
-   *  already surfaced). */
+   *  from another host, taken in place of this host's defaults. `when` is
+   *  asked once the draft's reads are back, as it is about to open: false
+   *  opens nothing. Resolves to the new draft's id, or `null` if none was
+   *  opened (an error is already surfaced). */
   createDraft: (
     repoPath: string,
     opts?: {
@@ -118,6 +119,7 @@ export interface DraftsSlice {
       roadmapItemId?: string;
       kind?: DraftKind;
       carried?: CarriedDraft;
+      when?: () => boolean;
     },
   ) => Promise<string | null>;
   /** Move a draft to `target`, the host its workspace is to run on (the
@@ -253,6 +255,10 @@ function openDraft(set: Set, get: Get, draft: DraftAgent, seedPrompt?: string): 
     selectedAgentId: null,
     selectedRunId: null,
   }));
+  // A project view takes the center pane over a draft (App.tsx), and it is
+  // this host's own: closed here, where the draft opens, because the host a
+  // caller is looking at need not be the one its draft opens on.
+  get().closeProjectScreen();
   get().setLastRepoPath(draft.repoPath);
 }
 
@@ -320,7 +326,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
         opts.kind,
         opts.carried,
       );
-      if (!draft) return null;
+      if (!draft || opts.when?.() === false) return null;
       openDraft(set, get, draft, opts.seedPrompt);
       return draft.id;
     },
@@ -341,11 +347,6 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
           { ...draft, afterProjectAdd: { seeded: first } },
           first ? FIRST_TASK_PROMPT : undefined,
         );
-        // A project view takes the center pane over a draft (App.tsx), so a
-        // project added from the sidebar while one is open would leave the
-        // draft invisible behind it. Still the page that was open when the add
-        // began — a newer one changed the key above.
-        get().closeProjectScreen();
         // The project was added on this host, which need not be the one on
         // screen: the draft is only in front of the user once its host is.
         // Not if they put another host on screen meanwhile: the draft is
