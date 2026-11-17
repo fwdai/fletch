@@ -22,15 +22,21 @@ export function FilterInput({ query, onChange, onArrowDown }: Props) {
 
   return (
     <>
-      <input
-        id="sidebar-search"
-        className="side-filter-input text-base"
-        placeholder={keys ? `Filter (${keys})` : "Filter…"}
-        aria-label="Filter workspaces by title, name, branch or project"
-        value={query}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={onKeyDown}
-      />
+      <span className="side-filter-field">
+        <input
+          id="sidebar-search"
+          className="side-filter-input text-base"
+          aria-label="Filter workspaces by title, name, branch or project"
+          value={query}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={onKeyDown}
+        />
+        {!query && (
+          <span className="side-filter-placeholder text-base truncate" aria-hidden="true">
+            Filter…{keys && <span className="side-filter-keys">{keys}</span>}
+          </span>
+        )}
+      </span>
       {query && (
         <button
           type="button"
