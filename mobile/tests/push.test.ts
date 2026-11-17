@@ -129,6 +129,10 @@ describe("a second paired host", () => {
     await vi.waitFor(async () =>
       expect((await loadSettings()).pushPermission?.[STUDIO]).toBe("granted"),
     );
+    // The pairing tells the host the token once the answer is on disk, which
+    // is after the writes queued ahead of it: let that land before the token
+    // changes, or the host hears the new one from both.
+    await settle();
     expect(asked()).toBe(2);
     expect(mock().client.state).toBe("connected");
 
