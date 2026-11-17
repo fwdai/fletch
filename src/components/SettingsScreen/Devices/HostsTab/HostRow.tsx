@@ -1,6 +1,8 @@
+import { HostDot } from "@/components/HostChip";
 import { HostGateNote } from "@/components/HostGateNote";
 import { HostProvidersNote } from "@/components/HostProvidersNote";
 import { Button } from "@/components/ui/Button";
+import { hostTone } from "@/remote/hostTone";
 import type { SavedHost } from "@/storage/remoteHosts";
 import { useAppStore } from "@/store";
 import { hostVersionLabel } from "@/store/capabilities";
@@ -41,7 +43,7 @@ export function HostRow({
     <div className="set-row flex-center align-start">
       <div className="set-row-l">
         <div className="set-row-t text-base flex-center">
-          <i className="set-dev-dot" data-state={connection} />
+          <HostDot tone={hostTone(connection, entry?.retrying)} className="set-dev-dot" />
           {entry?.name || host.name}
         </div>
         <div className="set-row-s text-sm">
