@@ -374,7 +374,13 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
         </span>
         <span className="ag-slot iflex-center">
           <span className="ag-meta wide">
-            <Badge variant="new">new</Badge>
+            {/* Being moved to another host, whose copy of the project is
+                being made: the spawn's spinner, saying so. */}
+            {draft.preparing ? (
+              <span className="ag-loader" aria-label={draft.preparing} title={draft.preparing} />
+            ) : (
+              <Badge variant="new">new</Badge>
+            )}
           </span>
           <span className="ag-actions">
             <button

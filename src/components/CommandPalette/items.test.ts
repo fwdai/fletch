@@ -444,6 +444,39 @@ describe("pageRows", () => {
     expect(one.s.createDraft).toHaveBeenCalledWith("/w/fletch", { kind: "workflow" });
   });
 
+  it("starts an agent in This Mac's scope for a project This Mac has, over a paired host", () => {
+    const local = state();
+    const copy = { ...PROJECTS[0], path: "/copies/fletch" };
+    const studio = state({
+      activeEnvironmentId: "studio",
+      workspace: {
+        repos: [copy.path, "/studio/only"],
+        projects: [copy, project("/studio/only", "only")],
+        agents: [],
+      },
+    });
+    const c = ctx(
+      {},
+      {
+        s: studio,
+        hosts: [
+          { id: LOCAL_ENVIRONMENT_ID, name: null, s: local },
+          { id: "studio", name: "Studio", s: studio },
+        ],
+      },
+    );
+    const rows = pageRows(c, "new-agent");
+
+    rows.find((r) => r.label === "fletch")?.run?.();
+    expect(c.show).toHaveBeenCalledWith(LOCAL_ENVIRONMENT_ID);
+    expect(local.createDraft).toHaveBeenCalledWith("/w/fletch");
+    expect(studio.createDraft).not.toHaveBeenCalled();
+
+    // A project only the paired host has stays there.
+    rows.find((r) => r.label === "only")?.run?.();
+    expect(studio.createDraft).toHaveBeenCalledWith("/studio/only");
+  });
+
   it("lists the accents with the current one marked", () => {
     const rows = pageRows(ctx({ accent: "ocean" }), "accent");
     expect(rows.find((r) => r.id === "accent:ocean")?.meta).toBe("Current");

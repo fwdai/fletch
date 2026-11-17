@@ -1,5 +1,6 @@
 import type { Invoke } from "../invoke";
 import type {
+  ProjectDefinition,
   ProjectDeleteResult,
   ProjectIconCandidate,
   ProjectIconData,
@@ -44,4 +45,15 @@ export const workspaceApi = (invoke: Invoke) => ({
     invoke<Workspace>("project_icon_set", { projectId, source, bytes: bytes ?? null }),
   projectIconGet: (projectId: string) =>
     invoke<ProjectIconData | null>("project_icon_get", { projectId }),
+  /** The project as another device needs it to run one of its workspaces
+   *  (docs/remote-protocol.md, "Projects on another device"). Asked of the
+   *  host the project is on. */
+  projectDefinition: (projectId: string) =>
+    invoke<ProjectDefinition>("project_definition", { projectId }),
+  /** Make sure this host can run workspaces of `definition`'s project: a no-op
+   *  for one it has, else its repositories are cloned from their remotes and
+   *  recorded as a copy. Resolves to the host's workspace, the copy among its
+   *  projects under the same `project_id`. */
+  ensureProject: (definition: ProjectDefinition) =>
+    invoke<Workspace>("ensure_project", { definition }),
 });

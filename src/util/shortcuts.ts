@@ -7,6 +7,7 @@ import type { FeatureFlags } from "@/storage/preferences";
 import type { AppState } from "@/store";
 import { hostStore, onHost, useAppStore } from "@/store";
 import { activeGateReason, type GateName } from "@/store/capabilities";
+import { newDraftHost } from "@/store/draftHosts";
 import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { focusNeedsRuns, isOnlyFocus, projectCount, surfaceProjectKey } from "@/store/projectFocus";
 import { activeSurface, surfaceAgent, surfaceRepoPath } from "@/store/surface";
@@ -50,6 +51,21 @@ export function newAgentRepoPath(s: AppState): string | undefined {
   const repos = s.workspace?.repos ?? [];
   const recent = s.lastRepoPath && repos.includes(s.lastRepoPath) ? s.lastRepoPath : undefined;
   return recent ?? surfaceRepoPath(s);
+}
+
+/** Open a new agent draft on `repoPath`, a repo of the host `s` is the view of:
+ *  in This Mac's scope for a project This Mac has, whichever host is on
+ *  screen (the run-target picker then decides where it runs), else in that
+ *  host's own. The palette's "New agent in…" goes by the same rule
+ *  (`newDraftHost`). */
+function openAgentDraft(s: AppState, repoPath: string): void {
+  const where = newDraftHost(
+    useAppStore.getState().workspace?.projects ?? [],
+    s.workspace?.projects ?? [],
+    s.activeEnvironmentId,
+    repoPath,
+  );
+  onHost(where.hostId, (h) => void h.createDraft(where.repoPath));
 }
 
 /** Reveal the sidebar if it is collapsed, then run `fn` once it has mounted. */
@@ -168,7 +184,7 @@ const ACTIONS: Record<string, Action> = {
       // A draft selects itself but does not leave Settings or a project
       // page; close them so the composer is in front, not behind.
       closeScreens(s);
-      void s.createDraft(active);
+      openAgentDraft(s, active);
     },
   },
   // The sidebar's own popover, so This Mac's, whichever host is on screen.
