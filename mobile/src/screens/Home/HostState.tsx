@@ -48,7 +48,7 @@ export function HostState() {
     title = connection === "pairing" ? `Pairing with ${host}` : `Connecting to ${host}`;
     body = <Working>{step ? STEP_LABELS[step] : "This usually takes a moment…"}</Working>;
   } else if (connection === "error" && retrying) {
-    dot = "waiting";
+    dot = "stopped";
     title = `Can't reach ${host}`;
     body = (
       <>

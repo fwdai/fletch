@@ -1,7 +1,7 @@
 import { Icon } from "@desktop/components/Icon";
 import { Segmented, Sheet, Toggle } from "../components/ui";
 import { useHost } from "../host/useHost";
-import { CONNECTION_TEXT } from "../lib/connection";
+import { CONNECTION_TEXT, connectionLook } from "../lib/connection";
 import { ignore } from "../lib/ignore";
 import { projectsOf } from "../lib/projects";
 import { severalHosts, useApp, useHostName, useHostNav, useHostStore } from "../store";
@@ -14,6 +14,7 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
   const { hostKey } = useHost();
   const hostName = useHostName();
   const connection = useHostStore((s) => s.connection);
+  const look = useHostStore((s) => connectionLook(s.connection, s.retrying));
   const { push } = useHostNav();
   // With one host paired, its provider accounts are a tap from the Home
   // header; with several, each host's are reached from here.
@@ -48,17 +49,14 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
           <div
             style={{
               fontSize: 12.5,
-              color: connection === "connected" ? "var(--success)" : "var(--danger)",
+              color: look.color,
               display: "flex",
               alignItems: "center",
               gap: 6,
               marginTop: 2,
             }}
           >
-            <span
-              className={`dot ${connection === "connected" ? "running" : "error"}`}
-              style={{ width: 6, height: 6 }}
-            />
+            <span className={`dot ${look.dot}`} style={{ width: 6, height: 6 }} />
             {CONNECTION_TEXT[connection]}
           </div>
         </div>

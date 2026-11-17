@@ -1,4 +1,5 @@
 import { Notice } from "../../../components/ui/Notice";
+import { isProblem } from "../../../lib/connection";
 import { ignore } from "../../../lib/ignore";
 import { useHostStore } from "../../../store";
 
@@ -19,7 +20,7 @@ export function HostBanner() {
       : "Not connected to your Mac";
   return (
     <Notice
-      tone={busy || retrying ? "warn" : "error"}
+      tone={isProblem(connection, retrying) ? "error" : "warn"}
       icon={
         busy ? (
           <span className="working-dots">
