@@ -67,6 +67,12 @@ jobs:
       - name: Version sync
         run: ./scripts/check-version.sh
 
+      # The cloud image's tag names what it is made from, so a change to its
+      # entrypoint or build cannot keep a tag the registry already has and is
+      # never pushed again. Pure shell, like the step above.
+      - name: Cloud image tag
+        run: ./scripts/check-cloud-image.sh
+
       # Plain apt, deliberately not `cache-apt-pkgs-action`. That action cached a
       # *failed* install: when Ubuntu's mirror served 404s for the versions its
       # index advertised, the action installed 0 of 4 packages, exited green, and

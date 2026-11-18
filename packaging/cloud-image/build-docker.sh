@@ -2,8 +2,9 @@
 # Build the cloud image the one way, on a Mac with Docker Desktop or on the
 # x86-64 CI runner, from a built box image: build.sh in a debian:trixie
 # container writes the root, `docker import` makes it the image
-# ghcr.io/fwdai/fletch-cloud:<box image version>-<REVISION> with the
-# entrypoint, and with --test, test.sh runs it.
+# ghcr.io/fwdai/fletch-cloud:<box image version>-<inputs fingerprint> with
+# the entrypoint, and with --test, test.sh runs it. The image's config below
+# is part of what the fingerprint covers (inputs.sh).
 #
 #   packaging/cloud-image/build-docker.sh [--test] [BOX_OUT] [OUT_DIR]
 #

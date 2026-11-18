@@ -488,9 +488,10 @@ entrypoint does what init does that is not VM plumbing (the environment
 check, `/data`, the identity binds, the host key, `/data/tools` on
 `/opt/fletch/tools`) and runs sshd on TCP port 2222. The apt proxy goes, and
 with it the egress policy: the machine's network is its own. It is
-`ghcr.io/fwdai/fletch-cloud:<VERSION>-<REVISION>`, `REVISION` counting the
-changes to the cloud image itself, and the Box image workflow pushes it where
-it publishes the x86_64 release, once per tag. Nothing in the app uses it yet.
+`ghcr.io/fwdai/fletch-cloud:<VERSION>-<fingerprint>`, the fingerprint naming
+the cloud image's own inputs (`packaging/cloud-image/inputs.sh`), so a change
+to them is another tag; the Box image workflow pushes it where it publishes
+the x86_64 release, once per tag. Nothing in the app uses it yet.
 
 ## Workflows
 

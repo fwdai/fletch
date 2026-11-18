@@ -63,11 +63,4 @@ if [[ "$pinned" != "$image_version" ]]; then
   exit 1
 fi
 
-# The cloud image is tagged <box image version>-<REVISION> (packaging/cloud-image).
-revision="$(tr -d '[:space:]' < packaging/cloud-image/REVISION)"
-if [[ ! "$revision" =~ ^[1-9][0-9]*$ ]]; then
-  echo "error: packaging/cloud-image/REVISION is '$revision', not a positive integer" >&2
-  exit 1
-fi
-
 echo "$version"

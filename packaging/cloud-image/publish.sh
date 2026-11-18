@@ -1,11 +1,12 @@
 #!/bin/sh
 # Push a cloud image build-docker.sh built, once. Its tag,
-# <box image version>-<REVISION>, names one image: a tag the registry has is
-# never pushed again, so a change to what the image contains needs a REVISION
-# bump (or a new box image version) to reach the registry. Needs `docker
-# login` to the registry (ghcr.io: the workflow's token, `packages: write`).
+# <box image version>-<inputs fingerprint>, names one image: the box image's
+# version names its inputs and the fingerprint names this directory's
+# (inputs.sh), so a tag the registry has holds what this build would, and is
+# never pushed again. Needs `docker login` to the registry (ghcr.io: the
+# workflow's token, `packages: write`).
 #
-#   publish.sh IMAGE     e.g. ghcr.io/fwdai/fletch-cloud:0.5.2-1 (OUT_DIR/image)
+#   publish.sh IMAGE     e.g. ghcr.io/fwdai/fletch-cloud:0.5.2-7dab1a2f3cc6 (OUT_DIR/image)
 set -eu
 
 IMAGE=${1:?usage: publish.sh IMAGE}

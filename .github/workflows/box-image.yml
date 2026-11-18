@@ -21,7 +21,8 @@ name: Box image
 #
 # The x86-64 job also builds the cloud image (packaging/cloud-image) from the
 # images it built, tests it, and where it publishes the release pushes it as
-# ghcr.io/fwdai/fletch-cloud:<VERSION>-<REVISION>, unless that tag exists.
+# ghcr.io/fwdai/fletch-cloud:<VERSION>-<inputs fingerprint>, unless that tag
+# exists (it then holds the same image: packaging/cloud-image/inputs.sh).
 on:
   pull_request:
     paths:

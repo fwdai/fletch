@@ -8,7 +8,7 @@ with the guest contract of a box on this machine. The map of the VM side is
 
 | File | What |
 | --- | --- |
-| `REVISION` | The cloud revision, a positive integer; the tag is `<box image VERSION>-<REVISION>` |
+| `inputs.sh` | The fingerprint of the files below that decide what the image holds; the tag is `<box image VERSION>-<fingerprint>` |
 | `entrypoint` | `/opt/fletch/cloud-entrypoint`, the image's `ENTRYPOINT`: the guest contract over TCP |
 | `build.sh` | Root, Debian trixie: extracts a built box image's base and layers, flattens them, applies the cloud changes, writes `rootfs.tar` |
 | `build-docker.sh` | The one way to build, on a Mac (Docker Desktop) or in CI: `build.sh` in a container, `docker import`, `test.sh` with `--test` |
@@ -45,7 +45,7 @@ The cloud changes, and nothing else:
   nftables backend and the bridge stay. Nothing starts dockerd in a cloud box;
   one started by hand (`sudo dockerd &`) finds a config that works.
 - `/etc/fletch-cloud-image`: `fletch-cloud-image <tag> (<arch>, box image
-  <version>, cloud revision <n>)`, beside the box image's `/etc/fletch-image`.
+  <version>, cloud inputs <fingerprint>)`, beside the box image's `/etc/fletch-image`.
 - The image config: the entrypoint, `PATH`, and
   `org.opencontainers.image.source` (the repository).
 
@@ -97,7 +97,7 @@ as the `ProxyCommand`.
 
 ```sh
 packaging/box-image/build-docker.sh              # the box image, -> packaging/box-image/out
-packaging/cloud-image/build-docker.sh --test     # -> ghcr.io/fwdai/fletch-cloud:<VERSION>-<REVISION>, local
+packaging/cloud-image/build-docker.sh --test     # -> ghcr.io/fwdai/fletch-cloud:<VERSION>-<fingerprint>, local
 ```
 
 Instead of building the box image, `packaging/box-image/out` may hold a
@@ -128,18 +128,22 @@ runner, then test again.
 
 ## Tags and publishing
 
-`ghcr.io/fwdai/fletch-cloud:<box image VERSION>-<REVISION>`, x86_64 only (the
+`ghcr.io/fwdai/fletch-cloud:<box image VERSION>-<fingerprint>`, x86_64 only (the
 machines a cloud box runs on; the box image's x86_64 release is
 `box-image-v<VERSION>-x86_64`). The Box image workflow's x86-64 job builds and
 tests it from the images it built on every run, and pushes it where it
 publishes the release, unless the registry has the tag (`publish.sh`); a pull
 request pushes nothing.
 
-A tag names one image: bump `REVISION` when a change here changes what the
-image contains (`build.sh`, `entrypoint`); `test.sh`, `publish.sh` and this
-README do not. A new box image VERSION is a new tag by itself.
-`scripts/check-version.sh` holds `REVISION` to a positive integer; nothing
-notices a change without a bump, which the registry then never gets.
+A tag names one image, with nothing to bump. Its second half is the
+fingerprint `inputs.sh` prints: twelve hex digits over `build.sh`,
+`build-docker.sh` (the image's config) and `entrypoint`, the files here that
+decide what the image holds. A change to any of them is another tag, which
+the registry does not have and so gets; `test.sh`, `publish.sh` and this
+README leave it alone, and a new box image VERSION is a new tag by itself.
+`scripts/check-cloud-image.sh`, run by CI, holds the fingerprint to exactly
+that. What pins an image by its tag is changed with the inputs, in the same
+pull request, as the app's box image pin is with the box image.
 
 ghcr makes a new package private. A provider pulls the image without
 credentials only once the package is public (its settings on GitHub, once).

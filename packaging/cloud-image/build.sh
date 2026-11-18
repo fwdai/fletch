@@ -10,7 +10,8 @@
 # BOX_OUT holds a box image as packaging/box-image/build.sh writes it (or its
 # release): manifest.json, base.erofs, layer-<name>.erofs. Writes to OUT_DIR:
 #   rootfs.tar   the root, numeric owners, for `docker import`
-#   tag          <box image version>-<REVISION>
+#   tag          <box image version>-<fingerprint of this directory's inputs>
+#                (inputs.sh)
 #   arch         the manifest's arch (aarch64, x86_64)
 #
 # The box image is the one source of what a box contains; nothing here
@@ -25,7 +26,7 @@ set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 BOX=${1:?usage: build.sh BOX_OUT OUT_DIR}
 OUT=${2:?usage: build.sh BOX_OUT OUT_DIR}
-REVISION=$(cat "$HERE/REVISION")
+INPUTS=$("$HERE/inputs.sh" "$HERE")
 WORK=${WORK:-/work/cloud-image}
 ROOT=$WORK/root
 M=$BOX/manifest.json
@@ -33,7 +34,7 @@ M=$BOX/manifest.json
 fail() { echo "build.sh: $*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || fail "run as root"
-echo "$REVISION" | grep -Eq '^[1-9][0-9]*$' || fail "REVISION must be a positive integer, got '$REVISION'"
+echo "$INPUTS" | grep -Eq '^[0-9a-f]{12}$' || fail "inputs.sh gave '$INPUTS', not a fingerprint"
 [ -f "$M" ] || fail "no $M (packaging/box-image/build-docker.sh first, or a release's files)"
 
 echo "== installing build tools"
@@ -44,7 +45,7 @@ apt-get -qq install -y --no-install-recommends erofs-utils jq >/dev/null
 VERSION=$(jq -r .version "$M")
 ARCH=$(jq -r .arch "$M")
 [ "$(jq -r '.images[0].name' "$M")" = base ] || fail "$M does not list the base first"
-echo "== box image $VERSION ($ARCH), cloud revision $REVISION"
+echo "== box image $VERSION ($ARCH), cloud inputs $INPUTS"
 jq -r '.images[] | "\(.sha256)  \(.file)"' "$M" | (cd "$BOX" && sha256sum --quiet -c -) ||
   fail "the files in $BOX do not match $M"
 
@@ -88,11 +89,11 @@ mv "$daemon.new" "$daemon"
 # /opt/fletch/tools stays the image's empty directory: the entrypoint binds
 # /data/tools on it.
 [ -d "$ROOT/opt/fletch/tools" ] || fail "no /opt/fletch/tools directory in the base"
-echo "fletch-cloud-image $VERSION-$REVISION ($ARCH, box image $VERSION, cloud revision $REVISION)" > "$ROOT/etc/fletch-cloud-image"
+echo "fletch-cloud-image $VERSION-$INPUTS ($ARCH, box image $VERSION, cloud inputs $INPUTS)" > "$ROOT/etc/fletch-cloud-image"
 
 echo "== writing rootfs.tar"
 tar -C "$ROOT" --numeric-owner -cf "$OUT/rootfs.tar" .
-echo "$VERSION-$REVISION" > "$OUT/tag"
+echo "$VERSION-$INPUTS" > "$OUT/tag"
 echo "$ARCH" > "$OUT/arch"
 rm -rf "$WORK"
-echo "== done: $OUT/rootfs.tar ($(du -m "$OUT/rootfs.tar" | cut -f1) MB), tag $VERSION-$REVISION"
+echo "== done: $OUT/rootfs.tar ($(du -m "$OUT/rootfs.tar" | cut -f1) MB), tag $VERSION-$INPUTS"
