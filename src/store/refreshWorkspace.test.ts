@@ -100,3 +100,33 @@ describe("refreshWorkspace generation guard", () => {
     expect(set).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("refreshWorkspace and the state the event stream carries", () => {
+  beforeEach(() => {
+    getWorkspace.mockReset();
+  });
+
+  it("takes each agent's open turn from the snapshot", async () => {
+    // What a client that was backgrounded missed: `fuji` finished its turn,
+    // and `etna`, whose session was resting, took a message and is still
+    // coming up for it — at `idle` on the wire, with the turn owed.
+    getWorkspace.mockResolvedValue({
+      agents: [
+        { id: "fuji", status: "idle", turn_since: null },
+        { id: "etna", status: "idle", turn_since: 250 },
+        // From a host that does not say: left as the events left it.
+        { id: "kibo", status: "idle" },
+      ],
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: test stub
+    let patch: any;
+    // biome-ignore lint/suspicious/noExplicitAny: test stub for the store set()
+    const set = (updater: any) => {
+      patch = updater({ sending: {}, turnStartedAt: { fuji: 100, kibo: 7 } });
+    };
+
+    await refreshWorkspace(localEngine, set);
+
+    expect(patch.turnStartedAt).toEqual({ etna: 250, kibo: 7 });
+  });
+});

@@ -33,6 +33,12 @@ impl Supervisor {
     /// Async because a turn delivered now is checkpointed first (see
     /// `deliver_as_turn`), and a send that arrives meanwhile waits for that
     /// turn to start before it routes (`Supervisor::delivery_locks`).
+    ///
+    /// The turn the message opens is open from here, not from its hand-off to
+    /// the process (`Supervisor::open_turn`): accepted for an agent at rest,
+    /// the message is what its user is waiting on through a relaunch of the
+    /// session, the checkpoint and the delivery alike. A message that reaches
+    /// no turn and has none coming closes it again before this returns.
     pub async fn send_user_message(
         self: Arc<Self>,
         ctx: &Arc<EngineCtx>,
@@ -62,6 +68,46 @@ impl Supervisor {
         // leaves the message queued, and an archive must see neither half-done
         // (`Supervisor::open_route`).
         let _route = self.open_route(agent_id)?;
+        // A turn left open with nothing behind it (no turn running, no
+        // message held) is nobody's: this message's turn starts now, not then.
+        if !self.is_busy(agent_id) && self.message_queue.lock().is_empty(agent_id) {
+            self.open_turns.lock().remove(agent_id);
+        }
+        self.open_turn(ctx, agent_id);
+        let queued = self
+            .clone()
+            .route_user_message(ctx, &record, turn_id, text, attachments)
+            .await;
+        // Every arm of the routing holds the message rather than dropping it,
+        // but holding only helps if something will eventually come along to
+        // deliver it. When no process is live at all there is no such boundary
+        // — the session is resting after an app restart, or its process exited
+        // when it last went idle — so revive it and flush. Without this the
+        // message sits in the queue until the user gives up: no turn ever
+        // starts, and each retry only grows the backlog.
+        if matches!(queued, Ok(true)) && self.needs_revive(agent_id) {
+            self.clone().revive_and_flush(ctx, agent_id);
+        } else {
+            // Delivered (the agent is busy, and this is a no-op), or held with
+            // nothing on its way to deliver it, or refused: an agent left at
+            // rest owes no turn.
+            self.settle_turn(ctx, agent_id);
+        }
+        queued
+    }
+
+    /// Route an accepted message (`send_user_message`, which holds the agent's
+    /// delivery lock and route): deliver it, inject it or queue it, and say
+    /// whether it is held for a later boundary.
+    async fn route_user_message(
+        self: Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        record: &AgentRecord,
+        turn_id: &str,
+        text: &str,
+        attachments: &[String],
+    ) -> Result<bool> {
+        let agent_id = record.id.as_str();
         // Ahead of the routing, so it sees the relaunched process: idle, on a
         // token with the whole margin ahead of the turn.
         self.relaunch_if_login_due(ctx, agent_id).await;
@@ -91,7 +137,7 @@ impl Supervisor {
         // the turn for it, `apply_changes_now`). Anything else still goes in
         // live — a pending relaunch is no reason to hold plain text back.
         let waits_for_relaunch = self.respawn_pending.lock().contains(agent_id)
-            && names_granted_folder(&record, attachments);
+            && names_granted_folder(record, attachments);
         let live_closed = waits_for_relaunch
             || self
                 .agents
@@ -197,16 +243,6 @@ impl Supervisor {
                 self.is_busy(agent_id) || flush_queued(&self, ctx, agent_id).await?
             }
         };
-        // Every arm above holds the message rather than dropping it, but holding
-        // only helps if something will eventually come along to deliver it. When
-        // no process is live at all there is no such boundary — the session is
-        // resting after an app restart, or its process exited when it last went
-        // idle — so revive it and flush. Without this the message sits in the
-        // queue until the user gives up: the spinner runs, no turn ever starts,
-        // and each retry only grows the backlog.
-        if queued && self.needs_revive(agent_id) {
-            self.clone().revive_and_flush(ctx, agent_id);
-        }
         Ok(queued)
     }
 
@@ -258,10 +294,13 @@ impl Supervisor {
                 "reviving a resting session to deliver a held message"
             );
             if let Err(e) = self.clone().resume_agent(ctx.clone(), &agent_id).await {
-                // The status is already Error with this reason (set inside the
-                // resume), so the user sees why; the message stays queued and a
-                // later successful revive still delivers it.
+                // A launch that failed left the status Error with this reason,
+                // so the user sees why; the message stays queued and a later
+                // successful revive still delivers it. Its turn is not coming
+                // now, which a resume refused before it launched has yet to
+                // say.
                 tracing::warn!(error = %e, agent_id, "revive for a held message failed");
+                self.settle_turn(&ctx, &agent_id);
                 return;
             }
             // `start_process` drains the queue itself on the spawn-completion
@@ -273,6 +312,7 @@ impl Supervisor {
             if let Err(e) = flush_queued(&self, &ctx, &agent_id).await {
                 tracing::warn!(error = %e, agent_id, "post-revive queue flush failed");
             }
+            self.settle_turn(&ctx, &agent_id);
         });
     }
 
@@ -509,12 +549,20 @@ pub(super) fn mark_user_turn_started(
     if let Some(activity) = sup.activities.lock().get_mut(agent_id) {
         activity.reset_for_new_turn();
     }
-    // Stamp the turn's run start with a single timestamp shared by the persisted
-    // row and the `turn:started` event, so the live timer and the footer measure
-    // from the identical instant. Native PTY turns have no fletch-origin row (no
-    // turn_id), so they carry no persisted timing — but still emit the event so
-    // their live timer has an anchor.
-    let started_at = chrono::Utc::now().timestamp_millis();
+    // Stamp the turn's start with the one timestamp the open turn carries
+    // (`Supervisor::open_turn`): when its message was accepted, or now for a
+    // turn nothing opened before this. The persisted row, the `turn:started`
+    // event and every status share it, so the live timer and the footer
+    // measure the identical span, the wait for the process included. Native
+    // PTY turns have no fletch-origin row (no turn_id), so they carry no
+    // persisted timing — but still emit the event so their live timer has an
+    // anchor. Emitted here even for a turn announced when it opened: a client
+    // that drops the anchor at the rest of a relaunch takes it up again.
+    let started_at = *sup
+        .open_turns
+        .lock()
+        .entry(agent_id.to_string())
+        .or_insert_with(|| chrono::Utc::now().timestamp_millis());
     if let Some(turn_id) = turn_id {
         if let Err(e) = sup.workspace.mark_user_turn_started(turn_id, started_at) {
             tracing::warn!(error = %e, agent_id, "stamp user turn start failed");
@@ -629,6 +677,10 @@ pub(super) async fn flush_queued(
         }
         (coalesced, members.len())
     };
+    // The follow-ups' turn is owed from here, where they start on their way,
+    // not from the far side of the checkpoint. A no-op for a message held
+    // since it was accepted, whose turn has been open since then.
+    sup.open_turn(ctx, agent_id);
     if count > 1 {
         tracing::debug!(
             agent_id,
@@ -733,6 +785,9 @@ pub(super) fn drain_message_queue(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_
         return;
     }
     if sup.interrupted.lock().remove(agent_id) {
+        // Stopped while a message was held for a process still coming up: its
+        // turn is not coming either.
+        sup.settle_turn(ctx, agent_id);
         return;
     }
     if sup.message_queue.lock().is_empty(agent_id) {
@@ -748,6 +803,7 @@ pub(super) fn drain_message_queue(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_
         if let Err(e) = flush_queued(&sup_arc, &ctx, &agent_id).await {
             tracing::warn!(error = %e, agent_id, "flush queued follow-up messages failed");
         }
+        sup_arc.settle_turn(&ctx, &agent_id);
     });
 }
 
@@ -1019,6 +1075,217 @@ mod tests {
         sup.workspace.mark_user_turn_started(TURN, 4242).unwrap();
         let turns = sup.workspace.read_history_turns("yosemite").unwrap();
         assert_eq!(turns[0].started_at, Some(4242));
+    }
+
+    // ── the open turn ─────────────────────────────────────────────────────
+
+    /// What each `agent:status` emitted so far said: the status, and the turn
+    /// it reported open.
+    fn statuses_said(sink: &crate::host::sink::RecordingSink) -> Vec<(String, Option<i64>)> {
+        sink.events()
+            .into_iter()
+            .filter(|(name, _)| name == "agent:status")
+            .map(|(_, p)| {
+                (
+                    p["status"].as_str().unwrap().to_string(),
+                    p["turn_since"].as_i64(),
+                )
+            })
+            .collect()
+    }
+
+    /// The `started_at` of each `turn:started` emitted so far.
+    fn turns_started(sink: &crate::host::sink::RecordingSink) -> Vec<i64> {
+        sink.events()
+            .into_iter()
+            .filter(|(name, _)| name == "turn:started")
+            .map(|(_, p)| p["started_at"].as_i64().unwrap())
+            .collect()
+    }
+
+    /// `yosemite` at rest with a record, nothing live.
+    fn resting() -> Arc<Supervisor> {
+        let sup = Arc::new(test_supervisor());
+        let mut record = record_with_status("yosemite", AgentStatus::Idle);
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup
+    }
+
+    /// The user's turn, as the engine reports it: open from the moment the
+    /// message is accepted, through the launch of the process it is held for
+    /// and that process coming to rest, and closed only when the turn has run.
+    /// One start time the whole way, which is the status every client reads
+    /// "working" from.
+    #[tokio::test]
+    async fn a_held_message_keeps_one_turn_open_from_acceptance_to_the_end_of_its_run() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = resting();
+
+        let since = sup.open_turn(&ctx, "yosemite");
+        // The session relaunches, rests, and only then takes the message.
+        sup.set_status(&ctx, "yosemite", AgentStatus::Spawning, None);
+        assert!(sup.claim_spawn_outcome(&ctx, "yosemite", AgentStatus::Idle, None));
+        assert_eq!(
+            sup.agent_record("yosemite").unwrap().turn_since,
+            Some(since)
+        );
+        sup.set_status(&ctx, "yosemite", AgentStatus::Running, None);
+        sup.set_status(&ctx, "yosemite", AgentStatus::Idle, None);
+
+        assert_eq!(
+            statuses_said(&sink),
+            [
+                ("spawning".to_string(), Some(since)),
+                ("idle".to_string(), Some(since)),
+                ("running".to_string(), Some(since)),
+                ("idle".to_string(), None),
+            ]
+        );
+        // Announced once, where it opened: going Running did not open another.
+        assert_eq!(turns_started(&sink), [since]);
+        assert_eq!(sup.turn_since("yosemite"), None);
+        assert_eq!(sup.agent_record("yosemite").unwrap().turn_since, None);
+    }
+
+    /// A turn nothing announced beforehand (the provider's own, a native one)
+    /// is open for as long as the agent runs.
+    #[tokio::test]
+    async fn a_turn_nothing_opened_is_open_while_the_agent_runs() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = resting();
+        sup.statuses
+            .lock()
+            .insert("yosemite".to_string(), AgentStatus::Idle);
+
+        sup.set_status(&ctx, "yosemite", AgentStatus::Running, None);
+        let since = sup.turn_since("yosemite").expect("open while running");
+        sup.set_status(&ctx, "yosemite", AgentStatus::Idle, None);
+
+        assert_eq!(
+            statuses_said(&sink),
+            [
+                ("running".to_string(), Some(since)),
+                ("idle".to_string(), None)
+            ]
+        );
+    }
+
+    /// Going down ends the turn, whatever it was waiting on.
+    #[tokio::test]
+    async fn a_launch_that_fails_closes_the_turn_it_was_for() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = resting();
+
+        sup.open_turn(&ctx, "yosemite");
+        sup.set_status(&ctx, "yosemite", AgentStatus::Spawning, None);
+        assert!(sup.claim_spawn_outcome(
+            &ctx,
+            "yosemite",
+            AgentStatus::Error,
+            Some("no session".to_string())
+        ));
+
+        assert_eq!(statuses_said(&sink).last().unwrap().1, None);
+        assert_eq!(sup.turn_since("yosemite"), None);
+    }
+
+    /// A turn opened for a message no delivery is coming for is closed, and
+    /// the clients told, by announcing the resting status again without it. A
+    /// busy agent's turn is left for its status to end.
+    #[tokio::test]
+    async fn a_turn_with_no_delivery_coming_is_settled_and_a_busy_one_is_left() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = resting();
+
+        let since = sup.open_turn(&ctx, "yosemite");
+        sup.set_status(&ctx, "yosemite", AgentStatus::Spawning, None);
+        sup.settle_turn(&ctx, "yosemite");
+        assert_eq!(sup.turn_since("yosemite"), Some(since));
+
+        assert!(sup.claim_spawn_outcome(&ctx, "yosemite", AgentStatus::Idle, None));
+        sup.settle_turn(&ctx, "yosemite");
+        assert_eq!(sup.turn_since("yosemite"), None);
+        assert_eq!(
+            statuses_said(&sink).last().unwrap(),
+            &("idle".to_string(), None)
+        );
+
+        // Nothing left to close: said once.
+        let said = statuses_said(&sink).len();
+        sup.settle_turn(&ctx, "yosemite");
+        assert_eq!(statuses_said(&sink).len(), said);
+    }
+
+    /// The turn's row starts when its message was accepted, not when it was
+    /// handed over: the time a turn is recorded to have run is the time its
+    /// user waited, and it is the clock the live count shares.
+    #[tokio::test]
+    async fn a_turn_is_recorded_as_starting_when_its_message_was_accepted() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = resting();
+        sup.statuses
+            .lock()
+            .insert("yosemite".to_string(), AgentStatus::Idle);
+        sup.workspace
+            .insert_user_turn("yosemite", TURN, "fix the build", &[])
+            .unwrap();
+        sup.open_turns.lock().insert("yosemite".to_string(), 4242);
+
+        mark_user_turn_started(&sup, &ctx, "yosemite", Some(TURN));
+
+        let turns = sup.workspace.read_history_turns("yosemite").unwrap();
+        assert_eq!(turns[0].started_at, Some(4242));
+        assert_eq!(turns_started(&sink), [4242]);
+        assert_eq!(statuses_said(&sink), [("running".to_string(), Some(4242))]);
+    }
+
+    /// The whole path for a session with no process: the message is accepted,
+    /// its turn opens at once, the delivery fails for want of a process, and
+    /// the revive it asks for cannot launch (the session has nothing to
+    /// resume). The turn is then closed and the clients told, rather than
+    /// left reading "working" for an agent at rest.
+    #[tokio::test]
+    async fn a_message_whose_revive_cannot_launch_does_not_leave_its_turn_open() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _checkout) = idle_agent_in(td.path()).await;
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+
+        let held = sup
+            .clone()
+            .send_user_message(&ctx, "yosemite", TURN, "hello", &[])
+            .await
+            .unwrap();
+        assert!(held, "no process to deliver to: the message is held");
+
+        // The revive runs on its own task.
+        for _ in 0..200 {
+            if sup.turn_since("yosemite").is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(sup.turn_since("yosemite"), None);
+
+        // Opened where the message was accepted, ahead of anything else it
+        // caused, and every status up to the close carried that one start.
+        let events = sink.events();
+        let opened = events
+            .iter()
+            .position(|(name, _)| name == "turn:started")
+            .unwrap();
+        let first_status = events
+            .iter()
+            .position(|(name, _)| name == "agent:status")
+            .unwrap();
+        assert!(opened < first_status);
+        let since = turns_started(&sink)[0];
+        let said = statuses_said(&sink);
+        let (last, before) = said.split_last().unwrap();
+        assert!(
+            before.iter().all(|(_, turn)| *turn == Some(since)),
+            "{said:?}"
+        );
+        assert_eq!(last.1, None, "{said:?}");
     }
 
     // ── turn outcomes ─────────────────────────────────────────────────────

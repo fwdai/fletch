@@ -23,7 +23,7 @@
 
 import type { Workspace } from "@/api";
 import type { Engine } from "@/api/engine";
-import { reconcileSending } from "@/helpers";
+import { reconcileSending, reconcileTurns } from "@/helpers";
 import { newestWins } from "@/util/newestWins";
 import { applyPendingHides } from "./pendingHides";
 import { perHost } from "./perHost";
@@ -58,13 +58,15 @@ export const refreshWorkspace = async (
   // ours is stale, so drop it instead of overwriting the newer snapshot.
   if (!claim.current() || !fresh) return null;
   const applied = applyPendingHides(hostId, fresh);
-  // Every snapshot also settles the `sending` bridge: a status event missed
-  // while the window was backgrounded would otherwise leave an agent reading
-  // "working" for the rest of the session (see helpers/sending).
+  // Every snapshot also settles what the event stream carries between them:
+  // the `sending` bridge and the open turns. A status event missed while the
+  // window was backgrounded would otherwise leave an agent reading "working"
+  // for the rest of the session (see helpers/sending, helpers/turn).
   set((state) => ({
     ...extra?.(applied, state),
     workspace: applied,
     sending: reconcileSending(state.sending, applied.agents, sendsInFlight(hostId)),
+    turnStartedAt: reconcileTurns(state.turnStartedAt, applied.agents),
   }));
   return applied;
 };

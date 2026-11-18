@@ -44,6 +44,7 @@ const newStore = (hostId: EnvironmentId = LOCAL_ENVIRONMENT_ID) => {
         offSidebarAgents: {},
         managedLogs: {},
         sending: {},
+        turnStartedAt: {},
         loadHistoryTranscript: vi.fn().mockResolvedValue(undefined),
         loadPendingPublishApprovals: vi.fn().mockResolvedValue(undefined),
         loadPendingEgressPrompts: vi.fn().mockResolvedValue(undefined),

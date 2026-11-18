@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
-import { Loader } from "@/components/ui/Loader";
 import { LiveTimer } from "./RunTimer";
 
 const DURATION_MS = 130;
@@ -45,9 +44,12 @@ export interface WorkingNotice {
  *  finished turn leaves in the feed. Slides up from behind the composer on
  *  show, back down on turn end.
  *
- *  One thing on the line moves, and no more: the count, when there is a start
- *  to count from, else the loader. The composer's own control already shows a
- *  run in progress, so the line is the datum, not a second spinner. */
+ *  One line, one look, from the send to the turn's end. The count is from the
+ *  host's start of the turn, which is the moment the message was accepted;
+ *  it joins the line when the host has said so (at once, but for a host from
+ *  before open turns, which only says when the agent starts running). The
+ *  composer's own control already shows a run in progress, so the line is the
+ *  datum, not a second spinner. */
 export function ChatWorkingStatus({
   visible,
   label,
@@ -66,11 +68,7 @@ export function ChatWorkingStatus({
 
   return (
     <div className={`chat-status${open ? " is-open" : ""}`} role="status" aria-live="polite">
-      {startedAt != null ? (
-        <Icon name="clock" size={11} className="turn-clock-i" />
-      ) : (
-        <Loader variant="accent" />
-      )}
+      <Icon name="clock" size={11} className="turn-clock-i" />
       <span className="chat-status-label">{label}</span>
       {startedAt != null && (
         <>

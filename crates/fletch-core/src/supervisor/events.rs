@@ -113,10 +113,13 @@ pub(super) fn emit_session_sync_health(
     );
 }
 
-/// Emitted when a turn flips to Running, carrying the backend's own start
-/// timestamp (the same value persisted as the turn's `started_at`). The live
-/// timer anchors to this rather than the event's client-receipt time, so it
-/// shares the footer's clock and the two never disagree by the delivery latency.
+/// Emitted when a turn opens (`Supervisor::open_turn`) and again when its
+/// message is handed to the agent, carrying the backend's own start timestamp
+/// both times: the instant the turn's message was accepted, which is also the
+/// turn row's `started_at`. The live timer anchors to this rather than the
+/// event's client-receipt time, so it shares the footer's clock. A client that
+/// reads `turn_since` off `agent:status` needs neither; this is how one that
+/// does not learns the clock.
 #[derive(Clone, serde::Serialize)]
 struct TurnStartedPayload {
     agent_id: String,
@@ -178,14 +181,20 @@ struct AgentStatusPayload {
     agent_id: String,
     status: AgentStatus,
     last_error: Option<String>,
+    /// When the turn the agent owes its user began (`Supervisor::open_turns`),
+    /// `null` while it owes none. Always present, so a client can tell a host
+    /// that says no turn is open from one too old to say.
+    turn_since: Option<i64>,
 }
 
-/// Runtime status transition (Spawning/Running/Idle/Error).
+/// Runtime status transition (Spawning/Running/Idle/Error), with the turn the
+/// agent has open as of it.
 pub(super) fn emit_status(
     sink: &dyn EventSink,
     agent_id: &str,
     status: AgentStatus,
     last_error: Option<String>,
+    turn_since: Option<i64>,
 ) {
     emit(
         sink,
@@ -194,6 +203,7 @@ pub(super) fn emit_status(
             agent_id: agent_id.to_string(),
             status,
             last_error,
+            turn_since,
         },
     );
 }
@@ -760,13 +770,38 @@ mod tests {
     #[test]
     fn a_status_event_carries_its_name_and_payload() {
         let sink = RecordingSink::new();
-        emit_status(&sink, "fuji", AgentStatus::Idle, Some("boom".to_string()));
+        emit_status(
+            &sink,
+            "fuji",
+            AgentStatus::Idle,
+            Some("boom".to_string()),
+            None,
+        );
+        emit_status(&sink, "fuji", AgentStatus::Spawning, None, Some(4242));
         assert_eq!(
             sink.events(),
-            vec![(
-                "agent:status".to_string(),
-                json!({ "agent_id": "fuji", "status": "idle", "last_error": "boom" })
-            )]
+            vec![
+                (
+                    "agent:status".to_string(),
+                    // `turn_since` is there when it is null: a client tells a
+                    // host that says no turn is open from one too old to say.
+                    json!({
+                        "agent_id": "fuji",
+                        "status": "idle",
+                        "last_error": "boom",
+                        "turn_since": null
+                    })
+                ),
+                (
+                    "agent:status".to_string(),
+                    json!({
+                        "agent_id": "fuji",
+                        "status": "spawning",
+                        "last_error": null,
+                        "turn_since": 4242
+                    })
+                )
+            ]
         );
     }
 

@@ -1578,6 +1578,24 @@ on every device; a client skips the one whose `turn_id` matches its own
 optimistic bubble.
 On the `error` status transition, `agent:status` must carry the real
 `last_error`, since both clients keep the previous error when it is null.
+`agent:status` also carries `turn_since`: when the turn the agent owes its user
+began (epoch millis, the host's clock), or `null` while it owes none. A turn is
+open from the moment its message is accepted for an agent at rest until the
+agent is back at rest, so it spans a resting session's relaunch (`spawning`,
+then the `idle` of a process just up, then `running`) under one start time.
+That is what a client reads "working" from, and its clock: the status alone
+reads `idle` through part of that span. The same field is on every agent
+record a host returns (`get_workspace` and the other record reads), so a client
+that missed events is corrected by its next snapshot. The field is always
+present, `null` included; a host from before it sends none, and a client then
+falls back to the status (`running` or `spawning` is working) and to
+`turn:started` for the clock. `turn:started` (`agent_id`, `started_at`) fires
+when a turn opens and again when its message is handed to the agent, with the
+same `started_at` both times: the value `turn_since` carries and the start the
+finished turn's duration is measured from, so that duration is the time the
+user waited, not only the time the agent ran. A host closes a turn that no
+delivery is coming for (a held message whose relaunch failed, a stop while it
+was held) by sending the resting status again with `turn_since: null`.
 `agent:spawn-progress` (`agent_id`, `stage`, `detail`) names the step a fresh
 spawn is on — `preparing`, `cloning`, `indexing`, `carrying`,
 `attaching_repos`, `starting` — so the client can label the wait behind

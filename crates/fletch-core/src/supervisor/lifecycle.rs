@@ -2082,6 +2082,9 @@ impl Supervisor {
                 tracing::warn!(agent_id, error = %e, "post-respawn queue flush failed");
             }
         }
+        // Whatever was held through the respawn has its turn by now, or has
+        // none coming (a stop, a flush that put it back).
+        self.settle_turn(ctx, agent_id);
         Ok(())
     }
 
@@ -2091,7 +2094,6 @@ impl Supervisor {
         // exits, `apply_exit_if_current` moves it to Idle; codex's
         // per-turn `exec` exits on SIGINT and its `on_turn_exit` handler
         // ends the turn (it emits no `turn.completed` when interrupted).
-        let _ = ctx;
         // Mark the stop so the turn-end Idle transition keeps the queue intact
         // instead of auto-flushing it (A2-A). Cleared when a new turn starts.
         self.interrupted.lock().insert(agent_id.to_string());
@@ -2101,6 +2103,10 @@ impl Supervisor {
         if let Ok(agent) = self.live_agent(agent_id) {
             agent.interrupt();
         }
+        // Nothing to interrupt when the turn is still owed rather than
+        // running (its message held for an agent at rest): stopping is then
+        // the user no longer waiting on it.
+        self.settle_turn(&ctx, agent_id);
         Ok(())
     }
 }

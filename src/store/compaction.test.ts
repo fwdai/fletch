@@ -12,6 +12,7 @@ const stateWith = (a: AgentRecord, over: Partial<AppState> = {}): AppState =>
     workspace: { agents: [a] },
     offSidebarAgents: {},
     sending: {},
+    turnStartedAt: {},
     busyLabel: {},
     compactions: {},
     usage: {},

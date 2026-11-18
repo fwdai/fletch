@@ -583,6 +583,7 @@ impl WorkspaceManager {
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,
+            turn_since: None,
         }
     }
 }

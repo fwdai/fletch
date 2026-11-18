@@ -31,6 +31,7 @@ import {
   patchAgentRecord,
   providerFor,
   reconcileSending,
+  reconcileTurns,
   recordWorkspaceUsage,
   reduceRecords,
   replaceTurnBubble,
@@ -108,18 +109,20 @@ export interface WorkspaceSlice {
   /** True once the current process has attempted transcript replay for
    *  an agent. Prevents repeated reloads when a session has no JSONL. */
   transcriptLoaded: Record<string, boolean>;
-  /** Agents with a send from this client that the backend has not answered
-   *  with a status yet. The agent's `status` is the busy signal (see
-   *  `isAgentBusy`); this only bridges the gap between the click and the
-   *  `running` it produces — or the spawn it triggers first — so the UI reads
-   *  "working" from the click on. Discharged by the next `agent:status` other
-   *  than the resting `idle` a spawn emits before its first turn, and by a
-   *  failed send. */
+  /** Agents with a send from this client that the host has not answered yet.
+   *  The host's status and open turn are the busy signal (see `isAgentBusy`);
+   *  this only bridges the gap between the click and the host's first word on
+   *  it, so the UI reads "working" from the click on. Discharged by the
+   *  `turn:started` the send opens, by the next `agent:status` other than the
+   *  resting `idle` a spawn emits before its first turn (all a host from
+   *  before open turns has to answer with), and by a failed send. */
   sending: Record<string, boolean>;
-  /** The backend's own start timestamp (epoch millis) for the current turn,
-   *  from the `turn:started` event — the live-timer anchor. Shared with the
-   *  persisted `started_at`, so the strip and footer measure from the identical
-   *  instant; cleared at turn end. */
+  /** The turn each agent's host has open, by when it began (epoch millis):
+   *  the instant its message was accepted, from the host's own clock. An
+   *  entry means the agent is working (`isAgentBusy`) and is the live timer's
+   *  anchor; it is the persisted `started_at` too, so the strip and the footer
+   *  measure the identical span. Folded from `turn:started`, every
+   *  `agent:status` and every snapshot (helpers/turn). */
   turnStartedAt: Record<string, number>;
   /** Label shown alongside the busy indicator when a slash command opened the
    *  turn, e.g. "Compacting" for `/compact`. Cleared when the turn ends. */
@@ -372,10 +375,12 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
           },
           { ...state.offSidebarAgents },
         ),
-        // A fresh read of these records settles their `sending` bridge the way a
-        // workspace snapshot settles a sidebar agent's (see helpers/sending):
-        // they are absent from that snapshot, so this is their only authority.
+        // A fresh read of these records settles their `sending` bridge and
+        // their open turns the way a workspace snapshot settles a sidebar
+        // agent's (see helpers/sending, helpers/turn): they are absent from
+        // that snapshot, so this is their only authority.
         sending: reconcileSending(state.sending, agents, sendsInFlight(hostId)),
+        turnStartedAt: reconcileTurns(state.turnStartedAt, agents),
       })),
 
     markResultsSeen: (id) =>

@@ -36,4 +36,17 @@ describe("registerOffSidebarAgents", () => {
     // Still working: the bridge is moot, and left alone.
     expect(store.getState().sending.kyoto).toBe(true);
   });
+
+  it("takes each chat's open turn from the fresh list", () => {
+    const store = makeStore();
+    // biome-ignore lint/suspicious/noExplicitAny: partial store seed
+    store.setState({ turnStartedAt: { sakura: 100 } } as any);
+    store.getState().registerOffSidebarAgents([
+      { ...chat("sakura", "idle"), turn_since: null },
+      { ...chat("kyoto", "idle"), turn_since: 250 },
+    ]);
+    // Closed while this client was not listening, and one it never heard open:
+    // a process just up for a held message rests at idle with its turn owed.
+    expect(store.getState().turnStartedAt).toEqual({ kyoto: 250 });
+  });
 });

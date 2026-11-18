@@ -22,11 +22,16 @@ export function providerFor(state: AppState, agentId: string): string | undefine
 /** Whether an agent is working right now — the one busy signal every surface
  *  renders from (sidebar rail, composer strip, code panel, run thread).
  *
- *  The backend's status is the truth: `running` while a turn is in flight,
- *  whoever started it, and `spawning` while the process it needs is coming up.
- *  The only thing this client adds is its own send that the backend has not
- *  answered with a status yet (`sending`), so the UI reads "working" from the
- *  click rather than from the round trip.
+ *  The host's word is the truth, and it says two things. Its status: `running`
+ *  while a turn is in flight, whoever started it, and `spawning` while the
+ *  process it needs is coming up. And the turn it has open (`turnStartedAt`,
+ *  see `helpers/turn`): from the moment a message is accepted to the agent
+ *  back at rest, which holds through the rest of a process just launched for
+ *  a held message, where the status alone reads idle.
+ *
+ *  The only thing this client adds is its own send that the host has not
+ *  answered yet (`sending`), so the UI reads "working" from the click rather
+ *  than from the round trip.
  *
  *  The status is the store's record's when the store has one — that is what
  *  `agent:status` patches (see `patchAgentRecord`), so it is never behind a
@@ -38,7 +43,12 @@ export function isAgentBusy(
   fallbackStatus?: AgentStatus,
 ): boolean {
   const status = agentRecord(state, agentId)?.status ?? fallbackStatus;
-  return status === "running" || status === "spawning" || state.sending[agentId] === true;
+  return (
+    status === "running" ||
+    status === "spawning" ||
+    state.turnStartedAt[agentId] !== undefined ||
+    state.sending[agentId] === true
+  );
 }
 
 export type AgentPatch = Partial<AgentRecord> | ((a: AgentRecord) => Partial<AgentRecord>);

@@ -9,6 +9,7 @@
 //   - usage:        live-usage persistence into session_records
 //   - reasoning:    readable Codex reasoning persistence for transcript replay
 //   - spawn:        spawn-payload snapshots + the send-when-ready retry util
+//   - turn:         the host's open turn, folded from statuses and snapshots
 
 export * from "./agentLookups";
 export * from "./commands";
@@ -18,4 +19,5 @@ export * from "./reasoning";
 export * from "./sending";
 export * from "./spawn";
 export * from "./transcript";
+export * from "./turn";
 export * from "./usage";
