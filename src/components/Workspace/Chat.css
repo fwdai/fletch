@@ -36,14 +36,15 @@
     opacity 100ms linear;
 }
 /* With the environment sheet behind the composer the strip is the sheet's
-   right-hand line: laid over its visible part, with no surface of its own,
-   and kept clear of the machine's name on its left, which a long label is cut
+   right-hand line: laid over its visible part (which is set in from the
+   composer's sides by its corner radius), with no surface of its own, and
+   kept clear of the machine's name on its left, which a long label is cut
    short before. */
 .composer-anchor:has(.env-sheet) .chat-status {
   min-height: 0;
   height: 26px;
   margin-bottom: 0;
-  padding: 0 12px 0 min(260px, calc(50% + 20px));
+  padding: 0 calc(var(--r-lg) + 10px) 0 min(270px, calc(50% + 20px));
   background: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
