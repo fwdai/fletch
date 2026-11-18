@@ -13,10 +13,12 @@ use crate::cloud::ProviderId;
 
 const TOKEN: &str = "fo1_plain_test_token_0123456789";
 const FLYV1: &str = "FlyV1 fm2_macaroonA0123456789,fm2_macaroonB9876543210";
+const ORG: &str = "acme";
 const APP: &str = "fletch-box-ladakh-otter-k3j9x2ab";
+const VOL: &str = "vol_0123456789abcdef";
 
 fn client(server: &StandIn, token: &str, region: Option<&str>) -> Client {
-    let connection = Connection::new(ProviderId::Fly, token, Some("acme"))
+    let connection = Connection::new(ProviderId::Fly, token, Some(ORG))
         .unwrap()
         .with_region(region);
     Client::new(&connection, server.url())
@@ -30,10 +32,10 @@ fn spec() -> MachineSpec {
         image: "ghcr.io/fwdai/fletch-cloud:test".into(),
         env: vec![
             (
-                "FLETCH_AUTHORIZED_KEY".into(),
+                "FLETCH_BOX_AUTHORIZED_KEY".into(),
                 "ssh-ed25519 AAAA engine".into(),
             ),
-            ("FLETCH_HOME".into(), "/home/agent".into()),
+            ("FLETCH_BOX_HOME".into(), "/Users/alex".into()),
         ],
         cpus: 2,
         memory_mib: 4096,
@@ -42,8 +44,43 @@ fn spec() -> MachineSpec {
     }
 }
 
-/// Fly answering a create that goes right, and deleting whatever it is asked
-/// to.
+/// The create-machine request a box with [`spec`] sends, on [`VOL`] in
+/// `region`.
+fn machine_request(app: &str, region: &str) -> serde_json::Value {
+    json!({
+        "name": app,
+        "region": region,
+        "config": {
+            "image": "ghcr.io/fwdai/fletch-cloud:test",
+            "env": {
+                "FLETCH_BOX_AUTHORIZED_KEY": "ssh-ed25519 AAAA engine",
+                "FLETCH_BOX_HOME": "/Users/alex",
+            },
+            "guest": {
+                "cpu_kind": "shared",
+                "cpus": 2,
+                "memory_mb": 4096,
+                "persist_rootfs": "restart",
+            },
+            "rootfs": { "persist": "restart" },
+            "mounts": [{ "volume": VOL, "path": "/data" }],
+            "restart": { "policy": "no" },
+            "auto_destroy": false,
+            "metadata": { "fletch_box": "ladakh-otter" },
+            "services": [{
+                "protocol": "tcp",
+                "internal_port": 2222,
+                "autostart": false,
+                "autostop": "off",
+                "ports": [{ "port": 443, "handlers": ["tls"] }],
+            }],
+        },
+    })
+}
+
+/// Fly answering a create that goes right: the volume lands in the region
+/// asked for, or `iad` (the API server's) without one. An app's lists of
+/// machines and volumes are empty, and whatever is deleted goes.
 fn fly_ok(r: &Request) -> Reply {
     let path = r.path.as_str();
     match r.method.as_str() {
@@ -53,14 +90,27 @@ fn fly_ok(r: &Request) -> Reply {
         "POST" if path.ends_with("/ip_assignments") => {
             Reply::json(200, json!({ "ip": "66.241.124.1", "shared": true }))
         }
+        "POST" if path.ends_with("/volumes") => Reply::json(
+            200,
+            json!({
+                "id": VOL,
+                "name": "fletch_data",
+                "state": "created",
+                "region": r.body["region"].as_str().unwrap_or("iad"),
+                "size_gb": r.body["size_gb"],
+            }),
+        ),
         "POST" if path.ends_with("/machines") => Reply::json(
             200,
             json!({ "id": "m1", "state": "created", "instance_id": "v1", "version": "v1" }),
         ),
-        "GET" if path.contains("/machines/m1/wait?") => {
+        "GET" if path.contains("/wait?") => {
             Reply::json(200, json!({ "ok": true, "state": "started" }))
         }
-        "DELETE" => Reply::empty(202),
+        "GET" if path.ends_with("/machines") || path.ends_with("/volumes") => {
+            Reply::json(200, json!([]))
+        }
+        "DELETE" => Reply::json(200, json!({ "ok": true })),
         _ => Reply::json(500, json!({ "error": format!("unexpected {}", r.line()) })),
     }
 }
@@ -74,13 +124,19 @@ fn created_app(server: &StandIn) -> String {
 }
 
 #[tokio::test]
-async fn create_makes_the_app_its_addresses_and_its_machine_then_waits_for_it() {
+async fn create_makes_the_app_its_addresses_its_disk_and_a_machine_on_the_disk() {
     let server = StandIn::start(fly_ok).await;
     let created = client(&server, TOKEN, None).create(&spec()).await.unwrap();
 
-    let Handle::Fly { app, machine } = &created.handle;
+    let Handle::Fly {
+        org,
+        app,
+        volume,
+        machine,
+    } = &created.handle;
+    assert_eq!(org, ORG);
     assert!(app.starts_with("fletch-box-ladakh-otter-"), "{app}");
-    assert_eq!(machine, "m1");
+    assert_eq!((volume.as_str(), machine.as_str()), (VOL, "m1"));
     assert_eq!(
         created.endpoint,
         Endpoint::Tls {
@@ -88,13 +144,13 @@ async fn create_makes_the_app_its_addresses_and_its_machine_then_waits_for_it() 
             port: 443
         }
     );
-    assert_eq!(created.handle.endpoint(), created.endpoint);
     assert_eq!(
         server.lines(),
         [
             "POST /v1/apps".to_string(),
             format!("POST /v1/apps/{app}/ip_assignments"),
             format!("POST /v1/apps/{app}/ip_assignments"),
+            format!("POST /v1/apps/{app}/volumes"),
             format!("POST /v1/apps/{app}/machines"),
             format!("GET /v1/apps/{app}/machines/m1/wait?state=started&timeout=30"),
         ]
@@ -118,43 +174,51 @@ async fn create_makes_the_app_its_addresses_and_its_machine_then_waits_for_it() 
     assert_eq!(
         requests[3].body,
         json!({
-            "name": app,
-            "config": {
-                "image": "ghcr.io/fwdai/fletch-cloud:test",
-                "env": {
-                    "FLETCH_AUTHORIZED_KEY": "ssh-ed25519 AAAA engine",
-                    "FLETCH_HOME": "/home/agent",
-                },
-                "guest": {
-                    "cpu_kind": "shared",
-                    "cpus": 2,
-                    "memory_mb": 4096,
-                    "persist_rootfs": "always",
-                },
-                "rootfs": { "persist": "always", "size_gb": 20 },
-                "restart": { "policy": "no" },
-                "auto_destroy": false,
-                "metadata": { "fletch_box": "ladakh-otter" },
-                "services": [{
-                    "protocol": "tcp",
-                    "internal_port": 2222,
-                    "autostart": false,
-                    "autostop": "off",
-                    "ports": [{ "port": 443, "handlers": ["tls"] }],
-                }],
-            },
+            "name": "fletch_data",
+            "size_gb": 20,
+            "fstype": "ext4",
+            "encrypted": true,
+            "auto_backup_enabled": true,
+            "snapshot_retention": 5,
+            "require_unique_zone": false,
+            "compute": { "cpu_kind": "shared", "cpus": 2, "memory_mb": 4096 },
         }),
-        "no region stored, so none is sent and Fly chooses"
+        "no region stored: none is sent, and Fly places the disk"
+    );
+    assert_eq!(
+        requests[4].body,
+        machine_request(app, "iad"),
+        "the machine goes to the region Fly put the disk in, mounting it at /data"
     );
 }
 
 #[tokio::test]
-async fn a_machine_fly_cannot_place_takes_its_app_with_it_and_names_the_region() {
+async fn a_stored_region_places_the_disk_and_the_machine_follows_it() {
+    let server = StandIn::start(fly_ok).await;
+    let mut spec = spec();
+    spec.disk_gib = None;
+    client(&server, TOKEN, Some("ams"))
+        .create(&spec)
+        .await
+        .unwrap();
+    let requests = server.requests();
+    assert_eq!(requests[3].body["region"], "ams");
+    assert_eq!(
+        requests[3].body["size_gb"], 8,
+        "no size given: a local box's default"
+    );
+    assert_eq!(requests[4].body["region"], "ams");
+}
+
+/// Everything after the app cleans up by destroying the app with what it
+/// holds, in the order Fly allows: machines, then volumes, then the app.
+#[tokio::test]
+async fn a_disk_fly_cannot_place_takes_the_app_with_it() {
     let server = StandIn::start(|r| {
-        if r.method == "POST" && r.path.ends_with("/machines") {
+        if r.method == "POST" && r.path.ends_with("/volumes") {
             return Reply::json(
                 412,
-                json!({ "error": "insufficient resources", "status": "insufficient_capacity" }),
+                json!({ "error": "no capacity", "status": "insufficient_capacity" }),
             );
         }
         fly_ok(r)
@@ -171,25 +235,71 @@ async fn a_machine_fly_cannot_place_takes_its_app_with_it_and_names_the_region()
         "{err}"
     );
     let app = created_app(&server);
-    assert_eq!(server.requests()[3].body["region"], "ams");
-    let lines = server.lines();
-    assert_eq!(lines.len(), 5, "{lines:?}");
-    assert_eq!(lines[4], format!("DELETE /v1/apps/{app}?force=true"));
+    assert_eq!(
+        server.lines()[4..],
+        [
+            format!("GET /v1/apps/{app}/machines"),
+            format!("GET /v1/apps/{app}/volumes"),
+            format!("DELETE /v1/apps/{app}?force=true"),
+        ]
+    );
 }
 
 #[tokio::test]
-async fn a_machine_that_fails_to_start_takes_its_app_with_it() {
-    let server = StandIn::start(|r| {
-        if r.path.contains("/wait?") {
-            return Reply::json(
-                400,
-                json!({ "error": "machine failed to reach desired state" }),
-            );
+async fn a_machine_fly_cannot_place_on_the_disks_host_takes_the_disk_and_the_app_with_it() {
+    let server = StandIn::start(|r| match (r.method.as_str(), r.path.as_str()) {
+        ("POST", p) if p.ends_with("/machines") => Reply::json(
+            412,
+            json!({ "error": "insufficient resources", "status": "insufficient_capacity" }),
+        ),
+        ("GET", p) if p.ends_with("/volumes") => Reply::json(
+            200,
+            json!([{ "id": VOL, "name": "fletch_data", "state": "created" }]),
+        ),
+        _ => fly_ok(r),
+    })
+    .await;
+    let err = client(&server, TOKEN, Some("ams"))
+        .create(&spec())
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        err.contains("no room right now on the host that holds this box's disk (in ams)"),
+        "{err}"
+    );
+    let app = created_app(&server);
+    assert_eq!(
+        server.lines()[5..],
+        [
+            format!("GET /v1/apps/{app}/machines"),
+            format!("GET /v1/apps/{app}/volumes"),
+            format!("DELETE /v1/apps/{app}/volumes/{VOL}"),
+            format!("DELETE /v1/apps/{app}?force=true"),
+        ],
+        "the disk is deleted before the app, so none is left whatever the app delete does"
+    );
+}
+
+#[tokio::test]
+async fn a_machine_that_fails_to_start_takes_itself_its_disk_and_the_app_with_it() {
+    let server = StandIn::start(|r| match (r.method.as_str(), r.path.as_str()) {
+        ("GET", p) if p.contains("/wait?state=started") => Reply::json(
+            400,
+            json!({ "error": "machine failed to reach desired state" }),
+        ),
+        ("GET", p) if p.ends_with("/machines/m1") => {
+            Reply::json(200, json!({ "id": "m1", "state": "failed" }))
         }
-        if r.method == "GET" && r.path.ends_with("/machines/m1") {
-            return Reply::json(200, json!({ "id": "m1", "state": "failed" }));
+        ("GET", p) if p.ends_with("/machines") => {
+            Reply::json(200, json!([{ "id": "m1", "state": "failed" }]))
         }
-        fly_ok(r)
+        ("GET", p) if p.ends_with("/volumes") => Reply::json(
+            200,
+            json!([{ "id": VOL, "name": "fletch_data", "state": "created" }]),
+        ),
+        _ => fly_ok(r),
     })
     .await;
     let err = client(&server, TOKEN, None)
@@ -201,17 +311,22 @@ async fn a_machine_that_fails_to_start_takes_its_app_with_it() {
     assert!(err.contains("did not start"), "{err}");
     let app = created_app(&server);
     assert_eq!(
-        server.lines()[4..],
+        server.lines()[5..],
         [
             format!("GET /v1/apps/{app}/machines/m1/wait?state=started&timeout=30"),
             format!("GET /v1/apps/{app}/machines/m1"),
+            format!("GET /v1/apps/{app}/machines"),
+            format!("DELETE /v1/apps/{app}/machines/m1?force=true"),
+            format!("GET /v1/apps/{app}/machines/m1/wait?state=destroyed&timeout=30"),
+            format!("GET /v1/apps/{app}/volumes"),
+            format!("DELETE /v1/apps/{app}/volumes/{VOL}"),
             format!("DELETE /v1/apps/{app}?force=true"),
         ]
     );
 }
 
 #[tokio::test]
-async fn an_address_fly_will_not_give_takes_the_app_with_it_before_any_machine() {
+async fn an_address_fly_will_not_give_takes_the_app_with_it_before_any_disk() {
     let server = StandIn::start(|r| {
         if r.path.ends_with("/ip_assignments") {
             return Reply::json(422, json!({ "error": "billing restriction" }));
@@ -233,14 +348,16 @@ async fn an_address_fly_will_not_give_takes_the_app_with_it_before_any_machine()
         [
             "POST /v1/apps".to_string(),
             format!("POST /v1/apps/{app}/ip_assignments"),
+            format!("GET /v1/apps/{app}/machines"),
+            format!("GET /v1/apps/{app}/volumes"),
             format!("DELETE /v1/apps/{app}?force=true"),
         ]
     );
 }
 
 /// A refused app create made nothing — and a name taken is someone else's app,
-/// which must never be deleted. A server error may have made the app, so it is
-/// deleted.
+/// which must never be touched. A server error may have made the app, so it is
+/// looked for and deleted if there.
 #[tokio::test]
 async fn an_app_create_is_cleaned_up_only_when_it_may_have_happened() {
     let taken = StandIn::start(|_| {
@@ -261,7 +378,7 @@ async fn an_app_create_is_cleaned_up_only_when_it_may_have_happened() {
     assert_eq!(taken.lines(), ["POST /v1/apps"]);
 
     let failing = StandIn::start(|r| match r.method.as_str() {
-        "DELETE" => Reply::json(404, json!({ "error": "app not found" })),
+        "GET" => Reply::json(404, json!({ "error": "app not found" })),
         _ => Reply::json(503, json!({ "error": "upstream unavailable" })),
     })
     .await;
@@ -279,18 +396,32 @@ async fn an_app_create_is_cleaned_up_only_when_it_may_have_happened() {
         failing.lines(),
         [
             "POST /v1/apps".to_string(),
-            format!("DELETE /v1/apps/{app}?force=true")
-        ]
+            format!("GET /v1/apps/{app}/machines"),
+        ],
+        "the app was never made: nothing to delete"
     );
 }
 
 #[tokio::test]
-async fn destroy_deletes_the_app_and_a_gone_one_is_success() {
-    let server = StandIn::start(|r| match r.path.as_str() {
-        p if p.starts_with("/v1/apps/fletch-box-gone") => {
+async fn destroy_deletes_the_machine_then_the_disk_then_the_app_and_a_gone_box_is_success() {
+    let server = StandIn::start(|r| match (r.method.as_str(), r.path.as_str()) {
+        (_, p) if p.starts_with("/v1/apps/fletch-box-gone") => {
             Reply::json(404, json!({ "error": "app not found" }))
         }
-        _ => Reply::empty(202),
+        ("GET", p) if p.ends_with("/machines") => {
+            Reply::json(200, json!([{ "id": "m1", "state": "stopped" }]))
+        }
+        ("GET", p) if p.ends_with("/volumes") => Reply::json(
+            200,
+            json!([
+                { "id": VOL, "name": "fletch_data", "state": "created" },
+                { "id": "vol_old", "name": "fletch_data", "state": "pending_destroy" },
+            ]),
+        ),
+        ("GET", p) if p.contains("/wait?") => Reply::json(404, json!({})),
+        ("DELETE", p) if p.ends_with(&format!("/apps/{APP}")) => Reply::empty(202),
+        ("DELETE", _) => Reply::json(200, json!({ "ok": true })),
+        _ => Reply::json(500, json!({})),
     })
     .await;
     let fly = client(&server, TOKEN, None);
@@ -299,9 +430,15 @@ async fn destroy_deletes_the_app_and_a_gone_one_is_success() {
     assert_eq!(
         server.lines(),
         [
+            format!("GET /v1/apps/{APP}/machines"),
+            format!("DELETE /v1/apps/{APP}/machines/m1?force=true"),
+            format!("GET /v1/apps/{APP}/machines/m1/wait?state=destroyed&timeout=30"),
+            format!("GET /v1/apps/{APP}/volumes"),
+            format!("DELETE /v1/apps/{APP}/volumes/{VOL}"),
             format!("DELETE /v1/apps/{APP}?force=true"),
-            "DELETE /v1/apps/fletch-box-gone-abc?force=true".to_string(),
-        ]
+            "GET /v1/apps/fletch-box-gone-abc/machines".to_string(),
+        ],
+        "a volume already being destroyed is left to it; an app already gone is done"
     );
 }
 
@@ -356,26 +493,222 @@ fn every_documented_fly_state_maps_onto_a_box_state() {
     }
 }
 
-#[tokio::test]
-async fn state_reads_the_machine_and_a_missing_one_is_gone() {
-    let server = StandIn::start(|r| match r.path.as_str() {
-        p if p.ends_with("/machines/m1") => {
-            Reply::json(200, json!({ "id": "m1", "state": "started" }))
+/// The apps of [`state_reads_the_disk_and_the_machine_and_says_what_is_left`],
+/// one per shape a box can be in.
+fn fly_shapes(r: &Request) -> Reply {
+    let live = json!({ "id": VOL, "name": "fletch_data", "state": "created", "region": "ams" });
+    let path = r.path.as_str();
+    let app = path.split('/').nth(3).unwrap_or_default();
+    match (app, path.rsplit('/').next().unwrap_or_default()) {
+        ("fletch-box-whole", "m1") => Reply::json(200, json!({ "id": "m1", "state": "started" })),
+        ("fletch-box-whole", _) => Reply::json(200, live),
+        // A machine destroyed from the dashboard: 404, or still listed destroyed.
+        ("fletch-box-no-machine", "m1") => Reply::json(404, json!({ "error": "not found" })),
+        ("fletch-box-destroyed-machine", "m1") => {
+            Reply::json(200, json!({ "id": "m1", "state": "destroyed" }))
         }
-        _ => Reply::json(404, json!({ "error": "machine not found" })),
+        ("fletch-box-no-machine" | "fletch-box-destroyed-machine", _) => Reply::json(200, live),
+        // A volume gone under a machine that is still there.
+        ("fletch-box-no-disk", "m1") => Reply::json(200, json!({ "id": "m1", "state": "stopped" })),
+        ("fletch-box-no-disk", _) => Reply::json(404, json!({ "error": "volume not found" })),
+        // Both gone, the app still there.
+        ("fletch-box-empty", "fletch-box-empty") => Reply::json(200, json!({})),
+        ("fletch-box-empty", p) if p == VOL => {
+            Reply::json(200, json!({ "id": VOL, "state": "destroyed" }))
+        }
+        ("fletch-box-empty", _) => Reply::json(404, json!({})),
+        // A volume on a host Fly cannot reach.
+        ("fletch-box-dead-host", "m1") => Reply::json(
+            200,
+            json!({ "id": "m1", "state": "started", "host_status": "unreachable" }),
+        ),
+        ("fletch-box-dead-host", _) => Reply::json(
+            200,
+            json!({ "id": VOL, "state": "created", "host_status": "unreachable" }),
+        ),
+        _ => Reply::json(404, json!({ "error": "app not found" })),
+    }
+}
+
+#[tokio::test]
+async fn state_reads_the_disk_and_the_machine_and_says_what_is_left() {
+    let server = StandIn::start(fly_shapes).await;
+    let fly = client(&server, TOKEN, None);
+    let state = |app: &'static str| fly.state(ORG, app, VOL, "m1");
+
+    assert_eq!(
+        state("fletch-box-whole").await.unwrap(),
+        MachineState::Running
+    );
+    assert_eq!(
+        state("fletch-box-no-machine").await.unwrap(),
+        MachineState::MachineGone
+    );
+    assert_eq!(
+        state("fletch-box-destroyed-machine").await.unwrap(),
+        MachineState::MachineGone
+    );
+    assert_eq!(
+        state("fletch-box-no-disk").await.unwrap(),
+        MachineState::DiskGone,
+        "a machine with no disk under it has lost the workspace"
+    );
+    assert_eq!(
+        state("fletch-box-empty").await.unwrap(),
+        MachineState::DiskGone
+    );
+    assert_eq!(state("fletch-box-gone").await.unwrap(), MachineState::Gone);
+    assert!(
+        matches!(state("fletch-box-dead-host").await.unwrap(), MachineState::Failed(r) if r.contains("unreachable")),
+        "a dead host is a failure, not a loss"
+    );
+
+    let lines = server.lines();
+    assert_eq!(
+        lines[..2],
+        [
+            format!("GET /v1/apps/fletch-box-whole/volumes/{VOL}"),
+            "GET /v1/apps/fletch-box-whole/machines/m1".to_string(),
+        ]
+    );
+    assert!(
+        lines.contains(&"GET /v1/apps/fletch-box-gone".to_string()),
+        "neither answering, the app itself is asked: {lines:?}"
+    );
+}
+
+/// Nothing answering a connection to another org than the box's says nothing
+/// about the box: this token may not see it.
+#[tokio::test]
+async fn a_box_from_another_org_that_this_token_cannot_see_is_not_called_gone() {
+    let server = StandIn::start(fly_shapes).await;
+    let err = client(&server, TOKEN, None)
+        .state("personal", "fletch-box-gone", VOL, "m1")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("it was created in \"personal\" — connect Fly.io to \"personal\""),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn replace_makes_a_new_machine_on_the_same_disk_in_its_region() {
+    let server = StandIn::start(|r| match (r.method.as_str(), r.path.as_str()) {
+        ("GET", p) if p.ends_with("/machines/m1") => Reply::json(404, json!({})),
+        ("GET", p) if p.ends_with(&format!("/volumes/{VOL}")) => Reply::json(
+            200,
+            json!({ "id": VOL, "state": "created", "region": "ams", "attached_machine_id": null }),
+        ),
+        ("POST", p) if p.ends_with("/machines") => {
+            Reply::json(200, json!({ "id": "m2", "state": "created" }))
+        }
+        ("GET", p) if p.contains("/machines/m2/wait?") => Reply::json(200, json!({ "ok": true })),
+        _ => Reply::json(500, json!({})),
     })
     .await;
-    let fly = client(&server, TOKEN, None);
-    assert_eq!(fly.state(APP, "m1").await.unwrap(), MachineState::Running);
-    assert_eq!(fly.state(APP, "m2").await.unwrap(), MachineState::Gone);
-    // An app listed with no machine is gone without asking.
-    assert_eq!(fly.state(APP, "").await.unwrap(), MachineState::Gone);
+    let replaced = client(&server, TOKEN, None)
+        .replace_machine(ORG, APP, VOL, "m1", &spec())
+        .await
+        .unwrap();
+    assert_eq!(
+        replaced.handle,
+        Handle::Fly {
+            org: ORG.into(),
+            app: APP.into(),
+            volume: VOL.into(),
+            machine: "m2".into(),
+        }
+    );
+    assert_eq!(replaced.endpoint, endpoint(APP), "the address is the box's");
     assert_eq!(
         server.lines(),
         [
             format!("GET /v1/apps/{APP}/machines/m1"),
-            format!("GET /v1/apps/{APP}/machines/m2"),
+            format!("GET /v1/apps/{APP}/volumes/{VOL}"),
+            format!("POST /v1/apps/{APP}/machines"),
+            format!("GET /v1/apps/{APP}/machines/m2/wait?state=started&timeout=30"),
         ]
+    );
+    assert_eq!(server.requests()[2].body, machine_request(APP, "ams"));
+}
+
+#[tokio::test]
+async fn replace_never_puts_a_new_disk_where_the_old_one_was_lost() {
+    let server = StandIn::start(|r| match r.path.as_str() {
+        p if p.ends_with("/machines/m1") => Reply::json(404, json!({})),
+        p if p.ends_with(&format!("/volumes/{VOL}")) => {
+            Reply::json(200, json!({ "id": VOL, "state": "destroyed" }))
+        }
+        _ => Reply::json(500, json!({})),
+    })
+    .await;
+    let err = client(&server, TOKEN, None)
+        .replace_machine(ORG, APP, VOL, "m1", &spec())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::CloudGone(m) if m.contains("what was on it is lost")),
+        "{err}"
+    );
+    assert_eq!(
+        server.lines(),
+        [
+            format!("GET /v1/apps/{APP}/machines/m1"),
+            format!("GET /v1/apps/{APP}/volumes/{VOL}"),
+        ],
+        "no volume and no machine is created"
+    );
+}
+
+#[tokio::test]
+async fn replace_refuses_while_the_old_machine_is_there() {
+    let server =
+        StandIn::start(|_| Reply::json(200, json!({ "id": "m1", "state": "stopped" }))).await;
+    let err = client(&server, TOKEN, None)
+        .replace_machine(ORG, APP, VOL, "m1", &spec())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("still exists"), "{err}");
+    assert_eq!(server.lines(), [format!("GET /v1/apps/{APP}/machines/m1")]);
+}
+
+/// A replacement that does not start is deleted — and nothing else: the disk
+/// holds the workspace and the app holds the disk.
+#[tokio::test]
+async fn a_replacement_that_fails_deletes_itself_and_keeps_the_disk() {
+    let server = StandIn::start(|r| match (r.method.as_str(), r.path.as_str()) {
+        ("GET", p) if p.ends_with("/machines/m1") => Reply::json(404, json!({})),
+        ("GET", p) if p.ends_with(&format!("/volumes/{VOL}")) => Reply::json(
+            200,
+            json!({ "id": VOL, "state": "created", "region": "ams" }),
+        ),
+        ("POST", p) if p.ends_with("/machines") => {
+            Reply::json(200, json!({ "id": "m2", "state": "created" }))
+        }
+        ("GET", p) if p.contains("/wait?state=started") => Reply::json(408, json!({})),
+        ("GET", p) if p.ends_with("/machines/m2") => {
+            Reply::json(200, json!({ "id": "m2", "state": "failed" }))
+        }
+        ("DELETE", _) => Reply::json(200, json!({ "ok": true })),
+        ("GET", p) if p.contains("/wait?state=destroyed") => Reply::json(200, json!({})),
+        _ => Reply::json(500, json!({})),
+    })
+    .await;
+    let err = client(&server, TOKEN, None)
+        .replace_machine(ORG, APP, VOL, "m1", &spec())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("did not start"), "{err}");
+    let deletes: Vec<String> = server
+        .lines()
+        .into_iter()
+        .filter(|l| l.starts_with("DELETE"))
+        .collect();
+    assert_eq!(
+        deletes,
+        [format!("DELETE /v1/apps/{APP}/machines/m2?force=true")]
     );
 }
 
@@ -467,16 +800,21 @@ async fn start_asks_then_waits_reading_the_state_when_a_wait_times_out() {
     assert_eq!(reads.load(Ordering::SeqCst), 2);
 }
 
-/// A start Fly refuses stands only if the machine is not already starting.
+/// A start Fly refuses stands only if the machine is not already starting; a
+/// start refused for want of room on the disk's host says so.
 #[tokio::test]
-async fn a_refused_start_of_a_machine_already_starting_is_waited_on() {
+async fn a_refused_start_is_waited_on_when_already_starting_and_named_when_the_host_is_full() {
     let server = StandIn::start(|r| match (r.method.as_str(), r.path.as_str()) {
         ("GET", p) if p.ends_with("/machines/m1") => {
             Reply::json(200, json!({ "id": "m1", "state": "starting" }))
         }
-        ("GET", p) if p.ends_with("/machines/m2") => {
-            Reply::json(200, json!({ "id": "m2", "state": "stopped" }))
+        ("GET", p) if p.ends_with("/machines/m2") || p.ends_with("/machines/m3") => {
+            Reply::json(200, json!({ "state": "stopped" }))
         }
+        ("POST", p) if p.contains("/machines/m3/") => Reply::json(
+            412,
+            json!({ "error": "insufficient resources", "status": "insufficient_capacity" }),
+        ),
         ("POST", _) => Reply::json(412, json!({ "error": "machine is busy" })),
         ("GET", p) if p.contains("/wait?") => Reply::json(200, json!({ "ok": true })),
         _ => Reply::json(500, json!({})),
@@ -491,6 +829,11 @@ async fn a_refused_start_of_a_machine_already_starting_is_waited_on() {
         err.contains("refused to start the machine (HTTP 412): machine is busy"),
         "{err}"
     );
+    let err = fly.start(APP, "m3").await.unwrap_err().to_string();
+    assert!(
+        err.contains("no room right now on the host that holds this box's disk, so it could not start the machine"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -500,7 +843,10 @@ async fn exec_runs_the_argv_with_an_explicit_timeout_and_returns_what_it_did() {
             200,
             json!({ "exit_code": 0, "exit_signal": 0, "stdout": "ssh-ed25519 AAAAC3 host\n", "stderr": "" }),
         ),
-        Some("fails") => Reply::json(200, json!({ "exit_code": 1, "stderr": "cat: fails: No such file" })),
+        Some("fails") => Reply::json(
+            200,
+            json!({ "exit_code": 1, "stderr": "cat: fails: No such file" }),
+        ),
         Some("killed") => Reply::json(200, json!({ "exit_code": 0, "exit_signal": 9 })),
         _ => Reply::json(500, json!({})),
     })
@@ -648,63 +994,91 @@ async fn a_rate_limit_that_persists_is_reported_after_a_bounded_number_of_tries(
 }
 
 #[tokio::test]
-async fn list_keeps_the_box_apps_and_their_labelled_machines() {
-    let server = StandIn::start(|r| match r.path.as_str() {
+async fn list_reports_each_box_shape_and_leaves_out_what_is_not_a_box() {
+    let ours = |id: &str| json!({ "id": id, "name": "fletch_data", "state": "created" });
+    let machine = |id: &str, state: &str| json!({ "id": id, "state": state, "config": { "metadata": { "fletch_box": "x" } } });
+    let server = StandIn::start(move |r| match r.path.as_str() {
         "/v1/apps?org_slug=acme" => Reply::json(
             200,
-            json!({ "total_apps": 5, "apps": [
-                { "name": "fletch-box-a-1", "machine_count": 1, "volume_count": 0 },
-                { "name": "fletch-box-b-2", "machine_count": 0, "volume_count": 0 },
-                { "name": "fletch-box-c-3", "machine_count": 1, "volume_count": 0 },
-                { "name": "fletch-box-d-4", "machine_count": 0, "volume_count": 1 },
-                { "name": "my-api", "machine_count": 2, "volume_count": 0 },
-                { "name": "fletch-box-e-5", "machine_count": 1, "volume_count": 0 },
+            json!({ "apps": [
+                { "name": "fletch-box-whole" },
+                { "name": "fletch-box-disk-only" },
+                { "name": "fletch-box-empty" },
+                { "name": "fletch-box-machine-only" },
+                { "name": "fletch-box-unlabelled" },
+                { "name": "fletch-box-foreign-volume" },
+                { "name": "fletch-box-gone-since" },
+                { "name": "my-api" },
             ]}),
         ),
-        "/v1/apps/fletch-box-a-1/machines" => Reply::json(
+        "/v1/apps/fletch-box-whole/machines" => Reply::json(200, json!([machine("ma", "stopped")])),
+        "/v1/apps/fletch-box-whole/volumes" => Reply::json(200, json!([ours("vol_a")])),
+        "/v1/apps/fletch-box-disk-only/volumes" => Reply::json(
             200,
-            json!([{ "id": "ma", "state": "stopped", "config": { "metadata": { "fletch_box": "a" } } }]),
+            json!([
+                ours("vol_b"),
+                { "id": "vol_old", "name": "fletch_data", "state": "pending_destroy" },
+            ]),
         ),
-        "/v1/apps/fletch-box-c-3/machines" => Reply::json(
+        "/v1/apps/fletch-box-empty/volumes" => Reply::json(
             200,
-            json!([{ "id": "mc", "state": "started", "config": { "metadata": {} } }]),
+            json!([{ "id": "vol_c", "name": "fletch_data", "state": "destroyed" }]),
         ),
-        "/v1/apps/fletch-box-e-5/machines" => Reply::json(
+        "/v1/apps/fletch-box-machine-only/machines" => Reply::json(
             200,
-            json!([{ "id": "me", "state": "started", "config": null,
-                     "incomplete_config": { "metadata": { "fletch_box": "e" } } }]),
+            json!([{ "id": "md", "state": "started", "config": null,
+                     "incomplete_config": { "metadata": { "fletch_box": "d" } } }]),
         ),
-        p if p.ends_with("/machines") => Reply::json(200, json!([])),
+        "/v1/apps/fletch-box-unlabelled/machines" => Reply::json(
+            200,
+            json!([{ "id": "me", "state": "started", "config": { "metadata": {} } }]),
+        ),
+        "/v1/apps/fletch-box-unlabelled/volumes" => Reply::json(200, json!([ours("vol_e")])),
+        "/v1/apps/fletch-box-foreign-volume/volumes" => Reply::json(
+            200,
+            json!([{ "id": "vol_f", "name": "pgdata", "state": "created" }]),
+        ),
+        p if p.starts_with("/v1/apps/fletch-box-gone-since/") => Reply::json(404, json!({})),
+        p if p.ends_with("/machines") || p.ends_with("/volumes") => Reply::json(200, json!([])),
         _ => Reply::json(500, json!({})),
     })
     .await;
     let listed = client(&server, TOKEN, None).list().await.unwrap();
-    let fly = |app: &str, machine: &str| Handle::Fly {
+    let fly = |app: &str, volume: &str, machine: &str| Handle::Fly {
+        org: ORG.into(),
         app: app.into(),
+        volume: volume.into(),
         machine: machine.into(),
     };
     assert_eq!(
         listed,
         [
             Listed {
-                handle: fly("fletch-box-a-1", "ma"),
-                state: MachineState::Stopped
+                handle: fly("fletch-box-whole", "vol_a", "ma"),
+                state: MachineState::Stopped,
             },
             Listed {
-                handle: fly("fletch-box-b-2", ""),
-                state: MachineState::Gone
+                handle: fly("fletch-box-disk-only", "vol_b", ""),
+                state: MachineState::MachineGone,
             },
             Listed {
-                handle: fly("fletch-box-e-5", "me"),
-                state: MachineState::Running
+                handle: fly("fletch-box-empty", "", ""),
+                state: MachineState::Gone,
+            },
+            Listed {
+                handle: fly("fletch-box-machine-only", "", "md"),
+                state: MachineState::DiskGone,
             },
         ],
-        "an unlabelled machine, an app with a volume and an app without the prefix are not ours"
+        "an unlabelled machine, a volume not a box's and an app without the prefix are not ours"
     );
     assert!(
         !server.lines().iter().any(|l| l.contains("my-api")),
         "an app without the prefix is never even read"
     );
+    // A box whose machine was lost still finds its disk in the listing.
+    let stored = fly("fletch-box-disk-only", "vol_b", "m-lost");
+    assert!(listed.iter().any(|l| l.handle.same_box(&stored)));
 }
 
 #[test]
@@ -778,11 +1152,17 @@ async fn no_error_or_log_line_holds_the_token() {
     tracing::callsite::rebuild_interest_cache();
     let server = StandIn::start(|r| {
         let echo = json!({ "error": format!("bad credentials {FLYV1}") });
-        match r.method.as_str() {
-            "POST" if r.path.ends_with("/machines") => Reply::json(400, echo),
-            "DELETE" => Reply::json(500, json!({ "error": "fm2_macaroonB9876543210 expired" })),
-            "GET" if r.path.starts_with("/v1/apps?") => Reply::json(401, echo),
-            "POST" if r.path.ends_with("/exec") => Reply::json(412, echo),
+        match (r.method.as_str(), r.path.as_str()) {
+            ("POST", p) if p.ends_with("/machines") => Reply::json(400, echo),
+            ("GET", p) if p.ends_with("/volumes") => Reply::json(
+                200,
+                json!([{ "id": VOL, "name": "fletch_data", "state": "created" }]),
+            ),
+            ("DELETE", _) => {
+                Reply::json(500, json!({ "error": "fm2_macaroonB9876543210 expired" }))
+            }
+            ("GET", p) if p.starts_with("/v1/apps?") => Reply::json(401, echo),
+            ("POST", p) if p.ends_with("/exec") => Reply::json(412, echo),
             _ => fly_ok(r),
         }
     })

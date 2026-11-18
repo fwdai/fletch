@@ -1,30 +1,47 @@
-//! The Fly.io Machines adapter: one Fly app per cloud box, holding exactly one
-//! Machine.
+//! The Fly.io Machines adapter: one Fly app per cloud box, holding one Fly
+//! Volume — the box's disk — and one Machine that mounts it.
 //!
-//! One app per machine because of how Fly routes: a shared IPv4 address carries
+//! One app per box because of how Fly routes: a shared IPv4 address carries
 //! many apps' TLS traffic and Fly's proxy picks the app by the name the client
-//! asks for, so `<app>.fly.dev:443` reaches this machine and no other, with no
-//! port bookkeeping. Destroying a box is then one call — deleting its app —
-//! which takes the machine and its addresses with it and cannot leak either,
-//! and an orphan sweep is a listing of the apps named with [`APP_PREFIX`].
+//! asks for, so `<app>.fly.dev:443` reaches this box's machine and no other,
+//! with no port bookkeeping. An orphan sweep is a listing of the apps named
+//! with [`APP_PREFIX`].
+//!
+//! The volume is mounted at `/data`, where the guest keeps everything that is
+//! the box's: the agent's trees, its home, the ssh host key, the provider CLIs.
+//! It is the box's persistent storage — Fly's, the kind it offers for data,
+//! where the root filesystem is a cache it may wipe. A Fly volume is a slice of
+//! one host's NVMe drive — not replicated, not network storage — so the
+//! machine always runs on the volume's host, and a machine lost while its
+//! volume survives (destroyed from the dashboard, or by Fly) is replaced by a
+//! new one mounting the same volume ([`Client::replace_machine`]). If the host
+//! itself fails, the volume is unreachable with it until it returns, and lost
+//! if it never does; Fly takes a snapshot of the volume daily and keeps it
+//! [`SNAPSHOT_RETENTION_DAYS`] days, and restoring one into a new volume is
+//! Fly's documented recovery — it misses whatever was written since the
+//! snapshot, and it is not done here. Fly does not move a volume by itself;
+//! forking one copies it to another host, which needs its host reachable. The machine's root filesystem holds only the image and the system
+//! changes made on it (`sudo apt-get install`): it is kept across a stop and a
+//! start on a best-effort basis — Fly may wipe it for maintenance — and lost
+//! when the machine is replaced.
 //!
 //! The machine runs the cloud image with one service: Fly's proxy accepts TLS
 //! on port 443 (its `tls` handler, with the `*.fly.dev` certificate) and
 //! forwards the plaintext to the guest's sshd, so the engine reaches the guest
 //! with ssh behind a TLS client ([`Endpoint::Tls`]). Fly never starts, stops or
 //! restarts the machine by itself — no restart policy, no autostop, no
-//! autostart — because the engine owns its lifecycle, and the machine's root
-//! filesystem, where the workspace lives, is kept across a stop and a start.
+//! autostart — because the engine owns its lifecycle.
 //!
 //! Every request has a bounded timeout. The Machines API rate-limits each
 //! action per machine (one request a second, bursts of three); a 429 is retried
 //! a few times with backoff, which is safe for every request because a
 //! rate-limited request was not carried out. Nothing else is retried: creating
-//! an app or a machine is not idempotent, and [`Client::create`] cleans up
-//! after a failure instead.
+//! an app, a volume or a machine is not idempotent, and [`Client::create`]
+//! cleans up after a failure instead.
 //!
 //! The API is documented at <https://docs.fly.io/machines/api/>, with its
-//! OpenAPI description at <https://docs.fly.io/api/machines/openapi.json>.
+//! OpenAPI description at <https://docs.fly.io/api/machines/openapi.json>;
+//! volumes at <https://docs.fly.io/volumes/overview/>.
 
 use std::time::{Duration, Instant};
 
@@ -33,7 +50,10 @@ use reqwest::header::{HeaderValue, AUTHORIZATION, RETRY_AFTER};
 use reqwest::{Method, StatusCode};
 use serde_json::{json, Map, Value};
 
-use super::{Connection, Created, Endpoint, ExecOutput, Handle, Listed, MachineSpec, MachineState};
+use super::{
+    Connection, Created, Endpoint, ExecOutput, Handle, Listed, MachineSpec, MachineState,
+    DEFAULT_DISK_GIB,
+};
 use crate::error::{Error, Result};
 
 /// The Machines API's public address.
@@ -44,11 +64,27 @@ pub const API_BASE: &str = "https://api.machines.dev";
 /// `fletch-` so it does not catch an app a person named for themselves.
 pub const APP_PREFIX: &str = "fletch-box-";
 
+/// How long Fly keeps each daily snapshot of a box's volume: Fly's default.
+/// Snapshots are what a volume lost with its host is restored from.
+pub const SNAPSHOT_RETENTION_DAYS: u32 = 5;
+
 /// The machine metadata key marking a machine as a Fletch cloud box, valued
-/// with the box's name: what a person sees in Fly's dashboard, and the check
-/// after the app prefix that [`Client::list`] makes before calling a machine
-/// ours.
+/// with the box's name: what a person sees in Fly's dashboard, and one of the
+/// marks [`Client::list`] checks before calling an app ours.
 const LABEL: &str = "fletch_box";
+
+/// The name of every box's volume (Fly: at most 30 lowercase letters, digits
+/// and underscores). The volume is mounted by its id; the name marks it as a
+/// box's, for [`Client::list`] and a person in Fly's dashboard.
+const VOLUME_NAME: &str = "fletch_data";
+
+/// Volume states Fly reports for a volume that is going or gone.
+const VOLUME_GONE_STATES: &[&str] = &[
+    "scheduling_destroy",
+    "pending_destroy",
+    "destroying",
+    "destroyed",
+];
 
 /// Fly app names are lowercase letters, digits and dashes, and one DNS label
 /// long, since the app is reached at `<app>.fly.dev`.
@@ -62,12 +98,12 @@ const SUFFIX_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 /// The port Fly's proxy accepts a box's TLS on.
 const TLS_PORT: u16 = 443;
 
-/// `rootfs.persist` (and its deprecated twin, `guest.persist_rootfs`): Fly
-/// documents `restart` as "kept across stops and restarts" and `always` as
-/// "also kept across updates". `always`, because the workspace lives on the
-/// root filesystem: the engine never updates a machine, but a person editing
-/// it in Fly's dashboard or with flyctl would, and that must not wipe it.
-const PERSIST_ROOTFS: &str = "always";
+/// `rootfs.persist` (and its deprecated twin, `guest.persist_rootfs`): Fly's
+/// `restart` keeps the root filesystem "across stops and restarts" and resets
+/// it "when the Machine is updated". The root holds only system changes — the
+/// workspace is on the volume — which is the cache-like use Fly offers it for:
+/// worth keeping across a stop, not worth keeping over a new image.
+const PERSIST_ROOTFS: &str = "restart";
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Creating a machine may not answer until Fly has resolved its image, and a
@@ -129,11 +165,22 @@ struct Seen {
     version: Option<String>,
 }
 
-/// A state `start` or `stop` drives a machine to.
+/// What a box's volume was seen as.
+enum Disk {
+    /// There, in `region`.
+    Present { region: String },
+    /// Deleted, being deleted, or never there.
+    Gone,
+    /// There, but not usable now (failed, or on a host Fly cannot reach).
+    Failed(String),
+}
+
+/// A state a machine is driven to and waited for.
 #[derive(Clone, Copy)]
 enum Target {
     Started,
     Stopped,
+    Destroyed,
 }
 
 impl Target {
@@ -141,13 +188,17 @@ impl Target {
         match self {
             Self::Started => "started",
             Self::Stopped => "stopped",
+            Self::Destroyed => "destroyed",
         }
     }
 
+    /// The request that drives a machine there; `Destroyed` is a `DELETE`
+    /// and never asked for through [`Client::request`].
     fn action(self) -> &'static str {
         match self {
             Self::Started => "start",
             Self::Stopped => "stop",
+            Self::Destroyed => "destroy",
         }
     }
 
@@ -156,6 +207,7 @@ impl Target {
             Self::Started => *state == MachineState::Running,
             // A failed machine is not running either.
             Self::Stopped => matches!(state, MachineState::Stopped | MachineState::Failed(_)),
+            Self::Destroyed => *state == MachineState::Gone,
         }
     }
 
@@ -165,6 +217,7 @@ impl Target {
             || match self {
                 Self::Started => *state == MachineState::Starting,
                 Self::Stopped => *state == MachineState::Stopping,
+                Self::Destroyed => false,
             }
     }
 }
@@ -230,9 +283,10 @@ impl Client {
         }
     }
 
-    /// Create the box's app, give it its addresses, create its machine and wait
-    /// for it to start; on any failure once the app may exist, delete the app
-    /// before returning (see `cloud::Client::create`).
+    /// Create the box's app, give it its addresses, create its volume and then
+    /// its machine on the volume's host, and wait for the machine to start; on
+    /// any failure once the app may exist, destroy the app with everything in
+    /// it before returning (see `cloud::Client::create`).
     pub async fn create(&self, spec: &MachineSpec) -> Result<Created> {
         let app = app_name(&spec.name);
         // `name` is the field the OpenAPI description gives, `app_name` the one
@@ -259,19 +313,25 @@ impl Client {
             });
         }
         match self.provision(&app, spec).await {
-            Ok(machine) => {
-                tracing::info!(app, machine, "created a Fly.io machine");
+            Ok((volume, machine)) => {
+                tracing::info!(app, volume, machine, "created a Fly.io cloud box");
                 Ok(Created {
                     endpoint: endpoint(&app),
-                    handle: Handle::Fly { app, machine },
+                    handle: Handle::Fly {
+                        org: self.org.clone(),
+                        app,
+                        volume,
+                        machine,
+                    },
                 })
             }
             Err(e) => Err(self.abandon(&app, e).await),
         }
     }
 
-    /// Everything `create` does once the app exists; returns the machine id.
-    async fn provision(&self, app: &str, spec: &MachineSpec) -> Result<String> {
+    /// Everything `create` does once the app exists; returns the volume's and
+    /// the machine's ids.
+    async fn provision(&self, app: &str, spec: &MachineSpec) -> Result<(String, String)> {
         // An app created through the Machines API gets no address of its own.
         // A shared IPv4 is what clients reach `<app>.fly.dev` by, and the
         // IPv6 is what `fly deploy` gives every public app; both are free.
@@ -289,31 +349,63 @@ impl Client {
                 return Err(self.refusal(&reply, &format!("give the app an address ({kind})")));
             }
         }
-        let body = machine_body(app, spec, self.region.as_deref());
+        let reply = self
+            .call(
+                Method::POST,
+                &format!("/v1/apps/{app}/volumes"),
+                &[],
+                Some(&volume_body(spec, self.region.as_deref())),
+                HTTP_TIMEOUT,
+            )
+            .await?;
+        if !reply.status.is_success() {
+            return Err(self.refusal(&reply, "create the box's disk"));
+        }
+        let (Some(volume), Some(region)) = (
+            reply.body["id"].as_str().filter(|v| !v.is_empty()),
+            reply.body["region"].as_str().filter(|r| !r.is_empty()),
+        ) else {
+            return Err(self
+                .error("Fly.io created the box's disk but did not say its id and region".into()));
+        };
+        // The machine goes where the volume is: Fly places a volume in the
+        // region asked for, or near the API server without one, and a machine
+        // can only mount a volume on its own host.
+        let machine = self.create_machine(app, spec, volume, region).await?;
+        self.wait_for(app, &machine, Target::Started, None, CREATE_BOUND)
+            .await?;
+        Ok((volume.to_string(), machine))
+    }
+
+    /// Create the box's machine, mounting `volume` in `region`; returns its id.
+    async fn create_machine(
+        &self,
+        app: &str,
+        spec: &MachineSpec,
+        volume: &str,
+        region: &str,
+    ) -> Result<String> {
         let reply = self
             .call(
                 Method::POST,
                 &format!("/v1/apps/{app}/machines"),
                 &[],
-                Some(&body),
+                Some(&machine_body(app, spec, volume, region)),
                 MACHINE_CREATE_TIMEOUT,
             )
             .await?;
         if !reply.status.is_success() {
-            return Err(self.refusal(&reply, "create the machine"));
+            return Err(self.pinned_refusal(&reply, "create the machine", Some(region)));
         }
-        let machine = reply.body["id"]
+        reply.body["id"]
             .as_str()
             .filter(|id| !id.is_empty())
-            .ok_or_else(|| self.error("Fly.io created a machine but did not say its id".into()))?
-            .to_string();
-        self.wait_for(app, &machine, Target::Started, None, CREATE_BOUND)
-            .await?;
-        Ok(machine)
+            .map(str::to_string)
+            .ok_or_else(|| self.error("Fly.io created a machine but did not say its id".into()))
     }
 
-    /// Delete `app` after `create` failed partway, returning the error to
-    /// report. If the delete fails too, the error says so and names the app.
+    /// Destroy `app` after `create` failed partway, returning the error to
+    /// report. If that fails too, the error says so and names the app.
     async fn abandon(&self, app: &str, error: Error) -> Error {
         match self.destroy(app).await {
             Ok(()) => error,
@@ -327,11 +419,40 @@ impl Client {
         }
     }
 
-    pub async fn state(&self, app: &str, machine: &str) -> Result<MachineState> {
-        Ok(self
-            .observe(app, machine)
-            .await?
-            .map_or(MachineState::Gone, |seen| seen.state))
+    /// The box's state, from its volume and its machine (and its app, when
+    /// neither answers). `org` is the org the box was created in: when nothing
+    /// answers and the connection is to another org, this token may simply not
+    /// see the box, which is an error rather than [`MachineState::Gone`].
+    pub async fn state(
+        &self,
+        org: &str,
+        app: &str,
+        volume: &str,
+        machine: &str,
+    ) -> Result<MachineState> {
+        let disk = self.disk(app, volume).await?;
+        let machine_state = self.observe(app, machine).await?.map(|seen| seen.state);
+        Ok(match (disk, machine_state) {
+            (Disk::Failed(reason), _) => MachineState::Failed(reason),
+            (Disk::Present { .. }, None | Some(MachineState::Gone)) => MachineState::MachineGone,
+            (Disk::Present { .. }, Some(state)) => state,
+            // The machine answers, so the app is there: the disk alone went.
+            (Disk::Gone, Some(_)) => MachineState::DiskGone,
+            (Disk::Gone, None) => {
+                if self.app_exists(app).await? {
+                    MachineState::DiskGone
+                } else if org != self.org {
+                    return Err(self.error(format!(
+                        "Fly.io shows nothing of this box to a connection to the organization \
+                         \"{}\"; it was created in \"{org}\" — connect Fly.io to \"{org}\" to \
+                         reach it",
+                        self.org
+                    )));
+                } else {
+                    MachineState::Gone
+                }
+            }
+        })
     }
 
     pub async fn start(&self, app: &str, machine: &str) -> Result<()> {
@@ -341,7 +462,9 @@ impl Client {
             .ok_or_else(|| gone(app, machine))?;
         match seen.state {
             MachineState::Running => return Ok(()),
-            MachineState::Gone => return Err(gone(app, machine)),
+            MachineState::Gone | MachineState::MachineGone | MachineState::DiskGone => {
+                return Err(gone(app, machine))
+            }
             MachineState::Starting => {}
             MachineState::Stopping => {
                 let version = seen.version.as_deref();
@@ -364,7 +487,9 @@ impl Client {
             .ok_or_else(|| gone(app, machine))?;
         match seen.state {
             MachineState::Stopped | MachineState::Failed(_) => return Ok(()),
-            MachineState::Gone => return Err(gone(app, machine)),
+            MachineState::Gone | MachineState::MachineGone | MachineState::DiskGone => {
+                return Err(gone(app, machine))
+            }
             MachineState::Stopping => {}
             MachineState::Running | MachineState::Starting => {
                 self.request(app, machine, Target::Stopped).await?;
@@ -375,14 +500,117 @@ impl Client {
             .await
     }
 
-    /// Delete the box's app with everything in it (`force` stops a running
-    /// machine first). Only ever an app named with [`APP_PREFIX`], whatever a
-    /// handle says. Fly deletes asynchronously: accepted is done.
+    /// A new machine for a box whose machine is gone, in `app`, mounting the
+    /// box's existing `volume` in the volume's region, from `spec` (as
+    /// `create` was given it). Refused while the old machine still exists (a
+    /// volume mounts on one machine at a time); refused with
+    /// [`Error::CloudGone`] when the volume is gone — never a fresh, empty
+    /// one in its place. A failure after the new machine exists deletes that
+    /// machine and nothing else.
+    pub async fn replace_machine(
+        &self,
+        org: &str,
+        app: &str,
+        volume: &str,
+        machine: &str,
+        spec: &MachineSpec,
+    ) -> Result<Created> {
+        if let Some(seen) = self.observe(app, machine).await? {
+            if seen.state != MachineState::Gone {
+                return Err(self.error(format!(
+                    "the Fly.io machine {machine} (app {app}) still exists (Fly.io reports it \
+                     {}); only a machine that is gone is replaced",
+                    seen.raw
+                )));
+            }
+        }
+        let region = match self.disk(app, volume).await? {
+            Disk::Present { region } => region,
+            Disk::Gone => return Err(disk_gone(app, volume)),
+            Disk::Failed(reason) => {
+                return Err(self.error(format!(
+                    "the Fly.io volume {volume} (app {app}) holding the box's workspace cannot be \
+                     used now: {reason}"
+                )))
+            }
+        };
+        let new = self.create_machine(app, spec, volume, &region).await?;
+        if let Err(e) = self
+            .wait_for(app, &new, Target::Started, None, CREATE_BOUND)
+            .await
+        {
+            return Err(self.discard_machine(app, &new, e).await);
+        }
+        tracing::info!(
+            app,
+            volume,
+            machine = new,
+            "replaced a Fly.io cloud box's machine"
+        );
+        Ok(Created {
+            endpoint: endpoint(app),
+            handle: Handle::Fly {
+                org: org.to_string(),
+                app: app.to_string(),
+                volume: volume.to_string(),
+                machine: new,
+            },
+        })
+    }
+
+    /// Delete a machine `replace_machine` made and could not start, returning
+    /// the error to report. The volume and the app stay.
+    async fn discard_machine(&self, app: &str, machine: &str, error: Error) -> Error {
+        match self.destroy_machine(app, machine).await {
+            Ok(()) => error,
+            Err(cleanup) => {
+                tracing::warn!(app, machine, error = %cleanup, "could not delete a replacement machine that failed");
+                self.error(format!(
+                    "{error} — and the new Fly.io machine {machine} could not be deleted \
+                     ({cleanup}); it holds the box's disk until it is"
+                ))
+            }
+        }
+    }
+
+    /// Delete the box's app with everything in it, in the order Fly allows:
+    /// the machines (a volume a machine holds cannot be deleted), then the
+    /// volumes, then the app. Fly documents that destroying an app takes its
+    /// volumes and their snapshots with it, but only for `fly apps destroy`;
+    /// deleting each volume here leaves none behind whatever the API's app
+    /// delete does. Only ever an app named with [`APP_PREFIX`], whatever a
+    /// handle says; anything already gone is success.
     pub async fn destroy(&self, app: &str) -> Result<()> {
         if !app.starts_with(APP_PREFIX) {
             return Err(Error::Other(format!(
                 "{app} is not a Fletch cloud box's app; refusing to delete it"
             )));
+        }
+        let Some(machines) = self.app_list(app, "machines").await? else {
+            return Ok(());
+        };
+        for machine in machines.iter().filter_map(|m| m["id"].as_str()) {
+            self.destroy_machine(app, machine).await?;
+        }
+        let Some(volumes) = self.app_list(app, "volumes").await? else {
+            return Ok(());
+        };
+        for volume in volumes.iter().filter(|v| volume_live(v)) {
+            let Some(id) = volume["id"].as_str() else {
+                continue;
+            };
+            let reply = self
+                .call(
+                    Method::DELETE,
+                    &format!("/v1/apps/{app}/volumes/{id}"),
+                    &[],
+                    None,
+                    HTTP_TIMEOUT,
+                )
+                .await?;
+            if !reply.status.is_success() && reply.status != StatusCode::NOT_FOUND {
+                return Err(self.refusal(&reply, "delete the box's disk"));
+            }
         }
         let reply = self
             .call(
@@ -397,6 +625,28 @@ impl Client {
             return Ok(());
         }
         Err(self.refusal(&reply, "delete the app"))
+    }
+
+    /// Delete one machine, killing it if it runs, and wait until Fly reports
+    /// it destroyed, so its volume is free.
+    async fn destroy_machine(&self, app: &str, machine: &str) -> Result<()> {
+        let reply = self
+            .call(
+                Method::DELETE,
+                &format!("/v1/apps/{app}/machines/{machine}"),
+                &[("force", "true")],
+                None,
+                HTTP_TIMEOUT,
+            )
+            .await?;
+        if reply.status == StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        if !reply.status.is_success() {
+            return Err(self.refusal(&reply, "delete the machine"));
+        }
+        self.wait_for(app, machine, Target::Destroyed, None, STOP_BOUND)
+            .await
     }
 
     /// Run `argv` through Fly's synchronous exec, with `timeout` (clamped to
@@ -438,11 +688,16 @@ impl Client {
         }
     }
 
-    /// The org's apps named with [`APP_PREFIX`], each with its machine. A
-    /// machine must also carry [`LABEL`] to be listed. An app with no machine
-    /// and no volume — what a `create` whose cleanup failed leaves — is listed
-    /// with an empty machine id as [`MachineState::Gone`]; `destroy` removes
-    /// it.
+    /// The org's box apps, each as one [`Listed`] per machine — or one with an
+    /// empty machine id when it holds none. An app is a box's only if it is
+    /// named with [`APP_PREFIX`], every machine in it carries [`LABEL`] and
+    /// every volume in it is named [`VOLUME_NAME`]; any other app is left out.
+    /// The state says what is left of the box: a machine's own state (its
+    /// volume there), [`MachineState::MachineGone`] for a volume with no
+    /// machine — a workspace a box may still refer to, recoverable with
+    /// `replace_machine` — [`MachineState::DiskGone`] for a machine with no
+    /// volume, and [`MachineState::Gone`] for an empty app (what a `create`
+    /// whose cleanup failed leaves).
     pub async fn list(&self) -> Result<Vec<Listed>> {
         let reply = self
             .call(
@@ -461,53 +716,141 @@ impl Client {
             let Some(name) = app["name"].as_str().filter(|n| n.starts_with(APP_PREFIX)) else {
                 continue;
             };
-            let reply = self
-                .call(
-                    Method::GET,
-                    &format!("/v1/apps/{name}/machines"),
-                    &[],
-                    None,
-                    HTTP_TIMEOUT,
-                )
-                .await?;
-            if reply.status == StatusCode::NOT_FOUND {
-                // Deleted since the listing.
+            // Deleted since the listing: nothing to report.
+            let Some(machines) = self.app_list(name, "machines").await? else {
+                continue;
+            };
+            let Some(volumes) = self.app_list(name, "volumes").await? else {
+                continue;
+            };
+            let volumes: Vec<&Value> = volumes.iter().filter(|v| volume_live(v)).collect();
+            if !machines.iter().all(labelled)
+                || !volumes
+                    .iter()
+                    .all(|v| v["name"].as_str() == Some(VOLUME_NAME))
+            {
                 continue;
             }
-            if !reply.status.is_success() {
-                return Err(self.refusal(&reply, "list an app's machines"));
-            }
-            let machines = reply.body.as_array().map(Vec::as_slice).unwrap_or_default();
+            let volume = volumes
+                .first()
+                .and_then(|v| v["id"].as_str())
+                .unwrap_or_default();
+            let handle = |machine: &str| Handle::Fly {
+                org: self.org.clone(),
+                app: name.to_string(),
+                volume: volume.to_string(),
+                machine: machine.to_string(),
+            };
             if machines.is_empty() {
-                // A box never has a volume; an app holding one is not ours.
-                if app["volume_count"].as_u64().unwrap_or(0) == 0 {
-                    listed.push(Listed {
-                        handle: Handle::Fly {
-                            app: name.to_string(),
-                            machine: String::new(),
-                        },
-                        state: MachineState::Gone,
-                    });
-                }
+                listed.push(Listed {
+                    handle: handle(""),
+                    state: if volume.is_empty() {
+                        MachineState::Gone
+                    } else {
+                        MachineState::MachineGone
+                    },
+                });
                 continue;
             }
-            for machine in machines.iter().filter(|m| labelled(m)) {
+            for machine in &machines {
                 let Some(id) = machine["id"].as_str().filter(|id| !id.is_empty()) else {
                     continue;
                 };
+                let state = machine_state(machine["state"].as_str().unwrap_or_default());
                 listed.push(Listed {
-                    handle: Handle::Fly {
-                        app: name.to_string(),
-                        machine: id.to_string(),
+                    handle: handle(id),
+                    state: match state {
+                        _ if volume.is_empty() => MachineState::DiskGone,
+                        MachineState::Gone => MachineState::MachineGone,
+                        state => state,
                     },
-                    state: machine_state(machine["state"].as_str().unwrap_or_default()),
                 });
             }
         }
         Ok(listed)
     }
 
-    /// The machine as Fly reports it now; `None` when it does not exist.
+    /// An app's machines or volumes (`what`), `None` when the app is gone.
+    async fn app_list(&self, app: &str, what: &str) -> Result<Option<Vec<Value>>> {
+        let reply = self
+            .call(
+                Method::GET,
+                &format!("/v1/apps/{app}/{what}"),
+                &[],
+                None,
+                HTTP_TIMEOUT,
+            )
+            .await?;
+        if reply.status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !reply.status.is_success() {
+            return Err(self.refusal(&reply, &format!("list the app's {what}")));
+        }
+        Ok(Some(reply.body.as_array().cloned().unwrap_or_default()))
+    }
+
+    /// Whether Fly has the app at all (its documented existence check).
+    async fn app_exists(&self, app: &str) -> Result<bool> {
+        let reply = self
+            .call(
+                Method::GET,
+                &format!("/v1/apps/{app}"),
+                &[],
+                None,
+                HTTP_TIMEOUT,
+            )
+            .await?;
+        match reply.status {
+            StatusCode::NOT_FOUND => Ok(false),
+            s if s.is_success() => Ok(true),
+            _ => Err(self.refusal(&reply, "read the app")),
+        }
+    }
+
+    /// The box's volume as Fly reports it now. A 404 is [`Disk::Gone`]
+    /// whether the volume or its whole app went.
+    async fn disk(&self, app: &str, volume: &str) -> Result<Disk> {
+        if volume.is_empty() {
+            return Ok(Disk::Gone);
+        }
+        let reply = self
+            .call(
+                Method::GET,
+                &format!("/v1/apps/{app}/volumes/{volume}"),
+                &[],
+                None,
+                HTTP_TIMEOUT,
+            )
+            .await?;
+        if reply.status == StatusCode::NOT_FOUND {
+            return Ok(Disk::Gone);
+        }
+        if !reply.status.is_success() {
+            return Err(self.refusal(&reply, "read the box's disk"));
+        }
+        let body = &reply.body;
+        if !volume_live(body) {
+            return Ok(Disk::Gone);
+        }
+        if body["state"].as_str() == Some("failed") {
+            return Ok(Disk::Failed("Fly.io reports the box's disk failed".into()));
+        }
+        if host_unreachable(body) {
+            return Ok(Disk::Failed(
+                "the Fly.io host holding the box's disk is unreachable; the disk comes back \
+                 with the host, or is restored from a snapshot"
+                    .into(),
+            ));
+        }
+        Ok(Disk::Present {
+            region: body["region"].as_str().unwrap_or_default().to_string(),
+        })
+    }
+
+    /// The machine as Fly reports it now; `None` when it does not exist. A
+    /// machine on a host Fly cannot reach is [`MachineState::Failed`], since
+    /// its state is only the last one known.
     async fn observe(&self, app: &str, machine: &str) -> Result<Option<Seen>> {
         if machine.is_empty() {
             return Ok(None);
@@ -532,8 +875,16 @@ impl Client {
             .iter()
             .find_map(|key| reply.body[*key].as_str().filter(|v| !v.is_empty()))
             .map(str::to_string);
+        let state = if host_unreachable(&reply.body) {
+            MachineState::Failed(
+                "the Fly.io host the machine is on is unreachable; it comes back with the host"
+                    .into(),
+            )
+        } else {
+            machine_state(&raw)
+        };
         Ok(Some(Seen {
-            state: machine_state(&raw),
+            state,
             raw,
             version,
         }))
@@ -555,7 +906,9 @@ impl Client {
         }
         match self.observe(app, machine).await? {
             Some(seen) if target.underway(&seen.state) => Ok(()),
-            _ => Err(self.refusal(&reply, &format!("{} the machine", target.action()))),
+            _ => {
+                Err(self.pinned_refusal(&reply, &format!("{} the machine", target.action()), None))
+            }
         }
     }
 
@@ -592,20 +945,23 @@ impl Client {
             {
                 Ok(reply) if reply.status.is_success() => return Ok(()),
                 Ok(reply) if reply.status == StatusCode::NOT_FOUND => {
-                    return Err(gone(app, machine))
+                    return match target {
+                        Target::Destroyed => Ok(()),
+                        _ => Err(gone(app, machine)),
+                    }
                 }
                 _ => {}
             }
-            let seen = self
-                .observe(app, machine)
-                .await?
-                .ok_or_else(|| gone(app, machine))?;
-            if target.reached(&seen.state) {
+            let (state, raw) = match self.observe(app, machine).await? {
+                Some(seen) => (seen.state, seen.raw),
+                None => (MachineState::Gone, "gone".to_string()),
+            };
+            if target.reached(&state) {
                 return Ok(());
             }
-            match &seen.state {
-                MachineState::Gone => return Err(gone(app, machine)),
-                MachineState::Failed(reason) => {
+            match (&state, target) {
+                (MachineState::Gone, _) => return Err(gone(app, machine)),
+                (MachineState::Failed(reason), Target::Started) => {
                     return Err(self.error(format!(
                         "the Fly.io machine {machine} did not start: {reason}"
                     )))
@@ -614,10 +970,9 @@ impl Client {
             }
             if Instant::now() >= deadline {
                 return Err(self.error(format!(
-                    "the Fly.io machine {machine} was not {} after {} s (Fly.io reports it {})",
+                    "the Fly.io machine {machine} was not {} after {} s (Fly.io reports it {raw})",
                     target.as_str(),
                     bound.as_secs(),
-                    seen.raw,
                 )));
             }
             tokio::time::sleep(self.pace).await;
@@ -676,6 +1031,20 @@ impl Client {
             }
             return Ok(Reply { status, body });
         }
+    }
+
+    /// [`refusal`](Self::refusal) for a request bound to the volume's host (a
+    /// machine on the box's disk): no capacity there is the host's, not the
+    /// region's, and waiting is the remedy.
+    fn pinned_refusal(&self, reply: &Reply, doing: &str, region: Option<&str>) -> Error {
+        if reply.body["status"].as_str() == Some("insufficient_capacity") {
+            let region = region.map(|r| format!(" (in {r})")).unwrap_or_default();
+            return self.error(format!(
+                "Fly.io has no room right now on the host that holds this box's disk{region}, \
+                 so it could not {doing} — try again later"
+            ));
+        }
+        self.refusal(reply, doing)
     }
 
     /// The error for a request Fly answered with a failure, for the person who
@@ -754,12 +1123,29 @@ fn gone(app: &str, machine: &str) -> Error {
     ))
 }
 
+fn disk_gone(app: &str, volume: &str) -> Error {
+    Error::CloudGone(format!(
+        "the Fly.io volume {volume} (app {app}) that held this box's workspace no longer exists; \
+         what was on it is lost"
+    ))
+}
+
 /// Whether a listed machine carries [`LABEL`]. Its `config` is null when its
 /// host could not be reached, with the last known one in `incomplete_config`.
 fn labelled(machine: &Value) -> bool {
     ["config", "incomplete_config"]
         .iter()
         .any(|key| machine[*key]["metadata"].get(LABEL).is_some())
+}
+
+/// Whether a volume is there, not deleted or on its way to being deleted.
+fn volume_live(volume: &Value) -> bool {
+    !VOLUME_GONE_STATES.contains(&volume["state"].as_str().unwrap_or_default())
+}
+
+/// Whether Fly reports it could not reach the host of a machine or volume.
+fn host_unreachable(body: &Value) -> bool {
+    body["host_status"].as_str() == Some("unreachable")
 }
 
 /// A new app's name: [`APP_PREFIX`], the box's name folded into Fly's rules,
@@ -792,13 +1178,51 @@ fn fold_app_name(name: &str, suffix: &str) -> String {
     }
 }
 
+/// The create-volume request for a box's disk: `disk_gib` (or
+/// [`DEFAULT_DISK_GIB`]) of ext4, encrypted, snapshotted daily and kept
+/// [`SNAPSHOT_RETENTION_DAYS`] days, placed on a host that can also run the
+/// box's machine (`compute`: without it Fly may pick a host with room for the
+/// volume and none for the machine). Without a region Fly places it in the
+/// region of the API server that takes the request, usually the nearest.
+///
+/// What it costs, as Fly prices it (<https://docs.fly.io/about/pricing/>,
+/// read November 2026): a volume is billed for its provisioned size whether
+/// its machine runs or not — "$0.15/GB per month … including while detached
+/// or attached to a stopped Machine" — so the default 8 GiB is $1.20 a month
+/// for as long as the box exists. Snapshots add $0.08/GB a month of data
+/// stored, the first 10 GB a month free; a stopped machine's root filesystem
+/// is billed at $0.15/GB a month as well.
+fn volume_body(spec: &MachineSpec, region: Option<&str>) -> Value {
+    let mut body = json!({
+        "name": VOLUME_NAME,
+        "size_gb": spec.disk_gib.unwrap_or(DEFAULT_DISK_GIB),
+        "fstype": "ext4",
+        "encrypted": true,
+        "auto_backup_enabled": true,
+        "snapshot_retention": SNAPSHOT_RETENTION_DAYS,
+        // One volume per app: no other volume to keep it apart from, and a
+        // unique zone can only make placement fail.
+        "require_unique_zone": false,
+        "compute": guest(spec),
+    });
+    if let Some(region) = region {
+        body["region"] = json!(region);
+    }
+    body
+}
+
+/// The machine's size, for the machine itself and for placing its volume.
+fn guest(spec: &MachineSpec) -> Value {
+    json!({ "cpu_kind": "shared", "cpus": spec.cpus, "memory_mb": spec.memory_mib })
+}
+
 /// The create-machine request for a box: the image with its environment and
-/// size, one TCP service taking TLS on 443 to the guest's sshd, nothing that
-/// would start, stop or restart the machine behind the engine's back, the root
-/// filesystem kept, and the box's label. Without a region Fly places the
-/// machine in the region of the API server that takes the request — usually
-/// the one nearest this machine.
-fn machine_body(app: &str, spec: &MachineSpec, region: Option<&str>) -> Value {
+/// size, in the volume's region with the volume mounted where the guest keeps
+/// the box's files, one TCP service taking TLS on 443 to the guest's sshd,
+/// nothing that would start, stop or restart the machine behind the engine's
+/// back, the root filesystem kept across a stop (best effort), and the box's
+/// label.
+fn machine_body(app: &str, spec: &MachineSpec, volume: &str, region: &str) -> Value {
     let env: Map<String, Value> = spec
         .env
         .iter()
@@ -806,22 +1230,17 @@ fn machine_body(app: &str, spec: &MachineSpec, region: Option<&str>) -> Value {
         .collect();
     let mut metadata = Map::new();
     metadata.insert(LABEL.into(), Value::from(spec.name.as_str()));
-    let mut rootfs = json!({ "persist": PERSIST_ROOTFS });
-    if let Some(gib) = spec.disk_gib {
-        rootfs["size_gb"] = json!(gib);
-    }
-    let mut body = json!({
+    let mut sizing = guest(spec);
+    sizing["persist_rootfs"] = json!(PERSIST_ROOTFS);
+    json!({
         "name": app,
+        "region": region,
         "config": {
             "image": spec.image,
             "env": env,
-            "guest": {
-                "cpu_kind": "shared",
-                "cpus": spec.cpus,
-                "memory_mb": spec.memory_mib,
-                "persist_rootfs": PERSIST_ROOTFS,
-            },
-            "rootfs": rootfs,
+            "guest": sizing,
+            "rootfs": { "persist": PERSIST_ROOTFS },
+            "mounts": [{ "volume": volume, "path": fletch_box::guest::DATA_MOUNT }],
             "restart": { "policy": "no" },
             "auto_destroy": false,
             "metadata": metadata,
@@ -833,11 +1252,7 @@ fn machine_body(app: &str, spec: &MachineSpec, region: Option<&str>) -> Value {
                 "ports": [{ "port": TLS_PORT, "handlers": ["tls"] }],
             }],
         },
-    });
-    if let Some(region) = region {
-        body["region"] = json!(region);
-    }
-    body
+    })
 }
 
 /// What an exec response says. Fly may leave out a zero exit code or signal.
@@ -852,13 +1267,14 @@ fn exec_output(body: &Value) -> ExecOutput {
     }
 }
 
-/// Every state Fly documents (the machine-states guide and the API's
+/// Every machine state Fly documents (the machine-states guide and the API's
 /// description), mapped onto what the registry acts on. Transient states that
 /// settle by themselves read as [`MachineState::Starting`] or
 /// [`MachineState::Stopping`] by their direction; `replaced` and `migrated`
 /// describe a superseded version, not the machine, so they too say "ask
-/// again". A state Fly adds later is a [`MachineState::Failed`] naming it, not
-/// a guess.
+/// again". [`MachineState::Gone`] here is the machine alone; what is left of
+/// the box beside it is `Client::state`'s to say. A state Fly adds later is a
+/// [`MachineState::Failed`] naming it, not a guess.
 fn machine_state(fly: &str) -> MachineState {
     match fly {
         "started" => MachineState::Running,

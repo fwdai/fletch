@@ -150,16 +150,27 @@ fn provider_ids_round_trip_and_nothing_else_parses() {
     }
 }
 
+fn fly(org: &str, app: &str, volume: &str, machine: &str) -> Handle {
+    Handle::Fly {
+        org: org.into(),
+        app: app.into(),
+        volume: volume.into(),
+        machine: machine.into(),
+    }
+}
+
 #[test]
 fn a_handle_survives_its_string_and_a_malformed_one_is_refused() {
-    let handle = Handle::Fly {
-        app: "fletch-box-ladakh-otter-k3j9x2ab".into(),
-        machine: "3d8d9dd6b26e89".into(),
-    };
+    let handle = fly(
+        "acme",
+        "fletch-box-ladakh-otter-k3j9x2ab",
+        "vol_0123456789abcdef",
+        "3d8d9dd6b26e89",
+    );
     let stored = handle.to_string();
     assert_eq!(
         stored,
-        "fly:fletch-box-ladakh-otter-k3j9x2ab/3d8d9dd6b26e89"
+        "fly:acme/fletch-box-ladakh-otter-k3j9x2ab/vol_0123456789abcdef/3d8d9dd6b26e89"
     );
     assert_eq!(Handle::parse(&stored).unwrap(), handle);
     assert_eq!(handle.provider(), ProviderId::Fly);
@@ -171,25 +182,50 @@ fn a_handle_survives_its_string_and_a_malformed_one_is_refused() {
         }
     );
 
-    let machineless = Handle::Fly {
-        app: "fletch-box-a".into(),
-        machine: String::new(),
-    };
-    assert_eq!(
-        Handle::parse(&machineless.to_string()).unwrap(),
-        machineless
-    );
+    // What `list` reports for a disk without a machine, a machine without a
+    // disk and an app with neither reads back too.
+    for listed in [
+        fly("acme", "fletch-box-a", "vol_abc", ""),
+        fly("acme", "fletch-box-a", "", "3d8d9dd6b26e89"),
+        fly("acme", "fletch-box-a", "", ""),
+    ] {
+        assert_eq!(Handle::parse(&listed.to_string()).unwrap(), listed);
+    }
 
     for bad in [
         "",
         "fly",
-        "fly:app",
-        "fly:/m1",
-        "fly:App/m1",
-        "fly:app/m 1",
-        "fly:app/../m1",
-        "gcp:app/m1",
+        "fly:acme/app/vol_a",
+        "fly:/app/vol_a/m1",
+        "fly:acme//vol_a/m1",
+        "fly:acme/App/vol_a/m1",
+        "fly:acme/app/volume/m1",
+        "fly:acme/app/vol_/m1",
+        "fly:acme/app/vol_a/m 1",
+        "fly:acme/app/vol_a/m1/extra",
+        "gcp:acme/app/vol_a/m1",
     ] {
         assert!(Handle::parse(bad).is_err(), "{bad:?}");
     }
+}
+
+/// The app/machine form a handle had before boxes had a disk is refused by
+/// name: it identifies no disk, so nothing could be done with it safely.
+#[test]
+fn a_handle_from_before_disks_is_refused_with_its_reason() {
+    let err = Handle::parse("fly:fletch-box-a-k3j9x2ab/3d8d9dd6b26e89").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("the form from before cloud boxes had a volume"),
+        "{err}"
+    );
+}
+
+#[test]
+fn the_same_box_is_its_app_and_disk_whatever_its_machine() {
+    let stored = fly("acme", "fletch-box-a", "vol_abc", "m-lost");
+    assert!(stored.same_box(&fly("acme", "fletch-box-a", "vol_abc", "")));
+    assert!(stored.same_box(&fly("acme", "fletch-box-a", "vol_abc", "m-new")));
+    assert!(!stored.same_box(&fly("acme", "fletch-box-a", "vol_other", "m-lost")));
+    assert!(!stored.same_box(&fly("acme", "fletch-box-b", "vol_abc", "m-lost")));
 }
