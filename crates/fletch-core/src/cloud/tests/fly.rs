@@ -500,7 +500,10 @@ fn fly_shapes(r: &Request) -> Reply {
     let path = r.path.as_str();
     let app = path.split('/').nth(3).unwrap_or_default();
     match (app, path.rsplit('/').next().unwrap_or_default()) {
-        ("fletch-box-whole", "m1") => Reply::json(200, json!({ "id": "m1", "state": "started" })),
+        ("fletch-box-whole", "m1") => Reply::json(
+            200,
+            json!({ "id": "m1", "state": "started", "host_status": "ok" }),
+        ),
         ("fletch-box-whole", _) => Reply::json(200, live),
         // A machine destroyed from the dashboard: 404, or still listed destroyed.
         ("fletch-box-no-machine", "m1") => Reply::json(404, json!({ "error": "not found" })),
@@ -525,6 +528,26 @@ fn fly_shapes(r: &Request) -> Reply {
         ("fletch-box-dead-host", _) => Reply::json(
             200,
             json!({ "id": VOL, "state": "created", "host_status": "unreachable" }),
+        ),
+        // A disk whose host Fly could not ask, and no machine answering: not
+        // a lost machine to replace.
+        ("fletch-box-unknown-disk-host", "m1") => Reply::json(404, json!({ "error": "not found" })),
+        ("fletch-box-unknown-disk-host", _) => Reply::json(
+            200,
+            json!({ "id": VOL, "state": "created", "region": "ams", "host_status": "unknown" }),
+        ),
+        // A machine whose host Fly could not ask, on a disk it could: its
+        // `started` is only the last state known.
+        ("fletch-box-unknown-machine-host", "m1") => Reply::json(
+            200,
+            json!({ "id": "m1", "state": "started", "host_status": "unknown" }),
+        ),
+        ("fletch-box-unknown-machine-host", _) => Reply::json(200, live),
+        // A status Fly does not document yet.
+        ("fletch-box-new-host-status", "m1") => Reply::json(404, json!({ "error": "not found" })),
+        ("fletch-box-new-host-status", _) => Reply::json(
+            200,
+            json!({ "id": VOL, "state": "created", "region": "ams", "host_status": "draining" }),
         ),
         _ => Reply::json(404, json!({ "error": "app not found" })),
     }
@@ -559,9 +582,22 @@ async fn state_reads_the_disk_and_the_machine_and_says_what_is_left() {
     );
     assert_eq!(state("fletch-box-gone").await.unwrap(), MachineState::Gone);
     assert!(
-        matches!(state("fletch-box-dead-host").await.unwrap(), MachineState::Failed(r) if r.contains("unreachable")),
+        matches!(state("fletch-box-dead-host").await.unwrap(), MachineState::Failed(r) if r.contains("cannot reach the host")),
         "a dead host is a failure, not a loss"
     );
+    // Every host status but `ok` is a host Fly could not ask: a disk there is
+    // not a disk to put a new machine on, and a machine there is not running.
+    for app in [
+        "fletch-box-unknown-disk-host",
+        "fletch-box-unknown-machine-host",
+        "fletch-box-new-host-status",
+    ] {
+        let found = state(app).await.unwrap();
+        assert!(
+            matches!(&found, MachineState::Failed(r) if r.contains("cannot reach the host")),
+            "{app}: {found:?}"
+        );
+    }
 
     let lines = server.lines();
     assert_eq!(
