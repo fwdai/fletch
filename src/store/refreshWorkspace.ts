@@ -23,7 +23,7 @@
 
 import type { Workspace } from "@/api";
 import type { Engine } from "@/api/engine";
-import { reconcileSending, reconcileTurns } from "@/helpers";
+import { dropAgentsEntries, endedAgentIds, reconcileSending, reconcileTurns } from "@/helpers";
 import { newestWins } from "@/util/newestWins";
 import { applyPendingHides } from "./pendingHides";
 import { perHost } from "./perHost";
@@ -39,10 +39,9 @@ const refetches = perHost(newestWins);
  * of that host was issued while this one was in flight — in which case the
  * fresh snapshot is dropped rather than allowed to clobber the newer state.
  *
- * `extra` computes any state DERIVED from the snapshot so it lands atomically
- * with the workspace it came from; it runs only when this refresh wins. State that reflects user intent rather than
- * the snapshot (selection, draft cleanup, log seeds) must be set by the caller
- * BEFORE calling this, so it is never dropped along with a superseded snapshot.
+ * State that reflects user intent rather than the snapshot (selection, draft
+ * cleanup, log seeds) must be set by the caller BEFORE calling this, so it is
+ * never dropped along with a superseded snapshot.
  *
  * Returns the fresh workspace (so callers can read it), or null if the fetch
  * failed or was superseded.
@@ -50,7 +49,6 @@ const refetches = perHost(newestWins);
 export const refreshWorkspace = async (
   { api, hostId }: Pick<Engine, "api" | "hostId">,
   set: AppSet,
-  extra?: (fresh: Workspace, state: AppState) => Partial<AppState>,
 ): Promise<Workspace | null> => {
   const claim = refetches(hostId).claim();
   const fresh = await api.getWorkspace();
@@ -62,11 +60,21 @@ export const refreshWorkspace = async (
   // the `sending` bridge and the open turns. A status event missed while the
   // window was backgrounded would otherwise leave an agent reading "working"
   // for the rest of the session (see helpers/sending, helpers/turn).
-  set((state) => ({
-    ...extra?.(applied, state),
-    workspace: applied,
-    sending: reconcileSending(state.sending, applied.agents, sendsInFlight(hostId)),
-    turnStartedAt: reconcileTurns(state.turnStartedAt, applied.agents),
-  }));
+  //
+  // And it is the one place every archive and discard shows up, whoever made
+  // it, so the per-agent state of an agent it says has ended goes here.
+  set((state) => {
+    const ended = dropAgentsEntries(state, endedAgentIds(state.workspace, applied));
+    return {
+      ...ended,
+      workspace: applied,
+      sending: reconcileSending(
+        ended.sending ?? state.sending,
+        applied.agents,
+        sendsInFlight(hostId),
+      ),
+      turnStartedAt: reconcileTurns(ended.turnStartedAt ?? state.turnStartedAt, applied.agents),
+    };
+  });
   return applied;
 };

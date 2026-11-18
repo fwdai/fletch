@@ -464,9 +464,11 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
         // guarded workspace refresh, so this user-intent state can never be dropped
         // if a concurrent refresh supersedes ours. The record rides along so a
         // recycled name can't open the chat against its archived predecessor
-        // (see adoptSpawnedAgent).
+        // (see adoptSpawnedAgent), nor show what that one left in the per-agent
+        // maps (its PR, its diff).
         set((state) => {
           const patches: Partial<AppState> = {
+            ...dropAgentEntries(state, rec.id),
             workspace: adoptSpawnedAgent(state.workspace, rec),
             selectedAgentId: rec.id,
           };
@@ -502,8 +504,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
         // history. Set the selection ahead of the guarded refresh so it survives
         // a superseding concurrent refresh, with the record in the same update
         // so a recycled name can't mount against its archived predecessor (see
-        // adoptSpawnedAgent).
+        // adoptSpawnedAgent), whose per-agent state goes with it.
         set((state) => ({
+          ...dropAgentEntries(state, rec.id),
           workspace: adoptSpawnedAgent(state.workspace, rec),
           selectedAgentId: rec.id,
           activeDraftId: null,
@@ -950,15 +953,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
       // Archiving kills the agent's processes, so release its PTY state (both
       // ring buffers and its cached live terminal); a restore starts fresh.
       dropAgentPty(hostId, id);
-      // Drop the agent's side maps ATOMICALLY with the post-commit snapshot that
-      // archives (hides) the row, by folding the cleanup into the guarded
-      // refresh: the backend stamps `archived_at` before it returns, so this
-      // snapshot confirms the archive and the maps go with it. If this refresh
-      // is superseded or returns null, the maps are kept until a later snapshot
-      // hides the row. The archive itself has committed, so a failed refetch is
-      // only reported — it must not put the row back.
+      // The agent's side maps go ATOMICALLY with the snapshot that confirms the
+      // archive and hides the row — this refresh's or, if it is superseded or
+      // fails, whichever one does (`endedAgentIds`); until then they are kept,
+      // so a row a stale snapshot re-exposed is never left emptied. The archive
+      // itself has committed, so a failed refetch is only reported — it must
+      // not put the row back.
       try {
-        await refreshWorkspace(engine, set, (_fresh, s) => dropAgentEntries(s, id));
+        await refreshWorkspace(engine, set);
       } catch (e) {
         set({ lastError: String(e) });
       }

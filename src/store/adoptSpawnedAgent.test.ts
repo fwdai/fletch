@@ -24,6 +24,7 @@ import { testEngine } from "@/test/engine";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { createDraftsSlice } from "./drafts";
 import { activeEnvironmentId, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
+import { BLANK_HOST_STATE } from "./hostState";
 import type { AppState } from "./types";
 import { createWorkspaceTypesSlice } from "./workspaceTypes";
 
@@ -73,6 +74,8 @@ const makeStore = (workspace: Workspace) => {
       }) as AppState,
   );
   store.setState({
+    // The per-agent maps a spawn clears for its agent's name.
+    ...BLANK_HOST_STATE,
     workspace,
     drafts: [{ id: "d1", repoPath: "/repos/app", name: NAME, provider: "claude", base: "main" }],
     composerDrafts: {},
@@ -135,6 +138,25 @@ describe("spawning a draft under a recycled landmark name", () => {
     // The archived predecessor is gone entirely — one record per id.
     expect(workspace?.agents.filter((a) => a.id === NAME)).toHaveLength(1);
     expect(workspace?.agents).toContainEqual(unrelated);
+  });
+
+  it("starts the new agent without what the name's last holder left behind", async () => {
+    // A read still in flight when the predecessor was archived can land after
+    // its state was dropped; the spawn is the last point to clear it.
+    const store = makeStore(workspaceWith([unrelated, archived]));
+    const merged = { number: 1131, url: "", title: "", state: "merged", mergeable: "unknown" };
+    store.setState({
+      prStates: { [NAME]: merged, eiger: merged },
+      prSets: { [NAME]: [{ state: merged, checks: null }] },
+    } as Partial<AppState>);
+
+    await store.getState().spawnFromDraft("d1", "ship it", "claude", "claude-opus-5");
+
+    expect(store.getState().prStates).toEqual({ eiger: merged });
+    expect(store.getState().prSets).toEqual({});
+    // What the spawn itself seeds for the agent is its own.
+    expect(store.getState().managedLogs[NAME]).toHaveLength(1);
+    expect(store.getState().sending[NAME]).toBe(true);
   });
 
   it("makes the new record visible immediately on a never-used name too", async () => {

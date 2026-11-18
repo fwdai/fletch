@@ -11,6 +11,7 @@ vi.mock("@/api", () => ({ api: { getWorkspace } }));
 
 import type { Api } from "@/api";
 import { localEngine } from "@/api/engine";
+import { BLANK_HOST_STATE } from "./hostState";
 import { refreshWorkspace } from "./refreshWorkspace";
 
 interface Deferred<T> {
@@ -128,5 +129,71 @@ describe("refreshWorkspace and the state the event stream carries", () => {
     await refreshWorkspace(localEngine, set);
 
     expect(patch.turnStartedAt).toEqual({ etna: 250, kibo: 7 });
+  });
+});
+
+describe("refreshWorkspace and an agent that ended elsewhere", () => {
+  beforeEach(() => {
+    getWorkspace.mockReset();
+  });
+
+  // The bug this pins: only this window's own archive click cleared an
+  // agent's per-agent state. One archived by the host's idle sweep (or from a
+  // phone) kept its PR in `prStates`, and the next workspace the host gave
+  // that landmark name showed it — a merged PR on a workspace minutes old.
+  it("drops the state of an agent the snapshot shows archived", async () => {
+    getWorkspace.mockResolvedValue({
+      agents: [
+        { id: "titicaca", status: "idle", archive: { archived_at: "2026-11-18T00:00:00Z" } },
+        { id: "fuji", status: "idle" },
+      ],
+    });
+    const merged = { number: 1131, state: "merged" };
+    const open = { number: 7, state: "open" };
+    const before = {
+      ...BLANK_HOST_STATE,
+      workspace: {
+        agents: [
+          { id: "titicaca", status: "idle" },
+          { id: "fuji", status: "idle" },
+        ],
+      },
+      prStates: { titicaca: merged, "titicaca::docs": merged, fuji: open },
+      prSets: { titicaca: [{ state: merged, checks: null }] },
+      gitShortstats: { titicaca: { additions: 4, deletions: 2, files: 1 } },
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: test stub
+    let patch: any;
+    // biome-ignore lint/suspicious/noExplicitAny: test stub for the store set()
+    const set = (updater: any) => {
+      patch = updater(before);
+    };
+
+    await refreshWorkspace(localEngine, set);
+
+    expect(patch.prStates).toEqual({ fuji: open });
+    expect(patch.prSets).toEqual({});
+    expect(patch.gitShortstats).toEqual({});
+  });
+
+  it("keeps an archived agent's state on a snapshot that still shows it archived", async () => {
+    // History loaded its transcript; nothing ended between the two snapshots.
+    const archive = { archived_at: "2026-11-18T00:00:00Z" };
+    getWorkspace.mockResolvedValue({ agents: [{ id: "titicaca", status: "idle", archive }] });
+    const before = {
+      ...BLANK_HOST_STATE,
+      workspace: { agents: [{ id: "titicaca", status: "idle", archive }] },
+      managedLogs: { titicaca: [{ kind: "user_message", text: "ship it" }] },
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: test stub
+    let patch: any;
+    // biome-ignore lint/suspicious/noExplicitAny: test stub for the store set()
+    const set = (updater: any) => {
+      patch = updater(before);
+    };
+
+    await refreshWorkspace(localEngine, set);
+
+    expect(patch.managedLogs).toBeUndefined();
   });
 });

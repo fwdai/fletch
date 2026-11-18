@@ -23,6 +23,7 @@ vi.mock("@/data/slashCommands", () => ({ discoverCommands: vi.fn() }));
 import type { AgentRecord, FolderGrant } from "@/api";
 import { activeEngine } from "@/api/engine";
 import { createDraftsSlice } from "./drafts";
+import { BLANK_HOST_STATE } from "./hostState";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
 import { createWorkspaceTypesSlice } from "./workspaceTypes";
@@ -58,6 +59,8 @@ const makeStore = () => {
       }) as AppState,
   );
   store.setState({
+    // The per-agent maps a spawn clears for its agent's name.
+    ...BLANK_HOST_STATE,
     workspace: { agents: [agent], projects: [] },
     drafts: [{ id: "d1", repoPath: "/repos/app", name: "chimborazo", provider: "claude" }],
     composerDrafts: {},

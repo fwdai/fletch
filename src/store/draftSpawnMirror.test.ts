@@ -22,6 +22,7 @@ import type { TurnSentEvent } from "@/api";
 import { activeEngine } from "@/api/engine";
 import { mirrorSentTurn } from "@/helpers";
 import { createDraftsSlice } from "./drafts";
+import { BLANK_HOST_STATE } from "./hostState";
 import type { AppState } from "./types";
 import { createWorkspaceTypesSlice } from "./workspaceTypes";
 
@@ -36,6 +37,8 @@ const makeStore = () => {
       }) as AppState,
   );
   store.setState({
+    // The per-agent maps a spawn clears for its agent's name.
+    ...BLANK_HOST_STATE,
     drafts: [
       {
         id: "d1",

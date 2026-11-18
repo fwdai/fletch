@@ -5,6 +5,7 @@ import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
 import { discoverCommands } from "@/data/slashCommands";
 import {
   draftNames,
+  dropAgentEntries,
   expandSlashCommand,
   resolveAgentSpawnProfile,
   resolveBaseBranch,
@@ -565,10 +566,12 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
         // dropped if a concurrent refresh supersedes ours. The record lands in the
         // same update: selecting an id the snapshot still holds an *archived*
         // record for (a recycled name) would otherwise open the chat against
-        // that stale record — see adoptSpawnedAgent.
+        // that stale record — see adoptSpawnedAgent. What that earlier holder of
+        // the name left in the per-agent maps (its PR, its diff) goes first.
         set((state) => {
           const { [id]: _droppedDraft, ...restComposerDrafts } = state.composerDrafts;
           const patches: Partial<AppState> = {
+            ...dropAgentEntries(state, rec.id),
             workspace: adoptSpawnedAgent(state.workspace, rec),
             selectedAgentId: rec.id,
             drafts: state.drafts.filter((d) => d.id !== id),

@@ -1,5 +1,5 @@
 import type { Workspace } from "@/api";
-import { dropAgentEntries } from "@/helpers";
+import { dropAgentsEntries } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
 import { projectKey } from "@/util/projects";
@@ -154,22 +154,17 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get, { api, host
     const result = await api.deleteProject(projectId);
     const deletedIds = result.deleted_agent_ids;
     for (const id of deletedIds) clearOutputBuffer(hostId, id);
-    set((state) => {
-      let patch = {};
-      for (const id of deletedIds)
-        patch = { ...patch, ...dropAgentEntries({ ...state, ...patch }, id) };
-      return {
-        ...patch,
-        workspace: result.workspace,
-        selectedAgentId: deletedIds.includes(state.selectedAgentId ?? "")
-          ? null
-          : state.selectedAgentId,
-        selectedRunId: result.deleted_run_ids.includes(state.selectedRunId ?? "")
-          ? null
-          : state.selectedRunId,
-        projectScreen: null,
-      };
-    });
+    set((state) => ({
+      ...dropAgentsEntries(state, deletedIds),
+      workspace: result.workspace,
+      selectedAgentId: deletedIds.includes(state.selectedAgentId ?? "")
+        ? null
+        : state.selectedAgentId,
+      selectedRunId: result.deleted_run_ids.includes(state.selectedRunId ?? "")
+        ? null
+        : state.selectedRunId,
+      projectScreen: null,
+    }));
   },
 
   relocateProject: async (oldPath, newPath) => {

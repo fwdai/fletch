@@ -130,10 +130,45 @@ function dropScopedEntries<T>(map: Record<string, T>, id: string): Record<string
   );
 }
 
+/** The agents the snapshot `next` says have ended since `prev`: live there,
+ *  archived or gone here. Whoever ended them — this window, a paired phone, the
+ *  host's own idle sweep — so the state kept for one never waits for a click
+ *  made here to be dropped. Ids are landmark names the host recycles, and what
+ *  an ended agent leaves behind is what the next agent of that name would be
+ *  shown with (its merged PR, its diff).
+ *
+ *  Archived means the host said so: a row this window has only hidden while
+ *  its own archive is confirmed (no `archived_at` yet) still counts as live,
+ *  and the snapshot that confirms it is the one that ends it. A `spawning`
+ *  record missing from `next` is left alone: a snapshot read just before the
+ *  spawn committed doesn't know the agent yet, and is not word that it ended. */
+export function endedAgentIds(prev: Workspace | null, next: Workspace): string[] {
+  if (!prev) return [];
+  const archived = (a: AgentRecord) => !!a.archive?.archived_at;
+  const after = new Map(next.agents.map((a) => [a.id, a]));
+  return prev.agents
+    .filter((a) => {
+      if (archived(a)) return false;
+      const now = after.get(a.id);
+      return now ? archived(now) : a.status !== "spawning";
+    })
+    .map((a) => a.id);
+}
+
+/** `dropAgentEntries` for each of `ids`, as one state patch. */
+export function dropAgentsEntries(state: AppState, ids: readonly string[]): Partial<AppState> {
+  let patch: Partial<AppState> = {};
+  for (const id of ids) patch = { ...patch, ...dropAgentEntries({ ...state, ...patch }, id) };
+  return patch;
+}
+
 /** Strip an agent's entries from every ephemeral per-agent map, returning just
  *  the pruned maps as a state patch (the caller layers on workspace /
- *  selectedAgentId). Shared by discard and archive — dropping these is safe
- *  because History re-loads an archived agent's transcript fresh from disk. */
+ *  selectedAgentId). Shared by discard and archive, by a snapshot that shows an
+ *  agent ended elsewhere (`endedAgentIds`), and by a spawn, whose agent starts
+ *  with none of what an earlier holder of its name left — dropping these is
+ *  safe because History re-loads an archived agent's transcript fresh from
+ *  disk. */
 export function dropAgentEntries(state: AppState, id: string): Partial<AppState> {
   const { [id]: _log, ...managedLogs } = state.managedLogs;
   const { [id]: _loading, ...transcriptLoading } = state.transcriptLoading;
