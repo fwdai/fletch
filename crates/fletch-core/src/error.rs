@@ -30,10 +30,11 @@ pub enum Error {
     #[error("sandbox unavailable: {0}")]
     SandboxUnavailable(String),
 
-    /// A cloud machine that no longer exists at its provider: deleted from the
-    /// provider's dashboard, or never there. Distinct from every other failure
-    /// because the box it backed is lost, not unreachable — retrying cannot
-    /// bring it back (see `cloud`).
+    /// A cloud box's machine or disk that no longer exists at its provider:
+    /// deleted from the provider's dashboard, or never there. Distinct from
+    /// every other failure because retrying cannot bring it back; the box's
+    /// state (`cloud::Client::state`) says which part went — a machine is
+    /// replaced, a disk is lost.
     #[error("{0}")]
     CloudGone(String),
 
