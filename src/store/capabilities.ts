@@ -149,6 +149,12 @@ export function useHostEntry(): EnvironmentEntry {
   return useAppStore((s) => entryOf(s, hostId));
 }
 
+/** Whether this window knows a host besides This Mac: what decides if where
+ *  something runs is worth saying at all. */
+export function useHasPairedHost(): boolean {
+  return useAppStore((s) => Object.keys(s.environments).length > 1);
+}
+
 /** How a notice says which machine it is about, on the host the calling
  *  component is scoped to: " on Studio" for a paired host, nothing for This
  *  Mac. Every host's notices share the window, so one about a paired host's

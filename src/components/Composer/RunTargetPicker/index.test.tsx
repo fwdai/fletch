@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-// The run-target picker on the new-workspace row. With no paired host it must
-// be the workspace-type pill exactly as it was, so the first test draws that
-// pill's markup the way the pill always has and compares the two.
+// Where a new workspace runs. With no paired host it is the workspace-type
+// pill on the new-workspace row exactly as it was, so the first test draws
+// that pill's markup the way the pill always has and compares the two. With a
+// host paired the row says nothing and the composer's tab is the control.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -20,7 +21,7 @@ import { DropdownItem, DropdownMenu, DropdownSection } from "@/components/ui/Dro
 import { useAppStore } from "@/store";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { fireEvent, render, screen } from "@/test/render";
-import { RunTargetPicker } from ".";
+import { RunTargetPicker, RunTargetTab } from ".";
 
 const OPTIONS: WorkspaceTypeOption[] = [
   { kind: "host", available: true, reason: null, default: true },
@@ -46,6 +47,18 @@ const studio = (over: Partial<EnvironmentEntry> = {}): EnvironmentEntry => ({
 function picker(onPick = vi.fn()) {
   return render(
     <RunTargetPicker repoPath="/w/app" provider="claude" projectId="p1" onPick={onPick} />,
+  );
+}
+
+function tab(onPick = vi.fn(), pinned = false) {
+  return render(
+    <RunTargetTab
+      repoPath="/w/app"
+      provider="claude"
+      projectId="p1"
+      pinned={pinned}
+      onPick={onPick}
+    />,
   );
 }
 
@@ -135,13 +148,21 @@ describe("RunTargetPicker with no paired host", () => {
 });
 
 describe("RunTargetPicker with a paired host", () => {
+  it("leaves the row to the composer's tab", async () => {
+    useAppStore.getState().upsertEnvironment(studio());
+    const { container } = picker();
+    await vi.waitFor(() => expect(availableWorkspaceTypes).not.toHaveBeenCalled());
+    expect(container.innerHTML).toBe("");
+  });
+});
+
+describe("RunTargetTab", () => {
   it("says where the workspace runs and lists This Mac's types beside the host", async () => {
     useAppStore.getState().upsertEnvironment(studio());
     const onPick = vi.fn();
-    picker(onPick);
+    tab(onPick);
 
-    const pill = await screen.findByRole("button", { name: /on\s*This Mac\s*in\s*macOS sandbox/ });
-    fireEvent.click(pill);
+    fireEvent.click(await screen.findByRole("button", { name: /This Mac\s*macOS sandbox/ }));
 
     expect(screen.getByText("Paired hosts")).toBeTruthy();
     const host = screen.getByRole("menuitemradio", { name: "Studio" }) as HTMLButtonElement;
@@ -152,13 +173,22 @@ describe("RunTargetPicker with a paired host", () => {
     expect(onPick).toHaveBeenCalledWith("studio", undefined);
   });
 
-  it("shows an offline host disabled, its connection as the reason", async () => {
+  it("keeps a workspace type picked for This Mac", async () => {
+    useAppStore.getState().upsertEnvironment(studio());
+    const onPick = vi.fn();
+    tab(onPick);
+    fireEvent.click(await screen.findByRole("button", { name: /macOS sandbox/ }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /macOS sandbox/ }));
+    expect(onPick).toHaveBeenCalledWith(LOCAL_ENVIRONMENT_ID, "host");
+  });
+
+  it("shows an offline host disabled, its connection written under its name", async () => {
     useAppStore.getState().upsertEnvironment(studio({ connection: "disconnected" }));
-    picker();
+    tab();
     fireEvent.click(await screen.findByRole("button", { name: /This Mac/ }));
-    const host = screen.getByRole("menuitemradio", { name: "Studio" }) as HTMLButtonElement;
+    const host = screen.getByRole("menuitemradio", { name: /^Studio/ }) as HTMLButtonElement;
     expect(host.disabled).toBe(true);
-    expect(host.title).toBe("Studio · offline");
+    expect(host.textContent).toBe("Studiooffline");
   });
 
   it("says why the project can't go to a host once it is read", async () => {
@@ -167,13 +197,22 @@ describe("RunTargetPicker with a paired host", () => {
       ...DEFINITION,
       repos: [{ ...DEFINITION.repos[0], origin: null }],
     });
-    picker();
+    tab();
 
     fireEvent.click(await screen.findByRole("button", { name: /This Mac/ }));
     await vi.waitFor(() => {
-      const host = screen.getByRole("menuitemradio", { name: "Studio" }) as HTMLButtonElement;
+      const host = screen.getByRole("menuitemradio", { name: /^Studio/ }) as HTMLButtonElement;
       expect(host.disabled).toBe(true);
-      expect(host.title).toBe("app has no remote. Publish it first.");
+      expect(host.textContent).toContain("app has no remote. Publish it first.");
     });
+  });
+
+  it("offers only the draft's own place to a pinned draft", async () => {
+    useAppStore.getState().upsertEnvironment(studio());
+    tab(vi.fn(), true);
+    fireEvent.click(await screen.findByRole("button", { name: /This Mac/ }));
+    expect(screen.getByRole("menuitemradio", { name: /macOS sandbox/ })).toBeTruthy();
+    expect(screen.queryByText("Paired hosts")).toBeNull();
+    expect(screen.queryByRole("menuitemradio", { name: /Studio/ })).toBeNull();
   });
 });

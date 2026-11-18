@@ -16,11 +16,14 @@
   position: relative;
   width: 100%;
   max-width: 860px;
-  background: var(--bg-2);
-  border: 1px solid var(--bd-strong);
+  /* Its surface, edge and focus hue are variables so whatever frames it
+     (`EnvironmentFrame`) can recolour the box and stay in step with it. */
+  background: var(--composer-bg, var(--bg-2));
+  border: 1px solid var(--composer-bd, var(--bd-strong));
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
   transition:
+    background 0.15s,
     border-color 0.15s,
     box-shadow 0.15s;
 }
@@ -64,10 +67,10 @@
   color: var(--fg-1);
 }
 .composer:focus-within {
-  border-color: color-mix(in oklch, var(--accent), transparent 50%);
+  border-color: color-mix(in oklch, var(--composer-tint, var(--accent)), transparent 50%);
   box-shadow:
     var(--shadow-2),
-    0 0 0 4px color-mix(in oklch, var(--accent), transparent 88%);
+    0 0 0 4px color-mix(in oklch, var(--composer-tint, var(--accent)), transparent 88%);
 }
 .composer.is-drop-target {
   border-color: color-mix(in oklch, var(--accent), transparent 30%);
@@ -251,6 +254,39 @@
 @media (prefers-reduced-motion: reduce) {
   .cmp-ghost .interim::after {
     animation: none;
+  }
+}
+/* Why a send was just refused, said where the attempt was made. Drawn anew
+   for each attempt, so a repeat is seen too. */
+.composer-refusal {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 2px 14px 4px;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  color: var(--fg-1);
+  animation: composerRefusal 0.28s var(--ease);
+}
+.composer-refusal svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--warn);
+}
+@keyframes composerRefusal {
+  0% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+  30% {
+    transform: translateX(-4px);
+  }
+  65% {
+    transform: translateX(3px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 .composer-foot {

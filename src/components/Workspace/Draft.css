@@ -87,6 +87,10 @@
   width: 100%;
   max-width: 760px;
 }
+/* Room for the environment tab between the sub-line and the composer. */
+.empty-composer .env-frame:has(.env-tab) {
+  margin-top: 10px;
+}
 
 .empty-meta {
   margin-top: 16px;

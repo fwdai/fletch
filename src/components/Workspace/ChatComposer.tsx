@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { AgentRecord } from "@/api";
 import { useEngine } from "@/api/engine";
 import { Composer } from "@/components/Composer";
+import { EnvironmentFrame } from "@/components/Composer/EnvironmentFrame";
 import { providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import { isAgentBusy } from "@/helpers";
@@ -158,110 +159,118 @@ export function ChatComposer({
                 : undefined
             }
           />
-          <Composer
-            existingSession
-            activeModel={activeModel}
-            defaultProvider={agent.provider}
-            projectDir={agent.repos[0]?.repo_path}
-            onLocalCommand={(action) => runLocalCommand(action, agent.id)}
-            defaultModel={agent.model ?? undefined}
-            defaultCustomAgentId={agent.custom_agent_id ?? undefined}
-            initialThinking={agent.effort ?? undefined}
-            onChangeEffort={(value) => {
-              // Go through the store so the change is serialized per agent and
-              // a subsequent send waits for it to land (see queueConfigOp).
-              // claude restarts to re-apply --effort; per-turn agents read the
-              // new value from the record on their next turn.
-              setAgentEffort(agent.id, value).catch((e) => {
-                console.error("set_agent_effort failed", e);
-              });
-            }}
-            onChangeModel={(model) => {
-              setAgentModel(agent.id, model ?? null).catch((e) => {
-                console.error("set_agent_model failed", e);
-              });
-            }}
-            account={{
-              current: currentAccountId(agent),
-              onPick: (id) => void switchAccount(agent.id, id),
-              locked: busy || switchingAccount,
-            }}
-            disabled={!canSend}
-            placeholder={
-              canSend
-                ? undefined
-                : transcriptLoading
-                  ? "Loading transcript…"
-                  : switchInFlight
-                    ? "Switching view…"
-                    : (spawnStageLabel(spawnStage) ?? "Agent is not ready")
-            }
-            stopping={busy}
-            mentionSource={() =>
-              api.listCheckoutTree(agent.id).then((files) => files.map((f) => f.path))
-            }
-            listDir={api.listDir}
-            listPrs={() => api.listPrs(agent.id)}
-            folders
-            grantedFolders={agent.folder_grants}
-            onChangeGrantedFolder={(path, writable) => void grantFolder(agent.id, path, writable)}
-            onRevokeFolder={(path) => void revokeFolder(agent.id, path)}
-            network={network}
-            listIssues={repoPath ? () => api.listTrackerIssues(repoPath, linearTeamId) : undefined}
-            listIssueComments={
-              repoPath ? (issue) => api.issueComments(repoPath, issue.source, issue.key) : undefined
-            }
-            onPickIssue={(issue) => {
-              // Persist the pick so the agent's eventual PR closes this
-              // issue — the brief insert alone wouldn't survive to the
-              // trailer. Best-effort: a failure only loses the trailer.
-              api.setAgentIssueRef(agent.id, issue.key).catch((e) => {
-                console.error("set_agent_issue_ref failed", e);
-              });
-            }}
-            listRoadmapItems={projectId ? () => api.roadmapListItems(projectId) : undefined}
-            onPickRoadmapItem={(item) => setRoadmapPick(agent.id, { id: item.id, code: item.code })}
-            seed={composerSeed}
-            onSeedConsumed={onSeedConsumed}
-            draftKey={agent.id}
-            onSend={({ text, attachments, folders }) => {
-              // Effort is session-level now (persisted via onChangeEffort and
-              // read from the record each turn), so sends carry no per-message
-              // effort — the composer's `thinking` in the payload is only used
-              // by the new-agent spawn path.
-              onSend?.();
-              // The send takes its place in line now and grants its folders in
-              // that place, so no later message overtakes it while they land
-              // (store.sendUserMessage). Mid-turn, a message naming a folder
-              // waits for the turn's end (or "Apply now" in the working
-              // strip). A refused folder is in the error banner, and false
-              // puts the draft back to fix.
-              // Read at send rather than subscribed to: nothing draws from it.
-              const pick = store.getState().composerRoadmapPicks[agent.id];
-              // The message still names the item, so it is what is going out.
-              const carried = pick && text.includes(pick.code) ? pick : undefined;
-              const sent = send(agent.id, text, attachments, folders, {
-                onDelivered: carried
-                  ? () => {
-                      // Best-effort: a failure only loses the board's link.
-                      api.roadmapHandOffItem(carried.id, agent.id).catch((e) => {
-                        console.error("roadmap_hand_off_item failed", e);
-                      });
-                    }
-                  : undefined,
-              });
-              if (pick) {
-                // A refused send puts the draft back, and the pick stays with
-                // it; any other outcome has spent the draft. Only this send's
-                // own pick goes: one made since belongs to the next draft.
-                void sent.then((ok) => {
-                  if (ok !== false) clearRoadmapPick(agent.id, pick.id);
+          <EnvironmentFrame>
+            <Composer
+              existingSession
+              activeModel={activeModel}
+              defaultProvider={agent.provider}
+              projectDir={agent.repos[0]?.repo_path}
+              onLocalCommand={(action) => runLocalCommand(action, agent.id)}
+              defaultModel={agent.model ?? undefined}
+              defaultCustomAgentId={agent.custom_agent_id ?? undefined}
+              initialThinking={agent.effort ?? undefined}
+              onChangeEffort={(value) => {
+                // Go through the store so the change is serialized per agent and
+                // a subsequent send waits for it to land (see queueConfigOp).
+                // claude restarts to re-apply --effort; per-turn agents read the
+                // new value from the record on their next turn.
+                setAgentEffort(agent.id, value).catch((e) => {
+                  console.error("set_agent_effort failed", e);
                 });
+              }}
+              onChangeModel={(model) => {
+                setAgentModel(agent.id, model ?? null).catch((e) => {
+                  console.error("set_agent_model failed", e);
+                });
+              }}
+              account={{
+                current: currentAccountId(agent),
+                onPick: (id) => void switchAccount(agent.id, id),
+                locked: busy || switchingAccount,
+              }}
+              disabled={!canSend}
+              placeholder={
+                canSend
+                  ? undefined
+                  : transcriptLoading
+                    ? "Loading transcript…"
+                    : switchInFlight
+                      ? "Switching view…"
+                      : (spawnStageLabel(spawnStage) ?? "Agent is not ready")
               }
-              return sent;
-            }}
-            onStop={() => stop(agent.id)}
-          />
+              stopping={busy}
+              mentionSource={() =>
+                api.listCheckoutTree(agent.id).then((files) => files.map((f) => f.path))
+              }
+              listDir={api.listDir}
+              listPrs={() => api.listPrs(agent.id)}
+              folders
+              grantedFolders={agent.folder_grants}
+              onChangeGrantedFolder={(path, writable) => void grantFolder(agent.id, path, writable)}
+              onRevokeFolder={(path) => void revokeFolder(agent.id, path)}
+              network={network}
+              listIssues={
+                repoPath ? () => api.listTrackerIssues(repoPath, linearTeamId) : undefined
+              }
+              listIssueComments={
+                repoPath
+                  ? (issue) => api.issueComments(repoPath, issue.source, issue.key)
+                  : undefined
+              }
+              onPickIssue={(issue) => {
+                // Persist the pick so the agent's eventual PR closes this
+                // issue — the brief insert alone wouldn't survive to the
+                // trailer. Best-effort: a failure only loses the trailer.
+                api.setAgentIssueRef(agent.id, issue.key).catch((e) => {
+                  console.error("set_agent_issue_ref failed", e);
+                });
+              }}
+              listRoadmapItems={projectId ? () => api.roadmapListItems(projectId) : undefined}
+              onPickRoadmapItem={(item) =>
+                setRoadmapPick(agent.id, { id: item.id, code: item.code })
+              }
+              seed={composerSeed}
+              onSeedConsumed={onSeedConsumed}
+              draftKey={agent.id}
+              onSend={({ text, attachments, folders }) => {
+                // Effort is session-level now (persisted via onChangeEffort and
+                // read from the record each turn), so sends carry no per-message
+                // effort — the composer's `thinking` in the payload is only used
+                // by the new-agent spawn path.
+                onSend?.();
+                // The send takes its place in line now and grants its folders in
+                // that place, so no later message overtakes it while they land
+                // (store.sendUserMessage). Mid-turn, a message naming a folder
+                // waits for the turn's end (or "Apply now" in the working
+                // strip). A refused folder is in the error banner, and false
+                // puts the draft back to fix.
+                // Read at send rather than subscribed to: nothing draws from it.
+                const pick = store.getState().composerRoadmapPicks[agent.id];
+                // The message still names the item, so it is what is going out.
+                const carried = pick && text.includes(pick.code) ? pick : undefined;
+                const sent = send(agent.id, text, attachments, folders, {
+                  onDelivered: carried
+                    ? () => {
+                        // Best-effort: a failure only loses the board's link.
+                        api.roadmapHandOffItem(carried.id, agent.id).catch((e) => {
+                          console.error("roadmap_hand_off_item failed", e);
+                        });
+                      }
+                    : undefined,
+                });
+                if (pick) {
+                  // A refused send puts the draft back, and the pick stays with
+                  // it; any other outcome has spent the draft. Only this send's
+                  // own pick goes: one made since belongs to the next draft.
+                  void sent.then((ok) => {
+                    if (ok !== false) clearRoadmapPick(agent.id, pick.id);
+                  });
+                }
+                return sent;
+              }}
+              onStop={() => stop(agent.id)}
+            />
+          </EnvironmentFrame>
         </div>
       </div>
     </div>

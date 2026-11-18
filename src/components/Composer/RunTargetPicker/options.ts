@@ -24,7 +24,7 @@ export interface RunTargetOption {
   hostId: EnvironmentId;
   label: string;
   available: boolean;
-  /** Why it can't be picked, for its tooltip; null while it can. */
+  /** Why it can't be picked, written under its name; null while it can. */
   reason: string | null;
 }
 
@@ -42,7 +42,7 @@ export interface RunTargetFacts {
  *  agents that host can run is not asked here: once the draft is there, its
  *  composer offers that host's own, as for any draft opened on it. */
 function refusal(facts: RunTargetFacts, env: EnvironmentEntry): string | null {
-  if (env.connection !== "connected") return `${env.name} · ${connectionLabel(env)}`;
+  if (env.connection !== "connected") return connectionLabel(env);
   return gateReason(env, "projectCopy") ?? travelReason(facts.definition);
 }
 

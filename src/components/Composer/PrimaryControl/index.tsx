@@ -34,7 +34,8 @@ interface Props {
   /** When the mic opened (epoch ms), for the clock; null when it isn't open. */
   startedAt?: number | null;
   /** Why sending is blocked right now, if it is (a provider the sandbox engine
-   *  can't run). Shown as the tooltip in `draft`; the arrow is disabled. */
+   *  can't run). Shown as the tooltip in `draft`. The arrow is dimmed but still
+   *  takes the click: `onSend` is where the attempt is refused and answered. */
   sendBlocked?: string;
   /** The last failure's reason, shown as the error pill's tooltip. */
   error?: string | null;
@@ -87,7 +88,7 @@ export function PrimaryControl({
   const micHome = dictationAvailable && is("empty");
   const micAside = dictationAvailable && split;
   const showSend = split || (!dictationAvailable && is("empty"));
-  const sendDisabled = disabled || !!sendBlocked || !is("draft");
+  const sendDisabled = disabled || !is("draft");
 
   const tip = tipFor(state, { dictationAvailable, autoStops, sendBlocked, error, sendLabel });
 
@@ -168,6 +169,7 @@ export function PrimaryControl({
           className="sq send"
           label={sendLabel}
           disabled={sendDisabled}
+          blocked={!!sendBlocked}
           onClick={onSend}
         >
           <Icon name="arrowUp" size={14} strokeWidth={1.75} />
@@ -197,6 +199,7 @@ function SegButton({
   className,
   label,
   disabled,
+  blocked,
   onClick,
   children,
 }: {
@@ -204,6 +207,9 @@ function SegButton({
   className: string;
   label: string;
   disabled?: boolean;
+  /** The action would be refused: said to assistive tech, while the click
+   *  still lands so the refusal can be answered. */
+  blocked?: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -218,6 +224,7 @@ function SegButton({
       aria-label={label}
       tabIndex={on ? 0 : -1}
       disabled={disabled || !on}
+      aria-disabled={blocked || undefined}
       onClick={click}
     >
       <span className="seg-in">

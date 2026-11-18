@@ -222,7 +222,8 @@
 .pc.s-draft.split:hover {
   background: oklch(from var(--accent) calc(l + 0.04) c h);
 }
-.pc.s-draft.split .seg.send:disabled {
+.pc.s-draft.split .seg.send:disabled,
+.pc.s-draft.split .seg.send[aria-disabled="true"] {
   opacity: 0.55;
 }
 .pc.s-listening {

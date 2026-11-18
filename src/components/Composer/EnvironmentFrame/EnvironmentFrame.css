@@ -1,0 +1,124 @@
+/* The composer in the colours of where its agent runs (`EnvironmentFrame`).
+   The frame only sets the composer's own variables (Composer.css), so the
+   box and the tab on its top edge are always one surface. */
+.env-frame {
+  position: relative;
+  width: 100%;
+}
+/* A paired host in reach. One hue per kind of place, never per device: This
+   Mac stays neutral, and accent, amber and red keep their own meanings. */
+.env-frame[data-env="remote"]:not([data-tone="inactive"]) {
+  --composer-tint: var(--info);
+  --composer-bd: color-mix(in oklab, var(--info) 38%, var(--bd-strong));
+  --composer-bg: color-mix(in oklab, var(--info) 4%, var(--bg-2));
+}
+
+/* The tab's place: off the composer's top-left corner, over the edge it
+   shares with the box. */
+.env-tab-slot {
+  position: absolute;
+  left: 14px;
+  bottom: 100%;
+  z-index: 3;
+  display: flex;
+  max-width: min(220px, 50%);
+  margin-bottom: -1px;
+}
+/* An open menu takes the menu layer, as the composer does for its own. */
+.env-tab-slot:has(.dd) {
+  z-index: var(--z-dropdown);
+}
+.env-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--composer-bd, var(--bd-strong));
+  border-bottom: 0;
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  background: var(--composer-bg, var(--bg-2));
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    box-shadow 0.15s,
+    color 0.12s;
+}
+.env-tab > svg {
+  flex-shrink: 0;
+}
+.env-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-1);
+}
+.env-tab-sep {
+  opacity: 0.5;
+}
+.env-tab-detail {
+  flex-shrink: 0;
+}
+/* Out of reach: greyed like every other mention of the host. */
+.env-frame[data-tone="inactive"] .env-tab,
+.env-frame[data-tone="inactive"] .env-tab-name {
+  color: var(--fg-3);
+}
+.env-frame[data-env="remote"]:not([data-tone="inactive"]) .env-tab-name {
+  color: color-mix(in oklab, var(--info) 55%, var(--fg-0));
+}
+.env-tab.is-action {
+  cursor: pointer;
+}
+.env-tab.is-action:hover,
+.env-tab.is-action[aria-expanded="true"],
+.env-tab.is-action:hover .env-tab-name,
+.env-tab.is-action[aria-expanded="true"] .env-tab-name {
+  color: var(--fg-0);
+}
+.env-tab.is-action:focus-visible {
+  border-color: var(--composer-tint, var(--accent));
+}
+/* The composer's focus ring runs on around the tab. Clipped at the tab's
+   foot, where the two meet. */
+.env-frame:focus-within .env-tab {
+  border-color: color-mix(in oklch, var(--composer-tint, var(--accent)), transparent 50%);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--composer-tint, var(--accent)), transparent 88%);
+  clip-path: inset(-4px -4px 0 -4px);
+}
+
+/* A place in the tab's menu, with why it can't be picked under its name. The
+   row dims its name and glyph, not itself: the reason stays readable. */
+.dd-item.target-item.is-disabled {
+  opacity: 1;
+}
+.target-item-text .di-l {
+  flex: none;
+  max-width: 100%;
+}
+.target-item.is-disabled .di-i,
+.target-item.is-disabled .di-l {
+  opacity: 0.45;
+}
+.target-item-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.target-item-why {
+  max-width: 240px;
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  color: var(--fg-2);
+  white-space: normal;
+}

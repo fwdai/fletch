@@ -2,12 +2,13 @@ import { useState } from "react";
 import type { WorkspaceKind } from "@/api";
 import { Scrim } from "@/components/ui/Scrim";
 import { useAppStore, useHostId } from "@/store";
+import { useHasPairedHost } from "@/store/capabilities";
 import { type EnvironmentId, LOCAL_ENVIRONMENT_ID } from "@/store/environments";
+import { EnvironmentTab } from "../EnvironmentFrame";
 import { useWorkspaceTypeChip, WorkspaceTypePicker } from "../WorkspaceTypePicker";
-import type { WorkspaceTypeChip } from "../workspaceType";
+import { type WorkspaceTypeChip, workspaceTypeLabel } from "../workspaceType";
 import { runTargetOptions } from "./options";
 import { TargetMenu } from "./TargetMenu";
-import { TargetPill } from "./TargetPill";
 import { useProjectDefinition } from "./useProjectDefinition";
 
 interface Props {
@@ -27,25 +28,29 @@ interface Props {
 }
 
 /** Where a new workspace runs, on the new-workspace row beside the project and
- *  the branch: This Mac, in the workspace type picked for it, or a paired host
- *  by name. Scoped to the draft's host, which is where it runs and so the
- *  place shown as picked. With nowhere else to run it is the workspace-type
- *  pill as it always was on This Mac, and nothing on a paired host (whose
- *  spawn carries no workspace type). */
+ *  the branch, for a window with no paired host: the workspace-type pill as it
+ *  always was. With a host paired the row has nothing to say about it: the tab
+ *  on the composer's top edge does ([`RunTargetTab`]). */
 export function RunTargetPicker(props: Props) {
-  const hostId = useHostId();
-  const paired = useAppStore((s) => Object.keys(s.environments).length > 1);
-  const local = hostId === LOCAL_ENVIRONMENT_ID;
-  if (props.pinned || !paired) {
-    return local ? (
-      <WorkspaceTypePicker
-        repoPath={props.repoPath}
-        provider={props.provider}
-        current={props.workspaceType}
-        onPick={(kind) => props.onPick(hostId, kind)}
-      />
-    ) : null;
-  }
+  const paired = useHasPairedHost();
+  const local = useHostId() === LOCAL_ENVIRONMENT_ID;
+  if (paired || !local) return null;
+  return (
+    <WorkspaceTypePicker
+      repoPath={props.repoPath}
+      provider={props.provider}
+      current={props.workspaceType}
+      onPick={(kind) => props.onPick(LOCAL_ENVIRONMENT_ID, kind)}
+    />
+  );
+}
+
+/** Where a new workspace runs, on the tab at the composer's top edge
+ *  (`EnvironmentFrame`, which draws it only with a host paired): This Mac, in
+ *  the workspace type picked for it, or a paired host by name. Scoped to the
+ *  draft's host, which is where it runs and so the place shown as picked. */
+export function RunTargetTab(props: Props) {
+  const local = useHostId() === LOCAL_ENVIRONMENT_ID;
   return local ? <WithWorkspaceTypes {...props} /> : <RunTargetControl {...props} types={null} />;
 }
 
@@ -57,6 +62,7 @@ function WithWorkspaceTypes(props: Props) {
 
 function RunTargetControl({
   projectId,
+  pinned,
   onPick,
   types,
   loadTypes,
@@ -66,23 +72,33 @@ function RunTargetControl({
   const { definition, check } = useProjectDefinition(projectId);
   const [open, setOpen] = useState(false);
 
-  const options = runTargetOptions({ environments, draftHost: hostId, definition });
+  const places = runTargetOptions({ environments, draftHost: hostId, definition });
+  const options = pinned ? places.filter((o) => o.hostId === hostId) : places;
   const picked = options.find((o) => o.hostId === hostId);
-  if (!picked) return null;
+  const env = picked && environments[picked.hostId];
+  if (!picked || !env) return null;
+
+  const shown = types?.kind === "menu" ? types.shown : null;
+  // With one place and no workspace type to pick for it there is nothing to
+  // open: the tab only says where the workspace runs.
+  if (options.length === 1 && !types) return <EnvironmentTab env={env} />;
 
   return (
-    <span style={{ position: "relative" }}>
-      <TargetPill
-        option={picked}
-        env={environments[picked.hostId]}
-        types={picked.kind === "local" ? types : null}
-        open={open}
-        onClick={() => {
-          if (!open) {
-            check();
-            loadTypes?.();
-          }
-          setOpen((v) => !v);
+    <span style={{ position: "relative", display: "flex", minWidth: 0 }}>
+      <EnvironmentTab
+        env={env}
+        icon={types?.kind === "retry" ? "refresh" : undefined}
+        detail={shown ? workspaceTypeLabel(shown.kind) : undefined}
+        tip={picked.reason ?? types?.tip}
+        menu={{
+          open,
+          onToggle: () => {
+            if (!open) {
+              check();
+              loadTypes?.();
+            }
+            setOpen((v) => !v);
+          },
         }}
       />
       {open && (
