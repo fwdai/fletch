@@ -147,6 +147,18 @@ impl Relays {
         }
     }
 
+    /// A box's relays with none running: for a registry test whose box has no
+    /// guest to talk to.
+    #[cfg(test)]
+    pub(super) fn none() -> Self {
+        Self {
+            stop: watch::channel(false).0,
+            tasks: parking_lot::Mutex::new(Vec::new()),
+            mailboxes: parking_lot::Mutex::new(HashSet::new()),
+            mirrors: parking_lot::Mutex::new(HashSet::new()),
+        }
+    }
+
     /// Tail one more sessions dir out of this box: a tenant's, into the
     /// tenant's own mirror (a tenant of the owner's provider whose sessions
     /// dir is the owner's — claude's `~/.claude/projects` — is tailed twice,
