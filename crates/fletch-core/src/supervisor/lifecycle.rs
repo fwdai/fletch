@@ -169,6 +169,16 @@ pub(super) async fn provision_then_release(
     }
 }
 
+/// The repos of its project that `record` has no checkout of: what a spawn
+/// attaches after the primary, and what a launch finishing that spawn still
+/// has to (`Supervisor::ensure_checkouts`).
+fn unattached_repos(record: &AgentRecord, project_repos: Vec<PathBuf>) -> Vec<PathBuf> {
+    project_repos
+        .into_iter()
+        .filter(|path| !record.repos.iter().any(|r| &r.repo_path == path))
+        .collect()
+}
+
 /// Undo what a failed spawn created: the checkout it provisioned, then the
 /// agent's dir. `checkout` is `None` when the spawn *adopted* its working tree
 /// — that directory belongs to the run, not the agent, so a step whose process
@@ -1114,10 +1124,20 @@ impl Supervisor {
     /// leaves its agent without one, and the launch that resumes the agent
     /// finishes the job. Nothing to do for any other agent.
     ///
+    /// A missing primary checkout is the mark of a spawn that never finished,
+    /// whichever step it failed at, so making it also brings in the project's
+    /// repos the spawn never got to attach — and only then: a repo the project
+    /// gained later is not pushed into an agent that was set up without it.
+    ///
     /// Not for a session that continues another (a fork, a handoff): what its
     /// spawn was to carry over is not here to be carried again.
-    async fn ensure_checkouts(&self, agent_id: &str) -> Result<()> {
+    async fn ensure_checkouts(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+    ) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
+        let mut unfinished_spawn = None;
         for repo in record.repos.iter().filter(|r| r.adopted_checkout.is_none()) {
             let checkout = repo.checkout_path(agent_id)?;
             if checkout.exists() {
@@ -1133,6 +1153,13 @@ impl Supervisor {
             tracing::info!(agent_id, subdir = %repo.subdir, "making the checkout the agent's spawn did not");
             tokio::fs::create_dir_all(agent_parent_dir(agent_id)?).await?;
             self.provision_repo(&record, repo).await?;
+            if record
+                .repos
+                .first()
+                .is_some_and(|p| p.subdir == repo.subdir)
+            {
+                unfinished_spawn = Some(checkout.clone());
+            }
             let base_sha = git::rev_parse(&checkout, "HEAD").await.ok();
             if let Some(sha) = &base_sha {
                 let _ = self
@@ -1148,6 +1175,26 @@ impl Supervisor {
                 &record.mcp_servers,
             )
             .await;
+        }
+        let Some(primary_checkout) = unfinished_spawn else {
+            return Ok(());
+        };
+        for source in unattached_repos(
+            &record,
+            self.workspace.project_repo_paths(&record.project_id),
+        ) {
+            if let Err(e) = self
+                .attach_repo_checkout(ctx, agent_id, source.clone())
+                .await
+            {
+                // The mark goes back, so the next launch attaches what this
+                // one could not rather than starting without it.
+                provision::discard(&primary_checkout).await;
+                return Err(Error::Other(format!(
+                    "checkout of {} failed: {e}",
+                    source.display()
+                )));
+            }
         }
         Ok(())
     }
@@ -1445,7 +1492,7 @@ impl Supervisor {
         // is made, neither on the process's clock.
         let ready = async {
             self.settle_before_acting(agent_id).await?;
-            self.ensure_checkouts(agent_id).await
+            self.ensure_checkouts(ctx, agent_id).await
         };
         if let Err(e) = ready.await {
             fail_spawn(self, ctx, agent_id, e.to_string());
@@ -3029,10 +3076,52 @@ mod tests {
     #[tokio::test]
     async fn a_launch_leaves_an_adopted_checkout_to_its_owner() {
         let td = tempfile::tempdir().unwrap();
-        let sup = fixture(td.path());
+        let sup = Arc::new(fixture(td.path()));
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        // A second repo of the same project (projects go by the repo dir's
+        // name), which a launch that made the primary would attach: nothing
+        // was made here, so nothing is attached either.
+        let other = td.path().join("second").join("repo");
+        std::fs::create_dir_all(other.join(".git")).unwrap();
+        sup.workspace.add_workspace_repo(other.clone()).unwrap();
+        let record = sup.workspace.agent("codex").unwrap();
+        assert!(sup
+            .workspace
+            .project_repo_paths(&record.project_id)
+            .contains(&other));
 
-        sup.ensure_checkouts("codex").await.unwrap();
+        sup.ensure_checkouts(&ctx, "codex").await.unwrap();
 
         assert!(!td.path().join("ws").exists());
+        assert_eq!(sup.workspace.agent("codex").unwrap().repos.len(), 1);
+    }
+
+    /// What a launch finishing an unfinished spawn still has to attach: the
+    /// project's repos the record has no checkout of, in the project's order
+    /// — the primary and anything attached before the failure left out.
+    #[test]
+    fn a_finished_spawn_has_every_repo_of_its_project() {
+        let td = tempfile::tempdir().unwrap();
+        let sup = fixture(td.path());
+        let record = sup.workspace.agent("codex").unwrap();
+        let primary = record.repos[0].repo_path.clone();
+        let (docs, api) = (td.path().join("docs"), td.path().join("api"));
+
+        assert_eq!(
+            unattached_repos(&record, vec![primary.clone(), docs.clone(), api.clone()]),
+            vec![docs.clone(), api.clone()]
+        );
+
+        let mut attached = record.clone();
+        attached.repos.push(TrackedRepo {
+            repo_path: docs.clone(),
+            subdir: "docs".into(),
+            ..record.repos[0].clone()
+        });
+        assert_eq!(
+            unattached_repos(&attached, vec![primary.clone(), docs, api.clone()]),
+            vec![api]
+        );
+        assert!(unattached_repos(&record, vec![primary]).is_empty());
     }
 }
