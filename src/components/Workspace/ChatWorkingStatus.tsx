@@ -40,8 +40,14 @@ export interface WorkingNotice {
   onAction: () => void;
 }
 
-/** Pinned working indicator — slides up from behind the composer on show,
- *  back down on turn end. */
+/** The open turn's status by the composer: what the agent is doing and for how
+ *  long, as "Working · 12s" behind the clock that leads the "Ran 38s" a
+ *  finished turn leaves in the feed. Slides up from behind the composer on
+ *  show, back down on turn end.
+ *
+ *  One thing on the line moves, and no more: the count, when there is a start
+ *  to count from, else the loader. The composer's own control already shows a
+ *  run in progress, so the line is the datum, not a second spinner. */
 export function ChatWorkingStatus({
   visible,
   label,
@@ -49,6 +55,7 @@ export function ChatWorkingStatus({
   notice,
 }: {
   visible: boolean;
+  /** The activity as one word: "Working", "Compacting". */
   label: string;
   /** Epoch millis the open turn started; when set, a live timer ticks. */
   startedAt?: number;
@@ -59,19 +66,22 @@ export function ChatWorkingStatus({
 
   return (
     <div className={`chat-status${open ? " is-open" : ""}`} role="status" aria-live="polite">
-      <Loader variant="accent" />
+      {startedAt != null ? (
+        <Icon name="clock" size={11} className="turn-clock-i" />
+      ) : (
+        <Loader variant="accent" />
+      )}
       <span className="chat-status-label">{label}</span>
       {startedAt != null && (
         <>
           <span className="chat-status-sep">·</span>
-          <Icon name="clock" size={11} className="turn-clock-i" />
           <LiveTimer startedAt={startedAt} />
         </>
       )}
       {notice && (
         <>
           <span className="chat-status-sep">·</span>
-          <span className="chat-status-label">{notice.text}</span>
+          <span className="chat-status-note">{notice.text}</span>
           <button
             type="button"
             className="chat-status-action"

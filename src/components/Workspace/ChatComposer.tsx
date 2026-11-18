@@ -11,7 +11,6 @@ import type { AgentRecord } from "@/api";
 import { useEngine } from "@/api/engine";
 import { Composer } from "@/components/Composer";
 import { EnvironmentFrame } from "@/components/Composer/EnvironmentFrame";
-import { providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import { isAgentBusy } from "@/helpers";
 import { getLinearTeamId } from "@/storage/projectSettings";
@@ -67,11 +66,6 @@ export function ChatComposer({
   const switchingAccount = useAppStore((s) => s.switchingAccount[agent.id] === true);
   const stop = useAppStore((s) => s.stop);
   const runLocalCommand = useAppStore((s) => s.runLocalCommand);
-  // The custom agent this session was spawned from (if any, and still present),
-  // so the chat surfaces the agent's name rather than its base provider.
-  const customAgent = useAppStore((s) =>
-    agent.custom_agent_id ? s.customAgents.find((a) => a.id === agent.custom_agent_id) : undefined,
-  );
   const composerSeed = useAppStore((s) => s.composerSeeds[agent.id]);
   const consumeComposerSeed = useAppStore((s) => s.consumeComposerSeed);
   // Stable identity: the Composer's seed effect lists this in its deps, so an
@@ -140,12 +134,7 @@ export function ChatComposer({
         <div className="composer-anchor">
           <ChatWorkingStatus
             visible={liveBusy}
-            label={
-              busyLabel ??
-              (compacting
-                ? "Compacting"
-                : `${customAgent?.name ?? providerLabel(agent.provider)} is working`)
-            }
+            label={busyLabel ?? (compacting ? "Compacting" : "Working")}
             startedAt={liveStartedAt}
             notice={
               folderChangeWaiting

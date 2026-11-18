@@ -53,7 +53,13 @@
   transform: translateY(0);
   opacity: 1;
 }
+/* The activity is one word and is never the part cut short: a notice beside
+   it gives way first. */
 .chat-status-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.chat-status-note {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -78,15 +84,17 @@
 .chat-status-action:hover {
   color: var(--fg-0);
 }
-/* Live timer riding the working strip — the one moving numeric value. */
 .chat-status-sep {
   flex-shrink: 0;
   opacity: 0.4;
 }
+/* The clock leads the line in the label's ink, as it leads a finished turn's
+   "Ran …" in the feed. */
 .chat-status .turn-clock-i {
   flex-shrink: 0;
-  color: var(--accent);
 }
+/* Live timer riding the working strip: the one moving value, and the one
+   thing on the line in accent. */
 .chat-status .turn-clock {
   flex-shrink: 0;
   font-family: var(--font-mono);
