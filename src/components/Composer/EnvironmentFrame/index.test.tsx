@@ -60,6 +60,29 @@ describe("EnvironmentFrame", () => {
     expect(frame(container).dataset.tone).toBe("inactive");
   });
 
+  // The tint is keyed on `connected` alone, so every other tone has to be told
+  // apart from it here: a host stopped on an error nobody is retrying is out
+  // of reach too, and one still dialling is not in reach yet.
+  it("is not a connected host's while it has stopped on an error or is still dialling", () => {
+    useAppStore.getState().upsertEnvironment(studio());
+    const scoped = (
+      <EngineScope hostId="studio">
+        <EnvironmentFrame>
+          <textarea />
+        </EnvironmentFrame>
+      </EngineScope>
+    );
+    const { container, rerender } = render(scoped);
+
+    useAppStore.getState().setEnvironmentConnection("studio", "error", "unpaired", false);
+    rerender(scoped);
+    expect(frame(container).dataset.tone).toBe("problem");
+
+    useAppStore.getState().setEnvironmentConnection("studio", "connecting");
+    rerender(scoped);
+    expect(frame(container).dataset.tone).toBe("connecting");
+  });
+
   it("draws the tab it is given in place of its own", () => {
     useAppStore.getState().upsertEnvironment(studio());
     render(

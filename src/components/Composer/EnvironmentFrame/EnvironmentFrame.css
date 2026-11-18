@@ -5,9 +5,10 @@
   position: relative;
   width: 100%;
 }
-/* A paired host in reach. One hue per kind of place, never per device: This
-   Mac stays neutral, and accent, amber and red keep their own meanings. */
-.env-frame[data-env="remote"]:not([data-tone="inactive"]) {
+/* A paired host in reach, which is a connected one and nothing short of it.
+   One hue per kind of place, never per device: This Mac stays neutral, and
+   accent, amber and red keep their own meanings. */
+.env-frame[data-tone="connected"] {
   --composer-tint: var(--info);
   --composer-bd: color-mix(in oklab, var(--info) 38%, var(--bd-strong));
   --composer-bg: color-mix(in oklab, var(--info) 4%, var(--bg-2));
@@ -65,12 +66,15 @@
 .env-tab-detail {
   flex-shrink: 0;
 }
-/* Out of reach: greyed like every other mention of the host. */
+/* Out of reach, whether it will come back on its own or needs the user:
+   greyed like every other mention of the host. Its dot says which. */
 .env-frame[data-tone="inactive"] .env-tab,
-.env-frame[data-tone="inactive"] .env-tab-name {
+.env-frame[data-tone="inactive"] .env-tab-name,
+.env-frame[data-tone="problem"] .env-tab,
+.env-frame[data-tone="problem"] .env-tab-name {
   color: var(--fg-3);
 }
-.env-frame[data-env="remote"]:not([data-tone="inactive"]) .env-tab-name {
+.env-frame[data-tone="connected"] .env-tab-name {
   color: color-mix(in oklab, var(--info) 55%, var(--fg-0));
 }
 .env-tab.is-action {
