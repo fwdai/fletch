@@ -18,10 +18,16 @@ name: Box image
 # Every build is installed with the app's own installer before it can be
 # published (build-docker.sh), and publish.sh makes a release public only once
 # it carries every file.
+#
+# The x86-64 job also builds the cloud image (packaging/cloud-image) from the
+# images it built, tests it, and where it publishes the release pushes it as
+# ghcr.io/fwdai/fletch-cloud:<VERSION>-<inputs fingerprint>, unless that tag
+# exists (it then holds the same image: packaging/cloud-image/inputs.sh).
 on:
   pull_request:
     paths:
       - "packaging/box-image/**"
+      - "packaging/cloud-image/**"
       - "crates/fletch-guest/**"
       - ".github/workflows/box-image.yml"
       - ".github/actions/box-image/**"
@@ -29,11 +35,12 @@ on:
     branches: [main]
     paths:
       - "packaging/box-image/**"
+      - "packaging/cloud-image/**"
       - "crates/fletch-guest/**"
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish the releases box-image-v<VERSION> and box-image-v<VERSION>-x86_64 (refused if they exist with other inputs)"
+        description: "Publish the releases box-image-v<VERSION> and box-image-v<VERSION>-x86_64 (refused if they exist with other inputs) and push the cloud image"
         type: boolean
         default: false
       with_agents:
@@ -58,6 +65,7 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -96,3 +104,43 @@ jobs:
           OUT: ${{ steps.image.outputs.out }}
           VERSION: ${{ steps.image.outputs.version }}
         run: packaging/box-image/publish.sh "$OUT" "$VERSION"
+
+      - name: Let the cloud image's tests make user namespaces
+        # A confined launch (`fletch-guest exec --read-only`) maps its ids in
+        # a user namespace of the guest user's. The test's container runs on
+        # the runner's kernel, whose AppArmor policy gives such a namespace no
+        # capabilities.
+        if: matrix.arch == 'x86_64'
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          [ ! -e "$knob" ] || sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build and test the cloud image
+        # x86-64 only, the machines a cloud box runs on. From the images just
+        # built, so a cloud box carries what a box here boots.
+        if: matrix.arch == 'x86_64'
+        env:
+          OUT: ${{ steps.image.outputs.out }}
+          CLOUD_OUT: ${{ runner.temp }}/cloud-image
+        run: packaging/cloud-image/build-docker.sh --test "$OUT" "$CLOUD_OUT"
+
+      - name: Cloud image summary
+        if: always() && matrix.arch == 'x86_64'
+        env:
+          CLOUD_OUT: ${{ runner.temp }}/cloud-image
+        run: |
+          {
+            echo "## Cloud image"
+            echo
+            if [ -f "$CLOUD_OUT/report.md" ]; then cat "$CLOUD_OUT/report.md"; else echo "The build failed before the tests ran."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push the cloud image
+        if: matrix.arch == 'x86_64' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          CLOUD_OUT: ${{ runner.temp }}/cloud-image
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          packaging/cloud-image/publish.sh "$(cat "$CLOUD_OUT/image")"
