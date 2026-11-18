@@ -69,27 +69,29 @@ export function ChatWorkingStatus({
   return (
     <div className={`chat-status${open ? " is-open" : ""}`} role="status" aria-live="polite">
       <Icon name="clock" size={11} className="turn-clock-i" />
-      <span className="chat-status-label">{label}</span>
-      {startedAt != null && (
-        <>
-          <span className="chat-status-sep">·</span>
-          <LiveTimer startedAt={startedAt} />
-        </>
-      )}
-      {notice && (
-        <>
-          <span className="chat-status-sep">·</span>
-          <span className="chat-status-note">{notice.text}</span>
-          <button
-            type="button"
-            className="chat-status-action"
-            title={notice.actionTip}
-            onClick={notice.onAction}
-          >
-            {notice.action}
-          </button>
-        </>
-      )}
+      <span className="chat-status-line">
+        <span className="chat-status-label">{label}</span>
+        {startedAt != null && (
+          <>
+            <span className="chat-status-sep">·</span>
+            <LiveTimer startedAt={startedAt} />
+          </>
+        )}
+        {notice && (
+          <>
+            <span className="chat-status-sep">·</span>
+            <span className="chat-status-note">{notice.text}</span>
+            <button
+              type="button"
+              className="chat-status-action"
+              title={notice.actionTip}
+              onClick={notice.onAction}
+            >
+              {notice.action}
+            </button>
+          </>
+        )}
+      </span>
     </div>
   );
 }

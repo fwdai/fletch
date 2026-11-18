@@ -53,6 +53,15 @@
   transform: translateY(0);
   opacity: 1;
 }
+/* The words of the line, set on one baseline: they are in two faces and two
+   sizes (the count is mono), which centring each would stand on two. The
+   clock before them is centred on the line as a whole. */
+.chat-status-line {
+  display: flex;
+  align-items: baseline;
+  gap: inherit;
+  min-width: 0;
+}
 /* The activity is one word and is never the part cut short: a notice beside
    it gives way first. */
 .chat-status-label {
