@@ -12,6 +12,7 @@ each part's README has the detail.
 | Runtime | `crates/fletch-box` | libkrun helper (`fletch-vm`), VM spec, SSH channel, egress proxy, image store, tools disks; the `fletch-box` CLI for manual use |
 | Guest agent | `crates/fletch-guest` | Static musl binary in the image: vsock listeners, `exec`, `tail`, the stop hook |
 | Image | `packaging/box-image` | The Debian root every box boots and its layers; `build-docker.sh` (builds, tests, checks), `bump.sh`, `publish.sh` |
+| Cloud image | `packaging/cloud-image` | The box image flattened into one OCI image for a machine at a cloud provider, with an entrypoint that keeps the guest contract over TCP; `build-docker.sh` (from a built box image), `test.sh`, `publish.sh` |
 | libkrun | `packaging/libkrun` | libkrun 1.19 + patches and the libkrunfw 6.12 kernel the app ships (dylibs) and Linux `fletch-host` ships (`.so`) |
 | Bundle | `packaging/box-bundle` | How the helper and dylibs are signed and placed in the app; the flat Linux layout beside `fletch-host` |
 | Engine | `crates/fletch-core/src/sandbox/boxes` | Boots boxes for agents: registry, setup, settings, the guest-home mechanism (`home.rs`: seeding, credential sync, session mirrors) |
@@ -476,12 +477,27 @@ the app's own installer before it can be published (`build-docker.sh`), and the
 app release workflow refuses to ship a pin whose release is missing files
 (`scripts/check-box-image.sh`).
 
+### The cloud image
+
+A cloud box is a machine at a cloud provider with the same guest contract,
+reached by ssh over the network (`channel::Route::tcp`, `Route::tls`) instead
+of `fletch-vm pipe`. Its image is made from the x86_64 box image's built files,
+never by building one (`packaging/cloud-image`): the base with every layer
+copied over it in init's order, flattened into one OCI image whose
+entrypoint does what init does that is not VM plumbing (the environment
+check, `/data`, the identity binds, the host key, `/data/tools` on
+`/opt/fletch/tools`) and runs sshd on TCP port 2222. The apt proxy goes, and
+with it the egress policy: the machine's network is its own. It is
+`ghcr.io/fwdai/fletch-cloud:<VERSION>-<REVISION>`, `REVISION` counting the
+changes to the cloud image itself, and the Box image workflow pushes it where
+it publishes the x86_64 release, once per tag. Nothing in the app uses it yet.
+
 ## Workflows
 
 | Workflow | When | Does |
 | --- | --- | --- |
-| **Box image** (`box-image.yml`) | PR touching `packaging/box-image`, `crates/fletch-guest` | Per architecture: checks VERSION is unreleased or released from these inputs; builds and tests; uploads the images as an artifact; publishes nothing |
-| | Push to `main` touching them | Same, then publishes `box-image-v<VERSION>` and `box-image-v<VERSION>-x86_64`; each a no-op when its release with these inputs exists |
+| **Box image** (`box-image.yml`) | PR touching `packaging/box-image`, `packaging/cloud-image`, `crates/fletch-guest` | Per architecture: checks VERSION is unreleased or released from these inputs; builds and tests; uploads the images as an artifact; on x86-64, builds and tests the cloud image from them; publishes nothing |
+| | Push to `main` touching them | Same, then publishes `box-image-v<VERSION>` and `box-image-v<VERSION>-x86_64`; each a no-op when its release with these inputs exists; pushes the cloud image unless its tag exists |
 | | Run workflow | Same on any branch; `publish` to publish from a branch before merging (so the pin never names a missing release) |
 | **Box image bump** (`box-image-bump.yml`) | The 1st of each month, 06:00 UTC, or by hand | `bump.sh`: newest Debian snapshot, Node 22 and Bun releases, VERSION patch bump, app pin bump, committed and pushed on `chore/box-image-bump`. Builds and tests that commit on both architectures. Tests green: publishes that architecture's release. Either way opens or refreshes the PR with both reports. Merge it to adopt (main's publish then finds the releases in place); close it to skip |
 
