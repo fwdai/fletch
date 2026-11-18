@@ -22,16 +22,14 @@
   border: 1px solid var(--composer-bd, var(--bd-strong));
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
-  /* The halo of a composer that has the keyboard, a drop or the mic: a
-     hairline against its edge and a soft bloom that fades into the page. No
-     hard outer edge, so whatever sits beside the box (the environment sheet,
-     the working strip) is lit by it rather than cut across. A state picks
-     the ink and how far the bloom fades. */
+  /* The halo of a composer that has the keyboard, a drop or the mic: a band
+     about as wide as a 4px ring, but one that fades out rather than ending
+     on an edge, so whatever sits beside the box (the environment sheet, the
+     working strip) is not cut across by it. A state picks the ink and how
+     far it fades. */
   --halo-ink: var(--composer-tint, var(--accent));
-  --halo-fade: 74%;
-  --halo:
-    0 0 0 1px color-mix(in oklch, var(--halo-ink), transparent 86%),
-    0 0 20px -3px color-mix(in oklch, var(--halo-ink), transparent var(--halo-fade));
+  --halo-fade: 72%;
+  --halo: 0 0 7px 2px color-mix(in oklch, var(--halo-ink), transparent var(--halo-fade));
   transition:
     background 0.15s,
     border-color 0.15s,
@@ -82,7 +80,7 @@
 }
 .composer.is-drop-target {
   --halo-ink: var(--accent);
-  --halo-fade: 58%;
+  --halo-fade: 55%;
   border-color: color-mix(in oklch, var(--accent), transparent 30%);
   box-shadow: var(--shadow-2), var(--halo);
 }

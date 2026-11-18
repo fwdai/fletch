@@ -20,11 +20,17 @@
   --sheet-radius: calc(var(--r-sm) + var(--sheet-gap));
   --sheet-tuck: 6px;
   --sheet-inset: 8px;
-  /* The page's surface, taken a few points toward the ink: just off the page
-     in either theme, and still under the composer's. */
-  --sheet-bg: color-mix(in oklab, var(--fg-0) 3%, var(--bg-1));
+  /* The page's own surface, a step up in lightness (down in the light
+     theme, below) and nothing else: its hue and chroma are kept, so the sheet
+     is the same grey as the page and the composer and never reads as tinted
+     beside them. */
+  --sheet-step: 0.023;
+  --sheet-bg: oklch(from var(--bg-1) calc(l + var(--sheet-step)) c h);
   position: relative;
   width: 100%;
+}
+.theme-light .env-frame {
+  --sheet-step: -0.023;
 }
 /* A paired host in reach, which is a connected one and nothing short of it.
    One hue per kind of place, never per device: This Mac stays neutral, and
@@ -60,7 +66,8 @@
   max-width: min(240px, 50%);
 }
 .env-tab {
-  /* The glyph and the chevron sit a step under the name. */
+  /* The glyph is in the name's ink, as one label; only the chevron sits a
+     step under them. */
   --ink: var(--fg-2);
   --ink-quiet: var(--fg-3);
   display: inline-flex;
@@ -72,7 +79,7 @@
   padding: 0 7px;
   border-radius: var(--r-sm);
   font-size: var(--fs-sm);
-  color: var(--ink-quiet);
+  color: var(--ink);
   white-space: nowrap;
   cursor: default;
   transition:
@@ -81,6 +88,9 @@
 }
 .env-tab > svg {
   flex-shrink: 0;
+}
+.env-tab.is-action > svg:last-child {
+  color: var(--ink-quiet);
 }
 .env-tab-name {
   min-width: 0;
