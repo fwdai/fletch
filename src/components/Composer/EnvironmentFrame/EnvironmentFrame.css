@@ -1,40 +1,57 @@
 /* The composer in the colours of where its agent runs (`EnvironmentFrame`),
    on a sheet that sticks out from behind its top edge and names the machine.
    The frame only sets variables: the composer's own (Composer.css) and the
-   sheet's, so the two change together. */
+   sheet's, so the two change together.
+
+   The composer is the page's one bright, outlined object. The sheet is kept a
+   step under it in every respect, so it is there to be found and never read
+   first: a surface between the page's and the composer's, no outline, and
+   caption-sized words in the page's quieter inks. */
 .env-frame {
-  --sheet-peek: 26px;
+  /* The sheet's measures, each from the one before. The control on it stands
+     `--sheet-gap` clear of the sheet's top and sides and of the composer's
+     edge below, so its hover fill is framed evenly; the sheet's corners are
+     the control's own, grown by that gap, so the two curves run parallel.
+     Set in `--sheet-inset` from the composer's sides, the control's edge
+     lands on the run rail's below (the foot's 10px padding and the border). */
+  --sheet-control: 20px;
+  --sheet-gap: 3px;
+  --sheet-peek: calc(var(--sheet-control) + 2 * var(--sheet-gap));
+  --sheet-radius: calc(var(--r-sm) + var(--sheet-gap));
   --sheet-tuck: 6px;
   --sheet-inset: 8px;
+  /* The page's surface, taken a few points toward the ink: just off the page
+     in either theme, and still under the composer's. */
+  --sheet-bg: color-mix(in oklab, var(--fg-0) 3%, var(--bg-1));
   position: relative;
   width: 100%;
 }
 /* A paired host in reach, which is a connected one and nothing short of it.
    One hue per kind of place, never per device: This Mac stays neutral, and
-   accent, amber and red keep their own meanings. */
+   accent, amber and red keep their own meanings. A trace of the hue on each
+   surface and a share of it in the composer's edge: enough to tell the place
+   by, not enough to colour the page. */
 .env-frame[data-tone="connected"] {
   --composer-tint: var(--info);
-  --composer-bd: color-mix(in oklab, var(--info) 38%, var(--bd-strong));
-  --composer-bg: color-mix(in oklab, var(--info) 4%, var(--bg-2));
-  --sheet-bg: color-mix(in oklab, var(--info) 12%, var(--bg-3));
+  --composer-bd: color-mix(in oklab, var(--info) 30%, var(--bd-strong));
+  --composer-bg: color-mix(in oklab, var(--info) 3%, var(--bg-2));
+  --sheet-bg: color-mix(in oklab, var(--info) 9%, var(--bg-1));
 }
 
 /* The sheet: a little narrower than the composer (`--sheet-inset` a side),
    tucked under its top edge far enough that the rounded corners cover its
-   foot, and showing `--sheet-peek` above it. A plain surface with no outline
-   of its own: a step lighter than the composer in the dark theme and greyer
-   in the light one, so it reads as a separate sheet either way. It comes
-   before the composer and has no layer of its own, so the composer covers
-   its foot and a menu opened from it still takes the menu layer. */
+   foot, and showing `--sheet-peek` above it. It comes before the composer
+   and has no layer of its own, so the composer covers its foot and a menu
+   opened from it still takes the menu layer. */
 .env-sheet {
   position: absolute;
   inset: auto var(--sheet-inset) calc(100% - var(--sheet-tuck)) var(--sheet-inset);
   display: flex;
   align-items: flex-start;
   height: calc(var(--sheet-peek) + var(--sheet-tuck));
-  padding: 2px 5px 0;
-  border-radius: var(--r-md) var(--r-md) 0 0;
-  background: var(--sheet-bg, var(--bg-3));
+  padding: var(--sheet-gap) var(--sheet-gap) 0;
+  border-radius: var(--sheet-radius) var(--sheet-radius) 0 0;
+  background: var(--sheet-bg);
   transition: background 0.15s;
 }
 /* The machine keeps to the sheet's left: its right is the working strip's
@@ -43,16 +60,19 @@
   max-width: min(240px, 50%);
 }
 .env-tab {
+  /* The glyph and the chevron sit a step under the name. */
+  --ink: var(--fg-2);
+  --ink-quiet: var(--fg-3);
   display: inline-flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
   max-width: 100%;
-  height: 22px;
-  padding: 0 8px;
+  height: var(--sheet-control);
+  padding: 0 7px;
   border-radius: var(--r-sm);
   font-size: var(--fs-sm);
-  color: var(--fg-2);
+  color: var(--ink-quiet);
   white-space: nowrap;
   cursor: default;
   transition:
@@ -66,31 +86,26 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--fg-1);
+  color: var(--ink);
+  transition: color 0.12s;
+}
+.env-frame[data-tone="connected"] .env-tab {
+  --ink: color-mix(in oklab, var(--info) 45%, var(--fg-1));
 }
 /* Out of reach, whether it will come back on its own or needs the user:
    greyed like every other mention of the host. Its dot says which. */
 .env-frame[data-tone="inactive"] .env-tab,
-.env-frame[data-tone="inactive"] .env-tab-name,
-.env-frame[data-tone="problem"] .env-tab,
-.env-frame[data-tone="problem"] .env-tab-name {
-  color: var(--fg-3);
-}
-.env-frame[data-tone="connected"] .env-tab-name {
-  color: color-mix(in oklab, var(--info) 55%, var(--fg-0));
+.env-frame[data-tone="problem"] .env-tab {
+  --ink: var(--fg-3);
 }
 .env-tab.is-action {
   cursor: pointer;
 }
 .env-tab.is-action:hover,
 .env-tab.is-action[aria-expanded="true"] {
-  background: color-mix(in oklab, var(--fg-1) 10%, transparent);
-}
-.env-tab.is-action:hover,
-.env-tab.is-action[aria-expanded="true"],
-.env-tab.is-action:hover .env-tab-name,
-.env-tab.is-action[aria-expanded="true"] .env-tab-name {
-  color: var(--fg-0);
+  --ink: var(--fg-0);
+  --ink-quiet: var(--fg-2);
+  background: color-mix(in oklab, var(--fg-0) 7%, transparent);
 }
 .env-tab.is-action:focus-visible {
   box-shadow: 0 0 0 1px var(--composer-tint, var(--accent)) inset;

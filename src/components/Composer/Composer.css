@@ -22,6 +22,16 @@
   border: 1px solid var(--composer-bd, var(--bd-strong));
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
+  /* The halo of a composer that has the keyboard, a drop or the mic: a
+     hairline against its edge and a soft bloom that fades into the page. No
+     hard outer edge, so whatever sits beside the box (the environment sheet,
+     the working strip) is lit by it rather than cut across. A state picks
+     the ink and how far the bloom fades. */
+  --halo-ink: var(--composer-tint, var(--accent));
+  --halo-fade: 74%;
+  --halo:
+    0 0 0 1px color-mix(in oklch, var(--halo-ink), transparent 86%),
+    0 0 20px -3px color-mix(in oklch, var(--halo-ink), transparent var(--halo-fade));
   transition:
     background 0.15s,
     border-color 0.15s,
@@ -67,16 +77,14 @@
   color: var(--fg-1);
 }
 .composer:focus-within {
-  border-color: color-mix(in oklch, var(--composer-tint, var(--accent)), transparent 50%);
-  box-shadow:
-    var(--shadow-2),
-    0 0 0 4px color-mix(in oklch, var(--composer-tint, var(--accent)), transparent 88%);
+  border-color: color-mix(in oklch, var(--halo-ink), transparent 50%);
+  box-shadow: var(--shadow-2), var(--halo);
 }
 .composer.is-drop-target {
+  --halo-ink: var(--accent);
+  --halo-fade: 58%;
   border-color: color-mix(in oklch, var(--accent), transparent 30%);
-  box-shadow:
-    var(--shadow-2),
-    0 0 0 4px color-mix(in oklch, var(--accent), transparent 78%);
+  box-shadow: var(--shadow-2), var(--halo);
 }
 .composer-drop-overlay {
   position: absolute;
@@ -180,10 +188,9 @@
 /* Dictation live: the frame glows accent regardless of focus, and the
    placeholder yields to the ghost's "Listening…". */
 .composer.is-listening {
+  --halo-ink: var(--accent);
   border-color: color-mix(in oklch, var(--accent), transparent 30%);
-  box-shadow:
-    var(--shadow-2),
-    0 0 0 4px color-mix(in oklch, var(--accent), transparent 88%);
+  box-shadow: var(--shadow-2), var(--halo);
 }
 .composer.is-listening .composer-input::placeholder {
   color: transparent;
