@@ -1,7 +1,9 @@
-/* The composer in the colours of where its agent runs (`EnvironmentFrame`).
-   The frame only sets the composer's own variables (Composer.css), so the
-   box and the tab on its top edge are always one surface. */
+/* The composer in the colours of where its agent runs (`EnvironmentFrame`),
+   on a sheet that sticks out from behind its top edge and names the machine.
+   The frame only sets variables: the composer's own (Composer.css) and the
+   sheet's, so the two change together. */
 .env-frame {
+  --sheet-peek: 26px;
   position: relative;
   width: 100%;
 }
@@ -12,22 +14,33 @@
   --composer-tint: var(--info);
   --composer-bd: color-mix(in oklab, var(--info) 38%, var(--bd-strong));
   --composer-bg: color-mix(in oklab, var(--info) 4%, var(--bg-2));
+  --sheet-bg: color-mix(in oklab, var(--info) 10%, var(--bg-0));
+  --sheet-bd: color-mix(in oklab, var(--info) 30%, var(--bd));
 }
 
-/* The tab's place: off the composer's top-left corner, over the edge it
-   shares with the box. */
-.env-tab-slot {
+/* The sheet: as wide as the composer, tucked under its rounded top by the
+   corner's radius and showing `--sheet-peek` above it. It comes before the
+   composer and has no layer of its own, so the composer covers its foot and
+   a menu opened from it still takes the menu layer. */
+.env-sheet {
   position: absolute;
-  left: 14px;
-  bottom: 100%;
-  z-index: 3;
+  inset: auto 0 calc(100% - var(--r-lg)) 0;
   display: flex;
-  max-width: min(220px, 50%);
-  margin-bottom: -1px;
+  align-items: flex-start;
+  height: calc(var(--sheet-peek) + var(--r-lg));
+  padding: 1px 6px 0;
+  border: 1px solid var(--sheet-bd, var(--bd));
+  border-bottom: 0;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: var(--sheet-bg, var(--bg-0));
+  transition:
+    background 0.15s,
+    border-color 0.15s;
 }
-/* An open menu takes the menu layer, as the composer does for its own. */
-.env-tab-slot:has(.dd) {
-  z-index: var(--z-dropdown);
+/* The machine keeps to the sheet's left: its right is the working strip's
+   (Chat.css). */
+.env-sheet > * {
+  max-width: min(240px, 50%);
 }
 .env-tab {
   display: inline-flex;
@@ -35,20 +48,15 @@
   gap: 6px;
   min-width: 0;
   max-width: 100%;
-  height: 24px;
-  padding: 0 9px;
-  border: 1px solid var(--composer-bd, var(--bd-strong));
-  border-bottom: 0;
-  border-radius: var(--r-md) var(--r-md) 0 0;
-  background: var(--composer-bg, var(--bg-2));
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
   font-size: var(--fs-sm);
   color: var(--fg-2);
   white-space: nowrap;
   cursor: default;
   transition:
-    background 0.15s,
-    border-color 0.15s,
-    box-shadow 0.15s,
+    background 0.12s,
     color 0.12s;
 }
 .env-tab > svg {
@@ -59,12 +67,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-1);
-}
-.env-tab-sep {
-  opacity: 0.5;
-}
-.env-tab-detail {
-  flex-shrink: 0;
 }
 /* Out of reach, whether it will come back on its own or needs the user:
    greyed like every other mention of the host. Its dot says which. */
@@ -81,23 +83,20 @@
   cursor: pointer;
 }
 .env-tab.is-action:hover,
+.env-tab.is-action[aria-expanded="true"] {
+  background: color-mix(in oklab, var(--fg-1) 10%, transparent);
+}
+.env-tab.is-action:hover,
 .env-tab.is-action[aria-expanded="true"],
 .env-tab.is-action:hover .env-tab-name,
 .env-tab.is-action[aria-expanded="true"] .env-tab-name {
   color: var(--fg-0);
 }
 .env-tab.is-action:focus-visible {
-  border-color: var(--composer-tint, var(--accent));
-}
-/* The composer's focus ring runs on around the tab. Clipped at the tab's
-   foot, where the two meet. */
-.env-frame:focus-within .env-tab {
-  border-color: color-mix(in oklch, var(--composer-tint, var(--accent)), transparent 50%);
-  box-shadow: 0 0 0 4px color-mix(in oklch, var(--composer-tint, var(--accent)), transparent 88%);
-  clip-path: inset(-4px -4px 0 -4px);
+  box-shadow: 0 0 0 1px var(--composer-tint, var(--accent)) inset;
 }
 
-/* A place in the tab's menu, with why it can't be picked under its name. The
+/* A place in the sheet's menu, with why it can't be picked under its name. The
    row dims its name and glyph, not itself: the reason stays readable. */
 .dd-item.target-item.is-disabled {
   opacity: 1;

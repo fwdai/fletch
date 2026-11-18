@@ -522,8 +522,9 @@ export function Composer({
           {/* The run rail: one framed chain of how the agent runs, read
            *  Agent › Account › Model › Effort. Each piece opens its own menu;
            *  the frame is shared. Where the workspace runs is not the
-           *  agent's: the tab on the composer's top edge says it, or the
-           *  new-workspace row with no host paired (`EnvironmentFrame`). */}
+           *  agent's: the sheet behind the composer's top edge says which machine
+           *  (`EnvironmentFrame`), the new-workspace row which sandbox
+           *  (`WorkspaceTypePicker`). */}
           <RunRail>
             <ModelPicker
               provider={provider}

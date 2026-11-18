@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ProjectRef, WorkspaceKind } from "@/api";
+import type { ProjectRef } from "@/api";
 import { useEngine } from "@/api/engine";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { EnvironmentFrame } from "@/components/Composer/EnvironmentFrame";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
-import { RunTargetPicker, RunTargetTab } from "@/components/Composer/RunTargetPicker";
+import { RunTargetPicker } from "@/components/Composer/RunTargetPicker";
 import { homeName, pushedNote } from "@/components/Composer/RunTargetPicker/options";
+import { WorkspaceTypePicker } from "@/components/Composer/WorkspaceTypePicker";
 import { declaredWorkspaceType } from "@/components/Composer/workspaceType";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
@@ -14,7 +15,7 @@ import { ProjectIcon } from "@/components/ProjectIcon";
 import { IconButton } from "@/components/ui/IconButton";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
-import { useAppStore, useHostId } from "@/store";
+import { useAppStore } from "@/store";
 import { useGate, useHostEntry } from "@/store/capabilities";
 import { workspaceTypeOptionsFor } from "@/store/workspaceTypes";
 import { WorkflowComposer, WorkflowHeading } from "@/workflows/run/WorkflowComposer";
@@ -32,7 +33,6 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const removeDraft = useAppStore((s) => s.removeDraft);
   const updateDraft = useAppStore((s) => s.updateDraft);
   const moveDraft = useAppStore((s) => s.moveDraft);
-  const hostId = useHostId();
   const environments = useAppStore((s) => s.environments);
   const setNewDraftSelection = useAppStore((s) => s.setNewDraftSelection);
   const setLastRepoPath = useAppStore((s) => s.setLastRepoPath);
@@ -103,24 +103,6 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
     workspaceTypeShown ? declaredWorkspaceType(workspaceTypeOptions, draft.workspaceType) : null,
     repoCount,
   );
-
-  // Where the workspace runs, for a quick agent only: a box runs no workflow
-  // steps, and a run is launched where its draft is. A draft runs on the host
-  // it is on, so another host picked is where the draft moves; This Mac's
-  // workspace type is a per-draft pick kept as made. One control in one of
-  // two places: the tab on the composer with a host paired, else the row
-  // under it.
-  const runTarget = {
-    repoPath: draft.repoPath,
-    provider: draft.provider,
-    projectId,
-    workspaceType: draft.workspaceType,
-    pinned: !!draft.roadmapItemId,
-    onPick: (target: string, workspaceType?: WorkspaceKind) => {
-      if (target !== hostId) void moveDraft(draft.id, target);
-      else if (workspaceType) updateDraft(draft.id, { workspaceType });
-    },
-  };
 
   return (
     <div className="pane center">
@@ -195,8 +177,19 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
 
           <div className="empty-composer">
             <EnvironmentFrame
-              // Out of reach while the draft is moved, as the row below is.
-              tab={workflowMode || draft.preparing ? undefined : <RunTargetTab {...runTarget} />}
+              // Which machine the workspace runs on, for a quick agent only: a
+              // run is launched where its draft is. A draft runs on the host
+              // it is on, so another host picked is where the draft moves.
+              // Out of reach while it is moved, as the row below is.
+              tab={
+                workflowMode || draft.preparing ? undefined : (
+                  <RunTargetPicker
+                    projectId={projectId}
+                    pinned={!!draft.roadmapItemId}
+                    onPick={(target) => void moveDraft(draft.id, target)}
+                  />
+                )
+              }
             >
               {workflowMode ? (
                 <WorkflowComposer
@@ -325,7 +318,18 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   rememberDraftBase(draft.repoPath, branch);
                 }}
               />
-              {!workflowMode && <RunTargetPicker {...runTarget} />}
+              {/* Which sandbox the workspace runs in, for a quick agent on
+                  This Mac: a box runs no workflow steps, and a paired host's
+                  spawn carries no workspace type yet. A per-draft pick, kept
+                  as made. */}
+              {!workflowMode && workspaceTypeShown && (
+                <WorkspaceTypePicker
+                  repoPath={draft.repoPath}
+                  provider={draft.provider}
+                  current={draft.workspaceType}
+                  onPick={(workspaceType) => updateDraft(draft.id, { workspaceType })}
+                />
+              )}
             </div>
             {/* This host runs the project from a copy of another device's. */}
             {!workflowMode && !draft.preparing && project?.home && (

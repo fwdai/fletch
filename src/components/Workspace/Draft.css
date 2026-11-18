@@ -87,9 +87,9 @@
   width: 100%;
   max-width: 760px;
 }
-/* Room for the environment tab between the sub-line and the composer. */
-.empty-composer .env-frame:has(.env-tab) {
-  margin-top: 10px;
+/* Room for the environment sheet between the sub-line and the composer. */
+.empty-composer .env-frame:has(.env-sheet) {
+  margin-top: 12px;
 }
 
 .empty-meta {

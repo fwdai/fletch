@@ -1,32 +1,22 @@
 // @vitest-environment happy-dom
-// Where a new workspace runs. With no paired host it is the workspace-type
-// pill on the new-workspace row exactly as it was, so the first test draws
-// that pill's markup the way the pill always has and compares the two. With a
-// host paired the row says nothing and the composer's tab is the control.
+// Which machine a new workspace runs on: the picker on the sheet behind the composer.
+// It names machines only; the sandbox a workspace runs in on This Mac is the
+// new-workspace row's (WorkspaceTypePicker).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { availableWorkspaceTypes, projectDefinition } = vi.hoisted(() => ({
-  availableWorkspaceTypes: vi.fn(),
-  projectDefinition: vi.fn(),
-}));
+const { projectDefinition } = vi.hoisted(() => ({ projectDefinition: vi.fn() }));
 vi.mock("@/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api")>();
-  return { ...actual, api: { availableWorkspaceTypes, projectDefinition } };
+  return { ...actual, api: { projectDefinition } };
 });
 
-import type { ProjectDefinition, WorkspaceTypeOption } from "@/api";
-import { Icon } from "@/components/Icon";
-import { DropdownItem, DropdownMenu, DropdownSection } from "@/components/ui/Dropdown";
+import type { ProjectDefinition } from "@/api";
 import { useAppStore } from "@/store";
-import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "@/store/environments";
+import { EngineScope } from "@/store/EngineScope";
+import type { EnvironmentEntry } from "@/store/environments";
 import { fireEvent, render, screen } from "@/test/render";
-import { RunTargetPicker, RunTargetTab } from ".";
-
-const OPTIONS: WorkspaceTypeOption[] = [
-  { kind: "host", available: true, reason: null, default: true },
-  { kind: "box", available: false, reason: "VM image not installed", default: false },
-];
+import { RunTargetPicker } from ".";
 
 const DEFINITION: ProjectDefinition = {
   project_id: "p1",
@@ -44,148 +34,50 @@ const studio = (over: Partial<EnvironmentEntry> = {}): EnvironmentEntry => ({
   ...over,
 });
 
-function picker(onPick = vi.fn()) {
-  return render(
-    <RunTargetPicker repoPath="/w/app" provider="claude" projectId="p1" onPick={onPick} />,
-  );
-}
-
-function tab(onPick = vi.fn(), pinned = false) {
-  return render(
-    <RunTargetTab
-      repoPath="/w/app"
-      provider="claude"
-      projectId="p1"
-      pinned={pinned}
-      onPick={onPick}
-    />,
-  );
-}
-
-/** The workspace-type pill as it has always been drawn for `OPTIONS`, closed
- *  and open. */
-function pillAsBefore(open: boolean): string {
-  const drawn = render(
-    <span style={{ position: "relative" }}>
-      <button
-        type="button"
-        className="pill is-action tip"
-        data-tip="Runs in the macOS sandbox"
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        <Icon name="folderLock" />
-        <span style={{ color: "var(--fg-2)" }}>in</span>
-        <span className="v">macOS sandbox</span>
-        <Icon name="chevD" size={9} />
-      </button>
-      {open && (
-        <>
-          <div style={{ position: "fixed", inset: 0, zIndex: 199 }} />
-          <DropdownMenu className="ws-type-menu" style={{ bottom: "calc(100% + 6px)", left: 0 }}>
-            <DropdownSection>Runs in</DropdownSection>
-            <DropdownItem
-              as="button"
-              role="menuitemradio"
-              aria-checked={true}
-              active={true}
-              disabled={false}
-            >
-              <Icon name="folderLock" size={14} />
-              <span className="di-l">macOS sandbox</span>
-              <span className="di-m">default</span>
-              <Icon name="check" size={13} />
-            </DropdownItem>
-            <DropdownItem
-              as="button"
-              role="menuitemradio"
-              aria-checked={false}
-              active={false}
-              disabled={true}
-              title="VM image not installed"
-            >
-              <Icon name="cube" size={14} />
-              <span className="di-l">Linux VM</span>
-            </DropdownItem>
-          </DropdownMenu>
-        </>
-      )}
-    </span>,
-  );
-  const html = drawn.container.innerHTML;
-  drawn.unmount();
-  return html;
+function picker(onPick = vi.fn(), pinned = false) {
+  return render(<RunTargetPicker projectId="p1" pinned={pinned} onPick={onPick} />);
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  availableWorkspaceTypes.mockResolvedValue(OPTIONS);
   projectDefinition.mockResolvedValue(DEFINITION);
   useAppStore.setState(useAppStore.getInitialState(), true);
 });
 
-describe("RunTargetPicker with no paired host", () => {
-  it("is the workspace-type pill exactly as before, closed and open", async () => {
-    const closed = pillAsBefore(false);
-    const opened = pillAsBefore(true);
-    const { container } = picker();
-    const pill = await screen.findByRole("button", { name: /macOS sandbox/ });
-
-    expect(container.innerHTML).toBe(closed);
-    fireEvent.click(pill);
-    expect(container.innerHTML).toBe(opened);
-    expect(screen.queryByText("This Mac")).toBeNull();
-    expect(projectDefinition).not.toHaveBeenCalled();
-  });
-
-  it("keeps a pick on This Mac", async () => {
+describe("RunTargetPicker", () => {
+  it("names the machine and lists the others, with no sandbox among them", async () => {
+    useAppStore.getState().upsertEnvironment(studio());
     const onPick = vi.fn();
     picker(onPick);
-    fireEvent.click(await screen.findByRole("button", { name: /macOS sandbox/ }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /macOS sandbox/ }));
-    expect(onPick).toHaveBeenCalledWith(LOCAL_ENVIRONMENT_ID, "host");
-  });
-});
 
-describe("RunTargetPicker with a paired host", () => {
-  it("leaves the row to the composer's tab", async () => {
-    useAppStore.getState().upsertEnvironment(studio());
-    const { container } = picker();
-    await vi.waitFor(() => expect(availableWorkspaceTypes).not.toHaveBeenCalled());
-    expect(container.innerHTML).toBe("");
-  });
-});
-
-describe("RunTargetTab", () => {
-  it("says where the workspace runs and lists This Mac's types beside the host", async () => {
-    useAppStore.getState().upsertEnvironment(studio());
-    const onPick = vi.fn();
-    tab(onPick);
-
-    fireEvent.click(await screen.findByRole("button", { name: /This Mac\s*macOS sandbox/ }));
+    const tab = screen.getByRole("button", { name: "This Mac" });
+    fireEvent.click(tab);
 
     expect(screen.getByText("Paired hosts")).toBeTruthy();
-    const host = screen.getByRole("menuitemradio", { name: "Studio" }) as HTMLButtonElement;
-    expect(host.disabled).toBe(false);
+    expect(screen.getAllByRole("menuitemradio").map((i) => i.textContent)).toEqual([
+      "This Mac",
+      "Studio",
+    ]);
     expect(projectDefinition).toHaveBeenCalledWith("p1");
 
-    fireEvent.click(host);
-    expect(onPick).toHaveBeenCalledWith("studio", undefined);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Studio" }));
+    expect(onPick).toHaveBeenCalledWith("studio");
   });
 
-  it("keeps a workspace type picked for This Mac", async () => {
+  it("moves nothing when the machine it is already on is picked", () => {
     useAppStore.getState().upsertEnvironment(studio());
     const onPick = vi.fn();
-    tab(onPick);
-    fireEvent.click(await screen.findByRole("button", { name: /macOS sandbox/ }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /macOS sandbox/ }));
-    expect(onPick).toHaveBeenCalledWith(LOCAL_ENVIRONMENT_ID, "host");
+    picker(onPick);
+    fireEvent.click(screen.getByRole("button", { name: "This Mac" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "This Mac" }));
+    expect(onPick).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menuitemradio")).toBeNull();
   });
 
-  it("shows an offline host disabled, its connection written under its name", async () => {
+  it("shows an offline host disabled, its connection written under its name", () => {
     useAppStore.getState().upsertEnvironment(studio({ connection: "disconnected" }));
-    tab();
-    fireEvent.click(await screen.findByRole("button", { name: /This Mac/ }));
+    picker();
+    fireEvent.click(screen.getByRole("button", { name: "This Mac" }));
     const host = screen.getByRole("menuitemradio", { name: /^Studio/ }) as HTMLButtonElement;
     expect(host.disabled).toBe(true);
     expect(host.textContent).toBe("Studiooffline");
@@ -197,9 +89,9 @@ describe("RunTargetTab", () => {
       ...DEFINITION,
       repos: [{ ...DEFINITION.repos[0], origin: null }],
     });
-    tab();
+    picker();
 
-    fireEvent.click(await screen.findByRole("button", { name: /This Mac/ }));
+    fireEvent.click(screen.getByRole("button", { name: "This Mac" }));
     await vi.waitFor(() => {
       const host = screen.getByRole("menuitemradio", { name: /^Studio/ }) as HTMLButtonElement;
       expect(host.disabled).toBe(true);
@@ -207,12 +99,19 @@ describe("RunTargetTab", () => {
     });
   });
 
-  it("offers only the draft's own place to a pinned draft", async () => {
+  it("only says where a pinned draft runs, on This Mac and on a host", () => {
     useAppStore.getState().upsertEnvironment(studio());
-    tab(vi.fn(), true);
-    fireEvent.click(await screen.findByRole("button", { name: /This Mac/ }));
-    expect(screen.getByRole("menuitemradio", { name: /macOS sandbox/ })).toBeTruthy();
-    expect(screen.queryByText("Paired hosts")).toBeNull();
-    expect(screen.queryByRole("menuitemradio", { name: /Studio/ })).toBeNull();
+    const here = picker(vi.fn(), true);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(here.container.textContent).toBe("This Mac");
+    here.unmount();
+
+    const there = render(
+      <EngineScope hostId="studio">
+        <RunTargetPicker projectId="p1" pinned onPick={vi.fn()} />
+      </EngineScope>,
+    );
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(there.container.textContent).toBe("Studio");
   });
 });

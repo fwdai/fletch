@@ -1,6 +1,7 @@
-// Where a new workspace can run: the options of the run-target picker on the
-// new-workspace row, and the words around them. Pure, and free of the store,
-// so the move checks a pick by the same rule the picker greys it by.
+// Which machine a new workspace can run on: the options of the run-target
+// picker on the composer's sheet, and the words around them. Pure, and free of
+// the store, so the move checks a pick by the same rule the picker greys it
+// by.
 //
 // Each source contributes the places of one kind. Today that is the hosts this
 // window knows, This Mac first and then each paired host by name; a provider
@@ -70,9 +71,10 @@ export function runTargetOptions(facts: RunTargetFacts): RunTargetOption[] {
   return SOURCES.flatMap((source) => source(facts));
 }
 
-/** What a menu section of each kind is headed. */
-export const RUN_TARGET_SECTIONS: Record<RunTargetKind, string> = {
-  local: "This Mac",
+/** What a menu section of each kind is headed. This Mac is one place, named
+ *  by its own row, so its section has no heading. */
+export const RUN_TARGET_SECTIONS: Record<RunTargetKind, string | null> = {
+  local: null,
   host: "Paired hosts",
 };
 
