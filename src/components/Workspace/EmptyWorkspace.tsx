@@ -104,6 +104,10 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
     repoCount,
   );
 
+  // A draft opened new is brought in; one moved here from another host is the
+  // page the user was already on, and is drawn where it was.
+  const enter = draft.arrived ? "" : " fade-in";
+
   return (
     <div className="pane center">
       <div className="center-h flex-center">
@@ -130,8 +134,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
         </IconButton>
       </div>
 
-      <div className="empty-wrap flex-center fade-in">
-        <div className="empty-body fade-in">
+      <div className={`empty-wrap flex-center${enter}`}>
+        <div className={`empty-body${enter}`}>
           <div className="empty-id flex-center">
             <div className="empty-mark flex-center text-xs">
               <span className="d" />

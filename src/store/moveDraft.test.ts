@@ -73,14 +73,16 @@ const agent = (id: string, repoPath: string): AgentRecord =>
 
 /** A paired host behind a fake connection, with a copy of the project once
  *  it is asked to make one. `fail` makes one op refuse with the host's words;
- *  `hold` keeps one op unanswered until its promise resolves. */
+ *  `hold` keeps one op unanswered until its promise resolves; `agents` are
+ *  the workspaces it already has. */
 function fakeHost(
   id: string,
   fail: Record<string, string> = {},
   hold?: { op: string; until: Promise<void> },
+  agents: AgentRecord[] = [],
 ) {
   const calls: [string, Record<string, unknown> | undefined][] = [];
-  let workspace: Workspace = { repos: [], projects: [], agents: [] } as unknown as Workspace;
+  let workspace: Workspace = { repos: [], projects: [], agents } as unknown as Workspace;
   const answer = (op: string, args?: Record<string, unknown>): unknown => {
     switch (op) {
       case "ensure_project":
@@ -229,12 +231,13 @@ describe("a draft moved to a paired host", () => {
 
     await move();
 
-    // The home describes the project; the host makes its copy, then names
-    // the draft itself. Nothing is spawned by a move.
+    // The home describes the project and the host makes its copy. The draft
+    // keeps its name, which the host has free, so it is not asked for one.
+    // Nothing is spawned by a move.
     expect(localApi.projectDefinition).toHaveBeenCalledWith("p1");
     expect(argsOf(studio, "ensure_project")).toEqual({ definition: DEFINITION });
     const ops = studio.ops();
-    expect(ops.indexOf("ensure_project")).toBeLessThan(ops.indexOf("allocate_draft_name"));
+    expect(ops).not.toContain("allocate_draft_name");
     expect(ops).not.toContain("spawn_agent");
     expect(localApi.spawnAgent).not.toHaveBeenCalled();
 
@@ -242,10 +245,13 @@ describe("a draft moved to a paired host", () => {
     const there = s.hostStates.studio;
     expect(there.drafts).toHaveLength(1);
     const moved = there.drafts[0];
-    // The task goes with it: what was typed, and the choices that mean the
-    // same on any device.
+    // The task goes with it: what was typed, the choices that mean the same
+    // on any device, and its name. It is marked as the page the user was
+    // already on, which the screen draws in place.
     expect(moved).toMatchObject({
       kind: "agent",
+      name: "chimborazo",
+      arrived: true,
       repoPath: COPY_PATH,
       provider: "claude",
       base: "develop",
@@ -266,11 +272,39 @@ describe("a draft moved to a paired host", () => {
     await move();
 
     const moved = useAppStore.getState().hostStates.studio.drafts[0];
-    // Named by the host it now runs on, against that host's own agents.
-    expect(moved.name).toBe("aconcagua");
     expect(moved.customAgentId).toBeUndefined();
     expect(moved.account).toBeUndefined();
     expect(moved.workspaceType).toBeUndefined();
+  });
+
+  it("is named by the host when a workspace there already has its name", async () => {
+    await pair(fakeHost("studio", {}, undefined, [agent("chimborazo", COPY_PATH)]));
+    drafting(DRAFT);
+
+    await move();
+
+    expect(studio.ops()).toContain("allocate_draft_name");
+    expect(useAppStore.getState().hostStates.studio.drafts[0].name).toBe("aconcagua");
+  });
+
+  it("keeps its name over an archived workspace's, which has given it up", async () => {
+    const archived = { ...agent("chimborazo", COPY_PATH), archive: {} } as AgentRecord;
+    await pair(fakeHost("studio", {}, undefined, [archived]));
+    drafting(DRAFT);
+
+    await move();
+
+    expect(useAppStore.getState().hostStates.studio.drafts[0].name).toBe("chimborazo");
+  });
+
+  it("is named by the host when a draft there already has its name", async () => {
+    hostStore("studio").setState({ drafts: [{ ...DRAFT, id: "theirs", repoPath: COPY_PATH }] });
+    drafting(DRAFT);
+
+    await move();
+
+    const names = useAppStore.getState().hostStates.studio.drafts.map((d) => d.name);
+    expect(names).toEqual(["aconcagua", "chimborazo"]);
   });
 
   it("then spawns there like any draft of that host's", async () => {
@@ -284,7 +318,7 @@ describe("a draft moved to a paired host", () => {
     // The host forks from the branch as its remote has it.
     expect(argsOf(studio, "spawn_agent")).toMatchObject({
       repoPath: COPY_PATH,
-      name: "aconcagua",
+      name: "chimborazo",
       forkBase: "develop",
       task: TEXT,
     });
@@ -314,11 +348,11 @@ describe("a draft moved to a paired host", () => {
 
   /** Pair a host that holds `op` until `ready()`, with the draft open. */
   let ready: () => void;
-  async function holding(op: string) {
+  async function holding(op: string, agents: AgentRecord[] = []) {
     const until = new Promise<void>((resolve) => {
       ready = resolve;
     });
-    await pair(fakeHost("studio", {}, { op, until }));
+    await pair(fakeHost("studio", {}, { op, until }, agents));
     drafting(DRAFT);
   }
 
@@ -381,8 +415,9 @@ describe("a draft moved to a paired host", () => {
     });
   });
 
+  // The host is only asked for a name when the draft's own is taken there.
   describe("while the host names it, the last thing asked", () => {
-    beforeEach(() => holding("allocate_draft_name"));
+    beforeEach(() => holding("allocate_draft_name", [agent("chimborazo", COPY_PATH)]));
 
     it("opens nothing for a draft discarded then", async () => {
       const moving = move();

@@ -9,8 +9,9 @@
 // The draft's host describes the project (`project_definition`); the target
 // makes sure it can run it (`ensure_project`, which clones the repositories
 // the first time) and answers with its copy; the target then opens a draft of
-// its own on that copy, with what the user has typed and the choices that mean
-// the same on any device (`CarriedDraft`). All of that happens before anything
+// its own on that copy, with what the user has typed, the choices that mean
+// the same on any device and, when it is free there, the same name
+// (`CarriedDraft`). All of that happens before anything
 // is sent, so a failure leaves the draft, and its message, where they were.
 
 import { type Engine, engineOf } from "@/api/engine";
@@ -68,6 +69,7 @@ export async function moveDraft(
       seedPrompt: get().composerDrafts[id],
       kind: now.kind,
       carried: {
+        name: now.name,
         provider: now.provider,
         model: now.model,
         base: now.base,

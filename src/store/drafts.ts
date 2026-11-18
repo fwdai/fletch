@@ -75,14 +75,19 @@ export interface DraftAgent {
    *  project can take a while to make (`moveDraft`): what the new-workspace
    *  screen says in place of its controls. Nothing is sent meanwhile. */
   preparing?: string;
+  /** Set on a draft that came from another host (`moveDraft`): to the user it
+   *  is the page they were already on, so the screen draws it in place rather
+   *  than bringing it in as a new one. */
+  arrived?: boolean;
 }
 
 /** What of a draft goes with it to another host (`moveDraft`): the choices
- *  that mean the same on any device. Everything else a draft holds names
- *  something of its own host (its name, a custom agent, an account, a
- *  workspace type) and is the new host's to decide, as for any draft opened
- *  there. */
-export type CarriedDraft = Pick<DraftAgent, "provider" | "model" | "base" | "issueRef">;
+ *  that mean the same on any device, and its name, which the new host keeps
+ *  when it has no workspace or draft of that name (`prepareDraft`), so the
+ *  page the user is on stays the page it was. Everything else a draft holds
+ *  names something of its own host (a custom agent, an account, a workspace
+ *  type) and is the new host's to decide, as for any draft opened there. */
+export type CarriedDraft = Pick<DraftAgent, "name" | "provider" | "model" | "base" | "issueRef">;
 
 export interface DraftsSlice {
   drafts: DraftAgent[];
@@ -213,7 +218,10 @@ async function prepareDraft(
   // the sidebar +, the Home screen) and a silently dead click.
   let name: string;
   try {
-    name = await api.allocateDraftName(draftNames(drafts));
+    name =
+      carried && nameIsFree(get(), carried.name)
+        ? carried.name
+        : await api.allocateDraftName(draftNames(drafts));
   } catch (e) {
     get().setLastError(`Couldn't start a new agent: ${String(e)}`);
     return null;
@@ -242,7 +250,18 @@ async function prepareDraft(
     base,
     issueRef: carried?.issueRef,
     roadmapItemId,
+    ...(carried ? { arrived: true } : {}),
   };
+}
+
+/** Whether this host can give a draft the name it had on another: no open
+ *  draft here and no live workspace has it. Read from the snapshot, which a
+ *  move refreshes just before; an archived workspace has given its name up.
+ *  A name taken between this and the spawn fails the spawn with the host's
+ *  reason, as for any draft. */
+function nameIsFree(state: AppState, name: string): boolean {
+  if (state.drafts.some((d) => d.name === name)) return false;
+  return !(state.workspace?.agents ?? []).some((a) => a.id === name && !a.archive);
 }
 
 /** Put a prepared draft on screen: seeded, listed first, selected. The seed

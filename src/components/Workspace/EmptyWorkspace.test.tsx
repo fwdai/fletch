@@ -26,6 +26,18 @@ describe("EmptyWorkspace", () => {
     expect(screen.getByText("What should be the first task?")).toBeTruthy();
   });
 
+  it("brings a new draft in, and draws one moved from another host in place", () => {
+    const projects = [{ path: "/repos/acme", name: "Acme", project_id: "p1" }] as ProjectRef[];
+    useAppStore.setState({ workspace: { projects, agents: [] } as unknown as Workspace });
+
+    const fresh = render(<EmptyWorkspace draft={draft} />);
+    expect(fresh.container.querySelector(".empty-wrap")?.classList.contains("fade-in")).toBe(true);
+    fresh.unmount();
+
+    const moved = render(<EmptyWorkspace draft={{ ...draft, arrived: true }} />);
+    expect(moved.container.querySelector(".fade-in")).toBeNull();
+  });
+
   it("offers the workspace's projects", () => {
     const projects = [
       { path: "/repos/acme", name: "Acme", project_id: "p1" },
