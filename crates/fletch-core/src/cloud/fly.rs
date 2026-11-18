@@ -690,8 +690,13 @@ impl Client {
 
     /// The org's box apps, each as one [`Listed`] per machine — or one with an
     /// empty machine id when it holds none. An app is a box's only if it is
-    /// named with [`APP_PREFIX`], every machine in it carries [`LABEL`] and
-    /// every volume in it is named [`VOLUME_NAME`]; any other app is left out.
+    /// named with [`APP_PREFIX`], every machine in it carries [`LABEL`], every
+    /// volume in it is named [`VOLUME_NAME`] and at most one of them is live;
+    /// any other app is left out. That includes a box's app holding two live
+    /// volumes (a fork or a restore someone made by hand: Fly lets volumes
+    /// share a name): one entry cannot stand for both, and a caller matching
+    /// its boxes with [`Handle::same_box`] must never find the volume a box
+    /// refers to missing from an app it is shown.
     /// The state says what is left of the box: a machine's own state (its
     /// volume there), [`MachineState::MachineGone`] for a volume with no
     /// machine — a workspace a box may still refer to, recoverable with
@@ -728,6 +733,7 @@ impl Client {
                 || !volumes
                     .iter()
                     .all(|v| v["name"].as_str() == Some(VOLUME_NAME))
+                || volumes.len() > 1
             {
                 continue;
             }
