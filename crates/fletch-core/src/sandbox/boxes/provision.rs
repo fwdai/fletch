@@ -24,8 +24,8 @@ use crate::sandbox::provision::{self as clone, BaseFreshness, CheckoutSpec};
 use super::mirror;
 use super::registry::{BoxIdentity, BoxRegistry, RunningBox};
 
-/// `git::fetch_fork_point`'s bound, for the same reason: this sits inside the
-/// supervisor's spawn watchdog.
+/// `git::fetch_fork_point`'s bound, for the same reason: a spawn waits on it
+/// before it falls back to the base this machine has.
 const BASE_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 /// The push of a whole repository into the guest, over vsock.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(60);

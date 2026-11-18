@@ -123,10 +123,10 @@ export function ChatComposer({
       ? { open: turnOpen, onToggle: (open: boolean) => void setTurnNetworkOpen(agent.id, open) }
       : undefined;
 
-  const canSend =
-    !transcriptLoading &&
-    !switchInFlight &&
-    (agent.status === "running" || agent.status === "idle");
+  // An agent whose process is down (stopped, or failed) takes a message too:
+  // the host relaunches it for the message, so there is nothing to click first.
+  // Only a spawn in flight holds the composer, behind the step it is on.
+  const canSend = !transcriptLoading && !switchInFlight && agent.status !== "spawning";
 
   return (
     <div className="composer-wrap">

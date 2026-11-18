@@ -110,8 +110,8 @@ pub async fn provision_at_remote_base(
         // Deliberately `git::fetch_fork_point`, not this module's [`fetch`]:
         // this one call sits on the spawn path, and `fetch_fork_point` is
         // bounded at 8s for exactly that reason, while [`fetch`] carries the
-        // 60s `NET_TIMEOUT` the recovery ladders want. Unifying them would put
-        // a 60s stall inside the supervisor's 15s spawn watchdog.
+        // 60s `NET_TIMEOUT` the recovery ladders want. Unifying them would
+        // make an offline spawn wait a minute before it falls back.
         match git::fetch_fork_point(&dest, spec.source_repo, &base_branch).await {
             Some(tip) => {
                 checkout_detached(&dest, &tip).await?;
