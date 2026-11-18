@@ -30,6 +30,13 @@ pub enum Error {
     #[error("sandbox unavailable: {0}")]
     SandboxUnavailable(String),
 
+    /// A cloud machine that no longer exists at its provider: deleted from the
+    /// provider's dashboard, or never there. Distinct from every other failure
+    /// because the box it backed is lost, not unreachable — retrying cannot
+    /// bring it back (see `cloud`).
+    #[error("{0}")]
+    CloudGone(String),
+
     #[error("{0}")]
     Other(String),
 }
