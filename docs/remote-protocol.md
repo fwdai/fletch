@@ -1044,7 +1044,9 @@ ops (`open_agent_shell`, `write_to_shell`, …), `write_to_agent` (raw PTY),
 editor/log/telemetry ops, the provider install/login ops (`install_agent`,
 `open_provider_login`) and the two desktop provider probes behind Settings ›
 Providers (`probe_provider_versions`, `probe_provider_auth`, which answer with
-resolved binary paths), and the `run_*` family (`run_start`, `run_stop`,
+resolved binary paths), the cloud provider connection behind Settings
+(`cloud_providers`, `cloud_connect`, `cloud_disconnect` — the token is kept in
+this machine's secret store), and the `run_*` family (`run_start`, `run_stop`,
 `run_verification` — this machine's own scripts). Autopilot's `fix-checks`
 verdict needs no `run_verification` on the wire: the ladder runs on the host,
 which calls its own verifier and reports it as `verify:report`. `host_providers` above is the
@@ -1315,7 +1317,7 @@ Each setter is the desktop command of the same name, so it does what the
 desktop's Settings pane does: it persists the key *and* updates the in-memory
 mirror the host's spawn and publish paths read, so a change applies without a
 restart. Nothing secret is on the list and nothing secret is ever answered —
-`github_token`, `linear_token`, the `remote.*` keys,
+`github_token`, `linear_token`, the `cloud.*` keys, the `remote.*` keys,
 `telemetry_*` and every client-side preference (theme, pane widths, shortcuts,
 dictation) stay where they are, off the wire.
 

@@ -20,6 +20,7 @@ pub mod autopilot;
 pub mod bin_resolve;
 pub mod capture;
 pub mod child_io;
+pub mod cloud;
 pub mod codegraph;
 /// The engine halves of the desktop's Tauri commands. Each `*_impl` is the
 /// body a `#[tauri::command]` wrapper in `src-tauri/src/commands/` calls and
