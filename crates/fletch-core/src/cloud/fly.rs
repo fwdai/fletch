@@ -842,9 +842,9 @@ impl Client {
         if body["state"].as_str() == Some("failed") {
             return Ok(Disk::Failed("Fly.io reports the box's disk failed".into()));
         }
-        if host_unreachable(body) {
+        if host_unavailable(body) {
             return Ok(Disk::Failed(
-                "the Fly.io host holding the box's disk is unreachable; the disk comes back \
+                "Fly.io cannot reach the host holding the box's disk; the disk comes back \
                  with the host, or is restored from a snapshot"
                     .into(),
             ));
@@ -881,9 +881,9 @@ impl Client {
             .iter()
             .find_map(|key| reply.body[*key].as_str().filter(|v| !v.is_empty()))
             .map(str::to_string);
-        let state = if host_unreachable(&reply.body) {
+        let state = if host_unavailable(&reply.body) {
             MachineState::Failed(
-                "the Fly.io host the machine is on is unreachable; it comes back with the host"
+                "Fly.io cannot reach the host the machine is on; it comes back with the host"
                     .into(),
             )
         } else {
@@ -1149,9 +1149,16 @@ fn volume_live(volume: &Value) -> bool {
     !VOLUME_GONE_STATES.contains(&volume["state"].as_str().unwrap_or_default())
 }
 
-/// Whether Fly reports it could not reach the host of a machine or volume.
-fn host_unreachable(body: &Value) -> bool {
-    body["host_status"].as_str() == Some("unreachable")
+/// Whether Fly reports it could not reach the host of a machine or volume,
+/// so what it says of either is only the last it knew. `host_status` is `ok`
+/// for a host it reached, and `unreachable` or `unknown` for one it did not;
+/// any value but `ok` counts, one Fly adds later included, so nothing is
+/// taken for live, or for gone and replaceable, on a host nobody could ask.
+/// A response without the field says nothing against its host.
+fn host_unavailable(body: &Value) -> bool {
+    body["host_status"]
+        .as_str()
+        .is_some_and(|status| status != "ok")
 }
 
 /// A new app's name: [`APP_PREFIX`], the box's name folded into Fly's rules,
