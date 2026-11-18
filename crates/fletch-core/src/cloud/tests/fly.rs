@@ -1007,6 +1007,7 @@ async fn list_reports_each_box_shape_and_leaves_out_what_is_not_a_box() {
                 { "name": "fletch-box-machine-only" },
                 { "name": "fletch-box-unlabelled" },
                 { "name": "fletch-box-foreign-volume" },
+                { "name": "fletch-box-two-disks" },
                 { "name": "fletch-box-gone-since" },
                 { "name": "my-api" },
             ]}),
@@ -1038,6 +1039,12 @@ async fn list_reports_each_box_shape_and_leaves_out_what_is_not_a_box() {
             200,
             json!([{ "id": "vol_f", "name": "pgdata", "state": "created" }]),
         ),
+        "/v1/apps/fletch-box-two-disks/machines" => {
+            Reply::json(200, json!([machine("mg", "stopped")]))
+        }
+        "/v1/apps/fletch-box-two-disks/volumes" => {
+            Reply::json(200, json!([ours("vol_g1"), ours("vol_g2")]))
+        }
         p if p.starts_with("/v1/apps/fletch-box-gone-since/") => Reply::json(404, json!({})),
         p if p.ends_with("/machines") || p.ends_with("/volumes") => Reply::json(200, json!([])),
         _ => Reply::json(500, json!({})),
@@ -1070,7 +1077,17 @@ async fn list_reports_each_box_shape_and_leaves_out_what_is_not_a_box() {
                 state: MachineState::DiskGone,
             },
         ],
-        "an unlabelled machine, a volume not a box's and an app without the prefix are not ours"
+        "an unlabelled machine, a volume not a box's, two live volumes and an app without the \
+         prefix are not ours"
+    );
+    // An app with two live volumes is shown under neither: a box that names
+    // the second is never offered the app with the first's id on it, which
+    // `same_box` would not match.
+    assert!(
+        !listed
+            .iter()
+            .any(|l| matches!(&l.handle, Handle::Fly { app, .. } if app == "fletch-box-two-disks")),
+        "{listed:?}"
     );
     assert!(
         !server.lines().iter().any(|l| l.contains("my-api")),
