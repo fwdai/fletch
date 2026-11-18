@@ -328,6 +328,15 @@ impl Supervisor {
         lock.lock_owned().await
     }
 
+    /// Whether a delivery for `agent_id` is under way right now: some entry
+    /// point holds its delivery lock (`Supervisor::delivery_locks`).
+    pub(super) fn delivery_in_flight(&self, agent_id: &str) -> bool {
+        self.delivery_locks
+            .lock()
+            .get(agent_id)
+            .is_some_and(|lock| lock.try_lock().is_err())
+    }
+
     /// Inject a message into the running turn over the managed agent's open
     /// stdin (claude), with its own row, so it matches the transcript record
     /// the live message produces (the matcher stays 1→1 per live message).
@@ -791,6 +800,14 @@ pub(super) fn drain_message_queue(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_
         return;
     }
     if sup.message_queue.lock().is_empty(agent_id) {
+        // Nothing is held, so an agent that has just come to rest owes no
+        // turn: one left open by a send that was refused while the process
+        // was still coming up (it could not settle a busy agent) is closed
+        // here. Unless a send is mid-delivery, which holds the turn for a
+        // message it has yet to queue or hand over, and settles for itself.
+        if !sup.delivery_in_flight(agent_id) {
+            sup.settle_turn(ctx, agent_id);
+        }
         return;
     }
     let Some(sup_arc) = ctx.supervisor() else {
@@ -1214,6 +1231,50 @@ mod tests {
         let said = statuses_said(&sink).len();
         sup.settle_turn(&ctx, "yosemite");
         assert_eq!(statuses_said(&sink).len(), said);
+    }
+
+    /// A send refused while the agent was still coming up (its attachments
+    /// could not be written into the guest, say) leaves the turn it opened:
+    /// the agent is busy, so the send cannot settle it, and nothing was
+    /// queued. This is the state that leaves. The process coming to rest with
+    /// nothing held closes the turn and says so, rather than leave an idle
+    /// agent reading "working" for good.
+    #[tokio::test]
+    async fn a_turn_left_by_a_send_refused_mid_spawn_closes_when_the_process_rests() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = resting();
+        sup.set_status(&ctx, "yosemite", AgentStatus::Spawning, None);
+        sup.open_turn(&ctx, "yosemite");
+        // The refused send's own settle: a no-op on a busy agent.
+        sup.settle_turn(&ctx, "yosemite");
+        assert!(sup.turn_since("yosemite").is_some());
+
+        // `start_process`, as the spawn completes.
+        assert!(sup.claim_spawn_outcome(&ctx, "yosemite", AgentStatus::Idle, None));
+        drain_message_queue(&sup, &ctx, "yosemite");
+
+        assert_eq!(sup.turn_since("yosemite"), None);
+        assert_eq!(
+            statuses_said(&sink).last().unwrap(),
+            &("idle".to_string(), None)
+        );
+    }
+
+    /// The same rest, with a send mid-delivery: the process was relaunched
+    /// from inside that send (its login was due), which has yet to queue or
+    /// hand over its message. Its turn is not the drain's to close.
+    #[tokio::test]
+    async fn a_process_resting_under_a_send_in_flight_leaves_that_sends_turn() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = resting();
+        let _delivering = sup.lock_delivery("yosemite").await;
+        let since = sup.open_turn(&ctx, "yosemite");
+        sup.set_status(&ctx, "yosemite", AgentStatus::Spawning, None);
+
+        assert!(sup.claim_spawn_outcome(&ctx, "yosemite", AgentStatus::Idle, None));
+        drain_message_queue(&sup, &ctx, "yosemite");
+
+        assert_eq!(sup.turn_since("yosemite"), Some(since));
     }
 
     /// The turn's row starts when its message was accepted, not when it was
