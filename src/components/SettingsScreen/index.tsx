@@ -9,6 +9,7 @@ import { IS_MAC } from "@/util/platform";
 import { WorkflowsPane } from "@/workflows/builder";
 import pkg from "../../../package.json";
 import { AccountPane } from "./AccountPane";
+import { CloudPane } from "./CloudPane";
 import { CustomAgentsPane } from "./CustomAgents";
 import { DevicesPane } from "./Devices";
 import { DictationPane } from "./Dictation";
@@ -163,6 +164,7 @@ function SettingsBody() {
           {/* One element for both tabs, so switching keeps the pane (and the
               pairing window it holds open) mounted. */}
           {visible && (section === "hosts" || section === "clients") && <DevicesPane />}
+          {visible && section === "cloud" && <CloudPane />}
           {visible && section === "providers" && (
             <HostScope>
               <ProvidersPane />
