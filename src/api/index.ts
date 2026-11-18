@@ -1,5 +1,6 @@
 import { agentsApi } from "./domains/agents";
 import { boxesApi } from "./domains/boxes";
+import { cloudApi } from "./domains/cloud";
 import { commandsApi } from "./domains/commands";
 import { contextApi } from "./domains/context";
 import { dictationApi } from "./domains/dictation";
@@ -29,6 +30,7 @@ export * from "./events";
 // Re-export every DTO/type so `import type { … } from "@/api"` keeps working.
 export * from "./types/agent";
 export * from "./types/checkout";
+export * from "./types/cloud";
 export * from "./types/commands";
 export * from "./types/context";
 export * from "./types/dictation";
@@ -76,6 +78,7 @@ export function makeApi(invoke: Invoke, remote?: () => Transport) {
     ...dictationApi,
     ...providersApi,
     ...remoteApi,
+    ...cloudApi,
     ...workflowsApi(invoke),
     ...roadmapApi(invoke),
     ...usageApi,

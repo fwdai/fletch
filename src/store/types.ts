@@ -13,6 +13,7 @@ import type { AppSlice } from "./app";
 import type { AppearanceSlice } from "./appearance";
 import type { AutopilotSlice } from "./autopilot";
 import type { BackgroundTasksSlice } from "./backgroundTasks";
+import type { CloudSlice } from "./cloud";
 import type { CompactionSlice } from "./compaction";
 import type { ComposerSlice } from "./composer";
 import type { CustomAgentsSlice } from "./customAgents";
@@ -39,6 +40,7 @@ export type {
   AppSlice,
   AutopilotSlice,
   BackgroundTasksSlice,
+  CloudSlice,
   CompactionSlice,
   ComposerSlice,
   CustomAgentsSlice,
@@ -87,7 +89,8 @@ export type AppState = AppSlice &
   SandboxSlice &
   WorkspaceTypesSlice &
   LocalCommandsSlice &
-  CompactionSlice;
+  CompactionSlice &
+  CloudSlice;
 
 type StoreArgs = Parameters<StateCreator<AppState, [], [], unknown>>;
 
