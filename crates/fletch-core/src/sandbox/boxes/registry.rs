@@ -242,24 +242,134 @@ pub enum ToolsBuild {
     Failed(String),
 }
 
-/// A box with its VM up.
+/// A box with its machine up.
 pub struct RunningBox {
     pub identity: BoxIdentity,
     pub dir: PathBuf,
     pub channel: Arc<Channel>,
     pub since: i64,
-    /// The CLI disks this box booted with — the owner's provider's first, then
-    /// every other provider's that was built by boot time — each held against
-    /// the tools sweep for as long as this box lives, its stop included.
-    tools_leases: Vec<ToolsLease>,
-    vm: Vm,
-    proxy: Mutex<Option<EgressProxy>>,
+    machine: Machine,
     relays: relay::Relays,
-    dirty: Dirty,
     /// Whether this boot's `fletch-guest` takes `exec --read-only`, once a
     /// launch has asked (`super::guest_confines`). The guest is the image's,
     /// fixed for the boot.
     read_only_exec: OnceLock<bool>,
+}
+
+/// What a running box's guest runs on, and what only that can do: end it, and
+/// hold what lives exactly as long as it does. Everything else the registry
+/// does with a box goes over its [`Channel`], whatever the machine.
+enum Machine {
+    Local(Box<LocalVm>),
+    #[cfg(test)]
+    Fake(tests::FakeMachine),
+}
+
+/// A libkrun VM on this machine, with what lives and dies with it.
+struct LocalVm {
+    vm: Vm,
+    proxy: Mutex<Option<EgressProxy>>,
+    dirty: Dirty,
+    /// The CLI disks this box booted with — the owner's provider's first, then
+    /// every other provider's that was built by boot time — each held against
+    /// the tools sweep for as long as this box lives, its stop included.
+    tools_leases: Vec<ToolsLease>,
+}
+
+impl Machine {
+    /// End the machine cleanly if it can be ([`stop_ladder`]); with a
+    /// `bound`, the clean attempts together get that long before it is killed.
+    async fn halt(&self, channel: &Channel, bound: Option<Duration>) -> StopOutcome {
+        match self {
+            Self::Local(local) => stop_ladder(&local.vm, channel, bound).await,
+            #[cfg(test)]
+            Self::Fake(fake) => fake.halt(bound),
+        }
+    }
+
+    /// End the machine without asking its guest ([`kill_rungs`]).
+    async fn kill(&self) -> StopOutcome {
+        match self {
+            Self::Local(local) => kill_rungs(&local.vm).await,
+            #[cfg(test)]
+            Self::Fake(fake) => fake.kill(),
+        }
+    }
+
+    /// Kill the machine at once and do not wait for it: for a boot that fails
+    /// after its machine came up.
+    fn abort(&self) {
+        match self {
+            Self::Local(local) => local.vm.kill(),
+            #[cfg(test)]
+            Self::Fake(fake) => fake.abort(),
+        }
+    }
+
+    /// Give up what the machine held while it ran, once `outcome` ended it.
+    /// A local VM's proxy goes, and its disk's dirty marker after a clean
+    /// outcome only.
+    fn release(&self, agent_id: &str, outcome: StopOutcome) {
+        match self {
+            Self::Local(local) => {
+                drop(local.proxy.lock().take());
+                if outcome.clean() {
+                    if let Err(e) = local.dirty.clear() {
+                        tracing::warn!(agent_id, error = %e, "clearing the dirty marker failed");
+                    }
+                } else {
+                    tracing::warn!(agent_id, "box was killed; its disk is marked dirty");
+                }
+            }
+            #[cfg(test)]
+            Self::Fake(fake) => fake.release(outcome),
+        }
+    }
+
+    /// Whether a stop leaves a data disk on this machine, which a seed can be
+    /// made of ([`seed::offer`]).
+    fn leaves_a_disk(&self) -> bool {
+        match self {
+            Self::Local(_) => true,
+            #[cfg(test)]
+            Self::Fake(_) => false,
+        }
+    }
+
+    fn tools_leases(&self) -> &[ToolsLease] {
+        match self {
+            Self::Local(local) => &local.tools_leases,
+            #[cfg(test)]
+            Self::Fake(_) => &[],
+        }
+    }
+
+    /// Serve `policy` and `mode` from the next connection, where the machine's
+    /// egress goes through a proxy of ours.
+    fn update_egress(&self, policy: EgressPolicy, mode: fletch_box::EgressMode) {
+        match self {
+            Self::Local(local) => {
+                if let Some(proxy) = local.proxy.lock().as_ref() {
+                    proxy.update(policy, mode);
+                }
+            }
+            #[cfg(test)]
+            Self::Fake(_) => {}
+        }
+    }
+
+    /// Refuse `host` from now on, the held connections included.
+    fn decline_host(&self, host: &str) {
+        match self {
+            Self::Local(local) => {
+                if let Some(proxy) = local.proxy.lock().as_ref() {
+                    proxy.decline(host);
+                }
+            }
+            #[cfg(test)]
+            Self::Fake(_) => {}
+        }
+    }
 }
 
 impl RunningBox {
@@ -270,7 +380,8 @@ impl RunningBox {
     /// `provider`'s CLI disk, when one was built by boot time and so is
     /// attached: the owner's, or another provider's a tenant runs from.
     pub fn tools_disk_for(&self, provider: &str) -> Option<&Path> {
-        self.tools_leases
+        self.machine
+            .tools_leases()
             .iter()
             .find(|lease| lease.provider == provider)
             .map(|lease| lease.path.as_path())
@@ -278,7 +389,8 @@ impl RunningBox {
 
     /// The providers whose CLI disks are attached, the owner's first.
     pub fn tools_providers(&self) -> Vec<String> {
-        self.tools_leases
+        self.machine
+            .tools_leases()
             .iter()
             .map(|lease| lease.provider.clone())
             .collect()
@@ -757,9 +869,9 @@ impl BoxRegistry {
             entry.running.clone().map(|r| (r, entry.proxy_mode()))
         };
         if let Some((running, mode)) = running {
-            if let Some(proxy) = running.proxy.lock().as_ref() {
-                proxy.update(egress_policy(&running.identity.project_id), mode);
-            }
+            running
+                .machine
+                .update_egress(egress_policy(&running.identity.project_id), mode);
         }
         self.emit_state(agent_id);
         true
@@ -769,9 +881,7 @@ impl BoxRegistry {
     /// connections included, until the box restarts or a list allows it.
     pub fn decline_host(&self, agent_id: &str, host: &str) {
         if let Some(running) = self.running(agent_id) {
-            if let Some(proxy) = running.proxy.lock().as_ref() {
-                proxy.decline(host);
-            }
+            running.machine.decline_host(host);
         }
     }
 
@@ -988,40 +1098,7 @@ impl BoxRegistry {
         let booted = boot(identity, &ready, tools_disks, mode).await;
         drop(slot);
         match booted {
-            Ok(running) => {
-                let running = Arc::new(running);
-                let published = 'publish: {
-                    let mut entries = self.entries.lock();
-                    // Read under the lock `close` sets it under, so this box is
-                    // either running before shutdown snapshots the running
-                    // boxes, or never published at all.
-                    if self.closing.load(Ordering::SeqCst) {
-                        break 'publish None;
-                    }
-                    let entry = entries
-                        .get_mut(&identity.agent_id)
-                        .expect("a discard waits for the lifecycle lock held here");
-                    entry.running = Some(running.clone());
-                    entry.phase = BoxPhase::Running {
-                        since: running.since,
-                    };
-                    entry.idle_gen += 1;
-                    Some(entry.attached.is_empty().then_some(entry.idle_gen))
-                };
-                let Some(arm_idle) = published else {
-                    // The app began quitting during the boot, after
-                    // `shutdown_all` listed the running boxes: end it here.
-                    self.finish_stop(&running, kill_rungs(&running.vm)).await;
-                    return Err(closing_error(agent_id));
-                };
-                self.emit_state(&identity.agent_id);
-                // A box booted by a read (no launch attached) must not run
-                // forever either.
-                if let Some(gen) = arm_idle {
-                    self.arm_idle(&identity.agent_id, gen);
-                }
-                Ok(running)
-            }
+            Ok(running) => self.publish(running).await,
             Err(e) => {
                 tracing::warn!(agent_id = %identity.agent_id, error = %e, "box boot failed");
                 self.set_phase(
@@ -1036,6 +1113,46 @@ impl BoxRegistry {
                 )))
             }
         }
+    }
+
+    /// Make a box that just booted the one its entry runs, under the box's
+    /// lifecycle lock ([`Self::boot_box`] holds it): from here every caller
+    /// gets it, and the idle timer arms when no launch is attached. Refused
+    /// once the app is quitting, and the machine ended instead.
+    async fn publish(&self, running: RunningBox) -> Result<Arc<RunningBox>> {
+        let running = Arc::new(running);
+        let agent_id = running.agent_id();
+        let published = 'publish: {
+            let mut entries = self.entries.lock();
+            // Read under the lock `close` sets it under, so this box is
+            // either running before shutdown snapshots the running
+            // boxes, or never published at all.
+            if self.closing.load(Ordering::SeqCst) {
+                break 'publish None;
+            }
+            let entry = entries
+                .get_mut(agent_id)
+                .expect("a discard waits for the lifecycle lock held here");
+            entry.running = Some(running.clone());
+            entry.phase = BoxPhase::Running {
+                since: running.since,
+            };
+            entry.idle_gen += 1;
+            Some(entry.attached.is_empty().then_some(entry.idle_gen))
+        };
+        let Some(arm_idle) = published else {
+            // The app began quitting during the boot, after
+            // `shutdown_all` listed the running boxes: end it here.
+            self.finish_stop(&running, running.machine.kill()).await;
+            return Err(closing_error(agent_id));
+        };
+        self.emit_state(agent_id);
+        // A box booted by a read (no launch attached) must not run
+        // forever either.
+        if let Some(gen) = arm_idle {
+            self.arm_idle(agent_id, gen);
+        }
+        Ok(running)
     }
 
     /// One of the [`MAX_CONCURRENT_BOOTS`] VM starts, held until the permit
@@ -1721,10 +1838,11 @@ impl BoxRegistry {
                 }
             }
             let outcome = self
-                .finish_stop(&running, stop_ladder(&running.vm, &running.channel, bound))
+                .finish_stop(&running, running.machine.halt(&running.channel, bound))
                 .await;
             // Not on app exit: nothing may start work that outlives the app.
-            if outcome.clean() && reason != StopReason::Shutdown {
+            if outcome.clean() && reason != StopReason::Shutdown && running.machine.leaves_a_disk()
+            {
                 seed::offer(&DownBox {
                     identity: &running.identity,
                     dir: &running.dir,
@@ -1734,7 +1852,7 @@ impl BoxRegistry {
             outcome
         } else {
             tracing::warn!(agent_id, "box lifecycle lock still held; killing its VM");
-            self.finish_stop(&running, kill_rungs(&running.vm)).await
+            self.finish_stop(&running, running.machine.kill()).await
         };
         tracing::info!(agent_id, ?reason, ?outcome, "box stopped");
         // Its disks' leases go with it (unless another holder of the box
@@ -1750,11 +1868,11 @@ impl BoxRegistry {
         Ok(outcome)
     }
 
-    /// End `running`'s VM with `halt` (the ladder or the kill rungs) and clean
-    /// up after it: relays stopped first, so none reconnects to a guest going
-    /// down; then the channel's ssh master ended and the proxy dropped, the
-    /// dirty marker cleared after a clean outcome, and the phase `Stopped`
-    /// unless a newer box was published.
+    /// End `running`'s machine with `halt` ([`Machine::halt`] or
+    /// [`Machine::kill`]) and clean up after it: relays stopped first, so none
+    /// reconnects to a guest going down; then the channel's ssh master ended,
+    /// what the machine held given up ([`Machine::release`]), and the phase
+    /// `Stopped` unless a newer box was published.
     async fn finish_stop(
         &self,
         running: &RunningBox,
@@ -1766,14 +1884,7 @@ impl BoxRegistry {
         // After the halt, whose sysrq rung still runs over the master: ended
         // before, the rung would have started another.
         close_master(agent_id, &running.channel).await;
-        drop(running.proxy.lock().take());
-        if outcome.clean() {
-            if let Err(e) = running.dirty.clear() {
-                tracing::warn!(agent_id, error = %e, "clearing the dirty marker failed");
-            }
-        } else {
-            tracing::warn!(agent_id, "box was killed; its disk is marked dirty");
-        }
+        running.machine.release(agent_id, outcome);
         if let Some(entry) = self.entries.lock().get_mut(agent_id) {
             if entry.running.is_none() {
                 entry.phase = BoxPhase::Stopped;
@@ -2008,9 +2119,7 @@ impl BoxRegistry {
             .filter_map(|e| e.running.clone().map(|r| (r, e.proxy_mode())))
             .collect();
         for (running, mode) in boxes {
-            if let Some(proxy) = running.proxy.lock().as_ref() {
-                proxy.update(policy.clone(), mode);
-            }
+            running.machine.update_egress(policy.clone(), mode);
         }
     }
 
@@ -2210,14 +2319,28 @@ pub fn egress_policy(project_id: &str) -> EgressPolicy {
     }
 }
 
-/// Boot one box (§7.2 step 1). `mode` is what its proxy does with a host off
-/// the list until the first [`BoxRegistry::update_egress`].
+/// Boot one box (§7.2 step 1): its machine ([`provision_local`]), then the
+/// box on it ([`attach`]).
 async fn boot(
     identity: &BoxIdentity,
     ready: &super::Ready,
     tools_leases: Vec<ToolsLease>,
     mode: fletch_box::EgressMode,
 ) -> Result<RunningBox> {
+    let (dir, channel, machine) = provision_local(identity, ready, tools_leases, mode).await?;
+    attach(identity, dir, channel, machine).await
+}
+
+/// Start `identity`'s VM on this machine and wait for its guest: the box
+/// directory, the channel to the guest's sshd, and the VM with what lives as
+/// long as it does. `mode` is what its proxy does with a host off the list
+/// until the first [`BoxRegistry::update_egress`].
+async fn provision_local(
+    identity: &BoxIdentity,
+    ready: &super::Ready,
+    tools_leases: Vec<ToolsLease>,
+    mode: fletch_box::EgressMode,
+) -> Result<(PathBuf, Arc<Channel>, Machine)> {
     let agent_id = identity.agent_id.clone();
     let dir = identity.box_dir()?;
     std::fs::create_dir_all(&dir)?;
@@ -2317,6 +2440,25 @@ async fn boot(
         ready_in = ?started.elapsed(),
         "box ready"
     );
+    let machine = Machine::Local(Box::new(LocalVm {
+        vm,
+        proxy: Mutex::new(Some(proxy)),
+        dirty,
+        tools_leases,
+    }));
+    Ok((dir, channel, machine))
+}
+
+/// Bring a machine whose guest answers on `channel` into service as
+/// `identity`'s box: what the registry does over the channel alone, whatever
+/// the machine is. A failure ends the machine.
+async fn attach(
+    identity: &BoxIdentity,
+    dir: PathBuf,
+    channel: Arc<Channel>,
+    machine: Machine,
+) -> Result<RunningBox> {
+    let agent_id = identity.agent_id.clone();
     // The first command below starts the ssh master every later one rides
     // on, for the box's lifetime. One left by an earlier run of this box (an
     // app that quit without stopping it) would carry them to a guest that is
@@ -2327,7 +2469,7 @@ async fn boot(
     // them, and the agent would find empty directories where the user's
     // folders should be: refuse the box instead, with what to do about it.
     if let Err(e) = verify_shares(&channel, &identity.shares).await {
-        vm.kill();
+        machine.abort();
         close_master(&agent_id, &channel).await;
         return Err(e);
     }
@@ -2369,11 +2511,8 @@ async fn boot(
         dir,
         channel,
         since: chrono::Utc::now().timestamp_millis(),
-        tools_leases,
-        vm,
-        proxy: Mutex::new(Some(proxy)),
+        machine,
         relays,
-        dirty,
         read_only_exec: OnceLock::new(),
     })
 }
@@ -2782,6 +2921,129 @@ mod tests {
             closing: AtomicBool::new(false),
             boots: tokio::sync::Semaphore::new(MAX_CONCURRENT_BOOTS),
         }
+    }
+
+    /// A machine that needs no VM: it records what the registry asks of it,
+    /// in order, and ends the way the test says.
+    pub(super) struct FakeMachine {
+        asked: Arc<Mutex<Vec<String>>>,
+        halts_with: StopOutcome,
+    }
+
+    impl FakeMachine {
+        pub(super) fn halt(&self, bound: Option<Duration>) -> StopOutcome {
+            self.asked.lock().push(format!("halt within {bound:?}"));
+            self.halts_with
+        }
+
+        pub(super) fn kill(&self) -> StopOutcome {
+            self.asked.lock().push("kill".into());
+            StopOutcome::Killed
+        }
+
+        pub(super) fn abort(&self) {
+            self.asked.lock().push("abort".into());
+        }
+
+        pub(super) fn release(&self, outcome: StopOutcome) {
+            self.asked.lock().push(format!("release after {outcome:?}"));
+        }
+    }
+
+    /// `registry` knowing a box `id` whose machine is a [`FakeMachine`], not
+    /// yet published, with what that machine gets asked. One launch is
+    /// attached, so publishing it arms no idle timer.
+    fn fake_box(
+        registry: &BoxRegistry,
+        id: &str,
+        halts_with: StopOutcome,
+    ) -> (RunningBox, Arc<Mutex<Vec<String>>>) {
+        let identity = BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from(format!("/{id}/root")),
+            rpc_dir: PathBuf::from(format!("/{id}/rpc")),
+            home: PathBuf::from(format!("/{id}/home")),
+            shares: Vec::new(),
+        };
+        let mut entry = Entry::new(identity.clone());
+        entry.attached.insert("launch".into());
+        registry.entries.lock().insert(id.into(), entry);
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let dir = PathBuf::from(format!("/{id}/box"));
+        let running = RunningBox {
+            identity,
+            channel: Arc::new(Channel::open(&dir)),
+            dir,
+            since: 1,
+            machine: Machine::Fake(FakeMachine {
+                asked: asked.clone(),
+                halts_with,
+            }),
+            relays: relay::Relays::none(),
+            read_only_exec: OnceLock::new(),
+        };
+        (running, asked)
+    }
+
+    /// A published box is the one its entry runs; stopping it halts the
+    /// machine, and only then gives up what the machine held, with how the
+    /// halt ended.
+    #[tokio::test]
+    async fn a_stop_halts_the_machine_then_releases_what_it_held() {
+        let registry = test_registry();
+        let id = "fake-stop";
+        let (running, asked) = fake_box(&registry, id, StopOutcome::Control);
+
+        let published = registry.publish(running).await.unwrap();
+        assert_eq!(registry.state(id), BoxPhase::Running { since: 1 });
+        assert!(Arc::ptr_eq(&registry.running(id).unwrap(), &published));
+        assert!(asked.lock().is_empty());
+        drop(published);
+
+        let outcome = registry.stop(id, StopReason::Discard).await.unwrap();
+        assert_eq!(outcome, StopOutcome::Control);
+        assert_eq!(*asked.lock(), ["halt within None", "release after Control"]);
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
+        assert!(registry.running(id).is_none());
+        assert_eq!(
+            registry.stop(id, StopReason::User).await.unwrap(),
+            StopOutcome::AlreadyExited
+        );
+    }
+
+    /// A boot that finishes once the app is quitting never becomes the
+    /// running box: its machine is killed and the boot fails.
+    #[tokio::test]
+    async fn a_box_that_boots_as_the_app_quits_is_killed_not_published() {
+        let registry = test_registry();
+        let id = "fake-closing";
+        let (running, asked) = fake_box(&registry, id, StopOutcome::Control);
+        registry.close();
+
+        let err = registry.publish(running).await.map(drop).unwrap_err();
+        assert!(err.to_string().contains("the app is quitting"), "{err}");
+        assert_eq!(*asked.lock(), ["kill", "release after Killed"]);
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
+        assert!(registry.running(id).is_none());
+    }
+
+    /// At app exit a box whose lifecycle lock stays held is not waited for
+    /// past the shutdown grace: its machine is killed without the lock.
+    #[tokio::test(start_paused = true)]
+    async fn a_shutdown_stop_kills_a_box_whose_lifecycle_lock_stays_held() {
+        let registry = test_registry();
+        let id = "fake-held";
+        let (running, asked) = fake_box(&registry, id, StopOutcome::Control);
+        registry.publish(running).await.unwrap();
+        let lifecycle = registry.entries.lock().get(id).unwrap().lifecycle.clone();
+        let _held = lifecycle.lock().await;
+
+        let outcome = registry.stop(id, StopReason::Shutdown).await.unwrap();
+        assert_eq!(outcome, StopOutcome::Killed);
+        assert_eq!(*asked.lock(), ["kill", "release after Killed"]);
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
     }
 
     /// A disk installed the way a build installs one.
