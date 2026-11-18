@@ -5,6 +5,7 @@
 .env-frame {
   --sheet-peek: 26px;
   --sheet-tuck: 6px;
+  --sheet-inset: 8px;
   position: relative;
   width: 100%;
 }
@@ -16,29 +17,25 @@
   --composer-bd: color-mix(in oklab, var(--info) 38%, var(--bd-strong));
   --composer-bg: color-mix(in oklab, var(--info) 4%, var(--bg-2));
   --sheet-bg: color-mix(in oklab, var(--info) 12%, var(--bg-3));
-  --sheet-bd: color-mix(in oklab, var(--info) 30%, var(--bd));
 }
 
-/* The sheet: a little narrower than the composer, set in past its rounded
-   corners, tucked under its top edge and showing `--sheet-peek` above it. A
-   step lighter than the composer in the dark theme and greyer in the light
-   one, so it reads as a separate sheet either way. It comes before the
-   composer and has no layer of its own, so the composer covers its foot and
-   a menu opened from it still takes the menu layer. */
+/* The sheet: a little narrower than the composer (`--sheet-inset` a side),
+   tucked under its top edge far enough that the rounded corners cover its
+   foot, and showing `--sheet-peek` above it. A plain surface with no outline
+   of its own: a step lighter than the composer in the dark theme and greyer
+   in the light one, so it reads as a separate sheet either way. It comes
+   before the composer and has no layer of its own, so the composer covers
+   its foot and a menu opened from it still takes the menu layer. */
 .env-sheet {
   position: absolute;
-  inset: auto var(--r-lg) calc(100% - var(--sheet-tuck)) var(--r-lg);
+  inset: auto var(--sheet-inset) calc(100% - var(--sheet-tuck)) var(--sheet-inset);
   display: flex;
   align-items: flex-start;
   height: calc(var(--sheet-peek) + var(--sheet-tuck));
-  padding: 1px 4px 0;
-  border: 1px solid var(--sheet-bd, var(--bd));
-  border-bottom: 0;
+  padding: 2px 5px 0;
   border-radius: var(--r-md) var(--r-md) 0 0;
   background: var(--sheet-bg, var(--bg-3));
-  transition:
-    background 0.15s,
-    border-color 0.15s;
+  transition: background 0.15s;
 }
 /* The machine keeps to the sheet's left: its right is the working strip's
    (Chat.css). */
