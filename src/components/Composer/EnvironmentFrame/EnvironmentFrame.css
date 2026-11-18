@@ -82,6 +82,19 @@
 .env-tab > svg {
   flex-shrink: 0;
 }
+/* The dot on the machine's glyph is ringed in what is under it: the sheet,
+   or the control's fill over the sheet. */
+.env-tab .device-glyph {
+  --glyph-surface: var(--composer-bg, var(--bg-2));
+}
+/* The dot stands a little past the laptop: kept off the name beside it. */
+.env-tab .device-glyph:has(.env-dot) {
+  margin-right: 2px;
+}
+.env-tab.is-action:hover .device-glyph,
+.env-tab.is-action[aria-expanded="true"] .device-glyph {
+  --glyph-surface: color-mix(in oklab, var(--fg-0) 7%, var(--composer-bg, var(--bg-2)));
+}
 .env-tab.is-action > svg:last-child {
   color: var(--ink-quiet);
 }
@@ -115,15 +128,19 @@
 }
 
 /* A place in the sheet's menu, with why it can't be picked under its name. The
-   row dims its name and glyph, not itself: the reason stays readable. */
+   row dims its name and its laptop, not itself: the reason and the
+   connection dot stay readable. */
 .dd-item.target-item.is-disabled {
   opacity: 1;
+}
+.dd-item.target-item:hover .device-glyph {
+  --glyph-surface: var(--hover);
 }
 .target-item-text .di-l {
   flex: none;
   max-width: 100%;
 }
-.target-item.is-disabled .di-i,
+.target-item.is-disabled .di-i svg,
 .target-item.is-disabled .di-l {
   opacity: 0.45;
 }

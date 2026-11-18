@@ -39,6 +39,9 @@ describe("EnvironmentFrame", () => {
     expect(container.querySelector(".env-tab")?.textContent).toBe("This Mac");
     expect(container.querySelector("button.env-tab")).toBeNull();
     expect(frame(container).dataset.env).toBe("local");
+    // A laptop like any device's, with no connection dot: it is always here.
+    expect(container.querySelector(".env-tab .device-glyph svg")).not.toBeNull();
+    expect(container.querySelector(".env-tab .env-dot")).toBeNull();
   });
 
   it("is a paired host's own while scoped to it, and greyed while it is out of reach", () => {
@@ -54,6 +57,10 @@ describe("EnvironmentFrame", () => {
     expect(container.querySelector(".env-tab")?.textContent).toBe("Studio");
     expect(frame(container).dataset.env).toBe("remote");
     expect(frame(container).dataset.tone).toBe("connected");
+    // The same laptop, with the host's connection on its corner.
+    const dot = container.querySelector(".env-tab .device-glyph .env-dot") as HTMLElement;
+    expect(container.querySelector(".env-tab .device-glyph svg")).not.toBeNull();
+    expect(dot.dataset.state).toBe("connected");
 
     useAppStore.getState().setEnvironmentConnection("studio", "disconnected");
     rerender(scoped);

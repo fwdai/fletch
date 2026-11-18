@@ -1,4 +1,4 @@
-import { EnvironmentDot } from "@/components/HostChip";
+import { DeviceGlyph } from "@/components/HostChip";
 import { Icon } from "@/components/Icon";
 import { connectionLabel } from "@/store/capabilities";
 import type { EnvironmentEntry } from "@/store/environments";
@@ -12,14 +12,14 @@ interface Props {
 }
 
 /** Which machine the composer's agent runs on, on the sheet behind the
- *  composer's top edge: a paired host by its connection dot and name, This
- *  Mac by its glyph. */
+ *  composer's top edge: its glyph and name, a paired host's glyph carrying
+ *  its connection dot. */
 export function EnvironmentTab({ env, menu }: Props) {
   const remote = env.kind === "remote";
   const tip = remote ? `Runs on ${env.name} · ${connectionLabel(env)}` : `Runs on ${env.name}`;
   const body = (
     <>
-      {remote ? <EnvironmentDot env={env} /> : <Icon name="laptop" size={12} />}
+      <DeviceGlyph env={env} size={12} />
       <span className="env-tab-name">{env.name}</span>
     </>
   );

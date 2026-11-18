@@ -3,6 +3,7 @@ import { hostTone } from "@/remote/hostTone";
 import { connectionLabel, useHostEntry } from "@/store/capabilities";
 import { HostDot } from "./EnvironmentDot";
 
+export { DeviceGlyph } from "./DeviceGlyph";
 export { EnvironmentDot, HostDot } from "./EnvironmentDot";
 
 /** Where something runs, when that is a paired host: the host's name beside
