@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { AgentRecord } from "../api";
+import type { AgentRecord, Workspace } from "../api";
 import type { AppState } from "../store";
-import { isAgentBusy, patchAgentRecord } from "./agentLookups";
+import { endedAgentIds, isAgentBusy, patchAgentRecord } from "./agentLookups";
 
 const record = (id: string, status: AgentRecord["status"]): AgentRecord =>
   ({ id, status, provider: "claude", repos: [] }) as unknown as AgentRecord;
@@ -59,5 +59,46 @@ describe("isAgentBusy", () => {
   it("counts this client's own send as busy", () => {
     expect(isAgentBusy(state({ sending: { fuji: true } }), "fuji")).toBe(true);
     expect(isAgentBusy(state(), "fuji")).toBe(false);
+  });
+});
+
+describe("endedAgentIds", () => {
+  const archived = (id: string): AgentRecord =>
+    ({ ...record(id, "idle"), archive: { archived_at: "2026-01-02T00:00:00Z" } }) as AgentRecord;
+  const snapshot = (...agents: AgentRecord[]) => ({ agents, projects: [] }) as unknown as Workspace;
+
+  it("names an agent a snapshot shows archived, whoever archived it", () => {
+    const prev = snapshot(record("fuji", "idle"), record("etna", "idle"));
+    expect(endedAgentIds(prev, snapshot(archived("fuji"), record("etna", "running")))).toEqual([
+      "fuji",
+    ]);
+  });
+
+  it("names an agent that is gone from the snapshot", () => {
+    const prev = snapshot(record("fuji", "idle"), record("etna", "idle"));
+    expect(endedAgentIds(prev, snapshot(record("etna", "idle")))).toEqual(["fuji"]);
+  });
+
+  it("leaves an agent that was archived already, and one restored", () => {
+    // History reads an archived agent's transcript into the same maps: a
+    // snapshot that still shows it archived must not clear it again.
+    const prev = snapshot(archived("fuji"), archived("etna"));
+    expect(endedAgentIds(prev, snapshot(archived("fuji"), record("etna", "spawning")))).toEqual([]);
+  });
+
+  it("ends an agent this window archived on the snapshot that confirms it", () => {
+    // The click only hides the row (a placeholder with no `archived_at`).
+    const hidden = { ...record("fuji", "idle"), archive: { archived_at: "" } } as AgentRecord;
+    expect(endedAgentIds(snapshot(hidden), snapshot(hidden))).toEqual([]);
+    expect(endedAgentIds(snapshot(hidden), snapshot(archived("fuji")))).toEqual(["fuji"]);
+  });
+
+  it("leaves a spawning agent a snapshot read before its spawn doesn't know yet", () => {
+    const prev = snapshot(record("fuji", "spawning"));
+    expect(endedAgentIds(prev, snapshot())).toEqual([]);
+  });
+
+  it("has nothing to say before the first snapshot", () => {
+    expect(endedAgentIds(null, snapshot(archived("fuji")))).toEqual([]);
   });
 });

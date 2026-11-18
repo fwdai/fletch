@@ -169,6 +169,16 @@ pub(super) async fn provision_then_release(
     }
 }
 
+/// The repos of its project that `record` has no checkout of: what a spawn
+/// attaches after the primary, and what a launch finishing that spawn still
+/// has to (`Supervisor::ensure_checkouts`).
+fn unattached_repos(record: &AgentRecord, project_repos: Vec<PathBuf>) -> Vec<PathBuf> {
+    project_repos
+        .into_iter()
+        .filter(|path| !record.repos.iter().any(|r| &r.repo_path == path))
+        .collect()
+}
+
 /// Undo what a failed spawn created: the checkout it provisioned, then the
 /// agent's dir. `checkout` is `None` when the spawn *adopted* its working tree
 /// — that directory belongs to the run, not the agent, so a step whose process
@@ -608,9 +618,8 @@ impl Supervisor {
             _ => git::default_branch(&repo_path).await,
         };
         let subdir = allocate_repo_subdir(&repo_path, &[]);
-        // Cloned for the background fork task — `parent_branch`/`subdir` are
-        // moved into `primary` below.
-        let parent_for_fork = parent_branch.clone();
+        // Cloned for the background fork task — `subdir` is moved into
+        // `primary` below.
         let subdir_for_fork = subdir.clone();
 
         let primary = TrackedRepo {
@@ -722,14 +731,6 @@ impl Supervisor {
         // caller that issued the spawn refetches on its own; the generation
         // guard in `refreshWorkspace` makes the extra fetch harmless.
         emit_workspace_changed(ctx.sink.as_ref());
-        // A spawn that summarizes may spend the summarizer's whole budget on
-        // it, on top of everything else a spawn does.
-        let watchdog = match handoff {
-            Some(SpawnHandoff::Summary(_)) => SPAWN_TIMEOUT + crate::handoff::TIMEOUT,
-            _ => SPAWN_TIMEOUT,
-        };
-        arm_spawn_watchdog(self.clone(), ctx.clone(), agent_id.clone(), watchdog);
-
         let sup = self.clone();
         let ctx_for_task = ctx.clone();
         let id_for_task = agent_id.clone();
@@ -807,7 +808,6 @@ impl Supervisor {
             // commit the run put it on, so there is no fork to make, no base to
             // fetch, and no freshness to degrade — `fork_base` is an input to
             // provisioning only, and provisioning is what adoption replaces.
-            let mut base_freshness = None;
             // The agent dir exists from here on, but no checkout does yet — so
             // that dir is the whole of what this task has to undo.
             if !adopted_for_task && !progress(SpawnStage::Cloning, None) {
@@ -817,33 +817,14 @@ impl Supervisor {
             let provision_result = if adopted_for_task {
                 Ok(())
             } else {
-                // Offline fallback: the base as this machine already knows it,
-                // never `HEAD` — that is the source repo's checked-out branch,
-                // unrelated to the base the user picked (see `git::base_tip`).
-                // With no local copy at all, pass the branch name so an
-                // unreachable `origin` fails the spawn instead of opening
-                // somewhere arbitrary.
-                let fallback = git::base_tip(&repo_path, &parent_for_fork).await;
-                let spec = CheckoutSpec {
-                    source_repo: &repo_path,
-                    base_ref: fallback.as_deref().unwrap_or(&parent_for_fork),
-                    dest: &primary_checkout,
-                };
-                sandbox::provision_checkout(engine_kind, &record_for_task, &spec, &parent_for_fork)
+                sup.provision_repo(&record_for_task, &record_for_task.repos[0])
                     .await
-                    .map(|freshness| base_freshness = Some(freshness))
             };
+            // Nothing is undone: the agent's next launch makes the checkout
+            // this one could not (`ensure_checkouts`).
             if let Err(e) = provision_result {
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                 return;
-            }
-            if base_freshness == Some(provision::BaseFreshness::Stale) {
-                // The workspace couldn't reach `origin`, so it starts at
-                // whatever this machine last had. Flag it so the agent's brief
-                // carries a heads-up and it can tell the user (see
-                // `start_process`) — silently working off a stale base is how
-                // an agent rebuilds something that already landed.
-                sup.stale_base.lock().insert(id_for_task.clone());
             }
 
             // What a failed spawn below is allowed to remove — never an adopted
@@ -980,8 +961,14 @@ impl Supervisor {
             }
             tokio::time::sleep(Duration::from_millis(350)).await;
 
+            // Armed for the process only. Everything above is bounded step by
+            // step and fails with its own reason; a clone that takes its time
+            // (a VM boot queued behind others, a slow network) is not a
+            // process that did not come up.
+            arm_spawn_timeout(sup.clone(), ctx_for_task.clone(), id_for_task.clone());
+            // A process that fails to start leaves its workspace in place: it
+            // is whole, and the agent's next launch starts in it.
             if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task).await {
-                discard_failed_spawn(&id_for_task, owned_checkout.as_deref(), &parent_dir).await;
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
             }
         };
@@ -1086,6 +1073,130 @@ impl Supervisor {
         // until its first push, when the agent names its branch (same as the
         // primary repo).
         Ok(repo)
+    }
+
+    /// Fork `repo`'s checkout for `record` from its parent branch as `origin`
+    /// has it. A checkout that could not be finished is removed, so one that
+    /// is there is one that was made whole.
+    async fn provision_repo(&self, record: &AgentRecord, repo: &TrackedRepo) -> Result<()> {
+        let checkout = repo.checkout_path(&record.id)?;
+        let parent_branch = match &repo.parent_branch {
+            Some(branch) => branch.clone(),
+            None => git::default_branch(&repo.repo_path).await,
+        };
+        // Offline fallback: the base as this machine already knows it, never
+        // `HEAD` — that is the source repo's checked-out branch, unrelated to
+        // the base the user picked (see `git::base_tip`). With no local copy
+        // at all, pass the branch name so an unreachable `origin` fails the
+        // provisioning instead of opening somewhere arbitrary.
+        let fallback = git::base_tip(&repo.repo_path, &parent_branch).await;
+        let spec = CheckoutSpec {
+            source_repo: &repo.repo_path,
+            base_ref: fallback.as_deref().unwrap_or(&parent_branch),
+            dest: &checkout,
+        };
+        let engine = sandbox::stamped_engine(record);
+        match sandbox::provision_checkout(engine, record, &spec, &parent_branch).await {
+            Ok(freshness) => {
+                let primary = record
+                    .repos
+                    .first()
+                    .is_some_and(|p| p.subdir == repo.subdir);
+                if primary && freshness == provision::BaseFreshness::Stale {
+                    // The workspace couldn't reach `origin`, so it starts at
+                    // whatever this machine last had. Flag it so the agent's
+                    // brief carries a heads-up and it can tell the user (see
+                    // `start_process`) — silently working off a stale base is
+                    // how an agent rebuilds something that already landed.
+                    self.stale_base.lock().insert(record.id.clone());
+                }
+                Ok(())
+            }
+            Err(e) => {
+                provision::discard(&checkout).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Make the checkouts `agent_id` should have and does not: a spawn that
+    /// failed before it had cloned (no network, a VM that did not start)
+    /// leaves its agent without one, and the launch that resumes the agent
+    /// finishes the job. Nothing to do for any other agent.
+    ///
+    /// A missing primary checkout is the mark of a spawn that never finished,
+    /// whichever step it failed at, so making it also brings in the project's
+    /// repos the spawn never got to attach — and only then: a repo the project
+    /// gained later is not pushed into an agent that was set up without it.
+    ///
+    /// Not for a session that continues another (a fork, a handoff): what its
+    /// spawn was to carry over is not here to be carried again.
+    async fn ensure_checkouts(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+    ) -> Result<()> {
+        let record = self.workspace.agent(agent_id)?;
+        let mut unfinished_spawn = None;
+        for repo in record.repos.iter().filter(|r| r.adopted_checkout.is_none()) {
+            let checkout = repo.checkout_path(agent_id)?;
+            if checkout.exists() {
+                continue;
+            }
+            if record.lineage.is_some() {
+                return Err(Error::Other(
+                    "this workspace was never set up, and what it was to start from is gone. \
+                     Discard it and start again."
+                        .into(),
+                ));
+            }
+            tracing::info!(agent_id, subdir = %repo.subdir, "making the checkout the agent's spawn did not");
+            tokio::fs::create_dir_all(agent_parent_dir(agent_id)?).await?;
+            self.provision_repo(&record, repo).await?;
+            if record
+                .repos
+                .first()
+                .is_some_and(|p| p.subdir == repo.subdir)
+            {
+                unfinished_spawn = Some(checkout.clone());
+            }
+            let base_sha = git::rev_parse(&checkout, "HEAD").await.ok();
+            if let Some(sha) = &base_sha {
+                let _ = self
+                    .workspace
+                    .set_repo_base_sha(agent_id, &repo.subdir, sha);
+            }
+            provision_codegraph_index(
+                record.project_id.clone(),
+                repo.repo_path.clone(),
+                checkout,
+                base_sha,
+                &record.provider,
+                &record.mcp_servers,
+            )
+            .await;
+        }
+        let Some(primary_checkout) = unfinished_spawn else {
+            return Ok(());
+        };
+        for source in unattached_repos(
+            &record,
+            self.workspace.project_repo_paths(&record.project_id),
+        ) {
+            if let Err(e) = self
+                .attach_repo_checkout(ctx, agent_id, source.clone())
+                .await
+            {
+                // The mark goes back, so the next launch attaches what this
+                // one could not rather than starting without it.
+                provision::discard(&primary_checkout).await;
+                return Err(Error::Other(format!(
+                    "checkout of {} failed: {e}",
+                    source.display()
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Launch `agent_id`'s current session: fresh or resumed, as the session
@@ -1376,6 +1487,17 @@ impl Supervisor {
         pause: Option<Duration>,
     ) -> Result<()> {
         self.set_status(ctx, agent_id, AgentStatus::Spawning, None);
+        // Ahead of the watchdog, which times the process: a move left
+        // unsettled is finished, then a checkout the agent's spawn never made
+        // is made, neither on the process's clock.
+        let ready = async {
+            self.settle_before_acting(agent_id).await?;
+            self.ensure_checkouts(ctx, agent_id).await
+        };
+        if let Err(e) = ready.await {
+            fail_spawn(self, ctx, agent_id, e.to_string());
+            return Err(e);
+        }
         arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
         if let Some(pause) = pause {
             tokio::time::sleep(pause).await;
@@ -2460,17 +2582,10 @@ fn spawn_turn_watchdog(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: Stri
     });
 }
 
+/// Fail the launch of `agent_id` if its process is still not up after
+/// [`SPAWN_TIMEOUT`]. Armed where the process is started, never over the
+/// provisioning before it.
 pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: String) {
-    arm_spawn_watchdog(sup, ctx, agent_id, SPAWN_TIMEOUT);
-}
-
-/// Fail the spawn of `agent_id` if it is still spawning after `timeout`.
-fn arm_spawn_watchdog(
-    sup: Arc<Supervisor>,
-    ctx: Arc<EngineCtx>,
-    agent_id: String,
-    timeout: Duration,
-) {
     crate::host::spawn(async move {
         // An agent may first have to wait for the engine's setup (a box's
         // image download and tools disk build), far longer than any process
@@ -2480,7 +2595,7 @@ fn arm_spawn_watchdog(
             .agent(&agent_id)
             .ok()
             .map_or(Duration::ZERO, |record| sandbox::setup_allowance(&record));
-        let timeout = timeout + setup;
+        let timeout = SPAWN_TIMEOUT + setup;
         tokio::time::sleep(timeout).await;
         // Atomically claim the timeout outcome. Only an agent still in the
         // live Spawning state may be timed out; if the swap fails the spawn
@@ -2954,5 +3069,59 @@ mod tests {
         assert!(err.contains("moving"), "{err}");
         assert_eq!(sup.status_of("codex"), Some(AgentStatus::Error));
         assert_eq!(sup.workspace.agent("codex").unwrap().last_error, Some(err));
+    }
+
+    /// A launch makes only the checkouts that are the agent's own to make: a
+    /// tree it adopted belongs to whoever made it, there or not.
+    #[tokio::test]
+    async fn a_launch_leaves_an_adopted_checkout_to_its_owner() {
+        let td = tempfile::tempdir().unwrap();
+        let sup = Arc::new(fixture(td.path()));
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        // A second repo of the same project (projects go by the repo dir's
+        // name), which a launch that made the primary would attach: nothing
+        // was made here, so nothing is attached either.
+        let other = td.path().join("second").join("repo");
+        std::fs::create_dir_all(other.join(".git")).unwrap();
+        sup.workspace.add_workspace_repo(other.clone()).unwrap();
+        let record = sup.workspace.agent("codex").unwrap();
+        assert!(sup
+            .workspace
+            .project_repo_paths(&record.project_id)
+            .contains(&other));
+
+        sup.ensure_checkouts(&ctx, "codex").await.unwrap();
+
+        assert!(!td.path().join("ws").exists());
+        assert_eq!(sup.workspace.agent("codex").unwrap().repos.len(), 1);
+    }
+
+    /// What a launch finishing an unfinished spawn still has to attach: the
+    /// project's repos the record has no checkout of, in the project's order
+    /// — the primary and anything attached before the failure left out.
+    #[test]
+    fn a_finished_spawn_has_every_repo_of_its_project() {
+        let td = tempfile::tempdir().unwrap();
+        let sup = fixture(td.path());
+        let record = sup.workspace.agent("codex").unwrap();
+        let primary = record.repos[0].repo_path.clone();
+        let (docs, api) = (td.path().join("docs"), td.path().join("api"));
+
+        assert_eq!(
+            unattached_repos(&record, vec![primary.clone(), docs.clone(), api.clone()]),
+            vec![docs.clone(), api.clone()]
+        );
+
+        let mut attached = record.clone();
+        attached.repos.push(TrackedRepo {
+            repo_path: docs.clone(),
+            subdir: "docs".into(),
+            ..record.repos[0].clone()
+        });
+        assert_eq!(
+            unattached_repos(&attached, vec![primary.clone(), docs, api.clone()]),
+            vec![api]
+        );
+        assert!(unattached_repos(&record, vec![primary]).is_empty());
     }
 }
