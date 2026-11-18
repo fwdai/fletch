@@ -104,6 +104,16 @@ jobs:
           VERSION: ${{ steps.image.outputs.version }}
         run: packaging/box-image/publish.sh "$OUT" "$VERSION"
 
+      - name: Let the cloud image's tests make user namespaces
+        # A confined launch (`fletch-guest exec --read-only`) maps its ids in
+        # a user namespace of the guest user's. The test's container runs on
+        # the runner's kernel, whose AppArmor policy gives such a namespace no
+        # capabilities.
+        if: matrix.arch == 'x86_64'
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          [ ! -e "$knob" ] || sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Build and test the cloud image
         # x86-64 only, the machines a cloud box runs on. From the images just
         # built, so a cloud box carries what a box here boots.

@@ -172,6 +172,14 @@ check T-exec "fletch-guest exec runs a command with the env file in the writable
 check T-exec-confined "a confined launch (/data covered) runs the provider CLIs and cannot write the home" -- \
   g "set -e; out=\$(/opt/fletch/bin/fletch-guest exec --env-file /data/run/t.env --read-only $H -- sh -c 'ls -A /data; /opt/fletch/tools/t/bin/t; touch $H/x 2>/dev/null || echo home read-only')
 test \"\$out\" = \"\$(printf 'tool ok\nhome read-only')\"; echo \$out"
+# A confined launch makes a user namespace as the guest user and maps its ids
+# there. The container runs on this machine's kernel, and Ubuntu's AppArmor
+# policy (the default from 24.04) gives such a namespace no capabilities, so
+# the launch is refused whatever the image holds.
+if tail -1 "$LOG" | grep -q '^== FAIL T-exec-confined' &&
+  [ "$(docker exec "$C" cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
+  say "note: this machine's kernel restricts unprivileged user namespaces; run 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0' and test again"
+fi
 check T-git "git init, commit and log in the writable root" -- \
   g "set -e; cd $WS && git init -q r && cd r && git -c user.email=a@b -c user.name=a commit -q --allow-empty -m x && git log --oneline | head -1"
 check T-node "node and npm run" -- g 'node -e "console.log(\"node \" + process.version)" && npm -v'

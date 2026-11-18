@@ -119,6 +119,13 @@ with no proxy; `sudo`; dockerd's config and no dockerd; the image's names;
 then a stop and a start, after which the host key and `/data` are the same
 and the binds are back.
 
+The confined launch makes a user namespace as the guest user, on the kernel of
+the machine the test runs on. Where that kernel gives an unprivileged user
+namespace no capabilities (Ubuntu's AppArmor policy, the default from 24.04),
+the check fails and the test says so: `sudo sysctl -w
+kernel.apparmor_restrict_unprivileged_userns=0`, as the workflow does on its
+runner, then test again.
+
 ## Tags and publishing
 
 `ghcr.io/fwdai/fletch-cloud:<box image VERSION>-<REVISION>`, x86_64 only (the
