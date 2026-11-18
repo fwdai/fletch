@@ -98,6 +98,15 @@ pub struct Supervisor {
     /// clock; `persist_and_emit_status` closes it onto the turn it followed.
     /// Lost across a host restart, which costs that one run's time at most.
     pub(super) provider_runs: Mutex<HashMap<String, i64>>,
+    /// When the turn each agent owes its user began, epoch millis: the turn as
+    /// the user knows it, from the instant a message is accepted for an agent
+    /// at rest until the agent is back at rest, across whatever stands between
+    /// the two (a resting session's relaunch, the checkpoint, the hand-off).
+    /// The one fact a client reads "working" and its clock from: every status
+    /// carries it (`agent:status`, the records of a snapshot), and it is the
+    /// start the turn's row is stamped with, so the time a turn is recorded to
+    /// have run is the time its user waited. See [`Supervisor::open_turn`].
+    pub(super) open_turns: Mutex<HashMap<String, i64>>,
     /// In-memory source of truth for live runtime status
     /// (Spawning/Running/Idle). The DB only persists durable
     /// dispositions, so a resting record loaded from it derives `Idle`;
@@ -197,6 +206,7 @@ impl Supervisor {
             activities: Mutex::new(HashMap::new()),
             heuristic_idle: Mutex::new(HashSet::new()),
             provider_runs: Mutex::new(HashMap::new()),
+            open_turns: Mutex::new(HashMap::new()),
             statuses: Mutex::new(HashMap::new()),
             native_inputs: Mutex::new(HashMap::new()),
             shells: Mutex::new(HashMap::new()),
@@ -350,7 +360,72 @@ impl Supervisor {
             to = ?status,
             "agent status transition"
         );
+        self.follow_turn(ctx, agent_id, prev.as_ref(), &status);
         self.persist_and_emit_status(ctx, agent_id, status, last_error);
+    }
+
+    /// Open the turn `agent_id` owes its user, unless one is open already, and
+    /// answer when it began. Called where a message is accepted for an agent
+    /// at rest and where a held one starts on its way (`send_user_message`,
+    /// `flush_queued`), so the turn covers the wait for the process as well as
+    /// its run; a turn nothing announced (the provider's own, a native one)
+    /// opens when its status goes Running (`follow_turn`). A turn opened here
+    /// is announced as `turn:started`.
+    pub(super) fn open_turn(&self, ctx: &Arc<EngineCtx>, agent_id: &str) -> i64 {
+        let now = chrono::Utc::now().timestamp_millis();
+        let (since, opened) = match self.open_turns.lock().entry(agent_id.to_string()) {
+            std::collections::hash_map::Entry::Occupied(turn) => (*turn.get(), false),
+            std::collections::hash_map::Entry::Vacant(turn) => (*turn.insert(now), true),
+        };
+        if opened {
+            events::emit_turn_started(ctx.sink.as_ref(), agent_id, since);
+        }
+        since
+    }
+
+    /// When the turn `agent_id` owes its user began, while one is open.
+    pub(super) fn turn_since(&self, agent_id: &str) -> Option<i64> {
+        self.open_turns.lock().get(agent_id).copied()
+    }
+
+    /// Keep the open turn in step with a status change, ahead of the status
+    /// being announced, which carries it. Running has a turn open. Coming to
+    /// rest from Running ends it, as does going down (Stopped, Error). The
+    /// rest of a process just launched (Idle from Spawning) ends nothing: a
+    /// message held for it is still owed its turn, and a turn that has none
+    /// coming is closed by whoever finds that out (`settle_turn`).
+    fn follow_turn(
+        &self,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+        prev: Option<&AgentStatus>,
+        next: &AgentStatus,
+    ) {
+        match next {
+            AgentStatus::Running => {
+                self.open_turn(ctx, agent_id);
+            }
+            AgentStatus::Idle if matches!(prev, Some(AgentStatus::Running)) => {
+                self.open_turns.lock().remove(agent_id);
+            }
+            AgentStatus::Stopped | AgentStatus::Error => {
+                self.open_turns.lock().remove(agent_id);
+            }
+            AgentStatus::Idle | AgentStatus::Spawning => {}
+        }
+    }
+
+    /// Close a turn that was opened for a message no delivery is coming for,
+    /// and say so: the agent is at rest (a busy one's turn ends with its
+    /// status), so its status is announced again without the turn. Called by
+    /// every entry point that tried to deliver, once it knows how that went,
+    /// and by a stop. A no-op when there is nothing to close.
+    pub(super) fn settle_turn(&self, ctx: &Arc<EngineCtx>, agent_id: &str) {
+        if self.is_busy(agent_id) || self.open_turns.lock().remove(agent_id).is_none() {
+            return;
+        }
+        let status = self.status_of(agent_id).unwrap_or(AgentStatus::Idle);
+        emit_status(ctx.sink.as_ref(), agent_id, status, None, None);
     }
 
     /// Undo the Running a turn start raised, for a turn whose hand-off to the
@@ -389,7 +464,15 @@ impl Supervisor {
             agent_id: agent_id.to_string(),
             status: AgentStatus::Idle,
         });
-        emit_status(ctx.sink.as_ref(), agent_id, AgentStatus::Idle, None);
+        // Still owed: the caller holds the message for another try, and
+        // closes the turn itself if none is coming (`settle_turn`).
+        emit_status(
+            ctx.sink.as_ref(),
+            agent_id,
+            AgentStatus::Idle,
+            None,
+            self.turn_since(agent_id),
+        );
     }
 
     /// Atomically flip the live status out of `Spawning` to `to`, returning
@@ -412,6 +495,7 @@ impl Supervisor {
             }
             statuses.insert(agent_id.to_string(), to.clone());
         }
+        self.follow_turn(ctx, agent_id, Some(&AgentStatus::Spawning), &to);
         self.persist_and_emit_status(ctx, agent_id, to, last_error);
         true
     }
@@ -534,7 +618,13 @@ impl Supervisor {
             agent_id: agent_id.to_string(),
             status: status.clone(),
         });
-        emit_status(ctx.sink.as_ref(), agent_id, status, last_error);
+        emit_status(
+            ctx.sink.as_ref(),
+            agent_id,
+            status,
+            last_error,
+            self.turn_since(agent_id),
+        );
     }
 
     /// Report a completed turn to product telemetry: usage-weighted provider
@@ -606,13 +696,19 @@ impl Supervisor {
             .unwrap_or_else(|| record.status.clone())
     }
 
+    /// Lay what only the running engine knows of an agent over its record:
+    /// the live Spawning/Running/Idle status in place of the DB-derived one,
+    /// which rests at `Idle`, and the turn it has open. Every record handed to
+    /// a client goes through here, so a snapshot says what the events do.
+    fn overlay_runtime(&self, record: &mut AgentRecord) {
+        record.status = self.effective_status(&record.id, record);
+        record.turn_since = self.turn_since(&record.id);
+    }
+
     pub fn current_workspace(&self) -> Option<Workspace> {
         let mut ws = self.workspace.current()?;
-        // The DB-derived `status` rests at `Idle`; overlay the supervisor's
-        // in-memory runtime status so the snapshot reflects the real
-        // Spawning/Running/Idle state for any agent that's currently live.
         for record in &mut ws.agents {
-            record.status = self.effective_status(&record.id, record);
+            self.overlay_runtime(record);
         }
         Some(ws)
     }
@@ -623,7 +719,7 @@ impl Supervisor {
     pub fn run_agents(&self, run_id: &str) -> Vec<AgentRecord> {
         let mut agents = self.workspace.agents_for_run(run_id);
         for record in &mut agents {
-            record.status = self.effective_status(&record.id, record);
+            self.overlay_runtime(record);
         }
         agents
     }
@@ -635,7 +731,7 @@ impl Supervisor {
     pub fn project_chats(&self, project_id: &str, purpose: &str) -> Vec<AgentRecord> {
         let mut chats = self.workspace.chats_for_project(project_id, purpose);
         for record in &mut chats {
-            record.status = self.effective_status(&record.id, record);
+            self.overlay_runtime(record);
         }
         chats
     }
@@ -646,7 +742,7 @@ impl Supervisor {
     /// resolve the chat it names.
     pub fn agent_record(&self, agent_id: &str) -> Option<AgentRecord> {
         let mut record = self.workspace.agent(agent_id).ok()?;
-        record.status = self.effective_status(&record.id, &record);
+        self.overlay_runtime(&mut record);
         Some(record)
     }
 

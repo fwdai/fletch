@@ -3,9 +3,11 @@ import type { ProjectRef } from "@/api";
 import { useEngine } from "@/api/engine";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
+import { EnvironmentFrame } from "@/components/Composer/EnvironmentFrame";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
 import { RunTargetPicker } from "@/components/Composer/RunTargetPicker";
 import { homeName, pushedNote } from "@/components/Composer/RunTargetPicker/options";
+import { WorkspaceTypePicker } from "@/components/Composer/WorkspaceTypePicker";
 import { declaredWorkspaceType } from "@/components/Composer/workspaceType";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
@@ -13,7 +15,7 @@ import { ProjectIcon } from "@/components/ProjectIcon";
 import { IconButton } from "@/components/ui/IconButton";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
-import { useAppStore, useHostId } from "@/store";
+import { useAppStore } from "@/store";
 import { useGate, useHostEntry } from "@/store/capabilities";
 import { workspaceTypeOptionsFor } from "@/store/workspaceTypes";
 import { WorkflowComposer, WorkflowHeading } from "@/workflows/run/WorkflowComposer";
@@ -31,7 +33,6 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const removeDraft = useAppStore((s) => s.removeDraft);
   const updateDraft = useAppStore((s) => s.updateDraft);
   const moveDraft = useAppStore((s) => s.moveDraft);
-  const hostId = useHostId();
   const environments = useAppStore((s) => s.environments);
   const setNewDraftSelection = useAppStore((s) => s.setNewDraftSelection);
   const setLastRepoPath = useAppStore((s) => s.setLastRepoPath);
@@ -103,6 +104,10 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
     repoCount,
   );
 
+  // A draft opened new is brought in; one moved here from another host is the
+  // page the user was already on, and is drawn where it was.
+  const enter = draft.arrived ? "" : " fade-in";
+
   return (
     <div className="pane center">
       <div className="center-h flex-center">
@@ -129,8 +134,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
         </IconButton>
       </div>
 
-      <div className="empty-wrap flex-center fade-in">
-        <div className="empty-body fade-in">
+      <div className={`empty-wrap flex-center${enter}`}>
+        <div className={`empty-body${enter}`}>
           <div className="empty-id flex-center">
             <div className="empty-mark flex-center text-xs">
               <span className="d" />
@@ -175,68 +180,73 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
           )}
 
           <div className="empty-composer">
-            {workflowMode ? (
-              <WorkflowComposer
-                repoPath={draft.repoPath}
-                baseBranch={draft.base}
-                name={draft.name}
-                projectId={projectId}
-                onLaunched={() => removeDraft(draft.id)}
-              />
-            ) : (
-              <Composer
-                // Remount when the target repo changes so the @/# mention
-                // sources drop the previous repo's cached files/PRs (they only
-                // refetch on menu-open, not on a repoPath change under a live
-                // composer) — otherwise a wrong-repo file/PR could be inserted.
-                key={draft.repoPath}
-                autoFocus
-                minRows={2}
-                draftKey={draft.id}
-                defaultProvider={draft.provider}
-                projectDir={draft.repoPath}
-                onLocalCommand={(action) => runLocalCommand(action)}
-                // On its way to another host: it is sent from there.
-                disabled={!!draft.preparing}
-                mentionSource={() => api.listRepoTree(draft.repoPath)}
-                listDir={api.listDir}
-                listPrs={() => api.listRepoPrs(draft.repoPath)}
-                listIssues={() => api.listTrackerIssues(draft.repoPath, linearTeamId)}
-                listIssueComments={(issue) =>
-                  api.issueComments(draft.repoPath, issue.source, issue.key)
-                }
-                onPickIssue={(issue) => updateDraft(draft.id, { issueRef: issue.key })}
-                listRoadmapItems={projectId ? () => api.roadmapListItems(projectId) : undefined}
-                // The item rides the draft: it is handed to the agent the
-                // first send spawns (`spawnFromDraft`).
-                onPickRoadmapItem={(item) => updateDraft(draft.id, { roadmapItemId: item.id })}
-                defaultModel={draft.model}
-                defaultCustomAgentId={draft.customAgentId}
-                onChangeSelection={(provider, model, customAgentId) => {
-                  // An account belongs to its provider: another provider
-                  // starts over from its own active account in Settings.
-                  const account = provider === draft.provider ? draft.account : undefined;
-                  updateDraft(draft.id, { provider, model, customAgentId, account });
-                  setNewDraftSelection(provider, model, customAgentId);
-                }}
-                // A per-draft pick, never remembered for the next draft.
-                account={{
-                  current: draft.account,
-                  onPick: (account) => updateDraft(draft.id, { account }),
-                }}
-                placeholder="Describe the task for the agent. ↵ to spawn."
-                folders
-                onSend={({
-                  text,
-                  provider,
-                  model,
-                  attachments,
-                  thinking,
-                  customAgentId,
-                  folders,
-                }) =>
-                  spawnFromDraft(
-                    draft.id,
+            <EnvironmentFrame
+              // Which machine the workspace runs on, for a quick agent only: a
+              // run is launched where its draft is. A draft runs on the host
+              // it is on, so another host picked is where the draft moves.
+              // Out of reach while it is moved, as the row below is.
+              tab={
+                workflowMode || draft.preparing ? undefined : (
+                  <RunTargetPicker
+                    projectId={projectId}
+                    pinned={!!draft.roadmapItemId}
+                    onPick={(target) => void moveDraft(draft.id, target)}
+                  />
+                )
+              }
+            >
+              {workflowMode ? (
+                <WorkflowComposer
+                  repoPath={draft.repoPath}
+                  baseBranch={draft.base}
+                  name={draft.name}
+                  projectId={projectId}
+                  onLaunched={() => removeDraft(draft.id)}
+                />
+              ) : (
+                <Composer
+                  // Remount when the target repo changes so the @/# mention
+                  // sources drop the previous repo's cached files/PRs (they only
+                  // refetch on menu-open, not on a repoPath change under a live
+                  // composer) — otherwise a wrong-repo file/PR could be inserted.
+                  key={draft.repoPath}
+                  autoFocus
+                  minRows={2}
+                  draftKey={draft.id}
+                  defaultProvider={draft.provider}
+                  projectDir={draft.repoPath}
+                  onLocalCommand={(action) => runLocalCommand(action)}
+                  // On its way to another host: it is sent from there.
+                  disabled={!!draft.preparing}
+                  mentionSource={() => api.listRepoTree(draft.repoPath)}
+                  listDir={api.listDir}
+                  listPrs={() => api.listRepoPrs(draft.repoPath)}
+                  listIssues={() => api.listTrackerIssues(draft.repoPath, linearTeamId)}
+                  listIssueComments={(issue) =>
+                    api.issueComments(draft.repoPath, issue.source, issue.key)
+                  }
+                  onPickIssue={(issue) => updateDraft(draft.id, { issueRef: issue.key })}
+                  listRoadmapItems={projectId ? () => api.roadmapListItems(projectId) : undefined}
+                  // The item rides the draft: it is handed to the agent the
+                  // first send spawns (`spawnFromDraft`).
+                  onPickRoadmapItem={(item) => updateDraft(draft.id, { roadmapItemId: item.id })}
+                  defaultModel={draft.model}
+                  defaultCustomAgentId={draft.customAgentId}
+                  onChangeSelection={(provider, model, customAgentId) => {
+                    // An account belongs to its provider: another provider
+                    // starts over from its own active account in Settings.
+                    const account = provider === draft.provider ? draft.account : undefined;
+                    updateDraft(draft.id, { provider, model, customAgentId, account });
+                    setNewDraftSelection(provider, model, customAgentId);
+                  }}
+                  // A per-draft pick, never remembered for the next draft.
+                  account={{
+                    current: draft.account,
+                    onPick: (account) => updateDraft(draft.id, { account }),
+                  }}
+                  placeholder="Describe the task for the agent. ↵ to spawn."
+                  folders
+                  onSend={({
                     text,
                     provider,
                     model,
@@ -244,10 +254,21 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                     thinking,
                     customAgentId,
                     folders,
-                  )
-                }
-              />
-            )}
+                  }) =>
+                    spawnFromDraft(
+                      draft.id,
+                      text,
+                      provider,
+                      model,
+                      attachments,
+                      thinking,
+                      customAgentId,
+                      folders,
+                    )
+                  }
+                />
+              )}
+            </EnvironmentFrame>
             {draft.preparing && (
               <div className="empty-meta flex-center" role="status">
                 <span className="ag-loader" aria-hidden />
@@ -301,22 +322,16 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   rememberDraftBase(draft.repoPath, branch);
                 }}
               />
-              {/* Where the workspace runs, for a quick agent only: a box runs
-                  no workflow steps, and a run is launched where its draft
-                  is. A draft runs on the host it is on, so another host
-                  picked here is where the draft moves; This Mac's workspace
-                  type is a per-draft pick kept as made. */}
-              {!workflowMode && (
-                <RunTargetPicker
+              {/* Which sandbox the workspace runs in, for a quick agent on
+                  This Mac: a box runs no workflow steps, and a paired host's
+                  spawn carries no workspace type yet. A per-draft pick, kept
+                  as made. */}
+              {!workflowMode && workspaceTypeShown && (
+                <WorkspaceTypePicker
                   repoPath={draft.repoPath}
                   provider={draft.provider}
-                  projectId={projectId}
-                  workspaceType={draft.workspaceType}
-                  pinned={!!draft.roadmapItemId}
-                  onPick={(target, workspaceType) => {
-                    if (target !== hostId) void moveDraft(draft.id, target);
-                    else if (workspaceType) updateDraft(draft.id, { workspaceType });
-                  }}
+                  current={draft.workspaceType}
+                  onPick={(workspaceType) => updateDraft(draft.id, { workspaceType })}
                 />
               )}
             </div>

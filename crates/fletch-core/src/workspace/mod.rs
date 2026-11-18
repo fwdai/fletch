@@ -390,6 +390,13 @@ pub struct AgentRecord {
     /// only a record (and claude's session JSONL on disk).
     #[serde(default)]
     pub archive: Option<ArchiveMetadata>,
+    /// When the turn the agent owes its user began, epoch millis; `None`
+    /// while it owes none. Runtime state like `status`: never stored, laid
+    /// over the record by the supervisor (`Supervisor::overlay_runtime`), and
+    /// always serialized so a client can tell "no turn" from a host too old
+    /// to say.
+    #[serde(default)]
+    pub turn_since: Option<i64>,
 }
 
 impl AgentRecord {

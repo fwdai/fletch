@@ -84,15 +84,28 @@
   line-height: var(--lh-normal);
 }
 .empty-composer {
+  /* Holds the note hung under it (`.empty-meta-note`). */
+  position: relative;
   width: 100%;
   max-width: 760px;
 }
+/* Room for the environment sheet between the sub-line and the composer. */
+.empty-composer .env-frame:has(.env-sheet) {
+  margin-top: 12px;
+}
 
 .empty-meta {
+  /* A pill's height, so the row is as tall saying a draft is being moved as
+     it is holding the pickers: the page is centred and must not shift when
+     one stands in for the other. */
+  min-height: 26px;
   margin-top: 16px;
   gap: 8px;
   justify-content: center;
   flex-wrap: wrap;
+}
+.empty-meta .empty-sub {
+  margin: 0;
 }
 .empty-meta .pill {
   display: inline-flex;
@@ -132,8 +145,14 @@
   color: var(--fg-0);
 }
 /* The row's one note (on a host that runs the project from a copy): the
-   page's note under the pills it is about. */
+   page's note under the pills it is about. Hung below the centred column,
+   not part of it, so the page stays put when moving the draft to another
+   device brings the note or takes it away. */
 .empty-meta-note {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
   margin: 12px auto 0;
 }
 /* The sandbox pill's menu (where the workspace runs): rows with a trailing

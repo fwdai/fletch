@@ -14,6 +14,8 @@
   z-index: 1;
   display: flex;
   align-items: center;
+  /* On the right: the left of this edge is the environment sheet's. */
+  justify-content: flex-end;
   gap: 8px;
   min-height: 26px;
   padding: 8px 6px 12px;
@@ -33,11 +35,40 @@
     transform 130ms cubic-bezier(0.2, 0, 0, 1),
     opacity 100ms linear;
 }
+/* With the environment sheet behind the composer the strip is the sheet's
+   right-hand line: laid over its visible part (which is set in 8px from the
+   composer's sides, `--sheet-inset`), with no surface of its own, and
+   kept clear of the machine's name on its left, which a long label is cut
+   short before. */
+.composer-anchor:has(.env-sheet) .chat-status {
+  min-height: 0;
+  height: 26px;
+  margin-bottom: 0;
+  padding: 0 18px 0 min(264px, calc(50% + 20px));
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
 .chat-status.is-open {
   transform: translateY(0);
   opacity: 1;
 }
+/* The words of the line, set on one baseline: they are in two faces and two
+   sizes (the count is mono), which centring each would stand on two. The
+   clock before them is centred on the line as a whole. */
+.chat-status-line {
+  display: flex;
+  align-items: baseline;
+  gap: inherit;
+  min-width: 0;
+}
+/* The activity is one word and is never the part cut short: a notice beside
+   it gives way first. */
 .chat-status-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.chat-status-note {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -62,15 +93,17 @@
 .chat-status-action:hover {
   color: var(--fg-0);
 }
-/* Live timer riding the working strip — the one moving numeric value. */
 .chat-status-sep {
   flex-shrink: 0;
   opacity: 0.4;
 }
+/* The clock leads the line in the label's ink, as it leads a finished turn's
+   "Ran …" in the feed. */
 .chat-status .turn-clock-i {
   flex-shrink: 0;
-  color: var(--accent);
 }
+/* Live timer riding the working strip: the one moving value, and the one
+   thing on the line in accent. */
 .chat-status .turn-clock {
   flex-shrink: 0;
   font-family: var(--font-mono);

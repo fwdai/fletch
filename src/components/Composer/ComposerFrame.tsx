@@ -16,6 +16,9 @@ interface Props {
   minRows?: number;
   /** Optional content pinned above the textarea (e.g. a workflow flow strip). */
   top?: ReactNode;
+  /** Optional line between the textarea and the footer: what the composer has
+   *  to say about the draft (a send it just refused). */
+  notice?: ReactNode;
   /** The footer row — pickers/chips + the primary control, supplied by the caller. */
   foot: ReactNode;
   /** Dictation's view of the field: the interim transcript to preview over the
@@ -35,6 +38,7 @@ export function ComposerFrame({
   disabled,
   minRows = 1,
   top,
+  notice,
   foot,
   dictation,
 }: Props) {
@@ -109,6 +113,7 @@ export function ComposerFrame({
           </div>
         )}
       </div>
+      {notice}
       <div className="composer-foot flex-center">{foot}</div>
     </div>
   );

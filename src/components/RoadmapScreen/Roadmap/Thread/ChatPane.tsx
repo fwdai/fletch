@@ -7,7 +7,6 @@ import { TranscriptList } from "@/components/Workspace/messages/TranscriptList";
 import { isTurnPending } from "@/components/Workspace/messages/turnPending";
 import { useTranscript } from "@/components/Workspace/messages/useTranscript";
 import { useLiveBusy } from "@/components/Workspace/useLiveBusy";
-import { providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { Composer } from "./Composer";
 
@@ -49,9 +48,6 @@ export function ChatPane({
   const send = useAppStore((s) => s.sendUserMessage);
   const turnStartedAt = useAppStore((s) => s.turnStartedAt[agent.id]);
   const busyLabel = useAppStore((s) => s.busyLabel[agent.id]);
-  const customAgent = useAppStore((s) =>
-    agent.custom_agent_id ? s.customAgents.find((a) => a.id === agent.custom_agent_id) : undefined,
-  );
 
   const transcript = useTranscript(agent);
   const { items, turns, awaitingInput, openTurnStartedAt, transcriptLoading } = transcript;
@@ -104,7 +100,7 @@ export function ChatPane({
         status={
           <ChatWorkingStatus
             visible={liveBusy}
-            label={busyLabel ?? `${customAgent?.name ?? providerLabel(agent.provider)} is working`}
+            label={busyLabel ?? "Working"}
             startedAt={liveStartedAt}
           />
         }

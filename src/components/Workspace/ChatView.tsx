@@ -75,10 +75,11 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   // anchor is redundant.
   const turnPending = liveBusy && isTurnPending(items) && turns.length <= 1;
 
-  // Live-timer anchor: the backend's turn-start timestamp (from `turn:started`,
-  // the same value the footer's duration uses, so they never drift). On reload
-  // mid-turn no event fired this session, so fall back to the open turn's
-  // persisted start. Absent during spawn → strip shows, timer waits.
+  // Live-timer anchor: when the host's open turn began (`turnStartedAt`, the
+  // same value the footer's duration uses, so they never drift). A host from
+  // before open turns has none to say until the agent runs, and none on a
+  // reload mid-turn: there the open turn's persisted start stands in, and
+  // until either the strip shows without a count.
   const liveStartedAt = liveBusy ? (turnStartedAt ?? openTurnStartedAt) : undefined;
 
   return (

@@ -225,7 +225,13 @@ impl Supervisor {
             .workspace
             .agent(agent_id)
             .map_or(AgentStatus::Idle, |r| r.status);
-        emit_status(ctx.sink.as_ref(), agent_id, rested, None);
+        emit_status(
+            ctx.sink.as_ref(),
+            agent_id,
+            rested,
+            None,
+            self.turn_since(agent_id),
+        );
     }
 
     /// Move every live agent of `provider` onto `target` (`None` for the

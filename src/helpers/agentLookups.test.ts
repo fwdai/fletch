@@ -12,6 +12,7 @@ const state = (over: Partial<AppState> = {}): AppState =>
     workspace: { agents: [record("fuji", "idle")], projects: [] },
     offSidebarAgents: { sakura: record("sakura", "idle") },
     sending: {},
+    turnStartedAt: {},
     ...over,
   }) as unknown as AppState;
 
@@ -46,6 +47,13 @@ describe("isAgentBusy", () => {
   it("falls back to the caller's status for a record the store does not carry", () => {
     expect(isAgentBusy(state(), "step-1", "running")).toBe(true);
     expect(isAgentBusy(state(), "step-1", "idle")).toBe(false);
+  });
+
+  it("counts the turn the host has open, through a status that reads idle", () => {
+    // A resting session's message: its process has come up and rests, and the
+    // turn the message is owed is still open.
+    expect(isAgentBusy(state({ turnStartedAt: { fuji: 100 } }), "fuji")).toBe(true);
+    expect(isAgentBusy(state({ turnStartedAt: { sakura: 100 } }), "fuji")).toBe(false);
   });
 
   it("counts this client's own send as busy", () => {

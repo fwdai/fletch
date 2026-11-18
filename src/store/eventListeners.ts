@@ -22,6 +22,7 @@ import {
   carryForwardStoreOnly,
   dischargeSending,
   foldLiveUsage,
+  followTurn,
   isAgentBusy,
   mergeUserTurns,
   mirrorSentTurn,
@@ -565,13 +566,9 @@ export const registerEventListeners = async (engine: Engine, set: AppSet, get: A
           status: e.status,
           last_error: e.last_error ?? a.last_error,
         }));
-        // Clear the live-timer anchor at turn end so the next turn's send→running
-        // gap can't show a stale one. The anchor itself is set from the
-        // `turn:started` event (the backend's own timestamp), not here.
-        const turnStartedAt = { ...state.turnStartedAt };
-        if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
-          delete turnStartedAt[e.agent_id];
-        }
+        // The turn the host has open as of this status (helpers/turn): what
+        // every surface reads "working" and its clock from.
+        const turnStartedAt = followTurn(state.turnStartedAt, e.agent_id, e.status, e.turn_since);
         // Any spawn stage we were showing belongs to a spawn that has now
         // ended, one way or the other (`spawning` itself is the only status
         // the label outlives).
@@ -649,14 +646,20 @@ export const registerEventListeners = async (engine: Engine, set: AppSet, get: A
     }),
   );
 
-  // The turn's start timestamp from the backend — the live-timer anchor, shared
-  // with the persisted duration so the strip and footer measure from the same
-  // instant (no off-by-the-delivery-latency drift).
+  // A turn opened, with the host's own timestamp for it: the instant its
+  // message was accepted, which is also the start the finished turn's duration
+  // is measured from, so the strip and the footer never disagree. From here
+  // the host is carrying the turn, and this client's `sending` bridge for it
+  // has done its job.
   await bind(
     events.onTurnStarted((e) => {
-      set((state) => ({
-        turnStartedAt: { ...state.turnStartedAt, [e.agent_id]: e.started_at },
-      }));
+      set((state) => {
+        const { [e.agent_id]: _answered, ...sending } = state.sending;
+        return {
+          turnStartedAt: { ...state.turnStartedAt, [e.agent_id]: e.started_at },
+          sending,
+        };
+      });
     }),
   );
 

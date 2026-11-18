@@ -104,9 +104,9 @@ describe("runTargetOptions", () => {
 
   it("refuses a host that is not connected, in the words its chip uses", () => {
     const f = facts([THIS_MAC, host("studio", { connection: "disconnected", retrying: false })]);
-    expect(option(f, "studio")).toMatchObject({ available: false, reason: "Studio · offline" });
+    expect(option(f, "studio")).toMatchObject({ available: false, reason: "offline" });
     const back = facts([THIS_MAC, host("studio", { connection: "error", retrying: true })]);
-    expect(option(back, "studio")?.reason).toBe("Studio · reconnecting…");
+    expect(option(back, "studio")?.reason).toBe("reconnecting…");
   });
 
   it("refuses a host that cannot run a project from another device", () => {

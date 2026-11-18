@@ -395,6 +395,7 @@ impl Supervisor {
         }
         self.activities.lock().remove(agent_id);
         self.statuses.lock().remove(agent_id);
+        self.open_turns.lock().remove(agent_id);
         self.native_inputs.lock().remove(agent_id);
         self.live_turns.lock().remove(agent_id);
         self.delivery_locks.lock().remove(agent_id);

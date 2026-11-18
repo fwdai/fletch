@@ -1,0 +1,162 @@
+/* The composer in the colours of where its agent runs (`EnvironmentFrame`),
+   on a sheet that sticks out from behind its top edge and names the machine.
+   The frame only sets the composer's variables (Composer.css), which the
+   sheet reads too, so the two change together.
+
+   The composer is the page's one outlined, lifted object. The sheet is kept a
+   step under it, so it is there to be found and never read first: the same
+   surface with no outline and no shadow, and caption-sized words in the
+   page's quieter inks. */
+.env-frame {
+  /* The sheet's measures, each from the one before. The control on it stands
+     `--sheet-gap` clear of the sheet's top and sides and of the composer's
+     edge below, so its hover fill is framed evenly; the sheet's corners are
+     the control's own, grown by that gap, so the two curves run parallel.
+     Set in `--sheet-inset` from the composer's sides, the control's edge
+     lands on the run rail's below (the foot's 10px padding and the border). */
+  --sheet-control: 20px;
+  --sheet-gap: 3px;
+  --sheet-peek: calc(var(--sheet-control) + 2 * var(--sheet-gap));
+  --sheet-radius: calc(var(--r-sm) + var(--sheet-gap));
+  --sheet-tuck: 6px;
+  --sheet-inset: 8px;
+  position: relative;
+  width: 100%;
+}
+/* A paired host in reach, which is a connected one and nothing short of it.
+   One hue per kind of place, never per device: This Mac stays neutral, and
+   accent, amber and red keep their own meanings. A trace of the hue on the
+   surface and a share of it in the composer's edge: enough to tell the place
+   by, not enough to colour the page. */
+.env-frame[data-tone="connected"] {
+  --composer-tint: var(--info);
+  --composer-bd: color-mix(in oklab, var(--info) 30%, var(--bd-strong));
+  --composer-bg: color-mix(in oklab, var(--info) 3%, var(--bg-2));
+}
+
+/* The sheet: a little narrower than the composer (`--sheet-inset` a side),
+   tucked under its top edge far enough that the rounded corners cover its
+   foot, and showing `--sheet-peek` above it. It comes before the composer
+   and has no layer of its own, so the composer covers its foot and a menu
+   opened from it still takes the menu layer. */
+.env-sheet {
+  position: absolute;
+  inset: auto var(--sheet-inset) calc(100% - var(--sheet-tuck)) var(--sheet-inset);
+  display: flex;
+  align-items: flex-start;
+  height: calc(var(--sheet-peek) + var(--sheet-tuck));
+  padding: var(--sheet-gap) var(--sheet-gap) 0;
+  border-radius: var(--sheet-radius) var(--sheet-radius) 0 0;
+  /* The composer's own surface, tint and all: a palette colour, not one made
+     up for the sheet. The composer's edge and shadow are what set the two
+     apart. */
+  background: var(--composer-bg, var(--bg-2));
+  transition: background 0.15s;
+}
+/* The machine keeps to the sheet's left: its right is the working strip's
+   (Chat.css). */
+.env-sheet > * {
+  max-width: min(240px, 50%);
+}
+.env-tab {
+  /* The glyph is in the name's ink, as one label; only the chevron sits a
+     step under them. */
+  --ink: var(--fg-2);
+  --ink-quiet: var(--fg-3);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  height: var(--sheet-control);
+  padding: 0 7px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+.env-tab > svg {
+  flex-shrink: 0;
+}
+/* The dot on the machine's glyph is ringed in what is under it: the sheet,
+   or the control's fill over the sheet. */
+.env-tab .device-glyph {
+  --glyph-surface: var(--composer-bg, var(--bg-2));
+}
+/* The dot stands a little past the laptop: kept off the name beside it. */
+.env-tab .device-glyph:has(.env-dot) {
+  margin-right: 2px;
+}
+.env-tab.is-action:hover .device-glyph,
+.env-tab.is-action[aria-expanded="true"] .device-glyph {
+  --glyph-surface: color-mix(in oklab, var(--fg-0) 7%, var(--composer-bg, var(--bg-2)));
+}
+.env-tab.is-action > svg:last-child {
+  color: var(--ink-quiet);
+}
+.env-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+  transition: color 0.12s;
+}
+.env-frame[data-tone="connected"] .env-tab {
+  --ink: color-mix(in oklab, var(--info) 45%, var(--fg-1));
+}
+/* Out of reach, whether it will come back on its own or needs the user:
+   greyed like every other mention of the host. Its dot says which. */
+.env-frame[data-tone="inactive"] .env-tab,
+.env-frame[data-tone="problem"] .env-tab {
+  --ink: var(--fg-3);
+}
+.env-tab.is-action {
+  cursor: pointer;
+}
+.env-tab.is-action:hover,
+.env-tab.is-action[aria-expanded="true"] {
+  --ink: var(--fg-0);
+  --ink-quiet: var(--fg-2);
+  background: color-mix(in oklab, var(--fg-0) 7%, transparent);
+}
+.env-tab.is-action:focus-visible {
+  box-shadow: 0 0 0 1px var(--composer-tint, var(--accent)) inset;
+}
+
+/* A place in the sheet's menu, with why it can't be picked under its name. The
+   row dims its name and its laptop, not itself: the reason and the
+   connection dot stay readable. */
+.dd-item.target-item.is-disabled {
+  opacity: 1;
+}
+.dd-item.target-item:hover .device-glyph {
+  --glyph-surface: var(--hover);
+}
+.target-item-text .di-l {
+  flex: none;
+  max-width: 100%;
+}
+.target-item.is-disabled .di-i svg,
+.target-item.is-disabled .di-l {
+  opacity: 0.45;
+}
+.target-item-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.target-item-why {
+  max-width: 240px;
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  color: var(--fg-2);
+  white-space: normal;
+}

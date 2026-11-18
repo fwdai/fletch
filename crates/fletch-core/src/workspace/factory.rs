@@ -74,5 +74,6 @@ pub fn new_agent_record(
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         archive: None,
+        turn_since: None,
     }
 }

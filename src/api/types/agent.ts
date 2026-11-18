@@ -123,6 +123,10 @@ export interface AgentRecord {
   lineage?: SessionLineage | null;
   created_at: string;
   last_error?: string | null;
+  /** When the turn the agent owes its user began, epoch millis; null while it
+   *  owes none. Runtime state the host lays over the record, like `status`.
+   *  Absent from a host before it (see `helpers/turn`). */
+  turn_since?: number | null;
   /** Set when the agent has been archived. Live agents have null. */
   archive?: ArchiveMetadata | null;
   /** Claude's session-level reasoning effort (`--effort <level>`), chosen at
@@ -285,6 +289,9 @@ export interface AgentStatusEvent {
   agent_id: string;
   status: AgentStatus;
   last_error: string | null;
+  /** When the turn the agent owes its user began, epoch millis; null while it
+   *  owes none. Absent from a host before it (see `helpers/turn`). */
+  turn_since?: number | null;
 }
 
 /** Which step of a fresh spawn is running, from `agent:spawn-progress`. A host

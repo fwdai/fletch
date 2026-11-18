@@ -8,6 +8,7 @@ import type {
   RoadmapItem,
   TrackerIssue,
 } from "@/api";
+import { Icon } from "@/components/Icon";
 import { lookupModel, lookupModelInList } from "@/data/modelCatalog";
 import {
   PROVIDER_DETAIL,
@@ -321,6 +322,12 @@ export function Composer({
   const sendBlocked =
     (existingSession ? null : blockedSentence(availability(provider))) ?? undefined;
 
+  // The send ↵ or the arrow last asked for while it was blocked: the reason it
+  // was refused with, and which attempt that was. Shown only while that is
+  // still the reason, so it goes when the block does.
+  const [refused, setRefused] = useState<{ why: string; attempt: number } | null>(null);
+  const refusal = sendBlocked && refused?.why === sendBlocked ? refused : null;
+
   const [thinkingValue, setThinkingValue] = useState<string | undefined>(() =>
     resolveThinking(
       defaultProvider,
@@ -412,11 +419,15 @@ export function Composer({
   function send() {
     if (dictation.phase !== "idle") return;
     const trimmed = input.text.trim();
+    if (!hasContent || disabled) return;
     // `sendBlocked` and nothing else: ↵ and the button are the same action and
     // must refuse on the same rule. This used to re-test one of the reasons by
     // hand, which let Enter start an agent the button said could not be
-    // started.
-    if (!hasContent || disabled || sendBlocked) return;
+    // started. Refused in words, since neither attempt says anything itself.
+    if (sendBlocked) {
+      setRefused((last) => ({ why: sendBlocked, attempt: (last?.attempt ?? 0) + 1 }));
+      return;
+    }
     const draft = { text: input.text, attachments: input.attachments, folders: input.folders };
     // Handed off at once, its folders still resolving: the receiver puts the
     // send in line before awaiting anything (`sendOrder`), so a later send
@@ -498,12 +509,22 @@ export function Composer({
         listening: state === "listening",
         fresh: dictation.fresh,
       }}
+      notice={
+        refusal && (
+          <div key={refusal.attempt} className="composer-refusal" role="alert">
+            <Icon name="alert" size={12} />
+            <span>{refusal.why}</span>
+          </div>
+        )
+      }
       foot={
         <>
           {/* The run rail: one framed chain of how the agent runs, read
            *  Agent › Account › Model › Effort. Each piece opens its own menu;
            *  the frame is shared. Where the workspace runs is not the
-           *  agent's: the new-workspace row picks it (WorkspaceTypePicker). */}
+           *  agent's: the sheet behind the composer's top edge says which machine
+           *  (`EnvironmentFrame`), the new-workspace row which sandbox
+           *  (`WorkspaceTypePicker`). */}
           <RunRail>
             <ModelPicker
               provider={provider}

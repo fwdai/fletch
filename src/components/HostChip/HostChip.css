@@ -17,6 +17,24 @@
   background: var(--danger);
 }
 
+/* A machine's glyph (`DeviceGlyph`): the laptop, with a paired host's dot
+   on its lower right corner. The dot is a size down from the one that stands
+   alone, and ringed in the surface under it so it reads as sitting on the
+   laptop rather than tangled in its lines. */
+.device-glyph {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.device-glyph .env-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -2px;
+  width: 5px;
+  height: 5px;
+  box-shadow: 0 0 0 1.5px var(--glyph-surface, var(--bg-2));
+}
+
 /* Where a row runs, when that is a paired host (`HostChip`): a pill of the
    PR pill's size, in the closed PR's grey, so it reads as a fact about the
    row rather than a state of it. */
