@@ -1,7 +1,9 @@
 //! The workspace channel: the system OpenSSH client driven by a generated
-//! `ssh_config`, reaching the guest's sshd through `fletch-vm pipe` on the
-//! box's `ssh.sock`. Every host-to-guest interaction is one of the shapes here;
-//! git and editors use the same config through [`Channel::git_ssh_command`].
+//! `ssh_config`, reaching the guest's sshd by a [`Route`]: through `fletch-vm
+//! pipe` on the box's `ssh.sock` for a VM on this machine, over the network
+//! for a guest elsewhere. Every host-to-guest interaction is one of the shapes
+//! here; git and editors use the same config through
+//! [`Channel::git_ssh_command`].
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -20,6 +22,9 @@ use crate::runtime::MAX_SOCKET_PATH;
 
 pub const SSH: &str = "/usr/bin/ssh";
 pub const SSH_KEYGEN: &str = "/usr/bin/ssh-keygen";
+/// The TLS client of [`Route::tls`]: the system's, LibreSSL on macOS and
+/// OpenSSL on Linux.
+pub const OPENSSL: &str = "/usr/bin/openssl";
 pub const CONFIG_FILE: &str = "ssh_config";
 pub const KEY_FILE: &str = "key";
 pub const KNOWN_HOSTS_FILE: &str = "known_hosts";
@@ -35,6 +40,104 @@ fn control_path_fits(control: &Path) -> bool {
     control.as_os_str().len() + CONTROL_TEMP_SUFFIX <= MAX_SOCKET_PATH
 }
 
+/// How ssh reaches the guest's sshd. A remote host is checked where it is
+/// named ([`Route::tcp`], [`Route::tls`]): it is written into the config and,
+/// behind TLS, into the command ssh runs through the user's shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Route<'a>(Via<'a>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Via<'a> {
+    Pipe {
+        helper: &'a Path,
+        ssh_sock: &'a Path,
+    },
+    Tcp {
+        host: &'a str,
+        port: u16,
+    },
+    Tls {
+        host: &'a str,
+        port: u16,
+    },
+}
+
+impl<'a> Route<'a> {
+    /// This machine's VM: `helper` (`fletch-vm`) pipes ssh to the guest's
+    /// vsock port through the box's `ssh_sock`.
+    pub fn pipe(helper: &'a Path, ssh_sock: &'a Path) -> Route<'a> {
+        Route(Via::Pipe { helper, ssh_sock })
+    }
+
+    /// The guest's sshd on `host:port`; `host` is a DNS name or an IPv4
+    /// address.
+    pub fn tcp(host: &'a str, port: u16) -> Result<Route<'a>> {
+        check_endpoint(host, port)?;
+        Ok(Route(Via::Tcp { host, port }))
+    }
+
+    /// The guest's sshd behind a proxy on `host:port` that terminates TLS and
+    /// forwards the plaintext stream to the machine the server name picks
+    /// (Fly.io's `tls` handler). `host` is a DNS name: it is the server name.
+    pub fn tls(host: &'a str, port: u16) -> Result<Route<'a>> {
+        check_endpoint(host, port)?;
+        Ok(Route(Via::Tls { host, port }))
+    }
+
+    fn is_remote(&self) -> bool {
+        !matches!(self.0, Via::Pipe { .. })
+    }
+
+    /// The config lines that take ssh to the guest.
+    ///
+    /// Behind TLS, `openssl s_client -quiet` carries the stream: `-quiet`
+    /// also keeps the connection through the end of ssh's input
+    /// (`-ign_eof`) and reads none of it as a command. It verifies no
+    /// certificate: the guest's host key, pinned in `known_hosts` with
+    /// strict checking, is what authenticates the peer, and TLS is only the
+    /// way through the proxy. Its stderr goes to `/dev/null` (ssh runs the
+    /// command through the user's shell), or every connection would print
+    /// the certificate chain where ssh's own stderr goes, a terminal
+    /// included; a failed connection then reads as ssh's "connection
+    /// closed".
+    fn lines(&self) -> String {
+        match self.0 {
+            Via::Pipe { helper, ssh_sock } => format!(
+                "  ProxyCommand {} pipe {}\n",
+                quote_path(helper),
+                quote_path(ssh_sock)
+            ),
+            Via::Tcp { host, port } => format!("  HostName {host}\n  Port {port}\n"),
+            Via::Tls { host, port } => format!(
+                "  HostName {host}\n  Port {port}\n  ProxyCommand {OPENSSL} s_client -quiet \
+                 -connect {host}:{port} -servername {host} 2>/dev/null\n"
+            ),
+        }
+    }
+}
+
+/// Refuses what [`Route::tcp`] and [`Route::tls`] may not write into a config
+/// line or a shell command: `host` must be a DNS name or an IPv4 address, in
+/// dot-separated labels of 1 to 63 letters, digits and `-`, none starting or
+/// ending with `-`, 253 characters at most; and `port` must not be 0.
+fn check_endpoint(host: &str, port: u16) -> Result<()> {
+    let label = |l: &str| {
+        (1..=63).contains(&l.len())
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    if host.len() > 253 || !host.split('.').all(label) {
+        return Err(Error::Other(format!(
+            "{host:?} is not a host name or IPv4 address"
+        )));
+    }
+    if port == 0 {
+        return Err(Error::Other(format!("{host}: port 0 cannot be reached")));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Channel {
     /// The generated `ssh_config`, passed with `-F` to every invocation.
@@ -42,9 +145,10 @@ pub struct Channel {
 }
 
 impl Channel {
-    /// Writes `<box_dir>/ssh_config` for a box whose sshd is behind `ssh_sock`,
-    /// authenticating with `key` and trusting only `known_hosts`. `helper` is
-    /// the `fletch-vm` binary, whose `pipe` subcommand is the `ProxyCommand`.
+    /// Writes `<box_dir>/ssh_config` for a box on this machine whose sshd is
+    /// behind `ssh_sock`, authenticating with `key` and trusting only
+    /// `known_hosts`. `helper` is the `fletch-vm` binary, whose `pipe`
+    /// subcommand is the `ProxyCommand` ([`Route::pipe`]).
     pub fn new(
         box_dir: &Path,
         ssh_sock: &Path,
@@ -52,12 +156,24 @@ impl Channel {
         known_hosts: &Path,
         helper: &Path,
     ) -> Result<Channel> {
+        Self::with_route(box_dir, Route::pipe(helper, ssh_sock), key, known_hosts)
+    }
+
+    /// Writes `<box_dir>/ssh_config` for a box whose sshd `route` reaches,
+    /// authenticating with `key` and trusting only `known_hosts`. The
+    /// multiplexing master's socket goes beside it when its path fits.
+    pub fn with_route(
+        box_dir: &Path,
+        route: Route<'_>,
+        key: &Path,
+        known_hosts: &Path,
+    ) -> Result<Channel> {
         let control = box_dir.join(CONTROL_FILE);
         let control = control_path_fits(&control).then_some(control.as_path());
         let config = box_dir.join(CONFIG_FILE);
         std::fs::write(
             &config,
-            render_config(ssh_sock, key, known_hosts, helper, control),
+            render_route_config(route, key, known_hosts, control),
         )
         .map_err(Error::io(format!("write {}", config.display())))?;
         Ok(Channel { config })
@@ -287,9 +403,9 @@ impl Channel {
     /// rather than the box's shared master: a forward requested through the
     /// master outlives the client that asked for it, while one on its own
     /// connection ends when the returned [`Forward`] drops — and with the
-    /// guest, as the helper's pipe closes. ssh exits instead of carrying on
-    /// without a listener when the host port cannot be bound; a dropped
-    /// `Forward` kills it. Needs a Tokio runtime context.
+    /// guest, as its connection does ([`render_route_config`]). ssh exits
+    /// instead of carrying on without a listener when the host port cannot be
+    /// bound; a dropped `Forward` kills it. Needs a Tokio runtime context.
     pub fn forward(&self, host_port: u16, guest_port: u16) -> Result<Forward> {
         let mut child = self
             .ssh()
@@ -366,9 +482,9 @@ impl Forward {
     }
 
     /// Waits until the host listener accepts connections — ssh binds it once
-    /// its connection to the guest is up, a handshake through the proxy
-    /// helper away — or until ssh exited (the host port taken after all, the
-    /// guest unreachable), with its last complaint, or `timeout` passed. Each
+    /// its connection to the guest is up, a handshake away — or until ssh
+    /// exited (the host port taken after all, the guest unreachable), with
+    /// its last complaint, or `timeout` passed. Each
     /// probe is one accepted connection, which ssh then fails to open in the
     /// guest, where nothing listens yet.
     pub async fn wait_ready(&mut self, timeout: Duration) -> Result<()> {
@@ -415,7 +531,78 @@ fn check(out: &Output, what: &str) -> Result<()> {
     )))
 }
 
-/// The `ssh_config` for one box.
+fn quote_path(path: &Path) -> String {
+    format!("\"{}\"", path.display())
+}
+
+/// One `Host` entry: `host` reached by `route` as the guest user with `key`,
+/// trusting only the key `known_hosts` holds for [`guest::SSH_HOST_ALIAS`].
+/// With `host_key_alias`, `HostKeyAlias` keeps the `known_hosts` lookup on
+/// that alias where ssh would look up another name: an entry under an alias
+/// of its own, or a remote route, whose `HostName` is what ssh looks up
+/// (`[host]:port` off port 22).
+fn entry(
+    host: &str,
+    host_key_alias: bool,
+    route: Route<'_>,
+    key: &Path,
+    known_hosts: &Path,
+) -> String {
+    let mut entry = format!("Host {host}\n  User {}\n", guest::USER);
+    if host_key_alias {
+        entry.push_str(&format!("  HostKeyAlias {}\n", guest::SSH_HOST_ALIAS));
+    }
+    entry.push_str(&format!(
+        "  IdentityFile {key}\n\
+         \x20 IdentitiesOnly yes\n\
+         \x20 IdentityAgent none\n\
+         \x20 ForwardAgent no\n\
+         \x20 BatchMode yes\n\
+         \x20 StrictHostKeyChecking yes\n\
+         \x20 UpdateHostKeys no\n\
+         \x20 UserKnownHostsFile {known_hosts}\n\
+         \x20 GlobalKnownHostsFile /dev/null\n\
+         {route}\
+         \x20 ConnectTimeout 10\n\
+         \x20 ServerAliveInterval 15\n\
+         \x20 ServerAliveCountMax 3\n",
+        key = quote_path(key),
+        known_hosts = quote_path(known_hosts),
+        route = route.lines(),
+    ));
+    entry
+}
+
+/// The `ssh_config` for one box, under the `box` alias, reached by `route`.
+pub fn render_route_config(
+    route: Route<'_>,
+    key: &Path,
+    known_hosts: &Path,
+    control: Option<&Path>,
+) -> String {
+    let mut config = entry(
+        guest::SSH_HOST_ALIAS,
+        route.is_remote(),
+        route,
+        key,
+        known_hosts,
+    );
+    config.push_str("  LogLevel ERROR\n");
+    // The master lives as long as its connection, not until an idle timeout:
+    // otherwise the first command after a pause pays a whole handshake. The
+    // box's stop ends it (`close_master`), and it goes by itself when the
+    // guest does: a local VM's helper pipe closes, and a remote guest leaves
+    // the keepalives unanswered (`ServerAliveInterval` 15 s, three times).
+    if let Some(control) = control {
+        config.push_str(&format!(
+            "  ControlMaster auto\n  ControlPath {}\n  ControlPersist yes\n",
+            quote_path(control)
+        ));
+    }
+    config
+}
+
+/// The `ssh_config` for a box on this machine ([`Route::pipe`]).
 pub fn render_config(
     ssh_sock: &Path,
     key: &Path,
@@ -423,50 +610,25 @@ pub fn render_config(
     helper: &Path,
     control: Option<&Path>,
 ) -> String {
-    let q = |p: &Path| format!("\"{}\"", p.display());
-    let mut config = format!(
-        "Host {alias}\n\
-         \x20 User {user}\n\
-         \x20 IdentityFile {key}\n\
-         \x20 IdentitiesOnly yes\n\
-         \x20 IdentityAgent none\n\
-         \x20 ForwardAgent no\n\
-         \x20 BatchMode yes\n\
-         \x20 StrictHostKeyChecking yes\n\
-         \x20 UpdateHostKeys no\n\
-         \x20 UserKnownHostsFile {known_hosts}\n\
-         \x20 GlobalKnownHostsFile /dev/null\n\
-         \x20 ProxyCommand {helper} pipe {sock}\n\
-         \x20 ConnectTimeout 10\n\
-         \x20 ServerAliveInterval 15\n\
-         \x20 ServerAliveCountMax 3\n\
-         \x20 LogLevel ERROR\n",
-        alias = guest::SSH_HOST_ALIAS,
-        user = guest::USER,
-        key = q(key),
-        known_hosts = q(known_hosts),
-        helper = q(helper),
-        sock = q(ssh_sock),
-    );
-    // The master lives as long as its connection, not until an idle timeout:
-    // otherwise the first command after a pause pays a whole handshake
-    // through the proxy helper. The box's stop ends it (`close_master`), and
-    // it goes by itself when the guest does, since the helper's pipe closes.
-    if let Some(control) = control {
-        config.push_str(&format!(
-            "  ControlMaster auto\n  ControlPath {}\n  ControlPersist yes\n",
-            q(control)
-        ));
-    }
-    config
+    render_route_config(Route::pipe(helper, ssh_sock), key, known_hosts, control)
 }
 
 /// A `Host` entry for the user's own ssh client (an editor's remote mode, a
-/// terminal) to reach the same guest: the same key, host key, proxy and
-/// timeouts as [`render_config`], under `alias` instead of `box`. `HostKeyAlias`
-/// keeps the `known_hosts` lookup on `box`, which is what the box's file
-/// names. No connection sharing: the editor's sessions must not ride on, or
-/// hold open, the master the engine's own config keeps.
+/// terminal) to reach the same guest: the same key, host key, route and
+/// timeouts as [`render_route_config`], under `alias` instead of `box`.
+/// `HostKeyAlias` keeps the `known_hosts` lookup on `box`, which is what the
+/// box's file names. No connection sharing: the editor's sessions must not
+/// ride on, or hold open, the master the engine's own config keeps.
+pub fn render_route_user_entry(
+    alias: &str,
+    route: Route<'_>,
+    key: &Path,
+    known_hosts: &Path,
+) -> String {
+    entry(alias, true, route, key, known_hosts)
+}
+
+/// [`render_route_user_entry`] for a box on this machine ([`Route::pipe`]).
 pub fn render_user_entry(
     alias: &str,
     ssh_sock: &Path,
@@ -474,31 +636,7 @@ pub fn render_user_entry(
     known_hosts: &Path,
     helper: &Path,
 ) -> String {
-    let q = |p: &Path| format!("\"{}\"", p.display());
-    format!(
-        "Host {alias}\n\
-         \x20 User {user}\n\
-         \x20 HostKeyAlias {hostkey_alias}\n\
-         \x20 IdentityFile {key}\n\
-         \x20 IdentitiesOnly yes\n\
-         \x20 IdentityAgent none\n\
-         \x20 ForwardAgent no\n\
-         \x20 BatchMode yes\n\
-         \x20 StrictHostKeyChecking yes\n\
-         \x20 UpdateHostKeys no\n\
-         \x20 UserKnownHostsFile {known_hosts}\n\
-         \x20 GlobalKnownHostsFile /dev/null\n\
-         \x20 ProxyCommand {helper} pipe {sock}\n\
-         \x20 ConnectTimeout 10\n\
-         \x20 ServerAliveInterval 15\n\
-         \x20 ServerAliveCountMax 3\n",
-        user = guest::USER,
-        hostkey_alias = guest::SSH_HOST_ALIAS,
-        key = q(key),
-        known_hosts = q(known_hosts),
-        helper = q(helper),
-        sock = q(ssh_sock),
-    )
+    render_route_user_entry(alias, Route::pipe(helper, ssh_sock), key, known_hosts)
 }
 
 /// Creates `<box_dir>/key` and `key.pub` (ed25519, no passphrase) unless the
@@ -590,6 +728,267 @@ mod tests {
         );
         assert!(!without.contains("ControlMaster"));
         assert!(!without.contains("ControlPersist"));
+    }
+
+    /// The local VM's config, whole: what every box on this machine has been
+    /// reached through, byte for byte.
+    const PIPE_CONFIG: &str = "Host box
+  User agent
+  IdentityFile \"/b/key\"
+  IdentitiesOnly yes
+  IdentityAgent none
+  ForwardAgent no
+  BatchMode yes
+  StrictHostKeyChecking yes
+  UpdateHostKeys no
+  UserKnownHostsFile \"/b/known_hosts\"
+  GlobalKnownHostsFile /dev/null
+  ProxyCommand \"/v\" pipe \"/b/ssh.sock\"
+  ConnectTimeout 10
+  ServerAliveInterval 15
+  ServerAliveCountMax 3
+  LogLevel ERROR
+  ControlMaster auto
+  ControlPath \"/b/cm.sock\"
+  ControlPersist yes
+";
+
+    const PIPE_USER_ENTRY: &str = "Host fletch-a1
+  User agent
+  HostKeyAlias box
+  IdentityFile \"/b/key\"
+  IdentitiesOnly yes
+  IdentityAgent none
+  ForwardAgent no
+  BatchMode yes
+  StrictHostKeyChecking yes
+  UpdateHostKeys no
+  UserKnownHostsFile \"/b/known_hosts\"
+  GlobalKnownHostsFile /dev/null
+  ProxyCommand \"/v\" pipe \"/b/ssh.sock\"
+  ConnectTimeout 10
+  ServerAliveInterval 15
+  ServerAliveCountMax 3
+";
+
+    #[test]
+    fn the_pipe_route_renders_the_local_config_byte_for_byte() {
+        let (sock, key, known_hosts, helper) = (
+            Path::new("/b/ssh.sock"),
+            Path::new("/b/key"),
+            Path::new("/b/known_hosts"),
+            Path::new("/v"),
+        );
+        let control = Some(Path::new("/b/cm.sock"));
+        assert_eq!(
+            render_config(sock, key, known_hosts, helper, control),
+            PIPE_CONFIG
+        );
+        assert_eq!(
+            render_user_entry("fletch-a1", sock, key, known_hosts, helper),
+            PIPE_USER_ENTRY
+        );
+    }
+
+    /// A remote route differs from the pipe config in how ssh reaches the
+    /// guest and only there, plus `HostKeyAlias`: ssh would look the host key
+    /// up under the `HostName` (as `[host]:port` off port 22), and the box's
+    /// `known_hosts` names `box`.
+    #[test]
+    fn remote_routes_render_their_endpoint_and_keep_the_host_key_on_the_alias() {
+        let (key, known_hosts) = (Path::new("/b/key"), Path::new("/b/known_hosts"));
+        let control = Some(Path::new("/b/cm.sock"));
+        let pipe_line = "  ProxyCommand \"/v\" pipe \"/b/ssh.sock\"\n";
+        let remote = |config: &str, lines: &str| {
+            config
+                .replace(
+                    "  User agent\n  IdentityFile",
+                    "  User agent\n  HostKeyAlias box\n  IdentityFile",
+                )
+                .replace(pipe_line, lines)
+        };
+        let host = "fletch-a1.fly.dev";
+        let tcp = Route::tcp(host, 2222).unwrap();
+        let tcp_lines = "  HostName fletch-a1.fly.dev\n  Port 2222\n";
+        assert_eq!(
+            render_route_config(tcp, key, known_hosts, control),
+            remote(PIPE_CONFIG, tcp_lines)
+        );
+        let tls = Route::tls(host, 443).unwrap();
+        let tls_lines = "  HostName fletch-a1.fly.dev\n  Port 443\n  ProxyCommand /usr/bin/openssl \
+             s_client -quiet -connect fletch-a1.fly.dev:443 -servername fletch-a1.fly.dev 2>/dev/null\n";
+        assert_eq!(
+            render_route_config(tls, key, known_hosts, control),
+            remote(PIPE_CONFIG, tls_lines)
+        );
+        // The user's entry names the alias already; it is not repeated.
+        assert_eq!(
+            render_route_user_entry("fletch-a1", tls, key, known_hosts),
+            PIPE_USER_ENTRY.replace(pipe_line, tls_lines)
+        );
+        assert_eq!(
+            render_route_user_entry("fletch-a1", tcp, key, known_hosts),
+            PIPE_USER_ENTRY.replace(pipe_line, tcp_lines)
+        );
+    }
+
+    /// A remote host lands in a config line and, behind TLS, in a shell
+    /// command: only a DNS name or an IPv4 address is taken.
+    #[test]
+    fn a_remote_route_takes_a_plain_host_name_only() {
+        let longest_label = "a".repeat(63);
+        let longest_name = format!("{0}.{0}.{0}.{1}", "a".repeat(63), "a".repeat(61));
+        assert_eq!(longest_name.len(), 253);
+        for host in [
+            "localhost",
+            "127.0.0.1",
+            "fletch-a1.fly.dev",
+            "xn--bcher-kva.example",
+            "A-1.b2",
+            &longest_label,
+            &longest_name,
+        ] {
+            assert!(Route::tcp(host, 22).is_ok(), "{host}");
+            assert!(Route::tls(host, 443).is_ok(), "{host}");
+        }
+        let too_long_label = "a".repeat(64);
+        let too_long_name = format!("{longest_name}a");
+        for host in [
+            "",
+            ".",
+            "a.",
+            ".a",
+            "a..b",
+            "-a",
+            "a-",
+            "a.-b",
+            "a b",
+            "a;b",
+            "a&b",
+            "$(id)",
+            "`id`",
+            "a'b",
+            "a\"b",
+            "a\\b",
+            "a/b",
+            "a:22",
+            "user@a",
+            "fdaa::1",
+            "[::1]",
+            "a\n  ProxyCommand sh",
+            "a\tb",
+            "ä.example",
+            &too_long_label,
+            &too_long_name,
+        ] {
+            assert!(Route::tcp(host, 22).is_err(), "{host:?}");
+            assert!(Route::tls(host, 443).is_err(), "{host:?}");
+        }
+        assert!(Route::tcp("a", 0).is_err());
+        assert!(Route::tls("a", 0).is_err());
+    }
+
+    /// `Channel::new` is the pipe route: the file it writes is the local
+    /// config, byte for byte.
+    #[test]
+    fn a_channel_writes_its_route_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sock, key, known_hosts, helper) = (
+            Path::new("/b/ssh.sock"),
+            Path::new("/b/key"),
+            Path::new("/b/known_hosts"),
+            Path::new("/v"),
+        );
+        let control = dir.path().join(CONTROL_FILE);
+        let control = control_path_fits(&control).then_some(control.as_path());
+        let channel = Channel::new(dir.path(), sock, key, known_hosts, helper).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&channel.config).unwrap(),
+            render_config(sock, key, known_hosts, helper, control)
+        );
+        let route = Route::tcp("fletch-a1.fly.dev", 2222).unwrap();
+        let remote = Channel::with_route(dir.path(), route, key, known_hosts).unwrap();
+        assert_eq!(remote, channel);
+        assert_eq!(
+            std::fs::read_to_string(&remote.config).unwrap(),
+            render_route_config(route, key, known_hosts, control)
+        );
+    }
+
+    /// A guest's sshd over TCP, end to end: the system sshd, run as this user
+    /// on a loopback port with a host key of its own, reached through the
+    /// channel's config with that key pinned under the `box` alias, and
+    /// refused once `known_hosts` holds another key. The guest user is this
+    /// user here (`-o User=` over the config's `agent`): an unprivileged sshd
+    /// can only log in its own.
+    #[tokio::test]
+    #[ignore = "starts the system sshd (/usr/sbin/sshd) as this user on a loopback port"]
+    async fn a_tcp_route_reaches_an_sshd_by_its_pinned_host_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let new_key = |name: &str| {
+            let path = d.join(name);
+            let out = std::process::Command::new(SSH_KEYGEN)
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+            let line = std::fs::read_to_string(path.with_extension("pub")).unwrap();
+            HostKey::from_public_key(&line).unwrap()
+        };
+        let host_key = new_key("host_key");
+        let other_key = new_key("other_key");
+        let key = keygen(d).unwrap();
+        std::fs::write(d.join("authorized_keys"), authorized_key(&key).unwrap()).unwrap();
+        std::fs::write(
+            d.join("sshd_config"),
+            format!(
+                "ListenAddress 127.0.0.1\nHostKey {dir}/host_key\n\
+                 AuthorizedKeysFile {dir}/authorized_keys\nPidFile none\nUsePAM no\n\
+                 StrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n",
+                dir = d.display()
+            ),
+        )
+        .unwrap();
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let mut sshd = Command::new("/usr/sbin/sshd")
+            .args(["-D", "-e", "-f"])
+            .arg(d.join("sshd_config"))
+            .args(["-p", &port.to_string()])
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while TcpStream::connect(("127.0.0.1", port)).await.is_err() {
+            assert!(sshd.try_wait().unwrap().is_none(), "sshd exited");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "sshd never listened"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let known_hosts = d.join(KNOWN_HOSTS_FILE);
+        let route = Route::tcp("127.0.0.1", port).unwrap();
+        let channel = Channel::with_route(d, route, &key, &known_hosts).unwrap();
+        let user = std::env::var("USER").unwrap();
+        let ssh = || {
+            let mut cmd = channel.ssh();
+            cmd.args(["-S", "none", "-o", &format!("User={user}")])
+                .args([guest::SSH_HOST_ALIAS, "echo", "reached"])
+                .stdin(Stdio::null());
+            cmd
+        };
+        write_known_hosts(&known_hosts, &host_key).unwrap();
+        let out = ssh().output().await.unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "reached\n");
+        write_known_hosts(&known_hosts, &other_key).unwrap();
+        let out = ssh().output().await.unwrap();
+        assert_eq!(out.status.code(), Some(255), "{out:?}");
     }
 
     /// The master's socket is the one the config names, beside it; with no

@@ -23,7 +23,7 @@ pub mod tools;
 pub mod version;
 pub mod workbench;
 
-pub use channel::{Channel, Forward};
+pub use channel::{Channel, Forward, Route};
 pub use egress::{EgressEvent, EgressPolicy, EgressProxy, HostPattern, Mode as EgressMode};
 pub use error::{Error, Result};
 pub use image_store::{ImageStore, InstalledImage, InstalledLayer, PinnedImage};
