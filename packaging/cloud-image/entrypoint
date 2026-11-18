@@ -1,0 +1,120 @@
+#!/bin/sh
+# Cloud box entrypoint: the image's ENTRYPOINT, run as root at every start of
+# the machine (by the provider's init, or as PID 1 under `docker run`). The
+# guest contract of a box on this machine (/opt/fletch/init) less the VM
+# plumbing: the machine has a network of its own and is stopped by its
+# provider, so there is no vsock, egress proxy, control port, console marker
+# or system overlay, and sshd listens on TCP. Where a step reproduces one of
+# init's, its comment names the step: a change to one is carried to the other.
+#
+# Everything comes from the environment. Required, as init:
+#   FLETCH_BOX_WRITABLE_ROOT   host path of the agent's writable root  -> /data/ws
+#   FLETCH_BOX_RPC_DIR         host path of the RPC mailbox           -> /data/rpc
+#   FLETCH_BOX_HOME            host path of $HOME                     -> /data/home
+#   FLETCH_BOX_AUTHORIZED_KEY  one OpenSSH public key line, the host's key for this box
+# Optional: FLETCH_BOX_ID, shown in log lines; FLETCH_BOX_SSH_PORT, the port
+# sshd listens on, every address (2222: a Fly Machine's own sshd holds 22).
+#
+# /data is the machine's volume: the agent's trees, its home, the ssh keys and
+# the provider CLIs (/data/tools/<provider>, installed by the host over ssh).
+# What this script mounts is mounted again at every start; what it makes on
+# the root stays, and is made again where it is missing.
+#
+# The host learns the guest's host key from /data/ssh/host_key.pub (one
+# OpenSSH public key line), written before sshd starts. On failure:
+# FLETCH_INIT_ERROR <text> on stdout and a non-zero exit, before sshd starts.
+set -eu
+
+step="starting"
+failed=
+fail() { failed=1; echo "FLETCH_INIT_ERROR $*"; exit 1; }
+trap '[ $? -eq 0 ] || [ -n "$failed" ] || echo "FLETCH_INIT_ERROR the entrypoint failed while $step"' EXIT
+
+# init: "checking the environment".
+step="checking the environment"
+for var in FLETCH_BOX_WRITABLE_ROOT FLETCH_BOX_RPC_DIR FLETCH_BOX_HOME FLETCH_BOX_AUTHORIZED_KEY; do
+  eval "value=\${$var:-}"
+  [ -n "$value" ] || fail "$var is not set in the environment"
+done
+# Binds must happen parent first (a later mount on an ancestor would hide an
+# earlier one), and HOME is the only plausible ancestor; refuse the other order.
+case "$FLETCH_BOX_HOME" in
+  "$FLETCH_BOX_WRITABLE_ROOT"/*|"$FLETCH_BOX_RPC_DIR"/*) fail "FLETCH_BOX_HOME may not lie inside the writable root or the rpc dir";;
+esac
+port=${FLETCH_BOX_SSH_PORT:-2222}
+case "$port" in
+  ''|*[!0-9]*) fail "FLETCH_BOX_SSH_PORT is not a port: $port";;
+esac
+[ "$port" -ge 1 ] && [ "$port" -le 65535 ] || fail "FLETCH_BOX_SSH_PORT is not a port: $port"
+# The hostname is the provider's: it writes /etc/hosts for it, so sudo finds
+# the name it runs under.
+echo "fletch-cloud: box ${FLETCH_BOX_ID:-?}"
+
+# init: the end of "mounting /data", and sshd's privilege separation
+# directory from "mounting tmpfs".
+step="preparing /data"
+mkdir -p /data/ws /data/rpc /data/home /data/ssh /data/run /data/tools
+chown agent:agent /data/ws /data/rpc /data/home /data/run /data/tools
+chmod 700 /data/run   # env files, 0600 and owned by agent, land here
+[ -d /run/sshd ] || mkdir -m 755 /run/sshd
+
+# init: "mounting the tools disks". Every launch finds a provider's CLI at
+# /opt/fletch/tools/<provider>/bin, where a box on this machine mounts its
+# tools disks; here the host installs the CLIs into /data/tools/<provider>.
+# A bind, read-only as a disk is, rather than a symbolic link: a confined
+# launch (`fletch-guest exec --read-only`) has /data covered, and must still
+# run the CLIs and never change them.
+step="binding the provider CLIs"
+if ! mountpoint -q /opt/fletch/tools; then
+  mount --bind /data/tools /opt/fletch/tools
+  mount -o remount,bind,ro,nosuid,nodev /opt/fletch/tools
+fi
+
+# init: "binding the host paths". Path identity: the host's absolute paths
+# exist in the guest, bound from /data, and resolve to themselves (provider
+# CLIs name their session directories after the real working directory, and
+# the host reads them by that path). The root is writable here, so the
+# directories are made in it, with no tmpfs over their first component; init's
+# refusals stand, so a path one kind of box takes the other takes too.
+# The directories between a path and its first component belong to agent,
+# like the home most of them sit in: the guest user makes their other entries
+# (a tenant's mailbox and writable root, the toolchain cache). Set at every
+# start, not only when made; -h, so a link the guest user left there is not
+# followed. A path bound already (this script run twice in one boot) stays.
+step="binding the host paths"
+bind_identity() { # <guest path> <data dir>
+  case "$1" in /?*/?*) ;; *) fail "$1 is not an absolute path with two components or more";; esac
+  top=${1#/}; top=/${top%%/*}
+  case "$top" in
+    /bin|/boot|/data|/dev|/etc|/lib|/lib64|/opt|/proc|/run|/sbin|/sys|/tmp|/usr|/var)
+      fail "cannot place $1 under $top: it would shadow the guest's own files";;
+  esac
+  [ -d "$top" ] || fail "no $top directory in the image to mount $1 under"
+  mkdir -p "$1"
+  dir=${1%/*}
+  while [ "$dir" != "$top" ]; do
+    chown -h agent:agent "$dir"
+    dir=${dir%/*}
+  done
+  mountpoint -q "$1" || mount --bind "$2" "$1"
+}
+bind_identity "$FLETCH_BOX_HOME" /data/home
+bind_identity "$FLETCH_BOX_RPC_DIR" /data/rpc
+bind_identity "$FLETCH_BOX_WRITABLE_ROOT" /data/ws
+
+# init: "preparing ssh". The host key persists with the volume, so the host
+# learns it once.
+step="preparing ssh"
+[ -f /data/ssh/host_key ] || ssh-keygen -q -t ed25519 -N '' -C fletch-box -f /data/ssh/host_key
+chmod 600 /data/ssh/host_key
+read -r keytype key _ < /data/ssh/host_key.pub
+echo "fletch-cloud: host key $keytype $key"
+# Root-owned and 0644 satisfies sshd's StrictModes (owner must be root or the user).
+printf '%s\n' "$FLETCH_BOX_AUTHORIZED_KEY" > /data/ssh/authorized_keys
+chmod 644 /data/ssh/authorized_keys
+
+# sshd listens on every address, IPv4 and IPv6 (the config names none), and
+# stays in the foreground: its exit is the machine's.
+step="starting sshd on port $port"
+echo "fletch-cloud: sshd on port $port"
+exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config.fletch -p "$port"
