@@ -21,6 +21,7 @@ export type SettingsSection =
   | "network"
   | "hosts"
   | "clients"
+  | "cloud"
   | "providers"
   | "agents"
   | "skills"

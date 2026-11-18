@@ -361,6 +361,7 @@ describe("rootItems", () => {
       ["network", "Network", "Sandbox"],
       ["tools", "Tools", "Customize"],
       ["skills", "Skills", "Customize"],
+      ["cloud", "Cloud", "Machines"],
     ]) {
       const row = rows.find((r) => r.id === `settings:${id}`);
       expect(row?.label, id).toBe(`Settings › ${label}`);

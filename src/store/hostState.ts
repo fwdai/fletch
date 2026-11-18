@@ -17,9 +17,9 @@
 //   - PTY ring buffers and the live-terminal cache key on the environment
 //     themselves (src/pty/buffers, src/pty/terminals).
 //   - Provider versions, model catalogs, installs, the custom agent / skill /
-//     MCP libraries, the account profile, the Linear connection and the
-//     appearance settings are properties of this desktop, keyed by provider or
-//     runtime.
+//     MCP libraries, the account profile, the Linear connection, the cloud
+//     providers and the appearance settings are properties of this desktop,
+//     keyed by provider or runtime.
 //   - `gitBusy` / `gitNotices` key on the environment already (`gitScopeKey`).
 //   - Where the UI is (open screens, panes, the palette, the sub-agent thread)
 //     is this window's, whichever host it is showing.

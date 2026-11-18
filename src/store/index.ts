@@ -9,6 +9,7 @@ import { createAppSlice } from "./app";
 import { createAppearanceSlice } from "./appearance";
 import { createAutopilotSlice } from "./autopilot";
 import { createBackgroundTasksSlice } from "./backgroundTasks";
+import { createCloudSlice } from "./cloud";
 import { createCompactionSlice } from "./compaction";
 import { createComposerSlice } from "./composer";
 import { createCustomAgentsSlice } from "./customAgents";
@@ -66,6 +67,7 @@ const createSlices: SlicesCreator = (...a) => ({
   ...createWorkspaceTypesSlice(...a),
   ...createLocalCommandsSlice(...a),
   ...createCompactionSlice(...a),
+  ...createCloudSlice(...a),
 });
 
 /** The store itself: this desktop's state at the top level, each paired host's

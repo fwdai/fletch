@@ -552,6 +552,7 @@ fn error_for_waiter(e: &Error) -> Error {
         Error::Io(io) => Error::Io(std::io::Error::new(io.kind(), io.to_string())),
         Error::SchemaTooNew => Error::SchemaTooNew,
         Error::SandboxUnavailable(s) => Error::SandboxUnavailable(s.clone()),
+        Error::CloudGone(s) => Error::CloudGone(s.clone()),
         Error::Other(s) => Error::Other(s.clone()),
         Error::Json(_) | Error::Database(_) => Error::Other(e.to_string()),
     }

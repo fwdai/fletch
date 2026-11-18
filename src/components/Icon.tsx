@@ -19,6 +19,7 @@ import {
   CircleCheck,
   CircleDot,
   Clock,
+  Cloud,
   Code,
   Combine,
   Container,
@@ -142,6 +143,8 @@ const ICON_COMPONENTS = {
   bot: Bot,
   blocks: Blocks,
   cube: Box,
+  // A machine at a cloud provider rather than on this Mac.
+  cloud: Cloud,
   container: Container,
   layers: Layers,
   graph: Waypoints,

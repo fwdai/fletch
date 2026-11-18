@@ -51,10 +51,9 @@ const AGENTS_GROUP = "Agents";
 // network or secrets settings belong here too. "Checkouts" or "Isolation" would
 // read as plain worktree-running, which is exactly the framing to avoid.
 const GUARDRAILS_GROUP = "Guardrails";
-// The machines in play beyond this one: devices on both ends of remote control
-// today, cloud runners when they get settings of their own. Says nothing about
-// the platform, so a Linux or Windows build needs no rename. One entry today —
-// the header still earns its place by marking where the next one goes.
+// The machines in play beyond this one: devices on both ends of remote control,
+// and the cloud providers whose machines workspaces can run on. Says nothing
+// about the platform, so a Linux or Windows build needs no rename.
 const MACHINES_GROUP = "Machines";
 // The conventional tail: things most people never open. A regular user sees
 // "Advanced › Experimental" — a deliberate category, not a stray entry under
@@ -101,6 +100,9 @@ const NAV: NavItem[] = [
     group: MACHINES_GROUP,
     subsections: DEVICES_IDS,
   },
+  // After Devices: a cloud machine is the farther place to run, and connecting
+  // a provider is a one-time act, where pairing is the common visit.
+  { id: "cloud", label: "Cloud", icon: "cloud", order: 63, group: MACHINES_GROUP },
   { id: "experimental", label: "Experimental", icon: "flask", order: 70, group: ADVANCED_GROUP },
 ];
 // Stable sort by weight keeps contribution order on ties.

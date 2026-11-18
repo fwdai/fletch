@@ -936,6 +936,11 @@ fn never_exposed_ops_are_not_dispatchable() {
         // The headless host's two, on its 0600 admin socket only.
         "provider_status",
         "provider_login_command",
+        // The cloud provider connection: the token lives in this machine's
+        // secret store, and connecting is this machine's own act.
+        "cloud_providers",
+        "cloud_connect",
+        "cloud_disconnect",
         "run_start",
         "run_stop",
         "",
