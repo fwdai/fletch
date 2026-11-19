@@ -43,7 +43,11 @@
 //!   where a tools disk would hold them (`fletch_box::tools::install_cli`):
 //!   the owner's is installed at boot at the version a local box would get
 //!   (`registry::tools_version`), and a tenant's of another provider on its
-//!   first launch, with no restart ([`CloudMachine::ensure_cli`]). Codegraph
+//!   first launch, with no restart ([`CloudMachine::ensure_cli`]). A version
+//!   is recorded on the disk only once the guest's sync has put its files
+//!   there, in the background of the launch, and a clean stop lets a record
+//!   still being made finish first; a machine lost or killed before then has
+//!   no record, and its next boot installs again. Codegraph
 //!   is not installed in a cloud box (its bundle is per-architecture and
 //!   built for local boxes), so a cloud box offers none (`codegraph_bin`).
 //! - **A stop** syncs the guest's disks over the channel, then has the
@@ -498,6 +502,11 @@ pub(super) struct CloudMachine {
     /// Held across a read and an install, so two launches never install one
     /// CLI at once.
     installing: tokio::sync::Mutex<()>,
+    /// The records of installed CLIs still being made on the box's disk
+    /// (`ensure_cli`), each the guest's sync and then its version marker:
+    /// what a clean stop lets finish first ([`Self::halt`]). A kill or an
+    /// abort waits for none, and a record they cut short leaves no marker.
+    records: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl CloudMachine {
@@ -508,6 +517,7 @@ impl CloudMachine {
             handle,
             clis: Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
+            records: Mutex::new(Vec::new()),
         }
     }
 
@@ -519,12 +529,13 @@ impl CloudMachine {
         &self.handle
     }
 
-    /// Stop the machine cleanly: the guest's disks synced over `channel`,
+    /// Stop the machine cleanly: the CLI records still being made let finish
+    /// ([`Self::finish_records`]), the guest's disks synced over `channel`,
     /// then the provider's stop, or for a box stopped for being idle
     /// ([`StopReason::Idle`]) its park, so that it wakes the soonest when it
-    /// is wanted again. With a `bound`, the two together get that long; the
-    /// request is made whatever comes of the wait, and an unconfirmed stop
-    /// or park is not a clean one.
+    /// is wanted again. With a `bound`, they all get that long; the request
+    /// is made whatever comes of the wait, and an unconfirmed stop or park is
+    /// not a clean one.
     pub(super) async fn halt(
         &self,
         channel: &Channel,
@@ -532,6 +543,7 @@ impl CloudMachine {
         bound: Option<Duration>,
     ) -> StopOutcome {
         let started = Instant::now();
+        self.finish_records(bound).await;
         let sync = bound.map_or(SYNC_BOUND, |bound| bound.min(SYNC_BOUND));
         let synced = tokio::time::timeout(sync, channel.exec(None, None, &["sync"])).await;
         if !matches!(synced, Ok(Ok(ref out)) if out.status.success()) {
@@ -613,6 +625,11 @@ impl CloudMachine {
     /// is asked, installed when it is missing or another version.
     /// `preparing` hears an install as it starts. An ordinary launch costs
     /// no round trip once the box has answered once.
+    ///
+    /// An install returns once the CLI is usable, its version known for this
+    /// run of the box; recording it on the disk waits for the guest's sync,
+    /// which the launch does not, so the record is made in the background
+    /// ([`Self::record_in_background`]).
     pub(super) async fn ensure_cli(
         &self,
         channel: &Channel,
@@ -639,7 +656,7 @@ impl CloudMachine {
         let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
         preparing(format!("installing {label} {wanted}"));
         let agent_id = self.agent_id.as_str();
-        fletch_box::tools::install_cli(
+        fletch_box::tools::run_cli_install(
             channel,
             provider,
             &wanted,
@@ -660,8 +677,62 @@ impl CloudMachine {
             version = wanted,
             "CLI installed in a cloud box"
         );
+        self.record_in_background(channel, provider, &wanted);
         self.clis.lock().insert(provider.to_string(), wanted);
         Ok(())
+    }
+
+    /// Record `provider`'s CLI at `version` on the box's disk, in a task of
+    /// its own that the machine keeps until a stop lets it finish: the
+    /// guest's disks synced, then the version marker written
+    /// (`fletch_box::tools::record_cli_version`). A record that fails, or is
+    /// cut short by the machine going down, leaves no marker, and the next
+    /// boot installs the CLI again.
+    fn record_in_background(&self, channel: &Channel, provider: &str, version: &str) {
+        let (channel, agent_id) = (channel.clone(), self.agent_id.clone());
+        let (provider, version) = (provider.to_string(), version.to_string());
+        let record = crate::host::spawn(async move {
+            if let Err(e) =
+                fletch_box::tools::record_cli_version(&channel, &provider, &version).await
+            {
+                tracing::warn!(
+                    agent_id,
+                    provider,
+                    version,
+                    error = %e,
+                    "a CLI installed in a cloud box was not recorded on its disk; its next boot \
+                     installs it again"
+                );
+            }
+        });
+        let mut records = self.records.lock();
+        records.retain(|record| !record.is_finished());
+        records.push(record);
+    }
+
+    /// Wait for the CLI records still being made ([`Self::record_in_background`])
+    /// to finish, for a clean stop, so the machine keeps each version it
+    /// recorded. With a `bound` they get what of it the stop's own sync does
+    /// not take; one still unfinished then races the machine going down, and
+    /// writes its marker only if its sync finishes first.
+    async fn finish_records(&self, bound: Option<Duration>) {
+        let records = std::mem::take(&mut *self.records.lock());
+        let deadline = bound.map(|bound| Instant::now() + bound.saturating_sub(SYNC_BOUND));
+        for record in records {
+            let finished = match deadline {
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    tokio::time::timeout(left, record).await.is_ok()
+                }
+                None => record.await.is_ok(),
+            };
+            if !finished {
+                tracing::debug!(
+                    agent_id = self.agent_id,
+                    "a CLI record did not finish before its cloud box's stop"
+                );
+            }
+        }
     }
 }
 

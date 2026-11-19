@@ -148,6 +148,80 @@ async fn a_parked_machine_is_woken_as_a_stopped_one_is() {
     assert_eq!(fake.acts(), ["create", "exec", "park", "start"]);
 }
 
+/// A made box's running machine, and a channel to a guest that never
+/// answers: a stop's own sync over it fails at once.
+async fn running_machine(fake: &FakeCloud, dir: &Path) -> (CloudMachine, Channel) {
+    let handle = made(fake, dir).await;
+    let machine = CloudMachine::new("glacier", Arc::new(fake.client()), handle);
+    (machine, Channel::open(dir))
+}
+
+/// A clean stop lets a CLI record still being made finish before the
+/// provider stops the machine, so the version it records is on the disk.
+#[tokio::test]
+async fn a_halt_lets_a_pending_cli_record_finish_before_the_machine_stops() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (machine, channel) = running_machine(&fake, dir.path()).await;
+    let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+    machine.records.lock().push(tokio::spawn(async move {
+        let _ = finished.await;
+    }));
+
+    let halt = machine.halt(&channel, StopReason::User, None);
+    tokio::pin!(halt);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut halt)
+            .await
+            .is_err(),
+        "the stop waits for the record"
+    );
+    assert_eq!(fake.acts(), ["create", "exec"], "not stopped yet");
+
+    finish.send(()).unwrap();
+    assert_eq!(halt.await, StopOutcome::Control);
+    assert_eq!(fake.acts(), ["create", "exec", "stop"]);
+    assert!(machine.records.lock().is_empty());
+}
+
+/// Under a bound, a record gets what the stop's own sync leaves of it, and
+/// the machine is stopped whatever became of the record.
+#[tokio::test]
+async fn a_bounded_halt_waits_for_a_cli_record_no_longer_than_its_share() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (machine, channel) = running_machine(&fake, dir.path()).await;
+    machine
+        .records
+        .lock()
+        .push(tokio::spawn(std::future::pending::<()>()));
+
+    let share = Duration::from_millis(300);
+    let started = Instant::now();
+    let outcome = machine.halt(&channel, StopReason::User, Some(SYNC_BOUND + share)).await;
+
+    let waited = started.elapsed();
+    assert!(waited >= share && waited < SYNC_BOUND, "{waited:?}");
+    assert_eq!(outcome, StopOutcome::Control);
+    assert_eq!(fake.acts(), ["create", "exec", "stop"]);
+}
+
+/// A record whose guest cannot be synced (here, cannot be reached) writes no
+/// marker and ends, warned of; the stop that waits for it goes on.
+#[tokio::test]
+async fn a_cli_record_that_cannot_sync_ends_and_the_stop_goes_on() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (machine, channel) = running_machine(&fake, dir.path()).await;
+
+    machine.record_in_background(&channel, "claude", "2.1.0");
+    assert_eq!(machine.records.lock().len(), 1);
+
+    assert_eq!(machine.halt(&channel, StopReason::User, None).await, StopOutcome::Control);
+    assert!(machine.records.lock().is_empty());
+    assert_eq!(fake.acts(), ["create", "exec", "stop"]);
+}
+
 /// A host key no box of this account has.
 const OTHER_HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA another-box";
 

@@ -528,7 +528,11 @@ everything provider-specific (nothing outside `cloud/` names a provider:
   at `/opt/fletch/tools` where a tools disk would be: the owner's is
   installed at boot at the version a local box would get, a tenant's of
   another provider on its first launch, in place and with no restart
-  (`fletch_box::tools::install_cli`, a version marker beside each).
+  (`fletch_box::tools::install_cli`). The version marker beside each is
+  written only once a sync of the guest's disks has put the CLI's files
+  there: in the background of the launch that installed it, and a clean
+  stop lets it finish first. A machine lost or killed before then has no
+  marker, and its next boot installs the CLI again.
   Codegraph is not installed in a cloud box: its bundle is per
   architecture and built for local boxes, so a cloud box offers none.
 - **Network.** The machine's network is its own: no egress proxy, no
