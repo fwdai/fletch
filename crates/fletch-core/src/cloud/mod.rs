@@ -3,11 +3,19 @@
 //! ssh, here across the internet.
 //!
 //! This module is the provider client and nothing more: create a box's machine
-//! and its disk, start and stop the machine, read the box's state, run one
-//! command in it, replace a machine that was lost, destroy the box, and list
-//! what this integration created so an orphan can be found. Which box a
-//! machine backs and when it starts or stops is the box registry's business;
-//! it keeps each box's [`Handle`] and passes it back for every call.
+//! and its disk, start, stop and park the machine, read the box's state, run
+//! one command in it, replace a machine that was lost, destroy the box, and
+//! list what this integration created so an orphan can be found. Which box a
+//! machine backs and when it starts, stops or parks is the box registry's
+//! business; it keeps each box's [`Handle`] and passes it back for every call.
+//!
+//! A parked machine rests in whichever state its provider wakes it from
+//! soonest, with everything on it kept ([`Client::park`]). Which state that
+//! is, and the fallback to a plain stop where the provider has nothing faster
+//! for the machine, is the adapter's answer: the caller never learns which it
+//! got, [`Client::start`] wakes the machine from either, and a guest works the
+//! same whether it resumed or started afresh, since a provider may cold-start
+//! a parked machine.
 //!
 //! A cloud box is two things with two lifetimes: a disk, the provider's
 //! persistent storage, holding everything that is the box's — its workspace,
@@ -337,9 +345,10 @@ pub enum MachineState {
     Starting,
     /// Running: its sshd is reachable at the endpoint.
     Running,
-    /// On its way to stopped.
+    /// On its way to stopped, or to parked.
     Stopping,
-    /// Not running; [`Client::start`] starts it.
+    /// Not running: stopped, or parked ([`Client::park`]); [`Client::start`]
+    /// starts it either way.
     Stopped,
     /// The machine is gone and the disk is not: deleted from the provider's
     /// dashboard, or by the provider. Nothing is lost —
@@ -472,6 +481,22 @@ impl Client {
     pub async fn stop(&self, handle: &Handle) -> Result<()> {
         match (self, handle) {
             (Self::Fly(c), Handle::Fly { app, machine, .. }) => c.stop(app, machine).await,
+        }
+    }
+
+    /// Put the machine at rest in the state its provider wakes it from
+    /// soonest, and return once it is at rest; a machine already at rest is
+    /// left as it is, and one on its way to running or to rest is brought to
+    /// rest as [`stop`](Self::stop) brings it. The disk and everything on it
+    /// is kept, and the machine's own root filesystem at least as surely as
+    /// `stop` keeps it. Which state that is is the adapter's to choose, a
+    /// stop where the provider cannot rest the machine any faster way, and
+    /// the caller is never told: [`start`](Self::start) brings the machine
+    /// back from whichever it got, by a resume or by a fresh start, as the
+    /// provider manages.
+    pub async fn park(&self, handle: &Handle) -> Result<()> {
+        match (self, handle) {
+            (Self::Fly(c), Handle::Fly { app, machine, .. }) => c.park(app, machine).await,
         }
     }
 

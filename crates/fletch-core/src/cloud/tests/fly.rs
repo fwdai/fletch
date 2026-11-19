@@ -869,6 +869,181 @@ async fn a_refused_start_is_waited_on_when_already_starting_and_named_when_the_h
     );
 }
 
+/// Fly answering for one machine, `m1` at version `v7`, whose state is held
+/// in `state`: a stop and a start move it as Fly would; a suspend is
+/// answered with the status `suspend`, and moves it to `suspended` only when
+/// that is a success and `takes` says so; a wait succeeds once the machine
+/// is in the state waited for, and otherwise times out as Fly's does.
+fn fly_machine(
+    state: Arc<Mutex<&'static str>>,
+    suspend: u16,
+    takes: bool,
+) -> impl Fn(&Request) -> Reply + Send + Sync + 'static {
+    move |r| {
+        let mut state = state.lock().unwrap();
+        match (r.method.as_str(), r.path.as_str()) {
+            ("GET", p) if p.ends_with("/machines/m1") => {
+                Reply::json(200, json!({ "id": "m1", "state": *state, "version": "v7" }))
+            }
+            ("GET", p) if p.ends_with(&format!("/volumes/{VOL}")) => Reply::json(
+                200,
+                json!({ "id": VOL, "state": "created", "region": "ams" }),
+            ),
+            ("POST", p) if p.ends_with("/suspend") => {
+                if !(200..300).contains(&suspend) {
+                    return Reply::json(suspend, json!({ "error": "machine cannot be suspended" }));
+                }
+                if takes {
+                    *state = "suspended";
+                }
+                Reply::json(suspend, json!({ "ok": true }))
+            }
+            ("POST", p) if p.ends_with("/stop") => {
+                *state = "stopped";
+                Reply::json(200, json!({ "ok": true }))
+            }
+            ("POST", p) if p.ends_with("/start") => {
+                let previous = std::mem::replace(&mut *state, "started");
+                Reply::json(200, json!({ "previous_state": previous }))
+            }
+            ("GET", p) if p.contains(&format!("/wait?state={}&", *state)) => {
+                Reply::json(200, json!({ "ok": true, "state": *state }))
+            }
+            ("GET", p) if p.contains("/wait?") => {
+                Reply::json(408, json!({ "error": "deadline_exceeded" }))
+            }
+            _ => Reply::json(500, json!({ "error": format!("unexpected {}", r.line()) })),
+        }
+    }
+}
+
+#[tokio::test]
+async fn park_suspends_then_waits_for_suspended_naming_no_version() {
+    let state = Arc::new(Mutex::new("started"));
+    let server = StandIn::start(fly_machine(state.clone(), 200, true)).await;
+    client(&server, TOKEN, None).park(APP, "m1").await.unwrap();
+    assert_eq!(*state.lock().unwrap(), "suspended");
+    assert_eq!(
+        server.lines(),
+        [
+            format!("GET /v1/apps/{APP}/machines/m1"),
+            format!("POST /v1/apps/{APP}/machines/m1/suspend"),
+            format!("GET /v1/apps/{APP}/machines/m1/wait?state=suspended&timeout=30"),
+        ]
+    );
+    assert_eq!(
+        server.requests()[1].body,
+        serde_json::Value::Null,
+        "no body"
+    );
+}
+
+/// Fly does not document how it turns a suspend down (a machine with more
+/// than 2 GB of memory, swap or a schedule): any refusal of a machine still
+/// running is a stop instead.
+#[tokio::test]
+async fn a_suspend_fly_refuses_is_a_stop_instead() {
+    for status in [400, 412, 422, 500] {
+        let state = Arc::new(Mutex::new("started"));
+        let server = StandIn::start(fly_machine(state.clone(), status, true)).await;
+        client(&server, TOKEN, None).park(APP, "m1").await.unwrap();
+        assert_eq!(*state.lock().unwrap(), "stopped", "{status}");
+        assert_eq!(
+            server.lines(),
+            [
+                format!("GET /v1/apps/{APP}/machines/m1"),
+                format!("POST /v1/apps/{APP}/machines/m1/suspend"),
+                // The refusal stands: the machine is still running.
+                format!("GET /v1/apps/{APP}/machines/m1"),
+                // The stop, as `stop` makes it.
+                format!("GET /v1/apps/{APP}/machines/m1"),
+                format!("POST /v1/apps/{APP}/machines/m1/stop"),
+                format!(
+                    "GET /v1/apps/{APP}/machines/m1/wait?state=stopped&timeout=30&instance_id=v7"
+                ),
+            ],
+            "{status}"
+        );
+    }
+}
+
+/// A suspend Fly accepts and does not carry out leaves the machine running
+/// once the wait for it is over: that is a stop too, without waiting out the
+/// rest of the bound.
+#[tokio::test]
+async fn a_suspend_that_does_not_reach_suspended_is_a_stop_instead() {
+    let state = Arc::new(Mutex::new("started"));
+    let server = StandIn::start(fly_machine(state.clone(), 200, false)).await;
+    client(&server, TOKEN, None).park(APP, "m1").await.unwrap();
+    assert_eq!(*state.lock().unwrap(), "stopped");
+    assert_eq!(
+        server.lines(),
+        [
+            format!("GET /v1/apps/{APP}/machines/m1"),
+            format!("POST /v1/apps/{APP}/machines/m1/suspend"),
+            format!("GET /v1/apps/{APP}/machines/m1/wait?state=suspended&timeout=30"),
+            format!("GET /v1/apps/{APP}/machines/m1"),
+            format!("GET /v1/apps/{APP}/machines/m1"),
+            format!("POST /v1/apps/{APP}/machines/m1/stop"),
+            format!("GET /v1/apps/{APP}/machines/m1/wait?state=stopped&timeout=30&instance_id=v7"),
+        ]
+    );
+}
+
+/// A machine already at rest is asked nothing: a stop would throw a
+/// suspended machine's snapshot away.
+#[tokio::test]
+async fn park_leaves_a_machine_not_running_alone() {
+    let server = StandIn::start(|r| match r.path.as_str() {
+        p if p.ends_with("/machines/stopped") => Reply::json(200, json!({ "state": "stopped" })),
+        p if p.ends_with("/machines/suspended") => {
+            Reply::json(200, json!({ "state": "suspended" }))
+        }
+        p if p.ends_with("/machines/failed") => Reply::json(200, json!({ "state": "failed" })),
+        _ => Reply::json(404, json!({})),
+    })
+    .await;
+    let fly = client(&server, TOKEN, None);
+    for machine in ["stopped", "suspended", "failed"] {
+        fly.park(APP, machine).await.unwrap();
+    }
+    let gone = fly.park(APP, "missing").await.unwrap_err();
+    assert!(matches!(gone, Error::CloudGone(_)), "{gone}");
+    assert_eq!(
+        server.lines(),
+        [
+            format!("GET /v1/apps/{APP}/machines/stopped"),
+            format!("GET /v1/apps/{APP}/machines/suspended"),
+            format!("GET /v1/apps/{APP}/machines/failed"),
+            format!("GET /v1/apps/{APP}/machines/missing"),
+        ]
+    );
+}
+
+/// A suspended machine is a box at rest, and the ordinary start resumes it.
+#[tokio::test]
+async fn a_suspended_machine_reads_stopped_and_start_resumes_it() {
+    let state = Arc::new(Mutex::new("suspended"));
+    let server = StandIn::start(fly_machine(state.clone(), 200, true)).await;
+    let fly = client(&server, TOKEN, None);
+    assert_eq!(
+        fly.state(ORG, APP, VOL, "m1").await.unwrap(),
+        MachineState::Stopped
+    );
+    fly.start(APP, "m1").await.unwrap();
+    assert_eq!(*state.lock().unwrap(), "started");
+    assert_eq!(
+        server.lines(),
+        [
+            format!("GET /v1/apps/{APP}/volumes/{VOL}"),
+            format!("GET /v1/apps/{APP}/machines/m1"),
+            format!("GET /v1/apps/{APP}/machines/m1"),
+            format!("POST /v1/apps/{APP}/machines/m1/start"),
+            format!("GET /v1/apps/{APP}/machines/m1/wait?state=started&timeout=30"),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn exec_runs_the_argv_with_an_explicit_timeout_and_returns_what_it_did() {
     let server = StandIn::start(|r| match r.body["command"][1].as_str() {

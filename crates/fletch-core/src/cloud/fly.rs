@@ -32,6 +32,18 @@
 //! restarts the machine by itself — no restart policy, no autostop, no
 //! autostart — because the engine owns its lifecycle.
 //!
+//! A parked machine ([`Client::park`]) is suspended: Fly snapshots it, its
+//! memory included, and the next start resumes it from the snapshot rather
+//! than booting it afresh, with its root filesystem as it was. Fly suspends
+//! only a machine with at most 2 GB of memory, no swap and no schedule
+//! (<https://docs.fly.io/reference/suspend-resume/>), and does not document
+//! how it turns a suspend down, so a suspend refused for any reason, and one
+//! that does not end in `suspended`, is a stop instead. A resume is not
+//! promised either: a machine migrated, maintained or whose snapshot was lost
+//! boots afresh at its next start, its root filesystem kept. A stop of a
+//! suspended machine throws its snapshot away, so [`Client::stop`] asks
+//! nothing of a machine already at rest.
+//!
 //! Every request has a bounded timeout. The Machines API rate-limits each
 //! action per machine (one request a second, bursts of three); a 429 is retried
 //! a few times with backoff, which is safe for every request because a
@@ -140,6 +152,8 @@ const WAIT_SLICE: Duration = Duration::from_secs(30);
 const CREATE_BOUND: Duration = Duration::from_secs(300);
 const START_BOUND: Duration = Duration::from_secs(120);
 const STOP_BOUND: Duration = Duration::from_secs(60);
+/// How long a machine may take to suspend: its memory is written out first.
+const SUSPEND_BOUND: Duration = Duration::from_secs(60);
 /// The longest Fly runs an exec'd command.
 const EXEC_MAX: Duration = Duration::from_secs(600);
 /// Retries of a rate-limited request before its refusal stands.
@@ -240,6 +254,10 @@ enum Disk {
 enum Target {
     Started,
     Stopped,
+    /// Suspended reads back as stopped ([`machine_state`]), so a read of the
+    /// machine's state counts a machine at rest either way as there; only
+    /// Fly's wait for `suspended` tells a suspended one apart.
+    Suspended,
     Destroyed,
 }
 
@@ -248,6 +266,7 @@ impl Target {
         match self {
             Self::Started => "started",
             Self::Stopped => "stopped",
+            Self::Suspended => "suspended",
             Self::Destroyed => "destroyed",
         }
     }
@@ -258,6 +277,7 @@ impl Target {
         match self {
             Self::Started => "start",
             Self::Stopped => "stop",
+            Self::Suspended => "suspend",
             Self::Destroyed => "destroy",
         }
     }
@@ -266,7 +286,9 @@ impl Target {
         match self {
             Self::Started => *state == MachineState::Running,
             // A failed machine is not running either.
-            Self::Stopped => matches!(state, MachineState::Stopped | MachineState::Failed(_)),
+            Self::Stopped | Self::Suspended => {
+                matches!(state, MachineState::Stopped | MachineState::Failed(_))
+            }
             Self::Destroyed => *state == MachineState::Gone,
         }
     }
@@ -276,7 +298,7 @@ impl Target {
         self.reached(state)
             || match self {
                 Self::Started => *state == MachineState::Starting,
-                Self::Stopped => *state == MachineState::Stopping,
+                Self::Stopped | Self::Suspended => *state == MachineState::Stopping,
                 Self::Destroyed => false,
             }
     }
@@ -557,6 +579,41 @@ impl Client {
         let version = seen.version.as_deref();
         self.wait_for(app, machine, Target::Stopped, version, STOP_BOUND)
             .await
+    }
+
+    /// Suspend the machine and wait until it is suspended; a machine Fly
+    /// will not suspend (over its limits: more than 2 GB of memory, swap, a
+    /// schedule), or that does not reach `suspended`, is stopped instead
+    /// ([`stop`](Self::stop)). A machine not running is left as `stop` leaves
+    /// it, and one on its way somewhere is settled as `stop` settles it.
+    pub async fn park(&self, app: &str, machine: &str) -> Result<()> {
+        let seen = self
+            .observe(app, machine)
+            .await?
+            .ok_or_else(|| gone(app, machine))?;
+        match seen.state {
+            MachineState::Running => {}
+            MachineState::Stopped | MachineState::Failed(_) => return Ok(()),
+            MachineState::Gone | MachineState::MachineGone | MachineState::DiskGone => {
+                return Err(gone(app, machine))
+            }
+            MachineState::Starting | MachineState::Stopping => {
+                return self.stop(app, machine).await
+            }
+        }
+        // Waiting for `suspended` names no version: Fly asks for one only
+        // for `stopped`.
+        let suspended = async {
+            self.request(app, machine, Target::Suspended).await?;
+            self.wait_for(app, machine, Target::Suspended, None, SUSPEND_BOUND)
+                .await
+        }
+        .await;
+        if let Err(e) = suspended {
+            tracing::info!(app, machine, error = %e, "Fly.io did not suspend a machine; stopping it");
+            return self.stop(app, machine).await;
+        }
+        Ok(())
     }
 
     /// A new machine for a box whose machine is gone, in `app`, mounting the
@@ -955,9 +1012,9 @@ impl Client {
         }))
     }
 
-    /// Ask Fly to start or stop the machine. A refusal stands only if the
-    /// machine is not already there or on its way (a stop that raced the
-    /// machine's own exit, a start of one already starting).
+    /// Ask Fly to start, stop or suspend the machine. A refusal stands only
+    /// if the machine is not already there or on its way (a stop that raced
+    /// the machine's own exit, a start of one already starting).
     async fn request(&self, app: &str, machine: &str, target: Target) -> Result<()> {
         let path = format!("/v1/apps/{app}/machines/{machine}/{}", target.action());
         let reply = self
@@ -980,8 +1037,10 @@ impl Client {
     /// Wait until the machine reaches `target`, within `bound`. Fly's wait
     /// blocks a slice at a time; whenever it comes back any other way than
     /// reached — timed out, refused, lost — the machine's state is read, so a
-    /// machine that failed or went is reported then rather than at the bound.
-    /// Waiting for `stopped` names the machine's version, as Fly asks.
+    /// machine that failed or went is reported then rather than at the bound,
+    /// and so is one still running once a wait for its suspension is over:
+    /// the suspend did not take. Waiting for `stopped` names the machine's
+    /// version, as Fly asks.
     async fn wait_for(
         &self,
         app: &str,
@@ -1029,6 +1088,11 @@ impl Client {
                 (MachineState::Failed(reason), Target::Started) => {
                     return Err(self.error(format!(
                         "the Fly.io machine {machine} did not start: {reason}"
+                    )))
+                }
+                (MachineState::Running, Target::Suspended) => {
+                    return Err(self.error(format!(
+                        "the Fly.io machine {machine} was not suspended (Fly.io reports it {raw})"
                     )))
                 }
                 _ => {}
