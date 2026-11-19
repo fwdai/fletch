@@ -313,7 +313,7 @@
     --chat-pad: 24px;
   }
   .composer-wrap {
-    padding: 0 24px 16px;
+    padding-inline: 24px;
   }
 }
 @media (max-width: 900px) {
@@ -321,7 +321,7 @@
     --chat-pad: 16px;
   }
   .composer-wrap {
-    padding: 0 16px 14px;
+    padding-inline: 16px;
   }
 }
 
