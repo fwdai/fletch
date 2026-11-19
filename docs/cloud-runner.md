@@ -91,8 +91,9 @@ any workspace and parked, so a new agent starts on a machine that only has to
 wake:
 
 - A spare is a whole box with no owner yet: the image, its disk, its ssh key,
-  its host key pinned, and the agent CLIs on its disk, so that no launch
-  creates a machine or installs anything.
+  its host key pinned, and on its disk every agent CLI the supervisor has a
+  login for, at the version it would launch, so that no launch creates a
+  machine or installs anything.
 - A new workspace takes the spare. Its replacement is created at once, in the
   background.
 - There is always at least one spare, whatever the number of workspaces,
@@ -102,11 +103,25 @@ wake:
   or waits for want of a spare.
 - A spare made for another image or agent CLI version than the supervisor now
   uses is replaced.
+- The runner keeps one spare by default. A laptop that drives provider
+  machines itself keeps none by default, since a spare is billed whether or
+  not it is used; the same setting turns it on.
 
-**Parked means the fastest way back.** A spare rests in whichever state its
-provider wakes soonest from. On Fly.io that is suspended, where its limits
-allow (section 5), else stopped. Which state is the adapter's answer, not the
-core's.
+**A machine serves one workspace in its life.** A spare has never had an
+owner: it is created new, and holds only the image and the agent CLIs its
+preparation installed. Once a workspace takes it, it is that workspace's
+until the workspace is archived, and then it is destroyed, never parked again
+or returned to the spares. So an agent never starts on a machine another
+workspace used, and there is nothing of an earlier agent's to clean: a new
+workspace on a spare finds its checkout directory and its home as a machine
+created for it would have them. Preparing a spare leaves nothing in either.
+
+**Parked means the fastest way back.** A spare, and a workspace's machine
+while the workspace is idle, rests in whichever state its provider wakes
+soonest from. On Fly.io that is suspended, where its limits allow (section 5),
+else stopped. Which state is the adapter's answer, not the core's. Parking
+keeps what is on the machine: a workspace wakes to its own files as it left
+them. Being pristine comes from never reusing a machine, not from parking.
 
 **A spare gets its identity when it is taken, over ssh.** A box binds the
 paths of its workspace, which carry the workspace's id. A spare is created
@@ -255,6 +270,10 @@ What Fly.io documents (`docs.fly.io/reference/suspend-resume`,
   A box has 2048 MiB by default (`sandbox/boxes/settings.rs`).
 - A resume is not guaranteed: a machine cold-starts when its snapshot is lost,
   its host is maintained, it is migrated, or it is stopped while suspended.
+- "Unlike stop, suspend does not reset the machine's rootfs". A stop resets
+  it unless the machine asks otherwise; a box asks for it to be kept across a
+  restart (`rootfs.persist`, `crates/fletch-core/src/cloud/fly.rs`), and its
+  workspace is on its disk either way.
 - After a resume the clock can lag until NTP syncs, and connections the
   machine held may be dead.
 - A stopped or suspended machine is billed for its root filesystem only,
@@ -284,16 +303,19 @@ quickly and are tested from a laptop; steps 4 to 6 make it run unattended.
    when the log of a wake shows the agent's process starting within a second
    or two of the box being connected.
 2. **Parking.** The adapter can put a box at rest in its fastest-waking state
-   and wake it, falling back to a stop where that state is not available.
-   Done when a parked Fly.io box resumes and its box is connected again, and
-   a box over the suspend limit still stops and starts.
+   and wake it, falling back to a stop where that state is not available, and
+   an idle workspace's machine is parked that way. Done when a parked Fly.io
+   box resumes with its files as they were and is connected again, and a box
+   over the suspend limit still stops and starts.
 3. **Spares.** The supervisor prepares a box with no owner (created, agent
    CLIs installed, parked), hands it to the next new workspace with that
    workspace's identity given over ssh, and replaces it; with none ready it
    creates the machine directly. The count is a setting. Done when, with a
    spare ready, a new workspace's agent starts without creating a machine or
-   installing a CLI, a second spare exists shortly after, and archiving the
-   workspace destroys only its own machine.
+   installing a CLI, in a checkout directory and home that hold nothing but
+   what its own launch put there; a second spare exists shortly after; and
+   archiving the workspace destroys its machine and returns nothing to the
+   spares.
 4. **A headless host sandboxes in provider machines.** It can hold a provider
    connection, and where it cannot boot a local VM it gives a new workspace a
    provider machine instead of refusing. Done when a `fletch-host` on a Linux
@@ -327,6 +349,7 @@ quickly and are tested from a laptop; steps 4 to 6 make it run unattended.
   destroys its spares with it.
 - A spare is never given its workspace by changing its machine's
   configuration.
+- A machine is never handed from one workspace to another.
 - A guest must work after a resume and after a cold start alike: nothing may
   depend on which one it got.
 - A provider token and every other secret stay out of logs, errors and
@@ -350,16 +373,6 @@ Not investigated:
 - How the guest takes its workspace's paths after it has started. Today they
   are bound once, by the image's entrypoint, from the machine's environment
   (`packaging/cloud-image/entrypoint`).
-
-Awaiting Alex's decision:
-
-- **Which agent CLIs a spare carries.** Proposed: every agent CLI the
-  supervisor has a login for, at the version it would launch.
-- **Whether a laptop that drives provider machines itself keeps a spare.**
-  Proposed: the setting defaults to one on the runner and none on a laptop,
-  since a spare is billed whether or not it is used.
-- **Whether an idle workspace's machine is parked like a spare** rather than
-  stopped, so that waking it is as fast.
 
 Not verified:
 
