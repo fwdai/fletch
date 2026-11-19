@@ -355,6 +355,13 @@ pub struct AgentRecord {
     /// `None` = the CLI's own default account.
     #[serde(default)]
     pub account: Option<String>,
+    /// The cloud provider whose machine this workspace's box is, as
+    /// `cloud::ProviderId::as_str` spells it (`"fly"`), stamped at creation
+    /// from the spawn's workspace type (`sandbox::WorkspaceType::Cloud`) and
+    /// never changed; `sandbox_engine` stays `box` for it. `None` for a box
+    /// on this machine and for every workspace of another engine.
+    #[serde(default)]
+    pub cloud_provider: Option<String>,
     /// The workflow run that owns this agent, when it was spawned as a
     /// workflow step (see `workflow::service`). Run-owned agents are hidden
     /// from the normal sidebar (they render under their run) and are cleaned up
@@ -729,7 +736,7 @@ const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created
             s.effort, s.model, s.instructions, s.handoff_context, s.custom_agent_id,
             s.skills, s.mcp_servers,
             w.sandbox_engine, w.owner_run_id, w.issue_ref, w.purpose, w.title,
-            s.parent_session_id, s.parent_cut_seq, w.provider_account
+            s.parent_session_id, s.parent_cut_seq, w.provider_account, w.cloud_provider
      FROM workspaces w
      LEFT JOIN sessions s ON s.workspace_id = w.id AND s.superseded_at IS NULL";
 
@@ -761,6 +768,7 @@ type AgentRow = (
     Option<String>, // s.parent_session_id
     Option<i64>,    // s.parent_cut_seq
     Option<String>, // w.provider_account
+    Option<String>, // w.cloud_provider
 );
 
 impl WorkspaceManager {
