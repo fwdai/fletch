@@ -34,6 +34,7 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
   // Only a box agent has an entry; its icon carries the phase.
   const boxPhase = useAppStore((s) => s.boxStates[agent.id]?.phase);
   const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
+  const cloudProviders = useAppStore((s) => s.cloudProviders);
   const { shortstats, gitState, prState, checks, prs } = useCapsuleData(agent.id);
   const { lanes } = useWorkspaceLanes(agent);
 
@@ -51,7 +52,7 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
         <div className="ws-cap" tabIndex={0}>
           <span className="ws-ctx">
             <IsolationIcon
-              isolation={shownIsolation(agent.sandbox_engine, movingTo)}
+              isolation={shownIsolation(agent, movingTo, cloudProviders)}
               boxPhase={boxPhase}
               moving={movingTo !== null}
             />

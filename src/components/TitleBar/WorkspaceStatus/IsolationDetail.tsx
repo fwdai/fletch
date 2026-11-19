@@ -20,7 +20,8 @@ export function IsolationDetail({
 }) {
   const boxState = useAppStore((s) => s.boxStates[agent.id]);
   const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
-  const isolation = shownIsolation(agent.sandbox_engine, movingTo);
+  const cloudProviders = useAppStore((s) => s.cloudProviders);
+  const isolation = shownIsolation(agent, movingTo, cloudProviders);
   const isBox = !movingTo && isolation.kind === "box";
   const failure = isBox && boxState?.phase === "failed" ? boxState.reason : null;
 

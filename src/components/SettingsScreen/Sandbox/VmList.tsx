@@ -7,7 +7,7 @@ import { useGate } from "@/store/capabilities";
 import { SetDisclosure, SetGroup, SetRow } from "../primitives";
 import { foldVmRows, type VmRow, vmRows } from "./vmRows";
 
-const VM = isolationOf("box");
+const VM = isolationOf({ sandbox_engine: "box" }, null);
 
 function VmListRow({ row }: { row: VmRow }) {
   const stopBox = useAppStore((s) => s.stopBox);
