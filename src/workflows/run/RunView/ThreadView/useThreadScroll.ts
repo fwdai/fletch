@@ -5,7 +5,9 @@
 // thread has no single such signal: segments append, a lazily-loaded history
 // lands under an older segment, and a phase row swaps for a taller one. So it
 // follows the rendered height instead — one ResizeObserver on the inner column
-// covers every one of those cases with the same rule.
+// covers every one of those cases with the same rule. It watches the scroller
+// too, so the composer under it growing a line doesn't leave it short of the
+// bottom.
 
 import { type MutableRefObject, useEffect, useRef } from "react";
 
@@ -41,6 +43,7 @@ export function useThreadScroll(runId: string): ThreadScroll {
     follow();
     const ro = new ResizeObserver(follow);
     ro.observe(inner);
+    ro.observe(el);
     return () => ro.disconnect();
   }, []);
 

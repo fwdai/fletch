@@ -76,10 +76,33 @@ export function TranscriptList({
     el.scrollTop = el.scrollHeight;
   }, [log, transcriptLoading, ref, pinnedToBottom]);
 
+  // A pinned log also follows its rendered height, not only new entries: a row
+  // growing open after it landed, the composer under the pane growing a line,
+  // a bar appearing below it. Without this the log stops short of its bottom,
+  // and the last line slides under what overlaps the log's foot (the working
+  // strip, the machine sheet behind the composer). Observers run between
+  // layout and paint, so the log keeps up in the same frame. Paused while the
+  // find bar reveals rows: it scrolls to the match itself.
+  const innerRef = useRef<HTMLDivElement | null>(null);
+  const revealing = useRef(false);
+  revealing.current = revealQuery.trim() !== "";
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `agent.id` remounts the inner column (it is keyed), which has to be observed afresh
+  useEffect(() => {
+    const el = ref.current;
+    const inner = innerRef.current;
+    if (!el || !inner) return;
+    const ro = new ResizeObserver(() => {
+      if (pinnedToBottom.current && !revealing.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, [ref, pinnedToBottom, agent.id]);
+
   return (
     <div className="chat-scroll-wrap">
       <div className="chat-scroll" ref={ref} onScroll={handleScroll}>
-        <div className="chat-inner fade-in" key={agent.id}>
+        <div className="chat-inner fade-in" key={agent.id} ref={innerRef}>
           <RevealQuery.Provider value={revealQuery.trim().toLowerCase()}>
             <TranscriptRows
               agent={agent}

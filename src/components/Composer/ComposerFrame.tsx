@@ -5,7 +5,7 @@ import { AutocompleteMenu } from "./autocomplete/AutocompleteMenu";
 import { FolderList } from "./FolderList";
 import { type GhostProps, InterimGhost } from "./InterimGhost";
 import type { ComposerInput } from "./useComposerInput";
-import { MAX_HEIGHT } from "./useComposerInput";
+import { grow } from "./useComposerInput";
 
 interface Props {
   /** The shared input core from [`useComposerInput`]. */
@@ -47,17 +47,15 @@ export function ComposerFrame({
   const listening = dictation?.listening ?? false;
   const showGhost = !!dictation && (interim !== "" || listening || dictation.fresh !== null);
 
-  // The interim text lives in the ghost, so the box has to grow to it — grow()
-  // only knows the textarea's own value. Measured after each revision, and
+  // The interim text lives in the ghost, so the box has to grow to it — the
+  // textarea's own value doesn't hold it. Measured after each revision, and
   // after each edit made while the ghost is up.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure when the previewed text changes; the refs are stable
   useEffect(() => {
     const ta = input.ta.current;
     const ghost = ghostRef.current;
     if (!ta || !ghost) return;
-    ta.style.height = "auto";
-    const wanted = Math.max(ta.scrollHeight, ghost.scrollHeight);
-    ta.style.height = `${Math.min(wanted, MAX_HEIGHT)}px`;
+    grow(ta, () => ghost.scrollHeight);
   }, [interim, showGhost, input.text]);
 
   const cls = [
