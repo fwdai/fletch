@@ -29,10 +29,14 @@
 //!   its directory removed; a destroy that fails keeps the directory, the
 //!   only way back to a billed machine.
 //! - **Taking one** ([`take`]) is the first boot of a box with nothing made
-//!   for it: under a lock held only for the pick and the rename, a fresh
-//!   spare's directory becomes the box's and its marker goes. The boot goes
-//!   on as for any box with a handle: its machine is woken, its CLI found on
-//!   its disk, and its own paths bound in its guest (`cloud::bind_identity`).
+//!   for it: under a lock held only for the pick and the rename, the
+//!   directory of a ready spare with the machine a box made now would get
+//!   (the provider, the image, the size) becomes the box's and its marker
+//!   goes. Its CLIs are not asked about, so a take costs no login probe: the
+//!   boot goes on as for any box with a handle, its machine woken, its CLI
+//!   found on its disk or brought to the launch's version
+//!   (`CloudMachine::ensure_cli`), and its own paths bound in its guest
+//!   (`cloud::bind_identity`).
 //!   With none ready, a box directory that holds anything, or a rename that
 //!   fails, the box is made directly; a spawn never waits for a spare. A
 //!   taken machine is its workspace's until the workspace is archived, and
@@ -124,6 +128,24 @@ impl Build {
     fn provider(&self) -> Option<ProviderId> {
         ProviderId::parse(&self.provider)
     }
+
+    /// Whether `other` is the same machine, whatever CLIs either carries:
+    /// the provider, the image and the size.
+    fn same_machine(&self, other: &Build) -> bool {
+        (
+            &self.provider,
+            &self.image,
+            self.cpus,
+            self.memory_mib,
+            self.disk_gib,
+        ) == (
+            &other.provider,
+            &other.image,
+            other.cpus,
+            other.memory_mib,
+            other.disk_gib,
+        )
+    }
 }
 
 /// The CLIs a spare carries: every provider this supervisor launches in a
@@ -184,13 +206,14 @@ fn vacant(dir: &Path) -> bool {
     }
 }
 
-/// Give the box whose directory is `box_dir`, at `provider`, a fresh ready
-/// spare if there is one and nothing was made for the box yet: the spare's
-/// directory becomes the box's. Otherwise the box is made directly. Either
-/// way, where there were spares, a replenish follows in the background: the
-/// taken one's replacement, or the replacements of spares made for what
-/// boxes are no longer made with.
-pub(super) async fn take(provider: ProviderId, box_dir: &Path) {
+/// Give the box whose directory is `box_dir`, at `provider`, a ready spare
+/// with the machine a box made now gets, if there is one and nothing was
+/// made for the box yet: the spare's directory becomes the box's. Otherwise
+/// the box is made directly. Either way, where there were spares, a
+/// replenish follows in the background: the taken one's replacement, or the
+/// replacements of spares made for what boxes are no longer made with.
+/// Nothing here waits on a provider, a guest or a login probe.
+pub(super) fn take(provider: ProviderId, box_dir: &Path) {
     if !vacant(box_dir) {
         return;
     }
@@ -200,19 +223,19 @@ pub(super) async fn take(provider: ProviderId, box_dir: &Path) {
     if found_in(&root).is_empty() {
         return;
     }
-    let build = Build::now(provider, &wanted_clis().await);
-    take_in(&root, box_dir, &build);
+    take_in(&root, box_dir, &Build::now(provider, &[]));
     replenish_in_background();
 }
 
-/// [`take`] from `root`, of a spare built as `build`; whether one was taken.
+/// [`take`] from `root`, of a ready spare with `build`'s machine
+/// ([`Build::same_machine`]); whether one was taken.
 fn take_in(root: &Path, box_dir: &Path, build: &Build) -> bool {
     let _taking = TAKING.lock();
     if !vacant(box_dir) {
         return false;
     }
     let Some(spare) = found_in(root).into_iter().find(|found| {
-        found.built.as_ref() == Some(build)
+        found.built.as_ref().is_some_and(|built| built.same_machine(build))
             && matches!(&found.handle, Ok(Some(handle)) if handle.provider().as_str() == build.provider)
     }) else {
         return false;
