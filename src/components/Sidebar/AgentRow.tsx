@@ -92,6 +92,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // where it is going.
   const boxPhase = useAppStore((s) => s.boxStates[agent.id]?.phase);
   const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
+  const cloudProviders = useAppStore((s) => s.cloudProviders);
   // Which step a fresh spawn is on, from `agent:spawn-progress` — the loader's
   // tooltip. Absent for anything but a spawn this client watched.
   const spawnStage = useAppStore((s) => s.spawnStage[agent.id]);
@@ -291,7 +292,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             onMouseLeave={() => setDetailsOpen(false)}
           >
             <IsolationIcon
-              isolation={shownIsolation(agent.sandbox_engine, movingTo)}
+              isolation={shownIsolation(agent, movingTo, cloudProviders)}
               boxPhase={boxPhase}
               moving={movingTo !== null}
               size={11.5}

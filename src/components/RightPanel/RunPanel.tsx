@@ -12,7 +12,9 @@ import {
   withFallbackRows,
 } from "@/components/RunConfig";
 import { useAppStore } from "@/store";
+import { CLOUD_MACHINE, LINUX_VM } from "@/util/sandboxNames";
 import { useXterm } from "@/util/useXterm";
+import { inCloud } from "@/util/workspaceKind";
 import { RunPorts } from "./RunPorts";
 import { RunSettingsSheet } from "./RunSettingsSheet";
 
@@ -263,6 +265,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
   // A stopped VM's checkout can't be read, so an empty detection there says
   // nothing about the repo — say what will fill it instead.
   const vmAsleep = boxPhase === "stopped" && rows.length === 0 && !isActive;
+  const vm = inCloud(agent) ? CLOUD_MACHINE.label.toLowerCase() : LINUX_VM.label;
 
   return (
     <div className="run-wrap">
@@ -309,7 +312,7 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
       <RunPorts ports={status?.ports ?? []} runGuestPort={status?.guest_port ?? null} />
       {vmAsleep && (
         <div className="run-hint text-sm">
-          The Linux VM is stopped — Start wakes it and detects the run command.
+          The {vm} is stopped — Start wakes it and detects the run command.
         </div>
       )}
 

@@ -298,8 +298,13 @@ impl GuestRun {
             Vec::new()
         };
         all.extend_from_slice(env);
-        let contents =
-            super::render_env_file(&all, &self.identity.provider, &self.identity.home, ENV_DENY)?;
+        let contents = super::render_env_file(
+            &all,
+            &self.identity.provider,
+            &self.identity.home,
+            self.running.egress(),
+            ENV_DENY,
+        )?;
         let env_file = launch_files::env_file(&self.launch_id);
         executor::put(&self.channel, contents.as_bytes(), &env_file, 0o600)?;
         self.env_file_written = true;

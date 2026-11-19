@@ -77,8 +77,9 @@ impl<'a> Route<'a> {
     }
 
     /// The guest's sshd behind a proxy on `host:port` that terminates TLS and
-    /// forwards the plaintext stream to the machine the server name picks
-    /// (Fly.io's `tls` handler). `host` is a DNS name: it is the server name.
+    /// forwards the plaintext stream to the machine the server name picks (a
+    /// cloud provider's TLS handler). `host` is a DNS name: it is the server
+    /// name.
     pub fn tls(host: &'a str, port: u16) -> Result<Route<'a>> {
         check_endpoint(host, port)?;
         Ok(Route(Via::Tls { host, port }))

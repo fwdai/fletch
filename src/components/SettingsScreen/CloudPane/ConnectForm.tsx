@@ -5,15 +5,16 @@ import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
 import { StatusLine } from "./StatusLine";
 
-/** Connecting Fly.io: an org token, and the organization it is for when that
- *  is not the personal one (the backend's default for an empty field). The
- *  backend checks the token with Fly before keeping it, so a refusal shows
- *  here with the fields as typed. The token is held in this form alone until
- *  it is sent, and cleared once it is kept. */
-export function FlyConnectForm({ provider }: { provider: CloudProviderStatus }) {
+/** Connecting a provider: a token, and the account it is for when that is not
+ *  the provider's default (the backend's for an empty field). Its labels,
+ *  placeholders and help are the provider's status, so one form connects any
+ *  provider. The backend checks the token with the provider before keeping
+ *  it, so a refusal shows here with the fields as typed. The token is held in
+ *  this form alone until it is sent, and cleared once it is kept. */
+export function ConnectForm({ provider }: { provider: CloudProviderStatus }) {
   const connectCloud = useAppStore((s) => s.connectCloud);
   const [token, setToken] = useState("");
-  const [org, setOrg] = useState("");
+  const [account, setAccount] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,7 +24,7 @@ export function FlyConnectForm({ provider }: { provider: CloudProviderStatus }) 
     setBusy(true);
     setError(null);
     try {
-      await connectCloud(provider.id, key, org.trim());
+      await connectCloud(provider.id, key, account.trim());
       setToken("");
     } catch (e) {
       setError(String(e));
@@ -49,7 +50,7 @@ export function FlyConnectForm({ provider }: { provider: CloudProviderStatus }) 
           <TextInput
             mono
             type="password"
-            placeholder="FlyV1 fm2_…"
+            placeholder={provider.token_placeholder}
             value={token}
             disabled={busy}
             spellCheck={false}
@@ -62,18 +63,18 @@ export function FlyConnectForm({ provider }: { provider: CloudProviderStatus }) 
           />
         </label>
         <label className="set-field">
-          <span className="set-field-label text-sm">Organization</span>
+          <span className="set-field-label text-sm">{provider.account_label}</span>
           <TextInput
             mono
-            placeholder="personal"
-            value={org}
+            placeholder={provider.account_placeholder}
+            value={account}
             disabled={busy}
             spellCheck={false}
             autoComplete="off"
             autoCapitalize="off"
             autoCorrect="off"
             onChange={(e) => {
-              setOrg(e.target.value);
+              setAccount(e.target.value);
               if (error) setError(null);
             }}
             onKeyDown={onKeyDown}
@@ -81,8 +82,7 @@ export function FlyConnectForm({ provider }: { provider: CloudProviderStatus }) 
         </label>
       </div>
       <div className="set-gh-hint text-sm">
-        Run <span className="mono">fly tokens create org</span> in a terminal, or create one in the
-        Fly.io dashboard under Tokens. It is kept in this Mac's keychain.
+        {provider.token_help} It is kept in this Mac's keychain.
       </div>
       {error && <div className="set-gh-err text-sm">{error}</div>}
     </>

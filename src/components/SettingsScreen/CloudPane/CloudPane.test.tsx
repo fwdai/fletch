@@ -2,10 +2,11 @@
 // Settings › Cloud: a provider is connected with a token the provider has
 // checked, and disconnected in one click. The token is in the form until it is
 // kept and nowhere after; a refusal is shown beside the form with what was
-// typed still there; a provider this pane does not know yet still gets its row.
+// typed still there; every provider the backend lists is connected by the same
+// form, in the words its status gives.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, type CloudProviderId, type CloudProviderStatus } from "@/api";
+import { api, type CloudProviderStatus } from "@/api";
 import { useAppStore } from "@/store";
 import { fireEvent, render, screen } from "@/test/render";
 import { CloudPane } from ".";
@@ -15,6 +16,12 @@ const fly = (over: Partial<CloudProviderStatus> = {}): CloudProviderStatus => ({
   label: "Fly.io",
   connected: false,
   account: null,
+  account_label: "Organization",
+  account_placeholder: "personal",
+  token_placeholder: "FlyV1 fm2_…",
+  token_help:
+    "Run fly tokens create org in a terminal, or create one in the Fly.io dashboard under Tokens.",
+  billing: "Fly.io bills its disk while the workspace exists.",
   ...over,
 });
 
@@ -52,6 +59,7 @@ describe("Settings › Cloud", () => {
     await mount([fly()]);
     expect(screen.getByText("Not connected")).toBeTruthy();
     expect(tokenField().type).toBe("password");
+    expect(tokenField().placeholder).toBe("FlyV1 fm2_…");
     expect(orgField().placeholder).toBe("personal");
     expect(screen.getByText(/fly tokens create org/)).toBeTruthy();
     expect(screen.getByText(/kept in this Mac's keychain/)).toBeTruthy();
@@ -154,20 +162,52 @@ describe("Settings › Cloud", () => {
     expect(screen.getByText("Connected to the acme organization")).toBeTruthy();
   });
 
-  it("gives a provider it does not know yet its row, with no form", async () => {
+  it("connects any provider the backend lists with the same form, in its own words", async () => {
+    const connect = vi.spyOn(api, "cloudConnect").mockResolvedValue(
+      fly({
+        id: "daytona",
+        label: "Daytona",
+        connected: true,
+        account: "acme",
+        account_label: "Team",
+      }),
+    );
     await mount([
-      { id: "daytona" as CloudProviderId, label: "Daytona", connected: false, account: null },
-      { id: "e2b" as CloudProviderId, label: "E2B", connected: true, account: "team" },
+      fly({
+        id: "daytona",
+        label: "Daytona",
+        account_label: "Team",
+        account_placeholder: "default",
+        token_placeholder: "dtn_…",
+        token_help: "Create an API key in the Daytona dashboard.",
+      }),
+      fly({ id: "e2b", label: "E2B", connected: true, account: "acme", account_label: "Team" }),
       fly(),
     ]);
 
-    expect(screen.getByText("Daytona")).toBeTruthy();
     expect(screen.getByText("E2B")).toBeTruthy();
-    expect(screen.getByText("Connected as team")).toBeTruthy();
+    expect(screen.getByText("Connected to the acme team")).toBeTruthy();
     expect(screen.getAllByText("Not connected")).toHaveLength(2);
-    // Only Fly.io has a form; E2B can still be disconnected.
-    expect(screen.getAllByLabelText("Token")).toHaveLength(1);
+    expect(screen.getAllByLabelText("Token")).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "Disconnect" })).toHaveLength(1);
+
+    const team = screen.getByLabelText("Team") as HTMLInputElement;
+    expect(team.placeholder).toBe("default");
+    const [token] = screen.getAllByLabelText("Token") as HTMLInputElement[];
+    expect(token.placeholder).toBe("dtn_…");
+    expect(
+      screen.getByText(
+        "Create an API key in the Daytona dashboard. It is kept in this Mac's keychain.",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.change(token, { target: { value: "dtn_secret" } });
+    fireEvent.change(team, { target: { value: "acme" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect Daytona" }));
+    expect(connect).toHaveBeenCalledWith("daytona", "dtn_secret", "acme");
+    await vi.waitFor(() =>
+      expect(screen.getAllByText("Connected to the acme team")).toHaveLength(2),
+    );
   });
 
   it("says when the providers could not be read", async () => {

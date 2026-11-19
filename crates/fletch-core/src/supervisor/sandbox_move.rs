@@ -295,6 +295,8 @@ impl Supervisor {
             Some("This workspace has no checkout to move.")
         } else if record.repos.iter().any(TrackedRepo::is_adopted) {
             Some("This workspace works in another's checkout, so it can't move.")
+        } else if record.cloud_provider.is_some() {
+            Some(sandbox::CLOUD_MOVE_REFUSAL)
         } else if self.is_busy(&record.id) {
             Some(BUSY)
         } else if self.reviewed(&record.id) {

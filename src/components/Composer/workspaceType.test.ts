@@ -7,6 +7,7 @@ import {
   shownWorkspaceType,
   WORKSPACE_TYPES_UNREADABLE,
   workspaceTypeChip,
+  workspaceTypeIcon,
   workspaceTypeLabel,
   workspaceTypeResponseLands,
   workspaceTypesKey,
@@ -72,8 +73,10 @@ describe("workspace type", () => {
   });
 
   it("names each type", () => {
-    expect(workspaceTypeLabel("host")).toBe("macOS sandbox");
-    expect(workspaceTypeLabel("box")).toBe("Linux VM");
+    expect(workspaceTypeLabel({ kind: "host" })).toBe("macOS sandbox");
+    expect(workspaceTypeLabel({ kind: "box" })).toBe("Linux VM");
+    expect(workspaceTypeIcon("host")).toBe("folderLock");
+    expect(workspaceTypeIcon("box")).toBe("cube");
   });
 
   it("keys an answer by its repo and provider", () => {
@@ -143,5 +146,72 @@ describe("workspace type", () => {
     // An unavailable shown option carries its reason as the tip.
     const refused = [host({ default: true }), box({ available: false, reason: "off" })];
     expect(workspaceTypeChip(refused, false, "box")).toMatchObject({ kind: "menu", tip: "off" });
+  });
+});
+
+describe("a cloud workspace type", () => {
+  const cloud = (over: Partial<WorkspaceTypeOption> = {}): WorkspaceTypeOption => ({
+    kind: "cloud:fly",
+    label: "Fly.io",
+    available: true,
+    reason: null,
+    default: false,
+    ...over,
+  });
+
+  it("is named for its provider, by the backend's label, under the cloud glyph", () => {
+    expect(workspaceTypeLabel(cloud())).toBe("Fly.io");
+    expect(workspaceTypeLabel(cloud({ kind: "cloud:daytona", label: "Daytona" }))).toBe("Daytona");
+    // A pick with no row to read the label from (the retry chip).
+    expect(workspaceTypeLabel({ kind: "cloud:fly" })).toBe("Cloud machine");
+    expect(workspaceTypeIcon("cloud:fly")).toBe("cloud");
+  });
+
+  it("says where it runs and whose bill it is on, or why it can't", () => {
+    expect(workspaceTypeTip(cloud(), null)).toBe(
+      "Runs on a machine at Fly.io · billed to your Fly.io account",
+    );
+    expect(workspaceTypeTip(cloud({ label: null }), null)).toBe("Runs on a cloud machine");
+    expect(
+      workspaceTypeTip(cloud({ available: false, reason: "Fly.io refused the token" }), null),
+    ).toBe("Fly.io refused the token");
+    expect(workspaceTypeTip(cloud({ available: false }), null)).toBe("Fly.io unavailable");
+  });
+
+  it("is listed in the host's order, and shown only when picked", () => {
+    const options = [box({ default: true }), host(), cloud()];
+    const untouched = workspaceTypeChip(options, false, undefined);
+    expect(untouched).toMatchObject({ kind: "menu", options, tip: "Runs in a Linux VM" });
+    expect(untouched?.kind === "menu" && untouched.options.map((o) => o.kind)).toEqual([
+      "box",
+      "host",
+      "cloud:fly",
+    ]);
+    // Never the default unless the host marks it: an untouched draft is not sent there.
+    expect(workspaceTypeToSend(undefined, true, options)).toBe("box");
+
+    const picked = workspaceTypeChip(options, false, "cloud:fly");
+    expect(picked).toMatchObject({
+      kind: "menu",
+      shown: options[2],
+      tip: "Runs on a machine at Fly.io · billed to your Fly.io account",
+    });
+    expect(workspaceTypeToSend("cloud:fly", true, options)).toBe("cloud:fly");
+
+    // Unavailable and picked: shown with its reason, and still sent, to fail with it.
+    const refused = [box({ default: true }), host(), cloud({ available: false, reason: "off" })];
+    expect(workspaceTypeChip(refused, false, "cloud:fly")).toMatchObject({ tip: "off" });
+    expect(workspaceTypeToSend("cloud:fly", true, refused)).toBe("cloud:fly");
+  });
+
+  it("falls back to the default once its provider is disconnected", () => {
+    const local = [box({ default: true }), host()];
+    expect(shownWorkspaceType(local, "cloud:fly")?.kind).toBe("box");
+    expect(workspaceTypeToSend("cloud:fly", true, local)).toBe("box");
+    // With no answer at all, the retry chip keeps the pick.
+    expect(workspaceTypeChip(null, true, "cloud:fly")).toMatchObject({
+      kind: "retry",
+      pick: "cloud:fly",
+    });
   });
 });

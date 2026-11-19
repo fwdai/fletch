@@ -373,7 +373,7 @@ impl Agent {
     {
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let engine = sandbox::engine_for(spec.engine)?;
+        let engine = sandbox::engine_for_agent(spec.engine, spec.agent_id)?;
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
         let agent_args = prepare_pty_args(&spec, &mcp.args);
@@ -471,7 +471,7 @@ impl Agent {
             .ok_or_else(|| Error::Other(format!("no per-turn descriptor for `{provider}`")))?;
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let engine = sandbox::engine_for(spec.engine)?;
+        let engine = sandbox::engine_for_agent(spec.engine, spec.agent_id)?;
         // In a box this is the tools disk's bin; under seatbelt the
         // host-resolved path — same decision claude makes.
         let bin = agent_bin_for(desc.id, desc.bin, desc.label, engine.as_ref(), &home)?;
@@ -579,7 +579,7 @@ impl Agent {
     {
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let engine = sandbox::engine_for(spec.engine)?;
+        let engine = sandbox::engine_for_agent(spec.engine, spec.agent_id)?;
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
         let mut account = account_launch("claude", spec.account)?;
@@ -695,7 +695,7 @@ impl Agent {
         // In a box this resolves to the tools disk's bin; under seatbelt the
         // host path — same decision claude makes. Resolved
         // here (not in `spawn_exec`) since the agent bin is provider-specific.
-        let engine = sandbox::engine_for(spec.engine)?;
+        let engine = sandbox::engine_for_agent(spec.engine, &spec.agent_id)?;
         let program = PathBuf::from(agent_bin_for(
             desc.id,
             desc.bin,
@@ -805,7 +805,7 @@ impl Agent {
             adopted_read_only: spec.adopted_read_only,
             folder_grants: &spec.folder_grants,
         };
-        let engine = sandbox::engine_for(spec.engine)?;
+        let engine = sandbox::engine_for_agent(spec.engine, &spec.agent_id)?;
         let LaunchPlan {
             program: launch_program,
             launcher_args,
@@ -1047,9 +1047,10 @@ fn push_typed(out: &mut String, s: &str) {
 /// by the *resolved* engine's kind: the host-resolved absolute path for an
 /// engine that runs it on this host, the engine's own otherwise. Keyed off the
 /// resolved engine rather than the stamped setting; a box-stamped agent on a
-/// machine that cannot boot one never reaches here — `sandbox::engine_for`
-/// fails the spawn instead of degrading to seatbelt — so the resolved engine
-/// always matches the launch boundary.
+/// machine that cannot boot one never reaches here — `sandbox::engine_for_agent`
+/// fails the spawn instead of degrading to seatbelt, unless the box's machine
+/// is at a cloud provider — so the resolved engine always matches the launch
+/// boundary.
 fn agent_bin_for(
     provider: &str,
     bin: &str,

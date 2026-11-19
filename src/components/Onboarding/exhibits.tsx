@@ -38,7 +38,7 @@ interface ParallelAgent {
 }
 
 /** The sandbox a new workspace gets unless the user picks the VM. */
-const DEFAULT_ISOLATION = isolationOf(null);
+const DEFAULT_ISOLATION = isolationOf({}, null);
 
 const PARALLEL_AGENTS: ParallelAgent[] = [
   {

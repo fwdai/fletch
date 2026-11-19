@@ -1,7 +1,7 @@
 //! Test support for the guard tests that read the crate's own source and pin
 //! where a pattern may appear (`exec::tests::no_direct_git_on_checkouts`,
-//! `sandbox::tests::engine_knowledge_stays_in_sandbox`). Compiled for tests
-//! only.
+//! `sandbox::tests::engine_knowledge_stays_in_sandbox`), or the sources of the
+//! crates around it (`cloud::neutral_tests`). Compiled for tests only.
 
 use std::path::{Path, PathBuf};
 
@@ -9,15 +9,23 @@ use std::path::{Path, PathBuf};
 /// `/` separators, the text up to the file's test module)`, in path order.
 /// Test files and the test half of every other file are left out.
 pub(crate) fn production_sources() -> Vec<(String, String)> {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    production_sources_in(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+}
+
+/// [`production_sources`] of the crate whose `src` is `src`, read the same
+/// way; empty where `src` does not exist.
+pub(crate) fn production_sources_in(src: &Path) -> Vec<(String, String)> {
+    if !src.is_dir() {
+        return Vec::new();
+    }
     let mut files = Vec::new();
-    rust_files(&src, &mut files);
+    rust_files(src, &mut files);
     files.sort();
     files
         .into_iter()
         .filter_map(|file| {
             let rel = file
-                .strip_prefix(&src)
+                .strip_prefix(src)
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");

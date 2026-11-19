@@ -142,6 +142,10 @@ export interface AgentRecord {
    *  and kept for the agent's life — a settings change never re-engines it. Null for
    *  agents created before engine selection existed (they run sandbox-exec). */
   sandbox_engine?: string | null;
+  /** The cloud provider (`CloudProviderStatus.id`) whose machine the
+   *  workspace's box runs on, stamped at creation; its `sandbox_engine` is
+   *  `box` all the same. Null or absent for a workspace on this Mac. */
+  cloud_provider?: string | null;
   /** Folders on the user's machine granted to this agent, live at their own
    *  paths (read-only unless `writable`). Every engine applies them at launch;
    *  changing them relaunches the agent on its own session. Empty for most

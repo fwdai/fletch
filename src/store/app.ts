@@ -107,6 +107,12 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get, engine) => ({
     // Where the Linux VM stands (downloading, ready, unavailable), so the
     // title bar and the ready toast can say so from the first workspace on.
     void get().loadBoxSetup();
+    // The cloud providers, which name a cloud workspace and its bill wherever
+    // it is shown. Until they are read (or if they cannot be), it is a cloud
+    // machine in neutral words.
+    get()
+      .refreshCloudProviders()
+      .catch(() => {});
 
     // The desktop-pinned streams first, since nothing ever takes them down;
     // then this desktop's own engine's. A paired host's are made when its

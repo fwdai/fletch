@@ -13,8 +13,9 @@ export interface CloudSlice {
   refreshCloudProviders: () => Promise<void>;
   /** Check `token` with the provider and keep it; the provider's entry takes
    *  the answer. Rejects with the provider's reason, the list unchanged. The
-   *  token goes to the backend and is held nowhere here. */
-  connectCloud: (provider: CloudProviderId, token: string, org: string) => Promise<void>;
+   *  token goes to the backend and is held nowhere here. An empty `account`
+   *  is the provider's default. */
+  connectCloud: (provider: CloudProviderId, token: string, account: string) => Promise<void>;
   /** Forget the provider's token. Its machines stay where they are. */
   disconnectCloud: (provider: CloudProviderId) => Promise<void>;
 }
@@ -31,16 +32,19 @@ export function withCloudProvider(
     : [...current, status];
 }
 
-export const createCloudSlice: SliceCreator<CloudSlice> = (set, _get, { api }) => ({
+// A connect or a disconnect adds or takes away a workspace type (one per
+// connected provider), so the composer's answer is read again after either.
+export const createCloudSlice: SliceCreator<CloudSlice> = (set, get, { api }) => ({
   cloudProviders: null,
 
   refreshCloudProviders: async () => {
     set({ cloudProviders: await api.cloudProviders() });
   },
 
-  connectCloud: async (provider, token, org) => {
-    const status = await api.cloudConnect(provider, token, org);
+  connectCloud: async (provider, token, account) => {
+    const status = await api.cloudConnect(provider, token, account);
     set((s) => ({ cloudProviders: withCloudProvider(s.cloudProviders, status) }));
+    get().reloadWorkspaceTypes();
   },
 
   // `cloud_disconnect` answers nothing, and what it leaves is known: the same
@@ -53,5 +57,6 @@ export const createCloudSlice: SliceCreator<CloudSlice> = (set, _get, { api }) =
           p.id === provider ? { ...p, connected: false, account: null } : p,
         ) ?? null,
     }));
+    get().reloadWorkspaceTypes();
   },
 });

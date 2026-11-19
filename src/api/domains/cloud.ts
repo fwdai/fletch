@@ -11,9 +11,9 @@ export const cloudApi = {
   cloudProviders: () => invokeLocal<CloudProviderStatus[]>("cloud_providers"),
   /** Check `token` with the provider, then keep it. Rejects, in words fit to
    *  show, when the provider refuses it, and nothing is stored then. An empty
-   *  `org` is the provider's default (`personal` for Fly). */
-  cloudConnect: (provider: CloudProviderId, token: string, org?: string) =>
-    invokeLocal<CloudProviderStatus>("cloud_connect", { provider, token, org: org ?? "" }),
+   *  `account` is the provider's default (its `account_placeholder`). */
+  cloudConnect: (provider: CloudProviderId, token: string, account?: string) =>
+    invokeLocal<CloudProviderStatus>("cloud_connect", { provider, token, account: account ?? "" }),
   /** Forget the provider's token. Machines already created there are left as
    *  they are. */
   cloudDisconnect: (provider: CloudProviderId) =>

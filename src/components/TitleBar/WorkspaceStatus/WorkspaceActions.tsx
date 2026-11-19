@@ -1,16 +1,18 @@
 import { useState } from "react";
-import type { AgentRecord, WorkspaceKind } from "@/api";
+import type { AgentRecord, LocalWorkspaceKind } from "@/api";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
+import { inCloud } from "@/util/workspaceKind";
 import { BoxActions } from "./BoxActions";
 
 /** The popover's action row: a box's own action beside the escape hatch
  *  between sandboxes, which moves this workspace (its code, branch and
  *  conversation) to the other one. Offered here and nowhere else, on
  *  purpose: nothing in the app suggests it. Confirmed in place, the row
- *  giving way to the one line that says what it costs. */
+ *  giving way to the one line that says what it costs. A workspace at a
+ *  cloud provider stays there: no move leaves the cloud or enters it. */
 export function WorkspaceActions({ agent, onBox }: { agent: AgentRecord; onBox: boolean }) {
   const [confirming, setConfirming] = useState(false);
   const movingTo = useAppStore((s) => s.movingWorkspace[agent.id] ?? null);
@@ -18,11 +20,11 @@ export function WorkspaceActions({ agent, onBox }: { agent: AgentRecord; onBox: 
   const moveWorkspace = useAppStore((s) => s.moveWorkspace);
   const vmPossible = useAppStore((s) => s.boxProbe?.runtime_ok === true);
   const gate = useGate("moveSandbox");
-  const offered = !gate && (onBox || vmPossible);
+  const offered = !gate && !inCloud(agent) && (onBox || vmPossible);
 
   // Where it's going: the move in flight's own target (the record is
   // restamped before it ends), else the other sandbox.
-  const kind: WorkspaceKind = movingTo ?? (onBox ? "host" : "box");
+  const kind: LocalWorkspaceKind = movingTo ?? (onBox ? "host" : "box");
   const target = kind === "box" ? LINUX_VM : MACOS_SANDBOX;
   const busy = agent.status === "running" || agent.status === "spawning";
   const wait =

@@ -24,23 +24,32 @@ pub fn cloud_providers(db: State<'_, Db>) -> Result<Vec<CloudProviderStatus>> {
     cloud::statuses(&db.lock())
 }
 
-/// Connect a provider with a pasted token, acting in `org` (absent or blank:
-/// `personal`). The token is validated against the provider before anything
-/// is stored, so a bad paste fails loudly and changes nothing.
+/// Connect a provider with a pasted token, acting in `account` (absent or
+/// blank: the provider's default, `CloudProviderStatus::account_placeholder`).
+/// The token is validated against the provider before anything is stored, so
+/// a bad paste fails loudly and changes nothing.
 #[tauri::command]
 pub async fn cloud_connect(
     db: State<'_, Db>,
     provider: String,
     token: String,
-    org: Option<String>,
+    account: Option<String>,
 ) -> Result<CloudProviderStatus> {
-    cloud::connect(db.inner(), provider_id(&provider)?, &token, org.as_deref()).await
+    cloud::connect(
+        db.inner(),
+        provider_id(&provider)?,
+        &token,
+        account.as_deref(),
+    )
+    .await
 }
 
-/// Forget a provider's token and org. Machines that exist at the provider are
-/// not touched: they stay there, running or stopped, out of this machine's
-/// reach until it connects again, and what becomes of their boxes is the box
-/// registry's decision.
+/// Forget a provider's token and account. Machines that exist at the provider
+/// are not touched: they stay there, running or stopped, out of this
+/// machine's reach until it connects again: a workspace whose box is there
+/// does not start meanwhile, and the box of one discarded meanwhile is
+/// destroyed at the provider at the first start after it does
+/// (`sandbox::boxes::cloud`).
 #[tauri::command]
 pub fn cloud_disconnect(db: State<'_, Db>, provider: String) -> Result<()> {
     cloud::disconnect(&db.lock(), provider_id(&provider)?)

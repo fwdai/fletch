@@ -76,7 +76,7 @@ export function WorkspaceTypeItems({
           onClick={() => onPick(o.kind)}
         >
           <Icon name={workspaceTypeIcon(o.kind)} size={14} />
-          <span className="di-l">{workspaceTypeLabel(o.kind)}</span>
+          <span className="di-l">{workspaceTypeLabel(o)}</span>
           {o.default && <span className="di-m">default</span>}
           {o.kind === checked && <Icon name="check" size={13} />}
         </DropdownItem>
@@ -85,8 +85,9 @@ export function WorkspaceTypeItems({
   );
 }
 
-/** Where a new workspace runs, a Linux VM or the macOS sandbox: a pill in the
- *  new-workspace row beside the project and the branch. It is a property of
+/** Where a new workspace runs, a Linux VM, the macOS sandbox or a machine at
+ *  a connected cloud provider: a pill in the new-workspace row beside the
+ *  project and the branch. It is a property of
  *  the workspace, chosen once at its creation, so it lives with them and not
  *  in the composer. The pill declares it: the spawn sends the kind shown
  *  here, read from the store's one answer for this repo and provider
@@ -104,7 +105,7 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
     return (
       <button type="button" className="pill is-action tip" data-tip={chip.tip} onClick={load}>
         <Icon name="refresh" />
-        <span className="v">{chip.pick ? workspaceTypeLabel(chip.pick) : "sandbox"}</span>
+        <span className="v">{chip.pick ? workspaceTypeLabel({ kind: chip.pick }) : "sandbox"}</span>
       </button>
     );
   }
@@ -125,7 +126,7 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
       >
         <Icon name={workspaceTypeIcon(shown.kind)} />
         <span style={{ color: "var(--fg-2)" }}>in</span>
-        <span className="v">{workspaceTypeLabel(shown.kind)}</span>
+        <span className="v">{workspaceTypeLabel(shown)}</span>
         <Icon name="chevD" size={9} />
       </button>
 

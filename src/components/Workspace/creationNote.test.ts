@@ -26,6 +26,22 @@ describe("creation note", () => {
     );
   });
 
+  it("names the machine at a cloud provider", () => {
+    const cloud = option({ kind: "cloud:fly", label: "Fly.io" });
+    expect(line(creationNote(cloud, 1))).toBe(
+      "A checkout will be created on a machine at Fly.io, at ~/.fletch/workspaces/bryce",
+    );
+    expect(line(creationNote(cloud, 2))).toBe(
+      "Checkouts of all 2 repositories will be created on a machine at Fly.io, at ~/.fletch/workspaces/bryce",
+    );
+    expect(line(creationNote(option({ kind: "cloud:fly" }), 1))).toBe(
+      "A checkout will be created on a cloud machine, at ~/.fletch/workspaces/bryce",
+    );
+    expect(
+      line(creationNote({ ...cloud, available: false, reason: "Fly.io refused the token." }, 1)),
+    ).toBe("Fly.io isn't available: Fly.io refused the token");
+  });
+
   it("says why when the declared sandbox can't be had", () => {
     expect(
       line(creationNote(option({ kind: "box", available: false, reason: "No VM runtime." }), 1)),

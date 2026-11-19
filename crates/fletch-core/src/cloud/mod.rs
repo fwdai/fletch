@@ -26,6 +26,16 @@
 //! provider makes the compiler name every place that needs its answer. Fly.io
 //! Machines is the first ([`fly`]).
 //!
+//! Everything provider-specific is its adapter's: the module ([`fly`]) holds
+//! the API, the handle's form, the stored keys and the words Settings shows
+//! (its `FACTS`), and this module only dispatches to it. Nothing outside
+//! `cloud/` names a provider: the box engine, the supervisor and the commands
+//! see a [`ProviderId`] as an opaque id with a [`label`](ProviderId::label),
+//! and a box through [`Client`], [`Handle`], [`Endpoint`], [`MachineState`]
+//! and [`MachineSpec`], whatever the provider (`tests/neutral.rs` holds the
+//! rest of the crate to that). A provider is added as a module here and its
+//! variant in those enums.
+//!
 //! The connection to a provider account is stored per provider: its API token
 //! in [`crate::secrets`] (`cloud.<provider>.token`; the keychain on release
 //! macOS), the account it acts in in the `settings` table
@@ -41,6 +51,8 @@
 //! message an adapter builds passes through its redaction, and
 //! [`Connection`]'s `Debug` leaves the token out.
 
+#[cfg(test)]
+pub(crate) mod fake;
 pub mod fly;
 #[cfg(test)]
 pub(crate) mod stand_in;
@@ -57,24 +69,52 @@ pub enum ProviderId {
     Fly,
 }
 
+/// What an adapter says about its provider: its names, where its connection
+/// is stored, and what Settings shows to connect it. One per provider, in its
+/// module (`fly::FACTS`).
+struct Facts {
+    /// [`ProviderId::as_str`].
+    id: &'static str,
+    /// [`ProviderId::label`].
+    label: &'static str,
+    /// The `crate::secrets` key holding the API token.
+    token_key: &'static str,
+    /// The `settings` key holding the account the token acts in.
+    account_key: &'static str,
+    /// The `settings` key holding the region new machines are created in.
+    region_key: &'static str,
+    /// The account a connection acts in when none is given.
+    default_account: &'static str,
+    /// [`CloudProviderStatus::account_label`].
+    account_label: &'static str,
+    /// [`CloudProviderStatus::token_placeholder`].
+    token_placeholder: &'static str,
+    /// [`CloudProviderStatus::token_help`].
+    token_help: &'static str,
+    /// [`CloudProviderStatus::billing`].
+    billing: &'static str,
+}
+
 impl ProviderId {
     /// Every provider, in the order Settings lists them.
     pub const ALL: &'static [Self] = &[Self::Fly];
 
-    /// The provider's spelling on the command surface (the `provider` argument
-    /// of the `cloud_*` commands, [`CloudProviderStatus::id`]) and in its
-    /// stored keys.
-    pub fn as_str(self) -> &'static str {
+    fn facts(self) -> &'static Facts {
         match self {
-            Self::Fly => "fly",
+            Self::Fly => &fly::FACTS,
         }
+    }
+
+    /// The provider's spelling on the command surface (the `provider` argument
+    /// of the `cloud_*` commands, [`CloudProviderStatus::id`]), in its stored
+    /// keys, and in a workspace's record.
+    pub fn as_str(self) -> &'static str {
+        self.facts().id
     }
 
     /// The name a person knows the provider by.
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Fly => "Fly.io",
-        }
+        self.facts().label
     }
 
     /// The provider an [`as_str`](Self::as_str) spelling names; `None` for any
@@ -85,32 +125,22 @@ impl ProviderId {
 
     /// The `crate::secrets` key holding the provider's API token.
     fn token_key(self) -> &'static str {
-        match self {
-            Self::Fly => "cloud.fly.token",
-        }
+        self.facts().token_key
     }
 
-    /// The `settings` key holding the account the token acts in: Fly's org
-    /// slug.
+    /// The `settings` key holding the account the token acts in.
     fn account_key(self) -> &'static str {
-        match self {
-            Self::Fly => "cloud.fly.org",
-        }
+        self.facts().account_key
     }
 
     /// The `settings` key holding the region new machines are created in.
     fn region_key(self) -> &'static str {
-        match self {
-            Self::Fly => "cloud.fly.region",
-        }
+        self.facts().region_key
     }
 
-    /// The account a connection acts in when none is given: Fly's `personal`
-    /// org, which every Fly user has and the API accepts as a slug.
+    /// The account a connection acts in when none is given.
     fn default_account(self) -> &'static str {
-        match self {
-            Self::Fly => "personal",
-        }
+        self.facts().default_account
     }
 }
 
@@ -238,47 +268,13 @@ impl Handle {
         }
     }
 
-    /// Read a handle back from its `Display` form.
+    /// Read a handle back from its `Display` form: `<provider>:<the rest>`,
+    /// the rest in the provider's own form, which its adapter reads.
     pub fn parse(s: &str) -> Result<Self> {
         let invalid = || Error::Other(format!("not a cloud box handle: {s:?}"));
         let (provider, rest) = s.split_once(':').ok_or_else(invalid)?;
         match ProviderId::parse(provider).ok_or_else(invalid)? {
-            ProviderId::Fly => {
-                let parts: Vec<&str> = rest.split('/').collect();
-                let [org, app, volume, machine] = parts[..] else {
-                    return Err(if parts.len() == 2 {
-                        Error::Other(format!(
-                            "{s:?} is a Fly.io handle in the form from before cloud boxes had a \
-                             volume (app/machine); it names no disk and no org, and cannot be \
-                             used"
-                        ))
-                    } else {
-                        invalid()
-                    });
-                };
-                let slug = |v: &str| {
-                    !v.is_empty()
-                        && v.chars()
-                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-                };
-                let volume_ok = volume.is_empty()
-                    || volume.strip_prefix("vol_").is_some_and(|id| {
-                        !id.is_empty()
-                            && id
-                                .chars()
-                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-                    });
-                let machine_ok = machine.chars().all(|c| c.is_ascii_alphanumeric());
-                if !slug(org) || !slug(app) || !volume_ok || !machine_ok {
-                    return Err(invalid());
-                }
-                Ok(Self::Fly {
-                    org: org.to_string(),
-                    app: app.to_string(),
-                    volume: volume.to_string(),
-                    machine: machine.to_string(),
-                })
-            }
+            ProviderId::Fly => fly::parse_handle(s, rest),
         }
     }
 
@@ -408,6 +404,13 @@ impl Client {
         }
     }
 
+    /// The provider this client talks to.
+    pub fn provider(&self) -> ProviderId {
+        match self {
+            Self::Fly(_) => ProviderId::Fly,
+        }
+    }
+
     /// Whether the token is accepted and can act in the connection's account:
     /// one cheap authenticated read, so a wrong token and a wrong account fail
     /// with different messages where the provider tells them apart.
@@ -531,7 +534,9 @@ impl Client {
     }
 }
 
-/// One provider's connection state, as Settings shows it.
+/// One provider's connection state, as Settings shows it, with what Settings
+/// needs to connect it: every word is the adapter's, so the pane names no
+/// provider.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CloudProviderStatus {
     /// [`ProviderId::as_str`].
@@ -542,15 +547,31 @@ pub struct CloudProviderStatus {
     /// The account the connection acts in (Fly's org slug); `None` when not
     /// connected.
     pub account: Option<String>,
+    /// What the provider calls the account a token acts in ("Organization").
+    pub account_label: &'static str,
+    /// The account a connection acts in when the field is left blank.
+    pub account_placeholder: &'static str,
+    /// What a token looks like, for the empty field.
+    pub token_placeholder: &'static str,
+    /// One sentence on where to get a token.
+    pub token_help: &'static str,
+    /// One sentence on what the provider bills for a workspace's box.
+    pub billing: &'static str,
 }
 
 impl CloudProviderStatus {
     fn of(provider: ProviderId, connection: Option<&Connection>) -> Self {
+        let facts = provider.facts();
         Self {
-            id: provider.as_str(),
-            label: provider.label(),
+            id: facts.id,
+            label: facts.label,
             connected: connection.is_some(),
             account: connection.map(|c| c.account.clone()),
+            account_label: facts.account_label,
+            account_placeholder: facts.default_account,
+            token_placeholder: facts.token_placeholder,
+            token_help: facts.token_help,
+            billing: facts.billing,
         }
     }
 }
@@ -628,3 +649,7 @@ pub fn disconnect(conn: &rusqlite::Connection, provider: ProviderId) -> Result<(
 #[cfg(test)]
 #[path = "tests/connection.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/neutral.rs"]
+mod neutral_tests;

@@ -758,6 +758,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // which has no ctx, and trimmed to its window once per start.
     sandbox::boxes::egress_log::install(db.clone());
     sandbox::boxes::egress_log::prune(&db.lock());
+    // Which boxes are machines at a cloud provider, and the connections to
+    // those providers: asked by agent id from paths with no ctx (a boot, a
+    // launch, the spawn watchdog), before any box is registered below.
+    sandbox::boxes::cloud::install(db.clone());
     // Each project's `.fletch/settings.json`, read into its mirror before any
     // box boots or has its disk looked at, and watched from further down
     // (`project_file`).

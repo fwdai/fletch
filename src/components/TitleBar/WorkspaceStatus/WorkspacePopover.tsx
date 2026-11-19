@@ -1,6 +1,7 @@
 import type { AgentRecord } from "@/api";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { providerChip } from "@/data/providers";
+import { useAppStore } from "@/store";
 import { type DotStatus, STATUS_LABEL } from "./derive";
 import { IsolationDetail } from "./IsolationDetail";
 import { isolationOf } from "./isolation";
@@ -9,9 +10,11 @@ import { WorkspaceActions } from "./WorkspaceActions";
 
 /** The workspace segment's hover/focus popover: who + what, then where it
  *  runs — the isolation in two lines at most, for a box its live phase and
- *  the one action it takes here — and the move to the other sandbox. */
+ *  the one action it takes here — and, on this Mac, the move to the other
+ *  sandbox. */
 export function WorkspacePopover({ agent, status }: { agent: AgentRecord; status: DotStatus }) {
-  const stamped = isolationOf(agent.sandbox_engine);
+  const cloudProviders = useAppStore((s) => s.cloudProviders);
+  const stamped = isolationOf(agent, cloudProviders);
 
   return (
     <div className="ws-pop" role="dialog" aria-label={`${agent.name} workspace`}>

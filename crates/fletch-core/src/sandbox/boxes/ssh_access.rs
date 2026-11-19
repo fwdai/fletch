@@ -102,11 +102,12 @@ pub fn open(tree: &Path, launch: impl FnOnce(&str) -> Result<()>) -> Result<()> 
 }
 
 /// Rewrite the generated file from every registered box that has booted at
-/// least once (a never-booted box has no host key to trust yet).
+/// least once (a never-booted box has no host key to trust yet). A box on
+/// this machine is reached through the runtime's `fletch-vm pipe`, so it is
+/// left out where there is no runtime; a cloud box is reached across the
+/// network at its provider's endpoint, as the engine reaches it.
 fn write_config() -> Result<()> {
-    let helper = runtime_paths()
-        .ok_or_else(|| Error::Other("box runtime not found".into()))?
-        .helper;
+    let helper = runtime_paths().map(|paths| paths.helper);
     let mut config =
         String::from("# Written by Fletch for the boxes on this Mac; edits are overwritten.\n\n");
     for identity in BoxRegistry::global().identities() {
@@ -116,13 +117,25 @@ fn write_config() -> Result<()> {
         if !key.exists() || !known_hosts.exists() {
             continue;
         }
-        config.push_str(&fletch_box::channel::render_user_entry(
-            &host_alias(&identity.agent_id),
-            &dir.join(SSH_SOCK),
-            &key,
-            &known_hosts,
-            &helper,
-        ));
+        let alias = host_alias(&identity.agent_id);
+        let entry = match super::cloud::read_handle(&dir)? {
+            Some(handle) => {
+                let endpoint = handle.endpoint();
+                let route = super::cloud::route(&endpoint)?;
+                fletch_box::channel::render_route_user_entry(&alias, route, &key, &known_hosts)
+            }
+            None => match &helper {
+                Some(helper) => fletch_box::channel::render_user_entry(
+                    &alias,
+                    &dir.join(SSH_SOCK),
+                    &key,
+                    &known_hosts,
+                    helper,
+                ),
+                None => continue,
+            },
+        };
+        config.push_str(&entry);
         config.push('\n');
     }
     write_private(&config_path()?, &config)
@@ -139,7 +152,7 @@ fn create_private_dir(dir: &Path) -> Result<()> {
 
 /// Write `contents` to `path` with mode 0600 through a sibling temp file, so
 /// a reader (ssh, mid-connect) never sees a partial file.
-fn write_private(path: &Path, contents: &str) -> Result<()> {
+pub(super) fn write_private(path: &Path, contents: &str) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let tmp = path.with_extension("tmp");

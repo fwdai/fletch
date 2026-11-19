@@ -86,8 +86,12 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   const [caret, setCaret] = useState(text.length);
   const [attachments, setAttachments] = useState<string[]>([]);
   // Folders waiting for the next send, which grants them (read-only unless
-  // the user flips one) before the message goes out.
-  const [folders, setFolders] = useState<FolderGrant[]>([]);
+  // the user flips one) before the message goes out. They wait only where
+  // folders can be attached: a draft switched to where they can't (a workspace
+  // type that mounts none) shows and sends none, and has them back if it is
+  // switched again.
+  const [folderChips, setFolders] = useState<FolderGrant[]>([]);
+  const folders = cfg.folders ? folderChips : [];
   const ta = useRef<HTMLTextAreaElement>(null);
 
   function placeCaret(pos: number) {

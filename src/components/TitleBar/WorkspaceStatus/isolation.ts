@@ -1,9 +1,14 @@
-import type { BoxStateEvent, WorkspaceKind } from "@/api";
+import type { AgentRecord, BoxStateEvent, CloudProviderStatus, LocalWorkspaceKind } from "@/api";
 import type { IconName } from "@/components/Icon";
-import { LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
+import { CLOUD_MACHINE, cloudMachineLabel, LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
+import { inCloud } from "@/util/workspaceKind";
 
-/** How a workspace's agent is confined, as the title bar tells it apart. */
+/** How a workspace's agent is confined, as the title bar tells it apart. A
+ *  box at a cloud provider is a `box` too: it has a box's phase and stop. */
 export type IsolationKind = "box" | "container" | "seatbelt";
+
+/** What a workspace's record says of where it runs. */
+export type WorkspacePlace = Pick<AgentRecord, "sandbox_engine" | "cloud_provider">;
 
 export interface Isolation {
   kind: IsolationKind;
@@ -15,7 +20,7 @@ export interface Isolation {
 }
 
 // Each hint is at most two short lines in the popover: what the agent can
-// reach, nothing else.
+// reach and, for a machine at a cloud provider, what it costs; nothing else.
 const BOX: Isolation = {
   kind: "box",
   icon: LINUX_VM.icon,
@@ -41,23 +46,41 @@ function container(runtime: string): Isolation {
   };
 }
 
-/** The isolation of an agent's stamped `sandbox_engine`. */
-export function isolationOf(engine: string | null | undefined): Isolation {
-  if (engine === "box") return BOX;
-  if (engine === "docker") return container("Docker");
-  if (engine === "podman") return container("Podman");
+/** A box on a machine at a cloud provider, named for the provider and its
+ *  bill. `provider` is its entry in `cloudProviders`: absent until the store
+ *  has read them, or for an id they do not list, when the words are neutral. */
+function cloud(provider: CloudProviderStatus | undefined): Isolation {
+  return {
+    kind: "box",
+    icon: CLOUD_MACHINE.icon,
+    title: cloudMachineLabel(provider?.label),
+    hint: `Its own machine; reaches any host. ${provider?.billing || "The provider bills your account."}`,
+  };
+}
+
+/** The isolation of an agent's stamped `sandbox_engine` and `cloud_provider`;
+ *  `providers` (the store's `cloudProviders`) names a cloud provider. */
+export function isolationOf(
+  place: WorkspacePlace,
+  providers: CloudProviderStatus[] | null,
+): Isolation {
+  if (inCloud(place)) return cloud(providers?.find((p) => p.id === place.cloud_provider));
+  if (place.sandbox_engine === "box") return BOX;
+  if (place.sandbox_engine === "docker") return container("Docker");
+  if (place.sandbox_engine === "podman") return container("Podman");
   return SEATBELT;
 }
 
 /** What the title bar shows for a workspace: where it runs, or, while it
  *  moves, where it's going (`movingTo`, as asked: the record is restamped
- *  before the move is over). */
+ *  before the move is over). A move stays on this Mac. */
 export function shownIsolation(
-  engine: string | null | undefined,
-  movingTo: WorkspaceKind | null,
+  place: WorkspacePlace,
+  movingTo: LocalWorkspaceKind | null,
+  providers: CloudProviderStatus[] | null,
 ): Isolation {
   if (movingTo) return movingTo === "box" ? BOX : SEATBELT;
-  return isolationOf(engine);
+  return isolationOf(place, providers);
 }
 
 /** The box's phase as the title bar spells it. */

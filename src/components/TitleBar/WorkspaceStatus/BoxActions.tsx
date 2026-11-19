@@ -2,6 +2,7 @@ import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
+import { inCloud } from "@/util/workspaceKind";
 import { boxIsUp } from "./isolation";
 
 /** The one action a box agent's popover offers for its box, if any, as a
@@ -9,7 +10,8 @@ import { boxIsUp } from "./isolation";
  *  keeps it up until the idle timer fires) the user can stop it without
  *  archiving the workspace. When it failed for want of its tools disk, whose
  *  build failed and now waits out a backoff before the next attempt, Retry
- *  builds it now. */
+ *  builds it now. The tools disk is this Mac's: a box at a cloud provider
+ *  installs its tools on its own machine. */
 export function BoxActions({ agent }: { agent: AgentRecord }) {
   const boxState = useAppStore((s) => s.boxStates[agent.id]);
   const tools = useAppStore((s) => s.boxTools[agent.provider]);
@@ -18,7 +20,7 @@ export function BoxActions({ agent }: { agent: AgentRecord }) {
   const stopGate = useGate("stopVm");
   const setupGate = useGate("vmSetup");
   const boxUp = boxIsUp(boxState?.phase);
-  const toolsFailed = boxState?.phase === "failed" && tools?.phase === "failed";
+  const toolsFailed = !inCloud(agent) && boxState?.phase === "failed" && tools?.phase === "failed";
 
   if (boxUp && !stopGate) {
     return (

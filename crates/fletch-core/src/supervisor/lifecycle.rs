@@ -531,6 +531,15 @@ impl Supervisor {
         })
         .await
         .map_err(|e| Error::Other(e.to_string()))??;
+        // A box whose machine is at a cloud provider, when the session's
+        // workspace type picked one (an adopted tree runs where it lives,
+        // whatever was asked): stamped below, and given no folder of this
+        // machine, which it could not mount.
+        let cloud_provider = match &adopted {
+            Some(_) => None,
+            None => workspace_type.and_then(sandbox::WorkspaceType::cloud),
+        };
+        sandbox::ensure_folders_can_be_shared(cloud_provider, &req.folder_grants)?;
         // The folder check may wait on a privacy prompt, so it too runs before
         // the lifecycle lock.
         let folder_grants = crate::workspace::folder_grants::check_all(
@@ -679,6 +688,9 @@ impl Supervisor {
         // never re-engines it — see `spawn_agent_process`, which reuses the
         // stored value instead of the live setting.
         record.sandbox_engine = Some(engine_kind.as_setting().to_string());
+        // And where that box's machine is, for life too: a box at a cloud
+        // provider keeps the `box` engine and names its provider here.
+        record.cloud_provider = cloud_provider.map(|p| p.as_str().to_string());
         // Stamp the provider account: the one the spawn picked, else the
         // active one in Settings. Later moves go through the switch, a
         // Settings change (`follow_active_account`) or a limit retry.
@@ -1959,6 +1971,10 @@ impl Supervisor {
             path: path.to_path_buf(),
             writable,
         };
+        sandbox::ensure_folders_can_be_shared(
+            sandbox::cloud_provider(&record)?,
+            std::slice::from_ref(&requested),
+        )?;
         let checked = crate::workspace::folder_grants::check_all(
             vec![requested],
             sandbox::stamped_engine(&record),

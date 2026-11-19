@@ -29,6 +29,8 @@ use super::registry::{BoxIdentity, BoxRegistry, RunningBox};
 const BASE_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 /// The push of a whole repository into the guest, over vsock.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(60);
+/// The same push into a cloud box, across this machine's uplink.
+const CLOUD_PUSH_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// The ref the base commit arrives under.
 const BASE_REF: &str = "refs/fletch/base";
 
@@ -67,7 +69,10 @@ pub async fn provision(
         .status
         .success();
     let (sha, freshness) = base_commit(spec, base_branch, has_origin).await?;
-    super::seed::link_built_at(&running.channel, identity).await;
+    // A cloud box starts from no seed, so has nothing built elsewhere.
+    if running.cloud().is_none() {
+        super::seed::link_built_at(&running.channel, identity).await;
+    }
 
     if let Err(e) = deliver_base(&running, spec, &sha, base_branch.filter(|_| has_origin)).await {
         clone::discard(spec.dest).await;
@@ -130,7 +135,11 @@ async fn deliver_base(
     if let Some(base) = tracking {
         push.arg(format!("+{sha}:refs/remotes/origin/{base}"));
     }
-    let out = tokio::time::timeout(PUSH_TIMEOUT, push.output())
+    let bound = match running.cloud() {
+        Some(_) => CLOUD_PUSH_TIMEOUT,
+        None => PUSH_TIMEOUT,
+    };
+    let out = tokio::time::timeout(bound, push.output())
         .await
         .map_err(|_| Error::Git("pushing the base into the box timed out".into()))??;
     if !out.status.success() {
