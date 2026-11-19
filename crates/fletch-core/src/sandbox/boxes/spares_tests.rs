@@ -130,6 +130,78 @@ async fn a_preparation_that_fails_destroys_what_it_made() {
     assert_eq!(unreachable.boxes(), 1);
 }
 
+/// A spare whose provider is disconnected while it is made is not marked
+/// ready: the disconnect destroyed the provider's spares before it was one,
+/// so it destroys itself, through the client it was made with.
+#[tokio::test]
+async fn a_spare_made_while_its_provider_is_disconnected_destroys_itself() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fake = FakeCloud::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let connected = AtomicBool::new(true);
+    let client_for = |provider: ProviderId| -> Result<Client> {
+        if connected.swap(false, Ordering::SeqCst) {
+            Ok(fake.client())
+        } else {
+            Err(Error::SandboxUnavailable(cloud::not_connected(provider)))
+        }
+    };
+
+    let err = prepare(
+        root.path(),
+        &build(&fake, &[]),
+        &client_for,
+        &FakeGuest::default(),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("was disconnected"), "{err}");
+    assert_eq!(fake.acts(), ["create", "exec", "park", "destroy"]);
+    assert_eq!(fake.boxes(), 0);
+    assert!(spares(root.path()).is_empty());
+}
+
+/// A new box asks for a replenish whether or not there was a spare to take,
+/// so an empty spares root gets its first spares from the first spawn; a box
+/// something was made for asks for none.
+#[test]
+fn a_take_with_no_spare_still_asks_for_a_replenish() {
+    let root = tempfile::tempdir().unwrap();
+    let boxes = tempfile::tempdir().unwrap();
+    let wanted = Build {
+        provider: ProviderId::ALL[0].as_str().to_string(),
+        image: "registry.test/fletch-cloud:1".into(),
+        cpus: 2,
+        memory_mib: 2048,
+        disk_gib: 8,
+        clis: BTreeMap::new(),
+    };
+    let asked = std::cell::Cell::new(0);
+    let new_box = boxes.path().join("glacier");
+
+    let taken = take_then(Ok(root.path().to_path_buf()), &new_box, &wanted, || {
+        asked.set(asked.get() + 1)
+    });
+    assert!(!taken);
+    assert_eq!(asked.get(), 1, "an empty root");
+
+    let missing = take_then(
+        Err(Error::Other("no home".into())),
+        &new_box,
+        &wanted,
+        || asked.set(asked.get() + 1),
+    );
+    assert!(!missing);
+    assert_eq!(asked.get(), 2, "no root at all");
+
+    std::fs::create_dir_all(&new_box).unwrap();
+    std::fs::write(new_box.join("key"), "a key").unwrap();
+    take_then(Ok(root.path().to_path_buf()), &new_box, &wanted, || {
+        asked.set(asked.get() + 1)
+    });
+    assert_eq!(asked.get(), 2, "a box made already");
+}
+
 /// A new box takes a ready spare: the spare's directory becomes the box's
 /// with its marker gone, so the box's boot wakes the spare's machine and
 /// makes none; the next replenish makes the replacement.

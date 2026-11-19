@@ -1,20 +1,22 @@
 //! The engine halves of the box commands: what the Settings › Sandbox page,
-//! the agent's isolation row and the composer's workspace type ask.
-//! `src-tauri` wraps each in a `#[tauri::command]` and `remote::dispatch` in
-//! a remote op.
+//! the agent's isolation row and the composer's workspace type ask, and
+//! connecting or disconnecting a cloud provider, which the spare cloud boxes
+//! follow. `src-tauri` wraps each in a `#[tauri::command]` and
+//! `remote::dispatch` the box ones in a remote op.
 
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::cloud::{self, CloudProviderStatus, ProviderId};
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::sandbox::boxes::{
-    self, egress_log, egress_prompt, registry::ToolsStatus, settings, setup, BoxRegistry,
+    self, egress_log, egress_prompt, registry::ToolsStatus, settings, setup, spares, BoxRegistry,
     StopReason,
 };
 use crate::workspace::WorkspaceManager;
-use crate::{database, sandbox};
+use crate::{database, sandbox, DbState};
 
 use super::settings::announce;
 
@@ -449,10 +451,66 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
         BoxRegistry::global().update_egress_all();
     }
     if key == settings::CLOUD_SPARES_SETTING {
-        crate::sandbox::boxes::spares::replenish_in_background();
+        spares::replenish_in_background();
     }
     announce(ctx, key, normalized.as_deref());
     Ok(())
+}
+
+/// `cloud_connect(provider, token, account)`: connect a cloud provider with a
+/// pasted token (`cloud::connect`, which checks it with the provider before
+/// storing anything), then bring the provider's spare cloud boxes to their
+/// number in the background (`spares::replenish`). This machine's only:
+/// never on the remote wire.
+pub async fn cloud_connect_impl(
+    db: &DbState,
+    provider: ProviderId,
+    token: &str,
+    account: Option<&str>,
+) -> Result<CloudProviderStatus> {
+    connected_then(
+        cloud::connect(db, provider, token, account).await,
+        spares::replenish_in_background,
+    )
+}
+
+/// A connect's answer, with `replenish` run once it succeeded.
+fn connected_then(
+    connected: Result<CloudProviderStatus>,
+    replenish: impl FnOnce(),
+) -> Result<CloudProviderStatus> {
+    let status = connected?;
+    replenish();
+    Ok(status)
+}
+
+/// `cloud_disconnect(provider)`: destroy the provider's spare cloud boxes
+/// (`spares::destroy_all`), then forget its token and account
+/// (`cloud::disconnect`). A spare is billed while it exists and only a
+/// connected provider can destroy it, so while one cannot be destroyed the
+/// provider stays connected and the disconnect is refused, to be tried
+/// again. With no spares it is the provider's disconnect alone. The boxes of
+/// workspaces at the provider are not touched. This machine's only: never
+/// on the remote wire.
+pub async fn cloud_disconnect_impl(db: &DbState, provider: ProviderId) -> Result<()> {
+    disconnect_after(db, provider, spares::destroy_all(Some(provider))).await
+}
+
+/// [`cloud_disconnect_impl`] once `destroyed`, the destruction of the
+/// provider's spares, has succeeded.
+async fn disconnect_after(
+    db: &DbState,
+    provider: ProviderId,
+    destroyed: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
+    if let Err(e) = destroyed.await {
+        return Err(Error::Other(format!(
+            "{label} is still connected: its spare machines could not all be deleted, and \
+             {label} bills them while they exist. Try disconnecting again in a moment. ({e})",
+            label = provider.label()
+        )));
+    }
+    cloud::disconnect(&db.lock(), provider)
 }
 
 #[cfg(test)]
@@ -529,6 +587,151 @@ mod tests {
         assert!(set_box_setting_impl(&ctx, "docker_image", Some("x")).is_err());
         set_box_setting_impl(&ctx, settings::MEMORY_SETTING, None).unwrap();
         assert_eq!(settings::current().memory_mib, settings::DEFAULT_MEMORY_MIB);
+    }
+
+    /// A database connected to `fake`'s account, and a spares root holding one
+    /// spare made there and one directory with nothing made, no provider's.
+    async fn connected_with_a_spare(
+        fake: &crate::cloud::fake::FakeCloud,
+    ) -> (
+        tempfile::TempDir,
+        DbState,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = database::init(dir.path()).unwrap();
+        let provider = fake.client().provider();
+        let connection =
+            cloud::Connection::new(provider, "fake-token-0123456789", Some("acme")).unwrap();
+        cloud::connect_with(&db, connection, &fake.client())
+            .await
+            .unwrap();
+        let root = dir.path().join("box-spares");
+        let spare = root.join("spare-0123456789ab");
+        std::fs::create_dir_all(&spare).unwrap();
+        let made = fake
+            .client()
+            .create(&cloud::MachineSpec {
+                name: "spare-0123456789ab".into(),
+                image: "registry.test/fletch-cloud:1".into(),
+                env: Vec::new(),
+                cpus: 1,
+                memory_mib: 256,
+                disk_gib: None,
+                ssh_port: 2222,
+            })
+            .await
+            .unwrap();
+        std::fs::write(
+            spare.join(boxes::cloud::HANDLE_FILE),
+            format!("{}\n", made.handle),
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("spare-000000000000")).unwrap();
+        (dir, db, root, spare)
+    }
+
+    /// Connecting a provider asks for its spares once it is connected; a
+    /// connect the provider refused asks for nothing.
+    #[tokio::test]
+    async fn connecting_a_provider_asks_for_its_spares() {
+        let fake = crate::cloud::fake::FakeCloud::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let db = database::init(dir.path()).unwrap();
+        let provider = fake.client().provider();
+        let asked = std::cell::Cell::new(0);
+
+        let connection =
+            cloud::Connection::new(provider, "fake-token-0123456789", Some("acme")).unwrap();
+        let status = connected_then(
+            cloud::connect_with(&db, connection, &fake.client()).await,
+            || asked.set(asked.get() + 1),
+        )
+        .unwrap();
+        assert!(status.connected);
+        assert_eq!(asked.get(), 1);
+
+        let refused = connected_then(Err(Error::Other("the token was refused".into())), || {
+            asked.set(asked.get() + 1)
+        });
+        assert!(refused.is_err());
+        assert_eq!(asked.get(), 1, "nothing asked for a refused connect");
+    }
+
+    /// Disconnecting a provider destroys its spares while it is still
+    /// connected, then forgets it; a directory that is no provider's spare is
+    /// left alone, and with no spare left the next disconnect is the
+    /// provider's alone.
+    #[tokio::test]
+    async fn a_disconnect_destroys_the_providers_spares_first() {
+        let fake = crate::cloud::fake::FakeCloud::start().await;
+        let (_dir, db, root, spare) = connected_with_a_spare(&fake).await;
+        let provider = fake.client().provider();
+        let client_for = |_: ProviderId| -> Result<cloud::Client> {
+            assert!(
+                cloud::connection(&db.lock(), provider).unwrap().is_some(),
+                "a spare is destroyed while its provider is connected"
+            );
+            Ok(fake.client())
+        };
+
+        disconnect_after(
+            &db,
+            provider,
+            spares::destroy_all_in(&root, Some(provider), &client_for),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fake.boxes(), 0);
+        assert!(!spare.exists());
+        assert!(root.join("spare-000000000000").is_dir(), "no provider's");
+        assert!(cloud::connection(&db.lock(), provider).unwrap().is_none());
+
+        let connection =
+            cloud::Connection::new(provider, "fake-token-0123456789", Some("acme")).unwrap();
+        cloud::connect_with(&db, connection, &fake.client())
+            .await
+            .unwrap();
+        disconnect_after(
+            &db,
+            provider,
+            spares::destroy_all_in(&root, Some(provider), &client_for),
+        )
+        .await
+        .unwrap();
+        assert!(cloud::connection(&db.lock(), provider).unwrap().is_none());
+    }
+
+    /// A disconnect whose spare cannot be destroyed is refused: the provider
+    /// stays connected, the spare's handle is kept for the next try, and the
+    /// refusal says so in words a person can act on.
+    #[tokio::test]
+    async fn a_disconnect_whose_spare_cannot_be_destroyed_is_refused() {
+        let fake = crate::cloud::fake::FakeCloud::start().await;
+        let (_dir, db, root, spare) = connected_with_a_spare(&fake).await;
+        let provider = fake.client().provider();
+        fake.refuse_destroy();
+
+        let err = disconnect_after(
+            &db,
+            provider,
+            spares::destroy_all_in(&root, Some(provider), &|_| Ok(fake.client())),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        for said in [
+            "is still connected",
+            "bills them while they exist",
+            "Try disconnecting again",
+        ] {
+            assert!(err.contains(said), "{said:?} in {err}");
+        }
+        assert!(err.contains(provider.label()), "{err}");
+        assert!(cloud::connection(&db.lock(), provider).unwrap().is_some());
+        assert!(spare.join(boxes::cloud::HANDLE_FILE).is_file());
+        assert_eq!(fake.boxes(), 1);
     }
 
     /// The engine a new agent gets on a Mac: seatbelt whenever a box cannot
