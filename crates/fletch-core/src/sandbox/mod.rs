@@ -1,5 +1,6 @@
 pub mod boxes;
 pub mod cargo_home;
+pub mod cloud_runner;
 mod engine;
 pub mod guarantees;
 pub mod placement;
