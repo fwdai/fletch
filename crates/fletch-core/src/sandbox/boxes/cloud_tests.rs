@@ -104,22 +104,22 @@ async fn a_stopped_machine_is_started_and_a_running_one_left_alone() {
         .await
         .unwrap();
     assert_eq!(again, handle);
-    assert_eq!(fake.acts(), ["create", "exec", "start", "exec"]);
+    assert_eq!(
+        fake.acts(),
+        ["create", "exec", "start"],
+        "its host key is pinned already"
+    );
 
     let again = machine_up(&client, dir.path(), &spec, &Phases::default().hear())
         .await
         .unwrap();
     assert_eq!(again, handle);
-    assert_eq!(
-        fake.acts(),
-        ["create", "exec", "start", "exec", "exec"],
-        "running: nothing but the host key read again"
-    );
+    assert_eq!(fake.acts(), ["create", "exec", "start"], "running: nothing");
     assert_eq!(fake.boxes(), 1);
 }
 
 /// A parked machine is at rest like a stopped one, and a boot wakes it the
-/// same way: started, on the same handle, its host key read again.
+/// same way: started, on the same handle, its pinned host key trusted.
 #[tokio::test]
 async fn a_parked_machine_is_woken_as_a_stopped_one_is() {
     let fake = FakeCloud::start().await;
@@ -145,7 +145,193 @@ async fn a_parked_machine_is_woken_as_a_stopped_one_is() {
     .await
     .unwrap();
     assert_eq!(again, handle);
-    assert_eq!(fake.acts(), ["create", "exec", "park", "start", "exec"]);
+    assert_eq!(fake.acts(), ["create", "exec", "park", "start"]);
+}
+
+/// A made box's running machine, and a channel to a guest that never
+/// answers: a stop's own sync over it fails at once.
+async fn running_machine(fake: &FakeCloud, dir: &Path) -> (CloudMachine, Channel) {
+    let handle = made(fake, dir).await;
+    let machine = CloudMachine::new("glacier", Arc::new(fake.client()), handle);
+    (machine, Channel::open(dir))
+}
+
+/// A clean stop lets a CLI record still being made finish before the
+/// provider stops the machine, so the version it records is on the disk.
+#[tokio::test]
+async fn a_halt_lets_a_pending_cli_record_finish_before_the_machine_stops() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (machine, channel) = running_machine(&fake, dir.path()).await;
+    let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+    machine.records.lock().push(tokio::spawn(async move {
+        let _ = finished.await;
+    }));
+
+    let halt = machine.halt(&channel, StopReason::User, None);
+    tokio::pin!(halt);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut halt)
+            .await
+            .is_err(),
+        "the stop waits for the record"
+    );
+    assert_eq!(fake.acts(), ["create", "exec"], "not stopped yet");
+
+    finish.send(()).unwrap();
+    assert_eq!(halt.await, StopOutcome::Control);
+    assert_eq!(fake.acts(), ["create", "exec", "stop"]);
+    assert!(machine.records.lock().is_empty());
+}
+
+/// Under a bound, a record gets what the stop's own sync leaves of it, and
+/// the machine is stopped whatever became of the record.
+#[tokio::test]
+async fn a_bounded_halt_waits_for_a_cli_record_no_longer_than_its_share() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (machine, channel) = running_machine(&fake, dir.path()).await;
+    machine
+        .records
+        .lock()
+        .push(tokio::spawn(std::future::pending::<()>()));
+
+    let share = Duration::from_millis(300);
+    let started = Instant::now();
+    let outcome = machine
+        .halt(&channel, StopReason::User, Some(SYNC_BOUND + share))
+        .await;
+
+    let waited = started.elapsed();
+    assert!(waited >= share && waited < SYNC_BOUND, "{waited:?}");
+    assert_eq!(outcome, StopOutcome::Control);
+    assert_eq!(fake.acts(), ["create", "exec", "stop"]);
+}
+
+/// A record whose guest cannot be synced (here, cannot be reached) writes no
+/// marker and ends, warned of; the stop that waits for it goes on.
+#[tokio::test]
+async fn a_cli_record_that_cannot_sync_ends_and_the_stop_goes_on() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (machine, channel) = running_machine(&fake, dir.path()).await;
+
+    machine.record_in_background(&channel, "claude", "2.1.0");
+    assert_eq!(machine.records.lock().len(), 1);
+
+    assert_eq!(
+        machine.halt(&channel, StopReason::User, None).await,
+        StopOutcome::Control
+    );
+    assert!(machine.records.lock().is_empty());
+    assert_eq!(fake.acts(), ["create", "exec", "stop"]);
+}
+
+/// A host key no box of this account has.
+const OTHER_HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA another-box";
+
+/// `key` as the box directory pins it.
+fn pin_of(key: &str) -> String {
+    HostKey::from_public_key(key).unwrap().known_hosts_line()
+}
+
+/// The guest keeps its host key on the box's disk, so a boot trusts the pin
+/// its directory holds, right or wrong (the ssh handshake checks it), and
+/// reads the key through the provider only where there is none.
+#[tokio::test]
+async fn a_boot_reads_the_host_key_only_where_its_directory_has_no_pin() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    made(&fake, dir.path()).await;
+    let client = Arc::new(fake.client());
+    let spec = spec(&identity("glacier"), "ssh-ed25519 AAAA engine".into());
+    let known_hosts = dir.path().join(fletch_box::channel::KNOWN_HOSTS_FILE);
+
+    std::fs::write(&known_hosts, pin_of(OTHER_HOST_KEY)).unwrap();
+    fake.shape(Shape::Stopped);
+    machine_up(&client, dir.path(), &spec, &Phases::default().hear())
+        .await
+        .unwrap();
+    assert_eq!(fake.acts(), ["create", "exec", "start"]);
+    assert_eq!(
+        std::fs::read_to_string(&known_hosts).unwrap(),
+        pin_of(OTHER_HOST_KEY)
+    );
+
+    for no_pin in ["removed", "empty"] {
+        match no_pin {
+            "removed" => std::fs::remove_file(&known_hosts).unwrap(),
+            _ => std::fs::write(&known_hosts, "").unwrap(),
+        }
+        machine_up(&client, dir.path(), &spec, &Phases::default().hear())
+            .await
+            .unwrap();
+        assert_eq!(fake.acts().last(), Some(&"exec"), "{no_pin}");
+        assert_eq!(
+            std::fs::read_to_string(&known_hosts).unwrap(),
+            pin_of(HOST_KEY),
+            "{no_pin}"
+        );
+    }
+}
+
+/// A box just made is a new disk with a key of its own: that key is pinned,
+/// whatever the directory held before.
+#[tokio::test]
+async fn a_new_box_pins_its_own_host_key_over_whatever_its_directory_held() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let known_hosts = dir.path().join(fletch_box::channel::KNOWN_HOSTS_FILE);
+    std::fs::write(&known_hosts, pin_of(OTHER_HOST_KEY)).unwrap();
+
+    made(&fake, dir.path()).await;
+
+    assert_eq!(fake.acts(), ["create", "exec"]);
+    assert_eq!(
+        std::fs::read_to_string(&known_hosts).unwrap(),
+        pin_of(HOST_KEY)
+    );
+}
+
+/// A try at ssh that fails is followed by a short pause first, then longer
+/// ones, up to the longest.
+#[test]
+fn the_pauses_between_ssh_tries_start_short_and_grow_to_the_pace() {
+    let pauses: Vec<Duration> = ssh_pauses().take(7).collect();
+    assert_eq!(pauses[0], SSH_FIRST_PACE);
+    assert!(pauses.windows(2).all(|w| w[0] <= w[1]), "{pauses:?}");
+    assert_eq!(pauses.last(), Some(&SSH_PACE), "{pauses:?}");
+    assert!(pauses.iter().all(|p| *p <= SSH_PACE), "{pauses:?}");
+}
+
+/// What a launch learns of a CLI in one cloud box (its capability probe)
+/// holds in every other with that version: the CLI is named by its
+/// version, never by its box.
+#[tokio::test]
+async fn a_cloud_boxs_cli_is_named_by_its_version_alone() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let handle = made(&fake, dir.path()).await;
+    let client = Arc::new(fake.client());
+    let one = CloudMachine::new("glacier", client.clone(), handle.clone());
+    let other = CloudMachine::new("tundra", client, handle);
+    assert_eq!(one.cli_identity("claude"), None, "no version known yet");
+
+    for machine in [&one, &other] {
+        machine
+            .clis
+            .lock()
+            .insert("claude".to_string(), "2.1.0".to_string());
+    }
+    assert!(one.cli_identity("claude").is_some());
+    assert_eq!(one.cli_identity("claude"), other.cli_identity("claude"));
+
+    other
+        .clis
+        .lock()
+        .insert("claude".to_string(), "2.2.0".to_string());
+    assert_ne!(one.cli_identity("claude"), other.cli_identity("claude"));
+    assert_eq!(other.cli_identity("codex"), None);
 }
 
 #[tokio::test]
@@ -169,7 +355,11 @@ async fn a_lost_machine_is_replaced_on_its_disk_and_the_new_handle_kept() {
     assert_ne!(replaced, handle, "a new machine");
     assert!(replaced.same_box(&handle), "on the same disk");
     assert_eq!(read_handle(dir.path()).unwrap(), Some(replaced));
-    assert_eq!(fake.acts(), ["create", "exec", "replace", "exec"]);
+    assert_eq!(
+        fake.acts(),
+        ["create", "exec", "replace"],
+        "the same disk, the same host key"
+    );
     assert_eq!(
         phases.details(),
         [format!(

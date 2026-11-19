@@ -520,15 +520,23 @@ everything provider-specific (nothing outside `cloud/` names a provider:
   is gone is the workspace's files gone: the boot is refused with
   `Error::CloudGone`, and nothing is made in its place. A machine the
   provider cannot run is refused with its reason, and nothing destroyed.
-  The guest's host key is read through the provider's authenticated exec
-  (`/data/ssh/host_key.pub`) at every boot and pinned, then ssh is waited
-  for (up to 90 s: a new name takes a while to resolve). Any failure once
-  the machine is up stops it, its handle kept.
+  The guest's host key lives on the box's disk, so it is the box's for its
+  whole life, through a replaced machine too: it is read through the
+  provider's authenticated exec (`/data/ssh/host_key.pub`) and pinned for a
+  box just made or a directory with no pin, and every other boot trusts the
+  pin; a guest offering another key is refused at the ssh handshake, at
+  once. Then ssh is waited for (up to 90 s: a new name takes a while to
+  resolve), tried again after 250 ms, the pause doubling up to 3 s. Any
+  failure once the machine is up stops it, its handle kept.
 - **Its CLIs** live on the box's own disk, `/data/tools/<provider>`, bound
   at `/opt/fletch/tools` where a tools disk would be: the owner's is
   installed at boot at the version a local box would get, a tenant's of
   another provider on its first launch, in place and with no restart
-  (`fletch_box::tools::install_cli`, a version marker beside each).
+  (`fletch_box::tools::install_cli`). The version marker beside each is
+  written only once a sync of the guest's disks has put the CLI's files
+  there: in the background of the launch that installed it, and a clean
+  stop lets it finish first. A machine lost or killed before then has no
+  marker, and its next boot installs the CLI again.
   Codegraph is not installed in a cloud box: its bundle is per
   architecture and built for local boxes, so a cloud box offers none.
 - **Network.** The machine's network is its own: no egress proxy, no
