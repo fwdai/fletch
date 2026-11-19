@@ -1,0 +1,257 @@
+# Cloud execution: the runner and provider sandboxes
+
+Status: design agreed 2026-11-19. The sandbox half is merged and not yet proven
+against a real provider; the runner half is not started. Every statement here
+is a decision Alex made, a fact checked in the code at the path given, or
+marked **open**. Nothing in section 8 may be assumed.
+
+## 1. The goal
+
+In Alex's words:
+
+- Launch a cloud agent from any device that can spawn agents: a laptop with
+  Fletch, or the phone.
+- The agent runs autonomously in the cloud, with no device connected.
+- Any app on any device that is online and connects sees the agent running and
+  its transcript.
+- When the agent has finished, the user reviews the result from any device:
+  the transcript with its messages and tool calls, and the file changes.
+- The user opens the pull request from a client. The agent does not need to
+  open it on its own.
+
+## 2. Two separate choices
+
+"Cloud" was used for two different things. They are independent:
+
+- **Where the supervisor runs**: the Fletch software that owns agents, their
+  transcripts and their lifecycle. On the user's device, or on an always-on
+  machine.
+- **Where the sandbox comes from**: a VM on the supervisor's own machine, or a
+  machine at a provider.
+
+| Supervisor | Sandbox | State |
+| --- | --- | --- |
+| The user's device | Local VM, or the macOS sandbox | Shipped |
+| The user's device | Provider machine | Merged (#1135, #1136, #1137, #1138, #1143, #1144); never completed a boot on a real provider |
+| A paired host (`fletch-host`) | Local VM on that host | Shipped; needs KVM on Linux |
+| A **runner**: `fletch-host` on a provider machine | Provider machine | To build (section 6) |
+
+Only the last two rows meet the goal: with the supervisor on the user's device,
+a closed laptop ends the turn, and a phone cannot launch anything. The last row
+is the one this document specifies. The second row stays: cloud compute driven
+from a laptop, useful and not autonomous.
+
+## 3. Business decisions
+
+1. **The free app sets everything up in one click.** Running agents unattended
+   in the cloud, on the user's own provider account, is free. Nothing in the
+   app is gated.
+2. **The paid product is a Fletch cloud account**, for solo developers and
+   teams: conveniences worth paying for. Doing the same things by hand
+   (pairing each device, adding projects on each, signing in on each) stays
+   possible and free.
+3. **No Fletch backend is built now.** No Fletch-operated always-on server and
+   no database. Alex is the first user; the solution must cost him only his own
+   provider bill.
+4. **What the paid account is for** (not designed, not started): a registry of
+   devices and hosts so they appear everywhere without pairing codes;
+   credentials, projects, sandbox settings and grants managed per user and
+   device; one record of what was launched, by whom, with which credentials
+   and sandboxes.
+5. **A provider is an adapter.** A generalized core behaves the same whatever
+   the provider; an adapter holds everything specific to one. Adding a provider
+   is adding an adapter, with no other wiring. Fly.io first, Daytona second.
+6. **Tools are auto-approved for every provider.** Agents are sandboxed so they
+   can run with full autonomy and be reviewed at the end. No design may need a
+   person or a component to approve tool calls.
+
+## 4. The design
+
+**A runner per user.** The runner is `fletch-host`, the existing headless host,
+on a machine at the user's provider. It supervises: it owns sessions and
+transcripts, holds the logins, and serves every paired device through the
+relay. It does not run agents on itself.
+
+**A provider machine per workspace.** The runner sandboxes each workspace
+exactly as a laptop can since #1143: a box whose machine is created at the
+provider, stopped when idle, destroyed with the workspace. The code is in
+`fletch-core`, which `fletch-host` runs.
+
+**Devices are clients.** A laptop or phone paired with the runner launches,
+watches and reviews through the existing remote protocol. Nothing about the
+session lives on the device.
+
+**Credentials.** The runner holds a GitHub token and a model login. Both are
+handed to it when it is created: long-lived tokens minted on the laptop that
+creates it, not a copy of the laptop's own login. They sit on the runner only.
+A sandbox gets what any box gets: a short-lived token per launch
+(`crates/fletch-core/src/sandbox/provider/auth.rs`).
+
+**Always on.** In the first version the runner runs until the user stops it
+from Settings: a stopped runner cannot be reached from a phone.
+
+**Later, the paid control plane registers runners; it does not replace them.**
+Execution stays in a runner per user or team, so one tenant's credentials are
+never in a process shared with another's. The central record is the control
+plane, fed by runners.
+
+### Rejected, with the reason
+
+- **Running agents directly on the runner, with the machine as the sandbox.**
+  Not needed once the runner uses provider machines, and it would break the
+  rule that Fletch has exactly two isolation engines (`docs/isolation.md:26`).
+- **One runner per workspace.** Every device pairs with every host one by one
+  (section 5), so each workspace would need a pairing on each device.
+- **One central supervisor for all users.** It would hold every user's GitHub
+  token and model login in one process, and is fixed infrastructure paid for
+  before anyone pays.
+- **A component in the sandbox that approves tools, logs output and replays it
+  to a reconnecting laptop.** It solved problems the laptop-as-supervisor
+  design created; the host already keeps a turn running and lets clients catch
+  up (section 5).
+- **Gating one-click setup or unattended runs behind payment.** Decision 3.1;
+  it would also need the accounts and licensing backend of decision 3.3.
+- **Deleting provider-side boxes this install has no directory for.** Two
+  installs (a debug and a release build, two machines) can share one provider
+  account and would destroy each other's workspaces.
+
+## 5. What exists (checked in the code)
+
+The host:
+
+- Agents belong to the host's supervisor, not to a connection. A disconnect
+  cancels only that connection's in-flight requests
+  (`crates/fletch-core/src/remote/server.rs`).
+- A client that connects mid-turn reads the turn so far with `read_live_turn`,
+  the host's in-memory copy capped at 2000 events
+  (`crates/fletch-core/src/supervisor/live_turn.rs:33`); finished turns come
+  from the session records. `hello` returns the whole workspace snapshot.
+- On the wire: `spawn_agent`, `read_live_turn`, the session and diff reads,
+  `push_agent`, `create_pr`, `clone_repo`, `ensure_project`
+  (`crates/fletch-core/src/remote/dispatch.rs`). Pushes and pull
+  requests use the host's GitHub login, never the client's.
+- A repository must be on the host's disk. The host clones it from GitHub with
+  its own token; a phone can ask for that (`clone_repo`). No client transfers
+  a repository.
+- Every tool call is auto-approved; only `AskUserQuestion` and `ExitPlanMode`
+  are held for a person (`crates/fletch-core/src/managed_session.rs:39`).
+- The GitHub token comes from `fletch-host github login`, the
+  `FLETCH_GITHUB_TOKEN` variable, or a systemd credential
+  (`crates/fletch-core/src/host/boot.rs:475,918`). A headless host keeps
+  secrets in its settings table, in plaintext (`boot.rs:330`).
+- Release builds include `fletch-host` for `x86_64-unknown-linux-gnu`
+  (`.github/workflows/release.yml:349`).
+
+Pairing and the relay:
+
+- A host's identity is its public key. A device reaches it through the relay
+  only when it holds that key and the relay's address.
+- Pairing is one device to one host, with a code minted on the host
+  (`fletch-host pair`, over the host's admin socket). There is no account, no
+  device or host registry, and no non-interactive pairing. The relay "holds no
+  keys and no accounts" (`relay/README.md:197`).
+- A paired device is a record in the host's `remote/devices.json` holding the
+  device's public key, which the host checks at every handshake
+  (`crates/fletch-core/src/remote/auth.rs`).
+- A `fletch-host` has no relay unless started with `--relay`: the default
+  (`wss://relay.fletch.sh`, `crates/fletch-core/src/remote/mod.rs:74`) is
+  written only by the desktop (`boot.rs:239`).
+
+The sandbox half:
+
+- A workspace's box is at a provider when `workspaces.cloud_provider` names
+  one; its engine stays `box`. The provider-side box is named by a handle kept
+  in the box directory (`crates/fletch-core/src/sandbox/boxes/cloud.rs`).
+- Nothing outside `crates/fletch-core/src/cloud/` names a provider, and nothing
+  under `src/` does; a test on each side fails otherwise
+  (`cloud/tests/neutral.rs`, `src/providerNeutrality.test.ts`). Settings builds
+  its connect form from what the adapter describes.
+- The cloud image is `ghcr.io/fwdai/fletch-cloud:<box version>-<fingerprint>`,
+  pinned in `crates/fletch-box/src/image_store/mod.rs` and checked by
+  `scripts/check-cloud-image.sh`.
+
+What stops a runner today:
+
+- Off macOS a new agent is always a local box
+  (`crates/fletch-core/src/sandbox/boxes/mod.rs:652`), and a host that cannot
+  boot one refuses every spawn (`boot.rs:395`).
+- A remote spawn carries no workspace type (`dispatch.rs:831`), so a client
+  cannot ask a host for a provider machine.
+- Connecting a provider is a desktop command only: not on the remote wire
+  (pinned by `remote/tests.rs:941`) and not on the host's admin socket
+  (`crates/fletch-host/src/ops.rs`).
+- No image contains `fletch-host`.
+
+## 6. What to build
+
+In this order; each is one pull request.
+
+1. **A headless host sandboxes in provider machines.** It can hold a provider
+   connection, and where it cannot boot a local VM it gives a new workspace a
+   provider machine instead of refusing. Done when a `fletch-host` on a Linux
+   machine without VM support, given a connection, runs a workspace in a
+   provider machine.
+2. **The runner image and its hands-off start.** An image with `fletch-host`
+   that comes up with the relay on, the creating device authorised, and its
+   GitHub token and provider connection in place, with no terminal. Done when a
+   machine booted from it with those inputs is reachable from the creating
+   device through the relay.
+3. **One click in the app.** Settings → Cloud creates, shows, stops, starts and
+   deletes the runner through the provider adapter. Creating it pairs this
+   device, and the runner appears as a host to run on; another device pairs
+   with a code. Done when, from a laptop with a connected provider: one click,
+   launch a workspace on the runner, close the laptop, follow it from the
+   phone.
+
+Before 1: one workspace driven from a laptop must boot on a real provider
+machine. The first attempt failed at its first request; #1146 fixed that
+request, and nothing after it has been seen to run.
+
+## 7. Rules for whoever builds this
+
+- No provider is named or branched on outside its adapter, in Rust or in
+  `src/`. Keep both tests passing. What differs per provider is asked of the
+  adapter.
+- No approval machinery (decision 3.6).
+- Two isolation engines; no third.
+- A box whose disk is gone is refused, never recreated on an empty disk.
+- A provider token and every other secret stay out of logs, errors and
+  telemetry.
+- Local boxes, the macOS sandbox and the laptop-driven cloud box behave as
+  they do today.
+- Before designing around an obstacle, establish that it is a requirement of
+  the goal in section 1 and not an artefact of an earlier design.
+
+## 8. Open
+
+Not investigated:
+
+- **How a long-lived token is minted on the laptop**, for each agent CLI and
+  for GitHub: which CLIs can mint one, how long it lasts, and how the host
+  takes it in place of the vendor's login run in a terminal, which is how a
+  host is signed in today. To settle before step 2.
+- How the creating device learns the runner's public key, and how its own key
+  is authorised on the runner, without a pairing code.
+- How the provider connection reaches the runner.
+
+Not verified:
+
+- Whether a Fly machine can boot a local VM. The design does not depend on it.
+- Every request to a provider after app creation: addresses, volume, machine,
+  host key, ssh.
+- The runner's size and cost.
+- `fletch-host` on Linux end to end: the acceptance line in
+  `docs/multi-host-plan.md` (3e) is unchecked, and that document still
+  describes container engines the code has retired.
+- Whether the later control plane fits Cloudflare's free tier.
+
+Known gaps in the sandbox half, accepted for now:
+
+- A crash during the create call leaves a box at the provider that Fletch has
+  no record of.
+- A machine keeps the image it was created with.
+- A changed agent CLI version is installed in place at the next launch, even
+  while another session runs in the box.
+- A provider box has open network (no allow-list), mounts no folder from the
+  user's machine, has no codegraph, and cannot be moved to or from a local
+  sandbox.
