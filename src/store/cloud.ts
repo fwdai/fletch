@@ -32,7 +32,9 @@ export function withCloudProvider(
     : [...current, status];
 }
 
-export const createCloudSlice: SliceCreator<CloudSlice> = (set, _get, { api }) => ({
+// A connect or a disconnect adds or takes away a workspace type (one per
+// connected provider), so the composer's answer is read again after either.
+export const createCloudSlice: SliceCreator<CloudSlice> = (set, get, { api }) => ({
   cloudProviders: null,
 
   refreshCloudProviders: async () => {
@@ -42,6 +44,7 @@ export const createCloudSlice: SliceCreator<CloudSlice> = (set, _get, { api }) =
   connectCloud: async (provider, token, account) => {
     const status = await api.cloudConnect(provider, token, account);
     set((s) => ({ cloudProviders: withCloudProvider(s.cloudProviders, status) }));
+    get().reloadWorkspaceTypes();
   },
 
   // `cloud_disconnect` answers nothing, and what it leaves is known: the same
@@ -54,5 +57,6 @@ export const createCloudSlice: SliceCreator<CloudSlice> = (set, _get, { api }) =
           p.id === provider ? { ...p, connected: false, account: null } : p,
         ) ?? null,
     }));
+    get().reloadWorkspaceTypes();
   },
 });
