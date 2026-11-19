@@ -48,13 +48,8 @@ async fn connect_stores_the_token_only_once_the_provider_accepts_it() {
         .await
         .unwrap();
     assert_eq!(
-        status,
-        CloudProviderStatus {
-            id: "fly",
-            label: "Fly.io",
-            connected: true,
-            account: Some("personal".into()),
-        },
+        (status.id, status.connected, status.account.as_deref()),
+        ("fly", true, Some("personal")),
         "a blank org is the personal one"
     );
     assert_eq!(accepting.lines(), ["GET /v1/apps?org_slug=personal"]);
@@ -106,21 +101,38 @@ async fn disconnect_forgets_the_token_and_the_org_but_not_the_region() {
 fn statuses_are_read_from_storage_in_the_settings_shape() {
     let (_dir, db) = db();
     let conn = db.lock();
+    // What the pane needs to connect the provider comes with it, every word
+    // the adapter's.
+    let fly = |connected: bool, account: serde_json::Value| {
+        json!([{
+            "id": "fly",
+            "label": "Fly.io",
+            "connected": connected,
+            "account": account,
+            "account_label": "Organization",
+            "account_placeholder": "personal",
+            "token_placeholder": "FlyV1 fm2_…",
+            "token_help": "Run \"fly tokens create org\" in a terminal, or create a token in the \
+                           Fly.io dashboard under Tokens.",
+            "billing": "Fly.io bills a workspace's machine while it runs, and its disk for as \
+                        long as the workspace exists, running or not.",
+        }])
+    };
     assert_eq!(
         serde_json::to_value(statuses(&conn).unwrap()).unwrap(),
-        json!([{ "id": "fly", "label": "Fly.io", "connected": false, "account": null }])
+        fly(false, json!(null))
     );
 
     crate::secrets::set(&conn, "cloud.fly.token", "token-0123456789").unwrap();
     assert_eq!(
         serde_json::to_value(statuses(&conn).unwrap()).unwrap(),
-        json!([{ "id": "fly", "label": "Fly.io", "connected": true, "account": "personal" }]),
+        fly(true, json!("personal")),
         "a token stored without an org acts in the personal one"
     );
     crate::database::set_setting(&conn, "cloud.fly.org", "acme").unwrap();
     assert_eq!(
         serde_json::to_value(statuses(&conn).unwrap()).unwrap(),
-        json!([{ "id": "fly", "label": "Fly.io", "connected": true, "account": "acme" }])
+        fly(true, json!("acme"))
     );
 }
 

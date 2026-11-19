@@ -51,10 +51,30 @@ use reqwest::{Method, StatusCode};
 use serde_json::{json, Map, Value};
 
 use super::{
-    Connection, Created, Endpoint, ExecOutput, Handle, Listed, MachineSpec, MachineState,
+    Connection, Created, Endpoint, ExecOutput, Facts, Handle, Listed, MachineSpec, MachineState,
     DEFAULT_DISK_GIB,
 };
 use crate::error::{Error, Result};
+
+/// Fly.io as the rest of the app knows it: the connection acts in an org (by
+/// its slug), `personal` when none is given — every Fly user has it and the
+/// API takes it as a slug; tokens come from `fly tokens create` (a
+/// comma-separated macaroon list behind `FlyV1 `) or `fly auth token`. The
+/// billing sentence is [`volume_body`]'s pricing in brief.
+pub(super) const FACTS: Facts = Facts {
+    id: "fly",
+    label: "Fly.io",
+    token_key: "cloud.fly.token",
+    account_key: "cloud.fly.org",
+    region_key: "cloud.fly.region",
+    default_account: "personal",
+    account_label: "Organization",
+    token_placeholder: "FlyV1 fm2_…",
+    token_help: "Run \"fly tokens create org\" in a terminal, or create a token in the Fly.io \
+                 dashboard under Tokens.",
+    billing: "Fly.io bills a workspace's machine while it runs, and its disk for as long as the \
+              workspace exists, running or not.",
+};
 
 /// The Machines API's public address.
 pub const API_BASE: &str = "https://api.machines.dev";
@@ -127,6 +147,46 @@ const RATE_LIMIT_RETRIES: u32 = 3;
 /// The longest `Retry-After` honoured; a request bounded in seconds does not
 /// sleep for minutes on the server's say-so.
 const RETRY_AFTER_MAX: Duration = Duration::from_secs(10);
+
+/// A Fly.io handle from `rest`, what follows `fly:` in `whole`:
+/// `<org>/<app>/<volume>/<machine>`, the volume or the machine empty only
+/// where [`Client::list`] found none.
+pub(super) fn parse_handle(whole: &str, rest: &str) -> Result<Handle> {
+    let invalid = || Error::Other(format!("not a cloud box handle: {whole:?}"));
+    let parts: Vec<&str> = rest.split('/').collect();
+    let [org, app, volume, machine] = parts[..] else {
+        return Err(if parts.len() == 2 {
+            Error::Other(format!(
+                "{whole:?} is a Fly.io handle in the form from before cloud boxes had a volume \
+                 (app/machine); it names no disk and no org, and cannot be used"
+            ))
+        } else {
+            invalid()
+        });
+    };
+    let slug = |v: &str| {
+        !v.is_empty()
+            && v.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    let volume_ok = volume.is_empty()
+        || volume.strip_prefix("vol_").is_some_and(|id| {
+            !id.is_empty()
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+    let machine_ok = machine.chars().all(|c| c.is_ascii_alphanumeric());
+    if !slug(org) || !slug(app) || !volume_ok || !machine_ok {
+        return Err(invalid());
+    }
+    Ok(Handle::Fly {
+        org: org.to_string(),
+        app: app.to_string(),
+        volume: volume.to_string(),
+        machine: machine.to_string(),
+    })
+}
 
 /// Where a box's sshd is reached: TLS to the app's `fly.dev` name.
 pub(super) fn endpoint(app: &str) -> Endpoint {
