@@ -748,10 +748,11 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // and skipped, so a side-by-side Fletch is left untouched.
     sandbox::cleanup_nested_rpc_roots();
     sandbox::cleanup_nested_checkouts_roots();
-    // The box engine: its settings mirrored in-process, its `box:*` events
-    // through the fanout, every live box-stamped agent's root routed to its
-    // box, and the helpers of dead instances swept — on a thread, so startup
-    // never waits on it.
+    // The box engine: its settings mirrored in-process (with the defaults a
+    // headless host has of its own), its `box:*` events through the fanout,
+    // every live box-stamped agent's root routed to its box, and the helpers
+    // of dead instances swept — on a thread, so startup never waits on it.
+    sandbox::boxes::settings::set_headless(headless);
     sandbox::boxes::settings::seed(&db.lock());
     sandbox::boxes::set_event_sink(sink.clone());
     // The record of what boxes reach: written from the proxies' event path,
