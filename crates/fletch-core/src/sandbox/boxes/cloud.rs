@@ -235,6 +235,7 @@ pub(super) fn spec(identity: &BoxIdentity, authorized_key: String) -> MachineSpe
         memory_mib: knobs.memory_mib,
         disk_gib: Some(knobs.disk_gib),
         ssh_port: guest::CLOUD_SSH_PORT,
+        keep_running: false,
     }
 }
 
@@ -373,7 +374,7 @@ async fn pin_host_key(client: &Client, handle: &Handle, dir: &Path) -> Result<()
 /// The channel to the guest of the box `handle` names, authenticating with
 /// `key` and trusting the host key [`machine_up`] pinned in `dir`, once its
 /// sshd answers.
-pub(super) async fn reach(dir: &Path, key: &Path, handle: &Handle) -> Result<Channel> {
+pub(crate) async fn reach(dir: &Path, key: &Path, handle: &Handle) -> Result<Channel> {
     let endpoint = handle.endpoint();
     let route = route(&endpoint)?;
     let known_hosts = dir.join(channel::KNOWN_HOSTS_FILE);
@@ -591,7 +592,7 @@ pub async fn destroy_box(dir: &Path) -> Result<()> {
 }
 
 /// [`destroy_box`] with the client for a provider from `client_for`.
-pub(super) async fn destroy_box_with(
+pub(crate) async fn destroy_box_with(
     dir: &Path,
     client_for: impl FnOnce(ProviderId) -> Result<Client>,
 ) -> Result<()> {

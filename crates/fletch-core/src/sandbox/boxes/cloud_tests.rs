@@ -231,6 +231,10 @@ fn a_machine_is_made_from_the_pinned_image_with_the_guest_contract() {
     assert_eq!(spec.name, "glacier");
     assert_eq!(spec.image, image());
     assert_eq!(spec.ssh_port, fletch_box::guest::CLOUD_SSH_PORT);
+    assert!(
+        !spec.keep_running,
+        "a box's machine is started and stopped by the engine alone"
+    );
     let knobs = settings::current();
     assert_eq!(
         (spec.cpus, spec.memory_mib, spec.disk_gib),
