@@ -4,7 +4,7 @@ A runner is `fletch-host` on a machine at the user's cloud provider: always
 on, supervising agents with no laptop online, each workspace in a provider
 machine of its own, and serving every paired device (desktop or phone)
 through the relay. The design is `docs/cloud-runner.md` (the spec); this page
-is what `crates/fletch-core/src/cloud_runner` does today. The desktop's
+is what `crates/fletch-core/src/sandbox/cloud_runner` does today. The desktop's
 Settings calls its functions (`status`, `create`, `start`, `stop`, `delete`,
 `pairing_link`); one runner per install.
 
