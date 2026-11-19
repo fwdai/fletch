@@ -1,7 +1,9 @@
 # Cloud execution: the runner and provider sandboxes
 
 Status: design agreed 2026-11-19. The sandbox half is merged and ran on Fly.io
-that day (section 5); spares and the runner are not started. Every statement
+that day (section 5). The six steps of section 6 are built and in review
+(#1149 to #1154), with tests against a stand-in provider only: none has run on
+a real machine. Every statement
 here is a decision Alex made, a fact checked in the code at the path given,
 measured, or quoted from a provider's documentation, or it is marked **open**.
 Nothing in section 8 may be assumed.
@@ -84,7 +86,11 @@ others are untouched.
 **Fletch's image, not the provider's.** Every machine runs the box image, the
 one built for VMs on the user's machine, with its tools already in it. For a
 provider it is the cloud image (`packaging/cloud-image`), built from the box
-image's x86_64 release.
+image's x86_64 release. The runner's machine runs that same image: `fletch-host`
+is installed on its durable disk and started by the image's entrypoint when
+the disk holds its start script, so `fletch-host update` updates it in place
+(decided 2026-11-19; a separate runner image would be fixed when its machine
+is created).
 
 **A spare is always ready.** The supervisor keeps a machine created ahead of
 any workspace and parked, so a new agent starts on a machine that only has to
@@ -96,8 +102,9 @@ wake:
   machine or installs anything.
 - A new workspace takes the spare. Its replacement is created at once, in the
   background.
-- There is always at least one spare, whatever the number of workspaces,
-  including none. How many is a setting; the default is one.
+- A supervisor that keeps spares always has at least one, whatever the number
+  of workspaces, including none. How many is a setting, per connected
+  provider; its default depends on the supervisor (last item).
 - With no spare ready (two agents spawned in a row, a spare that failed), the
   workspace's machine is created directly, as it is today. A spawn never fails
   or waits for want of a spare.
@@ -136,11 +143,37 @@ the supervisor becomes the workspace's box directory.
 watches and reviews through the existing remote protocol. Nothing about the
 session lives on the device.
 
-**Credentials.** The runner holds a GitHub token and a model login. Both are
-handed to it when it is created: long-lived tokens minted on the laptop that
-creates it, not a copy of the laptop's own login. They sit on the runner only.
-A sandbox gets what any box gets: a short-lived token per launch
-(`crates/fletch-core/src/sandbox/provider/auth.rs`).
+**Credentials.** The runner holds a GitHub token and a model login of its own,
+never a copy of the laptop's login. For the first version (decided
+2026-11-19):
+
+- GitHub: the runner runs its own device login while it is set up, and the app
+  shows the code. The token is minted on the runner and never leaves it; a
+  sandbox never gets it (pushes and pull requests are the supervisor's).
+- Claude: a long-lived token the user mints on the laptop with
+  `claude setup-token`, written to an owner-only file on the runner's disk and
+  loaded into `fletch-host`'s environment. Other agent CLIs are not set up on a
+  runner yet.
+
+What reaches a sandbox is not a boundary this design adds: it is what any box
+gets from its supervisor, which differs by agent CLI
+(`crates/fletch-core/src/sandbox/provider/`):
+
+- Claude, where the supervisor has a login of its own: an access token of
+  about 8 hours per launch, the refresh token kept on the supervisor. Where it
+  has only a token in its environment, which is the runner's case, that token
+  is forwarded unchanged (`auth.rs`): **each sandbox of a runner holds the
+  long-lived Claude token.**
+- Codex: a login file with the refresh token removed, and the supervisor's
+  `OPENAI_API_KEY` if it has one.
+- Cursor: its API key.
+- opencode and pi: the CLI's own login file, copied into the sandbox and
+  reconciled back, and any provider API keys the supervisor has.
+
+So only Claude with a supervisor-side login, and Codex's file, are short-lived
+in a sandbox; API keys and the opencode and pi login files are as long-lived
+there as on the supervisor. Keeping a runner's sandboxes on short-lived Claude
+tokens needs a login on the runner itself (its own refresh token); not built.
 
 **Always on.** In the first version the runner runs until the user stops it
 from Settings: a stopped runner cannot be reached from a phone.
@@ -280,22 +313,28 @@ What Fly.io documents (`docs.fly.io/reference/suspend-resume`,
   $0.15 per GB a month; a volume is $0.15 per GB a month in any state.
 - A machine can be created without being started (`skip_launch`).
 
-What stops a runner today:
+What stopped a runner on `main` at 2026-11-19, and the step of section 6 that
+removes it:
 
-- Off macOS a new agent is always a local box
-  (`crates/fletch-core/src/sandbox/boxes/mod.rs:652`), and a host that cannot
-  boot one refuses every spawn (`boot.rs:395`).
-- A remote spawn carries no workspace type (`dispatch.rs:831`), so a client
-  cannot ask a host for a provider machine.
-- Connecting a provider is a desktop command only: not on the remote wire
-  (pinned by `remote/tests.rs:941`) and not on the host's admin socket
-  (`crates/fletch-host/src/ops.rs`).
-- No image contains `fletch-host`.
+- Off macOS a new agent was always a local box, and a host that cannot boot
+  one refused every spawn. Step 4: such a host gives a spawn that names no
+  workspace type a box at a connected provider.
+- A remote spawn carries no workspace type (`remote/dispatch.rs`), so a client
+  cannot ask a host for a provider machine. Still true, and not needed: the
+  host's default covers a runner.
+- Connecting a provider was a desktop command only. Step 4: it is also on the
+  host's local admin socket (`fletch-host cloud connect`); it stays off the
+  remote wire.
+- No image started `fletch-host`. Step 5: the cloud image's entrypoint starts
+  a host service its disk holds.
 
 ## 6. What to build
 
 In this order; each is one pull request. Steps 1 to 3 make a new agent start
 quickly and are tested from a laptop; steps 4 to 6 make it run unattended.
+Built 2026-11-19 as #1151 (step 1), #1149 (2), #1152 (3), #1150 (4), #1153 (5)
+and #1154 (6); every "Done when" below is still to be checked on a real
+machine.
 
 1. **The engine's own delays.** No disk sync that a launch waits on; the CLI
    capability probe remembered per CLI version, not per box; a wake that does
@@ -321,13 +360,15 @@ quickly and are tested from a laptop; steps 4 to 6 make it run unattended.
    provider machine instead of refusing. Done when a `fletch-host` on a Linux
    machine without VM support, given a connection, runs a workspace in a
    provider machine.
-5. **The runner image and its hands-off start.** An image with `fletch-host`
-   that comes up with the relay on, the creating device authorised, and its
-   GitHub token and provider connection in place, with no terminal, and its
-   data directory on the durable disk. Done when a machine booted from it with
-   those inputs is reachable from the creating device through the relay, and
-   after a stop and a start it is the same runner: same identity, pairings,
-   logins and history.
+5. **The runner's machine and its hands-off start.** A machine from the cloud
+   image, with `fletch-host` on its disk, that comes up with the relay on, the
+   creating device authorised, and its GitHub token and provider connection in
+   place, with no terminal, and its data directory on the durable disk. The
+   creating device sets it up over the ssh channel the adapter gives, through
+   the host's admin socket; nothing secret is in the machine's configuration
+   or on the remote wire. Done when a machine set up that way is reachable
+   from the creating device through the relay, and after a stop and a start it
+   is the same runner: same identity, pairings, logins and history.
 6. **One click in the app.** Settings → Cloud creates, shows, stops, starts and
    deletes the runner through the provider adapter. Creating it pairs this
    device, and the runner appears as a host to run on; another device pairs
@@ -361,18 +402,25 @@ quickly and are tested from a laptop; steps 4 to 6 make it run unattended.
 
 ## 8. Open
 
+Settled while building (2026-11-19):
+
+- Credentials for the first version: section 4, "Credentials".
+- The creating device learns the runner's public key, has its own key
+  authorised, and hands over the provider connection, all over ssh through the
+  host's admin socket (`fletch-host call`), with the host key pinned through
+  the provider's authenticated exec as for any cloud box.
+- The guest takes its workspace's paths from its supervisor at every boot:
+  the supervisor binds them over ssh, a no-op where the entrypoint already
+  bound them from the machine's environment. No image or configuration change.
+
 Not investigated:
 
-- **How a long-lived token is minted on the laptop**, for each agent CLI and
-  for GitHub: which CLIs can mint one, how long it lasts, and how the host
-  takes it in place of the vendor's login run in a terminal, which is how a
-  host is signed in today. To settle before step 2.
-- How the creating device learns the runner's public key, and how its own key
-  is authorised on the runner, without a pairing code.
-- How the provider connection reaches the runner.
-- How the guest takes its workspace's paths after it has started. Today they
-  are bound once, by the image's entrypoint, from the machine's environment
-  (`packaging/cloud-image/entrypoint`).
+- A login on the runner itself for Claude (its own refresh token), so that
+  its sandboxes get short-lived tokens; and how any other agent CLI is signed
+  in on a runner.
+- Whether a provider restarts a machine it was asked to keep running after a
+  host restart, and what an explicit stop does under a restart policy:
+  Fly.io's documentation says neither.
 
 Not verified:
 
