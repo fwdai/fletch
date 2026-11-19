@@ -461,12 +461,12 @@ fn cloud_refusal(provider: &str, cloud: ProviderId) -> Option<String> {
 /// platform (`seatbelt::refusal`), and no box this machine can boot
 /// ([`boxes::runtime_usable`]) — gives it a box at a cloud provider that can
 /// take it ([`default_cloud`]). What the spawn stamps and what
-/// [`workspace_types`] marks as the default both come from here. Blocking:
-/// the runtime probe.
+/// [`workspace_types`] marks as the default both come from here. Blocking
+/// where the platform has no macOS sandbox: the runtime probe.
 pub fn default_workspace_type(provider: &str) -> Option<WorkspaceType> {
     default_cloud(
         seatbelt::refusal().is_none(),
-        boxes::runtime_usable(),
+        boxes::runtime_usable,
         |cloud| cloud_refusal(provider, cloud),
     )
     .map(WorkspaceType::Cloud)
@@ -474,16 +474,16 @@ pub fn default_workspace_type(provider: &str) -> Option<WorkspaceType> {
 
 /// [`default_workspace_type`]'s decision, its inputs passed in: whether this
 /// platform has the macOS sandbox (`host_sandbox`), whether this machine can
-/// boot a box (`local_box`), and why a box at each cloud provider cannot be
-/// had (`cloud_refusal`, `None` when it can). With neither sandbox here, the
-/// first provider in `ProviderId::ALL`'s order whose box can be had; with
-/// either, or with no such provider, `None`.
+/// boot a box (`local_box`, asked only without the macOS sandbox), and why a
+/// box at each cloud provider cannot be had (`cloud_refusal`, `None` when it
+/// can). With neither sandbox here, the first provider in `ProviderId::ALL`'s
+/// order whose box can be had; with either, or with no such provider, `None`.
 fn default_cloud(
     host_sandbox: bool,
-    local_box: bool,
+    local_box: impl FnOnce() -> bool,
     cloud_refusal: impl Fn(ProviderId) -> Option<String>,
 ) -> Option<ProviderId> {
-    if host_sandbox || local_box {
+    if host_sandbox || local_box() {
         return None;
     }
     ProviderId::ALL
@@ -1248,18 +1248,21 @@ mod workspace_type_tests {
         let cannot = |cloud: ProviderId| Some(boxes::cloud::not_connected(cloud));
 
         // Neither sandbox here: the first provider that can take it.
-        assert_eq!(default_cloud(false, false, can), Some(first));
+        assert_eq!(default_cloud(false, || false, can), Some(first));
         assert_eq!(
-            default_cloud(false, false, |cloud| (cloud != first)
-                .then(|| "not this one".to_string())),
+            default_cloud(
+                false,
+                || false,
+                |cloud| (cloud != first).then(|| "not this one".to_string())
+            ),
             Some(first)
         );
         // None that can: no default, and the spawn's own refusal stands.
-        assert_eq!(default_cloud(false, false, cannot), None);
+        assert_eq!(default_cloud(false, || false, cannot), None);
         // The macOS sandbox, a box this machine can boot, or both: unchanged.
         for (host_sandbox, local_box) in [(true, false), (false, true), (true, true)] {
             assert_eq!(
-                default_cloud(host_sandbox, local_box, can),
+                default_cloud(host_sandbox, || local_box, can),
                 None,
                 "host sandbox {host_sandbox}, local box {local_box}"
             );
