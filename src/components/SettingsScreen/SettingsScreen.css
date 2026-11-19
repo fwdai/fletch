@@ -609,6 +609,46 @@
   color: var(--fg-2);
 }
 
+/* ── CLOUD RUNNER (Settings › Cloud) ─────────────────────────────────── */
+/* Under its provider's connection line, set apart by the group's hairline. */
+.set-runner {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--bd-soft);
+}
+.set-runner-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.set-runner-confirm,
+.set-runner-github {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* A create's steps: the finished ones greyed with a check, the one under way
+   in full colour beside the spinner. */
+.set-runner-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.set-runner-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-2);
+}
+.set-runner-steps li.current {
+  color: var(--fg-0);
+}
+.set-runner-waiting {
+  gap: 8px;
+}
+
 /* Inline warning box, warn-tinted like the other inline banners. */
 .set-inline-warn {
   margin-top: 10px;

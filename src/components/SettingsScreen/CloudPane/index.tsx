@@ -2,17 +2,20 @@ import { useEffect, useState } from "react";
 import { useAppStore } from "@/store";
 import { SetHead } from "../primitives";
 import { ProviderSection } from "./ProviderSection";
+import { useRunnerStatus } from "./Runner/useRunnerStatus";
 
 /** Settings › Cloud: the providers whose machines a workspace can run on
- *  instead of this Mac, one section each, in the order the backend lists them.
- *  All of it is this Mac's (the tokens are in its keychain), so it never
- *  follows a host picked elsewhere in Settings. The list is the store's
- *  (`cloudProviders`), re-read on every visit; what is being typed into a form
- *  stays in that form. */
+ *  instead of this Mac, one section each, in the order the backend lists them,
+ *  and this install's runner under the provider it is at. All of it is this
+ *  Mac's (the tokens are in its keychain), so it never follows a host picked
+ *  elsewhere in Settings. The list and the runner are the store's
+ *  (`cloudProviders`, `cloudRunner`), re-read on every visit; what is being
+ *  typed into a form stays in that form. */
 export function CloudPane() {
   const providers = useAppStore((s) => s.cloudProviders);
   const refresh = useAppStore((s) => s.refreshCloudProviders);
   const [error, setError] = useState<string | null>(null);
+  const runnerError = useRunnerStatus();
 
   useEffect(() => {
     refresh().then(
@@ -30,7 +33,12 @@ export function CloudPane() {
       />
       {error && <div className="set-inline-warn">Couldn't read the cloud providers: {error}</div>}
       {providers?.map((p, i) => (
-        <ProviderSection key={p.id} provider={p} last={i === providers.length - 1} />
+        <ProviderSection
+          key={p.id}
+          provider={p}
+          runnerError={runnerError}
+          last={i === providers.length - 1}
+        />
       ))}
     </div>
   );

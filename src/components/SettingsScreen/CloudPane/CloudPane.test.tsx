@@ -48,6 +48,12 @@ const connectButton = () => screen.getByRole("button", { name: /Connect Fly\.io|
 
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
+  // The pane reads the runner too (Runner/Runner.test.tsx); here there is none.
+  vi.spyOn(api, "cloudRunnerStatus").mockResolvedValue({
+    state: "none",
+    provider: null,
+    record: null,
+  });
 });
 
 afterEach(() => {
