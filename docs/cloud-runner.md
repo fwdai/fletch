@@ -90,6 +90,25 @@ A sandbox gets what any box gets: a short-lived token per launch
 **Always on.** In the first version the runner runs until the user stops it
 from Settings: a stopped runner cannot be reached from a phone.
 
+**The runner's disk.** Everything the runner owns is in `fletch-host`'s data
+directory: the database with the workspaces and sessions, the transcripts, the
+logins, the provider connection, the host key that is its identity, and the
+paired devices. That directory is on the provider's durable disk, never on the
+machine's own root filesystem, which a provider may reset at a stop. The
+adapter already has this split for a box: a disk created with the machine and
+mounted at the guest's `/data`, which outlives the machine
+(`crates/fletch-core/src/cloud/mod.rs`); the runner is created the same way,
+with `--data-dir` on that mount. So:
+
+- A stop and a start keep everything.
+- A runner whose machine is lost gets a new machine on the same disk
+  (`Client::replace_machine`) and is the same runner: same identity, same
+  pairings.
+- A runner whose disk is lost is lost: its history, logins and pairings with
+  it. It is reported as such and never recreated on an empty disk behind the
+  user's back; the user creates a new runner and pairs again.
+- Deleting the runner deletes its disk, and says so first.
+
 **Later, the paid control plane registers runners; it does not replace them.**
 Execution stays in a runner per user or team, so one tenant's credentials are
 never in a process shared with another's. The central record is the control
@@ -193,9 +212,11 @@ In this order; each is one pull request.
    provider machine.
 2. **The runner image and its hands-off start.** An image with `fletch-host`
    that comes up with the relay on, the creating device authorised, and its
-   GitHub token and provider connection in place, with no terminal. Done when a
-   machine booted from it with those inputs is reachable from the creating
-   device through the relay.
+   GitHub token and provider connection in place, with no terminal, and its
+   data directory on the durable disk. Done when a machine booted from it with
+   those inputs is reachable from the creating device through the relay, and
+   after a stop and a start it is the same runner: same identity, pairings,
+   logins and history.
 3. **One click in the app.** Settings → Cloud creates, shows, stops, starts and
    deletes the runner through the provider adapter. Creating it pairs this
    device, and the runner appears as a host to run on; another device pairs
@@ -214,7 +235,8 @@ request, and nothing after it has been seen to run.
   adapter.
 - No approval machinery (decision 3.6).
 - Two isolation engines; no third.
-- A box whose disk is gone is refused, never recreated on an empty disk.
+- A box whose disk is gone is refused, never recreated on an empty disk. The
+  same holds for the runner.
 - A provider token and every other secret stay out of logs, errors and
   telemetry.
 - Local boxes, the macOS sandbox and the laptop-driven cloud box behave as
