@@ -1,6 +1,7 @@
 //! What is done on the runner over ssh, once its machine runs: the set-up of
-//! a new runner ([`configure`]), and the two questions asked of one that is
-//! set up ([`wind_down`], [`pairing`]).
+//! a new runner ([`configure`]), what is asked of one that is set up
+//! ([`wind_down`], [`pairing`]), and the clean end of its service before its
+//! machine is stopped ([`end_service`]).
 //!
 //! The set-up puts on the disk, in order: `fletch-host` (the release of this
 //! engine's version for the guest's architecture, downloaded by the guest and
@@ -17,9 +18,10 @@
 //! channel with the op's JSON arguments on stdin and its JSON result on
 //! stdout ([`admin`]): one way for every op, and no secret in a command line.
 //!
-//! No ssh step here has a test against a real guest; the set-up's pieces that
-//! are text (the start script, the env file, the release's address and
-//! digest) are tested on their own.
+//! No ssh step here has a test against a real guest. The pieces that are text
+//! are tested on their own: the start script and [`END_SERVICE`] run under a
+//! local shell with a stand-in service, the env file, the release's address
+//! and digest.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -69,6 +71,48 @@ const GITHUB_POLL: Duration = Duration::from_secs(3);
 
 /// How long the start script waits before starting an exited service again.
 const RESTART_PAUSE_SECS: u32 = 5;
+
+/// The running start script's pid, written by the script when it starts and
+/// removed when it ends: what a stop signals ([`end_service`]).
+pub(super) const PID_FILE: &str = "/data/host/start.pid";
+
+/// How long a stop waits for the service to end once its start script was
+/// told to: `fletch-host`'s shutdown stops each running workspace machine
+/// (its lock, its sessions pull and its halt each bounded at ten seconds,
+/// the machines side by side), and the bound leaves room past that.
+const SERVICE_END_SECS: u32 = 90;
+
+/// More than [`SERVICE_END_SECS`] for the whole ssh command, so a guest that
+/// stops answering mid-way does not hold the stop up.
+const SERVICE_END_SLACK: Duration = Duration::from_secs(30);
+
+/// Ends the runner's service and syncs the disk:
+/// `sh -c END_SERVICE sh <pid file> <start script> <seconds>`. The start
+/// script whose pid the file holds (and only while that pid is a process
+/// running the script, as `pgrep -f` finds it: a stale pid is not signalled)
+/// is sent TERM and waited for, at most `<seconds>`; the disk is synced
+/// either way. Exits 0 when the service ended, 3 when none was running, 4
+/// when it did not end in time.
+pub(super) const END_SERVICE: &str = r#"set -u
+pidfile=$1 script=$2 bound=$3
+pid=$(cat "$pidfile" 2>/dev/null || true)
+ended=3
+if [ -n "$pid" ] && pgrep -f -- "$script" | grep -qx -- "$pid"; then
+  kill -TERM "$pid" 2>/dev/null || true
+  waited=0
+  ended=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$bound" ]; then
+      ended=4
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+fi
+sync
+exit "$ended"
+"#;
 
 /// Downloads a release tarball into a directory, checks it against a digest
 /// and unpacks it there: `sh -c DOWNLOAD sh <url> <sha256> <dir>`.
@@ -171,9 +215,10 @@ pub(super) async fn configure(
     record
 }
 
-/// Have the runner in `dir` destroy every machine its workspaces have at
-/// their providers (its `destroy_cloud_boxes` op), starting it first when it
-/// is stopped; answers what it did.
+/// Have the runner in `dir` destroy every machine it made at its providers,
+/// its spares and its workspaces' boxes, and make no spare after (its
+/// `destroy_cloud_boxes` op), starting it first when it is stopped; answers
+/// what it did.
 pub(super) async fn wind_down(
     dir: &Path,
     client_for: &impl Fn(ProviderId) -> Result<Client>,
@@ -398,15 +443,20 @@ pub(super) fn env_file(claude_token: &str) -> String {
 /// environment (its home on the disk, the agent CLIs where the entrypoint
 /// binds them, the credentials), then `fletch-host serve` with its data
 /// directory on the disk, the relay `relay` and the name `name`, started again
-/// whenever it exits. Its flags live here, written by the engine, and not in
-/// the image: a machine keeps the image it was made with.
+/// whenever it exits on its own. The script keeps its pid in [`PID_FILE`]; a
+/// TERM to it is passed to the service, whose own shutdown it waits for, and
+/// then it ends instead of starting the service again ([`end_service`]). Its
+/// flags live here, written by the engine, and not in the image: a machine
+/// keeps the image it was made with.
 pub(super) fn start_script(relay: &str, name: &str) -> String {
     format!(
         r#"#!/bin/sh
 # The cloud runner's host service, written by the Fletch engine that set this
 # machine up. The image's entrypoint runs it at every start of the machine, as
 # the agent, with an empty environment; it runs fletch-host with its data on
-# this disk, and starts it again whenever it exits.
+# this disk, and starts it again whenever it exits on its own. Its pid is in
+# {pidfile}: a TERM to it ends the service, which shuts down cleanly, and then
+# the script, which starts nothing more.
 export HOME={home} USER={user} LOGNAME={user} SHELL=/bin/bash LANG=C.UTF-8
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 for bin in {tools}/*/bin; do
@@ -417,22 +467,91 @@ set -a
 . {env}
 set +a
 cd "$HOME" || exit 1
-while :; do
-  {bin} serve --data-dir {data} --relay {relay} --name {name}
-  echo "fletch-host exited with status $?; starting it again in {pause} s" >&2
+stopping=
+service=
+trap 'stopping=1; [ -n "$service" ] && kill -TERM "$service" 2>/dev/null' TERM
+echo $$ > {pidfile}
+while [ -z "$stopping" ]; do
+  {bin} serve --data-dir {data} --relay {relay} --name {name} &
+  service=$!
+  status=0
+  while kill -0 "$service" 2>/dev/null; do
+    [ -n "$stopping" ] && kill -TERM "$service" 2>/dev/null
+    wait "$service"
+    status=$?
+  done
+  service=
+  [ -n "$stopping" ] && break
+  echo "fletch-host exited with status $status; starting it again in {pause} s" >&2
   sleep {pause}
 done
+rm -f {pidfile}
 "#,
         home = HOME,
         user = guest::USER,
         tools = guest::TOOLS_MOUNT,
         env = ENV_FILE,
+        pidfile = PID_FILE,
         bin = HOST_BIN,
         data = DATA_DIR,
         relay = shell_quote(relay),
         name = shell_quote(name),
         pause = RESTART_PAUSE_SECS,
     )
+}
+
+/// End the runner's service cleanly before its machine is stopped, over ssh:
+/// its start script is sent TERM (`END_SERVICE`), which ends `fletch-host`
+/// as a TERM does (its workspaces' machines stopped, its databases closed)
+/// and then itself, and is waited for within a bound; the disk is synced
+/// then. Ok when the service ended or none was running; an error when the
+/// guest could not be reached or the service did not end in time.
+pub(super) async fn end_service(dir: &Path, handle: &Handle) -> Result<()> {
+    let ssh = boxes_cloud::reach(dir, &dir.join(channel::KEY_FILE), handle).await?;
+    let bound = SERVICE_END_SECS.to_string();
+    let ended = tokio::time::timeout(
+        Duration::from_secs(u64::from(SERVICE_END_SECS)) + SERVICE_END_SLACK,
+        ssh.exec(
+            None,
+            None,
+            &[
+                "sh",
+                "-c",
+                END_SERVICE,
+                "sh",
+                PID_FILE,
+                guest::CLOUD_HOST_SERVICE,
+                &bound,
+            ],
+        ),
+    )
+    .await;
+    close(&ssh).await;
+    match ended {
+        Err(_) => Err(Error::Other(format!(
+            "the runner did not answer within {} s while its service was ended",
+            u64::from(SERVICE_END_SECS) + SERVICE_END_SLACK.as_secs()
+        ))),
+        Ok(Err(e)) => Err(io_error(e)),
+        Ok(Ok(out)) => match out.status.code() {
+            Some(0) => {
+                tracing::info!("the cloud runner's service ended cleanly");
+                Ok(())
+            }
+            Some(3) => {
+                tracing::info!("the cloud runner had no service running to end");
+                Ok(())
+            }
+            Some(4) => Err(Error::Other(format!(
+                "the runner's service did not end within {SERVICE_END_SECS} s"
+            ))),
+            _ => Err(Error::Other(format!(
+                "ending the runner's service failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))),
+        },
+    }
 }
 
 /// Wait until the runner's `fletch-host` answers on its admin socket. When it

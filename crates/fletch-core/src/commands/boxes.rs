@@ -484,8 +484,10 @@ fn connected_then(
     Ok(status)
 }
 
-/// `cloud_disconnect(provider)`: destroy the provider's spare cloud boxes
-/// (`spares::destroy_all`), then forget its token and account
+/// `cloud_disconnect(provider)`: refused while this machine's cloud runner
+/// is at the provider (`cloud_runner::check_disconnect`: the runner can only
+/// be managed through that connection), else destroy the provider's spare
+/// cloud boxes (`spares::destroy_all`), then forget its token and account
 /// (`cloud::disconnect`). A spare is billed while it exists and only a
 /// connected provider can destroy it, so while one cannot be destroyed the
 /// provider stays connected and the disconnect is refused, to be tried
@@ -493,6 +495,7 @@ fn connected_then(
 /// workspaces at the provider are not touched. This machine's only: never
 /// on the remote wire.
 pub async fn cloud_disconnect_impl(db: &DbState, provider: ProviderId) -> Result<()> {
+    crate::sandbox::cloud_runner::check_disconnect(provider)?;
     disconnect_after(db, provider, spares::destroy_all(Some(provider))).await
 }
 
