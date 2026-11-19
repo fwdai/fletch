@@ -53,8 +53,9 @@ pub async fn cloud_connect(
 }
 
 /// Forget a provider's token and account, once its spare machines are
-/// destroyed: while one cannot be, the provider stays connected and the
-/// disconnect is refused with why (`fletch_core::commands::cloud_disconnect_impl`).
+/// destroyed: while one cannot be, or while this install has a runner at the
+/// provider, it stays connected and the disconnect is refused with why
+/// (`fletch_core::commands::cloud_disconnect_impl`).
 /// The machines of workspaces at the provider are not touched: they stay
 /// there, running or stopped, out of this machine's reach until it connects
 /// again: a workspace whose box is there does not start meanwhile, and the
