@@ -13,9 +13,11 @@ vi.mock("@/storage/remoteHosts", () => ({
   forgetHost: vi.fn(async () => {}),
 }));
 
-import { loadHosts } from "@/storage/remoteHosts";
+import { loadHosts, saveHost } from "@/storage/remoteHosts";
 import { useAppStore } from "@/store";
-import { addHost, hosts, offerPairBack, pairWithOfferedLink } from "./hosts";
+import { candidatesFor } from "./candidates";
+import { addHost, addRelayHost, hosts, offerPairBack, pairWithOfferedLink } from "./hosts";
+import { localHostname, parseAddress } from "./pairing";
 
 const RECORD = { hostKey: "mac-b", name: "Mac B", addr: "10.0.0.9:47285" };
 const NEARBY = { host: "10.0.0.9", port: 47285, hostKey: "mac-b", confirm: true as const };
@@ -128,6 +130,34 @@ describe("a failed pairing with a host already saved", () => {
 
     await expect(addHost(LINK)).rejects.toThrow("didn't work");
     expect(adopt).not.toHaveBeenCalled();
+  });
+});
+
+/** The cloud runner this Mac created: the engine authorised this device's key
+ *  on it, and it is reached through its relay alone. */
+describe("a host reached through its relay alone", () => {
+  // A 32-byte host key, base64url.
+  const KEY = "aG9zdC1rZXktMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3";
+  const RUNNER = { hostKey: KEY, name: "Studio runner", relay: "wss://relay.example" };
+
+  it("is saved and dialled with no pairing, under the name its key gives it", async () => {
+    const adopt = vi.spyOn(hosts, "adopt").mockResolvedValue();
+    await addRelayHost(RUNNER);
+    const addr = localHostname(KEY);
+    expect(addr).toMatch(/^fletch-[0-9a-f]{16}\.local$/);
+    expect(saveHost).toHaveBeenCalledWith({ ...RUNNER, addr, pairedAt: expect.any(String) });
+    expect(adopt).toHaveBeenCalledWith({ ...RUNNER, addr });
+    expect(pair).not.toHaveBeenCalled();
+  });
+
+  it("dials that name first, which only the host itself could answer, then the relay", () => {
+    const address = parseAddress(localHostname(KEY) ?? "");
+    expect(address).not.toBeNull();
+    const dials = candidatesFor({ ...(address ?? { host: "", port: 0 }), ...RUNNER });
+    expect(dials.map((d) => d.via)).toEqual(["lan", "relay"]);
+    expect(dials[0].url).toBe(`ws://${localHostname(KEY)}:47285/ws`);
+    expect(dials[0].alternates).toBeUndefined();
+    expect(dials[1].url).toBe(`wss://relay.example/v1/device/${KEY}`);
   });
 });
 

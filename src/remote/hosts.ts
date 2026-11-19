@@ -11,7 +11,7 @@ import { forgetHost as forgetRecord, loadHosts, saveHost, updateHost } from "@/s
 import { hostStore, startHost, stopHost, useAppStore } from "@/store";
 import { ProtocolClient } from "./client";
 import { thisDevice } from "./device";
-import { pairTargetFrom } from "./pairing";
+import { localHostname, pairTargetFrom } from "./pairing";
 import { createHostRegistry, type HostRecord, type PairTarget } from "./registry";
 import type { CodeHandler } from "./types";
 import { openWebSocket } from "./ws";
@@ -77,6 +77,26 @@ export async function addHost(target: PairTarget, onCode?: CodeHandler): Promise
   }
   await saveHost({ ...record, pairedAt: new Date().toISOString() });
   if (target.confirm && !target.pairingToken) await askToPairBack(record);
+}
+
+/** Remember a host this device is already authorised on and keep it
+ *  connected, as a pairing would but with no code: the cloud runner this Mac
+ *  created, whose engine added this device's key while setting it up.
+ *
+ *  It is reached through its relay alone; no network this Mac is on has an
+ *  address for it. Its saved address is the name it would announce on one
+ *  (`localHostname`), which parses like any other, is dialled first like any
+ *  host's LAN address, and is answered by nothing, so each dial moves on to
+ *  the relay after the LAN's open timeout, as a phone off a Mac's network
+ *  does. */
+export async function addRelayHost(host: {
+  hostKey: string;
+  name: string;
+  relay: string;
+}): Promise<void> {
+  const record: HostRecord = { ...host, addr: localHostname(host.hostKey) ?? "" };
+  await saveHost({ ...record, pairedAt: new Date().toISOString() });
+  await hosts.adopt(record);
 }
 
 /** The op that hands a host this Mac's own pairing link. */
