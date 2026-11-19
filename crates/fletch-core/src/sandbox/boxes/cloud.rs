@@ -1,0 +1,653 @@
+//! Boxes whose machine is made at a cloud provider rather than on this
+//! machine ([`crate::cloud`]): the same guest (`packaging/cloud-image`),
+//! reached over ssh across the network. The engine, the workspace's record,
+//! the GitHub login and the provider's API token all stay here; nothing
+//! secret goes to the machine but what any box gets, each launch's env file.
+//! A cloud box is a box: the registry boots, stops, idles out and discards it
+//! as any other, and everything it does with a running box goes over the
+//! channel. What differs is the machine (`registry::Machine::Cloud`, a
+//! [`CloudMachine`]), and this module is what only a cloud box does. Nothing
+//! here names a provider: each is a [`ProviderId`] with a label, its box a
+//! [`Handle`], and every answer that differs per provider is its adapter's.
+//!
+//! - **Which box is one** is the workspace's record: `workspaces.cloud_provider`,
+//!   stamped at spawn from the workspace type ([`backing`]). The registry and
+//!   the launch path ask by agent id, through a database handle installed once
+//!   at boot ([`install`], as `egress_log` is); with none installed (every
+//!   unit test) no box is a cloud box and no provider is connected.
+//! - **Its box at the provider** is named by a [`Handle`], kept in the box
+//!   directory ([`HANDLE_FILE`], owner-only) from the moment the provider
+//!   made it, and read at every boot. A box exists here once it has one
+//!   (`boxes_in`), as a local box does once it has a data disk.
+//! - **A boot** ([`machine_up`], then the channel) creates the box when there
+//!   is no handle, else brings its machine to running: started when
+//!   stopped, replaced on its disk when the machine alone was lost. A disk
+//!   that is gone is the workspace's files gone, and is refused
+//!   ([`Error::CloudGone`]), never replaced by an empty one; a provider that
+//!   cannot run the machine now is refused with its reason, and nothing is
+//!   destroyed. The guest's host key is read through the provider's
+//!   authenticated exec at every boot and pinned, then ssh is waited for:
+//!   a new machine's name takes a while to resolve. Nothing local is made:
+//!   no data disk, no dirty marker, no egress proxy, no tools disk.
+//! - **Its CLIs** live on its own disk, under `/data/tools/<provider>`,
+//!   where a tools disk would hold them (`fletch_box::tools::install_cli`):
+//!   the owner's is installed at boot at the version a local box would get
+//!   (`registry::tools_version`), and a tenant's of another provider on its
+//!   first launch, with no restart ([`CloudMachine::ensure_cli`]). Codegraph
+//!   is not installed in a cloud box (its bundle is per-architecture and
+//!   built for local boxes), so a cloud box offers none (`codegraph_bin`).
+//! - **A stop** syncs the guest's disks over the channel, then has the
+//!   provider stop the machine ([`CloudMachine::halt`]); a stop that fails
+//!   leaves a machine that may be running and billed, and says so in the log
+//!   with its handle.
+//! - **A discard** destroys the box at the provider before its directory
+//!   goes (`registry`), and keeps the directory when it cannot: the handle
+//!   and the key are the only way back to it. At startup a directory no live
+//!   workspace owns is destroyed the same way first ([`destroy_box`]), and a
+//!   live box's machine left running by an app that died is stopped
+//!   (`BoxRegistry::stop_stray_machines`). Nothing is destroyed at a provider
+//!   that this install has no directory for: two installs (a debug and a
+//!   release build, two machines) may share one account.
+//! - **Not in a cloud box**: the folders a user shares with a workspace
+//!   (a machine elsewhere cannot mount them; [`no_shares`]), the egress
+//!   proxy and its policy (the machine's network is its own), a project's
+//!   seed, codegraph, and moving the workspace to or from this machine.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+
+use fletch_box::channel::{self, Route};
+use fletch_box::{guest, Channel, HostKey, PinnedImage, StopOutcome};
+use parking_lot::Mutex;
+
+use crate::cloud::{self, Client, Endpoint, Handle, MachineSpec, MachineState, ProviderId};
+use crate::error::{Error, Result};
+use crate::roadmap::Db;
+
+use super::registry::{BoxIdentity, BoxPhase, BoxRegistry};
+use super::settings;
+
+/// The file in a cloud box's directory holding its [`Handle`].
+pub const HANDLE_FILE: &str = "cloud";
+
+/// Replaces the pinned cloud image with a whole image reference, for testing
+/// with an image of one's own (`packaging/cloud-image/README.md`).
+pub const IMAGE_ENV: &str = "FLETCH_CLOUD_IMAGE";
+
+/// How long a machine on its way to a state is waited for before a boot
+/// gives up on it.
+const SETTLE_BOUND: Duration = Duration::from_secs(120);
+/// The pause between two reads of a machine on its way.
+const SETTLE_PACE: Duration = Duration::from_secs(2);
+/// How long the guest's host key may take to appear once the machine runs
+/// (the entrypoint writes it before sshd starts), and the pause between
+/// reads.
+const HOST_KEY_BOUND: Duration = Duration::from_secs(30);
+const HOST_KEY_PACE: Duration = Duration::from_secs(2);
+const HOST_KEY_EXEC: Duration = Duration::from_secs(10);
+/// How long the guest may take to answer over ssh once its machine runs: a
+/// new box's name takes a while to resolve.
+const SSH_BOUND: Duration = Duration::from_secs(90);
+const SSH_PACE: Duration = Duration::from_secs(3);
+/// The `sync` a stop asks of the guest before the provider stops it.
+const SYNC_BOUND: Duration = Duration::from_secs(5);
+/// How long a kill waits for the provider to confirm the stop; the request
+/// is made whatever comes of the wait.
+const KILL_BOUND: Duration = Duration::from_secs(10);
+/// The spawn watchdog's extra time for a cloud box: making one (the box, its
+/// image pulled, the CLI installed), or starting one that exists.
+const CREATE_ALLOWANCE: Duration = Duration::from_secs(10 * 60);
+const START_ALLOWANCE: Duration = Duration::from_secs(3 * 60);
+
+static DB: OnceLock<Db> = OnceLock::new();
+
+/// Where the workspace records and the provider connections are read from.
+/// Installed once at boot.
+pub fn install(db: Db) {
+    if DB.set(db).is_err() {
+        tracing::warn!("cloud box database already set");
+    }
+}
+
+/// The provider whose machine `agent_id`'s box is, from its record
+/// (`workspaces.cloud_provider`); `Ok(None)` for a box on this machine, an
+/// agent with no record, and before [`install`]. A provider this build does
+/// not know, or a record that cannot be read, is an error, never a box on
+/// this machine.
+pub fn backing(agent_id: &str) -> Result<Option<ProviderId>> {
+    use rusqlite::OptionalExtension;
+    let Some(db) = DB.get() else {
+        return Ok(None);
+    };
+    let raw: Option<Option<String>> = db
+        .lock()
+        .query_row(
+            "SELECT cloud_provider FROM workspaces WHERE id = ?1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(raw) = raw.flatten() else {
+        return Ok(None);
+    };
+    ProviderId::parse(&raw).map(Some).ok_or_else(|| {
+        Error::SandboxUnavailable(format!(
+            "the box of {agent_id} is at a cloud provider this version of Fletch doesn't know \
+             (\"{raw}\")"
+        ))
+    })
+}
+
+/// The provider whose machine holds the box `agent_id` runs in: its own, or
+/// for a tenant its host's. `None` for a box on this machine, and where the
+/// record says something [`backing`] refuses.
+pub fn box_backing(agent_id: &str) -> Option<ProviderId> {
+    let tenant = BoxRegistry::global().tenant_of(agent_id);
+    let owner = tenant
+        .as_ref()
+        .map_or(agent_id, |t| t.host_agent_id.as_str());
+    backing(owner).ok().flatten()
+}
+
+/// `provider`'s connection on this machine: `None` when it is not connected,
+/// and before [`install`]. An unreadable secret store is an error.
+pub fn connection(provider: ProviderId) -> Result<Option<cloud::Connection>> {
+    match DB.get() {
+        Some(db) => cloud::connection(&db.lock(), provider),
+        None => Ok(None),
+    }
+}
+
+/// A client for `provider`, refused with the sentence the user sees when it
+/// is not connected on this machine.
+pub fn client(provider: ProviderId) -> Result<Client> {
+    match connection(provider)? {
+        Some(connection) => Client::new(&connection),
+        None => Err(Error::SandboxUnavailable(not_connected(provider))),
+    }
+}
+
+/// Why a cloud box at `provider` cannot be had while it is not connected.
+pub fn not_connected(provider: ProviderId) -> String {
+    format!(
+        "{} isn't connected on this machine. Connect it in Settings → Cloud.",
+        provider.label()
+    )
+}
+
+/// Why a box at `provider` gets no folder of this machine.
+pub fn no_shares(provider: ProviderId) -> String {
+    format!(
+        "A {} workspace can't see folders on this machine: its machine is at the provider, with \
+         no way to mount them. Remove the folders from this workspace, or start a workspace in \
+         a Linux VM or on this Mac to work with them.",
+        provider.label()
+    )
+}
+
+/// The cloud image a new machine runs: the pinned one
+/// (`PinnedImage::cloud_image`), or [`IMAGE_ENV`]'s.
+pub fn image() -> String {
+    std::env::var(IMAGE_ENV)
+        .ok()
+        .map(|image| image.trim().to_string())
+        .filter(|image| !image.is_empty())
+        .unwrap_or_else(PinnedImage::cloud_image)
+}
+
+/// The box `dir` holds a handle of, if any.
+pub fn read_handle(dir: &Path) -> Result<Option<Handle>> {
+    match std::fs::read_to_string(dir.join(HANDLE_FILE)) {
+        Ok(text) => Handle::parse(text.trim()).map(Some),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error::Other(format!(
+            "read {}: {e}",
+            dir.join(HANDLE_FILE).display()
+        ))),
+    }
+}
+
+/// Keep `handle` in `dir`, replacing the one there, owner-only and whole.
+fn write_handle(dir: &Path, handle: &Handle) -> Result<()> {
+    super::ssh_access::write_private(&dir.join(HANDLE_FILE), &format!("{handle}\n"))
+}
+
+/// The box a new machine for `identity` is made from: the cloud image, the
+/// guest's environment (the identity binds, the box's ssh key, the box id,
+/// the sshd port) and the size the box settings give a VM. Nothing secret.
+pub(super) fn spec(identity: &BoxIdentity, authorized_key: String) -> MachineSpec {
+    let knobs = settings::current();
+    let mut env = super::registry::identity_env(identity, authorized_key);
+    env.extend([
+        (guest::ENV_BOX_ID.to_string(), identity.agent_id.clone()),
+        (
+            guest::ENV_SSH_PORT.to_string(),
+            guest::CLOUD_SSH_PORT.to_string(),
+        ),
+    ]);
+    MachineSpec {
+        name: identity.agent_id.clone(),
+        image: image(),
+        env,
+        cpus: u32::from(knobs.cpus),
+        memory_mib: knobs.memory_mib,
+        disk_gib: Some(knobs.disk_gib),
+        ssh_port: guest::CLOUD_SSH_PORT,
+    }
+}
+
+/// Bring the machine of the box in `dir` to running and pin its guest's host
+/// key there, through `client`; answers the box's handle. With no handle in
+/// `dir` the box is made from `spec` and its handle kept at once; with one,
+/// its machine is started, waited for, or replaced on its disk, as its state
+/// asks. A box whose disk is gone is refused ([`Error::CloudGone`]) and
+/// nothing is made in its place; a machine the provider cannot run is
+/// refused with why, and nothing destroyed. `phase` hears what the boot
+/// does. Once the machine runs, a failure stops it, its handle kept.
+pub async fn machine_up(
+    client: &Arc<Client>,
+    dir: &Path,
+    spec: &MachineSpec,
+    phase: &(dyn Fn(BoxPhase) + Sync),
+) -> Result<Handle> {
+    let label = client.provider().label();
+    let handle = match read_handle(dir)? {
+        None => {
+            phase(BoxPhase::Preparing {
+                detail: format!("creating a {label} machine"),
+            });
+            let created = client.create(spec).await?;
+            if let Err(e) = write_handle(dir, &created.handle) {
+                tracing::warn!(
+                    handle = %created.handle,
+                    error = %e,
+                    "a new cloud box's handle could not be kept; destroying the box"
+                );
+                if let Err(destroyed) = client.destroy(&created.handle).await {
+                    tracing::warn!(
+                        handle = %created.handle,
+                        error = %destroyed,
+                        "a cloud box whose handle was lost could not be destroyed; it is billed \
+                         until it is deleted at the provider"
+                    );
+                }
+                return Err(e);
+            }
+            created.handle
+        }
+        Some(handle) => to_running(client, dir, handle, spec, phase).await?,
+    };
+    if let Err(e) = pin_host_key(client, &handle, dir).await {
+        drop(stop_in_background(
+            client.clone(),
+            handle.clone(),
+            spec.name.clone(),
+        ));
+        return Err(e);
+    }
+    Ok(handle)
+}
+
+/// [`machine_up`] for a box that exists: its machine to running, whatever
+/// state it is in; answers the handle it has now.
+async fn to_running(
+    client: &Client,
+    dir: &Path,
+    handle: Handle,
+    spec: &MachineSpec,
+    phase: &(dyn Fn(BoxPhase) + Sync),
+) -> Result<Handle> {
+    let label = client.provider().label();
+    let deadline = Instant::now() + SETTLE_BOUND;
+    loop {
+        match client.state(&handle).await? {
+            MachineState::Running => return Ok(handle),
+            MachineState::Stopped => {
+                client.start(&handle).await?;
+                return Ok(handle);
+            }
+            MachineState::Starting | MachineState::Stopping => {
+                if Instant::now() >= deadline {
+                    return Err(Error::SandboxUnavailable(format!(
+                        "the {label} machine of this workspace did not settle within {} s; try \
+                         again",
+                        SETTLE_BOUND.as_secs()
+                    )));
+                }
+                tokio::time::sleep(SETTLE_PACE).await;
+            }
+            MachineState::MachineGone => {
+                phase(BoxPhase::Preparing {
+                    detail: format!("replacing the {label} machine"),
+                });
+                let replaced = client.replace_machine(&handle, spec).await?;
+                write_handle(dir, &replaced.handle)?;
+                tracing::info!(old = %handle, new = %replaced.handle, "replaced a cloud box's lost machine");
+                return Ok(replaced.handle);
+            }
+            MachineState::DiskGone | MachineState::Gone => {
+                return Err(Error::CloudGone(format!(
+                    "This workspace's {label} disk is gone, and its files with it. Fletch won't \
+                     start it on an empty one: discard the workspace, or keep it to read its \
+                     history."
+                )))
+            }
+            MachineState::Failed(reason) => {
+                return Err(Error::SandboxUnavailable(format!(
+                    "{label} can't run this workspace's machine now: {reason}"
+                )))
+            }
+        }
+    }
+}
+
+/// Read the guest's host key through the provider's exec and pin it as the
+/// only key the box's channel trusts. Asked a few times: the entrypoint may
+/// not have written it the instant the machine reports running.
+async fn pin_host_key(client: &Client, handle: &Handle, dir: &Path) -> Result<()> {
+    let argv = ["cat".to_string(), guest::CLOUD_HOST_KEY.to_string()];
+    let deadline = Instant::now() + HOST_KEY_BOUND;
+    loop {
+        let why = match client.exec(handle, &argv, HOST_KEY_EXEC).await {
+            Ok(out) if out.exit_code == 0 => match HostKey::from_public_key(out.stdout.trim()) {
+                Ok(key) => {
+                    return channel::write_known_hosts(&dir.join(channel::KNOWN_HOSTS_FILE), &key)
+                        .map_err(|e| Error::Other(e.to_string()))
+                }
+                Err(e) => e.to_string(),
+            },
+            Ok(out) => format!("exit {}: {}", out.exit_code, out.stderr.trim()),
+            Err(e) => e.to_string(),
+        };
+        if Instant::now() >= deadline {
+            return Err(Error::SandboxUnavailable(format!(
+                "could not read the cloud box's ssh host key: {why}"
+            )));
+        }
+        tokio::time::sleep(HOST_KEY_PACE).await;
+    }
+}
+
+/// The channel to the guest of the box `handle` names, authenticating with
+/// `key` and trusting the host key [`machine_up`] pinned in `dir`, once its
+/// sshd answers.
+pub(super) async fn reach(dir: &Path, key: &Path, handle: &Handle) -> Result<Channel> {
+    let endpoint = handle.endpoint();
+    let route = route(&endpoint)?;
+    let known_hosts = dir.join(channel::KNOWN_HOSTS_FILE);
+    let channel = Channel::with_route(dir, route, key, &known_hosts)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    let deadline = Instant::now() + SSH_BOUND;
+    loop {
+        let why = match channel.exec(None, None, &["true"]).await {
+            Ok(out) if out.status.success() => return Ok(channel),
+            Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            Err(e) => e.to_string(),
+        };
+        if Instant::now() >= deadline {
+            return Err(Error::SandboxUnavailable(format!(
+                "the {} machine did not answer over ssh within {} s: {why}",
+                handle.provider().label(),
+                SSH_BOUND.as_secs()
+            )));
+        }
+        tokio::time::sleep(SSH_PACE).await;
+    }
+}
+
+/// How ssh reaches a guest at `endpoint`.
+pub(super) fn route(endpoint: &Endpoint) -> Result<Route<'_>> {
+    match endpoint {
+        Endpoint::Tcp { host, port } => Route::tcp(host, *port),
+        Endpoint::Tls { host, port } => Route::tls(host, *port),
+    }
+    .map_err(|e| Error::Other(e.to_string()))
+}
+
+/// The provider's stop of `handle`'s machine, in a task of its own: the
+/// request is made whatever the caller's wait comes to. `true` once the
+/// provider confirmed it; a failure is logged, since the machine may still
+/// be running and billed.
+fn stop_in_background(
+    client: Arc<Client>,
+    handle: Handle,
+    agent_id: String,
+) -> tokio::task::JoinHandle<bool> {
+    crate::host::spawn(async move {
+        match client.stop(&handle).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(
+                    agent_id,
+                    handle = %handle,
+                    error = %e,
+                    "a cloud machine's stop failed; it may still be running and billed"
+                );
+                false
+            }
+        }
+    })
+}
+
+/// A cloud box's machine, while the box runs: the provider's client, the
+/// box's handle, and the CLIs its disk holds.
+pub(super) struct CloudMachine {
+    agent_id: String,
+    client: Arc<Client>,
+    handle: Handle,
+    /// The CLI versions known to be installed on the box's disk, by
+    /// provider: read from the disk the first time a launch asks, and
+    /// recorded by every install.
+    clis: Mutex<HashMap<String, String>>,
+    /// Held across a read and an install, so two launches never install one
+    /// CLI at once.
+    installing: tokio::sync::Mutex<()>,
+}
+
+impl CloudMachine {
+    pub(super) fn new(agent_id: &str, client: Arc<Client>, handle: Handle) -> Self {
+        Self {
+            agent_id: agent_id.to_string(),
+            client,
+            handle,
+            clis: Mutex::new(HashMap::new()),
+            installing: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    pub(super) fn provider(&self) -> ProviderId {
+        self.handle.provider()
+    }
+
+    /// Stop the machine cleanly: the guest's disks synced over `channel`,
+    /// then the provider's stop. With a `bound`, the two together get that
+    /// long; the stop request is made whatever comes of the wait, and an
+    /// unconfirmed stop is not a clean one.
+    pub(super) async fn halt(&self, channel: &Channel, bound: Option<Duration>) -> StopOutcome {
+        let started = Instant::now();
+        let sync = bound.map_or(SYNC_BOUND, |bound| bound.min(SYNC_BOUND));
+        let synced = tokio::time::timeout(sync, channel.exec(None, None, &["sync"])).await;
+        if !matches!(synced, Ok(Ok(ref out)) if out.status.success()) {
+            tracing::debug!(
+                agent_id = self.agent_id,
+                "the cloud box's disks were not synced before its stop"
+            );
+        }
+        self.stop(bound.map(|bound| bound.saturating_sub(started.elapsed())))
+            .await
+    }
+
+    /// Stop the machine without asking its guest, waiting a short while for
+    /// the provider to confirm it.
+    pub(super) async fn kill(&self) -> StopOutcome {
+        self.stop(Some(KILL_BOUND)).await
+    }
+
+    /// Have the provider stop the machine, waiting for nothing.
+    pub(super) fn abort(&self) {
+        drop(self.send());
+    }
+
+    async fn stop(&self, bound: Option<Duration>) -> StopOutcome {
+        let stopping = self.send();
+        let confirmed = match bound {
+            Some(bound) => tokio::time::timeout(bound, stopping).await.ok(),
+            None => Some(stopping.await),
+        };
+        match confirmed {
+            Some(Ok(true)) => StopOutcome::Control,
+            Some(_) => StopOutcome::Killed,
+            None => {
+                tracing::warn!(
+                    agent_id = self.agent_id,
+                    handle = %self.handle,
+                    "the provider did not confirm a cloud machine's stop in time; it may still be \
+                     running and billed"
+                );
+                StopOutcome::Killed
+            }
+        }
+    }
+
+    fn send(&self) -> tokio::task::JoinHandle<bool> {
+        stop_in_background(
+            self.client.clone(),
+            self.handle.clone(),
+            self.agent_id.clone(),
+        )
+    }
+
+    /// The version of `provider`'s CLI known to be on the box's disk, if
+    /// any is known yet.
+    pub(super) fn cli_version(&self, provider: &str) -> Option<String> {
+        self.clis.lock().get(provider).cloned()
+    }
+
+    /// Make `provider`'s CLI present on the box's disk at the version a
+    /// launch of it runs (`registry::tools_version`), over `channel`, as the
+    /// guest user whose home is `home`: read from the disk the first time it
+    /// is asked, installed when it is missing or another version.
+    /// `preparing` hears an install as it starts. An ordinary launch costs
+    /// no round trip once the box has answered once.
+    pub(super) async fn ensure_cli(
+        &self,
+        channel: &Channel,
+        home: &Path,
+        provider: &str,
+        preparing: &(dyn Fn(String) + Sync),
+    ) -> Result<()> {
+        let wanted = super::registry::tools_version(provider);
+        if self.cli_version(provider).as_deref() == Some(wanted.as_str()) {
+            return Ok(());
+        }
+        let _installing = self.installing.lock().await;
+        if self.cli_version(provider).is_none() {
+            let found = fletch_box::tools::installed_cli_version(channel, provider)
+                .await
+                .map_err(|e| Error::Other(e.to_string()))?;
+            if let Some(found) = found {
+                self.clis.lock().insert(provider.to_string(), found);
+            }
+        }
+        if self.cli_version(provider).as_deref() == Some(wanted.as_str()) {
+            return Ok(());
+        }
+        let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
+        preparing(format!("installing {label} {wanted}"));
+        let agent_id = self.agent_id.as_str();
+        fletch_box::tools::install_cli(
+            channel,
+            provider,
+            &wanted,
+            home,
+            guest::Egress::Direct,
+            |line| tracing::info!(target: "fletch::box_tools", agent_id, provider, line, "cloud CLI install"),
+        )
+        .await
+        .map_err(|e| {
+            Error::SandboxUnavailable(format!(
+                "installing {label} {wanted} in the {} machine failed: {e}",
+                self.provider().label()
+            ))
+        })?;
+        tracing::info!(
+            agent_id,
+            provider,
+            version = wanted,
+            "CLI installed in a cloud box"
+        );
+        self.clis.lock().insert(provider.to_string(), wanted);
+        Ok(())
+    }
+}
+
+/// Destroy, at its provider, the box whose handle the box directory `dir`
+/// holds; nothing to do for a directory with none. Idempotent. A provider
+/// not connected on this machine is an error: the box is still there.
+pub async fn destroy_box(dir: &Path) -> Result<()> {
+    destroy_box_with(dir, client).await
+}
+
+/// [`destroy_box`] with the client for a provider from `client_for`.
+pub(super) async fn destroy_box_with(
+    dir: &Path,
+    client_for: impl FnOnce(ProviderId) -> Result<Client>,
+) -> Result<()> {
+    let Some(handle) = read_handle(dir)? else {
+        return Ok(());
+    };
+    client_for(handle.provider())?.destroy(&handle).await?;
+    tracing::info!(handle = %handle, box_dir = %dir.display(), "cloud box destroyed");
+    Ok(())
+}
+
+/// Stop the machine of `handle` when its provider reports it running or on
+/// its way there; for a box that does not run here. Logged, never an error.
+pub(super) async fn stop_if_running(client: &Client, handle: &Handle, agent_id: &str) {
+    match client.state(handle).await {
+        Ok(MachineState::Running | MachineState::Starting) => match client.stop(handle).await {
+            Ok(()) => tracing::info!(
+                agent_id,
+                handle = %handle,
+                "stopped a cloud machine left running by an earlier run"
+            ),
+            Err(e) => tracing::warn!(
+                agent_id,
+                handle = %handle,
+                error = %e,
+                "a cloud machine left running could not be stopped; it is billed while it runs"
+            ),
+        },
+        Ok(_) => {}
+        Err(e) => {
+            tracing::info!(agent_id, handle = %handle, error = %e, "a cloud box's state could not be read")
+        }
+    }
+}
+
+/// The extra time the spawn watchdog gives a launch of `agent_id` whose box
+/// is at a provider: making the box when it has no handle yet, else
+/// starting it. `None` for every other agent.
+pub fn setup_allowance(agent_id: &str) -> Option<Duration> {
+    box_backing(agent_id)?;
+    let owner = BoxRegistry::global()
+        .tenant_of(agent_id)
+        .map_or_else(|| agent_id.to_string(), |t| t.host_agent_id);
+    let made = super::box_dir(&owner).is_ok_and(|dir| dir.join(HANDLE_FILE).is_file());
+    Some(if made {
+        START_ALLOWANCE
+    } else {
+        CREATE_ALLOWANCE
+    })
+}
+
+/// Whether the box directory `dir` is a cloud box's: it holds a handle.
+pub fn is_cloud_dir(dir: &Path) -> bool {
+    dir.join(HANDLE_FILE).is_file()
+}
+
+#[cfg(test)]
+#[path = "cloud_tests.rs"]
+mod tests;

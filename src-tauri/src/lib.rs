@@ -513,18 +513,16 @@ fn track_event(event: String, props: Option<serde_json::Value>) {
     telemetry::track(&event, props.unwrap_or_else(|| json!({})));
 }
 
-/// What each sandbox engine actually guarantees — one report per engine, so the
-/// settings picker can show the trade rather than just the names.
+/// What each sandbox engine actually guarantees — one report per engine, then
+/// one per cloud provider's box, so the settings picker can show the trade
+/// rather than just the names.
 ///
-/// Every engine rather than one: a workspace may run under either, so "which
+/// Every engine rather than one: a workspace may run under any, so "which
 /// engine am I on" doesn't answer "what am I protected from". Each report
-/// carries its `engine` spelling.
+/// carries its `engine` spelling, or a cloud box's `cloud:<provider>`.
 #[tauri::command]
 fn describe_sandbox_isolation() -> Vec<sandbox::IsolationReport> {
-    sandbox::EngineKind::ALL
-        .iter()
-        .map(|&kind| sandbox::describe_isolation(kind))
-        .collect()
+    sandbox::describe_every_isolation()
 }
 
 /// Whether an agent must get the user's approval before publishing.

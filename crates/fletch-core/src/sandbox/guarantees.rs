@@ -11,6 +11,10 @@
 //! *typed* — visible to a reviewer, assertable in a test, and renderable to a
 //! user — instead of living in a documentation caveat that drifts.
 //!
+//! A box whose machine is at a cloud provider is the box engine on another
+//! computer, and its coverage is its own ([`Guarantee::cloud_coverage`]): no
+//! proxy of Fletch's stands in front of its network.
+//!
 //! One variant per claim in `docs/isolation.md`'s "what an agent can and cannot
 //! do", so the two cannot disagree. This is deliberately the *claim* level, not
 //! the path level: "show me exactly which paths this agent may write" needs a
@@ -19,7 +23,8 @@
 
 use serde::Serialize;
 
-use super::EngineKind;
+use super::{EngineKind, WorkspaceType};
+use crate::cloud::ProviderId;
 
 /// The engine-independent half of [`Guarantee::HostHeldCredentials`]'s
 /// shortfall: what gates the brokered publish ops. A macro rather than a
@@ -180,9 +185,46 @@ impl Guarantee {
         }
     }
 
+    /// How completely a box whose machine is at a cloud provider delivers
+    /// this claim. The engine is the box's, so what the box keeps off this
+    /// machine holds there too; the network is the machine's own, at the
+    /// provider, with no proxy of ours in front of it; and the provider holds
+    /// the workspace. The same for every provider: what differs between them
+    /// is their adapters' business, not the guarantees'.
+    pub fn cloud_coverage(self) -> Coverage {
+        match self {
+            // The machine is another computer: it has no path to this one's
+            // disk, and the user can share no folder with it.
+            Self::ConfinedWrites | Self::OpaqueAppData | Self::UntouchableSourceGit => {
+                Coverage::Enforced
+            }
+            Self::WithheldGitConfig => self.coverage(EngineKind::Box),
+            Self::ConfinedReads => Coverage::Enforced,
+            Self::ConfinedNetwork => Coverage::Unenforced(
+                "a cloud box's machine has a network of its own at the provider: no egress proxy \
+                 of Fletch's stands in front of it, so the allow-list, the Network posture and \
+                 the record of what it reached don't apply. Treat every cloud workspace as \
+                 network-capable",
+            ),
+            Self::HostHeldCredentials => Coverage::Partial(concat!(
+                "credentials stay on this machine: the cloud box gets no folder and no \
+                 environment from it, the provider's API token never leaves it, and sandbox \
+                 clones use an HTTPS GitHub origin, so git in the box has no credential path. \
+                 The agent's own login goes to the machine in each launch's env file, as in \
+                 any box, and lies on the provider's disk while the launch runs. ",
+                brokered_publish_gating!(),
+            )),
+        }
+    }
+
     /// This claim's coverage under `engine`, flattened for the IPC boundary.
     fn status(self, engine: EngineKind) -> GuaranteeStatus {
-        let (coverage, note) = match self.coverage(engine) {
+        self.status_of(self.coverage(engine))
+    }
+
+    /// `coverage` of this claim, flattened for the IPC boundary.
+    fn status_of(self, coverage: Coverage) -> GuaranteeStatus {
+        let (coverage, note) = match coverage {
             Coverage::Enforced => ("enforced", None),
             Coverage::Partial(why) => ("partial", Some(why)),
             Coverage::Unenforced(why) => ("unenforced", Some(why)),
@@ -209,8 +251,10 @@ pub struct GuaranteeStatus {
 /// What an agent stamped with `engine` is actually guaranteed.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct IsolationReport {
-    /// The engine's settings spelling, so this joins the `sandbox_engine` value.
-    pub engine: &'static str,
+    /// The engine's settings spelling, so this joins the `sandbox_engine`
+    /// value; for a cloud box, its workspace type's kind (`cloud:<provider>`,
+    /// `WorkspaceType::cloud_kind`), which joins `cloud_provider`.
+    pub engine: String,
     pub guarantees: Vec<GuaranteeStatus>,
 }
 
@@ -218,9 +262,31 @@ pub struct IsolationReport {
 /// coverage matrix.
 pub fn describe(engine: EngineKind) -> IsolationReport {
     IsolationReport {
-        engine: engine.as_setting(),
+        engine: engine.as_setting().to_string(),
         guarantees: Guarantee::ALL.iter().map(|g| g.status(engine)).collect(),
     }
+}
+
+/// Describe what a box whose machine is at `provider` guarantees
+/// ([`Guarantee::cloud_coverage`]).
+pub fn describe_cloud(provider: ProviderId) -> IsolationReport {
+    IsolationReport {
+        engine: WorkspaceType::cloud_kind(provider),
+        guarantees: Guarantee::ALL
+            .iter()
+            .map(|g| g.status_of(g.cloud_coverage()))
+            .collect(),
+    }
+}
+
+/// Every engine's report, then every cloud provider's, connected or not: a
+/// workspace may run under any of them.
+pub fn describe_every() -> Vec<IsolationReport> {
+    EngineKind::ALL
+        .iter()
+        .map(|&engine| describe(engine))
+        .chain(ProviderId::ALL.iter().map(|&p| describe_cloud(p)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -267,6 +333,32 @@ mod tests {
             7,
             "a new Guarantee must be added to ALL"
         );
+    }
+
+    /// A cloud box says what it is: its network is its own (nothing of the
+    /// box's egress policy applies), every note explains itself, and the
+    /// full report lists it after the engines under its workspace type's
+    /// kind.
+    #[test]
+    fn a_cloud_box_reports_its_own_network() {
+        assert!(matches!(
+            Guarantee::ConfinedNetwork.cloud_coverage(),
+            Coverage::Unenforced(why) if why.contains("network of its own")
+        ));
+        for &g in Guarantee::ALL {
+            if let Coverage::Partial(why) | Coverage::Unenforced(why) = g.cloud_coverage() {
+                assert!(why.len() > 20, "{g:?}: {why:?}");
+            }
+        }
+        let every = describe_every();
+        let kinds: Vec<&str> = every.iter().map(|r| r.engine.as_str()).collect();
+        let engines: Vec<&str> = ENGINES.iter().map(|e| e.as_setting()).collect();
+        assert_eq!(kinds[..engines.len()], engines[..]);
+        for (report, &provider) in every[engines.len()..].iter().zip(ProviderId::ALL) {
+            assert_eq!(report.engine, WorkspaceType::cloud_kind(provider));
+            assert_eq!(report.guarantees.len(), Guarantee::ALL.len());
+        }
+        assert_eq!(every.len(), engines.len() + ProviderId::ALL.len());
     }
 
     /// The report is what the UI and a reviewer read, so pin its shape: one
