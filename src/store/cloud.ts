@@ -18,6 +18,14 @@ export interface CloudSlice {
   connectCloud: (provider: CloudProviderId, token: string, account: string) => Promise<void>;
   /** Forget the provider's token. Its machines stay where they are. */
   disconnectCloud: (provider: CloudProviderId) => Promise<void>;
+  /** How many spare machines each connected provider keeps, as stored on
+   *  this Mac, `""` for the engine's default; `null` until the first read. */
+  cloudSpares: string | null;
+  /** Re-read `cloudSpares`. Rejects with the reason, keeping the last value. */
+  refreshCloudSpares: () => Promise<void>;
+  /** Store a new count, `""` for the default. Resolves to the engine's
+   *  refusal to show, or `null` once the count is stored. */
+  saveCloudSpares: (count: string) => Promise<string | null>;
 }
 
 /** `list` with `status` in its provider's place, or at the end for a provider
@@ -58,5 +66,21 @@ export const createCloudSlice: SliceCreator<CloudSlice> = (set, get, { api }) =>
         ) ?? null,
     }));
     get().reloadWorkspaceTypes();
+  },
+
+  cloudSpares: null,
+
+  refreshCloudSpares: async () => {
+    set({ cloudSpares: (await api.cloudSpares()) ?? "" });
+  },
+
+  saveCloudSpares: async (count) => {
+    try {
+      await api.cloudSetSpares(count || null);
+      set({ cloudSpares: count });
+      return null;
+    } catch (e) {
+      return String(e);
+    }
   },
 });
