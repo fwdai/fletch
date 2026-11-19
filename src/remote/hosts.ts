@@ -81,37 +81,40 @@ export async function addHost(target: PairTarget, onCode?: CodeHandler): Promise
   if (target.confirm && !target.pairingToken) await askToPairBack(record);
 }
 
-/** Remember the cloud runner as a host, marked as the runner's, and keep it
- *  connected, as a pairing would but with no code: the engine added this
+/** The cloud runner as a host to dial, with no pairing: the engine added this
  *  device's key on the runner while setting it up.
  *
  *  It is reached through its relay alone; no network this Mac is on has an
- *  address for it. Its saved address is the name it would announce on one
+ *  address for it. Its address is the name it would announce on one
  *  (`localHostname`), which parses like any other, is dialled first like any
  *  host's LAN address, and is answered by nothing, so each dial moves on to
  *  the relay after the LAN's open timeout, as a phone off a Mac's network
  *  does. */
-async function addRunnerHost({ hostId, name, relay }: CloudRunnerRecord): Promise<void> {
-  const record: HostRecord = { hostKey: hostId, name, relay, addr: localHostname(hostId) ?? "" };
-  await saveHost({ ...record, pairedAt: new Date().toISOString(), runner: true });
-  await hosts.adopt(record);
-}
+const runnerHost = ({ hostId, name, relay }: CloudRunnerRecord): HostRecord => ({
+  hostKey: hostId,
+  name,
+  relay,
+  addr: localHostname(hostId) ?? "",
+});
 
 /** Make the saved hosts agree with the runner's `status`, the one source of
  *  truth for whether this Mac has a runner to reach:
  *
  *  - a runner set up (a record, in a state of its machine) has a saved host
- *    under its host key: when no saved host has that key — never saved, saved
- *    before a crash or reload got in the way, or forgotten in Settings ›
- *    Devices — it is saved, marked as the runner's, and dialled
- *    (`addRunnerHost`); a host marked as the runner's under another key, an
- *    earlier runner's, is forgotten;
+ *    under its host key, and that host is live. When no saved host has that
+ *    key — never saved, saved before a crash or reload got in the way, or
+ *    forgotten in Settings › Devices — it is saved, marked as the runner's
+ *    (`runnerHost`). The host under that key is then adopted, every time:
+ *    nothing for one already live (`hosts.adopt`), and the retry of an
+ *    adoption that failed. A host marked as the runner's under another key,
+ *    an earlier runner's, is forgotten;
  *  - `none` forgets every host marked as the runner's (`removeHost`);
  *  - `setting_up` and `incomplete` change nothing.
  *
- *  A host paired by hand carries no mark and is never forgotten here, even
- *  one with the runner's key. Hosts that cannot be read count as none saved,
- *  so nothing is forgotten then. */
+ *  Both steps repeat safely, so whichever failed last time is what the next
+ *  answer makes good. A host paired by hand carries no mark and is never
+ *  forgotten or saved again here, even one with the runner's key. Saved hosts
+ *  that cannot be read end the reconcile with nothing changed. */
 export async function reconcileRunnerHost(status: CloudRunnerStatus): Promise<void> {
   if (status.state === "setting_up" || status.state === "incomplete") return;
   const record = status.state === "none" ? null : status.record;
@@ -120,9 +123,13 @@ export async function reconcileRunnerHost(status: CloudRunnerStatus): Promise<vo
   for (const host of saved) {
     if (host.runner && host.hostKey !== record?.hostId) await removeHost(host.hostKey);
   }
-  if (record && !saved.some((host) => host.hostKey === record.hostId)) {
-    await addRunnerHost(record);
+  if (!record) return;
+  let host: HostRecord | undefined = saved.find((h) => h.hostKey === record.hostId);
+  if (!host) {
+    host = runnerHost(record);
+    await saveHost({ ...host, pairedAt: new Date().toISOString(), runner: true });
   }
+  await hosts.adopt(host);
 }
 
 /** The reconcile in progress, so each runs after the one before: a later
@@ -130,12 +137,12 @@ export async function reconcileRunnerHost(status: CloudRunnerStatus): Promise<vo
 let reconciling: Promise<void> = Promise.resolve();
 let following = false;
 
-/** From now on, make the saved hosts agree with every answer of the runner's
- *  status the store gets (`refreshCloudRunner`: Settings › Cloud, and every
- *  runner action, which ends by reading it), one after another; then read it
- *  once now. Called at startup, after the saved hosts are dialled. A read
- *  that fails (offline, the provider unreachable) is not an answer, so it
- *  changes nothing. */
+/** From now on, make the saved hosts agree with every status of the runner
+ *  the store takes (a read's answer: Settings › Cloud, and after every runner
+ *  action; and what an action that worked leaves, which needs no read), one
+ *  after another; then read it once now. Called at startup, after the saved
+ *  hosts are dialled. A read that fails (offline, the provider unreachable)
+ *  is not an answer, so it changes nothing. */
 export async function followRunnerStatus(): Promise<void> {
   if (!following) {
     following = true;

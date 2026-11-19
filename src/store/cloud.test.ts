@@ -360,6 +360,66 @@ describe("the runner", () => {
     expect(runner.cloudRunnerDelete).toHaveBeenCalledWith(false);
     expect(store.getState().cloudRunner).toEqual(NONE);
   });
+
+  // The engine answers an action once what it does is done, so a status read
+  // that fails afterwards hides nothing of it.
+  describe("when the status read after an action fails", () => {
+    beforeEach(() => {
+      runner.cloudRunnerStatus.mockRejectedValue("the provider is unreachable");
+    });
+
+    it("a created runner is there, running, with its record", async () => {
+      const store = makeStore();
+      store.setState({ cloudRunner: NONE });
+      runner.cloudRunnerCreate.mockResolvedValue(RECORD);
+      await expect(store.getState().createCloudRunner("fly", "secret", "")).resolves.toEqual(
+        RECORD,
+      );
+      expect(store.getState().cloudRunner).toEqual(RUNNING);
+      expect(store.getState().cloudRunnerCreate).toBeNull();
+    });
+
+    it("a deleted runner is gone", async () => {
+      const store = makeStore();
+      store.setState({ cloudRunner: RUNNING });
+      runner.cloudRunnerDelete.mockResolvedValue({ destroyed: [], warning: null });
+      await store.getState().deleteCloudRunner(false);
+      expect(store.getState().cloudRunner).toEqual(NONE);
+    });
+
+    it("a started runner runs and a stopped one is stopped", async () => {
+      const store = makeStore();
+      store.setState({ cloudRunner: STOPPED });
+      runner.cloudRunnerStart.mockResolvedValue(undefined);
+      await store.getState().startCloudRunner();
+      expect(store.getState().cloudRunner).toEqual(RUNNING);
+
+      runner.cloudRunnerStop.mockResolvedValue(undefined);
+      await store.getState().stopCloudRunner();
+      expect(store.getState().cloudRunner).toEqual(STOPPED);
+    });
+
+    it("an action that failed leaves the runner as it was last known", async () => {
+      const store = makeStore();
+      store.setState({ cloudRunner: RUNNING });
+      runner.cloudRunnerDelete.mockRejectedValue("the runner could not be reached");
+      await expect(store.getState().deleteCloudRunner(false)).rejects.toBe(
+        "the runner could not be reached",
+      );
+      expect(store.getState().cloudRunner).toEqual(RUNNING);
+
+      runner.cloudRunnerStop.mockRejectedValue("the provider is down");
+      await expect(store.getState().stopCloudRunner()).rejects.toBe("the provider is down");
+      expect(store.getState().cloudRunner).toEqual(RUNNING);
+    });
+
+    it("a start with no runner known says nothing of one", async () => {
+      const store = makeStore();
+      runner.cloudRunnerStart.mockResolvedValue(undefined);
+      await store.getState().startCloudRunner();
+      expect(store.getState().cloudRunner).toBeNull();
+    });
+  });
 });
 
 describe("withCloudProvider", () => {

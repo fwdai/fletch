@@ -23,8 +23,9 @@ export interface CloudSlice {
    *  `cloud_*` op is on the wire, so it is not a host key — whatever offers a
    *  workspace in the cloud reads the answer Settings › Cloud writes. */
   cloudProviders: CloudProviderStatus[] | null;
-  /** This install's runner, as `cloud_runner_status` last answered. `null`
-   *  until the first read. This Mac's, like `cloudProviders`. */
+  /** This install's runner, as `cloud_runner_status` last answered or as a
+   *  runner action that worked since has left it. `null` until the first of
+   *  either. This Mac's, like `cloudProviders`. */
   cloudRunner: CloudRunnerStatus | null;
   /** The runner create under way from this window, if one is. Here rather
    *  than in the pane so its steps, and the GitHub code among them, outlive
@@ -53,10 +54,11 @@ export interface CloudSlice {
   saveCloudSpares: (count: string) => Promise<string | null>;
 
   /** Re-read `cloudRunner`. Rejects with the reason, keeping the last answer.
-   *  Each answer is what the saved hosts are made to agree with
+   *  Every value `cloudRunner` takes, a read's answer or what a runner action
+   *  that worked leaves, is what the saved hosts are made to agree with
    *  (`followRunnerStatus` in @/remote/hosts, which follows `cloudRunner`), so
-   *  a create or a delete, which both end by reading it, needs nothing more to
-   *  put the runner among the paired hosts or take it out. */
+   *  a create or a delete needs nothing more to put the runner among the
+   *  paired hosts or take it out. */
   refreshCloudRunner: () => Promise<void>;
   /** Create the runner at `provider`, authorising this device on it, and
    *  resolve with its record; `cloudRunnerCreate` holds the steps meanwhile.
@@ -91,19 +93,42 @@ export function withCloudProvider(
 
 // A connect or a disconnect adds or takes away a workspace type (one per
 // connected provider), so the composer's answer is read again after either.
-// Every runner action reads the runner's status again when it ends, whether it
-// worked or not: either way the runner may have moved.
+// A runner action that worked says where the runner is without a read: the
+// engine answers a create once the service is up, a start once the machine
+// runs, a stop once it has stopped, a delete once it is gone. That is the
+// status at once, so a read that then fails hides nothing. Every action,
+// worked or not, is followed by a fresh status, which refines it.
 export const createCloudSlice: SliceCreator<CloudSlice> = (set, get, { api, events }) => {
-  /** `action`, then a fresh status, which does not replace its outcome. */
-  const thenRefresh = async <T>(action: () => Promise<T>): Promise<T> => {
-    try {
-      return await action();
-    } finally {
-      await get()
+  /** `action`; then what its success leaves of the runner (`left`, given the
+   *  outcome and the status before; `null` when that cannot be said), as the
+   *  status; then a fresh status, whose failure changes neither that nor the
+   *  action's outcome. */
+  const runnerAction = async <T>(
+    action: () => Promise<T>,
+    left: (outcome: T, before: CloudRunnerStatus | null) => CloudRunnerStatus | null,
+  ): Promise<T> => {
+    const refresh = () =>
+      get()
         .refreshCloudRunner()
         .catch(() => {});
+    let outcome: T;
+    try {
+      outcome = await action();
+    } catch (e) {
+      await refresh();
+      throw e;
     }
+    const known = left(outcome, get().cloudRunner);
+    if (known) set({ cloudRunner: known });
+    await refresh();
+    return outcome;
   };
+  /** The runner the store knows, with its machine in `state`; `null` when the
+   *  store has no record of one. */
+  const runnerIn =
+    (state: "running" | "stopped") =>
+    (_: unknown, before: CloudRunnerStatus | null): CloudRunnerStatus | null =>
+      before?.record ? { state, provider: before.provider, record: before.record } : null;
 
   return {
     cloudProviders: null,
@@ -177,14 +202,16 @@ export const createCloudSlice: SliceCreator<CloudSlice> = (set, get, { api, even
           api.remoteDevicePublicKey(),
           thisDevice(),
         ]);
-        return await thenRefresh(() =>
-          api.cloudRunnerCreate(provider, {
-            devicePublicKey,
-            deviceName: device.name,
-            devicePlatform: device.platform,
-            claudeToken,
-            name: name.trim() || null,
-          }),
+        return await runnerAction(
+          () =>
+            api.cloudRunnerCreate(provider, {
+              devicePublicKey,
+              deviceName: device.name,
+              devicePlatform: device.platform,
+              claudeToken,
+              name: name.trim() || null,
+            }),
+          (record) => ({ state: "running", provider, record }),
         );
       } finally {
         off();
@@ -192,10 +219,14 @@ export const createCloudSlice: SliceCreator<CloudSlice> = (set, get, { api, even
       }
     },
 
-    startCloudRunner: () => thenRefresh(() => api.cloudRunnerStart()),
+    startCloudRunner: () => runnerAction(() => api.cloudRunnerStart(), runnerIn("running")),
 
-    stopCloudRunner: () => thenRefresh(() => api.cloudRunnerStop()),
+    stopCloudRunner: () => runnerAction(() => api.cloudRunnerStop(), runnerIn("stopped")),
 
-    deleteCloudRunner: (force) => thenRefresh(() => api.cloudRunnerDelete(force)),
+    deleteCloudRunner: (force) =>
+      runnerAction(
+        () => api.cloudRunnerDelete(force),
+        () => ({ state: "none", provider: null, record: null }),
+      ),
   };
 };

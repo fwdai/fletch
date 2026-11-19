@@ -205,10 +205,30 @@ describe("the cloud runner's saved host follows the runner's status", () => {
     vi.mocked(loadHosts).mockResolvedValue([marked()]);
     await reconcileRunnerHost(running());
     expect(saveHost).not.toHaveBeenCalled();
+    // Adopted all the same: nothing for a host already live.
+    expect(adopt).toHaveBeenCalledWith(marked());
 
     vi.mocked(loadHosts).mockResolvedValue([]);
     await reconcileRunnerHost(running());
     expect(saveHost).toHaveBeenCalledTimes(1);
+  });
+
+  it("an adoption that failed is tried again by the next status answer, the host saved once", async () => {
+    const savedRows: SavedHost[] = [];
+    vi.mocked(loadHosts).mockImplementation(async () => [...savedRows]);
+    vi.mocked(saveHost).mockImplementation(async (host) => {
+      savedRows.push(host);
+      return [...savedRows];
+    });
+    adopt.mockRejectedValueOnce(new Error("this device's key could not be read"));
+
+    await expect(reconcileRunnerHost(running())).rejects.toThrow("could not be read");
+    expect(saveHost).toHaveBeenCalledTimes(1);
+
+    await reconcileRunnerHost(running());
+    expect(saveHost).toHaveBeenCalledTimes(1);
+    expect(adopt).toHaveBeenCalledTimes(2);
+    expect(adopt).toHaveBeenLastCalledWith(expect.objectContaining({ hostKey: KEY }));
   });
 
   it("is forgotten when the status says there is no runner; a hand-paired host is not", async () => {
@@ -267,7 +287,19 @@ describe("the cloud runner's saved host follows the runner's status", () => {
   });
 
   it("follows every status read: a create ends with the host saved, a delete with it gone", async () => {
-    vi.mocked(loadHosts).mockResolvedValue([HAND]);
+    // The saved hosts as storage keeps them: what is saved is read back, and
+    // what is forgotten is gone, so a status answered twice changes nothing
+    // the second time.
+    let rows: SavedHost[] = [HAND];
+    vi.mocked(loadHosts).mockImplementation(async () => [...rows]);
+    vi.mocked(saveHost).mockImplementation(async (host) => {
+      rows = [...rows.filter((r) => r.hostKey !== host.hostKey), host];
+      return rows;
+    });
+    vi.mocked(forgetHost).mockImplementation(async (key) => {
+      rows = rows.filter((r) => r.hostKey !== key);
+      return rows;
+    });
     const status = vi.spyOn(api, "cloudRunnerStatus").mockResolvedValue(none());
     await followRunnerStatus();
     expect(forgetHost).not.toHaveBeenCalled();
@@ -282,12 +314,34 @@ describe("the cloud runner's saved host follows the runner's status", () => {
       ),
     );
 
-    vi.mocked(loadHosts).mockResolvedValue([marked(), HAND]);
+    expect(saveHost).toHaveBeenCalledTimes(1);
+    expect(rows.map((r) => r.hostKey)).toEqual([HAND.hostKey, KEY]);
+
     vi.spyOn(api, "cloudRunnerDelete").mockResolvedValue({ destroyed: [], warning: null });
     status.mockResolvedValue(none());
     await useAppStore.getState().deleteCloudRunner(false);
     await vi.waitFor(() => expect(forgetHost).toHaveBeenCalledWith(KEY));
     expect(forgetHost).toHaveBeenCalledTimes(1);
+    expect(rows).toEqual([HAND]);
+  });
+
+  it("a create whose status read then fails still ends with the host saved and live", async () => {
+    vi.mocked(loadHosts).mockResolvedValue([]);
+    const status = vi.spyOn(api, "cloudRunnerStatus").mockResolvedValue(none());
+    await followRunnerStatus();
+
+    remote.remoteDevicePublicKey.mockResolvedValue("device-key");
+    vi.spyOn(api, "cloudRunnerCreate").mockResolvedValue(RUNNER);
+    status.mockRejectedValue("the provider is unreachable");
+    await useAppStore.getState().createCloudRunner("fly", "sk-ant-oat01-secret", "");
+    await vi.waitFor(() =>
+      expect(saveHost).toHaveBeenCalledWith(
+        expect.objectContaining({ hostKey: KEY, runner: true }),
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ hostKey: KEY })),
+    );
   });
 
   it("dials the saved name first, which only the runner itself could answer, then the relay", () => {
