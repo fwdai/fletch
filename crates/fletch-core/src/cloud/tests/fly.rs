@@ -165,10 +165,7 @@ async fn create_makes_the_app_its_addresses_its_disk_and_a_machine_on_the_disk()
             r.line()
         );
     }
-    assert_eq!(
-        requests[0].body,
-        json!({ "name": app, "app_name": app, "org_slug": "acme" })
-    );
+    assert_eq!(requests[0].body, json!({ "name": app, "org_slug": "acme" }));
     assert_eq!(requests[1].body, json!({ "type": "shared_v4" }));
     assert_eq!(requests[2].body, json!({ "type": "v6" }));
     assert_eq!(

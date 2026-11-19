@@ -349,10 +349,9 @@ impl Client {
     /// it before returning (see `cloud::Client::create`).
     pub async fn create(&self, spec: &MachineSpec) -> Result<Created> {
         let app = app_name(&spec.name);
-        // `name` is the field the OpenAPI description gives, `app_name` the one
-        // the published guide gives; both carry the same name, so either
-        // reading of the request creates the same app.
-        let body = json!({ "name": app, "app_name": app, "org_slug": self.org });
+        // `name` alone: Fly refuses a request that also carries the
+        // `app_name` its published guide gives.
+        let body = json!({ "name": app, "org_slug": self.org });
         let reply = match self
             .call(Method::POST, "/v1/apps", &[], Some(&body), HTTP_TIMEOUT)
             .await
