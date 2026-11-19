@@ -57,6 +57,17 @@ enum Command {
     },
     /// Print what the host is doing, as JSON.
     Status,
+    /// Ask the running host one admin socket op and print its result as one
+    /// line of JSON: for scripts, and for the engine that set this host up
+    /// on a provider machine, over ssh. The op's arguments are a JSON object
+    /// on stdin (none when stdin is a terminal or blank), so nothing in them
+    /// is on a command line. Exits non-zero with the host's error on stderr
+    /// when the op fails.
+    Call {
+        /// The op, as the admin socket names it (`status`, `begin_pairing`,
+        /// …; README.md lists them).
+        op: String,
+    },
     /// Mint a pairing link for a phone or a desktop.
     Pair {
         /// What the paired device may do. `full` is everything; `control`
@@ -350,6 +361,10 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
         Command::Status => {
             print_json(&admin::call(data_dir, "status", json!({})).await?);
         }
+        Command::Call { op } => {
+            let args = admin::parse_args(&read_args()?)?;
+            println!("{}", admin::call(data_dir, &op, args).await?);
+        }
         Command::Pair { scope } => {
             let invite = admin::call(data_dir, "begin_pairing", json!({ "preset": scope })).await?;
             let url = string(&invite, "url");
@@ -600,6 +615,21 @@ async fn github_login(data_dir: &std::path::Path) -> Result<(), String> {
             return Err("the code expired before it was authorized; run the command again".into());
         }
     }
+}
+
+/// What `call` reads its arguments from: all of stdin, or nothing when stdin
+/// is a terminal, so a person asking an op with no arguments is not left
+/// waiting for an end of file.
+fn read_args() -> Result<String, String> {
+    use std::io::{IsTerminal, Read};
+    let mut stdin = std::io::stdin();
+    let mut text = String::new();
+    if !stdin.is_terminal() {
+        stdin
+            .read_to_string(&mut text)
+            .map_err(|e| format!("cannot read the arguments from stdin: {e}"))?;
+    }
+    Ok(text)
 }
 
 /// Paths are the *host's*, and a host may well have a different working

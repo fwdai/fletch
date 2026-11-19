@@ -129,7 +129,75 @@ async fn the_admin_socket_refuses_what_it_does_not_know() {
     );
 
     the_cloud_ops_check_what_they_are_given(&data_dir).await;
+    the_call_subcommand_passes_an_op_through(&data_dir).await;
     a_wedged_cli_cannot_hang_either_call(&data_dir, dir.path()).await;
+}
+
+/// `fletch-host call`, as an engine runs it over ssh: the op's JSON
+/// arguments on stdin, its JSON result on stdout and a zero exit; when the op
+/// fails, the host's error on stderr, nothing on stdout and a non-zero exit.
+/// What a token among the arguments never shows up in.
+async fn the_call_subcommand_passes_an_op_through(data_dir: &std::path::Path) {
+    use tokio::io::AsyncWriteExt;
+
+    let call = |op: &'static str, stdin: &'static str| async move {
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_fletch-host"))
+            .arg("--data-dir")
+            .arg(data_dir)
+            .args(["call", op])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run fletch-host call");
+        let mut input = child.stdin.take().unwrap();
+        input.write_all(stdin.as_bytes()).await.unwrap();
+        drop(input);
+        let out = child.wait_with_output().await.unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let (ok, stdout, stderr) = call("approvals_list", "").await;
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout).unwrap(),
+        json!([]),
+        "blank stdin is no arguments; the result is one line of JSON: {stdout:?}"
+    );
+    assert_eq!(stdout.lines().count(), 1, "{stdout:?}");
+
+    let (ok, stdout, stderr) = call("destroy_cloud_boxes", "{}").await;
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout).unwrap(),
+        json!({ "destroyed": [], "failed": [] })
+    );
+
+    let (ok, stdout, stderr) = call("revoke_device", r#"{"deviceId": "nobody"}"#).await;
+    assert!(!ok && stdout.is_empty(), "{stdout:?}");
+    assert!(stderr.contains("nobody"), "{stderr}");
+
+    let (ok, stdout, stderr) = call(
+        "cloud_connect",
+        r#"{"provider": "nowhere", "token": "secret-0123456789"}"#,
+    )
+    .await;
+    assert!(!ok, "{stdout}");
+    assert!(
+        stderr.contains("unknown cloud provider") && !stderr.contains("secret"),
+        "{stderr}"
+    );
+
+    let (ok, _, stderr) = call("status", "[\"secret-0123456789\"]").await;
+    assert!(!ok);
+    assert!(
+        stderr.contains("not a JSON object") && !stderr.contains("secret"),
+        "{stderr}"
+    );
 }
 
 /// The cloud provider surface, short of a provider's API: nothing here may
@@ -188,6 +256,13 @@ async fn the_cloud_ops_check_what_they_are_given(data_dir: &std::path::Path) {
         .await,
         Ok(json!(null)),
         "disconnecting what is not connected is nothing to refuse"
+    );
+
+    // A host that has made no machine at any provider has none to destroy,
+    // and says so in the shape the runner's deletion reads.
+    assert_eq!(
+        admin::call(data_dir, "destroy_cloud_boxes", json!({})).await,
+        Ok(json!({ "destroyed": [], "failed": [] }))
     );
 }
 

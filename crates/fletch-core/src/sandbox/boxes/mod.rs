@@ -2110,6 +2110,61 @@ pub fn created_box_ids() -> Vec<String> {
     boxes_on_disk().into_iter().map(|(id, _)| id).collect()
 }
 
+/// What [`destroy_cloud_boxes`] did: the boxes it destroyed at their
+/// provider, by agent id, and those it could not, each with why.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct CloudBoxesDestroyed {
+    pub destroyed: Vec<String>,
+    pub failed: Vec<CloudBoxNotDestroyed>,
+}
+
+/// A box [`destroy_cloud_boxes`] could not destroy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudBoxNotDestroyed {
+    pub agent_id: String,
+    pub error: String,
+}
+
+/// Destroy, at its provider, every cloud box this host has a directory for,
+/// whatever its workspace's state (each through [`cloud::destroy_box`]), and
+/// say which went and which did not. Only what this install made: a box at a
+/// provider with no directory here is never touched. The directories stay;
+/// a box destroyed already is destroyed again as success. What a runner is
+/// asked to do before it is deleted with its disk (`crate::cloud_runner`), so
+/// that nothing it made is left at the provider with no record of it.
+pub async fn destroy_cloud_boxes() -> CloudBoxesDestroyed {
+    let Ok(root) = boxes_root() else {
+        return CloudBoxesDestroyed::default();
+    };
+    destroy_cloud_boxes_in(&root, cloud::client).await
+}
+
+/// [`destroy_cloud_boxes`] with the boxes root given, and the client for a
+/// provider from `client_for`.
+async fn destroy_cloud_boxes_in(
+    root: &Path,
+    client_for: impl Fn(crate::cloud::ProviderId) -> Result<crate::cloud::Client>,
+) -> CloudBoxesDestroyed {
+    let mut outcome = CloudBoxesDestroyed::default();
+    for (agent_id, dir) in boxes_in(root) {
+        if !cloud::is_cloud_dir(&dir) {
+            continue;
+        }
+        match cloud::destroy_box_with(&dir, &client_for).await {
+            Ok(()) => outcome.destroyed.push(agent_id),
+            Err(e) => {
+                tracing::warn!(agent_id, error = %e, "a cloud box could not be destroyed");
+                outcome.failed.push(CloudBoxNotDestroyed {
+                    agent_id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+    outcome
+}
+
 /// Box directories no live agent owns: left by a discard that failed, or by
 /// an archive the app died in the middle of (`begin_archive` has already
 /// marked the row). Each holds a whole data disk, so nothing else would ever

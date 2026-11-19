@@ -312,6 +312,38 @@ the machines with its own `/usr/bin/ssh`, `/usr/bin/ssh-keygen` and
 `/usr/bin/openssl`, and an agent still signs in with the host user's login for
 its CLI (see "Log in to the provider CLIs first").
 
+`destroy_cloud_boxes` (an admin op, below) destroys at its provider every
+machine this host has made there for a workspace, live or not, and answers
+`{ "destroyed": [<agent id>…], "failed": [{ "agentId", "error" }…] }`. It is
+what the desktop asks a cloud runner before deleting it with its disk — a
+`fletch-host` the desktop runs on a provider machine
+([docs/cloud-runner-setup.md](../../docs/cloud-runner-setup.md)) — and only
+ever touches machines this host has a box directory for.
+
+## Scripting the admin socket
+
+Every subcommand but `serve`, `service` and `update` is one or two ops on the
+admin socket. `call` asks one op directly and prints its result as one line of
+JSON, for a script or for an engine driving the host over SSH:
+
+```sh
+fletch-host call status
+echo '{"preset":"control"}' | fletch-host call begin_pairing
+fletch-host call cloud_connect < args.json   # {"provider":…,"token":…,"account":…}
+```
+
+The op's arguments are a JSON object read from stdin — none when stdin is a
+terminal or blank — so a token among them is never on a command line, in `ps`
+or in a shell's history. An op that fails exits 1 with the host's error on
+stderr and nothing on stdout. The ops, with their arguments: `status`;
+`begin_pairing` (`preset`); `devices_list`; `add_device` (`publicKey`, `name`,
+`platform`, `preset`); `revoke_device` (`deviceId`); `approvals_list`;
+`answer_publish_approval` (`id`, `approved`); `github_login_start`;
+`github_login_status`; `project_add` (`path`); `project_clone` (`spec`,
+`destParent`); `provider_status`; `provider_login_command` (`id`);
+`cloud_status`; `cloud_connect` (`provider`, `token`, `account`);
+`cloud_disconnect` (`provider`); `destroy_cloud_boxes`.
+
 ## Pair a phone
 
 With the host running, on the host:

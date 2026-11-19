@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use fletch_core::cloud::{self, ProviderId};
 use fletch_core::host::Engine;
 use fletch_core::remote::RemoteState;
-use fletch_core::{commands, rpc};
+use fletch_core::{commands, rpc, sandbox};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -185,6 +185,14 @@ impl Admin {
                     .map_err(|e| e.to_string())?;
                 Ok(Value::Null)
             }
+            // Every workspace's machine this host made at a provider,
+            // destroyed there, with which went and which did not
+            // (`{ destroyed: [<agent id>], failed: [{ agentId, error }] }`).
+            // What the engine that made this host on a provider machine (a
+            // runner) asks first when it deletes it with its disk, so that
+            // nothing the runner made is left at the provider with no record
+            // of it (`fletch_core::cloud_runner::delete`).
+            "destroy_cloud_boxes" => value(&sandbox::boxes::destroy_cloud_boxes().await),
             _ => Err(UNKNOWN_OP.to_string()),
         }
     }
@@ -357,6 +365,7 @@ mod tests {
             "provider_status",
             "cloud_status",
             "cloud_connect",
+            "destroy_cloud_boxes",
             "spawn_agent",
         ] {
             assert_eq!(
