@@ -1,12 +1,19 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ProjectRef, Workspace } from "@/api";
+import type { ProjectRef, Workspace, WorkspaceTypeOption } from "@/api";
+import { workspaceTypesKey } from "@/components/Composer/workspaceType";
 import { type DraftAgent, useAppStore } from "@/store";
 import { render, screen } from "@/test/render";
 import { EmptyWorkspace } from "./EmptyWorkspace";
 
 // The composer is its own tree, and listens to the Tauri webview for drops.
-vi.mock("@/components/Composer", () => ({ Composer: () => null }));
+// What it was handed is all a test here reads of it.
+const { composer } = vi.hoisted(() => ({
+  composer: vi.fn((_props: { folders?: boolean }) => null),
+}));
+vi.mock("@/components/Composer", () => ({ Composer: composer }));
+// The pill reads the host's answer on mount; the tests seed it instead.
+vi.mock("@/components/Composer/WorkspaceTypePicker", () => ({ WorkspaceTypePicker: () => null }));
 
 const draft: DraftAgent = {
   id: "d1",
@@ -62,6 +69,32 @@ describe("EmptyWorkspace", () => {
     useAppStore.setState({ workspace: { projects: copy, agents: [] } as unknown as Workspace });
     render(<EmptyWorkspace draft={draft} />);
     expect(screen.getByText(note)).toBeTruthy();
+  });
+
+  it("offers no folder from this Mac to a workspace declared in the cloud", () => {
+    const projects = [{ path: "/repos/acme", name: "Acme", project_id: "p1" }] as ProjectRef[];
+    const options: WorkspaceTypeOption[] = [
+      { kind: "box", label: null, available: true, reason: null, default: true },
+      { kind: "host", label: null, available: true, reason: null, default: false },
+      { kind: "cloud:fly", label: "Fly.io", available: true, reason: null, default: false },
+    ];
+    useAppStore.setState({
+      workspace: { projects, agents: [] } as unknown as Workspace,
+      workspaceTypes: {
+        inputs: { repoPath: draft.repoPath, provider: draft.provider },
+        answer: { key: workspaceTypesKey(draft.repoPath, draft.provider), options },
+        failedKey: null,
+      },
+    });
+    const folders = () => composer.mock.lastCall?.[0].folders;
+
+    const local = render(<EmptyWorkspace draft={draft} />);
+    expect(folders()).toBe(true);
+    local.unmount();
+
+    render(<EmptyWorkspace draft={{ ...draft, workspaceType: "cloud:fly" }} />);
+    expect(folders()).toBe(false);
+    expect(screen.getByText(/A checkout will be created on a machine at Fly\.io, at/)).toBeTruthy();
   });
 
   it("shows only that it is being moved while its project is made ready elsewhere", () => {

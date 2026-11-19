@@ -1,6 +1,7 @@
-// The workspace type for a new workspace: a Linux VM or the macOS sandbox,
-// picked on the new-workspace row (`WorkspaceTypePicker`) beside the project
-// and the branch. The chip declares where the agent runs: the spawn carries exactly
+// The workspace type for a new workspace: a Linux VM, the macOS sandbox or a
+// machine at a connected cloud provider, picked on the new-workspace row
+// (`WorkspaceTypePicker`) beside the project and the branch. The chip declares
+// where the agent runs: the spawn carries exactly
 // the kind the chip shows, the user's pick or the host's default alike, so the
 // host lands the agent there or refuses with why, and the display cannot
 // disagree with the outcome. The options are the host's
@@ -9,7 +10,8 @@
 
 import type { WorkspaceKind, WorkspaceTypeOption } from "@/api";
 import type { IconName } from "@/components/Icon";
-import { LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
+import { CLOUD_MACHINE, cloudMachinePhrase, LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
+import { isCloudKind } from "@/util/workspaceKind";
 
 /** The option the chip shows: the user's explicit pick whenever the host
  *  lists it — even when it is the default, or no longer available (the spawn
@@ -24,12 +26,15 @@ export function shownWorkspaceType(
   );
 }
 
-/** The words the composer uses for each type. */
-export function workspaceTypeLabel(kind: WorkspaceKind): string {
-  return kind === "box" ? LINUX_VM.label : MACOS_SANDBOX.label;
+/** The words the composer uses for each type: a cloud row is its provider,
+ *  by the row's `label` (the neutral name without one). */
+export function workspaceTypeLabel(option: Pick<WorkspaceTypeOption, "kind" | "label">): string {
+  if (isCloudKind(option.kind)) return option.label || CLOUD_MACHINE.label;
+  return option.kind === "box" ? LINUX_VM.label : MACOS_SANDBOX.label;
 }
 
 export function workspaceTypeIcon(kind: WorkspaceKind): IconName {
+  if (isCloudKind(kind)) return CLOUD_MACHINE.icon;
   return kind === "box" ? LINUX_VM.icon : MACOS_SANDBOX.icon;
 }
 
@@ -92,6 +97,18 @@ export const WORKSPACE_TYPES_UNREADABLE = "Couldn't load the workspace types. Cl
  *  percent the host's answer cannot carry. */
 export const IMAGE_DOWNLOADING = "VM image downloading";
 
+/** Where an option runs, as the tip opens: a cloud row also says whose bill
+ *  its machine is on. */
+function runsIn(option: WorkspaceTypeOption): string {
+  if (isCloudKind(option.kind)) {
+    const runs = `Runs on ${cloudMachinePhrase(option.label)}`;
+    return option.label ? `${runs} · billed to your ${option.label} account` : runs;
+  }
+  return option.kind === "box"
+    ? `Runs in a ${LINUX_VM.label}`
+    : `Runs in the ${MACOS_SANDBOX.label}`;
+}
+
 /** The chip's one-sentence tooltip for the option it shows. The why comes
  *  from the host (`reason`, set on the default where it is worth saying, and
  *  on an unavailable option); `progress` is the image download's live
@@ -100,9 +117,8 @@ export function workspaceTypeTip(
   shown: WorkspaceTypeOption,
   progress: number | null | undefined,
 ): string {
-  if (!shown.available) return shown.reason ?? `${workspaceTypeLabel(shown.kind)} unavailable`;
-  const runs =
-    shown.kind === "box" ? `Runs in a ${LINUX_VM.label}` : `Runs in the ${MACOS_SANDBOX.label}`;
+  if (!shown.available) return shown.reason ?? `${workspaceTypeLabel(shown)} unavailable`;
+  const runs = runsIn(shown);
   if (!shown.reason) return runs;
   const pct = shown.reason === IMAGE_DOWNLOADING && progress != null ? ` ${progress}%` : "";
   return `${runs} · ${shown.reason}${pct}`;

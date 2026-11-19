@@ -18,6 +18,7 @@ import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { useGate, useHostEntry } from "@/store/capabilities";
 import { workspaceTypeOptionsFor } from "@/store/workspaceTypes";
+import { isCloudKind } from "@/util/workspaceKind";
 import { WorkflowComposer, WorkflowHeading } from "@/workflows/run/WorkflowComposer";
 import { creationNote } from "./creationNote";
 
@@ -99,10 +100,12 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const workspaceTypeOptions = useAppStore((s) =>
     workspaceTypeOptionsFor(s, draft.repoPath, draft.provider),
   );
-  const note = creationNote(
-    workspaceTypeShown ? declaredWorkspaceType(workspaceTypeOptions, draft.workspaceType) : null,
-    repoCount,
-  );
+  const declared = workspaceTypeShown
+    ? declaredWorkspaceType(workspaceTypeOptions, draft.workspaceType)
+    : null;
+  const note = creationNote(declared, repoCount);
+  // A machine at a cloud provider mounts no folder from this Mac.
+  const folders = !declared || !isCloudKind(declared.kind);
 
   // A draft opened new is brought in; one moved here from another host is the
   // page the user was already on, and is drawn where it was.
@@ -245,7 +248,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                     onPick: (account) => updateDraft(draft.id, { account }),
                   }}
                   placeholder="Describe the task for the agent. ↵ to spawn."
-                  folders
+                  folders={folders}
                   onSend={({
                     text,
                     provider,

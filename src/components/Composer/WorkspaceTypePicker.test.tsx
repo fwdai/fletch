@@ -111,6 +111,43 @@ describe("WorkspaceTypePicker", () => {
     expect(onPick).toHaveBeenCalledWith("host");
   });
 
+  it("offers a connected cloud by its provider's name, after the two on this Mac", async () => {
+    availableWorkspaceTypes.mockResolvedValue([
+      ...OPTIONS,
+      { kind: "cloud:fly", label: "Fly.io", available: true, reason: null, default: false },
+    ]);
+    const onPick = vi.fn();
+    const { container } = picker(onPick);
+    fireEvent.click(await screen.findByRole("button", { name: /macOS sandbox/ }));
+
+    const rows = screen.getAllByRole("menuitemradio");
+    expect(rows.map((r) => r.textContent)).toEqual(["macOS sandboxdefault", "Linux VM", "Fly.io"]);
+    expect(container.querySelector(".ws-type-menu .lucide-cloud")).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Fly\.io/ }));
+    expect(onPick).toHaveBeenCalledWith("cloud:fly");
+  });
+
+  it("draws a picked cloud on the pill, with whose bill it is on", async () => {
+    availableWorkspaceTypes.mockResolvedValue([
+      ...OPTIONS,
+      { kind: "cloud:fly", label: "Fly.io", available: true, reason: null, default: false },
+    ]);
+    render(
+      <WorkspaceTypePicker
+        repoPath="/w/app"
+        provider="claude"
+        current="cloud:fly"
+        onPick={vi.fn()}
+      />,
+    );
+    const pill = await screen.findByRole("button", { name: /Fly\.io/ });
+    expect(pill.textContent).toBe("inFly.io");
+    expect(pill.getAttribute("data-tip")).toBe(
+      "Runs on a machine at Fly.io · billed to your Fly.io account",
+    );
+    expect(pill.querySelector(".lucide-cloud")).toBeTruthy();
+  });
+
   it("is the same pill with a host paired", async () => {
     useAppStore.getState().upsertEnvironment({
       id: "studio",

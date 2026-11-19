@@ -36,3 +36,8 @@ export const CLOUD_MACHINE: SandboxName = {
 export function cloudMachineLabel(provider: string | null | undefined): string {
   return provider ? `Machine at ${provider}` : CLOUD_MACHINE.label;
 }
+
+/** The same within a sentence: "a machine at …", or "a cloud machine". */
+export function cloudMachinePhrase(provider: string | null | undefined): string {
+  return provider ? `a machine at ${provider}` : `a ${CLOUD_MACHINE.label.toLowerCase()}`;
+}
