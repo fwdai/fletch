@@ -198,7 +198,9 @@ async fn a_bounded_halt_waits_for_a_cli_record_no_longer_than_its_share() {
 
     let share = Duration::from_millis(300);
     let started = Instant::now();
-    let outcome = machine.halt(&channel, StopReason::User, Some(SYNC_BOUND + share)).await;
+    let outcome = machine
+        .halt(&channel, StopReason::User, Some(SYNC_BOUND + share))
+        .await;
 
     let waited = started.elapsed();
     assert!(waited >= share && waited < SYNC_BOUND, "{waited:?}");
@@ -217,7 +219,10 @@ async fn a_cli_record_that_cannot_sync_ends_and_the_stop_goes_on() {
     machine.record_in_background(&channel, "claude", "2.1.0");
     assert_eq!(machine.records.lock().len(), 1);
 
-    assert_eq!(machine.halt(&channel, StopReason::User, None).await, StopOutcome::Control);
+    assert_eq!(
+        machine.halt(&channel, StopReason::User, None).await,
+        StopOutcome::Control
+    );
     assert!(machine.records.lock().is_empty());
     assert_eq!(fake.acts(), ["create", "exec", "stop"]);
 }
