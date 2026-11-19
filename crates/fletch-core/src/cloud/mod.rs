@@ -640,7 +640,7 @@ pub async fn connect(
 }
 
 /// [`connect`] through a given client — a stand-in server's, in tests.
-async fn connect_with(
+pub(crate) async fn connect_with(
     db: &crate::DbState,
     connection: Connection,
     client: &Client,

@@ -29,6 +29,15 @@
 //!   authenticated exec at every boot and pinned, then ssh is waited for:
 //!   a new machine's name takes a while to resolve. Nothing local is made:
 //!   no data disk, no dirty marker, no egress proxy, no tools disk.
+//! - **A spare** ([`super::spares`]) is a box made ahead of any workspace,
+//!   under a placeholder identity of its own, its CLIs installed and its
+//!   machine parked. A box with nothing made for it yet takes one at its
+//!   first boot and wakes its machine instead of making one. Its guest
+//!   started with the placeholder's paths in its environment, which is never
+//!   changed, so every boot binds the box's own paths in the guest over the
+//!   channel where they are not bound yet ([`bind_identity`]): once after the
+//!   take, and again after any cold start, while a box made for its
+//!   workspace has them bound by its entrypoint and binds nothing.
 //! - **Its CLIs** live on its own disk, under `/data/tools/<provider>`,
 //!   where a tools disk would hold them (`fletch_box::tools::install_cli`):
 //!   the owner's is installed at boot at the version a local box would get
@@ -58,7 +67,7 @@
 //!   seed, codegraph, and moving the workspace to or from this machine.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -473,6 +482,10 @@ impl CloudMachine {
         self.handle.provider()
     }
 
+    pub(super) fn handle(&self) -> &Handle {
+        &self.handle
+    }
+
     /// Stop the machine cleanly: the guest's disks synced over `channel`,
     /// then the provider's stop, or for a box stopped for being idle
     /// ([`StopReason::Idle`]) its park, so that it wakes the soonest when it
@@ -672,6 +685,94 @@ pub fn setup_allowance(agent_id: &str) -> Option<Duration> {
 /// Whether the box directory `dir` is a cloud box's: it holds a handle.
 pub fn is_cloud_dir(dir: &Path) -> bool {
     dir.join(HANDLE_FILE).is_file()
+}
+
+/// Bring up the machine of the box in `dir` as `identity`'s, through
+/// `client`: the box's ssh key made in `dir` when it holds none, then its
+/// machine made from [`spec`] or brought to running ([`machine_up`]).
+/// Answers the machine and the key its guest is reached with ([`reach`]).
+/// What a box's boot starts with in the box's directory
+/// (`registry::provision_cloud`), and a spare's preparation in a directory
+/// of its own (`spares`). `phase` hears what it does.
+pub(super) async fn bring_up(
+    client: Arc<Client>,
+    identity: &BoxIdentity,
+    dir: &Path,
+    phase: &(dyn Fn(BoxPhase) + Sync),
+) -> Result<(CloudMachine, PathBuf)> {
+    let key = channel::keygen(dir)?;
+    let authorized = channel::authorized_key(&key)?;
+    let spec = spec(identity, authorized);
+    let handle = machine_up(&client, dir, &spec, phase).await?;
+    Ok((CloudMachine::new(&identity.agent_id, client, handle), key))
+}
+
+/// Binds a box's paths in its guest where they are not bound yet, as the
+/// entrypoint binds them at the machine's start (`bind_identity` in
+/// `packaging/cloud-image/entrypoint`), with its refusals and its ownership
+/// of the directories on the way: the home, the rpc dir and the writable
+/// root, in that order, each from its directory under `/data`. Run as the
+/// guest user, whose `sudo` needs no password; a path that is a mount point
+/// already is left alone, so a guest started with the box's own identity
+/// runs nothing privileged. Arguments: the three paths.
+const BIND_IDENTITY: &str = r#"set -eu
+bind() {
+  mountpoint -q "$1" && return
+  case "$1" in /?*/?*) ;; *) echo "$1 is not an absolute path with two components or more" >&2; exit 1;; esac
+  top=${1#/}; top=/${top%%/*}
+  case "$top" in
+    /bin|/boot|/data|/dev|/etc|/lib|/lib64|/opt|/proc|/run|/sbin|/sys|/tmp|/usr|/var)
+      echo "cannot place $1 under $top: it would shadow the guest's own files" >&2; exit 1;;
+  esac
+  [ -d "$top" ] || { echo "no $top directory in the guest to mount $1 under" >&2; exit 1; }
+  sudo -n mkdir -p "$1"
+  dir=${1%/*}
+  while [ "$dir" != "$top" ]; do
+    sudo -n chown -h agent:agent "$dir"
+    dir=${dir%/*}
+  done
+  sudo -n mount --bind "$2" "$1"
+}
+bind "$1" /data/home
+bind "$2" /data/rpc
+bind "$3" /data/ws
+"#;
+
+/// The command [`bind_identity`] runs in the guest for `identity`.
+fn bind_identity_argv(identity: &BoxIdentity) -> Vec<String> {
+    ["sh", "-c", BIND_IDENTITY, "sh"]
+        .into_iter()
+        .map(String::from)
+        .chain(
+            [&identity.home, &identity.rpc_dir, &identity.writable_root]
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned()),
+        )
+        .collect()
+}
+
+/// Make sure `identity`'s paths are bound in the guest `channel` reaches,
+/// binding those that are not ([`BIND_IDENTITY`]), in one ssh round trip.
+/// A box's guest started with another identity's paths when it was made as
+/// a spare (`spares`), and its entrypoint binds only those, at every start:
+/// so a boot of a cloud box asks every time, and the guest of a box made
+/// for its workspace answers that there is nothing to do. Bind mounts, so
+/// each path resolves to itself; the placeholder's stay as aliases.
+pub(super) async fn bind_identity(channel: &Channel, identity: &BoxIdentity) -> Result<()> {
+    let argv = bind_identity_argv(identity);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let out = channel
+        .exec(None, None, &argv)
+        .await
+        .map_err(|e| Error::Other(format!("bind the box's paths in its guest: {e}")))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(Error::SandboxUnavailable(format!(
+        "the box's paths could not be bound in its guest ({}): {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr).trim()
+    )))
 }
 
 #[cfg(test)]
