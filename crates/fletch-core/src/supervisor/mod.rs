@@ -172,6 +172,11 @@ pub struct Supervisor {
     /// flush distinguish a natural completion (flush queued follow-ups) from a
     /// stop (keep them queued, don't auto-send — see `drain_message_queue`).
     pub interrupted: Mutex<HashSet<String>>,
+    /// Agents whose launch was still on its way into a machine when the user
+    /// stopped that machine (`rest_sessions`): whatever comes of that launch,
+    /// it ends at rest, not in an error ([`Self::launch_rests`]). An entry
+    /// lasts for the one launch: the next `Spawning` clears it.
+    pub launches_to_rest: Mutex<HashSet<String>>,
     /// Last-emitted transcript-ingest health per agent, so `session:sync-health`
     /// fires on *change* only (real drift would otherwise spam an event every
     /// turn). Absent = healthy/never-degraded. In-memory only, event-driven —
@@ -221,6 +226,7 @@ impl Supervisor {
             message_queue: Mutex::new(MessageQueue::new()),
             stale_base: Mutex::new(HashSet::new()),
             interrupted: Mutex::new(HashSet::new()),
+            launches_to_rest: Mutex::new(HashSet::new()),
             sync_health: Arc::new(Mutex::new(HashMap::new())),
             verify_inflight: Arc::new(Mutex::new(HashSet::new())),
             live_turns: Mutex::new(HashMap::new()),
@@ -350,6 +356,10 @@ impl Supervisor {
         status: AgentStatus,
         last_error: Option<String>,
     ) {
+        // A new launch owes nothing to a stop that met the one before it.
+        if matches!(status, AgentStatus::Spawning) {
+            self.launches_to_rest.lock().remove(agent_id);
+        }
         let prev = self
             .statuses
             .lock()
@@ -497,6 +507,18 @@ impl Supervisor {
         }
         self.follow_turn(ctx, agent_id, Some(&AgentStatus::Spawning), &to);
         self.persist_and_emit_status(ctx, agent_id, to, last_error);
+        true
+    }
+
+    /// Whether the launch of `agent_id` that just failed was met by the
+    /// user's stop of its machine, and so ends at rest rather than in an
+    /// error: asked once, by `fail_spawn`, and settled here as idle when it
+    /// was. `false` for every other launch.
+    pub(super) fn launch_rests(&self, ctx: &Arc<EngineCtx>, agent_id: &str) -> bool {
+        if !self.launches_to_rest.lock().remove(agent_id) {
+            return false;
+        }
+        self.claim_spawn_outcome(ctx, agent_id, AgentStatus::Idle, None);
         true
     }
 
