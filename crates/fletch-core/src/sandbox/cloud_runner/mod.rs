@@ -369,9 +369,9 @@ pub async fn create(
     .await
 }
 
-/// Start the runner's machine and wait until it runs, its host key pinned
-/// again. A machine that was lost is made again on the runner's disk, the
-/// same runner; a disk that is gone is refused ([`Error::CloudGone`]).
+/// Start the runner's machine and wait until it runs. A machine that was
+/// lost is made again on the runner's disk, the same runner, with the host
+/// key that disk holds; a disk that is gone is refused ([`Error::CloudGone`]).
 pub async fn start(db: &DbState) -> Result<()> {
     let _under_way = UnderWay::begin(Change::Other)?;
     start_in(&dir()?, |p| client_for(db, p)).await

@@ -470,8 +470,8 @@ async fn stop_ends_the_service_before_the_machine_and_start_starts_it_again() {
     start_in(&dir, |_| Ok(fake.client())).await.unwrap();
     assert_eq!(
         fake.acts(),
-        ["create", "exec", "stop", "start", "exec"],
-        "started, and its host key pinned again"
+        ["create", "exec", "stop", "start"],
+        "started, its pinned host key trusted"
     );
 }
 
@@ -564,7 +564,11 @@ async fn start_replaces_a_lost_machine_on_the_runners_disk() {
     let after = boxes_cloud::read_handle(&dir).unwrap().unwrap();
     assert_ne!(after, before);
     assert!(after.same_box(&before), "on the same disk");
-    assert_eq!(fake.acts(), ["create", "exec", "replace", "exec"]);
+    assert_eq!(
+        fake.acts(),
+        ["create", "exec", "replace"],
+        "the disk's host key is the one already pinned"
+    );
 }
 
 /// A runner whose disk is gone is refused, in the runner's words, and never

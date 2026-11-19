@@ -686,8 +686,8 @@ fn identity_of(ctx: &AgentLaunchCtx) -> BoxIdentity {
 /// Whether the claude at `agent_bin` parses `--thinking-display`, for the
 /// copy of it `cli` names (`RunningBox::cli_identity`: its tools disk file,
 /// by the real path, size and modification time, so a `latest` disk rebuilt
-/// in place is a new one; or a cloud box and the version installed on its
-/// disk): remembered per copy, probed in the guest over the box's ssh
+/// in place is a new one; or the version installed on a cloud box's disk,
+/// whichever box): remembered per copy, probed in the guest over the box's ssh
 /// channel — the host's probe and reading
 /// (`agent::THINKING_DISPLAY_PROBE_ARGS`), on the host probe's bounded
 /// runner, so a wedged guest can't hold a launch — the first time a copy is

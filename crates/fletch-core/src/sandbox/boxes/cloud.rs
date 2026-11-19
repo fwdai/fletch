@@ -25,10 +25,11 @@
 //!   that is gone is the workspace's files gone, and is refused
 //!   ([`Error::CloudGone`]), never replaced by an empty one; a provider that
 //!   cannot run the machine now is refused with its reason, and nothing is
-//!   destroyed. The guest's host key is read through the provider's
-//!   authenticated exec at every boot and pinned, then ssh is waited for:
-//!   a new machine's name takes a while to resolve. Nothing local is made:
-//!   no data disk, no dirty marker, no egress proxy, no tools disk.
+//!   destroyed. The guest's host key, kept on the box's disk, is read
+//!   through the provider's authenticated exec and pinned at the box's first
+//!   boot (and at any boot that finds no pin), then ssh is waited for: a new
+//!   machine's name takes a while to resolve. Nothing local is made: no data
+//!   disk, no dirty marker, no egress proxy, no tools disk.
 //! - **A spare** ([`super::spares`]) is a box made ahead of any workspace,
 //!   under a placeholder identity of its own, its CLIs installed and its
 //!   machine parked. A box with nothing made for it yet takes one at its
@@ -42,7 +43,11 @@
 //!   where a tools disk would hold them (`fletch_box::tools::install_cli`):
 //!   the owner's is installed at boot at the version a local box would get
 //!   (`registry::tools_version`), and a tenant's of another provider on its
-//!   first launch, with no restart ([`CloudMachine::ensure_cli`]). Codegraph
+//!   first launch, with no restart ([`CloudMachine::ensure_cli`]). A version
+//!   is recorded on the disk only once the guest's sync has put its files
+//!   there, in the background of the launch, and a clean stop lets a record
+//!   still being made finish first; a machine lost or killed before then has
+//!   no record, and its next boot installs again. Codegraph
 //!   is not installed in a cloud box (its bundle is per-architecture and
 //!   built for local boxes), so a cloud box offers none (`codegraph_bin`).
 //! - **A stop** syncs the guest's disks over the channel, then has the
@@ -101,11 +106,18 @@ const HOST_KEY_BOUND: Duration = Duration::from_secs(30);
 const HOST_KEY_PACE: Duration = Duration::from_secs(2);
 const HOST_KEY_EXEC: Duration = Duration::from_secs(10);
 /// How long the guest may take to answer over ssh once its machine runs: a
-/// new box's name takes a while to resolve.
+/// new box's name takes a while to resolve. The pause between two tries
+/// starts short, for a machine that answers a moment after the first, and
+/// doubles up to the longest ([`ssh_pauses`]).
 const SSH_BOUND: Duration = Duration::from_secs(90);
+const SSH_FIRST_PACE: Duration = Duration::from_millis(250);
 const SSH_PACE: Duration = Duration::from_secs(3);
 /// The `sync` a stop asks of the guest before the provider stops it.
 const SYNC_BOUND: Duration = Duration::from_secs(5);
+/// How long a stop with no bound of its own waits for CLI records still being
+/// written: a sync of what an install wrote takes seconds, and a guest that
+/// stopped answering must not keep its machine running.
+const RECORD_BOUND: Duration = Duration::from_secs(60);
 /// How long a kill waits for the provider to confirm the stop; the request
 /// is made whatever comes of the wait.
 const KILL_BOUND: Duration = Duration::from_secs(10);
@@ -252,14 +264,20 @@ pub(super) fn spec(identity: &BoxIdentity, authorized_key: String) -> MachineSpe
     }
 }
 
-/// Bring the machine of the box in `dir` to running and pin its guest's host
-/// key there, through `client`; answers the box's handle. With no handle in
-/// `dir` the box is made from `spec` and its handle kept at once; with one,
-/// its machine is started, waited for, or replaced on its disk, as its state
-/// asks. A box whose disk is gone is refused ([`Error::CloudGone`]) and
-/// nothing is made in its place; a machine the provider cannot run is
+/// Bring the machine of the box in `dir` to running, its guest's host key
+/// pinned there, through `client`; answers the box's handle. With no handle
+/// in `dir` the box is made from `spec` and its handle kept at once; with
+/// one, its machine is started, waited for, or replaced on its disk, as its
+/// state asks. A box whose disk is gone is refused ([`Error::CloudGone`])
+/// and nothing is made in its place; a machine the provider cannot run is
 /// refused with why, and nothing destroyed. `phase` hears what the boot
 /// does. Once the machine runs, a failure stops it, its handle kept.
+///
+/// The guest keeps its host key on the box's disk, so the key is the box's
+/// for its whole life, through a replaced machine too: it is read through
+/// the provider for a box just made and for a directory that holds no pin,
+/// and every other boot trusts the pin, which the ssh handshake checks
+/// ([`reach`]).
 pub async fn machine_up(
     client: &Arc<Client>,
     dir: &Path,
@@ -267,7 +285,8 @@ pub async fn machine_up(
     phase: &(dyn Fn(BoxPhase) + Sync),
 ) -> Result<Handle> {
     let label = client.provider().label();
-    let handle = match read_handle(dir)? {
+    let pinned = std::fs::metadata(dir.join(channel::KNOWN_HOSTS_FILE)).is_ok_and(|m| m.len() > 0);
+    let (handle, made) = match read_handle(dir)? {
         None => {
             phase(BoxPhase::Preparing {
                 detail: format!("creating a {label} machine"),
@@ -289,10 +308,13 @@ pub async fn machine_up(
                 }
                 return Err(e);
             }
-            created.handle
+            (created.handle, true)
         }
-        Some(handle) => to_running(client, dir, handle, spec, phase).await?,
+        Some(handle) => (to_running(client, dir, handle, spec, phase).await?, false),
     };
+    if pinned && !made {
+        return Ok(handle);
+    }
     if let Err(e) = pin_host_key(client, &handle, dir).await {
         drop(stop_in_background(
             client.clone(),
@@ -386,30 +408,49 @@ async fn pin_host_key(client: &Client, handle: &Handle, dir: &Path) -> Result<()
 }
 
 /// The channel to the guest of the box `handle` names, authenticating with
-/// `key` and trusting the host key [`machine_up`] pinned in `dir`, once its
-/// sshd answers.
+/// `key` and trusting the host key pinned in `dir` ([`machine_up`]), once its
+/// sshd answers. A guest whose key is not the pinned one is refused at once:
+/// no wait makes it right.
 pub(crate) async fn reach(dir: &Path, key: &Path, handle: &Handle) -> Result<Channel> {
     let endpoint = handle.endpoint();
     let route = route(&endpoint)?;
     let known_hosts = dir.join(channel::KNOWN_HOSTS_FILE);
     let channel = Channel::with_route(dir, route, key, &known_hosts)
         .map_err(|e| Error::Other(e.to_string()))?;
+    let label = handle.provider().label();
     let deadline = Instant::now() + SSH_BOUND;
+    let mut pauses = ssh_pauses();
     loop {
         let why = match channel.exec(None, None, &["true"]).await {
             Ok(out) if out.status.success() => return Ok(channel),
             Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
             Err(e) => e.to_string(),
         };
+        // What ssh says when the guest's key is not the one pinned.
+        if why.contains("Host key verification failed") {
+            return Err(Error::SandboxUnavailable(format!(
+                "the {label} machine's ssh host key is not the one pinned for this workspace in {}, \
+                 so Fletch won't connect to it. If you know why its key changed, delete that file \
+                 and start the workspace again: the key the machine has is then pinned.",
+                known_hosts.display()
+            )));
+        }
         if Instant::now() >= deadline {
             return Err(Error::SandboxUnavailable(format!(
-                "the {} machine did not answer over ssh within {} s: {why}",
-                handle.provider().label(),
+                "the {label} machine did not answer over ssh within {} s: {why}",
                 SSH_BOUND.as_secs()
             )));
         }
-        tokio::time::sleep(SSH_PACE).await;
+        tokio::time::sleep(pauses.next().unwrap_or(SSH_PACE)).await;
     }
+}
+
+/// The pauses between [`reach`]'s tries: [`SSH_FIRST_PACE`], doubling up to
+/// [`SSH_PACE`].
+fn ssh_pauses() -> impl Iterator<Item = Duration> {
+    std::iter::successors(Some(SSH_FIRST_PACE), |pause| {
+        Some((*pause * 2).min(SSH_PACE))
+    })
 }
 
 /// How ssh reaches a guest at `endpoint`.
@@ -466,6 +507,11 @@ pub(super) struct CloudMachine {
     /// Held across a read and an install, so two launches never install one
     /// CLI at once.
     installing: tokio::sync::Mutex<()>,
+    /// The records of installed CLIs still being made on the box's disk
+    /// (`ensure_cli`), each the guest's sync and then its version marker:
+    /// what a clean stop lets finish first ([`Self::halt`]). A kill or an
+    /// abort waits for none, and a record they cut short leaves no marker.
+    records: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl CloudMachine {
@@ -476,6 +522,7 @@ impl CloudMachine {
             handle,
             clis: Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
+            records: Mutex::new(Vec::new()),
         }
     }
 
@@ -487,12 +534,13 @@ impl CloudMachine {
         &self.handle
     }
 
-    /// Stop the machine cleanly: the guest's disks synced over `channel`,
+    /// Stop the machine cleanly: the CLI records still being made let finish
+    /// ([`Self::finish_records`]), the guest's disks synced over `channel`,
     /// then the provider's stop, or for a box stopped for being idle
     /// ([`StopReason::Idle`]) its park, so that it wakes the soonest when it
-    /// is wanted again. With a `bound`, the two together get that long; the
-    /// request is made whatever comes of the wait, and an unconfirmed stop
-    /// or park is not a clean one.
+    /// is wanted again. With a `bound`, they all get that long; the request
+    /// is made whatever comes of the wait, and an unconfirmed stop or park is
+    /// not a clean one.
     pub(super) async fn halt(
         &self,
         channel: &Channel,
@@ -500,6 +548,7 @@ impl CloudMachine {
         bound: Option<Duration>,
     ) -> StopOutcome {
         let started = Instant::now();
+        self.finish_records(bound).await;
         let sync = bound.map_or(SYNC_BOUND, |bound| bound.min(SYNC_BOUND));
         let synced = tokio::time::timeout(sync, channel.exec(None, None, &["sync"])).await;
         if !matches!(synced, Ok(Ok(ref out)) if out.status.success()) {
@@ -565,12 +614,27 @@ impl CloudMachine {
         self.clis.lock().get(provider).cloned()
     }
 
+    /// What names `provider`'s CLI on the box's disk for what is remembered
+    /// about a CLI (`super::guest_thinking_summaries`): its version, and
+    /// nothing of the box. Every cloud box runs the same image and installs
+    /// the same package at a version, so what one learnt of a version holds
+    /// in all of them. `None` while no version is known.
+    pub(super) fn cli_identity(&self, provider: &str) -> Option<String> {
+        self.cli_version(provider)
+            .map(|version| format!("cloud box {provider} {version}"))
+    }
+
     /// Make `provider`'s CLI present on the box's disk at the version a
     /// launch of it runs (`registry::tools_version`), over `channel`, as the
     /// guest user whose home is `home`: read from the disk the first time it
     /// is asked, installed when it is missing or another version.
     /// `preparing` hears an install as it starts. An ordinary launch costs
     /// no round trip once the box has answered once.
+    ///
+    /// An install returns once the CLI is usable, its version known for this
+    /// run of the box; recording it on the disk waits for the guest's sync,
+    /// which the launch does not, so the record is made in the background
+    /// ([`Self::record_in_background`]).
     pub(super) async fn ensure_cli(
         &self,
         channel: &Channel,
@@ -597,7 +661,7 @@ impl CloudMachine {
         let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
         preparing(format!("installing {label} {wanted}"));
         let agent_id = self.agent_id.as_str();
-        fletch_box::tools::install_cli(
+        fletch_box::tools::run_cli_install(
             channel,
             provider,
             &wanted,
@@ -618,8 +682,59 @@ impl CloudMachine {
             version = wanted,
             "CLI installed in a cloud box"
         );
+        self.record_in_background(channel, provider, &wanted);
         self.clis.lock().insert(provider.to_string(), wanted);
         Ok(())
+    }
+
+    /// Record `provider`'s CLI at `version` on the box's disk, in a task of
+    /// its own that the machine keeps until a stop lets it finish: the
+    /// guest's disks synced, then the version marker written
+    /// (`fletch_box::tools::record_cli_version`). A record that fails, or is
+    /// cut short by the machine going down, leaves no marker, and the next
+    /// boot installs the CLI again.
+    fn record_in_background(&self, channel: &Channel, provider: &str, version: &str) {
+        let (channel, agent_id) = (channel.clone(), self.agent_id.clone());
+        let (provider, version) = (provider.to_string(), version.to_string());
+        let record = crate::host::spawn(async move {
+            if let Err(e) =
+                fletch_box::tools::record_cli_version(&channel, &provider, &version).await
+            {
+                tracing::warn!(
+                    agent_id,
+                    provider,
+                    version,
+                    error = %e,
+                    "a CLI installed in a cloud box was not recorded on its disk; its next boot \
+                     installs it again"
+                );
+            }
+        });
+        let mut records = self.records.lock();
+        records.retain(|record| !record.is_finished());
+        records.push(record);
+    }
+
+    /// Wait for the CLI records still being made ([`Self::record_in_background`])
+    /// to finish, for a clean stop, so the machine keeps each version it
+    /// recorded. With a `bound` they get what of it the stop's own sync does
+    /// not take, and with none [`RECORD_BOUND`]; one still unfinished then
+    /// races the machine going down, and writes its marker only if its sync
+    /// finishes first.
+    async fn finish_records(&self, bound: Option<Duration>) {
+        let records = std::mem::take(&mut *self.records.lock());
+        let wait = bound.map_or(RECORD_BOUND, |bound| bound.saturating_sub(SYNC_BOUND));
+        let deadline = Instant::now() + wait;
+        for record in records {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let finished = tokio::time::timeout(left, record).await.is_ok();
+            if !finished {
+                tracing::debug!(
+                    agent_id = self.agent_id,
+                    "a CLI record did not finish before its cloud box's stop"
+                );
+            }
+        }
     }
 }
 

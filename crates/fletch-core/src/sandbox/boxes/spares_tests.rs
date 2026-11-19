@@ -248,8 +248,8 @@ async fn a_new_box_takes_a_ready_spare_and_a_replacement_is_prepared() {
     assert_eq!(woken, handle, "the spare's own machine");
     assert_eq!(
         fake.acts(),
-        ["create", "exec", "park", "start", "exec"],
-        "woken, not made"
+        ["create", "exec", "park", "start"],
+        "woken, not made, its pinned host key trusted"
     );
 
     replenish_with(
@@ -263,7 +263,7 @@ async fn a_new_box_takes_a_ready_spare_and_a_replacement_is_prepared() {
     .await;
     assert_eq!(spares(root.path()).len(), 1, "a replacement");
     assert_eq!(
-        fake.acts()[5..],
+        fake.acts()[4..],
         ["create", "exec", "park"],
         "made and parked"
     );
