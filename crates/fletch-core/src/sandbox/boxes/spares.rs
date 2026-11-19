@@ -55,11 +55,18 @@
 //!   one cannot be destroyed the disconnect is refused, and the spare's
 //!   directory kept for the next try. The boxes of workspaces at the provider
 //!   are not touched.
+//! - **A host winding down** (`super::destroy_cloud_boxes`, what a cloud
+//!   runner is asked before it is deleted with its disk) destroys every
+//!   spare too ([`wind_down`]), and from then on its process prepares none:
+//!   a take or a setting change during those seconds would otherwise make a
+//!   machine nobody would ever know of.
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use fletch_box::Channel;
 use parking_lot::Mutex;
@@ -93,6 +100,15 @@ static TAKING: Mutex<()> = Mutex::new(());
 
 /// The one [`replenish`] that may run at a time.
 static REPLENISHING: Mutex<Flight> = Mutex::new(Flight::new());
+
+/// Set once this host has begun winding down ([`wind_down`]): from then on
+/// no replenish prepares a spare, for the rest of the process.
+static WOUND_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// How long a wind-down waits for a replenish under way to finish, and the
+/// pause between two looks.
+const WIND_DOWN_WAIT: Duration = Duration::from_secs(10 * 60);
+const WIND_DOWN_PACE: Duration = Duration::from_millis(500);
 
 /// Where the spares are kept, one directory each: beside the boxes, on the
 /// same volume, so a spare becomes a box by a rename.
@@ -442,7 +458,8 @@ async fn retire(
 /// for: stale and unfinished ones destroyed, any past the number destroyed,
 /// and what is missing prepared. One run at a time: a call while one runs
 /// has that run go once more when it is done. Nothing for a provider that is
-/// not connected. A failure is logged and left for the next call.
+/// not connected, and nothing at all once this host has begun winding down
+/// ([`wind_down`]). A failure is logged and left for the next call.
 pub async fn replenish() {
     single_flight(&REPLENISHING, replenish_once).await;
 }
@@ -475,19 +492,22 @@ async fn replenish_once() {
         .into_iter()
         .map(|provider| Build::now(provider, &clis))
         .collect();
-    replenish_with(&root, &builds, count, &cloud::client, &Ssh).await;
+    replenish_with(&root, &builds, count, &cloud::client, &Ssh, &WOUND_DOWN).await;
 }
 
 /// [`replenish_once`] in `root`, keeping `count` spares for each of
 /// `builds` (one per connected provider, as a box made now there gets).
+/// Nothing is done, and no further spare prepared, once `wound_down` is set
+/// ([`WOUND_DOWN`]).
 async fn replenish_with(
     root: &Path,
     builds: &[Build],
     count: u32,
     client_for: &(impl Fn(ProviderId) -> Result<Client> + Sync),
     guest: &impl Guest,
+    wound_down: &AtomicBool,
 ) {
-    if builds.is_empty() {
+    if builds.is_empty() || wound_down.load(Ordering::SeqCst) {
         return;
     }
     let mut fresh: HashMap<&str, Vec<PathBuf>> = HashMap::new();
@@ -548,6 +568,9 @@ async fn replenish_with(
             }
         }
         for _ in ready.len()..count {
+            if wound_down.load(Ordering::SeqCst) {
+                return;
+            }
             match prepare(root, build, client_for, guest).await {
                 Ok(dir) => tracing::info!(spare = %dir.display(), "a spare cloud box is ready"),
                 Err(e) => {
@@ -601,6 +624,82 @@ pub(crate) async fn destroy_all_in(
         kept.len(),
         kept.join("; ")
     )))
+}
+
+/// Wind this host's spares down for good, as part of its wind-down
+/// (`super::destroy_cloud_boxes`): no replenish prepares a spare from now on
+/// in this process, a replenish under way is waited for, then every spare is
+/// destroyed at its provider and its directory removed. Answers each spare
+/// destroyed and each that was not, with why, by its placeholder id: a spare
+/// a replenish was still preparing when the wait ran out is among those not.
+pub(super) async fn wind_down() -> super::CloudBoxesDestroyed {
+    let Ok(root) = root() else {
+        return super::CloudBoxesDestroyed::default();
+    };
+    wind_down_in(
+        &root,
+        &WOUND_DOWN,
+        &REPLENISHING,
+        WIND_DOWN_WAIT,
+        &cloud::client,
+    )
+    .await
+}
+
+/// [`wind_down`] in `root`, setting `wound_down` and waiting at most `wait`
+/// for a run under `flight` to finish, with clients from `client_for`.
+async fn wind_down_in(
+    root: &Path,
+    wound_down: &AtomicBool,
+    flight: &Mutex<Flight>,
+    wait: Duration,
+    client_for: &(impl Fn(ProviderId) -> Result<Client> + Sync),
+) -> super::CloudBoxesDestroyed {
+    wound_down.store(true, Ordering::SeqCst);
+    let mut outcome = super::CloudBoxesDestroyed::default();
+    let deadline = Instant::now() + wait;
+    while flight.lock().running {
+        if Instant::now() >= deadline {
+            outcome.failed.push(super::CloudBoxNotDestroyed {
+                agent_id: "spares".into(),
+                error: format!(
+                    "a spare was still being prepared after {} s; it may be left at its provider",
+                    wait.as_secs()
+                ),
+            });
+            break;
+        }
+        tokio::time::sleep(WIND_DOWN_PACE).await;
+    }
+    for found in found_in(root) {
+        let id = found
+            .dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let made = match &found.handle {
+            Ok(handle) => handle.is_some(),
+            Err(e) => {
+                outcome.failed.push(super::CloudBoxNotDestroyed {
+                    agent_id: id,
+                    error: e.to_string(),
+                });
+                continue;
+            }
+        };
+        match retire(&found.dir, client_for).await {
+            Ok(()) if made => outcome.destroyed.push(id),
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(spare = %found.dir.display(), error = %e, "a spare cloud box could not be destroyed in a wind-down");
+                outcome.failed.push(super::CloudBoxNotDestroyed {
+                    agent_id: id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+    outcome
 }
 
 /// Whether a run of something single-flight is under way, and whether it was

@@ -220,6 +220,7 @@ async fn a_new_box_takes_a_ready_spare_and_a_replacement_is_prepared() {
         1,
         &client_for,
         &guest,
+        &AtomicBool::new(false),
     )
     .await;
     let [spare] = &spares(root.path())[..] else {
@@ -251,7 +252,15 @@ async fn a_new_box_takes_a_ready_spare_and_a_replacement_is_prepared() {
         "woken, not made"
     );
 
-    replenish_with(root.path(), &[wanted], 1, &client_for, &guest).await;
+    replenish_with(
+        root.path(),
+        &[wanted],
+        1,
+        &client_for,
+        &guest,
+        &AtomicBool::new(false),
+    )
+    .await;
     assert_eq!(spares(root.path()).len(), 1, "a replacement");
     assert_eq!(
         fake.acts()[5..],
@@ -345,6 +354,7 @@ async fn a_stale_spare_and_a_half_prepared_one_are_destroyed() {
         0,
         &client_for,
         &guest,
+        &AtomicBool::new(false),
     )
     .await;
     assert!(spares(root.path()).is_empty());
@@ -368,6 +378,7 @@ async fn a_stale_spare_and_a_half_prepared_one_are_destroyed() {
         1,
         &client_for,
         &guest,
+        &AtomicBool::new(false),
     )
     .await;
     let kept = spares(root.path());
@@ -387,6 +398,7 @@ async fn a_stale_spare_and_a_half_prepared_one_are_destroyed() {
         0,
         &|_| Ok(unreachable.client()),
         &guest,
+        &AtomicBool::new(false),
     )
     .await;
     assert!(cloud::is_cloud_dir(&stale), "kept with its handle");
@@ -406,6 +418,7 @@ async fn a_replenish_with_no_provider_connected_does_nothing() {
         3,
         &|_| panic!("no provider is asked"),
         &FakeGuest::default(),
+        &AtomicBool::new(false),
     )
     .await;
     assert!(left.is_dir());
@@ -536,4 +549,116 @@ async fn a_replenish_runs_one_at_a_time() {
 
     single_flight(&flight, work).await;
     assert_eq!(runs.load(Ordering::SeqCst), 3);
+}
+
+/// A wind-down destroys every spare and names each, says which one it could
+/// not destroy and why, and leaves that one's directory, its only handle.
+#[tokio::test]
+async fn a_wind_down_destroys_every_spare_and_names_one_it_could_not() {
+    let fake = FakeCloud::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let guest = FakeGuest::default();
+    let client_for = |_: ProviderId| -> Result<Client> { Ok(fake.client()) };
+    let wanted = build(&fake, &[]);
+    let mut made = Vec::new();
+    for _ in 0..2 {
+        let dir = prepare(root.path(), &wanted, &client_for, &guest)
+            .await
+            .unwrap();
+        made.push(dir.file_name().unwrap().to_string_lossy().into_owned());
+    }
+    std::fs::create_dir_all(root.path().join("spare-000000000000")).unwrap();
+
+    let wound_down = AtomicBool::new(false);
+    let flight = Mutex::new(Flight::new());
+    let mut outcome = wind_down_in(
+        root.path(),
+        &wound_down,
+        &flight,
+        Duration::from_secs(1),
+        &client_for,
+    )
+    .await;
+    outcome.destroyed.sort();
+    made.sort();
+    assert_eq!(
+        outcome.destroyed, made,
+        "a directory with nothing made is not named"
+    );
+    assert!(outcome.failed.is_empty(), "{outcome:?}");
+    assert!(spares(root.path()).is_empty());
+    assert_eq!(fake.boxes(), 0);
+    assert!(wound_down.load(Ordering::SeqCst));
+
+    let refusing = FakeCloud::start().await;
+    let kept = prepare(root.path(), &wanted, &|_| Ok(refusing.client()), &guest)
+        .await
+        .unwrap();
+    refusing.refuse_destroy();
+    let outcome = wind_down_in(
+        root.path(),
+        &AtomicBool::new(false),
+        &flight,
+        Duration::from_secs(1),
+        &|_| Ok(refusing.client()),
+    )
+    .await;
+    assert!(outcome.destroyed.is_empty());
+    let [failed] = &outcome.failed[..] else {
+        panic!("one spare not destroyed: {outcome:?}");
+    };
+    assert_eq!(failed.agent_id, kept.file_name().unwrap().to_string_lossy());
+    assert!(!failed.error.is_empty());
+    assert!(cloud::is_cloud_dir(&kept), "kept with its handle");
+}
+
+/// Once a wind-down has begun no replenish prepares a spare, whatever asks
+/// for one: a take, a setting change, a connect.
+#[tokio::test]
+async fn after_a_wind_down_began_no_spare_is_made() {
+    let fake = FakeCloud::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let wanted = build(&fake, &[]);
+    let wound_down = AtomicBool::new(false);
+    wind_down_in(
+        root.path(),
+        &wound_down,
+        &Mutex::new(Flight::new()),
+        Duration::from_secs(1),
+        &|_| -> Result<Client> { panic!("no spare to destroy") },
+    )
+    .await;
+
+    replenish_with(
+        root.path(),
+        &[wanted],
+        2,
+        &|_| -> Result<Client> { panic!("nothing is made") },
+        &FakeGuest::default(),
+        &wound_down,
+    )
+    .await;
+    assert!(spares(root.path()).is_empty());
+    assert_eq!(fake.boxes(), 0);
+}
+
+/// A wind-down waits for a replenish under way, and when it outlasts the
+/// wait, says that a spare may be left.
+#[tokio::test]
+async fn a_wind_down_waits_for_a_replenish_under_way() {
+    let root = tempfile::tempdir().unwrap();
+    let flight = Mutex::new(Flight::new());
+    flight.lock().running = true;
+    let outcome = wind_down_in(
+        root.path(),
+        &AtomicBool::new(false),
+        &flight,
+        Duration::from_millis(1),
+        &|_| -> Result<Client> { panic!("no spare to destroy") },
+    )
+    .await;
+    let [failed] = &outcome.failed[..] else {
+        panic!("the replenish under way is named: {outcome:?}");
+    };
+    assert!(failed.error.contains("still being prepared"), "{failed:?}");
 }

@@ -2136,18 +2136,25 @@ pub struct CloudBoxNotDestroyed {
     pub error: String,
 }
 
-/// Destroy, at its provider, every cloud box this host has a directory for,
-/// whatever its workspace's state (each through [`cloud::destroy_box`]), and
-/// say which went and which did not. Only what this install made: a box at a
-/// provider with no directory here is never touched. The directories stay;
-/// a box destroyed already is destroyed again as success. What a runner is
-/// asked to do before it is deleted with its disk (`crate::cloud_runner`), so
-/// that nothing it made is left at the provider with no record of it.
+/// Destroy, at its provider, every cloud box this host has a directory for:
+/// its spares first, after which it prepares no more for the rest of the
+/// process ([`spares::wind_down`]), then every workspace's box whatever its
+/// workspace's state (each through [`cloud::destroy_box`]); and say which
+/// went and which did not, a spare by its placeholder id (`spare-…`), a
+/// workspace's box by its agent id. Only what this install made: a box at a
+/// provider with no directory here is never touched. A workspace's box
+/// directory stays; a box destroyed already is destroyed again as success.
+/// What a runner is asked to do before it is deleted with its disk
+/// (`crate::cloud_runner`), so that nothing it made is left at the provider
+/// with no record of it.
 pub async fn destroy_cloud_boxes() -> CloudBoxesDestroyed {
-    let Ok(root) = boxes_root() else {
-        return CloudBoxesDestroyed::default();
-    };
-    destroy_cloud_boxes_in(&root, cloud::client).await
+    let mut outcome = spares::wind_down().await;
+    if let Ok(root) = boxes_root() {
+        let boxes = destroy_cloud_boxes_in(&root, cloud::client).await;
+        outcome.destroyed.extend(boxes.destroyed);
+        outcome.failed.extend(boxes.failed);
+    }
+    outcome
 }
 
 /// [`destroy_cloud_boxes`] with the boxes root given, and the client for a
