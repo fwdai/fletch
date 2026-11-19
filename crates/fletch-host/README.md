@@ -319,8 +319,10 @@ setting), and a disconnect destroys them first, refusing while one cannot be
 destroyed.
 
 `destroy_cloud_boxes` (an admin op, below) destroys at its provider every
-machine this host has made there: its spares first, after which this process
-makes no new spare, then every workspace's machine, live or not. It answers
+machine this host has made there, its spares and then every workspace's
+machine, live or not, after refusing any new one and waiting for one being
+made. When all of them went, this process makes no machine again; when any
+did not, it goes on as before, spares included. It answers
 `{ "destroyed": [<id>…], "failed": [{ "agentId", "error" }…] }`, a spare by
 its `spare-…` id and a workspace's machine by its agent id. It is what the
 desktop asks a cloud runner before deleting it with its disk — a

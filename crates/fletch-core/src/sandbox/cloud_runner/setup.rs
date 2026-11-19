@@ -216,7 +216,7 @@ pub(super) async fn configure(
 }
 
 /// Have the runner in `dir` destroy every machine it made at its providers,
-/// its spares and its workspaces' boxes, and make no spare after (its
+/// its spares and its workspaces' boxes, under its hold on making any (its
 /// `destroy_cloud_boxes` op), starting it first when it is stopped; answers
 /// what it did.
 pub(super) async fn wind_down(
