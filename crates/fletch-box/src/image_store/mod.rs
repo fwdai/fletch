@@ -215,7 +215,7 @@ impl PinnedImage {
     /// fails CI when the fingerprint is not the one the inputs give, so it
     /// moves with them in the same pull request.
     pub const CLOUD_REPOSITORY: &'static str = "ghcr.io/fwdai/fletch-cloud";
-    pub const CLOUD_FINGERPRINT: &'static str = "5fa624c61c57";
+    pub const CLOUD_FINGERPRINT: &'static str = "7bc43f4d6479";
 
     /// The cloud image this build runs a cloud box's machine on:
     /// `<repository>:<VERSION>-<fingerprint>`, the box image of this build

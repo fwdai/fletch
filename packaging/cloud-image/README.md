@@ -69,16 +69,24 @@ as PID 1 under `docker run`. It reads the environment init reads:
 
 | Path / port | What |
 | --- | --- |
-| `/data` | the machine's volume: `ws`, `rpc`, `home`, `run` (0700) and `tools` owned by `agent`, `ssh` root's |
+| `/data` | the machine's volume: `ws`, `rpc`, `home`, `run` (0700) and `tools` owned by `agent`, `ssh` root's; on a runner's machine also `host` (0700, `agent`'s), which the engine makes |
 | the three host paths | bind mounts of `/data/ws`, `/data/rpc`, `/data/home`, each resolving to itself; the directories between a path and its first component belong to `agent`. The root is writable, so they are made in it, with no tmpfs over the first component; init's refusals hold (a path under `/bin`, `/etc`, `/usr`, … or with one component) |
 | `/opt/fletch/tools` | `/data/tools` bound read-only, as a tools disk is mounted: the host installs each provider's CLI into `/data/tools/<provider>` over ssh (the layout a tools disk has, `crates/fletch-box/tools/<provider>.sh`, run with no proxy by `fletch_box::tools::install_cli`, which records the version in `/data/tools/<provider>/.fletch-version`), and a launch finds it at `/opt/fletch/tools/<provider>/bin`. A bind, not a link, since a confined launch has `/data` covered |
 | `/data/ssh/host_key` | the ssh host key, made once; the host reads `host_key.pub` (one OpenSSH public key line) through the provider's exec and pins it (`HostKey::from_public_key`) |
+| `/data/host/start` | a host service, when the disk holds one (a runner's: [docs/cloud-runner-setup.md](../../docs/cloud-runner-setup.md)): run at every start, before sshd, as `agent`, in the background, by `/bin/sh` with an empty environment, its output in the machine's log. A box has none. The engine names the path `guest::CLOUD_HOST_SERVICE`, which `scripts/check-cloud-image.sh` holds to the entrypoint's |
 | port 2222 | `sshd -D -e -f /etc/ssh/sshd_config.fletch`, on every address, IPv4 and IPv6; key only, `agent` only |
 
 On a failure it prints `FLETCH_INIT_ERROR <text>` and exits non-zero before
 sshd starts. Its mounts are made again at every start; `/data`, and the
 directories made on the root, stay. Where it reproduces a step of init's, its
 comment names the step: a change to one is carried to the other.
+
+The host service hook is the one step that is not init's. A runner (a
+`fletch-host` on a provider machine, made by the desktop) is a machine of
+this image whose disk holds `/data/host/start`, written by the engine that
+set it up; the entrypoint starts it and leaves it to keep its service up.
+What the service runs and with which flags is the script's, not the image's:
+a machine keeps the image it was made with, and the engine writes the script.
 
 Not in a cloud box, since the machine has a network of its own and its
 provider stops it: vsock, the egress proxy (and with it the allow-list: the
@@ -115,9 +123,11 @@ agent's sessions; sshd on the IPv4 and IPv6 wildcards; the host paths (owner,
 `realpath`, the same trees as `/data`); `/opt/fletch/tools` showing
 `/data/tools` read-only, to a confined launch too; `fletch-guest exec` with an
 env file under `/data/run`; git, node and npm; https and `sudo apt-get update`
-with no proxy; `sudo`; dockerd's config and no dockerd; the image's names;
-then a stop and a start, after which the host key and `/data` are the same
-and the binds are back.
+with no proxy; `sudo`; dockerd's config and no dockerd; the image's names; no host
+service on a box's disk; then a stop and a start, after which the host key
+and `/data` are the same, the binds are back, and a start script put in
+`/data/host` before the stop ran as `agent` with none of the machine's
+environment.
 
 The confined launch makes a user namespace as the guest user, on the kernel of
 the machine the test runs on. Where that kernel gives an unprivileged user

@@ -79,4 +79,13 @@ if [[ -z "$host_port" || "$host_port" != "$entry_port" ]]; then
   exit 1
 fi
 
+# The start script the engine writes to a runner's disk is the one the
+# entrypoint runs.
+host_service="$(sed -n 's/^pub const CLOUD_HOST_SERVICE: &str = "\([^"]*\)";.*/\1/p' "$guest")"
+entry_service="$(sed -n 's/^service=\(.*\)$/\1/p' entrypoint)"
+if [[ -z "$host_service" || "$host_service" != "$entry_service" ]]; then
+  echo "error: guest::CLOUD_HOST_SERVICE is '$host_service', but the entrypoint starts '$entry_service'" >&2
+  exit 1
+fi
+
 echo "$fingerprint"

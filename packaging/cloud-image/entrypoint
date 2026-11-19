@@ -16,9 +16,10 @@
 # sshd listens on, every address (2222: a Fly Machine's own sshd holds 22).
 #
 # /data is the machine's volume: the agent's trees, its home, the ssh keys and
-# the provider CLIs (/data/tools/<provider>, installed by the host over ssh).
-# What this script mounts is mounted again at every start; what it makes on
-# the root stays, and is made again where it is missing.
+# the provider CLIs (/data/tools/<provider>, installed by the host over ssh),
+# and on a runner's machine its host service (/data/host). What this script
+# mounts is mounted again at every start; what it makes on the root stays, and
+# is made again where it is missing.
 #
 # The host learns the guest's host key from /data/ssh/host_key.pub (one
 # OpenSSH public key line), written before sshd starts. On failure:
@@ -112,6 +113,19 @@ echo "fletch-cloud: host key $keytype $key"
 # Root-owned and 0644 satisfies sshd's StrictModes (owner must be root or the user).
 printf '%s\n' "$FLETCH_BOX_AUTHORIZED_KEY" > /data/ssh/authorized_keys
 chmod 644 /data/ssh/authorized_keys
+
+# Not init's: a host service the disk holds. When /data/host/start is there
+# (a runner's fletch-host, written by the engine that made the machine,
+# fletch_box::guest::CLOUD_HOST_SERVICE), it runs at every start, as the
+# agent, in the background, with none of this environment (the script sets
+# its own), its output in the machine's log; it keeps itself running. A box
+# holds no such script, and nothing here changes for it.
+service=/data/host/start
+if [ -f "$service" ]; then
+  step="starting the host service"
+  echo "fletch-cloud: starting the host service $service"
+  setpriv --reuid=agent --regid=agent --clear-groups env -i /bin/sh "$service" </dev/null &
+fi
 
 # sshd listens on every address, IPv4 and IPv6 (the config names none), and
 # stays in the foreground: its exit is the machine's.
