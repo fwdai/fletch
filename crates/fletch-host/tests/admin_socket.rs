@@ -128,7 +128,67 @@ async fn the_admin_socket_refuses_what_it_does_not_know() {
         "a provider with no login command says so: {out_of_band}"
     );
 
+    the_cloud_ops_check_what_they_are_given(&data_dir).await;
     a_wedged_cli_cannot_hang_either_call(&data_dir, dir.path()).await;
+}
+
+/// The cloud provider surface, short of a provider's API: nothing here may
+/// reach one, so a token is only ever refused before it is sent (blank), and
+/// the validation and the store are `fletch_core::cloud`'s own tests.
+async fn the_cloud_ops_check_what_they_are_given(data_dir: &std::path::Path) {
+    use fletch_core::cloud::ProviderId;
+
+    let statuses = admin::call(data_dir, "cloud_status", json!({}))
+        .await
+        .expect("cloud_status");
+    let ids: Vec<&str> = statuses
+        .as_array()
+        .map(|rows| rows.iter().filter_map(|row| row["id"].as_str()).collect())
+        .unwrap_or_default();
+    let known: Vec<&str> = ProviderId::ALL.iter().map(|p| p.as_str()).collect();
+    assert_eq!(ids, known, "every provider, in the engine's order");
+    assert!(
+        statuses
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["connected"] == json!(false)),
+        "a fresh host is connected nowhere: {statuses}"
+    );
+
+    for op in ["cloud_connect", "cloud_disconnect"] {
+        let refusal = admin::call(
+            data_dir,
+            op,
+            json!({ "provider": "nowhere", "token": "secret-0123456789" }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refusal.contains("unknown cloud provider") && !refusal.contains("secret"),
+            "{op}: {refusal}"
+        );
+    }
+
+    let provider = ProviderId::ALL[0];
+    let blank = admin::call(
+        data_dir,
+        "cloud_connect",
+        json!({ "provider": provider.as_str(), "token": "  \n" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(blank.contains(provider.label()), "{blank}");
+    assert_eq!(
+        admin::call(
+            data_dir,
+            "cloud_disconnect",
+            json!({ "provider": provider.as_str() })
+        )
+        .await,
+        Ok(json!(null)),
+        "disconnecting what is not connected is nothing to refuse"
+    );
 }
 
 /// A CLI that never answers `--version` — a broken install, or a custom binary
