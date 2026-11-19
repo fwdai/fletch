@@ -291,6 +291,119 @@ fn without_a_database_nothing_is_in_the_cloud() {
     }
 }
 
+/// The binds a cloud boot asks of its guest, run here with `mountpoint` and
+/// `sudo` standing in for the guest's. A guest whose paths are all bound (a
+/// box made for its workspace, whose entrypoint bound them) runs nothing
+/// privileged. A taken spare's guest, which has only the home bound (the
+/// placeholder's is the same), gets the rpc dir and the writable root made,
+/// the directories on the way given to the guest user, and each bound from
+/// its data directory. A path the entrypoint refuses is refused here too.
+#[test]
+fn a_cloud_boot_binds_the_paths_its_guest_lacks_and_nothing_else() {
+    use std::os::unix::fs::PermissionsExt;
+    // A top-level directory that exists here and that the binds accept.
+    let Some(top) = dirs::home_dir()
+        .and_then(|home| home.components().nth(1).map(|c| Path::new("/").join(c)))
+        .filter(|top| {
+            !["/tmp", "/var", "/usr", "/opt", "/data"].contains(&&*top.to_string_lossy())
+        })
+    else {
+        return;
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    let stubs = scratch.path().join("bin");
+    std::fs::create_dir(&stubs).unwrap();
+    for (name, script) in [
+        (
+            "mountpoint",
+            "#!/bin/sh\n[ \"$1\" = -q ] && shift\ngrep -qxF -- \"$1\" \"$MOUNTED\"\n",
+        ),
+        (
+            "sudo",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SUDO_LOG\"\n\
+             [ \"$2\" = mount ] && printf '%s\\n' \"$5\" >> \"$MOUNTED\"\nexit 0\n",
+        ),
+    ] {
+        let stub = stubs.join(name);
+        std::fs::write(&stub, script).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (mounted, sudo_log) = (scratch.path().join("mounted"), scratch.path().join("sudo"));
+    let run = |identity: &BoxIdentity, bound: &[&Path]| {
+        let lines: String = bound.iter().map(|p| format!("{}\n", p.display())).collect();
+        std::fs::write(&mounted, lines).unwrap();
+        std::fs::write(&sudo_log, "").unwrap();
+        let argv = bind_identity_argv(identity);
+        let out = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .env("PATH", format!("{}:/usr/bin:/bin", stubs.display()))
+            .env("MOUNTED", &mounted)
+            .env("SUDO_LOG", &sudo_log)
+            .output()
+            .unwrap();
+        let sudo: Vec<String> = std::fs::read_to_string(&sudo_log)
+            .unwrap()
+            .lines()
+            .map(String::from)
+            .collect();
+        (out.status.success(), sudo)
+    };
+
+    let home = top
+        .join(format!("fletch-bind-{}", uuid::Uuid::new_v4().simple()))
+        .join("u");
+    let glacier = BoxIdentity {
+        writable_root: home.join(".fletch/workspaces/glacier"),
+        rpc_dir: home.join(".fletch/rpc/glacier"),
+        home: home.clone(),
+        ..identity("glacier")
+    };
+    let (ws, rpc) = (&glacier.writable_root, &glacier.rpc_dir);
+
+    let (ok, sudo) = run(&glacier, &[&home, rpc, ws]);
+    assert!(ok);
+    assert!(sudo.is_empty(), "bound already: {sudo:?}");
+
+    let (ok, sudo) = run(&glacier, &[&home]);
+    assert!(ok, "{sudo:?}");
+    let mounts: Vec<&String> = sudo.iter().filter(|c| c.starts_with("-n mount")).collect();
+    assert_eq!(
+        mounts,
+        [
+            &format!("-n mount --bind /data/rpc {}", rpc.display()),
+            &format!("-n mount --bind /data/ws {}", ws.display()),
+        ]
+    );
+    for made in [rpc, ws] {
+        assert!(
+            sudo.contains(&format!("-n mkdir -p {}", made.display())),
+            "{sudo:?}"
+        );
+    }
+    for owned in [
+        home.join(".fletch/workspaces"),
+        home.join(".fletch"),
+        home.clone(),
+    ] {
+        assert!(
+            sudo.contains(&format!("-n chown -h agent:agent {}", owned.display())),
+            "{owned:?}: {sudo:?}"
+        );
+    }
+    assert!(
+        !sudo.iter().any(|c| c.contains("/data/home")),
+        "the home was bound: {sudo:?}"
+    );
+
+    let shadowing = BoxIdentity {
+        rpc_dir: PathBuf::from("/etc/fletch/rpc/glacier"),
+        ..glacier.clone()
+    };
+    let (ok, sudo) = run(&shadowing, &[&home]);
+    assert!(!ok, "refused");
+    assert!(sudo.is_empty(), "before anything is made: {sudo:?}");
+}
+
 /// A handle that is not one is an error, never a box on this machine.
 #[test]
 fn a_damaged_handle_file_is_an_error() {

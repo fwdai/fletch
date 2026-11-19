@@ -2719,9 +2719,13 @@ pub(super) fn identity_env(identity: &BoxIdentity, authorized: String) -> Vec<(S
 /// guest: the box directory, the channel to the guest's sshd across the
 /// network, and the machine (`cloud::CloudMachine`). Nothing of this
 /// machine's is set up for it: no data disk, no dirty marker, no egress
-/// proxy, no tools disk. `phase` hears what it does. A box that shares a
-/// folder is refused before anything is made: a machine elsewhere cannot
-/// mount it. A failure once the machine is up stops it, its handle kept.
+/// proxy, no tools disk. A box with nothing made for it yet takes a ready
+/// spare when there is one (`spares::take`), whose machine is then woken
+/// rather than one made; either way the box's paths are bound in the guest
+/// before anything uses them (`cloud::bind_identity`). `phase` hears what it
+/// does. A box that shares a folder is refused before anything is made: a
+/// machine elsewhere cannot mount it. A failure once the machine is up stops
+/// it, its handle kept.
 async fn provision_cloud(
     identity: &BoxIdentity,
     provider: ProviderId,
@@ -2732,17 +2736,21 @@ async fn provision_cloud(
     }
     let client = Arc::new(cloud::client(provider)?);
     let dir = identity.box_dir()?;
+    super::spares::take(provider, &dir).await;
     std::fs::create_dir_all(&dir)?;
-    let key = channel::keygen(&dir)?;
-    let authorized = channel::authorized_key(&key)?;
     // The mailbox the relay mirrors into exists before anything can write it.
     crate::rpc::ensure_mailbox(&identity.rpc_dir)?;
-    let spec = cloud::spec(identity, authorized);
-    let handle = cloud::machine_up(&client, &dir, &spec, phase).await?;
+    let (machine, key) = cloud::bring_up(client, identity, &dir, phase).await?;
     // Made or replaced, if it had to be: what is left is the guest's start.
     phase(BoxPhase::Starting);
-    let machine = CloudMachine::new(&identity.agent_id, client, handle.clone());
-    let channel = match cloud::reach(&dir, &key, &handle).await {
+    let handle = machine.handle().clone();
+    let reached = async {
+        let channel = cloud::reach(&dir, &key, &handle).await?;
+        cloud::bind_identity(&channel, identity).await?;
+        Ok::<_, Error>(channel)
+    }
+    .await;
+    let channel = match reached {
         Ok(channel) => channel,
         Err(e) => {
             machine.abort();
