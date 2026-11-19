@@ -15,7 +15,7 @@ each part's README has the detail.
 | Cloud image | `packaging/cloud-image` | The box image flattened into one OCI image for a machine at a cloud provider, with an entrypoint that keeps the guest contract over TCP; `build-docker.sh` (from a built box image), `test.sh`, `publish.sh` |
 | libkrun | `packaging/libkrun` | libkrun 1.19 + patches and the libkrunfw 6.12 kernel the app ships (dylibs) and Linux `fletch-host` ships (`.so`) |
 | Bundle | `packaging/box-bundle` | How the helper and dylibs are signed and placed in the app; the flat Linux layout beside `fletch-host` |
-| Engine | `crates/fletch-core/src/sandbox/boxes` | Boots boxes for agents: registry, setup, settings, the guest-home mechanism (`home.rs`: seeding, credential sync, session mirrors) |
+| Engine | `crates/fletch-core/src/sandbox/boxes` | Boots boxes for agents: registry, setup, settings, the guest-home mechanism (`home.rs`: seeding, credential sync, session mirrors), and boxes whose machine is at a cloud provider (`cloud.rs`, "Cloud boxes" below) |
 | Provider adapters | `crates/fletch-core/src/sandbox/provider` | What each provider CLI keeps outside the checkout and how its credential reaches a launch (`ProviderHome`), shared with every engine, and the provider support gate (`supports`) |
 
 ## What a box boots
@@ -491,7 +491,68 @@ with it the egress policy: the machine's network is its own. It is
 `ghcr.io/fwdai/fletch-cloud:<VERSION>-<fingerprint>`, the fingerprint naming
 the cloud image's own inputs (`packaging/cloud-image/inputs.sh`), so a change
 to them is another tag; the Box image workflow pushes it where it publishes
-the x86_64 release, once per tag. Nothing in the app uses it yet.
+the x86_64 release, once per tag. The app pins it beside the box image
+(`PinnedImage::cloud_image`, `CLOUD_FINGERPRINT`, held to the inputs by
+`scripts/check-cloud-image.sh`); `FLETCH_CLOUD_IMAGE` replaces it for testing.
+
+## Cloud boxes
+
+A workspace can run in a box whose machine is made at a cloud provider
+(Fly.io first) instead of on this Mac: the composer lists `cloud:<provider>`
+for every provider connected in Settings › Cloud
+(`sandbox::workspace_types`). It is the box engine all the same
+(`sandbox_engine` is `box`): the engine, the workspace's record and every
+credential stay on this machine; the machine runs the cloud image and is
+reached over ssh across the network. `workspaces.cloud_provider` (migration
+0064) says which provider, stamped at spawn and never changed; a fork of a
+cloud workspace is one at the same provider. `sandbox/boxes/cloud.rs` is the
+cloud half; the provider client is `crate::cloud`, whose adapters hold
+everything provider-specific (nothing outside `cloud/` names a provider:
+`cloud::neutral_tests`).
+
+- **Boot.** No runtime, image, tools disk, boot slot or egress posture of
+  this machine's is asked for. The box directory keeps the ssh key and the
+  box's handle at the provider (`<box dir>/cloud`, owner-only), written the
+  moment the provider made the box. No handle: the box is created (its disk,
+  then a machine on it). A handle: the machine is used when running, started
+  when stopped, waited for when on its way, replaced on its disk when the
+  machine alone was lost (deleted in the provider's dashboard). A disk that
+  is gone is the workspace's files gone: the boot is refused with
+  `Error::CloudGone`, and nothing is made in its place. A machine the
+  provider cannot run is refused with its reason, and nothing destroyed.
+  The guest's host key is read through the provider's authenticated exec
+  (`/data/ssh/host_key.pub`) at every boot and pinned, then ssh is waited
+  for (up to 90 s: a new name takes a while to resolve). Any failure once
+  the machine is up stops it, its handle kept.
+- **Its CLIs** live on the box's own disk, `/data/tools/<provider>`, bound
+  at `/opt/fletch/tools` where a tools disk would be: the owner's is
+  installed at boot at the version a local box would get, a tenant's of
+  another provider on its first launch, in place and with no restart
+  (`fletch_box::tools::install_cli`, a version marker beside each).
+  Codegraph is not installed in a cloud box: its bundle is per
+  architecture and built for local boxes, so a cloud box offers none.
+- **Network.** The machine's network is its own: no egress proxy, no
+  allow-list, no posture, no egress log; no process there is given the proxy
+  variables (`guest_env`). The isolation report says so
+  (`guarantees::Guarantee::cloud_coverage`).
+- **Stop.** The guest syncs its disks over ssh (bounded), then the provider
+  stops the machine; at app exit within the shutdown grace, the request made
+  whatever comes of the wait. An unconfirmed stop counts as not clean; a
+  failed one is logged with the handle, since the machine may still be
+  running and billed. The idle stop works as for any box.
+- **Discard** destroys the box at the provider before its directory goes; a
+  destroy that fails (offline, provider disconnected) keeps the directory
+  and fails the discard, which archive records. At startup a box directory
+  no live workspace owns is destroyed the same way first, and kept when it
+  cannot be; a live cloud box whose machine is running while this app does
+  not run it (the app died) is stopped, under its lifecycle lock, silently
+  when its provider is not connected. Nothing is destroyed at a provider for
+  which this install has no directory: two installs may share an account.
+- **Not in a cloud box:** folders shared from this Mac (refused at the spawn,
+  at a grant and at boot), a project's seed (no data disk here; nothing is
+  taken from or given to one), codegraph, and moving the workspace to or
+  from the cloud. The ssh access for an editor (`ssh_access`) reaches a cloud
+  box at its provider's endpoint.
 
 ## Workflows
 

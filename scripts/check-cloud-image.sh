@@ -54,4 +54,29 @@ for file in "${others[@]}"; do
   fi
 done
 
+# The app runs the image these inputs make: its pin names this fingerprint,
+# so a change to the inputs moves the pin in the same pull request, as a box
+# image change moves `PinnedImage::VERSION` (scripts/check-version.sh).
+pins=../../crates/fletch-box/src/image_store/mod.rs
+pinned="$(sed -n 's/^ *pub const CLOUD_FINGERPRINT: &'"'"'static str = "\([^"]*\)";.*/\1/p' "$pins")"
+if [[ -z "$pinned" ]]; then
+  echo "error: no PinnedImage::CLOUD_FINGERPRINT found in crates/fletch-box/src/image_store/mod.rs" >&2
+  exit 1
+fi
+if [[ "$pinned" != "$fingerprint" ]]; then
+  echo "error: the app pins cloud image inputs $pinned, but packaging/cloud-image/inputs.sh gives $fingerprint" >&2
+  echo "Set PinnedImage::CLOUD_FINGERPRINT to $fingerprint in the same change; see packaging/cloud-image/README.md." >&2
+  exit 1
+fi
+
+# The port the host has a provider forward to the guest's sshd is the
+# entrypoint's default.
+guest=../../crates/fletch-box/src/guest.rs
+host_port="$(sed -n 's/^pub const CLOUD_SSH_PORT: u16 = \([0-9]*\);.*/\1/p' "$guest")"
+entry_port="$(sed -n 's/^port=\${FLETCH_BOX_SSH_PORT:-\([0-9]*\)}.*/\1/p' entrypoint)"
+if [[ -z "$host_port" || "$host_port" != "$entry_port" ]]; then
+  echo "error: guest::CLOUD_SSH_PORT is '$host_port', but the entrypoint's default sshd port is '$entry_port'" >&2
+  exit 1
+fi
+
 echo "$fingerprint"

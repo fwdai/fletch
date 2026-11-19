@@ -31,10 +31,12 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::sync::watch;
 
+use crate::cloud::{Client, ProviderId};
 use crate::codegraph::CODEGRAPH_VERSION;
 use crate::error::{Error, Result};
 use crate::workspace::{AgentRecord, FolderGrant};
 
+use super::cloud::{self, CloudMachine};
 use super::executor::BoxExecutor;
 use super::{
     relay, seed, settings, setup, tools_root, EgressEventPayload, EVENT_STATE, EVENT_TOOLS,
@@ -261,6 +263,9 @@ pub struct RunningBox {
 /// does with a box goes over its [`Channel`], whatever the machine.
 enum Machine {
     Local(Box<LocalVm>),
+    /// A machine at a cloud provider (`cloud`), stopped through the
+    /// provider. Its network is its own; it holds no disk of this machine's.
+    Cloud(Box<CloudMachine>),
     #[cfg(test)]
     Fake(tests::FakeMachine),
 }
@@ -277,20 +282,24 @@ struct LocalVm {
 }
 
 impl Machine {
-    /// End the machine cleanly if it can be ([`stop_ladder`]); with a
-    /// `bound`, the clean attempts together get that long before it is killed.
+    /// End the machine cleanly if it can be ([`stop_ladder`]; a cloud
+    /// machine's provider stop, `CloudMachine::halt`); with a `bound`, the
+    /// clean attempts together get that long before it is killed.
     async fn halt(&self, channel: &Channel, bound: Option<Duration>) -> StopOutcome {
         match self {
             Self::Local(local) => stop_ladder(&local.vm, channel, bound).await,
+            Self::Cloud(cloud) => cloud.halt(channel, bound).await,
             #[cfg(test)]
             Self::Fake(fake) => fake.halt(bound),
         }
     }
 
-    /// End the machine without asking its guest ([`kill_rungs`]).
+    /// End the machine without asking its guest ([`kill_rungs`]; a cloud
+    /// machine's provider stop with no sync).
     async fn kill(&self) -> StopOutcome {
         match self {
             Self::Local(local) => kill_rungs(&local.vm).await,
+            Self::Cloud(cloud) => cloud.kill().await,
             #[cfg(test)]
             Self::Fake(fake) => fake.kill(),
         }
@@ -301,6 +310,7 @@ impl Machine {
     fn abort(&self) {
         match self {
             Self::Local(local) => local.vm.kill(),
+            Self::Cloud(cloud) => cloud.abort(),
             #[cfg(test)]
             Self::Fake(fake) => fake.abort(),
         }
@@ -308,7 +318,7 @@ impl Machine {
 
     /// Give up what the machine held while it ran, once `outcome` ended it.
     /// A local VM's proxy goes, and its disk's dirty marker after a clean
-    /// outcome only.
+    /// outcome only. A cloud machine holds nothing here.
     fn release(&self, agent_id: &str, outcome: StopOutcome) {
         match self {
             Self::Local(local) => {
@@ -321,6 +331,7 @@ impl Machine {
                     tracing::warn!(agent_id, "box was killed; its disk is marked dirty");
                 }
             }
+            Self::Cloud(_) => {}
             #[cfg(test)]
             Self::Fake(fake) => fake.release(outcome),
         }
@@ -331,6 +342,7 @@ impl Machine {
     fn leaves_a_disk(&self) -> bool {
         match self {
             Self::Local(_) => true,
+            Self::Cloud(_) => false,
             #[cfg(test)]
             Self::Fake(_) => false,
         }
@@ -339,13 +351,14 @@ impl Machine {
     fn tools_leases(&self) -> &[ToolsLease] {
         match self {
             Self::Local(local) => &local.tools_leases,
+            Self::Cloud(_) => &[],
             #[cfg(test)]
             Self::Fake(_) => &[],
         }
     }
 
     /// Serve `policy` and `mode` from the next connection, where the machine's
-    /// egress goes through a proxy of ours.
+    /// egress goes through a proxy of ours. A cloud machine's does not.
     fn update_egress(&self, policy: EgressPolicy, mode: fletch_box::EgressMode) {
         match self {
             Self::Local(local) => {
@@ -353,6 +366,7 @@ impl Machine {
                     proxy.update(policy, mode);
                 }
             }
+            Self::Cloud(_) => {}
             #[cfg(test)]
             Self::Fake(_) => {}
         }
@@ -366,8 +380,19 @@ impl Machine {
                     proxy.decline(host);
                 }
             }
+            Self::Cloud(_) => {}
             #[cfg(test)]
             Self::Fake(_) => {}
+        }
+    }
+
+    /// How the guest reaches the network: through our proxy, or on its own.
+    fn egress(&self) -> guest::Egress {
+        match self {
+            Self::Local(_) => guest::Egress::Proxied,
+            Self::Cloud(_) => guest::Egress::Direct,
+            #[cfg(test)]
+            Self::Fake(_) => guest::Egress::Proxied,
         }
     }
 }
@@ -394,6 +419,45 @@ impl RunningBox {
             .iter()
             .map(|lease| lease.provider.clone())
             .collect()
+    }
+
+    /// The cloud provider whose machine this box is, `None` for a box on
+    /// this machine.
+    pub fn cloud(&self) -> Option<ProviderId> {
+        self.cloud_machine().map(CloudMachine::provider)
+    }
+
+    pub(super) fn cloud_machine(&self) -> Option<&CloudMachine> {
+        match &self.machine {
+            Machine::Cloud(cloud) => Some(cloud),
+            Machine::Local(_) => None,
+            #[cfg(test)]
+            Machine::Fake(_) => None,
+        }
+    }
+
+    /// How this box's guest reaches the network, which decides what every
+    /// process there is told about a proxy (`super::guest_env`).
+    pub fn egress(&self) -> guest::Egress {
+        self.machine.egress()
+    }
+
+    /// What tells `provider`'s CLI in this box apart from every other copy
+    /// of it, for what is remembered about a CLI (`super::guest_thinking_summaries`):
+    /// the tools disk it runs from (its file's identity, so a disk rebuilt in
+    /// place is another), or in a cloud box, the box and the version
+    /// installed on its disk. `None` while neither is known.
+    pub(super) fn cli_identity(&self, provider: &str) -> Option<String> {
+        match &self.machine {
+            Machine::Cloud(cloud) => cloud
+                .cli_version(provider)
+                .map(|version| format!("cloud box {} {provider} {version}", self.agent_id())),
+            Machine::Local(_) => self
+                .tools_disk_for(provider)
+                .map(|disk| format!("box tools disk {}", crate::agent::file_identity(disk))),
+            #[cfg(test)]
+            Machine::Fake(_) => None,
+        }
     }
 
     /// `box:<path>` for git over the channel.
@@ -922,8 +986,16 @@ impl BoxRegistry {
     /// blocks (`boxes::block_on`). The executor awaits
     /// [`Self::running_or_start`] instead.
     pub fn channel_for(&'static self, agent_id: &str) -> Result<Arc<Channel>> {
+        self.running_for(agent_id)
+            .map(|running| running.channel.clone())
+    }
+
+    /// The running box of `agent_id`, booting it when it is stopped: what
+    /// [`Self::channel_for`] reaches the guest through, for a synchronous
+    /// caller that needs more of the box than its channel.
+    pub fn running_for(&'static self, agent_id: &str) -> Result<Arc<RunningBox>> {
         if let Some(running) = self.running(agent_id) {
-            return Ok(running.channel.clone());
+            return Ok(running);
         }
         let identity = self
             .entries
@@ -931,7 +1003,7 @@ impl BoxRegistry {
             .get(agent_id)
             .map(|e| e.identity.clone())
             .ok_or_else(|| Error::Other(format!("no box is registered for {agent_id}")))?;
-        super::block_on(self.ensure_running(&identity)).map(|r| r.channel.clone())
+        super::block_on(self.ensure_running(&identity))
     }
 
     /// The running box for `agent_id`, booting it when stopped (async callers).
@@ -1055,6 +1127,21 @@ impl BoxRegistry {
         // here, before any setup wait: a box that is preparing is not running
         // either, and the sweep must not judge it from the old record.
         super::mirror::forget_disposal(&identity.box_dir()?)?;
+        // Where the box's machine is decides the rest: one at a cloud
+        // provider waits for nothing of this machine's.
+        match cloud::backing(agent_id) {
+            Ok(None) => {}
+            Ok(Some(provider)) => return self.boot_cloud(identity, provider).await,
+            Err(e) => {
+                self.set_phase(
+                    agent_id,
+                    BoxPhase::Failed {
+                        reason: e.to_string(),
+                    },
+                );
+                return Err(e);
+            }
+        }
         let prepared = async {
             let ready = setup::ready(|detail| {
                 self.set_phase(agent_id, BoxPhase::Preparing { detail });
@@ -1114,6 +1201,87 @@ impl BoxRegistry {
                 )))
             }
         }
+    }
+
+    /// [`Self::boot_box`] for a box whose machine is at `provider`, under the
+    /// lifecycle lock the caller holds: no image, tools disk or egress
+    /// posture is waited for or read, and no boot slot is taken, since no VM
+    /// starts here. The machine is brought up (`provision_cloud`), the box
+    /// attached on it, and the owner's CLI made present on its disk before
+    /// anything launches it. A failure once the machine is up stops it.
+    async fn boot_cloud(
+        &self,
+        identity: &BoxIdentity,
+        provider: ProviderId,
+    ) -> Result<Arc<RunningBox>> {
+        let agent_id = &identity.agent_id;
+        self.set_phase(agent_id, BoxPhase::Starting);
+        let phase = |phase| self.set_phase(agent_id, phase);
+        let preparing = |detail| self.set_phase(agent_id, BoxPhase::Preparing { detail });
+        let booted = async {
+            let (dir, channel, machine) = provision_cloud(identity, provider, &phase).await?;
+            let running = attach(identity, dir, channel, machine).await?;
+            let cli = match running.cloud_machine() {
+                Some(cloud) => {
+                    cloud
+                        .ensure_cli(
+                            &running.channel,
+                            &identity.home,
+                            &identity.provider,
+                            &preparing,
+                        )
+                        .await
+                }
+                None => Ok(()),
+            };
+            if let Err(e) = cli {
+                self.finish_stop(&running, running.machine.kill()).await;
+                return Err(e);
+            }
+            Ok(running)
+        }
+        .await;
+        match booted {
+            Ok(running) => self.publish(running).await,
+            Err(e) => {
+                tracing::warn!(agent_id, error = %e, "cloud box boot failed");
+                self.set_phase(
+                    agent_id,
+                    BoxPhase::Failed {
+                        reason: e.to_string(),
+                    },
+                );
+                Err(match e {
+                    Error::CloudGone(_) => e,
+                    e => Error::SandboxUnavailable(format!(
+                        "the box for {agent_id} did not start: {e}"
+                    )),
+                })
+            }
+        }
+    }
+
+    /// Make `provider`'s CLI present in `running`, a cloud box, for a launch
+    /// of it: a tenant of another provider than the box's, or the owner's
+    /// after its CLI version moved on. Installed on the box's disk in place,
+    /// with no restart, while the box is reported `Preparing` with what it
+    /// installs; a box on this machine has nothing to do here.
+    pub(super) async fn ensure_cli(&self, running: &RunningBox, provider: &str) -> Result<()> {
+        let Some(cloud) = running.cloud_machine() else {
+            return Ok(());
+        };
+        let agent_id = running.agent_id();
+        let preparing = |detail| self.set_phase(agent_id, BoxPhase::Preparing { detail });
+        let ensured = cloud
+            .ensure_cli(
+                &running.channel,
+                &running.identity.home,
+                provider,
+                &preparing,
+            )
+            .await;
+        self.settle_phase_after_wait(agent_id, ensured.as_ref().err());
+        ensured
     }
 
     /// Make a box that just booted the one its entry runs, under the box's
@@ -1958,7 +2126,9 @@ impl BoxRegistry {
     }
 
     /// Stop the box and delete its directory: the agent is gone. Forgets the
-    /// box and stops routing its root.
+    /// box and stops routing its root. A cloud box is destroyed at its
+    /// provider first ([`discard_dir`]); when that fails its directory stays,
+    /// and the error is returned.
     ///
     /// No boot starts once this has begun ([`Self::ensure_running`] checks),
     /// and one already under way — or a stop — is waited out first: either
@@ -1983,7 +2153,56 @@ impl BoxRegistry {
         }
         // Its tenants' roots pointed into a guest that no longer exists.
         self.forget_tenants_of(agent_id);
-        remove_box_dir(&super::box_dir(agent_id)?).await
+        discard_dir(&super::box_dir(agent_id)?).await
+    }
+
+    /// Stop the machine of every known cloud box that runs at its provider
+    /// while it does not run here: one the app left running when it quit
+    /// without stopping it, or died. Each under its box's lifecycle lock,
+    /// and never a box booting, running or being discarded here. A box whose
+    /// provider is not connected is left as it is, silently; any other
+    /// failure is logged. Startup's, in the background.
+    pub async fn stop_stray_machines(&self) {
+        for identity in self.identities() {
+            let agent_id = identity.agent_id.as_str();
+            let Ok(Some(provider)) = cloud::backing(agent_id) else {
+                continue;
+            };
+            let handle = match identity.box_dir().and_then(|dir| cloud::read_handle(&dir)) {
+                Ok(Some(handle)) => handle,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::info!(agent_id, error = %e, "a cloud box's handle could not be read");
+                    continue;
+                }
+            };
+            let Ok(Some(connection)) = cloud::connection(provider) else {
+                continue;
+            };
+            let client = match Client::new(&connection) {
+                Ok(client) => client,
+                Err(e) => {
+                    tracing::info!(agent_id, error = %e, "no client for a cloud box's provider");
+                    continue;
+                }
+            };
+            let lifecycle = self
+                .entries
+                .lock()
+                .get(agent_id)
+                .map(|e| e.lifecycle.clone());
+            let Some(lifecycle) = lifecycle else {
+                continue;
+            };
+            let _no_boot = lifecycle.lock().await;
+            // `map_or`, not `is_none_or`: the crate's rust-version is 1.77.
+            let here = self.entries.lock().get(agent_id).map_or(true, |e| {
+                e.running.is_some() || e.boot.is_some() || e.discarding
+            });
+            if !here {
+                cloud::stop_if_running(&client, &handle, agent_id).await;
+            }
+        }
     }
 
     /// Whether `agent_id`'s box is being discarded, or already was (it is no
@@ -2401,21 +2620,7 @@ async fn provision_local(
         (guest::CONTROL_PORT, dir.join(CTL_SOCK)),
     ];
     spec.connect_ports = vec![(guest::EGRESS_PORT, proxy.socket().to_path_buf())];
-    spec.env.extend([
-        (
-            guest::ENV_WRITABLE_ROOT.to_string(),
-            identity.writable_root.to_string_lossy().into_owned(),
-        ),
-        (
-            guest::ENV_RPC_DIR.to_string(),
-            identity.rpc_dir.to_string_lossy().into_owned(),
-        ),
-        (
-            guest::ENV_HOME.to_string(),
-            identity.home.to_string_lossy().into_owned(),
-        ),
-        (guest::ENV_AUTHORIZED_KEY.to_string(), authorized),
-    ]);
+    spec.env.extend(identity_env(identity, authorized));
 
     let started = std::time::Instant::now();
     let vm = Vm::start(&ready.paths, &spec).map_err(|e| Error::Other(e.to_string()))?;
@@ -2448,6 +2653,64 @@ async fn provision_local(
         tools_leases,
     }));
     Ok((dir, channel, machine))
+}
+
+/// What a guest is told of `identity` at its start, whatever its machine:
+/// the three paths it binds and the one key its sshd trusts, `authorized`.
+pub(super) fn identity_env(identity: &BoxIdentity, authorized: String) -> Vec<(String, String)> {
+    vec![
+        (
+            guest::ENV_WRITABLE_ROOT.to_string(),
+            identity.writable_root.to_string_lossy().into_owned(),
+        ),
+        (
+            guest::ENV_RPC_DIR.to_string(),
+            identity.rpc_dir.to_string_lossy().into_owned(),
+        ),
+        (
+            guest::ENV_HOME.to_string(),
+            identity.home.to_string_lossy().into_owned(),
+        ),
+        (guest::ENV_AUTHORIZED_KEY.to_string(), authorized),
+    ]
+}
+
+/// Bring `identity`'s machine at `provider` to running and wait for its
+/// guest: the box directory, the channel to the guest's sshd across the
+/// network, and the machine (`cloud::CloudMachine`). Nothing of this
+/// machine's is set up for it: no data disk, no dirty marker, no egress
+/// proxy, no tools disk. `phase` hears what it does. A box that shares a
+/// folder is refused before anything is made: a machine elsewhere cannot
+/// mount it. A failure once the machine is up stops it, its handle kept.
+async fn provision_cloud(
+    identity: &BoxIdentity,
+    provider: ProviderId,
+    phase: &(dyn Fn(BoxPhase) + Sync),
+) -> Result<(PathBuf, Arc<Channel>, Machine)> {
+    if !identity.shares.is_empty() {
+        return Err(Error::SandboxUnavailable(cloud::no_shares(provider)));
+    }
+    let client = Arc::new(cloud::client(provider)?);
+    let dir = identity.box_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let key = channel::keygen(&dir)?;
+    let authorized = channel::authorized_key(&key)?;
+    // The mailbox the relay mirrors into exists before anything can write it.
+    crate::rpc::ensure_mailbox(&identity.rpc_dir)?;
+    let spec = cloud::spec(identity, authorized);
+    let handle = cloud::machine_up(&client, &dir, &spec, phase).await?;
+    // Made or replaced, if it had to be: what is left is the guest's start.
+    phase(BoxPhase::Starting);
+    let machine = CloudMachine::new(&identity.agent_id, client, handle.clone());
+    let channel = match cloud::reach(&dir, &key, &handle).await {
+        Ok(channel) => channel,
+        Err(e) => {
+            machine.abort();
+            return Err(e);
+        }
+    };
+    tracing::info!(agent_id = identity.agent_id, handle = %handle, "cloud box ready");
+    Ok((dir, Arc::new(channel), Machine::Cloud(Box::new(machine))))
 }
 
 /// Bring a machine whose guest answers on `channel` into service as
@@ -2675,6 +2938,29 @@ fn closing_error(agent_id: &str) -> Error {
     Error::SandboxUnavailable(format!(
         "the box for {agent_id} did not start: the app is quitting"
     ))
+}
+
+/// Delete a box's directory, after the box at its provider when it is a
+/// cloud box ([`cloud::destroy_box`]): a destroy that fails keeps the
+/// directory, which holds the box's handle and key, the only way back to it.
+async fn discard_dir(dir: &Path) -> Result<()> {
+    discard_dir_with(dir, cloud::client).await
+}
+
+/// [`discard_dir`] with a cloud box's client from `client_for`.
+async fn discard_dir_with(
+    dir: &Path,
+    client_for: impl FnOnce(ProviderId) -> Result<Client>,
+) -> Result<()> {
+    cloud::destroy_box_with(dir, client_for)
+        .await
+        .map_err(|e| {
+            Error::Other(format!(
+                "the workspace's cloud box could not be destroyed, so it is kept and tried again \
+                 at the next start: {e}"
+            ))
+        })?;
+    remove_box_dir(dir).await
 }
 
 /// Delete a box directory — its data disk, the agent's whole tree — retrying
@@ -3045,6 +3331,113 @@ mod tests {
         assert_eq!(outcome, StopOutcome::Killed);
         assert_eq!(*asked.lock(), ["kill", "release after Killed"]);
         assert_eq!(registry.state(id), BoxPhase::Stopped);
+    }
+
+    /// `registry` knowing a published cloud box `id`, its machine made at
+    /// `fake` with its directory under `root`; one launch is attached.
+    async fn cloud_box(
+        registry: &BoxRegistry,
+        fake: &crate::cloud::fake::FakeCloud,
+        root: &Path,
+        id: &str,
+    ) -> PathBuf {
+        let identity = BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from(format!("/{id}/root")),
+            rpc_dir: PathBuf::from(format!("/{id}/rpc")),
+            home: PathBuf::from(format!("/{id}/home")),
+            shares: Vec::new(),
+        };
+        let dir = root.join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let client = Arc::new(fake.client());
+        let spec = cloud::spec(&identity, "ssh-ed25519 AAAA engine".into());
+        let handle = cloud::machine_up(&client, &dir, &spec, &|_| {})
+            .await
+            .unwrap();
+        let mut entry = Entry::new(identity.clone());
+        entry.attached.insert("launch".into());
+        registry.entries.lock().insert(id.into(), entry);
+        let running = RunningBox {
+            identity,
+            channel: Arc::new(Channel::open(&dir)),
+            dir: dir.clone(),
+            since: 1,
+            machine: Machine::Cloud(Box::new(CloudMachine::new(id, client, handle))),
+            relays: relay::Relays::none(),
+            read_only_exec: OnceLock::new(),
+        };
+        let running = registry.publish(running).await.unwrap();
+        assert_eq!(running.cloud(), Some(fake.client().provider()));
+        assert_eq!(running.egress(), guest::Egress::Direct);
+        assert!(running.tools_providers().is_empty());
+        dir
+    }
+
+    /// A cloud box stops through its provider and gives up nothing here; a
+    /// stop the provider could not carry out is not a clean one.
+    #[tokio::test]
+    async fn a_cloud_box_stops_through_its_provider() {
+        use crate::cloud::fake::{FakeCloud, Shape};
+        let registry = test_registry();
+        let fake = FakeCloud::start().await;
+        let root = tempfile::tempdir().unwrap();
+
+        let id = "cloud-stop";
+        cloud_box(&registry, &fake, root.path(), id).await;
+        let outcome = registry.stop(id, StopReason::Discard).await.unwrap();
+        assert_eq!(outcome, StopOutcome::Control);
+        assert_eq!(fake.acts(), ["create", "exec", "stop"]);
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
+        assert!(registry.running(id).is_none());
+
+        let id = "cloud-stop-lost";
+        cloud_box(&registry, &fake, root.path(), id).await;
+        fake.shape(Shape::MachineGone);
+        let outcome = registry.stop(id, StopReason::Shutdown).await.unwrap();
+        assert_eq!(outcome, StopOutcome::Killed, "unconfirmed: not clean");
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
+    }
+
+    /// A cloud box's directory — its handle, its key — goes only once its box
+    /// is destroyed at the provider: a destroy that fails keeps it, and says
+    /// so.
+    #[tokio::test]
+    async fn a_cloud_box_is_destroyed_before_its_directory_goes() {
+        use crate::cloud::fake::FakeCloud;
+        let registry = test_registry();
+        let root = tempfile::tempdir().unwrap();
+
+        let fake = FakeCloud::start().await;
+        let dir = cloud_box(&registry, &fake, root.path(), "cloud-discard").await;
+        discard_dir_with(&dir, |_| Ok(fake.client())).await.unwrap();
+        assert_eq!(fake.acts(), ["create", "exec", "destroy"]);
+        assert_eq!(fake.boxes(), 0);
+        assert!(!dir.exists());
+
+        let unreachable = FakeCloud::start().await;
+        let dir = cloud_box(&registry, &unreachable, root.path(), "cloud-kept").await;
+        unreachable.refuse_destroy();
+        let err = discard_dir_with(&dir, |_| Ok(unreachable.client()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("could not be destroyed"), "{err}");
+        assert!(
+            dir.join(cloud::HANDLE_FILE).is_file(),
+            "kept for the next try"
+        );
+        assert_eq!(unreachable.boxes(), 1);
+
+        // A box of this machine's has no provider to ask.
+        let local = root.path().join("local");
+        std::fs::create_dir(&local).unwrap();
+        discard_dir_with(&local, |_| panic!("no provider for a local box"))
+            .await
+            .unwrap();
+        assert!(!local.exists());
     }
 
     /// A disk installed the way a build installs one.

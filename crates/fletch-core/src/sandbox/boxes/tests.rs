@@ -262,7 +262,14 @@ async fn claude_runs_from_the_tools_disk() {
         .ensure_running(&identity)
         .await
         .unwrap_or_else(|e| panic!("{e}"));
-    let env = super::render_env_file(&[], "claude", &identity.home, super::ENV_DENY).unwrap();
+    let env = super::render_env_file(
+        &[],
+        "claude",
+        &identity.home,
+        fletch_box::guest::Egress::Proxied,
+        super::ENV_DENY,
+    )
+    .unwrap();
     let env_file = Path::new(fletch_box::guest::ENV_FILE_DIR).join("e2e.env");
     super::executor::put(&running.channel, env.as_bytes(), &env_file, 0o600).unwrap();
     let out = running
@@ -1014,7 +1021,14 @@ fn a_box_launch_redirects_toolchain_caches_into_the_projects_root() {
         root,
         crate::sandbox::toolchain_cache_root(home, project).unwrap()
     );
-    let file = super::render_env_file(&env, "claude", home, super::ENV_DENY).unwrap();
+    let file = super::render_env_file(
+        &env,
+        "claude",
+        home,
+        fletch_box::guest::Egress::Proxied,
+        super::ENV_DENY,
+    )
+    .unwrap();
     let root = root.to_string_lossy();
     let linux = crate::sandbox::toolchain_cache::Platform::linux().key();
     for line in [
@@ -1150,12 +1164,61 @@ fn a_created_box_is_a_directory_with_a_data_disk() {
     disk("vm", true);
     disk("never-booted", false);
     disk("tools-build", true);
+    // A cloud box has no data disk here: it exists once it has its handle.
+    let cloud = root.path().join("cloud-vm");
+    std::fs::create_dir_all(&cloud).unwrap();
+    std::fs::write(cloud.join(super::cloud::HANDLE_FILE), b"x").unwrap();
 
-    let boxes = super::boxes_in(root.path());
-    assert_eq!(
-        boxes.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
-        ["vm"]
+    let mut boxes: Vec<String> = super::boxes_in(root.path())
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    boxes.sort();
+    assert_eq!(boxes, ["cloud-vm", "vm"]);
+}
+
+/// A guest whose network goes through the egress proxy is pointed at it in
+/// every env it gets; a cloud box's machine has a network of its own and gets
+/// no proxy variable at all, and nothing else differs.
+#[test]
+fn only_a_guest_behind_the_proxy_is_told_of_it() {
+    use fletch_box::guest::Egress;
+    let home = Path::new("/Users/u");
+    let proxied = super::guest_env("claude", home, Egress::Proxied);
+    let direct = super::guest_env("claude", home, Egress::Direct);
+    let proxy_keys = [
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "https_proxy",
+        "http_proxy",
+        "NO_PROXY",
+        "no_proxy",
+        "NODE_USE_ENV_PROXY",
+    ];
+    for key in proxy_keys {
+        assert!(proxied.iter().any(|(k, _)| k == key), "{key}");
+        assert!(!direct.iter().any(|(k, _)| k == key), "{key}");
+    }
+    let rest: Vec<_> = proxied
+        .iter()
+        .filter(|(k, _)| !proxy_keys.contains(&k.as_str()))
+        .cloned()
+        .collect();
+    assert_eq!(direct, rest);
+
+    let file = super::render_env_file(
+        &[("HTTPS_PROXY".into(), "http://host.example:1".into())],
+        "claude",
+        home,
+        Egress::Direct,
+        super::ENV_DENY,
+    )
+    .unwrap();
+    assert!(
+        file.contains("HTTPS_PROXY=http://host.example:1\n"),
+        "nothing of the guest's stands over the launch's own env: {file}"
     );
+    assert!(!file.contains(fletch_box::guest::LOOPBACK_PROXY), "{file}");
 }
 
 // `block_on` from the sync seams (`launch_agent`, the executor).

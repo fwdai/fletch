@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 
+use crate::cloud::ProviderId;
 use crate::error::{Error, Result};
 use crate::workspace::AgentRecord;
 
@@ -29,7 +30,9 @@ pub use engine::{
     AgentLaunchCtx, EngineCaps, EngineKind, EnvDelivery, KillGuard, KillHandle, LaunchPlan,
     LauncherArgs, SandboxEngine, StageArgs, TurnPrep,
 };
-pub use guarantees::{describe as describe_isolation, IsolationReport};
+pub use guarantees::{
+    describe as describe_isolation, describe_every as describe_every_isolation, IsolationReport,
+};
 pub(crate) use seatbelt::pid_alive;
 pub use seatbelt::{
     build_run_profile, cleanup_nested_checkouts_roots, cleanup_nested_rpc_roots,
@@ -97,6 +100,20 @@ pub fn engine_for(kind: EngineKind) -> Result<Arc<dyn SandboxEngine>> {
         // first thing missing, so a box-stamped agent never launches
         // elsewhere.
         EngineKind::Box => boxes::availability().map(|_| boxes::BoxEngine::shared() as Arc<_>),
+    }
+}
+
+/// [`engine_for`] for a launch of `agent_id`: a box whose machine is at a
+/// cloud provider (its own, or its host's for a tenant: `boxes::cloud`) needs
+/// no runtime on this machine, so it is handed out without the runtime
+/// probe, and its boot refuses with the reason when the provider cannot be
+/// reached. Every other box is gated as [`engine_for`] gates it.
+pub fn engine_for_agent(kind: EngineKind, agent_id: &str) -> Result<Arc<dyn SandboxEngine>> {
+    match kind {
+        EngineKind::Box if boxes::cloud::box_backing(agent_id).is_some() => {
+            Ok(boxes::BoxEngine::shared())
+        }
+        EngineKind::Box | EngineKind::SandboxExec => engine_for(kind),
     }
 }
 
@@ -195,7 +212,7 @@ pub fn ensure_engine_not_retired(record: &AgentRecord) -> Result<()> {
 /// A spawn's per-session engine override (`SpawnRequest::workspace_type`,
 /// docs/sandbox-foundation.md rule 8), resolved by [`engine_for_spawn`].
 ///
-/// `Host` and `Box` are the user-facing choice the composer offers
+/// `Host`, `Box` and `Cloud` are the user-facing choice the composer offers
 /// ([`workspace_types`]), read off the wire by [`WorkspaceType::parse`].
 /// `Stamped` is the exact engine an existing record was stamped with, built
 /// only here ([`WorkspaceType::stamped`]): a fork passes its parent's, so the
@@ -209,26 +226,89 @@ pub enum WorkspaceType {
     Host,
     /// A box, or a refusal with the reason when there can be none.
     Box,
+    /// A box whose machine is made at a cloud provider rather than on this
+    /// machine (`boxes::cloud`); refused with the reason when it cannot be
+    /// had. Its engine is the box's.
+    Cloud(ProviderId),
     /// The engine an existing record was stamped with.
     Stamped(EngineKind),
 }
 
 impl WorkspaceType {
-    /// The composer's spelling: `host` or `box`. Anything else, or none, is
-    /// no override.
+    /// The composer's spelling: `host`, `box`, or `cloud:<provider>` with
+    /// the provider as `ProviderId::as_str` spells it ([`Self::cloud_kind`]).
+    /// Anything else, or none, is no override.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim() {
             "host" => Some(Self::Host),
             "box" => Some(Self::Box),
-            _ => None,
+            raw => raw
+                .strip_prefix(CLOUD_KIND_PREFIX)
+                .and_then(ProviderId::parse)
+                .map(Self::Cloud),
         }
     }
 
+    /// The composer's spelling of a cloud box at `provider`.
+    pub fn cloud_kind(provider: ProviderId) -> String {
+        format!("{CLOUD_KIND_PREFIX}{}", provider.as_str())
+    }
+
     /// The engine `record` was stamped with, as an override: what a fork
-    /// passes for its parent. Refused for a retired engine.
+    /// passes for its parent. A cloud box is one at the same provider.
+    /// Refused for a retired engine, and for a provider this build does not
+    /// know.
     pub fn stamped(record: &AgentRecord) -> Result<Self> {
         ensure_engine_not_retired(record)?;
-        Ok(Self::Stamped(stamped_engine(record)))
+        match cloud_provider(record)? {
+            Some(provider) => Ok(Self::Cloud(provider)),
+            None => Ok(Self::Stamped(stamped_engine(record))),
+        }
+    }
+
+    /// The provider of a cloud box, for every other type `None`.
+    pub fn cloud(self) -> Option<ProviderId> {
+        match self {
+            Self::Cloud(provider) => Some(provider),
+            Self::Host | Self::Box | Self::Stamped(_) => None,
+        }
+    }
+}
+
+/// What a cloud box's [`WorkspaceType`] is spelled with, before its provider.
+const CLOUD_KIND_PREFIX: &str = "cloud:";
+
+/// The provider `record`'s box is a machine at (`AgentRecord::cloud_provider`),
+/// `None` for a workspace whose box, if any, is on this machine. A provider
+/// this build does not know is refused, never read as a local box.
+pub fn cloud_provider(record: &AgentRecord) -> Result<Option<ProviderId>> {
+    let Some(raw) = record.cloud_provider.as_deref() else {
+        return Ok(None);
+    };
+    ProviderId::parse(raw).map(Some).ok_or_else(|| {
+        Error::SandboxUnavailable(format!(
+            "This workspace ran at a cloud provider this version of Fletch doesn't know \
+             (\"{raw}\"); start a new workspace."
+        ))
+    })
+}
+
+/// Why a workspace may not move between sandboxes when it is in the cloud,
+/// or would be.
+pub const CLOUD_MOVE_REFUSAL: &str = "Moving a workspace to or from the cloud isn't supported yet.";
+
+/// Refuse `grants` for a workspace whose box is a machine at `cloud`: a
+/// machine at a provider cannot mount a folder of this one. Nothing to check
+/// for any other workspace, or with no grant.
+pub fn ensure_folders_can_be_shared(
+    cloud: Option<ProviderId>,
+    grants: &[crate::workspace::FolderGrant],
+) -> Result<()> {
+    match cloud {
+        Some(provider) if !grants.is_empty() => {
+            Err(Error::Other(boxes::cloud::no_shares(provider)))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -255,8 +335,11 @@ pub fn ensure_supports_provider(engine: EngineKind, provider: &str) -> Result<()
 /// pinned to boxes does, and refused with the reason the user sees
 /// (`box_refusal`: a runtime that cannot boot, a provider boxes do not run)
 /// when there can be no box at all — an explicit choice never quietly lands
-/// somewhere else. `Stamped(kind)` is exactly `kind`, checked as the
-/// explicit choice is. Without an override this never errs.
+/// somewhere else. `Cloud(provider)` is a box whose machine is at
+/// `provider`, which needs no runtime here, refused with the reason
+/// (`cloud_refusal`: a provider boxes do not run, a cloud provider not
+/// connected). `Stamped(kind)` is exactly `kind`, checked as the explicit
+/// choice is. Without an override this never errs.
 ///
 /// Blocking: the automatic choice stats the repository and may run the
 /// runtime probe once, so a spawn calls this off the async runtime.
@@ -283,6 +366,10 @@ pub fn engine_for_spawn(
                 None => Ok(EngineKind::Box),
             }
         }
+        Some(WorkspaceType::Cloud(cloud)) => match cloud_refusal(provider, cloud) {
+            Some(reason) => Err(Error::Other(reason)),
+            None => Ok(EngineKind::Box),
+        },
         None => {
             let placement = placement::resolve(placement_setting, repo);
             Ok(boxes::engine_for_new_agent(provider, placement))
@@ -321,12 +408,16 @@ fn lands_in_a_box<'a>(
 /// The engine a workspace of `provider` moves to for the user's choice
 /// `kind` (`host` or `box`, as [`WorkspaceType::parse`] reads it), or why it
 /// can't move there now, in the sentence the user sees. The spawn override's
-/// refusals ([`engine_for_spawn`]), plus one: the workspace is down while it
+/// refusals ([`engine_for_spawn`]), plus two: the workspace is down while it
 /// moves, so a box still being set up (its image, the provider's tools) is
-/// refused rather than waited for. Blocking: the runtime probe.
+/// refused rather than waited for; and nothing moves into the cloud
+/// ([`CLOUD_MOVE_REFUSAL`]). Blocking: the runtime probe.
 pub fn engine_to_move_to(kind: &str, provider: &str) -> Result<EngineKind> {
     let choice = WorkspaceType::parse(kind)
         .ok_or_else(|| Error::Other(format!("Unknown workspace type `{kind}`.")))?;
+    if choice.cloud().is_some() {
+        return Err(Error::Other(CLOUD_MOVE_REFUSAL.into()));
+    }
     let engine = engine_for_spawn(None, None, Path::new(""), provider, Some(choice))?;
     if engine == EngineKind::Box && !boxes::ready_for(provider) {
         return Err(Error::Other(
@@ -346,13 +437,57 @@ fn box_refusal(provider: &str) -> Option<String> {
     self::provider::supports(EngineKind::Box, provider).err()
 }
 
+/// Why a new agent of `provider` cannot run in a box whose machine is at
+/// `cloud`, in the sentence the user sees, or `None` when it can: the
+/// provider gate, then the connection to `cloud` on this machine. No runtime
+/// here is asked: the machine is the provider's.
+fn cloud_refusal(provider: &str, cloud: ProviderId) -> Option<String> {
+    if let Err(refusal) = self::provider::supports(EngineKind::Box, provider) {
+        return Some(refusal);
+    }
+    match boxes::cloud::connection(cloud) {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(boxes::cloud::not_connected(cloud)),
+        Err(e) => Some(e.to_string()),
+    }
+}
+
+/// The workspace type of a box at `cloud` for a new agent of `provider`,
+/// whose connection there is `connection`: `None` when it is not connected,
+/// else available as [`cloud_refusal`] decides, or unavailable with why its
+/// connection cannot be read. Never the default, and asks nothing of this
+/// machine's runtime.
+fn cloud_type(
+    provider: &str,
+    cloud: ProviderId,
+    connection: Result<Option<crate::cloud::Connection>>,
+) -> Option<WorkspaceTypeOption> {
+    let reason = match connection {
+        Ok(None) => return None,
+        Ok(Some(_)) => self::provider::supports(EngineKind::Box, provider).err(),
+        Err(e) => Some(e.to_string()),
+    };
+    Some(WorkspaceTypeOption {
+        kind: WorkspaceType::cloud_kind(cloud),
+        label: Some(cloud.label().to_string()),
+        available: reason.is_none(),
+        reason,
+        default: false,
+    })
+}
+
 /// One workspace type a new agent may be given, as the composer offers it
 /// ([`workspace_types`]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct WorkspaceTypeOption {
-    /// `host` (the macOS sandbox) or `box` (an isolated VM): the spelling
-    /// [`WorkspaceType::parse`] reads a spawn's override from.
-    pub kind: &'static str,
+    /// `host` (the macOS sandbox), `box` (an isolated VM) or
+    /// `cloud:<provider>` (an isolated VM at a cloud provider,
+    /// [`WorkspaceType::cloud_kind`]): the spelling [`WorkspaceType::parse`]
+    /// reads a spawn's override from.
+    pub kind: String,
+    /// What a cloud type is called (`ProviderId::label`); `None` for `host`
+    /// and `box`, which the UI names itself.
+    pub label: Option<String>,
     /// Whether a spawn may ask for it.
     pub available: bool,
     /// Why not, when it is not: the sentence the spawn would fail with. On
@@ -368,12 +503,16 @@ pub struct WorkspaceTypeOption {
 /// reads. Each type is available exactly when [`engine_for_spawn`] would
 /// accept it as an override, with the same sentence when not: the macOS
 /// sandbox on macOS (`seatbelt::refusal`), a box where one can boot
-/// (`box_refusal`). Blocking, like [`engine_for_spawn`].
+/// (`box_refusal`), a cloud box where its provider is connected
+/// (`cloud_refusal`). Blocking, like [`engine_for_spawn`].
 ///
 /// The box comes first, always: it is the default engine and the macOS
 /// sandbox its fallback. The order stays fixed even when the default moves
 /// to this Mac, so a menu never reshuffles under the user; the `default`
-/// flag says which one a spawn gets.
+/// flag says which one a spawn gets. A cloud box is never the default: after
+/// those two, one per cloud provider connected on this machine, in
+/// `ProviderId::ALL`'s order; a provider not connected is not listed, and one
+/// whose connection cannot be read now is listed unavailable with why.
 pub fn workspace_types(
     placement_setting: Option<&str>,
     repo: &Path,
@@ -391,7 +530,8 @@ pub fn workspace_types(
     });
     let host_default = default == EngineKind::SandboxExec;
     let host = WorkspaceTypeOption {
-        kind: "host",
+        kind: "host".into(),
+        label: None,
         available: host_reason.is_none(),
         reason: host_reason.or_else(|| {
             host_default
@@ -400,12 +540,19 @@ pub fn workspace_types(
         default: host_default,
     };
     let vm = WorkspaceTypeOption {
-        kind: "box",
+        kind: "box".into(),
+        label: None,
         available: box_reason.is_none(),
         reason: box_reason,
         default: default == EngineKind::Box,
     };
-    vec![vm, host]
+    let mut options = vec![vm, host];
+    options.extend(
+        ProviderId::ALL
+            .iter()
+            .filter_map(|&cloud| cloud_type(provider, cloud, boxes::cloud::connection(cloud))),
+    );
+    options
 }
 
 /// The default macOS sandbox's reason while the VM image downloads. The
@@ -518,9 +665,12 @@ pub async fn restore_checkout(
 /// writes anything under the agent's writable root. A box-stamped agent that
 /// adopted its tree runs in the box that holds it (tenants), so it is routed
 /// there first and the profile lands in the guest it will run in. A record
-/// of a retired engine is refused here ([`ensure_engine_not_retired`]).
+/// of a retired engine is refused here ([`ensure_engine_not_retired`]), and
+/// one whose box is at a cloud provider this build does not know
+/// ([`cloud_provider`]).
 pub fn before_launch(record: &AgentRecord) -> Result<()> {
     ensure_engine_not_retired(record)?;
+    cloud_provider(record)?;
     match stamped_engine(record) {
         EngineKind::Box => boxes::route_tenant(record).map(|_| ()),
         EngineKind::SandboxExec => Ok(()),
@@ -529,11 +679,12 @@ pub fn before_launch(record: &AgentRecord) -> Result<()> {
 
 /// The extra time `record`'s spawn gets for the setup it may wait on: a box
 /// agent may first have to wait for the host's setup (the image download,
-/// its tools disk build), far longer than any process start. Zero for every
-/// other engine and once the setup is done.
+/// its tools disk build), or for its machine at a cloud provider (its
+/// creation, its start, the CLI's install), far longer than any process
+/// start. Zero for every other engine and once a local box's setup is done.
 pub fn setup_allowance(record: &AgentRecord) -> Duration {
     match stamped_engine(record) {
-        EngineKind::Box => boxes::setup::setup_allowance(&record.provider),
+        EngineKind::Box => boxes::setup_allowance(&record.id, &record.provider),
         EngineKind::SandboxExec => Duration::ZERO,
     }
 }
@@ -852,15 +1003,199 @@ mod adopted_tree_tests {
 mod workspace_type_tests {
     use super::*;
 
-    /// The composer's spelling is `host` or `box`; nothing else is an
-    /// override, and no spelling reaches a stamped engine.
+    /// The composer's spelling is `host`, `box` or `cloud:<provider>`;
+    /// nothing else is an override, and no spelling reaches a stamped engine.
     #[test]
-    fn only_host_and_box_parse() {
+    fn only_host_box_and_a_known_cloud_parse() {
         assert_eq!(WorkspaceType::parse("host"), Some(WorkspaceType::Host));
         assert_eq!(WorkspaceType::parse(" box "), Some(WorkspaceType::Box));
-        for raw in ["", "auto", "sandbox-exec", "vm"] {
+        for &provider in ProviderId::ALL {
+            let kind = WorkspaceType::cloud_kind(provider);
+            assert_eq!(kind, format!("cloud:{}", provider.as_str()));
+            assert_eq!(
+                WorkspaceType::parse(&kind),
+                Some(WorkspaceType::Cloud(provider))
+            );
+            assert_eq!(WorkspaceType::Cloud(provider).cloud(), Some(provider));
+        }
+        for raw in [
+            "",
+            "auto",
+            "sandbox-exec",
+            "vm",
+            "cloud",
+            "cloud:",
+            "cloud:nowhere",
+        ] {
             assert_eq!(WorkspaceType::parse(raw), None, "{raw}");
         }
+        assert_eq!(WorkspaceType::Box.cloud(), None);
+    }
+
+    fn record() -> AgentRecord {
+        crate::workspace::new_agent_record(
+            "stamped".into(),
+            "stamped".into(),
+            "claude".into(),
+            crate::workspace::TrackedRepo {
+                repo_path: PathBuf::from("/r"),
+                subdir: "repo".into(),
+                branch: None,
+                parent_branch: None,
+                pr_base: None,
+                base_sha: None,
+                pr_number: None,
+                pr_url: None,
+                pr_title: None,
+                pr_state: None,
+                label: None,
+                adopted_checkout: None,
+            },
+            String::new(),
+            crate::workspace::AgentView::Custom,
+        )
+    }
+
+    /// A fork of a cloud workspace is a cloud workspace at the same
+    /// provider; of any other, exactly its engine. A provider this build
+    /// does not know is refused, never read as a box here.
+    #[test]
+    fn a_stamped_cloud_box_forks_at_its_provider() {
+        let mut record = record();
+        record.sandbox_engine = Some("box".into());
+        assert_eq!(
+            WorkspaceType::stamped(&record).unwrap(),
+            WorkspaceType::Stamped(EngineKind::Box)
+        );
+        for &provider in ProviderId::ALL {
+            record.cloud_provider = Some(provider.as_str().into());
+            assert_eq!(cloud_provider(&record).unwrap(), Some(provider));
+            assert_eq!(
+                WorkspaceType::stamped(&record).unwrap(),
+                WorkspaceType::Cloud(provider)
+            );
+        }
+        record.cloud_provider = Some("nowhere".into());
+        assert!(WorkspaceType::stamped(&record).is_err());
+        assert!(before_launch(&record).is_err());
+    }
+
+    /// A cloud box is asked of the provider gate and of the connection,
+    /// never of this machine's runtime: with no provider connected (no
+    /// database in a unit test) it is refused with the sentence that says
+    /// where to connect one.
+    #[test]
+    fn a_cloud_box_is_refused_until_its_provider_is_connected() {
+        let repo = tempfile::tempdir().unwrap();
+        for &cloud in ProviderId::ALL {
+            let spawn = |provider: &str| {
+                engine_for_spawn(
+                    None,
+                    Some("host"),
+                    repo.path(),
+                    provider,
+                    Some(WorkspaceType::Cloud(cloud)),
+                )
+            };
+            assert_eq!(
+                spawn("claude").unwrap_err().to_string(),
+                boxes::cloud::not_connected(cloud)
+            );
+            assert_eq!(
+                Some(spawn("antigravity").unwrap_err().to_string()),
+                provider::supports(EngineKind::Box, "antigravity").err(),
+                "the provider gate first"
+            );
+            // An adopted tree runs where it lives, whatever was asked.
+            let adopted = engine_for_spawn(
+                Some(Path::new("/workspace-type-test/runs/run-1/repo")),
+                None,
+                repo.path(),
+                "claude",
+                Some(WorkspaceType::Cloud(cloud)),
+            )
+            .unwrap();
+            assert_ne!(adopted, EngineKind::Box);
+            // Nothing moves into the cloud.
+            assert_eq!(
+                engine_to_move_to(&WorkspaceType::cloud_kind(cloud), "claude")
+                    .unwrap_err()
+                    .to_string(),
+                CLOUD_MOVE_REFUSAL
+            );
+        }
+    }
+
+    /// The composer lists a cloud provider after the box and this Mac only
+    /// when it is connected, never as the default, available whatever this
+    /// machine's runtime says, and with its label.
+    #[test]
+    fn a_cloud_type_is_listed_only_when_its_provider_is_connected() {
+        let repo = tempfile::tempdir().unwrap();
+        let kinds: Vec<String> = workspace_types(None, repo.path(), "claude")
+            .into_iter()
+            .map(|o| o.kind)
+            .collect();
+        assert_eq!(kinds, ["box", "host"], "no provider connected");
+
+        for &cloud in ProviderId::ALL {
+            let connected = crate::cloud::Connection::new(cloud, "token-0123456789", None).unwrap();
+            assert_eq!(cloud_type("claude", cloud, Ok(None)), None);
+            let listed = cloud_type("claude", cloud, Ok(Some(connected.clone()))).unwrap();
+            assert_eq!(
+                listed,
+                WorkspaceTypeOption {
+                    kind: WorkspaceType::cloud_kind(cloud),
+                    label: Some(cloud.label().to_string()),
+                    available: true,
+                    reason: None,
+                    default: false,
+                }
+            );
+            assert_eq!(
+                serde_json::to_value(&listed).unwrap(),
+                serde_json::json!({
+                    "kind": WorkspaceType::cloud_kind(cloud),
+                    "label": cloud.label(),
+                    "available": true,
+                    "reason": null,
+                    "default": false,
+                })
+            );
+            let unsupported = cloud_type("antigravity", cloud, Ok(Some(connected))).unwrap();
+            assert!(!unsupported.available && unsupported.reason.is_some());
+            let unreadable = cloud_type(
+                "claude",
+                cloud,
+                Err(Error::Other("the keychain is locked".into())),
+            )
+            .unwrap();
+            assert!(!unreadable.available);
+            assert_eq!(unreadable.reason.as_deref(), Some("the keychain is locked"));
+        }
+        for option in workspace_types(None, repo.path(), "claude") {
+            assert_eq!(option.label, None, "{}", option.kind);
+        }
+    }
+
+    /// A cloud box takes no folder of this machine, at the spawn or later.
+    #[test]
+    fn a_cloud_box_takes_no_folder() {
+        let grant = crate::workspace::FolderGrant {
+            path: PathBuf::from("/Users/u/notes"),
+            writable: false,
+        };
+        for &cloud in ProviderId::ALL {
+            let err = ensure_folders_can_be_shared(Some(cloud), std::slice::from_ref(&grant))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains(cloud.label()) && err.contains("Remove the folders"),
+                "{err}"
+            );
+            assert!(ensure_folders_can_be_shared(Some(cloud), &[]).is_ok());
+        }
+        assert!(ensure_folders_can_be_shared(None, &[grant]).is_ok());
     }
 
     /// A session's workspace type stands over the host's choice and the
@@ -1012,8 +1347,8 @@ mod workspace_type_tests {
     fn the_box_is_listed_first_whatever_the_default() {
         let repo = tempfile::tempdir().unwrap();
         for provider in ["claude", "antigravity"] {
-            let kinds: Vec<&str> = workspace_types(None, repo.path(), provider)
-                .iter()
+            let kinds: Vec<String> = workspace_types(None, repo.path(), provider)
+                .into_iter()
                 .map(|o| o.kind)
                 .collect();
             assert_eq!(kinds, ["box", "host"], "{provider}");
@@ -1029,7 +1364,7 @@ mod workspace_type_tests {
         let options = workspace_types(None, repo.path(), "antigravity");
         assert!(options
             .iter()
-            .all(|o| WorkspaceType::parse(o.kind).is_some()));
+            .all(|o| WorkspaceType::parse(&o.kind).is_some()));
         let [vm, host] = [option(&options, "box"), option(&options, "host")];
         assert!(host.available && host.default);
         assert!(

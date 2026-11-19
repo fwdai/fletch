@@ -209,6 +209,26 @@ impl PinnedImage {
     /// merged build finds its image.
     pub const VERSION: &'static str = "0.5.2";
 
+    /// Where the cloud image is published, and the fingerprint of its own
+    /// inputs (`packaging/cloud-image/inputs.sh`): the cloud image this
+    /// build runs is [`Self::cloud_image`]. `scripts/check-cloud-image.sh`
+    /// fails CI when the fingerprint is not the one the inputs give, so it
+    /// moves with them in the same pull request.
+    pub const CLOUD_REPOSITORY: &'static str = "ghcr.io/fwdai/fletch-cloud";
+    pub const CLOUD_FINGERPRINT: &'static str = "5fa624c61c57";
+
+    /// The cloud image this build runs a cloud box's machine on:
+    /// `<repository>:<VERSION>-<fingerprint>`, the box image of this build
+    /// with its pinned cloud inputs.
+    pub fn cloud_image() -> String {
+        format!(
+            "{}:{}-{}",
+            Self::CLOUD_REPOSITORY,
+            Self::VERSION,
+            Self::CLOUD_FINGERPRINT
+        )
+    }
+
     /// This build's image, from `base_url` (the `box_image_url` setting) or
     /// the GitHub release.
     pub fn this_build(base_url: Option<&str>) -> PinnedImage {
@@ -970,6 +990,25 @@ mod tests {
         assert!(!pinned.version.is_empty());
         assert_eq!(pinned.base, release_url(&pinned.version));
         assert!(pinned.base.starts_with(RELEASES_URL));
+    }
+
+    /// The cloud image is this build's box image version with the pinned
+    /// fingerprint of the cloud inputs.
+    #[test]
+    fn the_cloud_image_names_this_builds_version_and_the_cloud_inputs() {
+        assert_eq!(
+            PinnedImage::cloud_image(),
+            format!(
+                "ghcr.io/fwdai/fletch-cloud:{}-{}",
+                PinnedImage::VERSION,
+                PinnedImage::CLOUD_FINGERPRINT
+            )
+        );
+        let fingerprint = PinnedImage::CLOUD_FINGERPRINT;
+        assert_eq!(fingerprint.len(), 12);
+        assert!(fingerprint
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
     }
 
     /// A `file://` base URL installs by copying, verified like a download;

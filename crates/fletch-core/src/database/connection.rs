@@ -127,6 +127,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0061_worktree_prs_base.sql"),
     include_str!("../../migrations/0062_project_home.sql"),
     include_str!("../../migrations/0063_repo_dropped.sql"),
+    include_str!("../../migrations/0064_workspace_cloud_provider.sql"),
 ];
 
 /// The transcript log's own migrations, tracked by `transcripts.db`'s

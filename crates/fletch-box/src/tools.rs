@@ -29,7 +29,7 @@ use crate::disks;
 use crate::egress::{EgressEvent, EgressPolicy, EgressProxy};
 use crate::error::{Error, Result};
 use crate::fsutil;
-use crate::guest;
+use crate::guest::{self, Egress};
 use crate::image_store;
 use crate::runtime::{RuntimePaths, StopOutcome};
 use crate::version::version_key;
@@ -558,6 +558,111 @@ async fn build_in(
     Ok(())
 }
 
+/// Where the install scripts put a provider's CLI in the guest they run in
+/// (each script's `PREFIX`, `<this>/<provider>`): the tools disk being built,
+/// whose `tools/` init mounts at [`guest::TOOLS_MOUNT`], or a cloud box's
+/// volume, which its entrypoint binds there.
+const INSTALL_ROOT: &str = "/data/tools";
+
+/// The file recording which version of `provider`'s CLI a guest installed for
+/// itself ([`install_cli`]), beside the CLI.
+pub fn cli_version_file(provider: &str) -> PathBuf {
+    PathBuf::from(format!("{INSTALL_ROOT}/{provider}/.fletch-version"))
+}
+
+/// Installs `provider`'s CLI at `version` in the guest `chan` reaches, for a
+/// guest that keeps its CLIs on its own disk rather than on a tools disk (a
+/// cloud box), and records the version there ([`cli_version_file`]) once the
+/// install succeeded. The same script a tools disk is built with, run as the
+/// guest user with `guest_home` as its home; `log` sees its output lines.
+pub async fn install_cli(
+    chan: &Channel,
+    provider: &str,
+    version: &str,
+    guest_home: &Path,
+    egress: Egress,
+    mut log: impl FnMut(&str),
+) -> Result<()> {
+    let script = install_script(provider)
+        .ok_or_else(|| Error::Other(format!("no install script for provider `{provider}`")))?;
+    if !valid_version(version) {
+        return Err(Error::Other(format!("bad version {version:?}")));
+    }
+    let env_file = put_install_env(chan, guest_home, egress).await?;
+    run_script(
+        chan,
+        &env_file,
+        provider,
+        script,
+        &[version],
+        &format!("{provider}@{version}"),
+        &mut log,
+    )
+    .await?;
+    chan.put(version.as_bytes(), &cli_version_file(provider), 0o644)
+        .await?;
+    chan.exec(None, None, &["sync"]).await?;
+    Ok(())
+}
+
+/// The version [`install_cli`] recorded for `provider` in the guest `chan`
+/// reaches; `None` when it recorded none.
+pub async fn installed_cli_version(chan: &Channel, provider: &str) -> Result<Option<String>> {
+    let file = cli_version_file(provider);
+    let out = chan
+        .exec(
+            None,
+            None,
+            &[
+                "sh",
+                "-c",
+                r#"[ -f "$1" ] || exit 3; cat -- "$1""#,
+                "sh",
+                &file.to_string_lossy(),
+            ],
+        )
+        .await?;
+    match out.status.code() {
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        )),
+        Some(3) => Ok(None),
+        _ => Err(Error::Other(format!(
+            "read {} ({}): {}",
+            file.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+    }
+}
+
+/// The env file an install runs under, for a guest whose home is
+/// `guest_home` and whose network is `egress`.
+fn install_env(guest_home: &Path, egress: Egress) -> String {
+    let mut env = format!(
+        "HOME={home}\nPATH=/usr/local/bin:/usr/bin:/bin\nSHELL=/bin/bash\nTERM=dumb\n",
+        home = guest_home.display(),
+    );
+    match egress {
+        Egress::Proxied => env.push_str(&format!(
+            "HTTPS_PROXY={proxy}\nHTTP_PROXY={proxy}\nhttps_proxy={proxy}\nhttp_proxy={proxy}\n\
+             NO_PROXY=127.0.0.1,localhost\nno_proxy=127.0.0.1,localhost\n",
+            proxy = guest::LOOPBACK_PROXY,
+        )),
+        Egress::Direct => {}
+    }
+    env.push_str("GIT_TERMINAL_PROMPT=0\nnpm_config_update_notifier=false\n");
+    env
+}
+
+/// Writes [`install_env`] into the guest; answers its path.
+async fn put_install_env(chan: &Channel, guest_home: &Path, egress: Egress) -> Result<PathBuf> {
+    let env_file = PathBuf::from(guest::ENV_FILE_DIR).join("tools.env");
+    chan.put(install_env(guest_home, egress).as_bytes(), &env_file, 0o600)
+        .await?;
+    Ok(env_file)
+}
+
 async fn install(
     chan: &Channel,
     provider: &str,
@@ -567,16 +672,7 @@ async fn install(
     guest_home: &Path,
     log: &mut impl FnMut(&str),
 ) -> Result<()> {
-    let env_file = PathBuf::from(guest::ENV_FILE_DIR).join("tools.env");
-    let env = format!(
-        "HOME={home}\nPATH=/usr/local/bin:/usr/bin:/bin\nSHELL=/bin/bash\nTERM=dumb\n\
-         HTTPS_PROXY={proxy}\nHTTP_PROXY={proxy}\nhttps_proxy={proxy}\nhttp_proxy={proxy}\n\
-         NO_PROXY=127.0.0.1,localhost\nno_proxy=127.0.0.1,localhost\n\
-         GIT_TERMINAL_PROMPT=0\nnpm_config_update_notifier=false\n",
-        home = guest_home.display(),
-        proxy = guest::LOOPBACK_PROXY,
-    );
-    chan.put(env.as_bytes(), &env_file, 0o600).await?;
+    let env_file = put_install_env(chan, guest_home, Egress::Proxied).await?;
     run_script(
         chan,
         &env_file,
@@ -656,9 +752,10 @@ mod tests {
             let script = install_script(provider).unwrap();
             assert!(script.starts_with("#!/bin/sh"), "{provider}");
             assert!(
-                script.contains(&format!("/data/tools/{provider}")),
-                "{provider}'s script must install under /data/tools/{provider}"
+                script.contains(&format!("PREFIX={INSTALL_ROOT}/{provider}\n")),
+                "{provider}'s script must install under {INSTALL_ROOT}/{provider}"
             );
+            assert!(cli_version_file(provider).starts_with(format!("{INSTALL_ROOT}/{provider}")));
             let bin = bin_path(provider).unwrap();
             assert!(bin.starts_with(&format!("{}/{provider}/bin/", guest::TOOLS_MOUNT)));
             assert!(bin.ends_with(cli_bin(provider).unwrap()));
@@ -668,6 +765,26 @@ mod tests {
         assert_eq!(
             disk_path(Path::new("/d/tools"), "claude", "2.1.0", None),
             PathBuf::from("/d/tools/claude-2.1.0.img")
+        );
+    }
+
+    /// A build box installs through the egress proxy; a guest with a network
+    /// of its own gets no proxy variable at all, and nothing else differs.
+    #[test]
+    fn an_install_is_proxied_only_where_the_guest_has_a_proxy() {
+        let home = Path::new("/Users/u");
+        assert_eq!(
+            install_env(home, Egress::Proxied),
+            "HOME=/Users/u\nPATH=/usr/local/bin:/usr/bin:/bin\nSHELL=/bin/bash\nTERM=dumb\n\
+             HTTPS_PROXY=http://127.0.0.1:8899\nHTTP_PROXY=http://127.0.0.1:8899\n\
+             https_proxy=http://127.0.0.1:8899\nhttp_proxy=http://127.0.0.1:8899\n\
+             NO_PROXY=127.0.0.1,localhost\nno_proxy=127.0.0.1,localhost\n\
+             GIT_TERMINAL_PROMPT=0\nnpm_config_update_notifier=false\n"
+        );
+        assert_eq!(
+            install_env(home, Egress::Direct),
+            "HOME=/Users/u\nPATH=/usr/local/bin:/usr/bin:/bin\nSHELL=/bin/bash\nTERM=dumb\n\
+             GIT_TERMINAL_PROMPT=0\nnpm_config_update_notifier=false\n"
         );
     }
 

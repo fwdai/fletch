@@ -511,6 +511,59 @@ fn sandbox_engine_stamp_round_trips() {
 }
 
 #[test]
+fn cloud_provider_stamp_round_trips() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    seed_repo(&db, "/r2");
+    let wm = WorkspaceManager::new(db.clone());
+
+    // A box whose machine is at a provider: the engine stays `box`, and the
+    // provider comes back on load, in the record and in its JSON.
+    let mut cloud = new_agent_record(
+        "matterhorn".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "t".into(),
+        AgentView::Custom,
+    );
+    cloud.sandbox_engine = Some("box".into());
+    cloud.cloud_provider = Some("fly".into());
+    wm.add_agent(&mut cloud).unwrap();
+    let loaded = wm.agent("matterhorn").unwrap();
+    assert_eq!(loaded.sandbox_engine.as_deref(), Some("box"));
+    assert_eq!(loaded.cloud_provider.as_deref(), Some("fly"));
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap()["cloud_provider"],
+        "fly"
+    );
+    let stored: Option<String> = db
+        .lock()
+        .query_row(
+            "SELECT cloud_provider FROM workspaces WHERE id = 'matterhorn'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("fly"));
+
+    // Every other workspace has none, and says so on the wire.
+    let mut local = new_agent_record(
+        "eiger".into(),
+        "b".into(),
+        "claude".into(),
+        mk_repo("/r2"),
+        "t".into(),
+        AgentView::Custom,
+    );
+    local.sandbox_engine = Some("box".into());
+    wm.add_agent(&mut local).unwrap();
+    let loaded = wm.agent("eiger").unwrap();
+    assert_eq!(loaded.cloud_provider, None);
+    assert!(serde_json::to_value(&loaded).unwrap()["cloud_provider"].is_null());
+}
+
+#[test]
 fn account_stamp_round_trips() {
     let db = test_db();
     seed_repo(&db, "/r");

@@ -13,10 +13,19 @@
 //! machine that cannot boot a box nothing here is reachable: [`availability`]
 //! refuses first, and `engine_for(Box)` asks it.
 //!
+//! A box's machine may also be made at a cloud provider instead of on this
+//! machine ([`cloud`]): the same guest, reached over ssh across the network,
+//! with no runtime, image, tools disk or egress proxy of this machine's. The
+//! workspace's record says which ([`cloud::backing`]); everything the engine
+//! does over the channel is the same.
+//!
 //! Layout:
 //! - [`settings`]: the knobs, mirrored in-process.
 //! - [`registry`]: `BoxRegistry`, one entry per box-stamped agent: boot, stop
 //!   ladder, idle timer, relays, discard.
+//! - [`cloud`]: what only a box whose machine is at a cloud provider does:
+//!   its handle, bringing its machine up, its CLIs, stopping and destroying
+//!   it through the provider.
 //! - [`executor`]: the `RemoteExecutor` the path-routed seam (`crate::exec`)
 //!   dispatches to for a box's writable root.
 //! - [`relay`]: the mailbox and transcript relays over the channel.
@@ -35,7 +44,9 @@
 //! the seam routes remotely): `data.img`, `dirty`, `key`, `key.pub`,
 //! `known_hosts`, `ssh_config`, `ssh.sock`, `ctl.sock`, `egress.sock`,
 //! `console.log`, `mirror.git/`, the provider's sessions mirror
-//! (`claude-projects/`, `codex-sessions/` — [`home`]), `relay/`.
+//! (`claude-projects/`, `codex-sessions/` — [`home`]), `relay/`. A cloud
+//! box's has no `data.img`, `dirty` or sockets, and holds `cloud`, its handle
+//! at the provider ([`cloud::HANDLE_FILE`]).
 //!
 //! **The engine names no provider.** What a CLI keeps outside the checkout —
 //! its config, its login, its transcripts — and how each reaches or leaves
@@ -97,6 +108,7 @@
 //! other phase (`mirror::record_disposal`, `sandbox::disposal_at_stop`).
 
 pub mod allowlist;
+pub mod cloud;
 pub mod egress_log;
 pub mod egress_prompt;
 pub mod executor;
@@ -487,6 +499,8 @@ struct PendingLaunch {
     box_agent_id: String,
     provider: String,
     home: PathBuf,
+    /// How the box's guest reaches the network ([`guest_env`]).
+    egress: fletch_box::guest::Egress,
     /// The launch's credential files, shipped after the env file
     /// ([`home::CredentialSync::launch`]) and kept in step for as long as
     /// the launch lives.
@@ -573,12 +587,24 @@ pub fn supports_provider(provider: &str) -> bool {
 /// its launch of `provider` runs from carries codegraph: the disk attached
 /// now, or for a box that is stopped (or will reattach, see `launch_agent`)
 /// the one its next boot takes. That is the disk the agent's MCP server will
-/// find, so the session is told about codegraph exactly when it is there.
+/// find, so the session is told about codegraph exactly when it is there. A
+/// cloud box has no tools disk, and no codegraph ([`cloud`]).
 pub fn codegraph_bin(agent_id: &str, provider: &str) -> Option<String> {
+    if cloud::box_backing(agent_id).is_some() {
+        return None;
+    }
     let disk = BoxRegistry::global()
         .attached_tools_disk(agent_id, provider)
         .or_else(|| registry::bootable_tools_disk(provider))?;
     fletch_box::tools::carries_codegraph(&disk).then(fletch_box::tools::codegraph_bin_path)
+}
+
+/// The extra time the spawn watchdog gives a launch of `agent_id`, of
+/// `provider`, for what its box may wait on: its machine at a cloud provider
+/// ([`cloud::setup_allowance`]), else this machine's image and tools disk
+/// (`setup::setup_allowance`).
+pub fn setup_allowance(agent_id: &str, provider: &str) -> std::time::Duration {
+    cloud::setup_allowance(agent_id).unwrap_or_else(|| setup::setup_allowance(provider))
 }
 
 /// Whether the box whose writable root holds `path` is running, so work there
@@ -650,17 +676,18 @@ fn identity_of(ctx: &AgentLaunchCtx) -> BoxIdentity {
     .with_shares(ctx.folder_grants)
 }
 
-/// Whether the claude at `agent_bin` on the box's tools disk `disk` parses
-/// `--thinking-display`: remembered per disk file (`agent::file_identity`:
-/// the real path, size and modification time, so a `latest` disk rebuilt in
-/// place is a new one), probed in the guest over the box's ssh channel — the
-/// host's probe and reading (`agent::THINKING_DISPLAY_PROBE_ARGS`), on the
-/// host probe's bounded runner, so a wedged guest can't hold a launch — the
-/// first time a disk is seen. A probe that didn't run or finish is no answer:
-/// nothing is remembered and the next launch asks again.
-fn guest_thinking_summaries(channel: &fletch_box::Channel, disk: &Path, agent_bin: &str) -> bool {
-    let identity = format!("box tools disk {}", crate::agent::file_identity(disk));
-    if let Some(known) = crate::agent::thinking_display_known(&identity) {
+/// Whether the claude at `agent_bin` parses `--thinking-display`, for the
+/// copy of it `cli` names (`RunningBox::cli_identity`: its tools disk file,
+/// by the real path, size and modification time, so a `latest` disk rebuilt
+/// in place is a new one; or a cloud box and the version installed on its
+/// disk): remembered per copy, probed in the guest over the box's ssh
+/// channel — the host's probe and reading
+/// (`agent::THINKING_DISPLAY_PROBE_ARGS`), on the host probe's bounded
+/// runner, so a wedged guest can't hold a launch — the first time a copy is
+/// seen. A probe that didn't run or finish is no answer: nothing is
+/// remembered and the next launch asks again.
+fn guest_thinking_summaries(channel: &fletch_box::Channel, cli: &str, agent_bin: &str) -> bool {
+    if let Some(known) = crate::agent::thinking_display_known(cli) {
         return known;
     }
     // `ssh -F <config> box <words…>`, each word quoted for the guest shell —
@@ -676,7 +703,7 @@ fn guest_thinking_summaries(channel: &fletch_box::Channel, disk: &Path, agent_bi
         return false;
     };
     let supported = crate::agent::probe_shows_thinking_display(&out);
-    crate::agent::remember_thinking_display(&identity, supported);
+    crate::agent::remember_thinking_display(cli, supported);
     supported
 }
 
@@ -1332,7 +1359,12 @@ impl SandboxEngine for BoxEngine {
             block_on(registry.stop(&box_agent_id, StopReason::Reshare))?;
             running = block_on(registry.ensure_running(&identity))?;
         }
-        if running.tools_disk_for(ctx.provider).is_none() {
+        if running.cloud().is_some() {
+            // A cloud box keeps its CLIs on its own disk: one it does not
+            // have yet (a tenant of another provider) or not at the version
+            // this launch runs is installed in place, with no restart.
+            block_on(registry.ensure_cli(&running, ctx.provider))?;
+        } else if running.tools_disk_for(ctx.provider).is_none() {
             // Booted before this provider's disk existed (an older build, a
             // host CLI upgrade since, or a tenant of a provider the box had no
             // disk for): a restart attaches the disk, once it is built — but
@@ -1425,11 +1457,11 @@ impl SandboxEngine for BoxEngine {
             }
         };
         // The claude on the tools disk this box booted with — which may be an
-        // older disk taken while the host's version builds — is the one this
-        // launch runs, so it is the one asked.
-        let claude_thinking_summaries = match running.tools_disk_for(ctx.provider) {
-            Some(disk) if ctx.provider == "claude" => {
-                guest_thinking_summaries(&running.channel, disk, agent_bin)
+        // older disk taken while the host's version builds — or on a cloud
+        // box's disk is the one this launch runs, so it is the one asked.
+        let claude_thinking_summaries = match running.cli_identity(ctx.provider) {
+            Some(cli) if ctx.provider == "claude" => {
+                guest_thinking_summaries(&running.channel, &cli, agent_bin)
             }
             _ => false,
         };
@@ -1495,6 +1527,7 @@ impl SandboxEngine for BoxEngine {
                     box_agent_id,
                     provider: ctx.provider.to_string(),
                     home: ctx.home.to_path_buf(),
+                    egress: running.egress(),
                     credentials,
                 },
             );
@@ -1539,7 +1572,13 @@ impl SandboxEngine for BoxEngine {
                 pending.agent_id
             )));
         }
-        let contents = render_env_file(env, &pending.provider, &pending.home, ENV_DENY)?;
+        let contents = render_env_file(
+            env,
+            &pending.provider,
+            &pending.home,
+            pending.egress,
+            ENV_DENY,
+        )?;
         let files = self
             .files
             .lock()
@@ -1613,17 +1652,18 @@ impl SandboxEngine for BoxEngine {
 
 /// The env file for a launch: the assembled env minus the deny-list, plus what
 /// the guest needs that the host never sets (`HOME` by path identity, the
-/// tools disk on `PATH`, the loopback proxy, a shell). Guest values win over
-/// the host's where both name a key, since a host `PATH` means nothing there.
-/// A value with a newline cannot be a `KEY=VALUE` line and is refused rather
-/// than truncated.
+/// tools disk on `PATH`, the loopback proxy where `egress` goes through it, a
+/// shell). Guest values win over the host's where both name a key, since a
+/// host `PATH` means nothing there. A value with a newline cannot be a
+/// `KEY=VALUE` line and is refused rather than truncated.
 pub fn render_env_file(
     env: &[(String, String)],
     provider: &str,
     home: &Path,
+    egress: fletch_box::guest::Egress,
     deny: &[&str],
 ) -> Result<String> {
-    let guest = guest_env(provider, home);
+    let guest = guest_env(provider, home, egress);
     let guest_keys: Vec<&str> = guest.iter().map(|(k, _)| k.as_str()).collect();
     let mut lines = String::new();
     for (key, value) in env {
@@ -1640,14 +1680,20 @@ pub fn render_env_file(
 
 /// What every process in a guest needs that the host never sets: `HOME` by
 /// path identity, the provider's tools disk on `PATH`, the loopback egress
-/// proxy, a shell and a locale. The env file of an agent launch ends with
-/// these; a shell or a tool run in the guest for the user starts from them.
-pub fn guest_env(provider: &str, home: &Path) -> Vec<(String, String)> {
+/// proxy where the guest's network goes through it (`egress`; a cloud box's
+/// machine has a network of its own and gets none of it), a shell and a
+/// locale. The env file of an agent launch ends with these; a shell or a
+/// tool run in the guest for the user starts from them.
+pub fn guest_env(
+    provider: &str,
+    home: &Path,
+    egress: fletch_box::guest::Egress,
+) -> Vec<(String, String)> {
     let term = std::env::var("TERM")
         .ok()
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| "xterm-256color".to_string());
-    vec![
+    let mut env: Vec<(String, String)> = vec![
         ("HOME".into(), home.to_string_lossy().into_owned()),
         ("USER".into(), fletch_box::guest::USER.into()),
         ("LOGNAME".into(), fletch_box::guest::USER.into()),
@@ -1661,34 +1707,45 @@ pub fn guest_env(provider: &str, home: &Path) -> Vec<(String, String)> {
         ("SHELL".into(), "/bin/bash".into()),
         ("TERM".into(), term),
         ("LANG".into(), "C.UTF-8".into()),
-        (
-            "HTTPS_PROXY".into(),
-            fletch_box::guest::LOOPBACK_PROXY.into(),
-        ),
-        (
-            "HTTP_PROXY".into(),
-            fletch_box::guest::LOOPBACK_PROXY.into(),
-        ),
-        (
-            "https_proxy".into(),
-            fletch_box::guest::LOOPBACK_PROXY.into(),
-        ),
-        (
-            "http_proxy".into(),
-            fletch_box::guest::LOOPBACK_PROXY.into(),
-        ),
-        ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
-        ("no_proxy".into(), "127.0.0.1,localhost".into()),
-        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+    ];
+    match egress {
+        fletch_box::guest::Egress::Proxied => env.extend([
+            (
+                "HTTPS_PROXY".into(),
+                fletch_box::guest::LOOPBACK_PROXY.into(),
+            ),
+            (
+                "HTTP_PROXY".into(),
+                fletch_box::guest::LOOPBACK_PROXY.into(),
+            ),
+            (
+                "https_proxy".into(),
+                fletch_box::guest::LOOPBACK_PROXY.into(),
+            ),
+            (
+                "http_proxy".into(),
+                fletch_box::guest::LOOPBACK_PROXY.into(),
+            ),
+            ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
+            ("no_proxy".into(), "127.0.0.1,localhost".into()),
+        ]),
+        fletch_box::guest::Egress::Direct => {}
+    }
+    env.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
+    match egress {
         // Node's own `fetch` takes the proxy from the env only when told to;
         // a box has no other way out (no DNS in the guest), and corepack —
         // the image's pnpm and yarn — downloads through nothing else.
-        ("NODE_USE_ENV_PROXY".into(), "1".into()),
-        // Corepack's shims ask on a tty before they download the version a
-        // project pins; nothing in a box answers a prompt (the Run panel's
-        // tty least of all), and the image put the shims there to download.
-        ("COREPACK_ENABLE_DOWNLOAD_PROMPT".into(), "0".into()),
-    ]
+        fletch_box::guest::Egress::Proxied => {
+            env.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
+        }
+        fletch_box::guest::Egress::Direct => {}
+    }
+    // Corepack's shims ask on a tty before they download the version a
+    // project pins; nothing in a box answers a prompt (the Run panel's
+    // tty least of all), and the image put the shims there to download.
+    env.push(("COREPACK_ENABLE_DOWNLOAD_PROMPT".into(), "0".into()));
+    env
 }
 
 /// A program to run in the guest that holds `tree`, for the user rather than
@@ -1705,7 +1762,8 @@ pub fn guest_program(
     let Some(identity) = box_holding(tree) else {
         return Ok(None);
     };
-    let channel = BoxRegistry::global().channel_for(&identity.agent_id)?;
+    let running = BoxRegistry::global().running_for(&identity.agent_id)?;
+    let channel = &running.channel;
     let quote = fletch_box::channel::shell_quote;
     let mut remote = vec![
         "cd".to_string(),
@@ -1715,7 +1773,7 @@ pub fn guest_program(
         "env".to_string(),
     ];
     remote.extend(
-        guest_env(&identity.provider, &identity.home)
+        guest_env(&identity.provider, &identity.home, running.egress())
             .iter()
             .map(|(k, v)| quote(&format!("{k}={v}"))),
     );
@@ -1995,6 +2053,16 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
         // Helpers first: a leaked box may still have its VM up.
         registry::sweep_orphans();
         for dir in leaked {
+            // A cloud box is destroyed at its provider first, and its
+            // directory (its handle, its key) kept until that succeeds.
+            if let Err(e) = block_on(cloud::destroy_box(&dir)) {
+                tracing::info!(
+                    box_dir = %dir.display(),
+                    error = %e,
+                    "a cloud box no live agent owns is kept until it can be destroyed"
+                );
+                continue;
+            }
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => {
                     tracing::info!(box_dir = %dir.display(), "removed a box no live agent owns")
@@ -2005,12 +2073,16 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
             }
         }
     });
+    // A cloud box's machine an earlier run left running, it stops; in the
+    // background, since each asks its provider.
+    crate::host::spawn(BoxRegistry::global().stop_stray_machines());
 }
 
 /// Every agent's box directory, by agent id: a box exists once it has a data
-/// disk. That survives a restart, which the registry's entries do not, and a
-/// tenant has none of its own. The root also holds a tools build's throwaway
-/// `tools-…` box, which is no agent's.
+/// disk, or for a cloud box its handle ([`cloud::HANDLE_FILE`]). That
+/// survives a restart, which the registry's entries do not, and a tenant has
+/// none of its own. The root also holds a tools build's throwaway `tools-…`
+/// box, which is no agent's.
 fn boxes_on_disk() -> Vec<(String, PathBuf)> {
     boxes_root().map(|root| boxes_in(&root)).unwrap_or_default()
 }
@@ -2025,8 +2097,8 @@ fn boxes_in(root: &Path) -> Vec<(String, PathBuf)> {
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
             let path = entry.path();
-            (!name.starts_with("tools-") && path.join(registry::DATA_DISK).is_file())
-                .then_some((name, path))
+            let a_box = path.join(registry::DATA_DISK).is_file() || cloud::is_cloud_dir(&path);
+            (!name.starts_with("tools-") && a_box).then_some((name, path))
         })
         .collect()
 }
