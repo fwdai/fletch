@@ -54,7 +54,10 @@ otherwise, and a repository that builds a macOS or iOS app stays in the
 macOS sandbox), and an optional per-session choice made in the composer for a
 new agent (the macOS sandbox or a Linux VM), which stands over the placement
 for that agent alone. There is no global engine setting; off macOS there is
-no seatbelt, so every new agent there is a box. A
+no seatbelt, so every new agent there is a box, and on a machine there that
+cannot boot one, a new agent with no per-session choice gets a box at the
+first connected cloud provider that can run it
+(`sandbox::default_workspace_type`). A
 fork's child is stamped with exactly the engine its parent was stamped with,
 whatever the placement now says, so a parent kept on this Mac never forks into a VM. A
 per-session Linux VM that cannot be had (a runtime that cannot boot, a

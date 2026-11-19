@@ -634,7 +634,9 @@ pub fn asleep_for_path(path: &Path) -> bool {
 /// Off macOS there is no seatbelt, so the box is the only engine: every new
 /// agent is a box, its launch waiting for the image as a box-pinned
 /// project's does (a Host placement means nothing there), and a machine that
-/// cannot boot one refuses the spawn with why ([`availability`]).
+/// cannot boot one refuses the spawn with why ([`availability`]). A spawn
+/// that names no workspace type reaches this choice only when no cloud
+/// provider takes it first (`sandbox::default_workspace_type`).
 ///
 /// On macOS the project's placement decides first — a project that runs on this Mac
 /// (a macOS or iOS app, or the user's say-so) is seatbelt — then a box when
