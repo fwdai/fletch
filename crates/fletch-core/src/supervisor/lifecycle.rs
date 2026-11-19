@@ -440,7 +440,9 @@ pub struct SpawnRequest {
     /// choice and the project's placement (`sandbox::engine_for_spawn`): the
     /// composer's `Host` or `Box`, or a fork's parent's exact engine
     /// (`sandbox::WorkspaceType::stamped`). `None` lets those decide, as
-    /// every other spawn does.
+    /// every other spawn does, after the host's own default
+    /// (`sandbox::default_workspace_type`: a cloud box where the host has no
+    /// sandbox of its own).
     pub workspace_type: Option<sandbox::WorkspaceType>,
 }
 
@@ -509,18 +511,24 @@ impl Supervisor {
         // agent runs where its tree lives (`engine_for_adopted_tree`): in the
         // box that holds it, or never in a box for a host tree. Anyone else
         // gets the session's workspace type when it picked one, else the
-        // automatic choice over the project's placement — read here, before
-        // the lock, since the automatic choice stats the repository and may
-        // run the runtime probe once. A workspace type that cannot be had (a
-        // box on a machine that cannot boot one, say) fails the spawn here,
-        // before anything is written.
+        // host's default for a spawn that names none (a cloud box, on a host
+        // with no sandbox of its own: `sandbox::default_workspace_type`),
+        // else the automatic choice over the project's placement — read here,
+        // before the lock, since the automatic choice stats the repository
+        // and either may run the runtime probe once. A workspace type that
+        // cannot be had (a box on a machine that cannot boot one, say) fails
+        // the spawn here, before anything is written.
         let placement = match &adopted {
             Some(_) => None,
             None => self.project_placement(&req.repo_path),
         };
         let (tree, provider, repo) = (adopted.clone(), req.provider.clone(), req.repo_path.clone());
-        let workspace_type = req.workspace_type;
-        let engine_kind = tokio::task::spawn_blocking(move || {
+        let asked = req.workspace_type;
+        let (engine_kind, workspace_type) = tokio::task::spawn_blocking(move || {
+            let workspace_type = match (&tree, asked) {
+                (None, None) => sandbox::default_workspace_type(&provider),
+                (_, asked) => asked,
+            };
             sandbox::engine_for_spawn(
                 tree.as_deref(),
                 placement.as_deref(),
@@ -528,13 +536,14 @@ impl Supervisor {
                 &provider,
                 workspace_type,
             )
+            .map(|kind| (kind, workspace_type))
         })
         .await
         .map_err(|e| Error::Other(e.to_string()))??;
-        // A box whose machine is at a cloud provider, when the session's
-        // workspace type picked one (an adopted tree runs where it lives,
-        // whatever was asked): stamped below, and given no folder of this
-        // machine, which it could not mount.
+        // A box whose machine is at a cloud provider, when the workspace type
+        // is one (an adopted tree runs where it lives, whatever was asked):
+        // stamped below, and given no folder of this machine, which it could
+        // not mount.
         let cloud_provider = match &adopted {
             Some(_) => None,
             None => workspace_type.and_then(sandbox::WorkspaceType::cloud),

@@ -385,14 +385,17 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // The engine of a new agent is chosen automatically: a box when one can
     // boot, seatbelt otherwise on macOS, and always a box off macOS, where
     // there is no seatbelt (`boxes::engine_for_new_agent`). A host off macOS
-    // that cannot boot one still comes up: it says why here, and every spawn
-    // refuses with the same reason.
+    // that cannot boot one still comes up: it says why here. A new workspace
+    // there gets a box at a connected cloud provider that can take it
+    // (`sandbox::default_workspace_type`); with none, every spawn refuses
+    // with the same reason.
     if !cfg!(target_os = "macos") {
         if let Some(problem) = sandbox::boxes::runtime_refusal() {
             tracing::warn!(
                 problem,
                 "no box can boot on this host, and off macOS the box is the only sandbox: \
-                 agents will not start"
+                 a new workspace gets a machine at a connected cloud provider, and with none \
+                 connected agents will not start"
             );
         }
     }
