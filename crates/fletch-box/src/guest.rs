@@ -44,6 +44,16 @@ pub fn share_tag(n: usize) -> String {
     format!("fletch-share-{n}")
 }
 
+/// A cloud box's guest (`packaging/cloud-image/entrypoint`): the port its
+/// sshd listens on, on every address, and the env name that sets it. The
+/// entrypoint's default is this port (`scripts/check-cloud-image.sh` holds
+/// the two together); the host passes it all the same.
+pub const CLOUD_SSH_PORT: u16 = 2222;
+pub const ENV_SSH_PORT: &str = "FLETCH_BOX_SSH_PORT";
+/// A cloud box's ssh host key, one OpenSSH public key line, written by the
+/// entrypoint before sshd starts; the host reads it through the provider.
+pub const CLOUD_HOST_KEY: &str = "/data/ssh/host_key.pub";
+
 /// Guest paths.
 pub const INIT: &str = "/opt/fletch/init";
 pub const GUEST_AGENT: &str = "/opt/fletch/bin/fletch-guest";
@@ -57,6 +67,18 @@ pub const GID: u32 = 1000;
 
 /// The guest's loopback proxy, for processes that only honour `HTTPS_PROXY`.
 pub const LOOPBACK_PROXY: &str = "http://127.0.0.1:8899";
+
+/// How a guest reaches the network, which decides whether a process there is
+/// pointed at [`LOOPBACK_PROXY`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Egress {
+    /// Through the host's egress proxy, on the guest's loopback: a box on
+    /// this machine, a build box. It has no other way out.
+    Proxied,
+    /// Directly: a cloud box's machine has a network of its own, and no
+    /// proxy.
+    Direct,
+}
 
 /// Block device order: the base image, the data disk, then the tools disks
 /// (one per provider CLI the box carries, the owner's first) and the layer

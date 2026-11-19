@@ -65,13 +65,13 @@ as PID 1 under `docker run`. It reads the environment init reads:
 | `FLETCH_BOX_HOME` | host path of `$HOME`, from `/data/home` (bound first; the others may lie inside it) |
 | `FLETCH_BOX_AUTHORIZED_KEY` | one OpenSSH public key line, written to `/data/ssh/authorized_keys` |
 | `FLETCH_BOX_ID` | optional, shown in log lines |
-| `FLETCH_BOX_SSH_PORT` | optional, sshd's port (2222: a Fly Machine's own sshd holds 22) |
+| `FLETCH_BOX_SSH_PORT` | optional, sshd's port (2222: a Fly Machine's own sshd holds 22; the engine's `guest::CLOUD_SSH_PORT`, which it also passes, and which `scripts/check-cloud-image.sh` holds to this default) |
 
 | Path / port | What |
 | --- | --- |
 | `/data` | the machine's volume: `ws`, `rpc`, `home`, `run` (0700) and `tools` owned by `agent`, `ssh` root's |
 | the three host paths | bind mounts of `/data/ws`, `/data/rpc`, `/data/home`, each resolving to itself; the directories between a path and its first component belong to `agent`. The root is writable, so they are made in it, with no tmpfs over the first component; init's refusals hold (a path under `/bin`, `/etc`, `/usr`, … or with one component) |
-| `/opt/fletch/tools` | `/data/tools` bound read-only, as a tools disk is mounted: the host installs each provider's CLI into `/data/tools/<provider>` over ssh (the layout a tools disk has, `crates/fletch-box/tools/<provider>.sh`), and a launch finds it at `/opt/fletch/tools/<provider>/bin`. A bind, not a link, since a confined launch has `/data` covered |
+| `/opt/fletch/tools` | `/data/tools` bound read-only, as a tools disk is mounted: the host installs each provider's CLI into `/data/tools/<provider>` over ssh (the layout a tools disk has, `crates/fletch-box/tools/<provider>.sh`, run with no proxy by `fletch_box::tools::install_cli`, which records the version in `/data/tools/<provider>/.fletch-version`), and a launch finds it at `/opt/fletch/tools/<provider>/bin`. A bind, not a link, since a confined launch has `/data` covered |
 | `/data/ssh/host_key` | the ssh host key, made once; the host reads `host_key.pub` (one OpenSSH public key line) through the provider's exec and pins it (`HostKey::from_public_key`) |
 | port 2222 | `sshd -D -e -f /etc/ssh/sshd_config.fletch`, on every address, IPv4 and IPv6; key only, `agent` only |
 
@@ -142,8 +142,22 @@ decide what the image holds. A change to any of them is another tag, which
 the registry does not have and so gets; `test.sh`, `publish.sh` and this
 README leave it alone, and a new box image VERSION is a new tag by itself.
 `scripts/check-cloud-image.sh`, run by CI, holds the fingerprint to exactly
-that. What pins an image by its tag is changed with the inputs, in the same
-pull request, as the app's box image pin is with the box image.
+that.
+
+The app runs the image of its own pins: `PinnedImage::cloud_image()`
+(`crates/fletch-box/src/image_store`), `<CLOUD_REPOSITORY>:<VERSION>-<CLOUD_FINGERPRINT>`.
+A change to the inputs moves `PinnedImage::CLOUD_FINGERPRINT` in the same
+pull request, as a box image change moves `PinnedImage::VERSION`;
+`scripts/check-cloud-image.sh` fails CI when the pin is not the fingerprint
+`inputs.sh` prints, and when the entrypoint's default sshd port is not the
+engine's `guest::CLOUD_SSH_PORT`. Until main's Box image workflow has pushed
+the tag, a new cloud box of a build with that pin cannot pull its image.
+
+To run cloud boxes on an image of one's own (a private registry, a tag not
+pushed yet), set `FLETCH_CLOUD_IMAGE` to the whole image reference in the
+app's environment (`FLETCH_CLOUD_IMAGE=registry.example/me/fletch-cloud:dev`):
+new machines, and machines replaced on their disk, run it instead of the pin.
+A machine that exists keeps the image it was made with.
 
 ghcr makes a new package private. A provider pulls the image without
 credentials only once the package is public (its settings on GitHub, once).
