@@ -114,6 +114,10 @@ const SSH_FIRST_PACE: Duration = Duration::from_millis(250);
 const SSH_PACE: Duration = Duration::from_secs(3);
 /// The `sync` a stop asks of the guest before the provider stops it.
 const SYNC_BOUND: Duration = Duration::from_secs(5);
+/// How long a stop with no bound of its own waits for CLI records still being
+/// written: a sync of what an install wrote takes seconds, and a guest that
+/// stopped answering must not keep its machine running.
+const RECORD_BOUND: Duration = Duration::from_secs(60);
 /// How long a kill waits for the provider to confirm the stop; the request
 /// is made whatever comes of the wait.
 const KILL_BOUND: Duration = Duration::from_secs(10);
@@ -713,19 +717,16 @@ impl CloudMachine {
     /// Wait for the CLI records still being made ([`Self::record_in_background`])
     /// to finish, for a clean stop, so the machine keeps each version it
     /// recorded. With a `bound` they get what of it the stop's own sync does
-    /// not take; one still unfinished then races the machine going down, and
-    /// writes its marker only if its sync finishes first.
+    /// not take, and with none [`RECORD_BOUND`]; one still unfinished then
+    /// races the machine going down, and writes its marker only if its sync
+    /// finishes first.
     async fn finish_records(&self, bound: Option<Duration>) {
         let records = std::mem::take(&mut *self.records.lock());
-        let deadline = bound.map(|bound| Instant::now() + bound.saturating_sub(SYNC_BOUND));
+        let wait = bound.map_or(RECORD_BOUND, |bound| bound.saturating_sub(SYNC_BOUND));
+        let deadline = Instant::now() + wait;
         for record in records {
-            let finished = match deadline {
-                Some(deadline) => {
-                    let left = deadline.saturating_duration_since(Instant::now());
-                    tokio::time::timeout(left, record).await.is_ok()
-                }
-                None => record.await.is_ok(),
-            };
+            let left = deadline.saturating_duration_since(Instant::now());
+            let finished = tokio::time::timeout(left, record).await.is_ok();
             if !finished {
                 tracing::debug!(
                     agent_id = self.agent_id,
