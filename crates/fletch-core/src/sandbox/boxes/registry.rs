@@ -165,10 +165,12 @@ impl BoxPhase {
     }
 }
 
-/// Why a box is being stopped; decides whether the mirror is refreshed first.
+/// Why a box is being stopped; decides whether the mirror is refreshed first,
+/// and whether a cloud box's machine is stopped or parked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason {
-    /// No launch attached for `box_idle_stop_minutes`.
+    /// No launch attached for `box_idle_stop_minutes`. The only stop that
+    /// parks a cloud box's machine (`CloudMachine::halt`).
     Idle,
     /// `box_stop` from the UI.
     User,
@@ -263,8 +265,9 @@ pub struct RunningBox {
 /// does with a box goes over its [`Channel`], whatever the machine.
 enum Machine {
     Local(Box<LocalVm>),
-    /// A machine at a cloud provider (`cloud`), stopped through the
-    /// provider. Its network is its own; it holds no disk of this machine's.
+    /// A machine at a cloud provider (`cloud`), stopped or parked through
+    /// the provider. Its network is its own; it holds no disk of this
+    /// machine's.
     Cloud(Box<CloudMachine>),
     #[cfg(test)]
     Fake(tests::FakeMachine),
@@ -283,12 +286,18 @@ struct LocalVm {
 
 impl Machine {
     /// End the machine cleanly if it can be ([`stop_ladder`]; a cloud
-    /// machine's provider stop, `CloudMachine::halt`); with a `bound`, the
-    /// clean attempts together get that long before it is killed.
-    async fn halt(&self, channel: &Channel, bound: Option<Duration>) -> StopOutcome {
+    /// machine's provider stop, or its park for a stop of `reason`
+    /// [`StopReason::Idle`], `CloudMachine::halt`); with a `bound`, the clean
+    /// attempts together get that long before it is killed.
+    async fn halt(
+        &self,
+        channel: &Channel,
+        reason: StopReason,
+        bound: Option<Duration>,
+    ) -> StopOutcome {
         match self {
             Self::Local(local) => stop_ladder(&local.vm, channel, bound).await,
-            Self::Cloud(cloud) => cloud.halt(channel, bound).await,
+            Self::Cloud(cloud) => cloud.halt(channel, reason, bound).await,
             #[cfg(test)]
             Self::Fake(fake) => fake.halt(bound),
         }
@@ -2035,7 +2044,10 @@ impl BoxRegistry {
                 }
             }
             let outcome = self
-                .finish_stop(&running, running.machine.halt(&running.channel, bound))
+                .finish_stop(
+                    &running,
+                    running.machine.halt(&running.channel, reason, bound),
+                )
                 .await;
             // Not on app exit: nothing may start work that outlives the app.
             if outcome.clean() && reason != StopReason::Shutdown && running.machine.leaves_a_disk()
@@ -3471,6 +3483,41 @@ mod tests {
         cloud_box(&registry, &fake, root.path(), id).await;
         fake.shape(Shape::MachineGone);
         let outcome = registry.stop(id, StopReason::Shutdown).await.unwrap();
+        assert_eq!(outcome, StopOutcome::Killed, "unconfirmed: not clean");
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
+    }
+
+    /// The idle stop parks a cloud box's machine, and every other stop stops
+    /// it; a park the provider could not carry out is not a clean stop.
+    #[tokio::test]
+    async fn an_idle_cloud_box_is_parked_and_any_other_stop_stops_it() {
+        use crate::cloud::fake::{FakeCloud, Shape};
+        let registry = test_registry();
+        let root = tempfile::tempdir().unwrap();
+
+        let fake = FakeCloud::start().await;
+        let id = "cloud-idle";
+        cloud_box(&registry, &fake, root.path(), id).await;
+        let outcome = registry.stop(id, StopReason::Idle).await.unwrap();
+        assert_eq!(outcome, StopOutcome::Control);
+        assert_eq!(fake.acts(), ["create", "exec", "park"]);
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
+        assert!(registry.running(id).is_none());
+
+        for reason in [StopReason::User, StopReason::Reattach, StopReason::Reshare] {
+            let fake = FakeCloud::start().await;
+            let id = format!("cloud-{reason:?}");
+            cloud_box(&registry, &fake, root.path(), &id).await;
+            let outcome = registry.stop(&id, reason).await.unwrap();
+            assert_eq!(outcome, StopOutcome::Control, "{reason:?}");
+            assert_eq!(fake.acts(), ["create", "exec", "stop"], "{reason:?}");
+        }
+
+        let fake = FakeCloud::start().await;
+        let id = "cloud-idle-lost";
+        cloud_box(&registry, &fake, root.path(), id).await;
+        fake.shape(Shape::MachineGone);
+        let outcome = registry.stop(id, StopReason::Idle).await.unwrap();
         assert_eq!(outcome, StopOutcome::Killed, "unconfirmed: not clean");
         assert_eq!(registry.state(id), BoxPhase::Stopped);
     }

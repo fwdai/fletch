@@ -37,9 +37,13 @@
 //!   is not installed in a cloud box (its bundle is per-architecture and
 //!   built for local boxes), so a cloud box offers none (`codegraph_bin`).
 //! - **A stop** syncs the guest's disks over the channel, then has the
-//!   provider stop the machine ([`CloudMachine::halt`]); a stop that fails
-//!   leaves a machine that may be running and billed, and says so in the log
-//!   with its handle.
+//!   provider stop the machine ([`CloudMachine::halt`]). A box stopped for
+//!   being idle has its machine parked instead ([`Client::park`]): at rest
+//!   in whichever state the provider wakes it from soonest, everything on it
+//!   kept, and woken by the next boot as a stopped one is; whether the guest
+//!   then resumed or started afresh is the provider's, and nothing here
+//!   depends on it. A stop or park that fails leaves a machine that may be
+//!   running and billed, and says so in the log with its handle.
 //! - **A discard** destroys the box at the provider before its directory
 //!   goes (`registry`), and keeps the directory when it cannot: the handle
 //!   and the key are the only way back to it. At startup a directory no live
@@ -66,7 +70,7 @@ use crate::cloud::{self, Client, Endpoint, Handle, MachineSpec, MachineState, Pr
 use crate::error::{Error, Result};
 use crate::roadmap::Db;
 
-use super::registry::{BoxIdentity, BoxPhase, BoxRegistry};
+use super::registry::{BoxIdentity, BoxPhase, BoxRegistry, StopReason};
 use super::settings;
 
 /// The file in a cloud box's directory holding its [`Handle`].
@@ -284,6 +288,7 @@ pub async fn machine_up(
             client.clone(),
             handle.clone(),
             spec.name.clone(),
+            false,
         ));
         return Err(e);
     }
@@ -406,22 +411,29 @@ pub(super) fn route(endpoint: &Endpoint) -> Result<Route<'_>> {
     .map_err(|e| Error::Other(e.to_string()))
 }
 
-/// The provider's stop of `handle`'s machine, in a task of its own: the
-/// request is made whatever the caller's wait comes to. `true` once the
-/// provider confirmed it; a failure is logged, since the machine may still
-/// be running and billed.
+/// The provider's stop of `handle`'s machine, or its park when `park`, in a
+/// task of its own: the request is made whatever the caller's wait comes
+/// to. `true` once the provider confirmed it; a failure is logged, since the
+/// machine may still be running and billed.
 fn stop_in_background(
     client: Arc<Client>,
     handle: Handle,
     agent_id: String,
+    park: bool,
 ) -> tokio::task::JoinHandle<bool> {
     crate::host::spawn(async move {
-        match client.stop(&handle).await {
+        let stopped = if park {
+            client.park(&handle).await
+        } else {
+            client.stop(&handle).await
+        };
+        match stopped {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!(
                     agent_id,
                     handle = %handle,
+                    park,
                     error = %e,
                     "a cloud machine's stop failed; it may still be running and billed"
                 );
@@ -462,10 +474,17 @@ impl CloudMachine {
     }
 
     /// Stop the machine cleanly: the guest's disks synced over `channel`,
-    /// then the provider's stop. With a `bound`, the two together get that
-    /// long; the stop request is made whatever comes of the wait, and an
-    /// unconfirmed stop is not a clean one.
-    pub(super) async fn halt(&self, channel: &Channel, bound: Option<Duration>) -> StopOutcome {
+    /// then the provider's stop, or for a box stopped for being idle
+    /// ([`StopReason::Idle`]) its park, so that it wakes the soonest when it
+    /// is wanted again. With a `bound`, the two together get that long; the
+    /// request is made whatever comes of the wait, and an unconfirmed stop
+    /// or park is not a clean one.
+    pub(super) async fn halt(
+        &self,
+        channel: &Channel,
+        reason: StopReason,
+        bound: Option<Duration>,
+    ) -> StopOutcome {
         let started = Instant::now();
         let sync = bound.map_or(SYNC_BOUND, |bound| bound.min(SYNC_BOUND));
         let synced = tokio::time::timeout(sync, channel.exec(None, None, &["sync"])).await;
@@ -475,23 +494,28 @@ impl CloudMachine {
                 "the cloud box's disks were not synced before its stop"
             );
         }
-        self.stop(bound.map(|bound| bound.saturating_sub(started.elapsed())))
-            .await
+        let park = reason == StopReason::Idle;
+        self.stop(
+            bound.map(|bound| bound.saturating_sub(started.elapsed())),
+            park,
+        )
+        .await
     }
 
     /// Stop the machine without asking its guest, waiting a short while for
     /// the provider to confirm it.
     pub(super) async fn kill(&self) -> StopOutcome {
-        self.stop(Some(KILL_BOUND)).await
+        self.stop(Some(KILL_BOUND), false).await
     }
 
     /// Have the provider stop the machine, waiting for nothing.
     pub(super) fn abort(&self) {
-        drop(self.send());
+        drop(self.send(false));
     }
 
-    async fn stop(&self, bound: Option<Duration>) -> StopOutcome {
-        let stopping = self.send();
+    /// Have the provider stop the machine, or park it when `park`.
+    async fn stop(&self, bound: Option<Duration>, park: bool) -> StopOutcome {
+        let stopping = self.send(park);
         let confirmed = match bound {
             Some(bound) => tokio::time::timeout(bound, stopping).await.ok(),
             None => Some(stopping.await),
@@ -503,6 +527,7 @@ impl CloudMachine {
                 tracing::warn!(
                     agent_id = self.agent_id,
                     handle = %self.handle,
+                    park,
                     "the provider did not confirm a cloud machine's stop in time; it may still be \
                      running and billed"
                 );
@@ -511,11 +536,12 @@ impl CloudMachine {
         }
     }
 
-    fn send(&self) -> tokio::task::JoinHandle<bool> {
+    fn send(&self, park: bool) -> tokio::task::JoinHandle<bool> {
         stop_in_background(
             self.client.clone(),
             self.handle.clone(),
             self.agent_id.clone(),
+            park,
         )
     }
 
