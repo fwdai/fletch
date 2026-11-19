@@ -575,6 +575,12 @@ pub fn cli_version_file(provider: &str) -> PathBuf {
 /// cloud box), and records the version there ([`cli_version_file`]) once the
 /// install succeeded. The same script a tools disk is built with, run as the
 /// guest user with `guest_home` as its home; `log` sees its output lines.
+///
+/// Returns once the version is recorded. The guest's disks are synced after
+/// it in the background, not waited for: a sync of everything an install
+/// wrote takes seconds, the running guest reads it all back from its page
+/// cache meanwhile, and a stop of the machine syncs again before it goes
+/// down. Needs a Tokio runtime context.
 pub async fn install_cli(
     chan: &Channel,
     provider: &str,
@@ -601,7 +607,20 @@ pub async fn install_cli(
     .await?;
     chan.put(version.as_bytes(), &cli_version_file(provider), 0o644)
         .await?;
-    chan.exec(None, None, &["sync"]).await?;
+    let chan = chan.clone();
+    tokio::spawn(async move {
+        match chan.exec(None, None, &["sync"]).await {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => tracing::debug!(
+                status = %out.status,
+                "the guest's disks were not synced after a CLI install"
+            ),
+            Err(e) => tracing::debug!(
+                error = %e,
+                "the guest's disks were not synced after a CLI install"
+            ),
+        }
+    });
     Ok(())
 }
 
