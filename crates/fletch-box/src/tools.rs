@@ -565,17 +565,42 @@ async fn build_in(
 const INSTALL_ROOT: &str = "/data/tools";
 
 /// The file recording which version of `provider`'s CLI a guest installed for
-/// itself ([`install_cli`]), beside the CLI.
+/// itself ([`record_cli_version`]), beside the CLI. Its presence promises the
+/// CLI's files are on the guest's disk, not only in its page cache.
 pub fn cli_version_file(provider: &str) -> PathBuf {
     PathBuf::from(format!("{INSTALL_ROOT}/{provider}/.fletch-version"))
 }
 
+/// What [`record_cli_version`] runs in the guest, with the version file and
+/// the version as `$1` and `$2`: the guest's disks synced, and only once
+/// that succeeded, the version written.
+const RECORD_SCRIPT: &str = r#"sync && printf '%s' "$2" > "$1" && chmod 644 "$1""#;
+
 /// Installs `provider`'s CLI at `version` in the guest `chan` reaches, for a
 /// guest that keeps its CLIs on its own disk rather than on a tools disk (a
-/// cloud box), and records the version there ([`cli_version_file`]) once the
-/// install succeeded. The same script a tools disk is built with, run as the
+/// cloud box), and records it there once its files are on the disk: the
+/// install ([`run_cli_install`]), then the record ([`record_cli_version`]),
+/// both awaited. The same script a tools disk is built with, run as the
 /// guest user with `guest_home` as its home; `log` sees its output lines.
 pub async fn install_cli(
+    chan: &Channel,
+    provider: &str,
+    version: &str,
+    guest_home: &Path,
+    egress: Egress,
+    log: impl FnMut(&str),
+) -> Result<()> {
+    run_cli_install(chan, provider, version, guest_home, egress, log).await?;
+    record_cli_version(chan, provider, version).await
+}
+
+/// The first half of [`install_cli`]: `provider`'s CLI at `version` installed
+/// in the guest `chan` reaches and usable there, with no version recorded.
+/// Any version recorded before goes first, since the files it vouched for
+/// are about to change. Whoever runs this records the version once the files
+/// are on the disk ([`record_cli_version`]), or leaves the next boot to
+/// install it again.
+pub async fn run_cli_install(
     chan: &Channel,
     provider: &str,
     version: &str,
@@ -588,6 +613,18 @@ pub async fn install_cli(
     if !valid_version(version) {
         return Err(Error::Other(format!("bad version {version:?}")));
     }
+    let marker = cli_version_file(provider);
+    let withdrawn = chan
+        .exec(None, None, &["rm", "-f", "--", &marker.to_string_lossy()])
+        .await?;
+    if !withdrawn.status.success() {
+        return Err(Error::Other(format!(
+            "remove {} ({}): {}",
+            marker.display(),
+            withdrawn.status,
+            String::from_utf8_lossy(&withdrawn.stderr).trim()
+        )));
+    }
     let env_file = put_install_env(chan, guest_home, egress).await?;
     run_script(
         chan,
@@ -598,15 +635,45 @@ pub async fn install_cli(
         &format!("{provider}@{version}"),
         &mut log,
     )
-    .await?;
-    chan.put(version.as_bytes(), &cli_version_file(provider), 0o644)
+    .await
+}
+
+/// The second half of [`install_cli`]: the guest's disks synced, so the files
+/// [`run_cli_install`] wrote are on them, and only then `version` recorded
+/// for `provider` ([`cli_version_file`]). A sync that fails records nothing.
+/// The sync takes as long as the guest has to flush, seconds after an
+/// install.
+pub async fn record_cli_version(chan: &Channel, provider: &str, version: &str) -> Result<()> {
+    if !valid_version(version) {
+        return Err(Error::Other(format!("bad version {version:?}")));
+    }
+    let marker = cli_version_file(provider);
+    let out = chan
+        .exec(
+            None,
+            None,
+            &[
+                "sh",
+                "-c",
+                RECORD_SCRIPT,
+                "sh",
+                &marker.to_string_lossy(),
+                version,
+            ],
+        )
         .await?;
-    chan.exec(None, None, &["sync"]).await?;
+    if !out.status.success() {
+        return Err(Error::Other(format!(
+            "sync the guest's disks and record {provider} {version} ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
     Ok(())
 }
 
-/// The version [`install_cli`] recorded for `provider` in the guest `chan`
-/// reaches; `None` when it recorded none.
+/// The version [`record_cli_version`] recorded for `provider` in the guest
+/// `chan` reaches; `None` when it recorded none.
 pub async fn installed_cli_version(chan: &Channel, provider: &str) -> Result<Option<String>> {
     let file = cli_version_file(provider);
     let out = chan
@@ -786,6 +853,49 @@ mod tests {
             "HOME=/Users/u\nPATH=/usr/local/bin:/usr/bin:/bin\nSHELL=/bin/bash\nTERM=dumb\n\
              GIT_TERMINAL_PROMPT=0\nnpm_config_update_notifier=false\n"
         );
+    }
+
+    /// A version is recorded only once the guest's disks are synced: the
+    /// record's guest command, run here by `sh` as the guest runs it, with a
+    /// `sync` of the test's own that fails and then succeeds.
+    #[test]
+    fn a_cli_version_is_recorded_only_after_a_sync_that_succeeded() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let marker = dir.path().join(".fletch-version");
+        let record = |sync_exit: i32| {
+            let sync = bin.join("sync");
+            std::fs::write(&sync, format!("#!/bin/sh\nexit {sync_exit}\n")).unwrap();
+            std::fs::set_permissions(&sync, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::process::Command::new("/bin/sh")
+                .args(["-c", RECORD_SCRIPT, "sh"])
+                .arg(&marker)
+                .arg("2.1.0")
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .status()
+                .unwrap()
+        };
+
+        assert!(!record(1).success());
+        assert!(!marker.exists(), "a failed sync records nothing");
+
+        assert!(record(0).success());
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "2.1.0");
+        let mode = std::fs::metadata(&marker).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644);
+    }
+
+    /// A guest that cannot be reached has nothing recorded, and says so.
+    #[tokio::test]
+    async fn a_record_that_cannot_reach_its_guest_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let unreachable = Channel::open(dir.path());
+        let err = record_cli_version(&unreachable, "claude", "2.1.0")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("record claude 2.1.0"), "{err}");
     }
 
     /// `parse_disk_name` reads back what `disk_path` wrote, for that provider

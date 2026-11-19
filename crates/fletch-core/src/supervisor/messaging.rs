@@ -19,16 +19,18 @@ use super::{transition_active, Supervisor};
 impl Supervisor {
     /// Route a user message by the provider's injection mode and the agent's
     /// current state (see `message_queue::decide_delivery`):
+    /// - at rest, no process → queue for the revive below to deliver,
     /// - idle, queue empty  → deliver now as a new turn (the original path),
     /// - idle, queue full    → flush the leftovers + this message, coalesced,
     /// - busy, claude live    → inject into the running turn over stdin,
     /// - busy, per-turn / tool-gated → queue for the next turn boundary.
     ///
     /// Returns `true` when the message is *held* for a later turn boundary
-    /// rather than delivered now — a busy enqueue, or a flush whose delivery
-    /// failed and re-queued it (raced with teardown/respawn). The frontend uses
-    /// this to badge the optimistic bubble as "queued" only while it genuinely
-    /// is; any variant that actually delivers returns `false`.
+    /// rather than delivered now — a busy enqueue, a message for a session at
+    /// rest, or a flush whose delivery failed and re-queued it (raced with
+    /// teardown/respawn). The frontend uses this to badge the optimistic
+    /// bubble as "queued" only while it genuinely is; any variant that
+    /// actually delivers returns `false`.
     ///
     /// Async because a turn delivered now is checkpointed first (see
     /// `deliver_as_turn`), and a send that arrives meanwhile waits for that
@@ -181,6 +183,28 @@ impl Supervisor {
             text.to_string(),
         );
 
+        // No process to take the message and none coming up: it is held for
+        // the revive `send_user_message` starts, whose process delivers it as
+        // it comes up (`drain_message_queue`), after the turn's checkpoint. A
+        // delivery tried here could only fail for want of the process, and
+        // only after a checkpoint of its own, whose git in a box agent's
+        // checkout boots a stopped box first.
+        if !busy && self.needs_revive(agent_id) {
+            // A stop from before this message is moot once it is accepted, as
+            // at any turn's start (`mark_user_turn_started`); one made while
+            // the session comes back still holds it.
+            self.interrupted.lock().remove(agent_id);
+            // Its row, as a delivery writes it: a client that reads the
+            // history meanwhile, or after a revive that fails, still has it.
+            if let Err(e) =
+                self.workspace
+                    .insert_user_turn(agent_id, &msg.turn_id, &msg.text, &msg.attachments)
+            {
+                tracing::warn!(error = %e, agent_id, "persist outgoing user turn failed");
+            }
+            self.persist_and_enqueue(agent_id, msg);
+            return Ok(true);
+        }
         let delivery = decide_delivery(busy, mode, live_closed, queue_nonempty);
         // Whether the message is genuinely held for a later boundary. A path
         // that delivers now returns `false`; a still-busy `Enqueue` returns
@@ -199,9 +223,9 @@ impl Supervisor {
                     // the (already-persisted) turn: the respawn's post-restart
                     // flush, or this flush once the restart lands, delivers it
                     // onto the fresh process — which is the intent, since the
-                    // message then runs under the new config (CQ3-C). If there
-                    // was no teardown to race and simply no process at all, the
-                    // revive below is what picks the message up. The same
+                    // message then runs under the new config (CQ3-C). A process
+                    // that went for good meanwhile leaves the message to the
+                    // revive below, as one that was never there does. The same
                     // re-queue holds a message whose turn start was refused
                     // because the agent went busy outside the delivery lock
                     // while it was checkpointed (see `deliver_as_turn`).
@@ -1388,6 +1412,73 @@ mod tests {
         assert_eq!(last.1, None, "{said:?}");
     }
 
+    /// A message to a session at rest, with no process to take it, is held for
+    /// the revive it asks for and nothing more: no checkpoint (whose git, in a
+    /// box agent's checkout, would boot the stopped box first) and no delivery
+    /// that could only fail, so its turn never flaps Running and back.
+    #[tokio::test]
+    async fn a_message_to_a_session_at_rest_is_held_for_its_revive_untried() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkout) = idle_agent_in(td.path()).await;
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+
+        let held = sup
+            .clone()
+            .send_user_message(&ctx, "yosemite", TURN, "hello", &[])
+            .await
+            .unwrap();
+
+        assert!(held);
+        assert_eq!(sup.message_queue.lock().turn_ids("yosemite"), [TURN]);
+        assert_eq!(checkpoint::resolve(&checkout, TURN).await.unwrap(), None);
+        let said = statuses_said(&sink);
+        assert!(
+            said.iter().all(|(status, _)| status != "running"),
+            "{said:?}"
+        );
+    }
+
+    /// The rest of that path, for a session whose box the user stopped
+    /// mid-turn (`rest_sessions`, which leaves that turn's stop for the next
+    /// one to clear): once the revived process is up, the held message is
+    /// checkpointed and delivered, there and only there.
+    #[tokio::test]
+    async fn a_held_message_is_checkpointed_and_delivered_once_its_revived_process_is_up() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkout) = idle_agent_in(td.path()).await;
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        ctx.set_supervisor(sup.clone());
+        mark_user_turn_started(&sup, &ctx, "yosemite", None);
+        sup.rest_sessions(&ctx, &["yosemite".to_string()]);
+
+        let held = sup
+            .clone()
+            .send_user_message(&ctx, "yosemite", TURN, "hello", &[])
+            .await
+            .unwrap();
+        assert!(held);
+        // This session has nothing to resume, so the revive the send started
+        // fails at once and closes the turn; its launch is played here.
+        assert!(turn_closed(&sup).await);
+        let launch = sup.begin_launch(&ctx, "yosemite");
+        live_process(&sup, td.path());
+        assert!(sup.settle_launch(&ctx, &launch, AgentStatus::Idle, None));
+        drain_message_queue(&sup, &ctx, "yosemite");
+
+        for _ in 0..200 {
+            if sup.live_status("yosemite") == Some(AgentStatus::Running) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(sup.live_status("yosemite"), Some(AgentStatus::Running));
+        assert!(sup.message_queue.lock().is_empty("yosemite"));
+        assert!(checkpoint::resolve(&checkout, TURN)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
     // ── turn outcomes ─────────────────────────────────────────────────────
 
     /// `yosemite`'s first turn, persisted and running, as a delivery leaves it.
@@ -1477,8 +1568,9 @@ mod tests {
         assert_eq!(outcomes(&sup), [Some("failed".to_string())]);
     }
 
-    /// A send whose hand-off fails is held for a retry, not given up on: its
-    /// row stays without an outcome, and a later turn end doesn't close it.
+    /// A message held for a later delivery (here, one sent to a session at
+    /// rest; as well, one whose hand-off failed) is not given up on: its row
+    /// stays without an outcome, and a later turn end doesn't close it.
     #[tokio::test]
     async fn a_requeued_delivery_has_no_outcome() {
         let td = tempfile::tempdir().unwrap();
@@ -1583,8 +1675,9 @@ mod tests {
     }
 
     /// Two sends racing into an idle agent are routed in send order: the second
-    /// waits out the first's checkpoint and queues behind it. (With no process
-    /// both end up held; their order is what this checks.)
+    /// waits out the first's routing and queues behind it. (With no process
+    /// both are held for the revive, which checkpoints the turn they make;
+    /// their order is what this checks.)
     #[tokio::test]
     async fn concurrent_sends_reach_the_agent_in_send_order() {
         let td = tempfile::tempdir().unwrap();
@@ -1606,10 +1699,7 @@ mod tests {
             .unwrap();
         assert_eq!(held.text, "first\n\nsecond");
         assert_eq!(held.turn_id, SECOND);
-        assert!(checkpoint::resolve(&checkout, FIRST)
-            .await
-            .unwrap()
-            .is_some());
+        assert_eq!(checkpoint::resolve(&checkout, FIRST).await.unwrap(), None);
     }
 
     /// The delivery lock orders the turns Fletch starts, not one the user
