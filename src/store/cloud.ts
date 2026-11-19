@@ -16,7 +16,9 @@ export interface CloudSlice {
    *  token goes to the backend and is held nowhere here. An empty `account`
    *  is the provider's default. */
   connectCloud: (provider: CloudProviderId, token: string, account: string) => Promise<void>;
-  /** Forget the provider's token. Its machines stay where they are. */
+  /** Delete the provider's spare machines, then forget its token. Rejects
+   *  with the refusal to show, the list unchanged, while a spare could not be
+   *  deleted. The machines of workspaces there stay where they are. */
   disconnectCloud: (provider: CloudProviderId) => Promise<void>;
   /** How many spare machines each connected provider keeps, as stored on
    *  this Mac, `""` for the engine's default; `null` until the first read. */
