@@ -13,6 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { holdView } from "@/util/stickToBottom";
 import { useTranscriptHost } from "./host";
 import type { ViewItem } from "./pair";
 import { REVEAL_MIN_QUERY, searchText } from "./steps";
@@ -42,14 +43,16 @@ export function useRevealedText(text: string | undefined): boolean {
 /** Open state for a disclosure: starts open under a ⌥-opened ancestor, and
  *  `toggle` reads ⌥ off the click to open (or close) everything below.
  *  `reveal` opens it without motion, for a jump that has to land on a row
- *  inside at its final place. */
+ *  inside at its final place. A toggle is the user reading here: the log
+ *  stops following its bottom, so the row they clicked stays under the
+ *  pointer. */
 export function useDisclosure(): {
   open: boolean;
   deep: boolean;
   instant: boolean;
   setOpen: (open: boolean) => void;
   reveal: () => void;
-  toggle: (e: { altKey: boolean }) => void;
+  toggle: (e: { altKey: boolean; currentTarget: Element }) => void;
 } {
   const parentDeep = useContext(DeepOpen);
   const [open, setOpen] = useState(parentDeep);
@@ -65,6 +68,7 @@ export function useDisclosure(): {
       setOpen(true);
     },
     toggle: (e) => {
+      holdView(e.currentTarget);
       setInstant(false);
       setDeep(e.altKey && !open);
       setOpen(!open);

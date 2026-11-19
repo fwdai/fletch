@@ -1,5 +1,6 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { useDismiss } from "@/util/hooks";
+import { scrollToRow } from "@/util/stickToBottom";
 
 /** One navigable turn: `id` matches the `data-chat-turn` attribute on the
  *  rendered user bubble; `text` is the prompt preview shown in the outline. */
@@ -78,7 +79,7 @@ export function ChatNav({
     (id: number) => {
       const target = scrollRef.current?.querySelector<HTMLElement>(`[data-chat-turn="${id}"]`);
       if (!target) return;
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      scrollToRow(target, { behavior: "smooth", block: "start" });
       setActiveId(id);
       setOpen(false);
     },

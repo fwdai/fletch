@@ -63,10 +63,12 @@
   min-width: 0;
 }
 /* The activity is one word and is never the part cut short: a notice beside
-   it gives way first. */
+   it gives way first. It shimmers in the strip's own ink, so between sweeps
+   it reads at the clock's and the count's weight. */
 .chat-status-label {
   flex-shrink: 0;
   white-space: nowrap;
+  --shimmer-ink: var(--fg-2);
 }
 .chat-status-note {
   min-width: 0;
@@ -313,7 +315,7 @@
     --chat-pad: 24px;
   }
   .composer-wrap {
-    padding: 0 24px 16px;
+    --composer-pad-x: 24px;
   }
 }
 @media (max-width: 900px) {
@@ -321,7 +323,7 @@
     --chat-pad: 16px;
   }
   .composer-wrap {
-    padding: 0 16px 14px;
+    --composer-pad-x: 16px;
   }
 }
 

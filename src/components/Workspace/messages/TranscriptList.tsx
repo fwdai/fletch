@@ -1,9 +1,10 @@
-// The scrolling transcript itself: bottom-pinning and the turn navigator around
-// one agent's rows (TranscriptRows). Shared by the custom view's ChatView (which
-// stacks a composer under it) and the native view's rail (which sits beside the
-// terminal).
-import { type MutableRefObject, useEffect, useRef } from "react";
+// The scrolling transcript itself: a log that follows its bottom and the turn
+// navigator around one agent's rows (TranscriptRows). Shared by the custom
+// view's ChatView (which stacks a composer under it) and the native view's rail
+// (which sits beside the terminal).
+import { type MutableRefObject, useRef } from "react";
 import type { AgentRecord } from "@/api";
+import { useStickToBottom } from "@/util/stickToBottom";
 import { ChatNav } from "../ChatNav";
 import { RevealQuery } from "./Disclosure";
 import { TranscriptRows } from "./TranscriptRows";
@@ -19,9 +20,9 @@ interface Props {
   /** Lifted so a parent can wire find-in-conversation to the same container.
    *  Omit and the list owns its own ref. */
   scrollRef?: MutableRefObject<HTMLDivElement | null>;
-  /** Lifted bottom-pin flag, so a parent that sends a message can re-pin the
-   *  log to the bottom the way an in-list scroll would. */
-  pinRef?: MutableRefObject<boolean>;
+  /** Filled with the log's "go to the bottom and follow", for a parent that
+   *  sends a message while the user is scrolled up. */
+  toBottomRef?: MutableRefObject<() => void>;
   /** Suppress the turn navigator — while find-in-conversation is open (it owns
    *  that corner), or in the native rail, which is too narrow for it. */
   hideNav?: boolean;
@@ -36,49 +37,21 @@ export function TranscriptList({
   liveBusy,
   pending,
   scrollRef,
-  pinRef,
+  toBottomRef,
   hideNav,
   revealQuery = "",
 }: Props) {
-  const { turns, transcriptLoading, log } = transcript;
-
   const ownRef = useRef<HTMLDivElement | null>(null);
   const ref = scrollRef ?? ownRef;
 
-  // Whether the log is "pinned" to the bottom. While true we follow new
-  // messages; once the user scrolls up we stop auto-scrolling and leave their
-  // position alone until they scroll back down to the bottom.
-  const ownPin = useRef(true);
-  const pinnedToBottom = pinRef ?? ownPin;
-
-  // Re-pin whenever we switch agents, so each conversation opens at its latest.
-  useEffect(() => {
-    pinnedToBottom.current = true;
-  }, [agent.id, pinnedToBottom]);
-
-  const handleScroll = () => {
-    const el = ref.current;
-    if (!el) return;
-    // Allow a small slop so the user counts as "at the bottom" even a few
-    // pixels short — sub-pixel rounding otherwise makes exact equality flaky.
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    pinnedToBottom.current = distanceFromBottom <= 40;
-  };
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `log` is the change
-  // signal rather than a value the body reads — new content arriving is exactly
-  // when a bottom-pinned log has to follow.
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (transcriptLoading) return;
-    if (!pinnedToBottom.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [log, transcriptLoading, ref, pinnedToBottom]);
+  // Each conversation opens at its latest: the content column is keyed by the
+  // agent, and the same key starts the follow over.
+  const toBottom = useStickToBottom(ref, agent.id);
+  if (toBottomRef) toBottomRef.current = toBottom;
 
   return (
     <div className="chat-scroll-wrap">
-      <div className="chat-scroll" ref={ref} onScroll={handleScroll}>
+      <div className="chat-scroll" ref={ref}>
         <div className="chat-inner fade-in" key={agent.id}>
           <RevealQuery.Provider value={revealQuery.trim().toLowerCase()}>
             <TranscriptRows
@@ -90,7 +63,7 @@ export function TranscriptList({
           </RevealQuery.Provider>
         </div>
       </div>
-      {!hideNav && <ChatNav scrollRef={ref} turns={turns} />}
+      {!hideNav && <ChatNav scrollRef={ref} turns={transcript.turns} />}
     </div>
   );
 }

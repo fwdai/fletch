@@ -48,8 +48,8 @@ export interface WorkingNotice {
  *  host's start of the turn, which is the moment the message was accepted;
  *  it joins the line when the host has said so (at once, but for a host from
  *  before open turns, which only says when the agent starts running). The
- *  composer's own control already shows a run in progress, so the line is the
- *  datum, not a second spinner. */
+ *  label shimmers with the same sweep as a working agent's name in the
+ *  sidebar, so the line reads as live rather than as a static caption. */
 export function ChatWorkingStatus({
   visible,
   label,
@@ -70,7 +70,7 @@ export function ChatWorkingStatus({
     <div className={`chat-status${open ? " is-open" : ""}`} role="status" aria-live="polite">
       <Icon name="clock" size={11} className="turn-clock-i" />
       <span className="chat-status-line">
-        <span className="chat-status-label">{label}</span>
+        <span className="chat-status-label shimmer">{label}</span>
         {startedAt != null && (
           <>
             <span className="chat-status-sep">·</span>

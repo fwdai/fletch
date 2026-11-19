@@ -54,7 +54,7 @@ export function ChatPane({
   const liveBusy = useLiveBusy(agent, awaitingInput);
 
   // Owned here so sending re-pins the log to the bottom, as in the main chat.
-  const pinnedToBottom = useRef(true);
+  const toBottom = useRef(() => {});
 
   // Quiet inline anchor for a just-sent first prompt with nothing back yet;
   // later turns have content above and the status strip below to carry it.
@@ -90,7 +90,7 @@ export function ChatPane({
           transcript={transcript}
           liveBusy={liveBusy}
           pending={pending}
-          pinRef={pinnedToBottom}
+          toBottomRef={toBottom}
           hideNav
         />
       </TokenChipContext.Provider>
@@ -105,7 +105,7 @@ export function ChatPane({
           />
         }
         onSend={(text) => {
-          pinnedToBottom.current = true;
+          toBottom.current();
           void send(agent.id, text);
         }}
       />

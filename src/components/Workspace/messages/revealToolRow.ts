@@ -11,17 +11,16 @@
 type Frame = (cb: () => void) => number;
 
 export function revealToolRow(
-  root: () => { scrollIntoView: (opts: ScrollIntoViewOptions) => void } | null,
+  scroll: () => void,
   open: () => void,
   done: () => void,
   raf: Frame = (cb) => requestAnimationFrame(cb),
   caf: (id: number) => void = (id) => cancelAnimationFrame(id),
 ): () => void {
   open();
-  // Next frame: the transcript's own bottom-pin effect runs after this one
-  // (parent effects follow children's) and would otherwise win the scroll.
+  // Next frame: the row has to render open before it is centred.
   const frame = raf(() => {
-    root()?.scrollIntoView({ block: "center" });
+    scroll();
     done();
   });
   return () => caf(frame);

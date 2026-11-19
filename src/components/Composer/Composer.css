@@ -1,7 +1,9 @@
 /* composer */
+/* Its sides are `--composer-pad-x`, so a screen that loads before this file
+   (Chat.css, which matches them to the transcript's) can still narrow them. */
 .composer-wrap {
   flex-shrink: 0;
-  padding: 0 20px 20px;
+  padding: 0 var(--composer-pad-x, 20px) 10px;
   display: flex;
   justify-content: center;
   background: var(--bg-1);

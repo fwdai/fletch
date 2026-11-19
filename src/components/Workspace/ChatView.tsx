@@ -19,8 +19,8 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const turnStartedAt = useAppStore((s) => s.turnStartedAt[agent.id]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  // Owned here so sending a message can re-pin the log to the bottom.
-  const pinnedToBottom = useRef(true);
+  // Sending a message takes the log back to its bottom.
+  const toBottom = useRef(() => {});
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -99,7 +99,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         liveBusy={liveBusy}
         pending={turnPending}
         scrollRef={scrollRef}
-        pinRef={pinnedToBottom}
+        toBottomRef={toBottom}
         hideNav={searchOpen}
         revealQuery={searchOpen ? searchQuery : ""}
       />
@@ -110,9 +110,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         activeModel={activeModel}
         liveBusy={liveBusy}
         liveStartedAt={liveStartedAt}
-        onSend={() => {
-          pinnedToBottom.current = true;
-        }}
+        onSend={() => toBottom.current()}
       />
     </div>
   );
