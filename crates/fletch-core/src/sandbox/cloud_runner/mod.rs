@@ -50,9 +50,10 @@
 //! **The runner's service is always ended cleanly before its machine goes
 //! down on purpose**: [`stop`] has its start script end `fletch-host` (whose
 //! own shutdown stops its workspaces' machines) and syncs the disk before the
-//! provider stops the machine, and falls back to the provider's stop alone,
-//! logged, only when the guest cannot be reached or the service does not end
-//! in time. The stop and start inside [`create`] comes before the service
+//! provider stops the machine, whatever state the machine is in short of at
+//! rest or gone, and falls back to the provider's stop alone, logged, only
+//! when the guest cannot be reached or the service does not end in time.
+//! The stop and start inside [`create`] comes before the service
 //! ever ran, and [`delete`] takes the disk with the machine. And while the
 //! runner is at a provider, that provider is not disconnected on this
 //! machine ([`check_disconnect`]): the connection is the only way to manage
@@ -377,14 +378,16 @@ pub async fn start(db: &DbState) -> Result<()> {
     start_in(&dir()?, |p| client_for(db, p)).await
 }
 
-/// Stop the runner's machine and wait until it has stopped. A running
-/// runner's service is ended cleanly first, over ssh (`setup::end_service`):
-/// its start script is told to stop, `fletch-host` shuts down as it does on
-/// a TERM (stopping its workspaces' machines), and the disk is synced; only
-/// then is the provider asked to stop the machine. A guest that cannot be
-/// reached, or a service that does not end in time, does not keep the
-/// machine running: it is stopped all the same, and that is logged. Its
-/// provider leaves it stopped until [`start`].
+/// Stop the runner's machine and wait until it has stopped. Unless the
+/// machine is seen at rest (stopped, or gone), the runner's service is ended
+/// cleanly first, over ssh (`setup::end_service`): its start script is told
+/// to stop, `fletch-host` shuts down as it does on a TERM (stopping its
+/// workspaces' machines), and the disk is synced; only then is the provider
+/// asked to stop the machine. A guest that cannot be reached, or a service
+/// that does not end in time, does not keep the machine running: it is
+/// stopped all the same, and that is logged. A machine that never finishes
+/// starting is stopped once the wait to reach it runs out. Its provider
+/// leaves it stopped until [`start`].
 pub async fn stop(db: &DbState) -> Result<()> {
     let _under_way = UnderWay::begin(Change::Other)?;
     let dir = dir()?;
@@ -407,9 +410,11 @@ pub fn check_disconnect(provider: ProviderId) -> Result<()> {
 }
 
 /// Delete the runner: first it destroys, at their provider, every machine it
-/// made, its spares and its workspaces' boxes, and makes no spare after
-/// (started for that if it is stopped), then its own machine and disk go,
-/// history, logins and pairings with them, and the directory.
+/// made, its spares and its workspaces' boxes, under a hold that refuses any
+/// new one and, once all are gone, stands for the rest of its process
+/// (`destroy_cloud_boxes`; started for that if it is stopped), then its own
+/// machine and disk go, history, logins and pairings with them, and the
+/// directory.
 /// When the runner cannot be reached (its disk lost, a machine that will not
 /// start) or could not destroy them all, it is refused unless `force`, and
 /// with `force` [`Deleted::warning`] says what may remain.
@@ -548,10 +553,13 @@ async fn start_in(dir: &Path, client_for: impl Fn(ProviderId) -> Result<Client>)
     Ok(())
 }
 
-/// [`stop`] for the runner in `dir`: a running machine's service is ended
-/// first by `end_service` (`setup::end_service`; a test's stand-in), and the
-/// provider's stop follows whatever came of it, a failure logged. A machine
-/// that is not running has nothing to end: the provider's stop is all.
+/// [`stop`] for the runner in `dir`: the machine's service is ended first by
+/// `end_service` (`setup::end_service`; a test's stand-in), and the
+/// provider's stop follows whatever came of it, a failure logged. Only a
+/// machine seen at rest (stopped, or gone in any way) has no service to end
+/// and is only asked of the provider; any other, starting or stopping or
+/// failed among them, may be running its service a moment later, so the end
+/// is attempted.
 async fn stop_in<E, Fut>(
     dir: &Path,
     client_for: impl Fn(ProviderId) -> Result<Client>,
@@ -563,7 +571,14 @@ where
 {
     let handle = boxes_cloud::read_handle(dir)?.ok_or_else(no_runner)?;
     let client = client_for(handle.provider())?;
-    if client.state(&handle).await? == MachineState::Running {
+    let at_rest = matches!(
+        client.state(&handle).await?,
+        MachineState::Stopped
+            | MachineState::MachineGone
+            | MachineState::DiskGone
+            | MachineState::Gone
+    );
+    if !at_rest {
         if let Err(e) = end_service(handle.clone()).await {
             tracing::warn!(
                 handle = %handle,

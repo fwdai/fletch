@@ -499,10 +499,36 @@ async fn a_service_that_cannot_be_ended_does_not_keep_the_machine_running() {
     );
 }
 
-/// A machine that is not running has no service to end: the provider alone
-/// is asked, and a stopped one is left as it is.
+/// A machine reported starting may be running its service a moment later:
+/// the service's end is attempted before the provider stops it.
 #[tokio::test]
-async fn a_runner_that_is_not_running_is_only_asked_of_the_provider() {
+async fn a_starting_runner_has_its_service_ended_before_its_machine_stops() {
+    let fake = FakeCloud::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let dir = runner_dir(&root);
+    made(&fake, &dir).await;
+    fake.shape(Shape::Starting);
+    let attempted = Mutex::new(false);
+
+    stop_in(
+        &dir,
+        |_| Ok(fake.client()),
+        |_| {
+            *attempted.lock() = true;
+            assert!(!fake.acts().contains(&"stop"), "before the provider's stop");
+            async { Ok(()) }
+        },
+    )
+    .await
+    .unwrap();
+    assert!(*attempted.lock(), "the end was attempted");
+    assert_eq!(fake.acts(), ["create", "exec", "stop"]);
+}
+
+/// A machine seen at rest has no service to end: the provider alone is
+/// asked, and a stopped one is left as it is.
+#[tokio::test]
+async fn a_runner_at_rest_is_only_asked_of_the_provider() {
     let fake = FakeCloud::start().await;
     let root = tempfile::tempdir().unwrap();
     let dir = runner_dir(&root);
