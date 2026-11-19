@@ -18,10 +18,11 @@
 //!   supervisor launches in a box and is signed in to installed on its disk
 //!   (`CloudMachine::ensure_cli`), then the machine parked
 //!   (`CloudMachine::halt` for an idle stop); the marker is written once the
-//!   provider confirmed the park and the ssh master is closed. The installs
-//!   run with a home outside the guest's disk ([`PREPARE_HOME`]), so the
-//!   guest's home and checkout directories hold nothing of them. A
-//!   preparation that fails destroys what it made and removes its directory.
+//!   provider confirmed the park and the ssh master is closed, and only while
+//!   the provider is still connected. The installs run with a home outside
+//!   the guest's disk ([`PREPARE_HOME`]), so the guest's home and checkout
+//!   directories hold nothing of them. A preparation that fails destroys what
+//!   it made and removes its directory.
 //! - **Fresh or stale**: a spare is fresh while its marker equals what a box
 //!   made now would get: the provider, the image, the size, and each CLI at
 //!   the version a launch installs. A stale spare, and a directory left with
@@ -43,9 +44,17 @@
 //!   is destroyed then like any box's: nothing returns to the spares.
 //! - **How many** is a setting (`settings::cloud_spares`), per connected
 //!   provider. [`replenish`] brings each connected provider's spares to it,
-//!   one run at a time; it runs at startup, after a take, and when the
-//!   setting changes, and a failure waits for the next of those.
-//!   [`destroy_all`] destroys every spare, of one provider or all.
+//!   one run at a time. It runs at startup, when a provider is connected
+//!   (`commands::cloud_connect_impl`), at the first boot of every new cloud
+//!   box whether or not it took a spare, and when the setting changes; a
+//!   failure waits for the next of those, the next new box at the latest.
+//! - **Disconnecting a provider** (`commands::cloud_disconnect_impl`)
+//!   destroys its spares first ([`destroy_all`]) and forgets its token only
+//!   once they are all gone: a spare is billed while it exists, and a
+//!   provider that is not connected has no client to destroy it with. While
+//!   one cannot be destroyed the disconnect is refused, and the spare's
+//!   directory kept for the next try. The boxes of workspaces at the provider
+//!   are not touched.
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -209,22 +218,34 @@ fn vacant(dir: &Path) -> bool {
 /// Give the box whose directory is `box_dir`, at `provider`, a ready spare
 /// with the machine a box made now gets, if there is one and nothing was
 /// made for the box yet: the spare's directory becomes the box's. Otherwise
-/// the box is made directly. Either way, where there were spares, a
-/// replenish follows in the background: the taken one's replacement, or the
-/// replacements of spares made for what boxes are no longer made with.
-/// Nothing here waits on a provider, a guest or a login probe.
+/// the box is made directly. Either way a new box asks for a replenish in
+/// the background ([`take_then`]). Nothing here waits on a provider, a guest
+/// or a login probe.
 pub(super) fn take(provider: ProviderId, box_dir: &Path) {
+    take_then(
+        root(),
+        box_dir,
+        &Build::now(provider, &[]),
+        replenish_in_background,
+    );
+}
+
+/// [`take`] from the spares in `root`, of a spare with `build`'s machine,
+/// then `replenish` for a box nothing was made for yet, whether or not a
+/// spare was there: the taken one's replacement, the first spares of an empty
+/// root, or those of a preparation that failed. Whether one was taken.
+fn take_then(
+    root: Result<PathBuf>,
+    box_dir: &Path,
+    build: &Build,
+    replenish: impl FnOnce(),
+) -> bool {
     if !vacant(box_dir) {
-        return;
+        return false;
     }
-    let Ok(root) = root() else {
-        return;
-    };
-    if found_in(&root).is_empty() {
-        return;
-    }
-    take_in(&root, box_dir, &Build::now(provider, &[]));
-    replenish_in_background();
+    let taken = root.is_ok_and(|root| take_in(&root, box_dir, build));
+    replenish();
+    taken
 }
 
 /// [`take`] from `root`, of a ready spare with `build`'s machine
@@ -302,14 +323,24 @@ impl Guest for Ssh {
 
 /// Prepare one spare of `build` in `root`, at its provider through a client
 /// from `client_for`, its guest worked through `guest`; answers its
-/// directory. A failure destroys what was made and removes the directory,
-/// which is kept only when the destroy fails.
+/// directory. The marker is written only while `client_for` still has a
+/// client for the provider: a provider disconnected meanwhile has had its
+/// spares destroyed, and this one, not yet among them, goes too. A failure
+/// destroys what was made, through the client it was made with, and removes
+/// the directory, which is kept only when the destroy fails.
 async fn prepare(
     root: &Path,
     build: &Build,
     client_for: &(impl Fn(ProviderId) -> Result<Client> + Sync),
     guest: &impl Guest,
 ) -> Result<PathBuf> {
+    let provider = build.provider().ok_or_else(|| {
+        Error::Other(format!(
+            "no cloud provider \"{}\" in this build",
+            build.provider
+        ))
+    })?;
+    let client = Arc::new(client_for(provider)?);
     let id = format!(
         "{ID_PREFIX}{}",
         &uuid::Uuid::new_v4().simple().to_string()[..12]
@@ -317,19 +348,25 @@ async fn prepare(
     let dir = root.join(&id);
     std::fs::create_dir_all(&dir)?;
     let made = async {
-        let provider = build.provider().ok_or_else(|| {
+        make(&dir, &id, client.clone(), build, guest).await?;
+        client_for(provider).map_err(|e| {
             Error::Other(format!(
-                "no cloud provider \"{}\" in this build",
-                build.provider
+                "{} was disconnected while a spare was made there: {e}",
+                provider.label()
             ))
         })?;
-        make(&dir, &id, Arc::new(client_for(provider)?), build, guest).await
+        write_ready(&dir, build)
     }
     .await;
     let Err(e) = made else {
         return Ok(dir);
     };
-    match cloud::destroy_box_with(&dir, client_for).await {
+    let destroyed = match cloud::read_handle(&dir) {
+        Ok(Some(handle)) => client.destroy(&handle).await,
+        Ok(None) => Ok(()),
+        Err(e) => Err(e),
+    };
+    match destroyed {
         Ok(()) => {
             if let Err(removed) = tokio::fs::remove_dir_all(&dir).await {
                 tracing::warn!(spare = %dir.display(), error = %removed, "a failed spare's directory stayed");
@@ -346,7 +383,7 @@ async fn prepare(
 }
 
 /// [`prepare`]'s work in `dir`, for the placeholder `id`: the box brought up,
-/// each CLI installed, the machine parked, the marker written.
+/// each CLI installed, the machine parked and the ssh master closed.
 async fn make(
     dir: &Path,
     id: &str,
@@ -373,8 +410,7 @@ async fn make(
     if let Err(e) = channel.close_master().await {
         tracing::debug!(spare = id, error = %e, "ending a spare's ssh master failed");
     }
-    filled?;
-    write_ready(dir, build)
+    filled
 }
 
 /// Take the spare in `dir` out of the spares, so no taker picks it from here
@@ -524,8 +560,10 @@ async fn replenish_with(
 }
 
 /// Destroy every spare of `provider`, or of every provider, at its provider,
-/// and remove its directory. A spare that cannot be destroyed keeps its
-/// directory and makes this an error, once every other was tried.
+/// and remove its directory: what disconnecting a provider does first
+/// (`commands::cloud_disconnect_impl`). A spare that cannot be destroyed
+/// keeps its directory, so a later call finds it again, and makes this an
+/// error, once every other was tried.
 pub async fn destroy_all(provider: Option<ProviderId>) -> Result<()> {
     destroy_all_in(&root()?, provider, &cloud::client).await
 }
@@ -533,7 +571,7 @@ pub async fn destroy_all(provider: Option<ProviderId>) -> Result<()> {
 /// [`destroy_all`] in `root`, with clients from `client_for`. A directory
 /// with no handle belongs to no provider: it goes when every provider's
 /// spares go, and is left alone when one provider's do.
-async fn destroy_all_in(
+pub(crate) async fn destroy_all_in(
     root: &Path,
     provider: Option<ProviderId>,
     client_for: &(impl Fn(ProviderId) -> Result<Client> + Sync),
