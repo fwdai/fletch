@@ -299,8 +299,9 @@ argument or an environment variable. The host checks it with the provider
 before storing anything, so a wrong token or account fails (exit 1) and leaves
 what was stored before; it then prints `connected <provider> (<account>)` and
 what the provider bills. `--account` defaults to the provider's own default.
-`cloud disconnect` forgets the token: machines made with it stay at the
-provider, and their workspaces do not start until it is connected again.
+`cloud disconnect` destroys the provider's spare machines (below) and forgets
+the token: workspaces' machines made with it stay at the provider, and their
+workspaces do not start until it is connected again.
 
 With a provider connected and no box possible on this machine, a new workspace
 whose spawn names no workspace type — every spawn from a paired phone — gets a
@@ -311,6 +312,11 @@ own, and macOS keeps `sandbox-exec`, whatever is connected. The host reaches
 the machines with its own `/usr/bin/ssh`, `/usr/bin/ssh-keygen` and
 `/usr/bin/openssl`, and an agent still signs in with the host user's login for
 its CLI (see "Log in to the provider CLIs first").
+
+`cloud connect` and `cloud disconnect` are the desktop's own: a connect makes
+the provider's spare machines in the background (how many is the box
+setting), and a disconnect destroys them first, refusing while one cannot be
+destroyed.
 
 ## Pair a phone
 

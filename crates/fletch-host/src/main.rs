@@ -257,8 +257,10 @@ enum CloudCommand {
         #[arg(long)]
         account: Option<String>,
     },
-    /// Forget a provider's token. Machines made with it stay at the provider,
-    /// and their workspaces do not start until it is connected again.
+    /// Destroy a provider's spare machines, then forget its token (refused
+    /// while a spare cannot be destroyed). Workspaces' machines made with it
+    /// stay at the provider, and their workspaces do not start until it is
+    /// connected again.
     Disconnect {
         /// The provider, as `cloud status` lists it.
         provider: String,

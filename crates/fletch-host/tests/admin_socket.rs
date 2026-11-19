@@ -189,6 +189,46 @@ async fn the_cloud_ops_check_what_they_are_given(data_dir: &std::path::Path) {
         Ok(json!(null)),
         "disconnecting what is not connected is nothing to refuse"
     );
+
+    // A disconnect is the desktop's (`commands::cloud_disconnect_impl`): the
+    // provider's spares go first, and while one cannot be destroyed — here a
+    // spare whose handle does not read — the disconnect is refused, its
+    // directory kept for the next try.
+    let spares = fletch_core::sandbox::boxes::spares::root().expect("a spares root");
+    assert!(
+        spares.starts_with(data_dir),
+        "this host's spares are its own: {}",
+        spares.display()
+    );
+    let damaged = spares.join("spare-0123456789ab");
+    std::fs::create_dir_all(&damaged).unwrap();
+    std::fs::write(
+        damaged.join(fletch_core::sandbox::boxes::cloud::HANDLE_FILE),
+        "not a handle\n",
+    )
+    .unwrap();
+    let refusal = admin::call(
+        data_dir,
+        "cloud_disconnect",
+        json!({ "provider": provider.as_str() }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refusal.contains("still connected") && refusal.contains("spare"),
+        "{refusal}"
+    );
+    assert!(damaged.is_dir(), "kept for the next try");
+    std::fs::remove_dir_all(&damaged).unwrap();
+    assert_eq!(
+        admin::call(
+            data_dir,
+            "cloud_disconnect",
+            json!({ "provider": provider.as_str() })
+        )
+        .await,
+        Ok(json!(null))
+    );
 }
 
 /// A CLI that never answers `--version` — a broken install, or a custom binary
