@@ -163,35 +163,45 @@ impl Admin {
             // ── Cloud providers (`fletch_core::cloud`) ─────────────────────
             // The account a workspace's machine is made in where this host
             // cannot boot a box (`sandbox::default_workspace_type`). The
-            // desktop's `cloud_*` commands, never on the remote wire: the
-            // token is the whole account. It arrives in `cloud_connect`'s
-            // arguments, which the socket does not log, and the engine
-            // stores it without ever putting it in an answer or an error.
+            // desktop's `cloud_*` commands, through the same engine halves
+            // (`commands::cloud_connect_impl`, `cloud_disconnect_impl`), never
+            // on the remote wire: the token is the whole account. It arrives
+            // in `cloud_connect`'s arguments, which the socket does not log,
+            // and the engine stores it without ever putting it in an answer
+            // or an error. A connect then makes the provider's spare machines
+            // in the background; a disconnect destroys them first, and is
+            // refused while one cannot be destroyed.
             "cloud_status" => {
                 value(&cloud::statuses(&engine.db.lock()).map_err(|e| e.to_string())?)
             }
             "cloud_connect" => {
                 let args: CloudConnectArgs = parse(args)?;
                 let provider = cloud_provider(&args.provider)?;
-                let status =
-                    cloud::connect(&engine.db, provider, &args.token, args.account.as_deref())
-                        .await
-                        .map_err(|e| e.to_string())?;
+                let status = commands::cloud_connect_impl(
+                    &engine.db,
+                    provider,
+                    &args.token,
+                    args.account.as_deref(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
                 value(&status)
             }
             "cloud_disconnect" => {
                 let args: CloudArgs = parse(args)?;
-                cloud::disconnect(&engine.db.lock(), cloud_provider(&args.provider)?)
+                commands::cloud_disconnect_impl(&engine.db, cloud_provider(&args.provider)?)
+                    .await
                     .map_err(|e| e.to_string())?;
                 Ok(Value::Null)
             }
-            // Every workspace's machine this host made at a provider,
-            // destroyed there, with which went and which did not
-            // (`{ destroyed: [<agent id>], failed: [{ agentId, error }] }`).
-            // What the engine that made this host on a provider machine (a
-            // runner) asks first when it deletes it with its disk, so that
-            // nothing the runner made is left at the provider with no record
-            // of it (`fletch_core::cloud_runner::delete`).
+            // Every machine this host made at a provider, its spares and its
+            // workspaces' boxes, destroyed there, with which went and which
+            // did not (`{ destroyed: [<id>], failed: [{ agentId, error }] }`);
+            // from then on it makes no spare. What the engine that made this
+            // host on a provider machine (a runner) asks first when it
+            // deletes it with its disk, so that nothing the runner made is
+            // left at the provider with no record of it
+            // (`fletch_core::cloud_runner::delete`).
             "destroy_cloud_boxes" => value(&sandbox::boxes::destroy_cloud_boxes().await),
             _ => Err(UNKNOWN_OP.to_string()),
         }

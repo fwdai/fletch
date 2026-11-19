@@ -4,8 +4,10 @@
 //! A host that cannot boot a box gives a new workspace a machine at a
 //! connected provider (`sandbox::default_workspace_type`), so an operator with
 //! no window needs what the desktop's Settings › Cloud pane gives: the same
-//! three engine calls (`cloud::statuses`, `connect`, `disconnect`), over the
-//! admin socket (`ops`). Every word about a provider — its id, its name, where
+//! three engine calls (`cloud::statuses`, `commands::cloud_connect_impl`,
+//! `commands::cloud_disconnect_impl`: spares made after a connect, destroyed
+//! before a disconnect), over the admin socket (`ops`). Every word about a
+//! provider — its id, its name, where
 //! to get a token, what it bills — is the host's answer, so nothing here names
 //! one.
 //!
