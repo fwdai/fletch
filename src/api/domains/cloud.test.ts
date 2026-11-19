@@ -28,3 +28,39 @@ describe("cloudConnect", () => {
     });
   });
 });
+
+// The runner's commands take what `src-tauri/src/commands/cloud.rs` names:
+// the create's inputs as one object, in the engine's camelCase.
+describe("the runner's commands", () => {
+  beforeEach(() => rawInvoke.mockReset().mockResolvedValue(null));
+
+  it("sends the provider and the inputs to create", async () => {
+    const inputs = {
+      devicePublicKey: "device-key",
+      deviceName: "Studio",
+      devicePlatform: "macos",
+      claudeToken: "sk-ant-oat01-secret",
+      name: null,
+    };
+    await cloudApi.cloudRunnerCreate("fly", inputs);
+    expect(rawInvoke).toHaveBeenCalledWith("cloud_runner_create", { provider: "fly", inputs });
+  });
+
+  it("sends whether a delete is forced, and no preset for a full pairing", async () => {
+    await cloudApi.cloudRunnerDelete(true);
+    expect(rawInvoke).toHaveBeenCalledWith("cloud_runner_delete", { force: true });
+    await cloudApi.cloudRunnerPairingLink();
+    expect(rawInvoke).toHaveBeenCalledWith("cloud_runner_pairing_link", { preset: null });
+  });
+
+  it("asks for the status, a start and a stop with nothing else", async () => {
+    await cloudApi.cloudRunnerStatus();
+    await cloudApi.cloudRunnerStart();
+    await cloudApi.cloudRunnerStop();
+    expect(rawInvoke.mock.calls).toEqual([
+      ["cloud_runner_status", undefined],
+      ["cloud_runner_start", undefined],
+      ["cloud_runner_stop", undefined],
+    ]);
+  });
+});

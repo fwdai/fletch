@@ -1,5 +1,20 @@
-import type { CloudProviderId, CloudProviderStatus } from "@/api";
+import type {
+  CloudProviderId,
+  CloudProviderStatus,
+  CloudRunnerDeleted,
+  CloudRunnerProgress,
+  CloudRunnerRecord,
+  CloudRunnerStatus,
+} from "@/api";
+import { thisDevice } from "@/remote/device";
 import type { SliceCreator } from "./types";
+
+/** A runner create this window started and that has not finished: the
+ *  provider it is at, and the steps the engine has reported, in order. */
+export interface CloudRunnerCreate {
+  provider: CloudProviderId;
+  steps: CloudRunnerProgress[];
+}
 
 export interface CloudSlice {
   /** The cloud providers on this Mac, one per provider the backend knows, and
@@ -8,6 +23,13 @@ export interface CloudSlice {
    *  `cloud_*` op is on the wire, so it is not a host key — whatever offers a
    *  workspace in the cloud reads the answer Settings › Cloud writes. */
   cloudProviders: CloudProviderStatus[] | null;
+  /** This install's runner, as `cloud_runner_status` last answered. `null`
+   *  until the first read. This Mac's, like `cloudProviders`. */
+  cloudRunner: CloudRunnerStatus | null;
+  /** The runner create under way from this window, if one is. Here rather
+   *  than in the pane so its steps, and the GitHub code among them, outlive
+   *  the pane. */
+  cloudRunnerCreate: CloudRunnerCreate | null;
 
   /** Re-read `cloudProviders`. Rejects with the reason, keeping the last list. */
   refreshCloudProviders: () => Promise<void>;
@@ -18,6 +40,26 @@ export interface CloudSlice {
   connectCloud: (provider: CloudProviderId, token: string, account: string) => Promise<void>;
   /** Forget the provider's token. Its machines stay where they are. */
   disconnectCloud: (provider: CloudProviderId) => Promise<void>;
+
+  /** Re-read `cloudRunner`. Rejects with the reason, keeping the last answer. */
+  refreshCloudRunner: () => Promise<void>;
+  /** Create the runner at `provider`, authorising this device on it, and
+   *  resolve with its record; `cloudRunnerCreate` holds the steps meanwhile.
+   *  Rejects with the engine's reason, which has undone what it made. The
+   *  Claude token goes to the backend and is held nowhere here. A blank
+   *  `name` is the engine's default. */
+  createCloudRunner: (
+    provider: CloudProviderId,
+    claudeToken: string,
+    name: string,
+  ) => Promise<CloudRunnerRecord>;
+  /** Start the runner's machine; resolves once it runs. */
+  startCloudRunner: () => Promise<void>;
+  /** Stop the runner's machine; resolves once it has stopped. */
+  stopCloudRunner: () => Promise<void>;
+  /** Delete the runner. Rejects with the engine's refusal of one it cannot
+   *  reach unless `force`. */
+  deleteCloudRunner: (force: boolean) => Promise<CloudRunnerDeleted>;
 }
 
 /** `list` with `status` in its provider's place, or at the end for a provider
@@ -34,29 +76,95 @@ export function withCloudProvider(
 
 // A connect or a disconnect adds or takes away a workspace type (one per
 // connected provider), so the composer's answer is read again after either.
-export const createCloudSlice: SliceCreator<CloudSlice> = (set, get, { api }) => ({
-  cloudProviders: null,
+// Every runner action reads the runner's status again when it ends, whether it
+// worked or not: either way the runner may have moved.
+export const createCloudSlice: SliceCreator<CloudSlice> = (set, get, { api, events }) => {
+  /** `action`, then a fresh status, which does not replace its outcome. */
+  const thenRefresh = async <T>(action: () => Promise<T>): Promise<T> => {
+    try {
+      return await action();
+    } finally {
+      await get()
+        .refreshCloudRunner()
+        .catch(() => {});
+    }
+  };
 
-  refreshCloudProviders: async () => {
-    set({ cloudProviders: await api.cloudProviders() });
-  },
+  return {
+    cloudProviders: null,
+    cloudRunner: null,
+    cloudRunnerCreate: null,
 
-  connectCloud: async (provider, token, account) => {
-    const status = await api.cloudConnect(provider, token, account);
-    set((s) => ({ cloudProviders: withCloudProvider(s.cloudProviders, status) }));
-    get().reloadWorkspaceTypes();
-  },
+    refreshCloudProviders: async () => {
+      set({ cloudProviders: await api.cloudProviders() });
+    },
 
-  // `cloud_disconnect` answers nothing, and what it leaves is known: the same
-  // provider with no token, so no account.
-  disconnectCloud: async (provider) => {
-    await api.cloudDisconnect(provider);
-    set((s) => ({
-      cloudProviders:
-        s.cloudProviders?.map((p) =>
-          p.id === provider ? { ...p, connected: false, account: null } : p,
-        ) ?? null,
-    }));
-    get().reloadWorkspaceTypes();
-  },
-});
+    connectCloud: async (provider, token, account) => {
+      const status = await api.cloudConnect(provider, token, account);
+      set((s) => ({ cloudProviders: withCloudProvider(s.cloudProviders, status) }));
+      get().reloadWorkspaceTypes();
+    },
+
+    // `cloud_disconnect` answers nothing, and what it leaves is known: the same
+    // provider with no token, so no account.
+    disconnectCloud: async (provider) => {
+      await api.cloudDisconnect(provider);
+      set((s) => ({
+        cloudProviders:
+          s.cloudProviders?.map((p) =>
+            p.id === provider ? { ...p, connected: false, account: null } : p,
+          ) ?? null,
+      }));
+      get().reloadWorkspaceTypes();
+    },
+
+    refreshCloudRunner: async () => {
+      set({ cloudRunner: await api.cloudRunnerStatus() });
+    },
+
+    // Subscribed before the call, so no step is missed. The create is cleared
+    // only once the fresh status is in, so the pane goes from the steps
+    // straight to the runner (or back to the form) with nothing in between.
+    createCloudRunner: async (provider, claudeToken, name) => {
+      if (get().cloudRunnerCreate) throw new Error("A runner is being created already.");
+      set({ cloudRunnerCreate: { provider, steps: [] } });
+      let off = () => {};
+      try {
+        off = await events.onCloudRunnerProgress((step) =>
+          set((s) =>
+            s.cloudRunnerCreate
+              ? {
+                  cloudRunnerCreate: {
+                    ...s.cloudRunnerCreate,
+                    steps: [...s.cloudRunnerCreate.steps, step],
+                  },
+                }
+              : {},
+          ),
+        );
+        const [devicePublicKey, device] = await Promise.all([
+          api.remoteDevicePublicKey(),
+          thisDevice(),
+        ]);
+        return await thenRefresh(() =>
+          api.cloudRunnerCreate(provider, {
+            devicePublicKey,
+            deviceName: device.name,
+            devicePlatform: device.platform,
+            claudeToken,
+            name: name.trim() || null,
+          }),
+        );
+      } finally {
+        off();
+        set({ cloudRunnerCreate: null });
+      }
+    },
+
+    startCloudRunner: () => thenRefresh(() => api.cloudRunnerStart()),
+
+    stopCloudRunner: () => thenRefresh(() => api.cloudRunnerStop()),
+
+    deleteCloudRunner: (force) => thenRefresh(() => api.cloudRunnerDelete(force)),
+  };
+};
