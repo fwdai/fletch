@@ -454,13 +454,11 @@ impl RunningBox {
     /// What tells `provider`'s CLI in this box apart from every other copy
     /// of it, for what is remembered about a CLI (`super::guest_thinking_summaries`):
     /// the tools disk it runs from (its file's identity, so a disk rebuilt in
-    /// place is another), or in a cloud box, the box and the version
-    /// installed on its disk. `None` while neither is known.
+    /// place is another), or in a cloud box, the version installed on its
+    /// disk (`CloudMachine::cli_identity`). `None` while neither is known.
     pub(super) fn cli_identity(&self, provider: &str) -> Option<String> {
         match &self.machine {
-            Machine::Cloud(cloud) => cloud
-                .cli_version(provider)
-                .map(|version| format!("cloud box {} {provider} {version}", self.agent_id())),
+            Machine::Cloud(cloud) => cloud.cli_identity(provider),
             Machine::Local(_) => self
                 .tools_disk_for(provider)
                 .map(|disk| format!("box tools disk {}", crate::agent::file_identity(disk))),
