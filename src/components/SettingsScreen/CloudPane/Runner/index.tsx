@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type { CloudProviderStatus } from "@/api";
 import { useAppStore } from "@/store";
-import { createRunner } from "./actions";
 import { CreateForm } from "./CreateForm";
 import { Creating } from "./Creating";
 import { RunnerCard } from "./RunnerCard";
@@ -15,7 +14,9 @@ import { RunnerCard } from "./RunnerCard";
  *  What it shows is the store's (`cloudRunner`, read by the pane through
  *  `useRunnerStatus`, and `cloudRunnerCreate` while this window creates one);
  *  what a create's failure or a forced delete's warning said is kept here, so
- *  it stays on screen as the view under it changes. */
+ *  it stays on screen as the view under it changes. The runner's paired host
+ *  follows its status (`followRunnerStatus` in @/remote/hosts), so a create
+ *  or a delete here does nothing about hosts itself. */
 export function Runner({
   provider,
   readError,
@@ -26,6 +27,7 @@ export function Runner({
 }) {
   const status = useAppStore((s) => s.cloudRunner);
   const creating = useAppStore((s) => s.cloudRunnerCreate);
+  const createCloudRunner = useAppStore((s) => s.createCloudRunner);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
 
@@ -38,7 +40,7 @@ export function Runner({
     setError(null);
     setWarning(null);
     try {
-      await createRunner(provider.id, claudeToken, name);
+      await createCloudRunner(provider.id, claudeToken, name);
     } catch (e) {
       setError(String(e));
     }

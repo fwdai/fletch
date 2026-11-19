@@ -25,6 +25,11 @@ export interface SavedHost {
   relay?: string;
   /** RFC3339. Shown in the pane; nothing branches on it. */
   pairedAt: string;
+  /** Set on the host that is this install's cloud runner, saved because the
+   *  runner's status said it exists (`reconcileRunnerHost`), and forgotten
+   *  when it says there is none. Absent on every host paired by hand, which
+   *  that never touches. */
+  runner?: true;
 }
 
 const isHost = (v: unknown): v is SavedHost => {

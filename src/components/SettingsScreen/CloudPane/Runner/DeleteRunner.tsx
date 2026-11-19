@@ -1,25 +1,24 @@
 import { useState } from "react";
-import type { CloudProviderStatus, CloudRunnerStatus } from "@/api";
+import type { CloudProviderStatus } from "@/api";
 import { Button } from "@/components/ui/Button";
-import { deleteRunner } from "./actions";
+import { useAppStore } from "@/store";
 
 type Step = "idle" | "confirm" | "refused";
 
 /** Delete, behind a confirmation that says what goes with the runner, as the
  *  Providers pane's account rows confirm. The engine refuses a runner it
- *  cannot reach (or one that could not destroy every workspace's machine);
- *  its words are shown, and the forced delete is offered with what it may
- *  leave behind. */
+ *  cannot reach (or one that could not destroy every machine it made); its
+ *  words are shown, and the forced delete is offered with what it may leave
+ *  behind. */
 export function DeleteRunner({
   provider,
-  status,
   onDeleted,
 }: {
   provider: CloudProviderStatus;
-  status: CloudRunnerStatus;
   /** The runner is gone; `warning` is what a forced delete may have left. */
   onDeleted: (warning: string | null) => void;
 }) {
+  const deleteCloudRunner = useAppStore((s) => s.deleteCloudRunner);
   const [step, setStep] = useState<Step>("idle");
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -28,7 +27,7 @@ export function DeleteRunner({
   const run = async (force: boolean) => {
     setBusy(true);
     try {
-      const deleted = await deleteRunner(force, status.record?.hostId);
+      const deleted = await deleteCloudRunner(force);
       setStep("idle");
       onDeleted(deleted.warning);
     } catch (e) {
@@ -54,8 +53,8 @@ export function DeleteRunner({
   );
   const waiting = busy && (
     <div className="set-gh-hint text-sm">
-      A stopped runner is started first, so it can delete its workspaces' machines. This can take a
-      few minutes.
+      A stopped runner is started first, so it can delete the machines it made. This can take a few
+      minutes.
     </div>
   );
 
@@ -63,8 +62,9 @@ export function DeleteRunner({
     return (
       <div className="set-runner-confirm">
         <div className="set-gh-lede text-sm">
-          Delete the runner? Its workspaces' machines are deleted first, then its own machine and
-          disk at {label}, and with them its history, logins and pairings.
+          Delete the runner? The machines it made at {label}, its workspaces' and its spares, are
+          deleted first, then its own machine and disk, and with them its history, logins and
+          pairings.
         </div>
         <div className="set-runner-actions flex-center">
           <Button
@@ -87,8 +87,8 @@ export function DeleteRunner({
     <div className="set-runner-confirm">
       <div className="set-gh-err text-sm">{refusal}</div>
       <div className="set-gh-lede text-sm">
-        Delete it anyway? Its own machine and disk are deleted, but its workspaces' machines may
-        remain at {label}, for you to delete there.
+        Delete it anyway? Its own machine and disk are deleted, but the machines it made, its
+        workspaces' and its spares, may remain at {label}, for you to delete there.
       </div>
       <div className="set-runner-actions flex-center">
         <Button variant="outline" size="sm" danger disabled={busy} onClick={() => void run(true)}>

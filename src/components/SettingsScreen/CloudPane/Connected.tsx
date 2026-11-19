@@ -13,8 +13,10 @@ function connectedLine({ account, account_label }: CloudProviderStatus): string 
 }
 
 /** A connected provider: the account its token acts for, and Disconnect,
- *  which forgets the token at once, as the Account pane's GitHub and Linear
- *  rows do. */
+ *  which deletes the provider's spare machines and then forgets the token.
+ *  The engine refuses it while a spare cannot be deleted or this install's
+ *  runner is at the provider; its words show under the row, which stays
+ *  connected. */
 export function Connected({
   provider,
   onDisconnected,

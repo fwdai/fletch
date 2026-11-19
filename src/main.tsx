@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { whenIdle } from "./remote/defer";
-import { startSavedHosts } from "./remote/hosts";
+import { followRunnerStatus, startSavedHosts } from "./remote/hosts";
 import { useAppStore } from "./store";
 import { setupAppMenu } from "./util/appMenu";
 import { runStartupUpdateCheck } from "./util/autoUpdate";
@@ -44,6 +44,10 @@ void setupAppMenu();
 // this is one keyed settings read and then nothing. And not before the engine
 // is ready: the dialer they connect through is managed only then. A failed
 // boot is already on screen through the store, so there is nothing to add.
+// Then the cloud runner's status is read once, and from then on every answer
+// of it puts the runner among the saved hosts or takes it out
+// (`followRunnerStatus`): a runner made or deleted while this window was not
+// there to save or forget its host is caught up here.
 waitForEngineReady((status) => useAppStore.getState().setBootStatus(status))
-  .then(() => whenIdle(() => void startSavedHosts()))
+  .then(() => whenIdle(() => void startSavedHosts().then(followRunnerStatus)))
   .catch(() => {});

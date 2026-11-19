@@ -48,7 +48,12 @@ export function RunnerCard({
           </Button>
         )}
         {(can.stop || busy === "stop") && (
-          <Button variant="outline" disabled={!!busy} onClick={() => void act("stop")}>
+          <Button
+            variant="outline"
+            disabled={!!busy}
+            tip="Stops its agents and their machines, then the runner's own. No device can reach it until it is started."
+            onClick={() => void act("stop")}
+          >
             {busy === "stop" ? "Stopping…" : "Stop"}
           </Button>
         )}
@@ -62,7 +67,7 @@ export function RunnerCard({
       )}
       {can.delete && !busy && (
         <div>
-          <DeleteRunner provider={provider} status={status} onDeleted={onDeleted} />
+          <DeleteRunner provider={provider} onDeleted={onDeleted} />
         </div>
       )}
     </>

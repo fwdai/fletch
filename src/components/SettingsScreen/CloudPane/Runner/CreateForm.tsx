@@ -37,8 +37,8 @@ export function CreateForm({
       <div className="set-gh-lede text-sm">
         A runner is Fletch on a machine at {provider.label} that stays on: agents keep running with
         this Mac closed, and your other devices can follow and review them. {provider.label} bills
-        your account for its machine while it runs and its disk until you delete it; each of its
-        workspaces gets a machine of its own there too.
+        your account for its machine while it runs and its disk until you delete it, and for the
+        machines it makes there: one per workspace, and a spare it keeps ready.
       </div>
       <div className="set-form-grid">
         <label className="set-field">

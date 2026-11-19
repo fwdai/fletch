@@ -51,11 +51,14 @@ export function stateWords(
           "Agents on it keep running with this Mac closed. This Mac and the devices you pair reach it through Fletch's relay.",
       };
     case "stopping":
-      return { short: "stopping…", detail: null };
+      return {
+        short: "stopping…",
+        detail: "Its agents and their machines stop first, then its own machine.",
+      };
     case "stopped":
       return {
         short: "stopped",
-        detail: `Its agents don't run and no device can reach it until you start it. ${label} still bills for its disk.`,
+        detail: `Its agents and their machines are stopped, and no device can reach it until you start it. ${label} still bills for its disk, and for its workspaces' and spare machines while they exist.`,
       };
     case "machine_lost":
       return {

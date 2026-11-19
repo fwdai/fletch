@@ -1,11 +1,13 @@
 // The app's one host registry, and the things anything outside it wants: dial
-// the saved hosts at startup, add one from a pairing link, forget one, and pair
-// back with a desktop that is a host too ("Pairing back").
+// the saved hosts at startup, add one from a pairing link, forget one, keep
+// this install's cloud runner among them as its status says, and pair back
+// with a desktop that is a host too ("Pairing back").
 //
 // This is the only module that puts the registry, the app store and the
 // settings row together; `./registry` is the lifecycle on its own and knows
 // about none of them.
 
+import type { CloudRunnerRecord, CloudRunnerStatus } from "@/api";
 import { remoteApi } from "@/api/domains/remote";
 import { forgetHost as forgetRecord, loadHosts, saveHost, updateHost } from "@/storage/remoteHosts";
 import { hostStore, startHost, stopHost, useAppStore } from "@/store";
@@ -79,9 +81,9 @@ export async function addHost(target: PairTarget, onCode?: CodeHandler): Promise
   if (target.confirm && !target.pairingToken) await askToPairBack(record);
 }
 
-/** Remember a host this device is already authorised on and keep it
- *  connected, as a pairing would but with no code: the cloud runner this Mac
- *  created, whose engine added this device's key while setting it up.
+/** Remember the cloud runner as a host, marked as the runner's, and keep it
+ *  connected, as a pairing would but with no code: the engine added this
+ *  device's key on the runner while setting it up.
  *
  *  It is reached through its relay alone; no network this Mac is on has an
  *  address for it. Its saved address is the name it would announce on one
@@ -89,14 +91,65 @@ export async function addHost(target: PairTarget, onCode?: CodeHandler): Promise
  *  host's LAN address, and is answered by nothing, so each dial moves on to
  *  the relay after the LAN's open timeout, as a phone off a Mac's network
  *  does. */
-export async function addRelayHost(host: {
-  hostKey: string;
-  name: string;
-  relay: string;
-}): Promise<void> {
-  const record: HostRecord = { ...host, addr: localHostname(host.hostKey) ?? "" };
-  await saveHost({ ...record, pairedAt: new Date().toISOString() });
+async function addRunnerHost({ hostId, name, relay }: CloudRunnerRecord): Promise<void> {
+  const record: HostRecord = { hostKey: hostId, name, relay, addr: localHostname(hostId) ?? "" };
+  await saveHost({ ...record, pairedAt: new Date().toISOString(), runner: true });
   await hosts.adopt(record);
+}
+
+/** Make the saved hosts agree with the runner's `status`, the one source of
+ *  truth for whether this Mac has a runner to reach:
+ *
+ *  - a runner set up (a record, in a state of its machine) has a saved host
+ *    under its host key: when no saved host has that key — never saved, saved
+ *    before a crash or reload got in the way, or forgotten in Settings ›
+ *    Devices — it is saved, marked as the runner's, and dialled
+ *    (`addRunnerHost`); a host marked as the runner's under another key, an
+ *    earlier runner's, is forgotten;
+ *  - `none` forgets every host marked as the runner's (`removeHost`);
+ *  - `setting_up` and `incomplete` change nothing.
+ *
+ *  A host paired by hand carries no mark and is never forgotten here, even
+ *  one with the runner's key. Hosts that cannot be read count as none saved,
+ *  so nothing is forgotten then. */
+export async function reconcileRunnerHost(status: CloudRunnerStatus): Promise<void> {
+  if (status.state === "setting_up" || status.state === "incomplete") return;
+  const record = status.state === "none" ? null : status.record;
+  if (status.state !== "none" && !record) return;
+  const saved = await loadHosts();
+  for (const host of saved) {
+    if (host.runner && host.hostKey !== record?.hostId) await removeHost(host.hostKey);
+  }
+  if (record && !saved.some((host) => host.hostKey === record.hostId)) {
+    await addRunnerHost(record);
+  }
+}
+
+/** The reconcile in progress, so each runs after the one before: a later
+ *  status is the one the saved hosts end up agreeing with. */
+let reconciling: Promise<void> = Promise.resolve();
+let following = false;
+
+/** From now on, make the saved hosts agree with every answer of the runner's
+ *  status the store gets (`refreshCloudRunner`: Settings › Cloud, and every
+ *  runner action, which ends by reading it), one after another; then read it
+ *  once now. Called at startup, after the saved hosts are dialled. A read
+ *  that fails (offline, the provider unreachable) is not an answer, so it
+ *  changes nothing. */
+export async function followRunnerStatus(): Promise<void> {
+  if (!following) {
+    following = true;
+    useAppStore.subscribe((state, prev) => {
+      const status = state.cloudRunner;
+      if (!status || status === prev.cloudRunner) return;
+      reconciling = reconciling.then(() => reconcileRunnerHost(status)).catch(() => {});
+    });
+  }
+  await useAppStore
+    .getState()
+    .refreshCloudRunner()
+    .catch(() => {});
+  await reconciling;
 }
 
 /** The op that hands a host this Mac's own pairing link. */

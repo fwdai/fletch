@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 // Settings › Cloud › the runner, under the provider it is at. With none, a
 // form says what one is and costs and takes the Claude token; creating shows
-// each step and, at the GitHub one, its code and where to enter it; once made,
-// it is saved as a paired host with no code. A runner that exists shows its
-// state in words and what it allows: Start, Stop, another device's code while
-// it runs, and Delete, whose refusal offers the forced delete. Status is read
-// again only while it is changing.
+// each step and, at the GitHub one, its code and where to enter it. A runner
+// that exists shows its state in words and what it allows: Start, Stop,
+// another device's code while it runs, and Delete, whose refusal offers the
+// forced delete; its provider cannot be disconnected under it. Status is read
+// again only while it is changing. (The runner's paired host follows its
+// status: src/remote/hosts.test.ts.)
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,11 +19,6 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 const shell = vi.hoisted(() => ({ open: vi.fn(async () => {}) }));
 vi.mock("@tauri-apps/plugin-shell", () => shell);
-const hostsMock = vi.hoisted(() => ({
-  addRelayHost: vi.fn(async () => {}),
-  removeHost: vi.fn(async () => {}),
-}));
-vi.mock("@/remote/hosts", () => hostsMock);
 vi.mock("@/remote/device", () => ({
   thisDevice: async () => ({ name: "Studio", platform: "macos", appVersion: "0.8.29" }),
 }));
@@ -114,7 +110,9 @@ describe("Settings › Cloud › runner", () => {
     expect(await screen.findByText("No runner")).toBeTruthy();
     expect(screen.getByText(/agents keep running with this Mac closed/)).toBeTruthy();
     expect(
-      screen.getByText(/Fly\.io bills your account for its machine while it runs and its disk/),
+      screen.getByText(
+        /Fly\.io bills your account for its machine while it runs and its disk until you delete it, and for the machines it makes there: one per workspace, and a spare it keeps ready\./,
+      ),
     ).toBeTruthy();
     expect(tokenField().type).toBe("password");
     expect(screen.getByText("claude setup-token")).toBeTruthy();
@@ -125,7 +123,7 @@ describe("Settings › Cloud › runner", () => {
     expect(create).toHaveProperty("disabled", false);
   });
 
-  it("creates it, step by step, with the GitHub code to enter, then pairs this Mac with it", async () => {
+  it("creates it, step by step, with the GitHub code to enter, then shows it", async () => {
     const answer = deferred<CloudRunnerRecord>();
     const create = vi.spyOn(api, "cloudRunnerCreate").mockReturnValue(answer.promise);
     const read = mount(NONE);
@@ -164,11 +162,6 @@ describe("Settings › Cloud › runner", () => {
     read.mockResolvedValue(at("running"));
     await act(async () => answer.resolve(RECORD));
     expect(await screen.findByText("Studio runner · running")).toBeTruthy();
-    expect(hostsMock.addRelayHost).toHaveBeenCalledWith({
-      hostKey: "runner-key",
-      name: "Studio runner",
-      relay: "wss://relay.example",
-    });
     expect(screen.queryByText("ABCD-1234")).toBeNull();
   });
 
@@ -185,7 +178,6 @@ describe("Settings › Cloud › runner", () => {
     expect(screen.getByText("No runner")).toBeTruthy();
     // The token went with the form: it is kept nowhere for a retry.
     expect(tokenField().value).toBe("");
-    expect(hostsMock.addRelayHost).not.toHaveBeenCalled();
   });
 
   it("running: its name and state, Stop, and a code for another device", async () => {
@@ -198,7 +190,9 @@ describe("Settings › Cloud › runner", () => {
     mount(at("running"));
     expect(await screen.findByText("Studio runner · running")).toBeTruthy();
     expect(screen.getByText(/keep running with this Mac closed/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop" }).getAttribute("data-tip")).toBe(
+      "Stops its agents and their machines, then the runner's own. No device can reach it until it is started.",
+    );
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Pair another device" }));
@@ -213,7 +207,11 @@ describe("Settings › Cloud › runner", () => {
     const start = vi.spyOn(api, "cloudRunnerStart").mockResolvedValue(undefined);
     const read = mount(at("stopped"));
     expect(await screen.findByText("Studio runner · stopped")).toBeTruthy();
-    expect(screen.getByText(/no device can reach it until you start it/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Its agents and their machines are stopped, and no device can reach it until you start it. Fly.io still bills for its disk, and for its workspaces' and spare machines while they exist.",
+      ),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Pair another device" })).toBeNull();
 
@@ -254,16 +252,16 @@ describe("Settings › Cloud › runner", () => {
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
   });
 
-  it("a delete refused shows why and offers the forced one, which forgets the host", async () => {
+  it("a delete refused shows why and offers the forced one, which says what may remain", async () => {
     const remove = vi
       .spyOn(api, "cloudRunnerDelete")
       .mockRejectedValueOnce(
-        "Fletch can't reach the runner to have it destroy its workspaces' machines: its disk is gone.",
+        "Fletch can't reach the runner to have it destroy the machines it made: its disk is gone.",
       )
       .mockResolvedValueOnce({
         destroyed: [],
         warning:
-          "The runner could not be reached, so any machines its workspaces had may remain at Fly.io. Delete them in its dashboard.",
+          "The runner could not be reached, so the machines it made may remain at Fly.io. Delete them in its dashboard.",
       });
     const read = mount(at("disk_lost"));
     await screen.findByText("Studio runner · disk lost");
@@ -271,16 +269,17 @@ describe("Settings › Cloud › runner", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete runner" }));
     expect(
       screen.getByText(
-        "Delete the runner? Its workspaces' machines are deleted first, then its own machine and disk at Fly.io, and with them its history, logins and pairings.",
+        "Delete the runner? The machines it made at Fly.io, its workspaces' and its spares, are deleted first, then its own machine and disk, and with them its history, logins and pairings.",
       ),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     expect(await screen.findByText(/Fletch can't reach the runner/)).toBeTruthy();
     expect(remove).toHaveBeenLastCalledWith(false);
-    expect(hostsMock.removeHost).not.toHaveBeenCalled();
     expect(
-      screen.getByText(/its workspaces' machines may remain at Fly\.io, for you to delete there/),
+      screen.getByText(
+        "Delete it anyway? Its own machine and disk are deleted, but the machines it made, its workspaces' and its spares, may remain at Fly.io, for you to delete there.",
+      ),
     ).toBeTruthy();
 
     read.mockResolvedValue(NONE);
@@ -289,8 +288,23 @@ describe("Settings › Cloud › runner", () => {
       await screen.findByText(/may remain at Fly\.io\. Delete them in its dashboard/),
     ).toBeTruthy();
     expect(remove).toHaveBeenLastCalledWith(true);
-    expect(hostsMock.removeHost).toHaveBeenCalledWith("runner-key");
     expect(screen.getByText("No runner")).toBeTruthy();
+  });
+
+  it("its provider is not disconnected under it: the refusal shows on the connected row", async () => {
+    const refusal =
+      "Fly.io can't be disconnected while this machine's cloud runner is at Fly.io: the runner is billed while it exists and can only be managed through this connection. Delete the runner first.";
+    const disconnect = vi.spyOn(api, "cloudDisconnect").mockRejectedValue(refusal);
+    mount(at("running"));
+    await screen.findByText("Studio runner · running");
+
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+    expect(await screen.findByText(refusal)).toBeTruthy();
+    expect(disconnect).toHaveBeenCalledWith("fly");
+    expect(screen.getByText("Connected to the acme organization")).toBeTruthy();
+    expect(screen.getByText("Studio runner · running")).toBeTruthy();
+    expect(screen.queryByText(/Disconnecting deleted/)).toBeNull();
   });
 
   it("shows only under the provider its machine is at", async () => {

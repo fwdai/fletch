@@ -40,7 +40,8 @@ export interface CloudSlice {
   connectCloud: (provider: CloudProviderId, token: string, account: string) => Promise<void>;
   /** Delete the provider's spare machines, then forget its token. Rejects
    *  with the refusal to show, the list unchanged, while a spare could not be
-   *  deleted. The machines of workspaces there stay where they are. */
+   *  deleted or this install's runner is at the provider. The machines of
+   *  workspaces there stay where they are. */
   disconnectCloud: (provider: CloudProviderId) => Promise<void>;
   /** How many spare machines each connected provider keeps, as stored on
    *  this Mac, `""` for the engine's default; `null` until the first read. */
@@ -51,7 +52,11 @@ export interface CloudSlice {
    *  refusal to show, or `null` once the count is stored. */
   saveCloudSpares: (count: string) => Promise<string | null>;
 
-  /** Re-read `cloudRunner`. Rejects with the reason, keeping the last answer. */
+  /** Re-read `cloudRunner`. Rejects with the reason, keeping the last answer.
+   *  Each answer is what the saved hosts are made to agree with
+   *  (`followRunnerStatus` in @/remote/hosts, which follows `cloudRunner`), so
+   *  a create or a delete, which both end by reading it, needs nothing more to
+   *  put the runner among the paired hosts or take it out. */
   refreshCloudRunner: () => Promise<void>;
   /** Create the runner at `provider`, authorising this device on it, and
    *  resolve with its record; `cloudRunnerCreate` holds the steps meanwhile.
