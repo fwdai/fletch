@@ -148,6 +148,9 @@ pub struct BoxVm {
     pub name: String,
     pub project_id: String,
     pub created_at: String,
+    /// The cloud provider whose machine the VM is
+    /// (`AgentRecord::cloud_provider`); `None` for one on this machine.
+    pub cloud_provider: Option<String>,
     pub state: boxes::registry::BoxStateReport,
 }
 
@@ -181,6 +184,7 @@ fn vms_of(workspace: &WorkspaceManager, ids: impl Iterator<Item = String>) -> Ve
                 name: record.name,
                 project_id: record.project_id,
                 created_at: record.created_at,
+                cloud_provider: record.cloud_provider,
             })
         })
         .collect()
