@@ -19,8 +19,10 @@ export const cloudApi = {
    *  `account` is the provider's default (its `account_placeholder`). */
   cloudConnect: (provider: CloudProviderId, token: string, account?: string) =>
     invokeLocal<CloudProviderStatus>("cloud_connect", { provider, token, account: account ?? "" }),
-  /** Forget the provider's token. Machines already created there are left as
-   *  they are. */
+  /** Delete the provider's spare machines, then forget its token. Rejects, in
+   *  words fit to show, while a spare could not be deleted, and the provider
+   *  stays connected then. The machines of workspaces there are left as they
+   *  are. */
   cloudDisconnect: (provider: CloudProviderId) =>
     invokeLocal<void>("cloud_disconnect", { provider }),
   /** How many spare machines each connected provider keeps, as stored on this

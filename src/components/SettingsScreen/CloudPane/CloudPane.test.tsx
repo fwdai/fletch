@@ -142,17 +142,19 @@ describe("Settings › Cloud", () => {
     expect(screen.queryByText("Fly.io refused this token")).toBeNull();
   });
 
-  it("disconnects back to the form, and says the machines stay", async () => {
+  it("disconnects back to the form, and says the spares went and the workspaces' machines stay", async () => {
     const disconnect = vi.spyOn(api, "cloudDisconnect").mockResolvedValue(undefined);
     await mount([fly({ connected: true, account: "acme" })]);
-    expect(screen.queryByText(/not deleted by disconnecting/)).toBeNull();
+    expect(screen.queryByText(/Disconnecting deleted/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
 
     expect(await screen.findByLabelText("Token")).toBeTruthy();
     expect(disconnect).toHaveBeenCalledWith("fly");
     expect(
-      screen.getByText("Machines already created at Fly.io are not deleted by disconnecting."),
+      screen.getByText(
+        "Disconnecting deleted any spare machines at Fly.io; the machines of workspaces there stay.",
+      ),
     ).toBeTruthy();
   });
 
@@ -164,6 +166,20 @@ describe("Settings › Cloud", () => {
 
     expect(await screen.findByText("keychain locked")).toBeTruthy();
     expect(screen.getByText("Connected to the acme organization")).toBeTruthy();
+  });
+
+  it("shows a disconnect refused for a spare that could not be deleted, still connected", async () => {
+    const refusal =
+      "Fly.io is still connected: its spare machines could not all be deleted, and Fly.io bills them while they exist. Try disconnecting again in a moment.";
+    vi.spyOn(api, "cloudDisconnect").mockRejectedValue(refusal);
+    await mount([fly({ connected: true, account: "acme" })]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+    expect(await screen.findByText(refusal)).toBeTruthy();
+    expect(screen.getByText("Connected to the acme organization")).toBeTruthy();
+    expect(screen.getByLabelText("Spare machines per provider")).toBeTruthy();
+    expect(screen.queryByText(/Disconnecting deleted/)).toBeNull();
   });
 
   it("connects any provider the backend lists with the same form, in its own words", async () => {
