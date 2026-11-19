@@ -1046,7 +1046,8 @@ editor/log/telemetry ops, the provider install/login ops (`install_agent`,
 Providers (`probe_provider_versions`, `probe_provider_auth`, which answer with
 resolved binary paths), the cloud provider connection behind Settings
 (`cloud_providers`, `cloud_connect`, `cloud_disconnect` — the token is kept in
-this machine's secret store), and the `run_*` family (`run_start`, `run_stop`,
+this machine's secret store) and this install's runner at a provider (the
+`cloud_runner_*` family), and the `run_*` family (`run_start`, `run_stop`,
 `run_verification` — this machine's own scripts). Autopilot's `fix-checks`
 verdict needs no `run_verification` on the wire: the ladder runs on the host,
 which calls its own verifier and reports it as `verify:report`. `host_providers` above is the

@@ -1015,6 +1015,15 @@ fn never_exposed_ops_are_not_dispatchable() {
         "cloud_providers",
         "cloud_connect",
         "cloud_disconnect",
+        // This install's runner at a provider: made, started, stopped and
+        // deleted with this machine's provider connection, and created with a
+        // Claude token on its way to the runner's disk.
+        "cloud_runner_status",
+        "cloud_runner_create",
+        "cloud_runner_start",
+        "cloud_runner_stop",
+        "cloud_runner_delete",
+        "cloud_runner_pairing_link",
         "run_start",
         "run_stop",
         "",
