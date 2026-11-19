@@ -41,6 +41,7 @@ fn spec() -> MachineSpec {
         memory_mib: 4096,
         disk_gib: Some(20),
         ssh_port: 2222,
+        keep_running: false,
     }
 }
 
@@ -205,6 +206,21 @@ async fn a_stored_region_places_the_disk_and_the_machine_follows_it() {
         "no size given: a local box's default"
     );
     assert_eq!(requests[4].body["region"], "ams");
+}
+
+/// A machine kept running (a runner's) is restarted by Fly when its main
+/// process fails, and is otherwise the box's machine to the byte: still no
+/// autostart or autostop, so a stop asked for stays a stop.
+#[tokio::test]
+async fn a_machine_kept_running_has_the_on_failure_policy_and_nothing_else_changes() {
+    let server = StandIn::start(fly_ok).await;
+    let mut spec = spec();
+    spec.keep_running = true;
+    client(&server, TOKEN, None).create(&spec).await.unwrap();
+    let app = created_app(&server);
+    let mut expected = machine_request(&app, "iad");
+    expected["config"]["restart"] = json!({ "policy": "on-failure" });
+    assert_eq!(server.requests()[4].body, expected);
 }
 
 /// Everything after the app cleans up by destroying the app with what it

@@ -6,7 +6,8 @@
 # pinned under the `box` alias, in a config of the shape the channel writes
 # for a TCP route (crates/fletch-box/src/channel, Route::tcp). Then check
 # what the engine and the agents rely on, stop and start the container, and
-# check that /data and the host key outlived it. Needs docker (privileged
+# check that /data and the host key outlived it, and that a host service put
+# on the disk ran at the start. Needs docker (privileged
 # containers: the entrypoint mounts), ssh, ssh-keygen and the network.
 #
 #   test.sh IMAGE [OUT_DIR]
@@ -198,11 +199,20 @@ check T-image "the image names itself and the box image it was made from" -- \
 # ------------------------------------------------------------ a stop and a start
 key_before=$(docker exec "$C" cat /data/ssh/host_key.pub)
 g "echo kept > $WS/kept" >> "$LOG" 2>&1
+# A box's disk holds no host service. A runner's start script, put there as
+# the engine puts one, runs from the next start on (the entrypoint's hook).
+check T-no-service "a box's disk holds no host service, and none runs" -- \
+  g 'set -e; ! test -e /data/host/start; ! pgrep -f "[/]data/host/start"; echo none'
+g 'set -e; sudo -n install -d -o agent -g agent -m 700 /data/host
+printf "#!/bin/sh\n{ id -un; env | grep -c ^FLETCH_BOX_ || true; } > /data/host/ran\nexec sleep 600\n" > /data/host/start' \
+  >> "$LOG" 2>&1
 say "stopping and starting the container"
 docker stop -t 10 "$C" >> "$LOG" && docker start "$C" >> "$LOG"
 check T-restart "after a stop and a start: the host key pinned before, and /data's files" -- restarted
 check T-restart-binds "after a start the host paths and the tools are bound again" -- \
   g "set -e; for p in $H $RPC $WS /opt/fletch/tools; do mountpoint -q \$p; done; /opt/fletch/tools/t/bin/t"
+check T-host-service "after a start the disk's host service ran, as the agent, with none of the machine's environment" -- \
+  is "agent 0" g 'for _ in $(seq 1 50); do [ -s /data/host/ran ] && break; sleep 0.2; done; echo $(cat /data/host/ran)'
 
 say "report: $REPORT"
 exit $failed

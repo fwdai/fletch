@@ -128,7 +128,182 @@ async fn the_admin_socket_refuses_what_it_does_not_know() {
         "a provider with no login command says so: {out_of_band}"
     );
 
+    the_cloud_ops_check_what_they_are_given(&data_dir).await;
+    the_call_subcommand_passes_an_op_through(&data_dir).await;
     a_wedged_cli_cannot_hang_either_call(&data_dir, dir.path()).await;
+}
+
+/// `fletch-host call`, as an engine runs it over ssh: the op's JSON
+/// arguments on stdin, its JSON result on stdout and a zero exit; when the op
+/// fails, the host's error on stderr, nothing on stdout and a non-zero exit.
+/// What a token among the arguments never shows up in.
+async fn the_call_subcommand_passes_an_op_through(data_dir: &std::path::Path) {
+    use tokio::io::AsyncWriteExt;
+
+    let call = |op: &'static str, stdin: &'static str| async move {
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_fletch-host"))
+            .arg("--data-dir")
+            .arg(data_dir)
+            .args(["call", op])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run fletch-host call");
+        let mut input = child.stdin.take().unwrap();
+        input.write_all(stdin.as_bytes()).await.unwrap();
+        drop(input);
+        let out = child.wait_with_output().await.unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let (ok, stdout, stderr) = call("approvals_list", "").await;
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout).unwrap(),
+        json!([]),
+        "blank stdin is no arguments; the result is one line of JSON: {stdout:?}"
+    );
+    assert_eq!(stdout.lines().count(), 1, "{stdout:?}");
+
+    let (ok, stdout, stderr) = call("destroy_cloud_boxes", "{}").await;
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout).unwrap(),
+        json!({ "destroyed": [], "failed": [] })
+    );
+
+    let (ok, stdout, stderr) = call("revoke_device", r#"{"deviceId": "nobody"}"#).await;
+    assert!(!ok && stdout.is_empty(), "{stdout:?}");
+    assert!(stderr.contains("nobody"), "{stderr}");
+
+    let (ok, stdout, stderr) = call(
+        "cloud_connect",
+        r#"{"provider": "nowhere", "token": "secret-0123456789"}"#,
+    )
+    .await;
+    assert!(!ok, "{stdout}");
+    assert!(
+        stderr.contains("unknown cloud provider") && !stderr.contains("secret"),
+        "{stderr}"
+    );
+
+    let (ok, _, stderr) = call("status", "[\"secret-0123456789\"]").await;
+    assert!(!ok);
+    assert!(
+        stderr.contains("not a JSON object") && !stderr.contains("secret"),
+        "{stderr}"
+    );
+}
+
+/// The cloud provider surface, short of a provider's API: nothing here may
+/// reach one, so a token is only ever refused before it is sent (blank), and
+/// the validation and the store are `fletch_core::cloud`'s own tests.
+async fn the_cloud_ops_check_what_they_are_given(data_dir: &std::path::Path) {
+    use fletch_core::cloud::ProviderId;
+
+    let statuses = admin::call(data_dir, "cloud_status", json!({}))
+        .await
+        .expect("cloud_status");
+    let ids: Vec<&str> = statuses
+        .as_array()
+        .map(|rows| rows.iter().filter_map(|row| row["id"].as_str()).collect())
+        .unwrap_or_default();
+    let known: Vec<&str> = ProviderId::ALL.iter().map(|p| p.as_str()).collect();
+    assert_eq!(ids, known, "every provider, in the engine's order");
+    assert!(
+        statuses
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["connected"] == json!(false)),
+        "a fresh host is connected nowhere: {statuses}"
+    );
+
+    for op in ["cloud_connect", "cloud_disconnect"] {
+        let refusal = admin::call(
+            data_dir,
+            op,
+            json!({ "provider": "nowhere", "token": "secret-0123456789" }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refusal.contains("unknown cloud provider") && !refusal.contains("secret"),
+            "{op}: {refusal}"
+        );
+    }
+
+    let provider = ProviderId::ALL[0];
+    let blank = admin::call(
+        data_dir,
+        "cloud_connect",
+        json!({ "provider": provider.as_str(), "token": "  \n" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(blank.contains(provider.label()), "{blank}");
+    assert_eq!(
+        admin::call(
+            data_dir,
+            "cloud_disconnect",
+            json!({ "provider": provider.as_str() })
+        )
+        .await,
+        Ok(json!(null)),
+        "disconnecting what is not connected is nothing to refuse"
+    );
+
+    // A disconnect is the desktop's (`commands::cloud_disconnect_impl`): the
+    // provider's spares go first, and while one cannot be destroyed — here a
+    // spare whose handle does not read — the disconnect is refused, its
+    // directory kept for the next try.
+    let spares = fletch_core::sandbox::boxes::spares::root().expect("a spares root");
+    assert!(
+        spares.starts_with(data_dir),
+        "this host's spares are its own: {}",
+        spares.display()
+    );
+    let damaged = spares.join("spare-0123456789ab");
+    std::fs::create_dir_all(&damaged).unwrap();
+    std::fs::write(
+        damaged.join(fletch_core::sandbox::boxes::cloud::HANDLE_FILE),
+        "not a handle\n",
+    )
+    .unwrap();
+    let refusal = admin::call(
+        data_dir,
+        "cloud_disconnect",
+        json!({ "provider": provider.as_str() }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refusal.contains("still connected") && refusal.contains("spare"),
+        "{refusal}"
+    );
+    assert!(damaged.is_dir(), "kept for the next try");
+    std::fs::remove_dir_all(&damaged).unwrap();
+    assert_eq!(
+        admin::call(
+            data_dir,
+            "cloud_disconnect",
+            json!({ "provider": provider.as_str() })
+        )
+        .await,
+        Ok(json!(null))
+    );
+
+    // A host that has made no machine at any provider has none to destroy,
+    // and says so in the shape the runner's deletion reads.
+    assert_eq!(
+        admin::call(data_dir, "destroy_cloud_boxes", json!({})).await,
+        Ok(json!({ "destroyed": [], "failed": [] }))
+    );
 }
 
 /// A CLI that never answers `--version` — a broken install, or a custom binary

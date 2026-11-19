@@ -51,6 +51,12 @@ const sparesField = () => screen.getByLabelText("Spare machines per provider") a
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   vi.spyOn(api, "cloudSpares").mockResolvedValue(null);
+  // The pane reads the runner too (Runner/Runner.test.tsx); here there is none.
+  vi.spyOn(api, "cloudRunnerStatus").mockResolvedValue({
+    state: "none",
+    provider: null,
+    record: null,
+  });
 });
 
 afterEach(() => {

@@ -16,6 +16,7 @@ import type {
   ShellOutputEvent,
   WorkspaceAutoArchivedEvent,
 } from "./types/agent";
+import type { CloudRunnerProgress } from "./types/cloud";
 import type { ContextChangedEvent } from "./types/context";
 import type {
   DictationLevelEvent,
@@ -441,6 +442,12 @@ export function makeEvents(on: Subscribe, onLocal: Subscribe) {
      *  was closed. */
     onProviderLoginExit: (cb: (e: ProviderLoginExitEvent) => void): Promise<UnlistenFn> =>
       onLocal<ProviderLoginExitEvent>("provider-login:exit", cb),
+
+    /** A step of the runner create this Mac is running started (Settings ›
+     *  Cloud). Local: the runner is this install's, whatever environment the
+     *  window is driving. */
+    onCloudRunnerProgress: (cb: (e: CloudRunnerProgress) => void): Promise<UnlistenFn> =>
+      onLocal<CloudRunnerProgress>("cloud-runner:progress", cb),
   };
 }
 
@@ -526,4 +533,5 @@ export const {
   onContextChanged,
   onProviderLoginOutput,
   onProviderLoginExit,
+  onCloudRunnerProgress,
 } = local;

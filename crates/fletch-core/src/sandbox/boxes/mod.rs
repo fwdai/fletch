@@ -26,6 +26,8 @@
 //! - [`cloud`]: what only a box whose machine is at a cloud provider does:
 //!   its handle, bringing its machine up, its CLIs, stopping and destroying
 //!   it through the provider.
+//! - [`gate`]: making a cloud machine and sweeping a provider's machines
+//!   away, kept from crossing.
 //! - [`spares`]: cloud boxes made ahead of any workspace, kept in a root of
 //!   their own beside the boxes, and taken by the next new cloud box.
 //! - [`executor`]: the `RemoteExecutor` the path-routed seam (`crate::exec`)
@@ -116,6 +118,7 @@ pub mod cloud;
 pub mod egress_log;
 pub mod egress_prompt;
 pub mod executor;
+pub mod gate;
 pub mod home;
 mod launch_files;
 pub mod mirror;
@@ -634,7 +637,9 @@ pub fn asleep_for_path(path: &Path) -> bool {
 /// Off macOS there is no seatbelt, so the box is the only engine: every new
 /// agent is a box, its launch waiting for the image as a box-pinned
 /// project's does (a Host placement means nothing there), and a machine that
-/// cannot boot one refuses the spawn with why ([`availability`]).
+/// cannot boot one refuses the spawn with why ([`availability`]). A spawn
+/// that names no workspace type reaches this choice only when no cloud
+/// provider takes it first (`sandbox::default_workspace_type`).
 ///
 /// On macOS the project's placement decides first — a project that runs on this Mac
 /// (a macOS or iOS app, or the user's say-so) is seatbelt — then a box when
@@ -2116,6 +2121,99 @@ fn boxes_in(root: &Path) -> Vec<(String, PathBuf)> {
 /// The agents that have a box, running or not, hidden workspaces included.
 pub fn created_box_ids() -> Vec<String> {
     boxes_on_disk().into_iter().map(|(id, _)| id).collect()
+}
+
+/// What [`destroy_cloud_boxes`] did: the boxes it destroyed at their
+/// provider, by agent id, and those it could not, each with why.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct CloudBoxesDestroyed {
+    pub destroyed: Vec<String>,
+    pub failed: Vec<CloudBoxNotDestroyed>,
+}
+
+/// A box [`destroy_cloud_boxes`] could not destroy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudBoxNotDestroyed {
+    pub agent_id: String,
+    pub error: String,
+}
+
+/// Destroy, at its provider, every cloud box this host has a directory for,
+/// under a hold on every provider ([`gate`]): no machine is made from then
+/// on, and one being made is waited for until its handle is on disk. Then
+/// its spares, ready or not ([`spares::destroy_in`]), and every workspace's
+/// box whatever its workspace's state (each through [`cloud::destroy_box`]),
+/// the spares first so that one taken meanwhile is found among the boxes.
+/// Says which went and which did not, a spare by its placeholder id
+/// (`spare-…`), a workspace's box by its agent id, and a machine still being
+/// made when the hold's wait ran out as one that may be left. When every one
+/// went, or the host is deleted whatever this could destroy (`for_good`, a
+/// forced delete), the hold is kept for the rest of the process, so nothing
+/// is made behind the deletion. Otherwise the hold is released and a
+/// replenish asked for, and the host goes on as before. Only what this
+/// install made: a box at a provider with no directory here is never
+/// touched. A workspace's box
+/// directory stays; a box destroyed already is destroyed again as success.
+/// What a runner is asked to do before it is deleted with its disk
+/// (`crate::cloud_runner`), so that nothing it made is left at the provider
+/// with no record of it.
+pub async fn destroy_cloud_boxes(for_good: bool) -> CloudBoxesDestroyed {
+    let (Ok(boxes), Ok(spares)) = (boxes_root(), spares::root()) else {
+        return CloudBoxesDestroyed::default();
+    };
+    destroy_cloud_boxes_in(
+        &boxes,
+        &spares,
+        &cloud::client,
+        for_good,
+        spares::replenish_in_background,
+    )
+    .await
+}
+
+/// [`destroy_cloud_boxes`] with the boxes and spares roots given, the client
+/// for a provider from `client_for`, and `replenish` run when the hold is
+/// released.
+async fn destroy_cloud_boxes_in(
+    boxes: &Path,
+    spares: &Path,
+    client_for: &(impl Fn(crate::cloud::ProviderId) -> Result<crate::cloud::Client> + Sync),
+    for_good: bool,
+    replenish: impl FnOnce(),
+) -> CloudBoxesDestroyed {
+    let hold = gate::hold(None).await;
+    let mut outcome = spares::destroy_in(spares, None, client_for).await;
+    if !hold.settled() {
+        outcome.failed.push(CloudBoxNotDestroyed {
+            agent_id: "machines being made".into(),
+            error: "a machine was still being made when the wait for it ran out; it may be left \
+                    at its provider"
+                .into(),
+        });
+    }
+    for (agent_id, dir) in boxes_in(boxes) {
+        if !cloud::is_cloud_dir(&dir) {
+            continue;
+        }
+        match cloud::destroy_box_with(&dir, client_for).await {
+            Ok(()) => outcome.destroyed.push(agent_id),
+            Err(e) => {
+                tracing::warn!(agent_id, error = %e, "a cloud box could not be destroyed");
+                outcome.failed.push(CloudBoxNotDestroyed {
+                    agent_id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+    if for_good || outcome.failed.is_empty() {
+        hold.keep();
+    } else {
+        drop(hold);
+        replenish();
+    }
+    outcome
 }
 
 /// Box directories no live agent owns: left by a discard that failed, or by

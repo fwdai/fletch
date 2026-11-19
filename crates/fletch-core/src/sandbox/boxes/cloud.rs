@@ -29,7 +29,10 @@
 //!   through the provider's authenticated exec and pinned at the box's first
 //!   boot (and at any boot that finds no pin), then ssh is waited for: a new
 //!   machine's name takes a while to resolve. Nothing local is made: no data
-//!   disk, no dirty marker, no egress proxy, no tools disk.
+//!   disk, no dirty marker, no egress proxy, no tools disk. These two are
+//!   the only places a machine is made at a provider, and each registers
+//!   with the gate ([`super::gate`]) until its handle is kept: refused while
+//!   a sweep holds its provider, waited for by a sweep that began meanwhile.
 //! - **A spare** ([`super::spares`]) is a box made ahead of any workspace,
 //!   under a placeholder identity of its own, its CLIs installed and its
 //!   machine parked. A box with nothing made for it yet takes one at its
@@ -260,6 +263,7 @@ pub(super) fn spec(identity: &BoxIdentity, authorized_key: String) -> MachineSpe
         memory_mib: knobs.memory_mib,
         disk_gib: Some(knobs.disk_gib),
         ssh_port: guest::CLOUD_SSH_PORT,
+        keep_running: false,
     }
 }
 
@@ -287,6 +291,9 @@ pub async fn machine_up(
     let pinned = std::fs::metadata(dir.join(channel::KNOWN_HOSTS_FILE)).is_ok_and(|m| m.len() > 0);
     let (handle, made) = match read_handle(dir)? {
         None => {
+            // Registered until the handle is kept, or the box destroyed when
+            // it cannot be: a sweep waits for it (`super::gate`).
+            let _making = super::gate::make(client.provider())?;
             phase(BoxPhase::Preparing {
                 detail: format!("creating a {label} machine"),
             });
@@ -355,6 +362,8 @@ async fn to_running(
                 tokio::time::sleep(SETTLE_PACE).await;
             }
             MachineState::MachineGone => {
+                // Registered until the new handle is kept (`super::gate`).
+                let _making = super::gate::make(client.provider())?;
                 phase(BoxPhase::Preparing {
                     detail: format!("replacing the {label} machine"),
                 });
@@ -410,7 +419,7 @@ async fn pin_host_key(client: &Client, handle: &Handle, dir: &Path) -> Result<()
 /// `key` and trusting the host key pinned in `dir` ([`machine_up`]), once its
 /// sshd answers. A guest whose key is not the pinned one is refused at once:
 /// no wait makes it right.
-pub(super) async fn reach(dir: &Path, key: &Path, handle: &Handle) -> Result<Channel> {
+pub(crate) async fn reach(dir: &Path, key: &Path, handle: &Handle) -> Result<Channel> {
     let endpoint = handle.endpoint();
     let route = route(&endpoint)?;
     let known_hosts = dir.join(channel::KNOWN_HOSTS_FILE);
@@ -745,7 +754,7 @@ pub async fn destroy_box(dir: &Path) -> Result<()> {
 }
 
 /// [`destroy_box`] with the client for a provider from `client_for`.
-pub(super) async fn destroy_box_with(
+pub(crate) async fn destroy_box_with(
     dir: &Path,
     client_for: impl FnOnce(ProviderId) -> Result<Client>,
 ) -> Result<()> {

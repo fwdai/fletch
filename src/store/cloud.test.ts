@@ -2,6 +2,9 @@
 // puts its answer in the provider's place, a refusal leaves the list alone,
 // and a disconnect leaves the provider with no account. Either one done reads
 // the composer's workspace types again, since each connected provider is one.
+// The runner is what its status last said, read again after every action;
+// a create holds its steps as the engine reports them, and the Claude token
+// nowhere.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
@@ -14,11 +17,33 @@ const { cloudProviders, cloudConnect, cloudDisconnect, availableWorkspaceTypes }
     availableWorkspaceTypes: vi.fn(),
   }),
 );
+const runner = vi.hoisted(() => ({
+  cloudRunnerStatus: vi.fn(),
+  cloudRunnerCreate: vi.fn(),
+  cloudRunnerStart: vi.fn(),
+  cloudRunnerStop: vi.fn(),
+  cloudRunnerDelete: vi.fn(),
+  remoteDevicePublicKey: vi.fn(),
+}));
+/** The one `cloud-runner:progress` listener, while there is one. */
+const progress = vi.hoisted(() => ({
+  listener: null as ((step: unknown) => void) | null,
+  subscribe: vi.fn(),
+}));
 vi.mock("@/api", () => ({
-  api: { cloudProviders, cloudConnect, cloudDisconnect, availableWorkspaceTypes },
+  api: { cloudProviders, cloudConnect, cloudDisconnect, availableWorkspaceTypes, ...runner },
+  onCloudRunnerProgress: progress.subscribe,
+}));
+vi.mock("@/remote/device", () => ({
+  thisDevice: async () => ({ name: "Studio", platform: "macos", appVersion: "0.8.29" }),
 }));
 
-import type { CloudProviderStatus, WorkspaceTypeOption } from "@/api";
+import type {
+  CloudProviderStatus,
+  CloudRunnerProgress,
+  CloudRunnerStatus,
+  WorkspaceTypeOption,
+} from "@/api";
 import { activeEngine } from "@/api/engine";
 import { createCloudSlice, withCloudProvider } from "./cloud";
 import type { AppState } from "./types";
@@ -202,6 +227,198 @@ describe("the composer's workspace types", () => {
     cloudConnect.mockResolvedValue(fly({ connected: true, account: "acme" }));
     await store.getState().connectCloud("fly", "FlyV1 secret", "");
     expect(availableWorkspaceTypes).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the runner", () => {
+  const RECORD = { hostId: "runner-key", name: "Studio runner", relay: "wss://relay.example" };
+  const NONE: CloudRunnerStatus = { state: "none", provider: null, record: null };
+  const RUNNING: CloudRunnerStatus = { state: "running", provider: "fly", record: RECORD };
+  const STOPPED: CloudRunnerStatus = { state: "stopped", provider: "fly", record: RECORD };
+  const GITHUB: CloudRunnerProgress = {
+    step: "github_login",
+    userCode: "ABCD-1234",
+    verificationUrl: "https://github.com/login/device",
+    expiresIn: 900,
+  };
+
+  /** A promise the test settles by hand, to hold a create in flight. */
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    for (const fn of Object.values(runner)) fn.mockReset();
+    progress.listener = null;
+    progress.subscribe.mockReset().mockImplementation(async (cb: (step: unknown) => void) => {
+      progress.listener = cb;
+      return () => {
+        progress.listener = null;
+      };
+    });
+    runner.remoteDevicePublicKey.mockResolvedValue("device-key");
+  });
+
+  it("has nothing until the first read, then what the engine said", async () => {
+    const store = makeStore();
+    expect(store.getState().cloudRunner).toBeNull();
+    runner.cloudRunnerStatus.mockResolvedValue(RUNNING);
+    await store.getState().refreshCloudRunner();
+    expect(store.getState().cloudRunner).toEqual(RUNNING);
+  });
+
+  it("creates with this device's key, name and platform, holding the steps meanwhile", async () => {
+    const store = makeStore();
+    const answer = deferred<typeof RECORD>();
+    runner.cloudRunnerCreate.mockReturnValue(answer.promise);
+    runner.cloudRunnerStatus.mockResolvedValue(RUNNING);
+
+    const created = store.getState().createCloudRunner("fly", "sk-ant-oat01-secret", "  ");
+    expect(store.getState().cloudRunnerCreate).toEqual({ provider: "fly", steps: [] });
+    await flush();
+    expect(runner.cloudRunnerCreate).toHaveBeenCalledWith("fly", {
+      devicePublicKey: "device-key",
+      deviceName: "Studio",
+      devicePlatform: "macos",
+      claudeToken: "sk-ant-oat01-secret",
+      name: null,
+    });
+
+    progress.listener?.({ step: "creating_machine" });
+    progress.listener?.(GITHUB);
+    expect(store.getState().cloudRunnerCreate?.steps).toEqual([
+      { step: "creating_machine" },
+      GITHUB,
+    ]);
+    expect(JSON.stringify(store.getState())).not.toContain("sk-ant-oat01-secret");
+
+    answer.resolve(RECORD);
+    await expect(created).resolves.toEqual(RECORD);
+    expect(store.getState().cloudRunner).toEqual(RUNNING);
+    expect(store.getState().cloudRunnerCreate).toBeNull();
+    expect(progress.listener).toBeNull();
+  });
+
+  it("sends a name that is not blank", async () => {
+    const store = makeStore();
+    runner.cloudRunnerCreate.mockResolvedValue(RECORD);
+    runner.cloudRunnerStatus.mockResolvedValue(RUNNING);
+    await store.getState().createCloudRunner("fly", "secret", " Studio runner ");
+    expect(runner.cloudRunnerCreate.mock.calls[0][1].name).toBe("Studio runner");
+  });
+
+  it("rejects with the engine's reason when a create fails, and reads the runner again", async () => {
+    const store = makeStore();
+    runner.cloudRunnerCreate.mockRejectedValue("the GitHub code lapsed before it was entered");
+    runner.cloudRunnerStatus.mockResolvedValue(NONE);
+    await expect(store.getState().createCloudRunner("fly", "secret", "")).rejects.toBe(
+      "the GitHub code lapsed before it was entered",
+    );
+    expect(store.getState().cloudRunner).toEqual(NONE);
+    expect(store.getState().cloudRunnerCreate).toBeNull();
+    expect(progress.listener).toBeNull();
+  });
+
+  it("refuses a second create while one is under way", async () => {
+    const store = makeStore();
+    runner.cloudRunnerCreate.mockReturnValue(new Promise(() => {}));
+    void store.getState().createCloudRunner("fly", "secret", "");
+    await expect(store.getState().createCloudRunner("fly", "secret", "")).rejects.toThrow(
+      "being created already",
+    );
+  });
+
+  it("reads the runner again after a start or a stop, worked or not", async () => {
+    const store = makeStore();
+    runner.cloudRunnerStart.mockResolvedValue(undefined);
+    runner.cloudRunnerStatus.mockResolvedValue(RUNNING);
+    await store.getState().startCloudRunner();
+    expect(store.getState().cloudRunner).toEqual(RUNNING);
+
+    runner.cloudRunnerStop.mockRejectedValue("the provider is down");
+    runner.cloudRunnerStatus.mockResolvedValue(STOPPED);
+    await expect(store.getState().stopCloudRunner()).rejects.toBe("the provider is down");
+    expect(store.getState().cloudRunner).toEqual(STOPPED);
+  });
+
+  it("answers what a delete did, and reads the runner again", async () => {
+    const store = makeStore();
+    store.setState({ cloudRunner: RUNNING });
+    runner.cloudRunnerDelete.mockResolvedValue({ destroyed: ["fuji"], warning: null });
+    runner.cloudRunnerStatus.mockResolvedValue(NONE);
+    await expect(store.getState().deleteCloudRunner(false)).resolves.toEqual({
+      destroyed: ["fuji"],
+      warning: null,
+    });
+    expect(runner.cloudRunnerDelete).toHaveBeenCalledWith(false);
+    expect(store.getState().cloudRunner).toEqual(NONE);
+  });
+
+  // The engine answers an action once what it does is done, so a status read
+  // that fails afterwards hides nothing of it.
+  describe("when the status read after an action fails", () => {
+    beforeEach(() => {
+      runner.cloudRunnerStatus.mockRejectedValue("the provider is unreachable");
+    });
+
+    it("a created runner is there, running, with its record", async () => {
+      const store = makeStore();
+      store.setState({ cloudRunner: NONE });
+      runner.cloudRunnerCreate.mockResolvedValue(RECORD);
+      await expect(store.getState().createCloudRunner("fly", "secret", "")).resolves.toEqual(
+        RECORD,
+      );
+      expect(store.getState().cloudRunner).toEqual(RUNNING);
+      expect(store.getState().cloudRunnerCreate).toBeNull();
+    });
+
+    it("a deleted runner is gone", async () => {
+      const store = makeStore();
+      store.setState({ cloudRunner: RUNNING });
+      runner.cloudRunnerDelete.mockResolvedValue({ destroyed: [], warning: null });
+      await store.getState().deleteCloudRunner(false);
+      expect(store.getState().cloudRunner).toEqual(NONE);
+    });
+
+    it("a started runner runs and a stopped one is stopped", async () => {
+      const store = makeStore();
+      store.setState({ cloudRunner: STOPPED });
+      runner.cloudRunnerStart.mockResolvedValue(undefined);
+      await store.getState().startCloudRunner();
+      expect(store.getState().cloudRunner).toEqual(RUNNING);
+
+      runner.cloudRunnerStop.mockResolvedValue(undefined);
+      await store.getState().stopCloudRunner();
+      expect(store.getState().cloudRunner).toEqual(STOPPED);
+    });
+
+    it("an action that failed leaves the runner as it was last known", async () => {
+      const store = makeStore();
+      store.setState({ cloudRunner: RUNNING });
+      runner.cloudRunnerDelete.mockRejectedValue("the runner could not be reached");
+      await expect(store.getState().deleteCloudRunner(false)).rejects.toBe(
+        "the runner could not be reached",
+      );
+      expect(store.getState().cloudRunner).toEqual(RUNNING);
+
+      runner.cloudRunnerStop.mockRejectedValue("the provider is down");
+      await expect(store.getState().stopCloudRunner()).rejects.toBe("the provider is down");
+      expect(store.getState().cloudRunner).toEqual(RUNNING);
+    });
+
+    it("a start with no runner known says nothing of one", async () => {
+      const store = makeStore();
+      runner.cloudRunnerStart.mockResolvedValue(undefined);
+      await store.getState().startCloudRunner();
+      expect(store.getState().cloudRunner).toBeNull();
+    });
   });
 });
 

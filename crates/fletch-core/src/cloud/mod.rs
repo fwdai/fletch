@@ -209,7 +209,11 @@ impl Connection {
         self.region.as_deref()
     }
 
-    fn token(&self) -> &str {
+    /// The API token. Read by the adapters, and by a runner's setup, which
+    /// hands it to the runner over ssh on a command's stdin
+    /// (`crate::cloud_runner`); never logged, put in an error, or in a
+    /// command line.
+    pub(crate) fn token(&self) -> &str {
         &self.token
     }
 }
@@ -231,8 +235,9 @@ impl fmt::Debug for Connection {
 /// is in `fly`).
 pub const DEFAULT_DISK_GIB: u32 = (fletch_box::disks::DEFAULT_DATA_DISK_BYTES >> 30) as u32;
 
-/// A box to create. Nothing in it is secret: the environment carries paths and
-/// one public ssh key, never a credential.
+/// A box to create, or a runner's machine (`crate::cloud_runner`), which is
+/// made the same way. Nothing in it is secret: the environment carries paths
+/// and one public ssh key, never a credential.
 #[derive(Debug, Clone)]
 pub struct MachineSpec {
     /// The caller's name for the box (its agent id). A provider folds it into
@@ -251,6 +256,14 @@ pub struct MachineSpec {
     pub disk_gib: Option<u32>,
     /// The port the guest's sshd listens on.
     pub ssh_port: u16,
+    /// Whether the provider keeps the machine running by itself: starts it
+    /// again when it fails on its own, as far as the provider offers (each
+    /// adapter says what its provider documents: `fly`'s
+    /// `KEEP_RUNNING_POLICY`). An explicit stop ([`Client::stop`]) still
+    /// stops it, and it stays stopped. False for a box, whose machine only
+    /// the engine starts and stops; true for a machine that must be up with
+    /// no engine watching it (a runner, `crate::cloud_runner`).
+    pub keep_running: bool,
 }
 
 /// A created box, as the box registry keeps it: the `Display` form is the

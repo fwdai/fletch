@@ -1240,18 +1240,23 @@ struct ClientInfo {
     platform: Option<String>,
 }
 
+/// The name a device that gives none is recorded under.
+pub(super) const UNNAMED_DEVICE: &str = "Unnamed device";
+/// The platform a device that gives none is recorded under.
+pub(super) const UNKNOWN_PLATFORM: &str = "unknown";
+
 impl ClientInfo {
     fn name(&self) -> String {
         self.name
             .clone()
             .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| "Unnamed device".to_string())
+            .unwrap_or_else(|| UNNAMED_DEVICE.to_string())
     }
 
     fn platform(&self) -> String {
         self.platform
             .clone()
-            .unwrap_or_else(|| "unknown".to_string())
+            .unwrap_or_else(|| UNKNOWN_PLATFORM.to_string())
     }
 }
 

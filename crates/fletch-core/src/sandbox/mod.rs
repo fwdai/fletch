@@ -1,5 +1,6 @@
 pub mod boxes;
 pub mod cargo_home;
+pub mod cloud_runner;
 mod engine;
 pub mod guarantees;
 pub mod placement;
@@ -339,7 +340,9 @@ pub fn ensure_supports_provider(engine: EngineKind, provider: &str) -> Result<()
 /// `provider`, which needs no runtime here, refused with the reason
 /// (`cloud_refusal`: a provider boxes do not run, a cloud provider not
 /// connected). `Stamped(kind)` is exactly `kind`, checked as the explicit
-/// choice is. Without an override this never errs.
+/// choice is. Without an override this never errs. A spawn that names no
+/// workspace type passes [`default_workspace_type`]'s as the override when
+/// there is one.
 ///
 /// Blocking: the automatic choice stats the repository and may run the
 /// runtime probe once, so a spawn calls this off the async runtime.
@@ -452,15 +455,54 @@ fn cloud_refusal(provider: &str, cloud: ProviderId) -> Option<String> {
     }
 }
 
+/// The workspace type a new agent of `provider` gets when its spawn names
+/// none and adopts no tree, in place of the automatic choice
+/// ([`engine_for_spawn`]); `None` leaves the spawn to that choice. A host
+/// with no sandbox of its own to give the agent — no macOS sandbox on this
+/// platform (`seatbelt::refusal`), and no box this machine can boot
+/// ([`boxes::runtime_usable`]) — gives it a box at a cloud provider that can
+/// take it ([`default_cloud`]). What the spawn stamps and what
+/// [`workspace_types`] marks as the default both come from here. Blocking
+/// where the platform has no macOS sandbox: the runtime probe.
+pub fn default_workspace_type(provider: &str) -> Option<WorkspaceType> {
+    default_cloud(
+        seatbelt::refusal().is_none(),
+        boxes::runtime_usable,
+        |cloud| cloud_refusal(provider, cloud),
+    )
+    .map(WorkspaceType::Cloud)
+}
+
+/// [`default_workspace_type`]'s decision, its inputs passed in: whether this
+/// platform has the macOS sandbox (`host_sandbox`), whether this machine can
+/// boot a box (`local_box`, asked only without the macOS sandbox), and why a
+/// box at each cloud provider cannot be had (`cloud_refusal`, `None` when it
+/// can). With neither sandbox here, the first provider in `ProviderId::ALL`'s
+/// order whose box can be had; with either, or with no such provider, `None`.
+fn default_cloud(
+    host_sandbox: bool,
+    local_box: impl FnOnce() -> bool,
+    cloud_refusal: impl Fn(ProviderId) -> Option<String>,
+) -> Option<ProviderId> {
+    if host_sandbox || local_box() {
+        return None;
+    }
+    ProviderId::ALL
+        .iter()
+        .copied()
+        .find(|&cloud| cloud_refusal(cloud).is_none())
+}
+
 /// The workspace type of a box at `cloud` for a new agent of `provider`,
 /// whose connection there is `connection`: `None` when it is not connected,
 /// else available as [`cloud_refusal`] decides, or unavailable with why its
-/// connection cannot be read. Never the default, and asks nothing of this
-/// machine's runtime.
+/// connection cannot be read. The default when `default` says so
+/// ([`default_workspace_type`]); asks nothing of this machine's runtime.
 fn cloud_type(
     provider: &str,
     cloud: ProviderId,
     connection: Result<Option<crate::cloud::Connection>>,
+    default: bool,
 ) -> Option<WorkspaceTypeOption> {
     let reason = match connection {
         Ok(None) => return None,
@@ -472,7 +514,7 @@ fn cloud_type(
         label: Some(cloud.label().to_string()),
         available: reason.is_none(),
         reason,
-        default: false,
+        default,
     })
 }
 
@@ -494,7 +536,9 @@ pub struct WorkspaceTypeOption {
     /// the default option, why it is the default when that is worth saying
     /// (the macOS sandbox standing in for a box: [`host_default_reason`]).
     pub reason: Option<String>,
-    /// What [`engine_for_spawn`] picks with no override.
+    /// What a spawn that names no workspace type gets: the cloud box
+    /// [`default_workspace_type`] gives, else what [`engine_for_spawn`]
+    /// picks with no override.
     pub default: bool,
 }
 
@@ -509,10 +553,12 @@ pub struct WorkspaceTypeOption {
 /// The box comes first, always: it is the default engine and the macOS
 /// sandbox its fallback. The order stays fixed even when the default moves
 /// to this Mac, so a menu never reshuffles under the user; the `default`
-/// flag says which one a spawn gets. A cloud box is never the default: after
-/// those two, one per cloud provider connected on this machine, in
-/// `ProviderId::ALL`'s order; a provider not connected is not listed, and one
-/// whose connection cannot be read now is listed unavailable with why.
+/// flag says which one a spawn gets. After those two, one per cloud provider
+/// connected on this machine, in `ProviderId::ALL`'s order; a provider not
+/// connected is not listed, and one whose connection cannot be read now is
+/// listed unavailable with why. A cloud box is the default only on a host
+/// with no sandbox of its own, as [`default_workspace_type`] decides for the
+/// spawn.
 pub fn workspace_types(
     placement_setting: Option<&str>,
     repo: &Path,
@@ -521,14 +567,21 @@ pub fn workspace_types(
     let host_reason = seatbelt::refusal();
     let box_reason = box_refusal(provider);
     let placement = placement::resolve(placement_setting, repo);
-    // What `engine_for_spawn` picks with a `None` override: the automatic
-    // choice over the project's placement. A box refused above is never
-    // ready, and a passing runtime is remembered, so the runtime is probed at
-    // most once for the whole answer.
-    let default = boxes::engine_for_new_agent_with(provider, placement, || {
-        box_reason.is_none() && boxes::ready_for(provider)
-    });
-    let host_default = default == EngineKind::SandboxExec;
+    // What a spawn with no workspace type gets: a cloud box on a host with
+    // no sandbox of its own, else what `engine_for_spawn` picks with a `None`
+    // override, the automatic choice over the project's placement. A box
+    // refused above is never ready, and a passing runtime is remembered, so
+    // the runtime is probed at most once for the whole answer.
+    let cloud_default = default_workspace_type(provider).and_then(WorkspaceType::cloud);
+    let default = match cloud_default {
+        Some(_) => None,
+        None => Some(boxes::engine_for_new_agent_with(
+            provider,
+            placement,
+            || box_reason.is_none() && boxes::ready_for(provider),
+        )),
+    };
+    let host_default = default == Some(EngineKind::SandboxExec);
     let host = WorkspaceTypeOption {
         kind: "host".into(),
         label: None,
@@ -544,14 +597,17 @@ pub fn workspace_types(
         label: None,
         available: box_reason.is_none(),
         reason: box_reason,
-        default: default == EngineKind::Box,
+        default: default == Some(EngineKind::Box),
     };
     let mut options = vec![vm, host];
-    options.extend(
-        ProviderId::ALL
-            .iter()
-            .filter_map(|&cloud| cloud_type(provider, cloud, boxes::cloud::connection(cloud))),
-    );
+    options.extend(ProviderId::ALL.iter().filter_map(|&cloud| {
+        cloud_type(
+            provider,
+            cloud,
+            boxes::cloud::connection(cloud),
+            cloud_default == Some(cloud),
+        )
+    }));
     options
 }
 
@@ -1127,8 +1183,8 @@ mod workspace_type_tests {
     }
 
     /// The composer lists a cloud provider after the box and this Mac only
-    /// when it is connected, never as the default, available whatever this
-    /// machine's runtime says, and with its label.
+    /// when it is connected, available whatever this machine's runtime says,
+    /// with its label, and the default only when it is told it is.
     #[test]
     fn a_cloud_type_is_listed_only_when_its_provider_is_connected() {
         let repo = tempfile::tempdir().unwrap();
@@ -1140,8 +1196,10 @@ mod workspace_type_tests {
 
         for &cloud in ProviderId::ALL {
             let connected = crate::cloud::Connection::new(cloud, "token-0123456789", None).unwrap();
-            assert_eq!(cloud_type("claude", cloud, Ok(None)), None);
-            let listed = cloud_type("claude", cloud, Ok(Some(connected.clone()))).unwrap();
+            assert_eq!(cloud_type("claude", cloud, Ok(None), false), None);
+            let defaulted = cloud_type("claude", cloud, Ok(Some(connected.clone())), true).unwrap();
+            assert!(defaulted.available && defaulted.default);
+            let listed = cloud_type("claude", cloud, Ok(Some(connected.clone())), false).unwrap();
             assert_eq!(
                 listed,
                 WorkspaceTypeOption {
@@ -1162,12 +1220,13 @@ mod workspace_type_tests {
                     "default": false,
                 })
             );
-            let unsupported = cloud_type("antigravity", cloud, Ok(Some(connected))).unwrap();
+            let unsupported = cloud_type("antigravity", cloud, Ok(Some(connected)), false).unwrap();
             assert!(!unsupported.available && unsupported.reason.is_some());
             let unreadable = cloud_type(
                 "claude",
                 cloud,
                 Err(Error::Other("the keychain is locked".into())),
+                false,
             )
             .unwrap();
             assert!(!unreadable.available);
@@ -1176,6 +1235,42 @@ mod workspace_type_tests {
         for option in workspace_types(None, repo.path(), "claude") {
             assert_eq!(option.label, None, "{}", option.kind);
         }
+    }
+
+    /// A new workspace goes to a cloud provider only where the host has no
+    /// sandbox of its own to give it — no macOS sandbox and no box that can
+    /// boot here — and then to the first provider whose box can be had for
+    /// this agent CLI. Everywhere else the spawn is left to the automatic
+    /// choice, a connected provider or not.
+    #[test]
+    fn a_host_with_no_sandbox_of_its_own_defaults_to_a_cloud_box() {
+        let first = ProviderId::ALL[0];
+        let can = |_: ProviderId| None;
+        let cannot = |cloud: ProviderId| Some(boxes::cloud::not_connected(cloud));
+
+        // Neither sandbox here: the first provider that can take it.
+        assert_eq!(default_cloud(false, || false, can), Some(first));
+        assert_eq!(
+            default_cloud(
+                false,
+                || false,
+                |cloud| (cloud != first).then(|| "not this one".to_string())
+            ),
+            Some(first)
+        );
+        // None that can: no default, and the spawn's own refusal stands.
+        assert_eq!(default_cloud(false, || false, cannot), None);
+        // The macOS sandbox, a box this machine can boot, or both: unchanged.
+        for (host_sandbox, local_box) in [(true, false), (false, true), (true, true)] {
+            assert_eq!(
+                default_cloud(host_sandbox, || local_box, can),
+                None,
+                "host sandbox {host_sandbox}, local box {local_box}"
+            );
+        }
+        // With no provider connected (no database installed in a unit test)
+        // there is never one, whatever this machine is.
+        assert_eq!(default_workspace_type("claude"), None);
     }
 
     /// A cloud box takes no folder of this machine, at the spawn or later.

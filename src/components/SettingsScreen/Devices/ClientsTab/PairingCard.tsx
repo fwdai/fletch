@@ -1,29 +1,13 @@
 import { QRCodeSVG } from "qrcode.react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { PairingInvite } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { parsePairUrl } from "@/remote/pairing";
 import { useCopy } from "@/util/useCopy";
+import { mmss, useCountdown } from "@/util/useCountdown";
 import { SetRow } from "../../primitives";
 
 const QR_SIZE = 148;
-
-/** Seconds left before `iso` lapses, floored at zero. */
-function secondsLeft(iso: string): number {
-  const at = Date.parse(iso);
-  if (Number.isNaN(at)) return 0;
-  return Math.max(0, Math.floor((at - Date.now()) / 1000));
-}
-
-function useCountdown(iso: string): number {
-  const [left, setLeft] = useState(() => secondsLeft(iso));
-  useEffect(() => {
-    setLeft(secondsLeft(iso));
-    const timer = setInterval(() => setLeft(secondsLeft(iso)), 1000);
-    return () => clearInterval(timer);
-  }, [iso]);
-  return left;
-}
 
 /** The live pairing invitation: the window during which this Mac will pair a
  *  device, kept open while Settings › Devices is. One line per kind of client,
@@ -58,7 +42,6 @@ export function PairingCard({
   onRegenerate: () => void;
 }) {
   const left = useCountdown(invite.expiresAt);
-  const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
   const [manual, setManual] = useState(false);
   const { copied, copy } = useCopy(invite.url);
   const link = parsePairUrl(invite.url);
@@ -121,7 +104,7 @@ export function PairingCard({
         )}
         <div className="set-pair-meta text-xs flex-center">
           <span className={`set-pair-clock mono ${left <= 30 ? "urgent" : ""}`}>
-            new code in {mmss}
+            new code in {mmss(left)}
           </span>
           {!manual && (
             <button type="button" className="set-pair-link-btn" onClick={() => setManual(true)}>

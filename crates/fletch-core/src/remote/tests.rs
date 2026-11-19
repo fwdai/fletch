@@ -524,6 +524,80 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
     assert!(!control.url.contains("preset="));
 }
 
+/// A device authorized by its key alone is on file as a paired one is, the
+/// handshake's lookup finds it, and authorizing it again changes nothing about
+/// it: not its name, not its access. A string that is not a key, and a preset
+/// the host does not define, are refused before anything is stored.
+#[test]
+fn a_device_is_authorized_by_its_key_and_a_second_time_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
+    let phone = device();
+    let key = secure::encode_key(&phone.public);
+
+    let (record, already) = state
+        .authorize_device(&format!(" {key}\n"), None, Some(" "), Some("control"))
+        .unwrap();
+    assert!(!already);
+    assert_eq!(
+        (record.name.as_str(), record.platform.as_str()),
+        ("Unnamed device", "unknown"),
+        "with no name or platform it is recorded as a pairing device that gives none"
+    );
+    assert_eq!(
+        record.scope_set(),
+        dispatch::preset_scopes("control").unwrap()
+    );
+    assert_eq!(
+        state
+            .devices()
+            .find_by_key(&phone.public)
+            .map(|d| d.device_id),
+        Some(record.device_id.clone()),
+        "the handshake's lookup finds it"
+    );
+
+    let (again, already) = state
+        .authorize_device(&key, Some("laptop"), Some("macos"), Some("full"))
+        .unwrap();
+    assert!(already);
+    assert_eq!(again.device_id, record.device_id);
+    assert_eq!(state.devices().list().len(), 1);
+    let stored = state.devices().find_by_key(&phone.public).unwrap();
+    assert_eq!(
+        stored.name, "Unnamed device",
+        "a second time renames nothing"
+    );
+    assert_eq!(
+        stored.scope_set(),
+        dispatch::preset_scopes("control").unwrap(),
+        "a second time widens nothing"
+    );
+
+    let other = secure::encode_key(&device().public);
+    for bad in [
+        "",
+        "not a key",
+        &key[..42],
+        &format!("{key}="),
+        &format!("{key}A"),
+    ] {
+        let refusal = state
+            .authorize_device(bad, None, None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("43 characters"), "{bad:?}: {refusal}");
+    }
+    assert!(state
+        .authorize_device(&other, None, None, Some("observer"))
+        .is_err());
+    assert_eq!(
+        state.devices().list().len(),
+        1,
+        "nothing refused was stored"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Op allowlist
 // ---------------------------------------------------------------------------
@@ -941,6 +1015,15 @@ fn never_exposed_ops_are_not_dispatchable() {
         "cloud_providers",
         "cloud_connect",
         "cloud_disconnect",
+        // This install's runner at a provider: made, started, stopped and
+        // deleted with this machine's provider connection, and created with a
+        // Claude token on its way to the runner's disk.
+        "cloud_runner_status",
+        "cloud_runner_create",
+        "cloud_runner_start",
+        "cloud_runner_stop",
+        "cloud_runner_delete",
+        "cloud_runner_pairing_link",
         "run_start",
         "run_stop",
         "",

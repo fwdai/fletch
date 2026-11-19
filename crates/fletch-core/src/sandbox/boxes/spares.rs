@@ -19,7 +19,7 @@
 //!   (`CloudMachine::ensure_cli`), then the machine parked
 //!   (`CloudMachine::halt` for an idle stop); the marker is written once the
 //!   provider confirmed the park and the ssh master is closed, and only while
-//!   the provider is still connected. The installs run with a home outside
+//!   no sweep holds the provider (`super::gate`). The installs run with a home outside
 //!   the guest's disk ([`PREPARE_HOME`]), so the guest's home and checkout
 //!   directories hold nothing of them. A preparation that fails destroys what
 //!   it made and removes its directory.
@@ -49,12 +49,21 @@
 //!   box whether or not it took a spare, and when the setting changes; a
 //!   failure waits for the next of those, the next new box at the latest.
 //! - **Disconnecting a provider** (`commands::cloud_disconnect_impl`)
-//!   destroys its spares first ([`destroy_all`]) and forgets its token only
-//!   once they are all gone: a spare is billed while it exists, and a
-//!   provider that is not connected has no client to destroy it with. While
-//!   one cannot be destroyed the disconnect is refused, and the spare's
-//!   directory kept for the next try. The boxes of workspaces at the provider
-//!   are not touched.
+//!   holds the provider (`super::gate`: no machine is made there, and one
+//!   being made is waited for), destroys its spares ([`destroy_all`], every
+//!   directory with a handle, ready or not) and forgets its token only once
+//!   they are all gone: a spare is billed while it exists, and a provider
+//!   that is not connected has no client to destroy it with. While one cannot
+//!   be destroyed the disconnect is refused, the hold released, and the
+//!   spare's directory kept for the next try. The boxes of workspaces at the
+//!   provider are not touched.
+//! - **A host winding down** (`super::destroy_cloud_boxes`, what a cloud
+//!   runner is asked before it is deleted with its disk) holds every
+//!   provider the same way and destroys every spare too ([`destroy_in`]).
+//!   A preparation already past its make has its handle on disk, so the
+//!   sweep destroys its machine; the preparation then fails, cleans up what
+//!   is left, and writes no marker. A replenish that meets a hold fails as
+//!   any preparation does, and is left for its next trigger.
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -200,7 +209,19 @@ fn read_built(dir: &Path) -> Option<Build> {
 }
 
 /// Write `build` as the marker in `dir`, whole: a reader finds it or not.
-fn write_ready(dir: &Path, build: &Build) -> Result<()> {
+/// Refused while a sweep holds `provider` ([`super::gate`]): the sweep, which
+/// read the spares root once its hold stood, destroys this machine, and a
+/// marker would let a taker have it first. Under [`TAKING`], as a sweep's
+/// removal of the marker is, so the two never cross; the directory is never
+/// made again here, so a marker never lands where a sweep removed one.
+fn write_ready(dir: &Path, build: &Build, provider: ProviderId) -> Result<()> {
+    let _taking = TAKING.lock();
+    if super::gate::held(provider) {
+        return Err(Error::Other(format!(
+            "the machines at {} are being deleted; this spare goes with them",
+            provider.label()
+        )));
+    }
     let staging = dir.join(format!("{READY_FILE}.building"));
     std::fs::write(&staging, serde_json::to_vec(build)?)?;
     std::fs::rename(&staging, dir.join(READY_FILE))?;
@@ -323,11 +344,13 @@ impl Guest for Ssh {
 
 /// Prepare one spare of `build` in `root`, at its provider through a client
 /// from `client_for`, its guest worked through `guest`; answers its
-/// directory. The marker is written only while `client_for` still has a
-/// client for the provider: a provider disconnected meanwhile has had its
-/// spares destroyed, and this one, not yet among them, goes too. A failure
-/// destroys what was made, through the client it was made with, and removes
-/// the directory, which is kept only when the destroy fails.
+/// directory. Its machine is made through the gate ([`super::gate`]), so a
+/// sweep that holds the provider refuses the make, or waits for it and then
+/// destroys the machine with the rest; the marker is not written while a
+/// sweep holds the provider ([`write_ready`]). A failure destroys what was
+/// made, through the client it was made with, and removes the directory,
+/// which is kept only when the destroy fails; a directory a sweep removed
+/// already is nothing to clean.
 async fn prepare(
     root: &Path,
     build: &Build,
@@ -349,13 +372,7 @@ async fn prepare(
     std::fs::create_dir_all(&dir)?;
     let made = async {
         make(&dir, &id, client.clone(), build, guest).await?;
-        client_for(provider).map_err(|e| {
-            Error::Other(format!(
-                "{} was disconnected while a spare was made there: {e}",
-                provider.label()
-            ))
-        })?;
-        write_ready(&dir, build)
+        write_ready(&dir, build, provider)
     }
     .await;
     let Err(e) = made else {
@@ -442,7 +459,8 @@ async fn retire(
 /// for: stale and unfinished ones destroyed, any past the number destroyed,
 /// and what is missing prepared. One run at a time: a call while one runs
 /// has that run go once more when it is done. Nothing for a provider that is
-/// not connected. A failure is logged and left for the next call.
+/// not connected. A preparation a sweep's hold refuses ([`super::gate`])
+/// fails as any other does: a failure is logged and left for the next call.
 pub async fn replenish() {
     single_flight(&REPLENISHING, replenish_once).await;
 }
@@ -561,46 +579,79 @@ async fn replenish_with(
 
 /// Destroy every spare of `provider`, or of every provider, at its provider,
 /// and remove its directory: what disconnecting a provider does first
-/// (`commands::cloud_disconnect_impl`). A spare that cannot be destroyed
-/// keeps its directory, so a later call finds it again, and makes this an
-/// error, once every other was tried.
+/// (`commands::cloud_disconnect_impl`), under its hold. A spare that cannot be
+/// destroyed keeps its directory, so a later call finds it again, and makes
+/// this an error, once every other was tried.
 pub async fn destroy_all(provider: Option<ProviderId>) -> Result<()> {
     destroy_all_in(&root()?, provider, &cloud::client).await
 }
 
-/// [`destroy_all`] in `root`, with clients from `client_for`. A directory
-/// with no handle belongs to no provider: it goes when every provider's
-/// spares go, and is left alone when one provider's do.
+/// [`destroy_all`] in `root`, with clients from `client_for`.
 pub(crate) async fn destroy_all_in(
     root: &Path,
     provider: Option<ProviderId>,
     client_for: &(impl Fn(ProviderId) -> Result<Client> + Sync),
 ) -> Result<()> {
-    let mut kept = Vec::new();
-    for found in found_in(root) {
-        let ours = match &found.handle {
-            Ok(Some(handle)) => provider.map_or(true, |p| handle.provider() == p),
-            Ok(None) => provider.is_none(),
-            Err(e) => {
-                kept.push(format!("{}: {e}", found.dir.display()));
-                continue;
-            }
-        };
-        if !ours {
-            continue;
-        }
-        if let Err(e) = retire(&found.dir, client_for).await {
-            kept.push(format!("{}: {e}", found.dir.display()));
-        }
-    }
-    if kept.is_empty() {
+    let outcome = destroy_in(root, provider, client_for).await;
+    if outcome.failed.is_empty() {
         return Ok(());
     }
+    let kept: Vec<String> = outcome
+        .failed
+        .iter()
+        .map(|f| format!("{}: {}", f.agent_id, f.error))
+        .collect();
     Err(Error::Other(format!(
         "{} spare cloud box(es) could not be destroyed and are kept: {}",
         kept.len(),
         kept.join("; ")
     )))
+}
+
+/// Destroy, in `root`, every spare of `provider` (every spare with `None`)
+/// whose directory has a handle, ready or not, with clients from
+/// `client_for`, and answer which went and which did not, each by its
+/// placeholder id. A directory with no handle belongs to no provider: it is
+/// removed when every provider's spares go, and left alone when one
+/// provider's do. What a sweep does in the spares root, under its hold
+/// ([`super::gate`]).
+pub(super) async fn destroy_in(
+    root: &Path,
+    provider: Option<ProviderId>,
+    client_for: &(impl Fn(ProviderId) -> Result<Client> + Sync),
+) -> super::CloudBoxesDestroyed {
+    let mut outcome = super::CloudBoxesDestroyed::default();
+    for found in found_in(root) {
+        let id = found
+            .dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let made = match &found.handle {
+            Ok(Some(handle)) if provider.map_or(true, |p| handle.provider() == p) => true,
+            Ok(None) if provider.is_none() => false,
+            Ok(_) => continue,
+            Err(e) => {
+                outcome.failed.push(super::CloudBoxNotDestroyed {
+                    agent_id: id,
+                    error: e.to_string(),
+                });
+                continue;
+            }
+        };
+        match retire(&found.dir, client_for).await {
+            Ok(()) if made => outcome.destroyed.push(id),
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(spare = %found.dir.display(), error = %e, "a spare cloud box could not be destroyed");
+                outcome.failed.push(super::CloudBoxNotDestroyed {
+                    agent_id: id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+    outcome
 }
 
 /// Whether a run of something single-flight is under way, and whether it was

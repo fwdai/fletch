@@ -106,6 +106,21 @@ pub const DEFAULT_PORT: u16 = 47285;
 /// The only path the listener serves.
 pub const WS_PATH: &str = "/ws";
 
+/// The pairing preset `preset` names ([`DEFAULT_PAIRING_PRESET`] for `None`)
+/// and the scopes it grants (`dispatch::preset_scopes`). An unknown name is
+/// refused rather than narrowed or widened: guessing would hand out access
+/// nobody asked for.
+fn pairing_preset(preset: Option<&str>) -> Result<(&str, Vec<Scope>)> {
+    let preset = preset.unwrap_or(DEFAULT_PAIRING_PRESET);
+    let scopes = dispatch::preset_scopes(preset).ok_or_else(|| {
+        Error::Other(format!(
+            "unknown pairing preset {preset:?}: expected one of {}",
+            PAIRING_PRESETS.join(", ")
+        ))
+    })?;
+    Ok((preset, scopes))
+}
+
 /// Same shape as the other `settings`-mirrored booleans in the crate
 /// (`rpc::approval`, `codegraph`): anything but the literal `"true"` is off.
 pub fn parse_enabled(raw: Option<&str>) -> bool {
@@ -627,13 +642,7 @@ impl RemoteState {
     /// existed. An unknown name is refused rather than narrowed or widened —
     /// guessing here would hand out access nobody asked for.
     pub fn begin_pairing(&self, preset: Option<&str>) -> Result<PairingInvite> {
-        let preset = preset.unwrap_or(DEFAULT_PAIRING_PRESET);
-        let scopes = dispatch::preset_scopes(preset).ok_or_else(|| {
-            Error::Other(format!(
-                "unknown pairing preset {preset:?}: expected one of {}",
-                PAIRING_PRESETS.join(", ")
-            ))
-        })?;
+        let (preset, scopes) = pairing_preset(preset)?;
         let minted = self.pairing.mint(&scopes);
         let host = host_info();
         let (port, relay_url) = {
@@ -726,6 +735,53 @@ impl RemoteState {
                 .close_device(&record.device_id, CLOSE_REPAIRED);
         }
         Ok(record)
+    }
+
+    /// Authorize a device by its public key, with no pairing code: the host's
+    /// operator vouches for it (`fletch-host devices add`) where a pairing
+    /// vouches with a code the operator handed out. `public_key` is the
+    /// device's Noise static key as the protocol writes it (base64url without
+    /// padding, 43 characters), `preset` its access as [`Self::begin_pairing`]
+    /// reads one, and a blank name or platform is recorded as a pairing device
+    /// that gives none is.
+    ///
+    /// A key already on file is left exactly as it is, name, platform and
+    /// access included, and answered with `true`: changing a device's access
+    /// is a revoke and a new authorization, as it is for pairing. A new key is
+    /// recorded as [`Self::pair_device`] records a paired one, and answered
+    /// with `false`.
+    pub fn authorize_device(
+        &self,
+        public_key: &str,
+        name: Option<&str>,
+        platform: Option<&str>,
+        preset: Option<&str>,
+    ) -> Result<(DeviceRecord, bool)> {
+        let public_key = public_key.trim();
+        let key = secure::pairing::decode(public_key, "the key").map_err(|_| {
+            Error::Other(format!(
+                "{public_key:?} is not a device's public key: expected 43 characters of \
+                 base64url, without padding"
+            ))
+        })?;
+        let (_, scopes) = pairing_preset(preset)?;
+        if let Some(existing) = self.devices.find_by_key(&key) {
+            return Ok((existing, true));
+        }
+        let given = |value: Option<&str>, otherwise: &str| {
+            value
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or(otherwise)
+                .to_string()
+        };
+        let record = self.pair_device(
+            &given(name, server::UNNAMED_DEVICE),
+            &given(platform, server::UNKNOWN_PLATFORM),
+            &key,
+            &scopes,
+        )?;
+        Ok((record, false))
     }
 
     /// Revoke a device and hang up on it.

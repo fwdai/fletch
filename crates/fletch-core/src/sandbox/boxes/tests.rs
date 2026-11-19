@@ -1177,6 +1177,202 @@ fn a_created_box_is_a_directory_with_a_data_disk() {
     assert_eq!(boxes, ["cloud-vm", "vm"]);
 }
 
+/// The wind-down a runner's deletion asks for: every cloud box this host
+/// has a directory for is destroyed at its provider and named, a box on this
+/// machine and a directory that is no box are left alone, and a box its
+/// provider will not delete is named with why. Nothing at the provider that
+/// no directory here refers to is touched.
+#[tokio::test]
+async fn winding_down_destroys_every_cloud_box_with_a_directory_and_nothing_else() {
+    use crate::cloud::fake::FakeCloud;
+
+    /// A boxes root holding two cloud boxes made at `fake`, a box on this
+    /// machine and a directory that is no box; and a box at `fake` that no
+    /// directory here refers to, as another install's would be.
+    async fn host_of(fake: &FakeCloud) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for id in ["glacier", "otter", "stranger"] {
+            let identity = BoxIdentity {
+                agent_id: id.into(),
+                project_id: "p".into(),
+                provider: "claude".into(),
+                writable_root: PathBuf::from(format!("/home/u/ws/{id}")),
+                rpc_dir: PathBuf::from(format!("/home/u/rpc/{id}")),
+                home: PathBuf::from("/home/u"),
+                shares: Vec::new(),
+            };
+            let spec = super::cloud::spec(&identity, "ssh-ed25519 AAAA engine".into());
+            let created = fake.client().create(&spec).await.unwrap();
+            if id != "stranger" {
+                let dir = root.path().join(id);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(
+                    dir.join(super::cloud::HANDLE_FILE),
+                    format!("{}\n", created.handle),
+                )
+                .unwrap();
+            }
+        }
+        let vm = root.path().join("vm");
+        std::fs::create_dir_all(&vm).unwrap();
+        std::fs::write(vm.join(super::registry::DATA_DISK), b"").unwrap();
+        std::fs::create_dir_all(root.path().join("never-booted")).unwrap();
+        root
+    }
+
+    super::gate::with_own_gate(async {
+        let no_spares = tempfile::tempdir().unwrap();
+        let fake = FakeCloud::start().await;
+        let root = host_of(&fake).await;
+        let mut outcome = super::destroy_cloud_boxes_in(
+            root.path(),
+            no_spares.path(),
+            &|_| Ok(fake.client()),
+            false,
+            || {},
+        )
+        .await;
+        outcome.destroyed.sort();
+        assert_eq!(outcome.destroyed, ["glacier", "otter"]);
+        assert!(outcome.failed.is_empty(), "{outcome:?}");
+        assert_eq!(fake.boxes(), 1, "the other install's box is still there");
+        assert!(root
+            .path()
+            .join("vm")
+            .join(super::registry::DATA_DISK)
+            .is_file());
+        assert!(
+            root.path().join("glacier").is_dir(),
+            "the directories stay: the handle is the record of what was there"
+        );
+        let again = super::destroy_cloud_boxes_in(
+            root.path(),
+            no_spares.path(),
+            &|_| Ok(fake.client()),
+            false,
+            || {},
+        )
+        .await;
+        assert_eq!(again.destroyed.len(), 2, "destroyed already is success");
+    })
+    .await;
+
+    super::gate::with_own_gate(async {
+        let no_spares = tempfile::tempdir().unwrap();
+        let refusing = FakeCloud::start().await;
+        let root = host_of(&refusing).await;
+        refusing.refuse_destroy();
+        let refused = super::destroy_cloud_boxes_in(
+            root.path(),
+            no_spares.path(),
+            &|_| Ok(refusing.client()),
+            false,
+            || {},
+        )
+        .await;
+        assert!(
+            refused.destroyed.is_empty(),
+            "a refused delete is not reported destroyed: {refused:?}"
+        );
+        let mut failed: Vec<&str> = refused.failed.iter().map(|f| f.agent_id.as_str()).collect();
+        failed.sort();
+        assert_eq!(failed, ["glacier", "otter"]);
+        assert!(refused.failed.iter().all(|f| !f.error.is_empty()));
+        let provider = refusing.client().provider();
+        assert!(
+            !super::gate::held(provider),
+            "the host goes on: its hold is released"
+        );
+
+        // The same refusal for a host that is deleted whatever it could
+        // destroy: it makes no machine from then on.
+        let for_good = super::destroy_cloud_boxes_in(
+            root.path(),
+            no_spares.path(),
+            &|_| Ok(refusing.client()),
+            true,
+            || panic!("no spares are asked for a host that is going"),
+        )
+        .await;
+        assert!(!for_good.failed.is_empty());
+        assert!(
+            super::gate::held(provider),
+            "kept for the rest of the process"
+        );
+    })
+    .await;
+}
+
+/// A workspace's box whose create is in flight when a wind-down begins: the
+/// wind-down does not read the boxes root until the box's handle is on disk,
+/// and then destroys that machine too; nothing is left at the provider, and
+/// the hold the finished wind-down keeps refuses the next box at once.
+#[tokio::test]
+async fn a_box_made_while_a_wind_down_begins_is_waited_for_and_swept() {
+    use crate::cloud::fake::FakeCloud;
+    use std::sync::Arc;
+
+    super::gate::with_own_gate(async {
+        let fake = FakeCloud::start().await;
+        let base = tempfile::tempdir().unwrap();
+        let (boxes, spares) = (base.path().join("boxes"), base.path().join("box-spares"));
+        let identity = |id: &str| BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from(format!("/home/u/ws/{id}")),
+            rpc_dir: PathBuf::from(format!("/home/u/rpc/{id}")),
+            home: PathBuf::from("/home/u"),
+            shares: Vec::new(),
+        };
+        let spec = |id: &str| super::cloud::spec(&identity(id), "ssh-ed25519 AAAA engine".into());
+        let glacier = boxes.join("glacier");
+        std::fs::create_dir_all(&glacier).unwrap();
+        let client = Arc::new(fake.client());
+        fake.hold_creates();
+
+        let glacier_spec = spec("glacier");
+        let making = super::cloud::machine_up(&client, &glacier, &glacier_spec, &|_| {});
+        let client_for = |_: crate::cloud::ProviderId| Ok(fake.client());
+        let winding_down = async {
+            while fake.boxes() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let (outcome, ()) = tokio::join!(
+                super::destroy_cloud_boxes_in(&boxes, &spares, &client_for, false, || {}),
+                async {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    assert!(
+                        !super::cloud::is_cloud_dir(&glacier),
+                        "the create is in flight: no handle yet"
+                    );
+                    assert!(
+                        !fake.acts().contains(&"destroy"),
+                        "nothing read or destroyed yet"
+                    );
+                    fake.release_creates();
+                }
+            );
+            outcome
+        };
+        let (made, outcome) = tokio::join!(making, winding_down);
+
+        made.unwrap();
+        assert_eq!(outcome.destroyed, ["glacier"], "{outcome:?}");
+        assert!(outcome.failed.is_empty(), "{outcome:?}");
+        assert_eq!(fake.boxes(), 0, "nothing left at the provider");
+
+        let shasta = boxes.join("shasta");
+        std::fs::create_dir_all(&shasta).unwrap();
+        let refused = super::cloud::machine_up(&client, &shasta, &spec("shasta"), &|_| {})
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("being deleted"), "{refused}");
+        assert_eq!(fake.boxes(), 0, "no machine made after the wind-down");
+    })
+    .await;
+}
+
 /// A guest whose network goes through the egress proxy is pointed at it in
 /// every env it gets; a cloud box's machine has a network of its own and gets
 /// no proxy variable at all, and nothing else differs.

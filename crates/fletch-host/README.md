@@ -8,7 +8,8 @@ same engine the desktop app runs, booted by the same function
 microphone or a window.
 
 Unix only: **Linux** (x86-64 and arm64) and **macOS** (Apple silicon). On Linux
-agents run in boxes, one KVM micro-VM each, so the machine needs KVM (see "The
+agents run in boxes, one KVM micro-VM each, so the machine needs KVM, or a
+connected cloud provider whose machines the boxes run on instead (see "The
 sandbox") — there is no `sandbox-exec` to fall back to, and a spawn is refused
 rather than run outside the boundary it promised.
 
@@ -265,11 +266,94 @@ On a virtual server there is a `/dev/kvm` only if the provider passes
 virtualization through to your VM (nested virtualization): Hetzner Cloud,
 DigitalOcean and most KVM-based VPS do; on AWS only the bare-metal (`*.metal`)
 instances do; on GCP it is a per-instance flag (`--enable-nested-virtualization`).
-Without KVM the host still starts, so it can be paired and inspected, but it
-logs what is missing at boot and refuses every spawn with that reason rather
-than run an agent unsandboxed. The macOS sandbox is never offered on Linux:
+Without KVM the host still starts, so it can be paired and inspected, and it
+logs what is missing at boot. A new workspace there gets a box whose machine
+is at a connected cloud provider (see "Cloud providers"); with none connected,
+every spawn is refused with the reason rather than run an agent unsandboxed.
+The macOS sandbox is never offered on Linux:
 the composer lists it as unavailable, and a spawn that asks for it anyway is
 refused the same way. Docker and Podman are not supported.
+
+## Cloud providers
+
+A host that cannot boot a box (Linux without KVM) can run its agents' boxes on
+machines at a cloud provider instead: the same guest, made at the provider and
+reached over SSH, one machine per workspace, at rest when idle and destroyed
+with the workspace ([docs/box.md](../../docs/box.md), "Cloud boxes"). The
+provider's API token is held by the host, in its database, and never sent to a
+machine.
+
+```sh
+fletch-host cloud status
+fletch-host cloud connect <provider>              # reads the token from stdin
+fletch-host cloud connect <provider> --account <account>
+fletch-host cloud disconnect <provider>
+```
+
+`cloud status` prints one line per provider this build knows: its id (what the
+other two commands take), its name, and either the account it is connected in
+or the command that connects it. `cloud connect` prints where to get a token
+and reads it from stdin — typed at a prompt that does not echo it, or piped in
+(`fletch-host cloud connect <provider> < token-file`), one line, never as an
+argument or an environment variable. The host checks it with the provider
+before storing anything, so a wrong token or account fails (exit 1) and leaves
+what was stored before; it then prints `connected <provider> (<account>)` and
+what the provider bills. `--account` defaults to the provider's own default.
+`cloud disconnect` destroys the provider's spare machines (below) and forgets
+the token: workspaces' machines made with it stay at the provider, and their
+workspaces do not start until it is connected again.
+
+With a provider connected and no box possible on this machine, a new workspace
+whose spawn names no workspace type — every spawn from a paired phone — gets a
+box at the first connected provider that can run its agent CLI, and
+`available_workspace_types` marks that one as the default. A reviewer works in
+its coder's box, wherever that is. A host that can boot a box keeps using its
+own, and macOS keeps `sandbox-exec`, whatever is connected. The host reaches
+the machines with its own `/usr/bin/ssh`, `/usr/bin/ssh-keygen` and
+`/usr/bin/openssl`, and an agent still signs in with the host user's login for
+its CLI (see "Log in to the provider CLIs first").
+
+`cloud connect` and `cloud disconnect` are the desktop's own: a connect makes
+the provider's spare machines in the background (how many is the box
+setting), and a disconnect destroys them first, refusing while one cannot be
+destroyed.
+
+`destroy_cloud_boxes` (an admin op, below) destroys at its provider every
+machine this host has made there, its spares and then every workspace's
+machine, live or not, after refusing any new one and waiting for one being
+made. When all of them went, or its argument `final` is true (the host is
+deleted whatever could be destroyed), this process makes no machine again;
+otherwise it goes on as before, spares included. It answers
+`{ "destroyed": [<id>…], "failed": [{ "agentId", "error" }…] }`, a spare by
+its `spare-…` id and a workspace's machine by its agent id. It is what the
+desktop asks a cloud runner before deleting it with its disk — a
+`fletch-host` the desktop runs on a provider machine
+([docs/cloud-runner-setup.md](../../docs/cloud-runner-setup.md)) — and only
+ever touches machines this host has a directory for.
+
+## Scripting the admin socket
+
+Every subcommand but `serve`, `service` and `update` is one or two ops on the
+admin socket. `call` asks one op directly and prints its result as one line of
+JSON, for a script or for an engine driving the host over SSH:
+
+```sh
+fletch-host call status
+echo '{"preset":"control"}' | fletch-host call begin_pairing
+fletch-host call cloud_connect < args.json   # {"provider":…,"token":…,"account":…}
+```
+
+The op's arguments are a JSON object read from stdin — none when stdin is a
+terminal or blank — so a token among them is never on a command line, in `ps`
+or in a shell's history. An op that fails exits 1 with the host's error on
+stderr and nothing on stdout. The ops, with their arguments: `status`;
+`begin_pairing` (`preset`); `devices_list`; `add_device` (`publicKey`, `name`,
+`platform`, `preset`); `revoke_device` (`deviceId`); `approvals_list`;
+`answer_publish_approval` (`id`, `approved`); `github_login_start`;
+`github_login_status`; `project_add` (`path`); `project_clone` (`spec`,
+`destParent`); `provider_status`; `provider_login_command` (`id`);
+`cloud_status`; `cloud_connect` (`provider`, `token`, `account`);
+`cloud_disconnect` (`provider`); `destroy_cloud_boxes` (`final`).
 
 ## Pair a phone
 
@@ -291,6 +375,23 @@ fletch-host status                 # what the host is doing, as JSON
 fletch-host devices list
 fletch-host devices revoke <id>    # also hangs up on the device immediately
 ```
+
+A device can also be authorized with no code, by its public key — the 43
+characters of base64url its identity is written in — for a script that sets a
+host up for a device it already knows:
+
+```sh
+fletch-host devices add <public-key> --name "Alex's laptop" --platform macos
+```
+
+`--scope full|control` is `pair`'s (`full` by default), and `--name` and
+`--platform` are what `devices list` shows (`Unnamed device` and `unknown`
+without them). It prints `authorized <id>  <name> (<platform>)  <access>`. A key
+that is already authorized is left exactly as it is, name and access included:
+the command succeeds, prints `already authorized, nothing changed: …` and
+exits 0, so running it twice is harmless. Changing a device's access is
+`devices revoke` and `devices add` again. A string that is not a key is refused
+(exit 1) before anything is stored.
 
 `status` is one document: everything the desktop's Settings pane shows about
 remote access (`enabled`, `listening`, the bound `port`, `name`, `hostId`,

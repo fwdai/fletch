@@ -9,7 +9,9 @@
 //! client is written out by hand, because the client is the phone.
 //!
 //! No agent is ever spawned: that would need a provider binary, and none of
-//! what is under test here goes anywhere near one.
+//! what is under test here goes anywhere near one. A device the operator
+//! authorizes by its key, with no code, is the last step: the same handshake,
+//! with nothing to pair.
 
 use std::time::Duration;
 
@@ -140,6 +142,48 @@ async fn a_phone_pairs_with_a_headless_host_and_a_revoke_hangs_up_on_it() {
             .is_some_and(|devices| devices.is_empty()),
         "the revoked device is gone from the store"
     );
+
+    // 4. A device authorized from the socket by its key alone, with no code:
+    //    its first connection is a `hello`, as a paired device's second is.
+    let laptop = StaticKey::generate().unwrap();
+    let add = json!({
+        "publicKey": laptop.public_base64(),
+        "name": "test laptop",
+        "platform": "macos",
+        "preset": "control",
+    });
+    let added = admin::call(&data_dir, "add_device", add.clone())
+        .await
+        .expect("add_device");
+    assert_eq!(added["alreadyAuthorized"], json!(false), "{added}");
+    assert_eq!(added["name"], json!("test laptop"), "{added}");
+    assert!(
+        !added["scopes"].to_string().contains("publish"),
+        "the control preset grants no publish: {added}"
+    );
+    let (mut ws, mut channel) = dial(port, &host_id, &laptop).await;
+    let hello = request(&mut ws, &mut channel, "4", "hello", json!({}))
+        .await
+        .expect("an authorized key says hello without pairing");
+    assert_eq!(hello["host"]["name"], json!("test host"), "{hello}");
+
+    // Authorizing it again is a success that changes nothing.
+    let again = admin::call(
+        &data_dir,
+        "add_device",
+        json!({ "publicKey": laptop.public_base64(), "name": "renamed", "preset": "full" }),
+    )
+    .await
+    .expect("add_device again");
+    assert_eq!(again["alreadyAuthorized"], json!(true), "{again}");
+    assert_eq!(again["deviceId"], added["deviceId"], "{again}");
+    assert_eq!(again["name"], json!("test laptop"), "{again}");
+    assert_eq!(again["scopes"], added["scopes"], "{again}");
+
+    let refusal = admin::call(&data_dir, "add_device", json!({ "publicKey": "not-a-key" }))
+        .await
+        .unwrap_err();
+    assert!(refusal.contains("43 characters"), "{refusal}");
 }
 
 /// Open a connection and run the Noise handshake, pinning the host key the

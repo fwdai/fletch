@@ -303,6 +303,32 @@ impl Channel {
             .map_err(Error::io("run ssh"))
     }
 
+    /// Runs `cmd` in the guest with `input` on its stdin, and collects its
+    /// output: for what a command takes that must never pass through argv. A
+    /// non-zero exit is in the `Output`; ssh itself failing to connect exits
+    /// 255.
+    pub async fn exec_with_input(&self, cmd: &[&str], input: &[u8]) -> Result<Output> {
+        let mut child = self
+            .ssh()
+            .arg(guest::SSH_HOST_ALIAS)
+            .args(Self::remote_command(None, None, cmd))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(Error::io("spawn ssh"))?;
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        stdin
+            .write_all(input)
+            .await
+            .map_err(Error::io("write to ssh"))?;
+        drop(stdin);
+        child
+            .wait_with_output()
+            .await
+            .map_err(Error::io("wait for ssh"))
+    }
+
     /// Program and arguments for a PTY session running `cmd` in the guest.
     pub fn pty_command(&self, cwd: &Path, env_file: &Path, cmd: &[&str]) -> (PathBuf, Vec<String>) {
         let mut args = vec![

@@ -500,7 +500,12 @@ the x86_64 release, once per tag. The app pins it beside the box image
 A workspace can run in a box whose machine is made at a cloud provider
 (Fly.io first) instead of on this Mac: the composer lists `cloud:<provider>`
 for every provider connected in Settings › Cloud
-(`sandbox::workspace_types`). It is the box engine all the same
+(`sandbox::workspace_types`). It is the default only on a host with no
+sandbox of its own, neither the macOS sandbox nor a box that can boot (a
+Linux `fletch-host` without KVM, connected with `fletch-host cloud connect`):
+there a spawn that names no workspace type gets one at the first connected
+provider that can run its agent CLI (`sandbox::default_workspace_type`). It
+is the box engine all the same
 (`sandbox_engine` is `box`): the engine, the workspace's record and every
 credential stay on this machine; the machine runs the cloud image and is
 reached over ssh across the network. `workspaces.cloud_provider` (migration

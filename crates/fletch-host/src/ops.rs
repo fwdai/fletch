@@ -11,9 +11,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
+use fletch_core::cloud::{self, ProviderId};
 use fletch_core::host::Engine;
 use fletch_core::remote::RemoteState;
-use fletch_core::{commands, rpc};
+use fletch_core::{commands, rpc, sandbox};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -91,6 +92,27 @@ impl Admin {
                 value(&invite)
             }
             "devices_list" => value(&remote(engine)?.status().devices),
+            // A device authorized by its public key alone, with no code: the
+            // operator vouches for it. `preset` is `begin_pairing`'s.
+            "add_device" => {
+                let args: AddDeviceArgs = parse(args)?;
+                let (device, already) = remote(engine)?
+                    .authorize_device(
+                        &args.public_key,
+                        args.name.as_deref(),
+                        args.platform.as_deref(),
+                        args.preset.as_deref(),
+                    )
+                    .map_err(|e| e.to_string())?;
+                // The record's identity and grant, never its push token.
+                Ok(json!({
+                    "deviceId": device.device_id,
+                    "name": device.name,
+                    "platform": device.platform,
+                    "scopes": device.scopes,
+                    "alreadyAuthorized": already,
+                }))
+            }
             "revoke_device" => {
                 let args: DeviceArgs = parse(args)?;
                 match remote(engine)?.revoke_device(&args.device_id) {
@@ -137,6 +159,54 @@ impl Admin {
             "provider_login_command" => {
                 let args: ProviderArgs = parse(args)?;
                 provider::login_spec(&args.id)
+            }
+            // ── Cloud providers (`fletch_core::cloud`) ─────────────────────
+            // The account a workspace's machine is made in where this host
+            // cannot boot a box (`sandbox::default_workspace_type`). The
+            // desktop's `cloud_*` commands, through the same engine halves
+            // (`commands::cloud_connect_impl`, `cloud_disconnect_impl`), never
+            // on the remote wire: the token is the whole account. It arrives
+            // in `cloud_connect`'s arguments, which the socket does not log,
+            // and the engine stores it without ever putting it in an answer
+            // or an error. A connect then makes the provider's spare machines
+            // in the background; a disconnect destroys them first, and is
+            // refused while one cannot be destroyed.
+            "cloud_status" => {
+                value(&cloud::statuses(&engine.db.lock()).map_err(|e| e.to_string())?)
+            }
+            "cloud_connect" => {
+                let args: CloudConnectArgs = parse(args)?;
+                let provider = cloud_provider(&args.provider)?;
+                let status = commands::cloud_connect_impl(
+                    &engine.db,
+                    provider,
+                    &args.token,
+                    args.account.as_deref(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+                value(&status)
+            }
+            "cloud_disconnect" => {
+                let args: CloudArgs = parse(args)?;
+                commands::cloud_disconnect_impl(&engine.db, cloud_provider(&args.provider)?)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(Value::Null)
+            }
+            // Every machine this host made at a provider, its spares and its
+            // workspaces' boxes, destroyed there, with which went and which
+            // did not (`{ destroyed: [<id>], failed: [{ agentId, error }] }`).
+            // While it runs the host makes no machine; it goes on making
+            // none when every one went, or when `final` says the host is
+            // deleted whatever could be destroyed, and makes them again
+            // otherwise. What the engine that made this host on a provider
+            // machine (a runner) asks first when it deletes it with its
+            // disk, so that nothing the runner made is left at the provider
+            // with no record of it (`fletch_core::cloud_runner::delete`).
+            "destroy_cloud_boxes" => {
+                let for_good = args.get("final").and_then(Value::as_bool).unwrap_or(false);
+                value(&sandbox::boxes::destroy_cloud_boxes(for_good).await)
             }
             _ => Err(UNKNOWN_OP.to_string()),
         }
@@ -204,6 +274,18 @@ fn remote(engine: &Engine) -> Result<&Arc<RemoteState>, String> {
     engine.remote.as_ref().ok_or(NO_REMOTE.to_string())
 }
 
+/// The cloud provider `id` names (`ProviderId::as_str`), or an error that
+/// lists the ones this build knows.
+fn cloud_provider(id: &str) -> Result<ProviderId, String> {
+    ProviderId::parse(id).ok_or_else(|| {
+        let known: Vec<&str> = ProviderId::ALL.iter().map(|p| p.as_str()).collect();
+        format!(
+            "unknown cloud provider {id:?}: expected one of {}",
+            known.join(", ")
+        )
+    })
+}
+
 fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
     serde_json::from_value(args).map_err(|e| e.to_string())
 }
@@ -216,6 +298,20 @@ fn value<T: serde::Serialize>(value: &T) -> Result<Value, String> {
 #[serde(rename_all = "camelCase")]
 struct DeviceArgs {
     device_id: String,
+}
+
+/// `add_device`'s arguments: the device's public key, and what it is called,
+/// what it runs on and what it may do, each optional as in a pairing.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddDeviceArgs {
+    public_key: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    platform: Option<String>,
+    #[serde(default)]
+    preset: Option<String>,
 }
 
 /// `begin_pairing`'s one optional argument. Absent is `full`, so a caller that
@@ -251,6 +347,21 @@ struct ProviderArgs {
     id: String,
 }
 
+/// A cloud provider (`ProviderId::as_str`), for `cloud_disconnect`.
+#[derive(Deserialize)]
+struct CloudArgs {
+    provider: String,
+}
+
+/// `cloud_connect`'s arguments. No `Debug`: the token is in here.
+#[derive(Deserialize)]
+struct CloudConnectArgs {
+    provider: String,
+    token: String,
+    #[serde(default)]
+    account: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,12 +373,35 @@ mod tests {
     #[tokio::test]
     async fn an_op_asked_before_the_engine_lands_says_the_host_is_starting() {
         let admin = Admin::new(PathBuf::from("/nonexistent"));
-        for op in ["status", "devices_list", "provider_status", "spawn_agent"] {
+        for op in [
+            "status",
+            "devices_list",
+            "add_device",
+            "provider_status",
+            "cloud_status",
+            "cloud_connect",
+            "destroy_cloud_boxes",
+            "spawn_agent",
+        ] {
             assert_eq!(
                 admin.call(op, json!({})).await,
                 Err(STARTING.to_string()),
                 "{op} answered something else while the host was booting"
             );
+        }
+    }
+
+    /// The cloud ops take a provider as the engine spells it, and refuse any
+    /// other string with the ones this build knows.
+    #[test]
+    fn a_cloud_provider_is_named_as_the_engine_spells_it() {
+        for &provider in ProviderId::ALL {
+            assert_eq!(cloud_provider(provider.as_str()), Ok(provider));
+        }
+        let refusal = cloud_provider("nowhere").unwrap_err();
+        assert!(refusal.contains("\"nowhere\""), "{refusal}");
+        for &provider in ProviderId::ALL {
+            assert!(refusal.contains(provider.as_str()), "{refusal}");
         }
     }
 }

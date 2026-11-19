@@ -53,6 +53,14 @@ pub const ENV_SSH_PORT: &str = "FLETCH_BOX_SSH_PORT";
 /// A cloud box's ssh host key, one OpenSSH public key line, written by the
 /// entrypoint before sshd starts; the host reads it through the provider.
 pub const CLOUD_HOST_KEY: &str = "/data/ssh/host_key.pub";
+/// Where a cloud machine's disk holds a host service of its own, and the
+/// start script in it: when the script is there, the entrypoint runs it at
+/// every start of the machine, as [`USER`], in the background, with an empty
+/// environment, before sshd (a runner's `fletch-host`, which the engine that
+/// made the machine put there). A box has none. `scripts/check-cloud-image.sh`
+/// holds the script's path to the entrypoint's.
+pub const CLOUD_HOST_DIR: &str = "/data/host";
+pub const CLOUD_HOST_SERVICE: &str = "/data/host/start";
 
 /// Guest paths.
 pub const INIT: &str = "/opt/fletch/init";

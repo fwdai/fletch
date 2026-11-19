@@ -29,8 +29,11 @@
 //! on port 443 (its `tls` handler, with the `*.fly.dev` certificate) and
 //! forwards the plaintext to the guest's sshd, so the engine reaches the guest
 //! with ssh behind a TLS client ([`Endpoint::Tls`]). Fly never starts, stops or
-//! restarts the machine by itself — no restart policy, no autostop, no
-//! autostart — because the engine owns its lifecycle.
+//! restarts a box's machine by itself — no restart policy, no autostop, no
+//! autostart — because the engine owns its lifecycle. A machine whose spec
+//! asks to be kept running (a runner's, [`MachineSpec::keep_running`]) gets
+//! Fly's `on-failure` restart policy instead ([`KEEP_RUNNING_POLICY`]), and
+//! still no autostop or autostart.
 //!
 //! A parked machine ([`Client::park`]) is suspended: Fly snapshots it, its
 //! memory included, and the next start resumes it from the snapshot rather
@@ -136,6 +139,22 @@ const TLS_PORT: u16 = 443;
 /// workspace is on the volume — which is the cache-like use Fly offers it for:
 /// worth keeping across a stop, not worth keeping over a new image.
 const PERSIST_ROOTFS: &str = "restart";
+
+/// The restart policy of a machine kept running ([`MachineSpec::keep_running`]),
+/// as Fly documents its three (<https://docs.fly.io/machines/guides-examples/machine-restart-policy/>,
+/// read November 2026): `no` — "Never try to restart a Machine automatically
+/// when its main process exits, whether that's on purpose or on a crash" — is
+/// a box's; `always` — "never let it enter a `stopped` state, even when the
+/// main process exits cleanly" — would fight a person's stop, and what an
+/// explicit stop does under it is not documented; `on-failure` restarts it
+/// when its main process "exits with a non-zero exit code", up to
+/// `max_retries` (10 by default) in five minutes, and is Fly's default and its
+/// recommendation for machines its proxy stops and wakes, which a policy that
+/// undid a requested stop would defeat. The policy is defined on the main
+/// process exiting ("whether and how flyd restarts a Machine after its main
+/// process exits", the API's description); what Fly does with a machine whose
+/// host restarts is not documented for any policy.
+const KEEP_RUNNING_POLICY: &str = "on-failure";
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Creating a machine may not answer until Fly has resolved its image, and a
@@ -1355,9 +1374,10 @@ fn guest(spec: &MachineSpec) -> Value {
 /// The create-machine request for a box: the image with its environment and
 /// size, in the volume's region with the volume mounted where the guest keeps
 /// the box's files, one TCP service taking TLS on 443 to the guest's sshd,
-/// nothing that would start, stop or restart the machine behind the engine's
-/// back, the root filesystem kept across a stop (best effort), and the box's
-/// label.
+/// nothing that would start or stop the machine behind the engine's back and
+/// no restart unless the spec asks for it to be kept running
+/// ([`KEEP_RUNNING_POLICY`]), the root filesystem kept across a stop (best
+/// effort), and the box's label.
 fn machine_body(app: &str, spec: &MachineSpec, volume: &str, region: &str) -> Value {
     let env: Map<String, Value> = spec
         .env
@@ -1368,6 +1388,11 @@ fn machine_body(app: &str, spec: &MachineSpec, volume: &str, region: &str) -> Va
     metadata.insert(LABEL.into(), Value::from(spec.name.as_str()));
     let mut sizing = guest(spec);
     sizing["persist_rootfs"] = json!(PERSIST_ROOTFS);
+    let restart = if spec.keep_running {
+        KEEP_RUNNING_POLICY
+    } else {
+        "no"
+    };
     json!({
         "name": app,
         "region": region,
@@ -1377,7 +1402,7 @@ fn machine_body(app: &str, spec: &MachineSpec, volume: &str, region: &str) -> Va
             "guest": sizing,
             "rootfs": { "persist": PERSIST_ROOTFS },
             "mounts": [{ "volume": volume, "path": fletch_box::guest::DATA_MOUNT }],
-            "restart": { "policy": "no" },
+            "restart": { "policy": restart },
             "auto_destroy": false,
             "metadata": metadata,
             "services": [{

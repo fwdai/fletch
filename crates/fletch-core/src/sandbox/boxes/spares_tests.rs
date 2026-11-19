@@ -4,7 +4,9 @@
 //! reached over ssh, and the installs it is asked for are recorded.
 
 use std::sync::Barrier;
+use std::time::Duration;
 
+use super::super::gate;
 use super::*;
 use crate::cloud::fake::FakeCloud;
 
@@ -130,35 +132,51 @@ async fn a_preparation_that_fails_destroys_what_it_made() {
     assert_eq!(unreachable.boxes(), 1);
 }
 
-/// A spare whose provider is disconnected while it is made is not marked
-/// ready: the disconnect destroyed the provider's spares before it was one,
-/// so it destroys itself, through the client it was made with.
-#[tokio::test]
-async fn a_spare_made_while_its_provider_is_disconnected_destroys_itself() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let fake = FakeCloud::start().await;
-    let root = tempfile::tempdir().unwrap();
-    let connected = AtomicBool::new(true);
-    let client_for = |provider: ProviderId| -> Result<Client> {
-        if connected.swap(false, Ordering::SeqCst) {
-            Ok(fake.client())
-        } else {
-            Err(Error::SandboxUnavailable(cloud::not_connected(provider)))
-        }
-    };
+/// A guest whose install takes a sweep's hold on the spare's provider, as a
+/// disconnect that begins once the spare's machine is made would: the hold
+/// is kept here for the rest of the preparation.
+#[derive(Default)]
+struct HoldingGuest {
+    hold: Mutex<Option<super::super::gate::Hold>>,
+}
 
-    let err = prepare(
-        root.path(),
-        &build(&fake, &[]),
-        &client_for,
-        &FakeGuest::default(),
-    )
-    .await
-    .unwrap_err();
-    assert!(err.to_string().contains("was disconnected"), "{err}");
-    assert_eq!(fake.acts(), ["create", "exec", "park", "destroy"]);
-    assert_eq!(fake.boxes(), 0);
-    assert!(spares(root.path()).is_empty());
+impl Guest for HoldingGuest {
+    async fn reach(&self, dir: &Path, _key: &Path, _handle: &Handle) -> Result<Channel> {
+        Ok(Channel::open(dir))
+    }
+
+    async fn install(&self, _machine: &CloudMachine, _channel: &Channel, _cli: &str) -> Result<()> {
+        let hold = super::super::gate::hold(Some(ProviderId::ALL[0])).await;
+        assert!(hold.settled(), "the spare's make is done");
+        *self.hold.lock() = Some(hold);
+        Ok(())
+    }
+}
+
+/// A spare a sweep began to hold the provider of after its machine was made
+/// is not marked ready, so no taker has it: it destroys itself, through the
+/// client it was made with.
+#[tokio::test]
+async fn a_spare_finished_under_a_sweeps_hold_is_not_marked_ready() {
+    super::super::gate::with_own_gate(async {
+        let fake = FakeCloud::start().await;
+        let root = tempfile::tempdir().unwrap();
+        let guest = HoldingGuest::default();
+
+        let err = prepare(
+            root.path(),
+            &build(&fake, &[("claude", "2.1.0")]),
+            &|_| Ok(fake.client()),
+            &guest,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("being deleted"), "{err}");
+        assert_eq!(fake.acts(), ["create", "exec", "park", "destroy"]);
+        assert_eq!(fake.boxes(), 0);
+        assert!(spares(root.path()).is_empty());
+    })
+    .await;
 }
 
 /// A new box asks for a replenish whether or not there was a spare to take,
@@ -536,4 +554,173 @@ async fn a_replenish_runs_one_at_a_time() {
 
     single_flight(&flight, work).await;
     assert_eq!(runs.load(Ordering::SeqCst), 3);
+}
+
+/// What a sweep does in the spares root: every directory with a handle goes,
+/// ready or not, and is named; one with nothing made goes unnamed; one whose
+/// box its provider will not delete is named with why and kept, its only
+/// handle.
+#[tokio::test]
+async fn a_sweep_destroys_every_spare_ready_or_not_and_names_one_it_could_not() {
+    let fake = FakeCloud::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let guest = FakeGuest::default();
+    let client_for = |_: ProviderId| -> Result<Client> { Ok(fake.client()) };
+    let wanted = build(&fake, &[]);
+    let mut made = Vec::new();
+    for _ in 0..2 {
+        let dir = prepare(root.path(), &wanted, &client_for, &guest)
+            .await
+            .unwrap();
+        made.push(dir.file_name().unwrap().to_string_lossy().into_owned());
+    }
+    let unfinished = root.path().join(&made[1]);
+    std::fs::remove_file(unfinished.join(READY_FILE)).unwrap();
+    std::fs::create_dir_all(root.path().join("spare-000000000000")).unwrap();
+
+    let mut outcome = destroy_in(root.path(), None, &client_for).await;
+    outcome.destroyed.sort();
+    made.sort();
+    assert_eq!(outcome.destroyed, made, "the unready one too");
+    assert!(outcome.failed.is_empty(), "{outcome:?}");
+    assert!(spares(root.path()).is_empty());
+    assert_eq!(fake.boxes(), 0);
+
+    let refusing = FakeCloud::start().await;
+    let kept = prepare(root.path(), &wanted, &|_| Ok(refusing.client()), &guest)
+        .await
+        .unwrap();
+    refusing.refuse_destroy();
+    let outcome = destroy_in(root.path(), None, &|_| Ok(refusing.client())).await;
+    assert!(outcome.destroyed.is_empty());
+    let [failed] = &outcome.failed[..] else {
+        panic!("one spare not destroyed: {outcome:?}");
+    };
+    assert_eq!(failed.agent_id, kept.file_name().unwrap().to_string_lossy());
+    assert!(!failed.error.is_empty());
+    assert!(cloud::is_cloud_dir(&kept), "kept with its handle");
+}
+
+/// A replenish that meets a hold makes nothing, and fails as any
+/// preparation does; once the hold is gone, the next one makes the spare.
+#[tokio::test]
+async fn a_replenish_under_a_hold_makes_nothing_and_the_next_one_does() {
+    gate::with_own_gate(async {
+        let fake = FakeCloud::start().await;
+        let root = tempfile::tempdir().unwrap();
+        let client_for = |_: ProviderId| -> Result<Client> { Ok(fake.client()) };
+        let wanted = build(&fake, &[]);
+
+        let hold = gate::hold(Some(fake.client().provider())).await;
+        replenish_with(
+            root.path(),
+            std::slice::from_ref(&wanted),
+            2,
+            &client_for,
+            &FakeGuest::default(),
+        )
+        .await;
+        assert_eq!(fake.boxes(), 0, "no machine made under the hold");
+        assert!(spares(root.path()).is_empty());
+
+        drop(hold);
+        replenish_with(
+            root.path(),
+            &[wanted],
+            1,
+            &client_for,
+            &FakeGuest::default(),
+        )
+        .await;
+        assert_eq!(spares(root.path()).len(), 1);
+        assert_eq!(fake.boxes(), 1);
+    })
+    .await;
+}
+
+/// The reviewer's interleaving: a spare's preparation is inside its create
+/// when a provider's disconnect begins. The disconnect's hold waits until the
+/// create's handle is on disk, its sweep then destroys that machine, and the
+/// hold is dropped; the preparation, carrying on past its create, fails and
+/// cleans up. No machine is left at the provider and no spare is ready.
+#[tokio::test]
+async fn a_preparation_in_flight_across_a_disconnect_leaves_nothing() {
+    gate::with_own_gate(async {
+        let fake = FakeCloud::start().await;
+        let root = tempfile::tempdir().unwrap();
+        let provider = fake.client().provider();
+        let client_for = |_: ProviderId| -> Result<Client> { Ok(fake.client()) };
+        let wanted = build(&fake, &[("claude", "2.1.0")]);
+        fake.hold_creates();
+
+        let guest = FakeGuest::default();
+        let preparing = prepare(root.path(), &wanted, &client_for, &guest);
+        let disconnecting = async {
+            while fake.boxes() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let (hold, ()) = tokio::join!(gate::hold(Some(provider)), async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(
+                    spares(root.path())
+                        .iter()
+                        .all(|dir| !cloud::is_cloud_dir(dir)),
+                    "the create is still in flight: no handle yet"
+                );
+                assert!(!fake.acts().contains(&"destroy"), "the sweep has not begun");
+                fake.release_creates();
+            });
+            assert!(hold.settled(), "the make finished with its handle on disk");
+            let swept = destroy_all_in(root.path(), Some(provider), &client_for).await;
+            drop(hold);
+            swept
+        };
+        let (prepared, swept) = tokio::join!(preparing, disconnecting);
+
+        assert!(prepared.is_err(), "the preparation fails: {prepared:?}");
+        swept.unwrap();
+        assert_eq!(fake.boxes(), 0, "no machine left at the provider");
+        assert!(spares(root.path()).is_empty(), "and no spare");
+    })
+    .await;
+}
+
+/// A wind-down that cannot destroy everything releases its hold and asks
+/// for a replenish, so the host it was asked of goes on as before: the next
+/// replenish makes a spare.
+#[tokio::test]
+async fn a_refused_wind_down_releases_its_hold_and_spares_are_made_again() {
+    gate::with_own_gate(async {
+        let refusing = FakeCloud::start().await;
+        let base = tempfile::tempdir().unwrap();
+        let (boxes, root) = (base.path().join("boxes"), base.path().join("box-spares"));
+        std::fs::create_dir_all(&root).unwrap();
+        let client_for = |_: ProviderId| -> Result<Client> { Ok(refusing.client()) };
+        let wanted = build(&refusing, &[]);
+        let dir = boxes.join("glacier");
+        std::fs::create_dir_all(&dir).unwrap();
+        cloud::machine_up(
+            &Arc::new(refusing.client()),
+            &dir,
+            &cloud::spec(&identity("glacier"), "ssh-ed25519 AAAA engine".into()),
+            &|_| {},
+        )
+        .await
+        .unwrap();
+        refusing.refuse_destroy();
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+
+        let outcome =
+            super::super::destroy_cloud_boxes_in(&boxes, &root, &client_for, false, || {
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
+        assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!gate::held(refusing.client().provider()), "released");
+
+        replenish_with(&root, &[wanted], 1, &client_for, &FakeGuest::default()).await;
+        assert_eq!(spares(&root).len(), 1, "a spare is made again");
+    })
+    .await;
 }

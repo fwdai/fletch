@@ -23,6 +23,8 @@ const ORG: &str = "acme";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Shape {
     Running,
+    /// On its way to running.
+    Starting,
     Stopped,
     /// The machine deleted, the disk kept.
     MachineGone,
@@ -45,6 +47,9 @@ struct Account {
     boxes: BTreeMap<String, Box>,
     acts: Vec<&'static str>,
     refuse_destroy: bool,
+    /// New machines stay starting until [`FakeCloud::release_creates`], so a
+    /// create is in flight for as long as a test wants.
+    hold_creates: bool,
     next_id: u32,
 }
 
@@ -93,11 +98,11 @@ impl FakeCloud {
         }
         for b in account.boxes.values_mut() {
             match shape {
-                Shape::Running | Shape::Stopped => {
-                    let state = if shape == Shape::Running {
-                        "started"
-                    } else {
-                        "stopped"
+                Shape::Running | Shape::Starting | Shape::Stopped => {
+                    let state = match shape {
+                        Shape::Running => "started",
+                        Shape::Starting => "starting",
+                        _ => "stopped",
                     };
                     if let Some((_, s)) = &mut b.machine {
                         *s = state;
@@ -113,6 +118,25 @@ impl FakeCloud {
     /// Refuse every delete from now on, as an unreachable provider would.
     pub(crate) fn refuse_destroy(&self) {
         self.account.lock().unwrap().refuse_destroy = true;
+    }
+
+    /// Keep every machine made from now on starting, so the create that made
+    /// it waits, until [`release_creates`](Self::release_creates).
+    pub(crate) fn hold_creates(&self) {
+        self.account.lock().unwrap().hold_creates = true;
+    }
+
+    /// Let every machine held starting run, and every later one start at once.
+    pub(crate) fn release_creates(&self) {
+        let mut account = self.account.lock().unwrap();
+        account.hold_creates = false;
+        for b in account.boxes.values_mut() {
+            if let Some((_, state)) = &mut b.machine {
+                if *state == "starting" {
+                    *state = "started";
+                }
+            }
+        }
     }
 }
 
@@ -154,7 +178,12 @@ fn answer(account: &mut Account, r: &Request) -> Reply {
         (_, ["", app, rest @ ..]) => {
             let next_id = account.next_id;
             account.next_id += 1;
-            let Account { boxes, acts, .. } = account;
+            let Account {
+                boxes,
+                acts,
+                hold_creates,
+                ..
+            } = account;
             let Some(b) = boxes.get_mut(*app) else {
                 return not_found();
             };
@@ -191,7 +220,8 @@ fn answer(account: &mut Account, r: &Request) -> Reply {
                         acts.push("replace");
                     }
                     b.had_machine = true;
-                    b.machine = Some((id.clone(), "started"));
+                    let state = if *hold_creates { "starting" } else { "started" };
+                    b.machine = Some((id.clone(), state));
                     Reply::json(200, json!({ "id": id, "state": "created" }))
                 }
                 ("GET", ["machines"]) => Reply::json(

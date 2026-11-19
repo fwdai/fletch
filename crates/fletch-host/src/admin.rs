@@ -58,6 +58,20 @@ fn empty_args() -> Value {
     Value::Object(Default::default())
 }
 
+/// An op's arguments as `fletch-host call` reads them from its stdin: a JSON
+/// object, or nothing at all (blank) for none. The error never quotes what
+/// was read: a token may be in it.
+pub fn parse_args(text: &str) -> Result<Value, String> {
+    if text.trim().is_empty() {
+        return Ok(empty_args());
+    }
+    match serde_json::from_str::<Value>(text) {
+        Ok(args @ Value::Object(_)) => Ok(args),
+        Ok(_) => Err("the arguments on stdin are not a JSON object".to_string()),
+        Err(e) => Err(format!("the arguments on stdin are not JSON ({e})")),
+    }
+}
+
 /// One answer. `result` and `error` are exclusive, and `ok` says which.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
@@ -203,5 +217,31 @@ pub async fn call(data_dir: &Path, op: &str, args: Value) -> Result<Value, Strin
         Err(response
             .error
             .unwrap_or_else(|| "the host refused the request".to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `fletch-host call` takes a JSON object, or nothing for none; anything
+    /// else is refused without being quoted back.
+    #[test]
+    fn call_reads_an_object_or_nothing_from_stdin() {
+        for blank in ["", "\n", "  \n"] {
+            assert_eq!(parse_args(blank), Ok(serde_json::json!({})), "{blank:?}");
+        }
+        assert_eq!(
+            parse_args("{\"preset\": \"control\"}\n"),
+            Ok(serde_json::json!({ "preset": "control" }))
+        );
+        for bad in [
+            "[\"secret-0123456789\"]",
+            "\"secret-0123456789\"",
+            "{\"token\": \"secret-0123456789",
+        ] {
+            let refusal = parse_args(bad).unwrap_err();
+            assert!(!refusal.contains("secret"), "{refusal}");
+        }
     }
 }

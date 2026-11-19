@@ -3,8 +3,8 @@ import type { NearbyHost, PairingInvite, PairingPreset, RemoteStatus } from "../
 
 /** Host-side control of the paired-device remote server. These are not remote
  *  ops — they are how the desktop turns the listener on, points it at a relay,
- *  mints pairing codes, revokes devices and lists the hosts nearby. The
- *  mutating ones answer with the
+ *  mints pairing codes, revokes devices and lists the hosts nearby, and what
+ *  this Mac's key as a client is. The mutating ones answer with the
  *  resulting status so the pane never has to re-read (and never renders a state
  *  in between). */
 export const remoteApi = {
@@ -32,4 +32,8 @@ export const remoteApi = {
    *  announcing themselves, this Mac left out. Nothing browses between calls. */
   remoteBrowseNearby: (durationMs: number) =>
     invokeLocal<NearbyHost[]>("remote_browse_nearby", { durationMs }),
+  /** This Mac's public key as a client of other hosts (base64url): what a host
+   *  records when this Mac pairs with it, and what a new cloud runner is
+   *  created trusting. Not its key as a host. */
+  remoteDevicePublicKey: () => invokeLocal<string>("remote_device_public_key"),
 };
