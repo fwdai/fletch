@@ -197,6 +197,31 @@ pub struct Supervisor {
     status_tx: broadcast::Sender<StatusEvent>,
 }
 
+/// One attempt to bring an agent's process up, from the `Spawning` it begins
+/// with ([`Supervisor::begin_launch`]) to its one outcome
+/// ([`Supervisor::settle_launch`]): the process up, a failure, the spawn
+/// timeout. Its identity is the generation it began under, which the process
+/// it starts keeps.
+///
+/// Everything a launch does to its agent goes through this value, so a launch
+/// can be ended from outside by retiring its generation and setting the
+/// status that should stand (a stop of its machine rests the agent, a
+/// teardown removes it, a newer attempt takes over). The ended attempt then
+/// finds itself superseded wherever it is, keeps no process, and reports
+/// nothing: its late failure cannot mark the agent failed, and its timeout
+/// cannot fire on an attempt that came after it.
+#[derive(Debug, Clone)]
+pub(super) struct Launch {
+    agent_id: String,
+    gen: u64,
+}
+
+impl Launch {
+    pub(super) fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+}
+
 impl Supervisor {
     pub fn new(workspace: Arc<WorkspaceManager>) -> Self {
         Self {
@@ -272,13 +297,22 @@ impl Supervisor {
     /// handler captured the old number, so after this bump they see
     /// `current_gen != gen` and exit / no-op cleanly.
     ///
-    /// `start_process` bumps on its own when it restarts the process; teardown
-    /// paths that DON'T restart (archive, discard, spawn-timeout kill, spawn
-    /// abort) must call this, or their loops spin for the app's lifetime and a
-    /// late clean exit re-emits `Idle` for an already-gone agent (ghost entry).
-    fn bump_generation(&self, agent_id: &str) {
+    /// A launch takes a generation of its own where it begins
+    /// (`begin_launch`), and retires it when it ends without a process
+    /// (`settle_launch`); teardown paths that don't launch (archive, discard,
+    /// a stop of the agent's machine) must call this, or their loops spin for
+    /// the app's lifetime and a late clean exit re-emits `Idle` for an
+    /// already-gone agent (ghost entry). Returns the new generation.
+    fn bump_generation(&self, agent_id: &str) -> u64 {
         let mut g = self.generations.lock();
-        *g.entry(agent_id.to_string()).or_insert(0) += 1;
+        let gen = g.entry(agent_id.to_string()).or_insert(0);
+        *gen += 1;
+        *gen
+    }
+
+    /// `agent_id`'s current generation.
+    fn generation(&self, agent_id: &str) -> u64 {
+        self.generations.lock().get(agent_id).copied().unwrap_or(0)
     }
 
     /// Clone the live agent's handle under a short-lived `agents` lock.
@@ -475,23 +509,79 @@ impl Supervisor {
         );
     }
 
-    /// Atomically flip the live status out of `Spawning` to `to`, returning
-    /// `true` iff this call performed the swap. The spawn task and the spawn
-    /// timeout both race to finish a `Spawning` agent; whoever flips it first
-    /// "wins" and owns the outcome. The check-and-swap happens under a single
-    /// lock so the two can never both succeed — losing the race is precisely
-    /// how each side learns the other already resolved the spawn.
-    fn claim_spawn_outcome(
+    /// Start an attempt to bring `agent_id`'s process up: the agent goes
+    /// `Spawning` under a generation of the attempt's own, both in one step,
+    /// so nothing that ends an attempt can land between them. Whatever was
+    /// left of an earlier process or attempt is retired by it.
+    pub(super) fn begin_launch(&self, ctx: &Arc<EngineCtx>, agent_id: &str) -> Launch {
+        let (prev, gen) = {
+            let mut statuses = self.statuses.lock();
+            let gen = self.bump_generation(agent_id);
+            let prev = statuses.insert(agent_id.to_string(), AgentStatus::Spawning);
+            (prev, gen)
+        };
+        tracing::debug!(agent_id = %agent_id, from = ?prev, gen, "agent launch begins");
+        self.follow_turn(ctx, agent_id, prev.as_ref(), &AgentStatus::Spawning);
+        self.persist_and_emit_status(ctx, agent_id, AgentStatus::Spawning, None);
+        Launch {
+            agent_id: agent_id.to_string(),
+            gen,
+        }
+    }
+
+    /// Whether `launch` is still the attempt its agent is on and has no
+    /// outcome yet: would [`Self::settle_launch`] from it still succeed?
+    ///
+    /// The status half is the map and the match of the swap in
+    /// `settle_launch`, so the two can never disagree. The spawn task asks at
+    /// every stage boundary, which is what makes ending an attempt actually
+    /// stop its work: without it a timed-out spawn kept cloning, indexing and
+    /// attaching repos, and emitting stage events, after `agent:status` had
+    /// already gone to `error`.
+    ///
+    /// The generation half binds the answer to the attempt. Status alone would
+    /// say "live" again the moment a *later* attempt went `Spawning` (a resume
+    /// after the timeout), letting the abandoned task resume provisioning
+    /// against the checkout and process the new attempt owns.
+    pub(super) fn launch_is_live(&self, launch: &Launch) -> bool {
+        let statuses = self.statuses.lock();
+        matches!(statuses.get(&launch.agent_id), Some(AgentStatus::Spawning))
+            && self.generation(&launch.agent_id) == launch.gen
+    }
+
+    /// Whether something other than `launch` itself ended it: its generation
+    /// was retired. A status that left `Spawning` under the launch's own
+    /// generation is its process's doing (a turn it started on its own), not
+    /// an end to the launch.
+    pub(super) fn launch_superseded(&self, launch: &Launch) -> bool {
+        self.generation(&launch.agent_id) != launch.gen
+    }
+
+    /// Give `launch` its outcome, `Idle` with its process up or `Error` with
+    /// the reason, and say whether it took: only while the agent is still
+    /// `Spawning` on this attempt, checked and written under one lock. The
+    /// launch, its spawn timeout and its failure path all settle through
+    /// here, so exactly one of them does, and an attempt that was ended
+    /// meanwhile (a stop of its machine, a teardown, a newer attempt) settles
+    /// nothing. An attempt that ends without a process is over: its
+    /// generation is retired in the same step.
+    pub(super) fn settle_launch(
         &self,
         ctx: &Arc<EngineCtx>,
-        agent_id: &str,
+        launch: &Launch,
         to: AgentStatus,
         last_error: Option<String>,
     ) -> bool {
+        let agent_id = launch.agent_id.as_str();
         {
             let mut statuses = self.statuses.lock();
-            if !matches!(statuses.get(agent_id), Some(AgentStatus::Spawning)) {
+            if self.generation(agent_id) != launch.gen
+                || !matches!(statuses.get(agent_id), Some(AgentStatus::Spawning))
+            {
                 return false;
+            }
+            if to != AgentStatus::Idle {
+                self.bump_generation(agent_id);
             }
             statuses.insert(agent_id.to_string(), to.clone());
         }
@@ -500,39 +590,33 @@ impl Supervisor {
         true
     }
 
-    /// Is *this* spawn attempt still unresolved — i.e. would a
-    /// `claim_spawn_outcome` from it still succeed? `gen` is the agent's
-    /// generation as captured when the attempt started.
-    ///
-    /// The status half is the same map, same lock, same match as the swap
-    /// above, so the two can never disagree: `false` here means the spawn's
-    /// outcome is already claimed (by the spawn timeout, or by a teardown) and
-    /// this side lost. The spawn task polls this at every stage boundary, which
-    /// is what makes the timeout actually stop the work: without it a timed-out
-    /// spawn kept cloning, indexing and attaching repos — and emitting stage
-    /// events — after `agent:status` had already gone to `error`.
-    ///
-    /// The generation half binds the answer to the attempt. Status alone would
-    /// say "live" again the moment a *later* attempt re-entered `Spawning` (a
-    /// resume after the timeout), letting the abandoned task resume
-    /// provisioning against the checkout and process the new attempt owns.
-    /// Every actor that can strand a spawn task — the timeout watchdog,
-    /// `detach_runtime`, `start_process`, `apply_exit_if_current`, `shutdown` —
-    /// bumps the generation, so a stale capture can never match again.
-    fn spawn_still_live(&self, agent_id: &str, gen: u64) -> bool {
-        if !matches!(
-            self.statuses.lock().get(agent_id),
-            Some(AgentStatus::Spawning)
-        ) {
-            return false;
+    /// End, from outside, whatever attempt `agent_id` is on and leave the
+    /// agent at rest: retired and `Idle` in one step, so the attempt settles
+    /// nothing afterwards and nothing waits on it. `false` when the agent is
+    /// not `Spawning`.
+    pub(super) fn rest_launch(&self, ctx: &Arc<EngineCtx>, agent_id: &str) -> bool {
+        {
+            let mut statuses = self.statuses.lock();
+            if !matches!(statuses.get(agent_id), Some(AgentStatus::Spawning)) {
+                return false;
+            }
+            self.bump_generation(agent_id);
+            statuses.insert(agent_id.to_string(), AgentStatus::Idle);
         }
-        self.generations.lock().get(agent_id).copied().unwrap_or(0) == gen
+        self.follow_turn(
+            ctx,
+            agent_id,
+            Some(&AgentStatus::Spawning),
+            &AgentStatus::Idle,
+        );
+        self.persist_and_emit_status(ctx, agent_id, AgentStatus::Idle, None);
+        true
     }
 
     /// Durable side-effects of a status change: persist to the DB where the
     /// status warrants it, then emit to the frontend. Split out of
-    /// `set_status` so `claim_spawn_outcome` can reuse it after writing the
-    /// status map under the lock.
+    /// `set_status` so a launch's settling (`settle_launch`) can reuse it
+    /// after writing the status map under the lock.
     fn persist_and_emit_status(
         &self,
         ctx: &Arc<EngineCtx>,
@@ -945,64 +1029,73 @@ mod tests {
         Supervisor::new(Arc::new(WorkspaceManager::new(db)))
     }
 
-    /// The spawn task and the spawn watchdog read the same cell: the moment
-    /// either claims the outcome, the other's liveness check must flip — that
-    /// agreement is what makes a timed-out spawn stop at its next stage
-    /// boundary instead of working on (and emitting stages) past `error`.
+    /// The spawn task and the spawn watchdog settle through the same cell:
+    /// the moment either gives the launch its outcome, the other's liveness
+    /// check must flip. That agreement is what makes a timed-out spawn stop at
+    /// its next stage boundary instead of working on (and emitting stages)
+    /// past `error`.
     #[test]
-    fn claiming_a_spawn_outcome_ends_its_liveness() {
+    fn settling_a_launch_ends_its_liveness() {
         let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
         let sup = test_supervisor();
-        sup.statuses
-            .lock()
-            .insert("a1".to_string(), AgentStatus::Spawning);
+        let launch = sup.begin_launch(&ctx, "a1");
 
-        assert!(sup.spawn_still_live("a1", 0));
-        // An agent nobody is spawning is never live.
-        assert!(!sup.spawn_still_live("unknown", 0));
-
-        assert!(sup.claim_spawn_outcome(
+        assert!(sup.launch_is_live(&launch));
+        assert!(sup.settle_launch(
             &ctx,
-            "a1",
+            &launch,
             AgentStatus::Error,
             Some("Spawn timed out".into())
         ));
-        assert!(!sup.spawn_still_live("a1", 0));
-        // And the losing side (here the spawn task's own failure path) would
-        // fail its claim too — the predicate and the swap can't disagree.
-        assert!(!sup.claim_spawn_outcome(&ctx, "a1", AgentStatus::Idle, None));
+        assert!(!sup.launch_is_live(&launch));
+        // And the losing side (here the spawn task's own promotion) fails to
+        // settle too: the predicate and the swap can't disagree.
+        assert!(!sup.settle_launch(&ctx, &launch, AgentStatus::Idle, None));
+        assert_eq!(sup.status_of("a1"), Some(AgentStatus::Error));
     }
 
-    /// The timed-out attempt's task outlives the claim, and a resume puts the
-    /// agent back into `Spawning` while it is still running. Status alone would
-    /// call that stale task live again — and let it provision over the new
-    /// attempt's checkout — so the generation the watchdog bumped is what keeps
-    /// it dead. The new attempt, holding the bumped number, is live.
+    /// The timed-out attempt's task outlives its outcome, and a resume puts
+    /// the agent back into `Spawning` while it is still running. Status alone
+    /// would call that stale task live again, and let it provision over the
+    /// new attempt's checkout, or fail the new attempt with its own late
+    /// error: the attempt's generation is what keeps it dead.
     #[test]
-    fn a_stale_spawn_attempt_stays_dead_across_a_resume() {
+    fn a_stale_launch_stays_dead_across_a_resume() {
         let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
         let sup = test_supervisor();
-        sup.statuses
-            .lock()
-            .insert("a1".to_string(), AgentStatus::Spawning);
-        let stale_gen = sup.generations.lock().get("a1").copied().unwrap_or(0);
-
-        // Spawn watchdog: claim the timeout, then invalidate the attempt.
-        assert!(sup.claim_spawn_outcome(
+        let stale = sup.begin_launch(&ctx, "a1");
+        assert!(sup.settle_launch(
             &ctx,
-            "a1",
+            &stale,
             AgentStatus::Error,
             Some("Spawn timed out".into())
         ));
-        sup.bump_generation("a1");
 
-        // Resume: the agent is `Spawning` once more, under a new generation.
-        sup.set_status(&ctx, "a1", AgentStatus::Spawning, None);
-        let resume_gen = sup.generations.lock().get("a1").copied().unwrap_or(0);
-        assert_ne!(stale_gen, resume_gen);
+        let resumed = sup.begin_launch(&ctx, "a1");
 
-        assert!(!sup.spawn_still_live("a1", stale_gen));
-        assert!(sup.spawn_still_live("a1", resume_gen));
+        assert!(!sup.launch_is_live(&stale));
+        assert!(sup.launch_superseded(&stale));
+        assert!(!sup.settle_launch(&ctx, &stale, AgentStatus::Error, Some("late".into())));
+        assert!(sup.launch_is_live(&resumed));
+        assert_eq!(sup.status_of("a1"), Some(AgentStatus::Spawning));
+    }
+
+    /// A launch ended from outside is at rest at once and settles nothing
+    /// when it comes back, whichever way it went.
+    #[test]
+    fn a_launch_put_to_rest_settles_nothing_afterwards() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = test_supervisor();
+        let launch = sup.begin_launch(&ctx, "a1");
+
+        assert!(sup.rest_launch(&ctx, "a1"));
+        assert_eq!(sup.status_of("a1"), Some(AgentStatus::Idle));
+        assert!(sup.launch_superseded(&launch));
+        assert!(!sup.settle_launch(&ctx, &launch, AgentStatus::Error, Some("late".into())));
+        assert!(!sup.settle_launch(&ctx, &launch, AgentStatus::Idle, None));
+        assert_eq!(sup.status_of("a1"), Some(AgentStatus::Idle));
+        // Nothing is launching any more, so there is nothing to put to rest.
+        assert!(!sup.rest_launch(&ctx, "a1"));
     }
 
     /// Manual/local check (macOS-only, `#[ignore]`d so it's off the Linux CI

@@ -262,7 +262,7 @@ impl Supervisor {
     /// it tears the old one down. Reviving into that window is harmless: the
     /// revive waits on the same `agent_lifecycle` lock the respawn holds, then
     /// finds the agent already restored and returns without spawning.
-    fn needs_revive(&self, agent_id: &str) -> bool {
+    pub(super) fn needs_revive(&self, agent_id: &str) -> bool {
         if matches!(self.live_status(agent_id), Some(AgentStatus::Spawning)) {
             return false;
         }
@@ -1143,8 +1143,8 @@ mod tests {
 
         let since = sup.open_turn(&ctx, "yosemite");
         // The session relaunches, rests, and only then takes the message.
-        sup.set_status(&ctx, "yosemite", AgentStatus::Spawning, None);
-        assert!(sup.claim_spawn_outcome(&ctx, "yosemite", AgentStatus::Idle, None));
+        let launch = sup.begin_launch(&ctx, "yosemite");
+        assert!(sup.settle_launch(&ctx, &launch, AgentStatus::Idle, None));
         assert_eq!(
             sup.agent_record("yosemite").unwrap().turn_since,
             Some(since)
@@ -1197,10 +1197,10 @@ mod tests {
         let sup = resting();
 
         sup.open_turn(&ctx, "yosemite");
-        sup.set_status(&ctx, "yosemite", AgentStatus::Spawning, None);
-        assert!(sup.claim_spawn_outcome(
+        let launch = sup.begin_launch(&ctx, "yosemite");
+        assert!(sup.settle_launch(
             &ctx,
-            "yosemite",
+            &launch,
             AgentStatus::Error,
             Some("no session".to_string())
         ));
@@ -1218,11 +1218,11 @@ mod tests {
         let sup = resting();
 
         let since = sup.open_turn(&ctx, "yosemite");
-        sup.set_status(&ctx, "yosemite", AgentStatus::Spawning, None);
+        let launch = sup.begin_launch(&ctx, "yosemite");
         sup.settle_turn(&ctx, "yosemite");
         assert_eq!(sup.turn_since("yosemite"), Some(since));
 
-        assert!(sup.claim_spawn_outcome(&ctx, "yosemite", AgentStatus::Idle, None));
+        assert!(sup.settle_launch(&ctx, &launch, AgentStatus::Idle, None));
         sup.settle_turn(&ctx, "yosemite");
         assert_eq!(sup.turn_since("yosemite"), None);
         assert_eq!(
@@ -1243,11 +1243,11 @@ mod tests {
     fn rested_with_a_turn_left_open(ctx: &Arc<EngineCtx>) -> (Arc<Supervisor>, i64) {
         let sup = resting();
         ctx.set_supervisor(sup.clone());
-        sup.set_status(ctx, "yosemite", AgentStatus::Spawning, None);
+        let launch = sup.begin_launch(ctx, "yosemite");
         let since = sup.open_turn(ctx, "yosemite");
         // The refused send's own settle: a no-op on a busy agent.
         sup.settle_turn(ctx, "yosemite");
-        assert!(sup.claim_spawn_outcome(ctx, "yosemite", AgentStatus::Idle, None));
+        assert!(sup.settle_launch(ctx, &launch, AgentStatus::Idle, None));
         (sup, since)
     }
 
