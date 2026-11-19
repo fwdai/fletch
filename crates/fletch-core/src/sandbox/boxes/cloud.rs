@@ -564,6 +564,16 @@ impl CloudMachine {
         self.clis.lock().get(provider).cloned()
     }
 
+    /// What names `provider`'s CLI on the box's disk for what is remembered
+    /// about a CLI (`super::guest_thinking_summaries`): its version, and
+    /// nothing of the box. Every cloud box runs the same image and installs
+    /// the same package at a version, so what one learnt of a version holds
+    /// in all of them. `None` while no version is known.
+    pub(super) fn cli_identity(&self, provider: &str) -> Option<String> {
+        self.cli_version(provider)
+            .map(|version| format!("cloud box {provider} {version}"))
+    }
+
     /// Make `provider`'s CLI present on the box's disk at the version a
     /// launch of it runs (`registry::tools_version`), over `channel`, as the
     /// guest user whose home is `home`: read from the disk the first time it

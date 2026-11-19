@@ -148,6 +148,36 @@ async fn a_parked_machine_is_woken_as_a_stopped_one_is() {
     assert_eq!(fake.acts(), ["create", "exec", "park", "start", "exec"]);
 }
 
+/// What a launch learns of a CLI in one cloud box (its capability probe)
+/// holds in every other with that version: the CLI is named by its
+/// version, never by its box.
+#[tokio::test]
+async fn a_cloud_boxs_cli_is_named_by_its_version_alone() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let handle = made(&fake, dir.path()).await;
+    let client = Arc::new(fake.client());
+    let one = CloudMachine::new("glacier", client.clone(), handle.clone());
+    let other = CloudMachine::new("tundra", client, handle);
+    assert_eq!(one.cli_identity("claude"), None, "no version known yet");
+
+    for machine in [&one, &other] {
+        machine
+            .clis
+            .lock()
+            .insert("claude".to_string(), "2.1.0".to_string());
+    }
+    assert!(one.cli_identity("claude").is_some());
+    assert_eq!(one.cli_identity("claude"), other.cli_identity("claude"));
+
+    other
+        .clis
+        .lock()
+        .insert("claude".to_string(), "2.2.0".to_string());
+    assert_ne!(one.cli_identity("claude"), other.cli_identity("claude"));
+    assert_eq!(other.cli_identity("codex"), None);
+}
+
 #[tokio::test]
 async fn a_lost_machine_is_replaced_on_its_disk_and_the_new_handle_kept() {
     let fake = FakeCloud::start().await;
