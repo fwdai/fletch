@@ -19,9 +19,15 @@
 }
 /* "an agent is working on this": a sweep of light through the text. One
  * period by default; a surface that syncs it with other motion overrides
- * `animation-duration`. */
+ * `animation-duration`, and one set in a dimmer ink than `--fg-1` passes it as
+ * `--shimmer-ink` (the sweep's peak is `--shimmer-peak`). */
 .shimmer {
-  background: linear-gradient(100deg, var(--fg-1) 34%, var(--fg-0) 50%, var(--fg-1) 66%);
+  background: linear-gradient(
+    100deg,
+    var(--shimmer-ink, var(--fg-1)) 34%,
+    var(--shimmer-peak, var(--fg-0)) 50%,
+    var(--shimmer-ink, var(--fg-1)) 66%
+  );
   background-size: 220% 100%;
   -webkit-background-clip: text;
   background-clip: text;
