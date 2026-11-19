@@ -416,10 +416,12 @@ pub fn box_egress_open_turn_impl(agent_id: &str, open: bool) -> Result<()> {
 }
 
 /// Write one box setting (`box_memory_mib`, `box_cpus`, `box_disk_gib`,
-/// `box_image_url`, `box_idle_stop_minutes`, `box_egress_mode`), validated, and
-/// mirror it for the engine; `None` restores the default. The Sandbox page's
-/// knobs go through here, not the client-side `set_setting`, since the engine
-/// reads these. A new posture reaches every running box at once.
+/// `box_image_url`, `box_idle_stop_minutes`, `box_egress_mode`,
+/// `box_cloud_spares`), validated, and mirror it for the engine; `None`
+/// restores the default. The Sandbox page's knobs go through here, not the
+/// client-side `set_setting`, since the engine reads these. A new posture
+/// reaches every running box at once, and a new number of spare cloud boxes
+/// is made or destroyed at once.
 pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> Result<()> {
     let normalized = match value {
         Some(value) => Some(
@@ -445,6 +447,9 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
     }
     if key == settings::EGRESS_MODE_SETTING {
         BoxRegistry::global().update_egress_all();
+    }
+    if key == settings::CLOUD_SPARES_SETTING {
+        crate::sandbox::boxes::spares::replenish_in_background();
     }
     announce(ctx, key, normalized.as_deref());
     Ok(())
