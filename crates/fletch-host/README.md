@@ -321,8 +321,9 @@ destroyed.
 `destroy_cloud_boxes` (an admin op, below) destroys at its provider every
 machine this host has made there, its spares and then every workspace's
 machine, live or not, after refusing any new one and waiting for one being
-made. When all of them went, this process makes no machine again; when any
-did not, it goes on as before, spares included. It answers
+made. When all of them went, or its argument `final` is true (the host is
+deleted whatever could be destroyed), this process makes no machine again;
+otherwise it goes on as before, spares included. It answers
 `{ "destroyed": [<id>…], "failed": [{ "agentId", "error" }…] }`, a spare by
 its `spare-…` id and a workspace's machine by its agent id. It is what the
 desktop asks a cloud runner before deleting it with its disk — a
@@ -352,7 +353,7 @@ stderr and nothing on stdout. The ops, with their arguments: `status`;
 `github_login_status`; `project_add` (`path`); `project_clone` (`spec`,
 `destParent`); `provider_status`; `provider_login_command` (`id`);
 `cloud_status`; `cloud_connect` (`provider`, `token`, `account`);
-`cloud_disconnect` (`provider`); `destroy_cloud_boxes`.
+`cloud_disconnect` (`provider`); `destroy_cloud_boxes` (`final`).
 
 ## Pair a phone
 

@@ -218,10 +218,12 @@ pub(super) async fn configure(
 /// Have the runner in `dir` destroy every machine it made at its providers,
 /// its spares and its workspaces' boxes, under its hold on making any (its
 /// `destroy_cloud_boxes` op), starting it first when it is stopped; answers
-/// what it did.
+/// what it did. `for_good` tells it the runner is deleted whatever it could
+/// destroy (a forced delete), so it makes no machine afterwards either way.
 pub(super) async fn wind_down(
     dir: &Path,
     client_for: &impl Fn(ProviderId) -> Result<Client>,
+    for_good: bool,
 ) -> Result<CloudBoxesDestroyed> {
     let handle = boxes_cloud::read_handle(dir)?.ok_or_else(super::no_runner)?;
     let client = Arc::new(client_for(handle.provider())?);
@@ -229,7 +231,7 @@ pub(super) async fn wind_down(
     let ssh = boxes_cloud::reach(dir, &dir.join(channel::KEY_FILE), &handle).await?;
     let outcome = async {
         wait_for_service(&ssh).await?;
-        let answer = admin(&ssh, "destroy_cloud_boxes", &json!({})).await?;
+        let answer = admin(&ssh, "destroy_cloud_boxes", &json!({ "final": for_good })).await?;
         serde_json::from_value(answer).map_err(|e| {
             Error::Other(format!(
                 "the runner's account of its workspaces' machines did not parse: {e}"

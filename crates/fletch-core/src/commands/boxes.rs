@@ -486,9 +486,10 @@ fn connected_then(
 
 /// `cloud_disconnect(provider)`: refused while this machine's cloud runner
 /// is at the provider (`cloud_runner::check_disconnect`: the runner can only
-/// be managed through that connection). Else the provider is held for the
-/// sweep (`boxes::gate`: no machine is made there from then on, and one being
-/// made is waited for), its spare cloud boxes are destroyed
+/// be managed through that connection), asked at once and again once the
+/// hold below has waited for any machine being made. Else the provider is
+/// held for the sweep (`boxes::gate`: no machine is made there from then on,
+/// and one being made is waited for), its spare cloud boxes are destroyed
 /// (`spares::destroy_all`), its token and account forgotten
 /// (`cloud::disconnect`), and only then is the hold released. A spare is
 /// billed while it exists and only a connected provider can destroy it, so
@@ -498,17 +499,21 @@ fn connected_then(
 /// the provider's disconnect alone. The boxes of workspaces at the provider
 /// are not touched. This machine's only: never on the remote wire.
 pub async fn cloud_disconnect_impl(db: &DbState, provider: ProviderId) -> Result<()> {
-    crate::sandbox::cloud_runner::check_disconnect(provider)?;
+    let no_runner = || crate::sandbox::cloud_runner::check_disconnect(provider);
+    no_runner()?;
     disconnect_held(
         db,
         provider,
+        no_runner,
         spares::destroy_all(Some(provider)),
         spares::replenish_in_background,
     )
     .await
 }
 
-/// [`cloud_disconnect_impl`] past its runner check: the provider held, then
+/// [`cloud_disconnect_impl`] past its first runner check: the provider held,
+/// `allowed` asked again (a runner whose machine was being made when the hold
+/// was taken has its handle on disk once the hold has waited for it), then
 /// [`disconnect_after`] with `destroyed`, the destruction of its spares, and
 /// the hold released once the connection is forgotten. A refusal, or a
 /// machine still being made there when the hold's wait ran out, releases the
@@ -516,12 +521,16 @@ pub async fn cloud_disconnect_impl(db: &DbState, provider: ProviderId) -> Result
 async fn disconnect_held(
     db: &DbState,
     provider: ProviderId,
+    allowed: impl FnOnce() -> Result<()>,
     destroyed: impl std::future::Future<Output = Result<()>>,
     replenish: impl FnOnce(),
 ) -> Result<()> {
     let hold = gate::hold(Some(provider)).await;
     let done = if hold.settled() {
-        disconnect_after(db, provider, destroyed).await
+        match allowed() {
+            Ok(()) => disconnect_after(db, provider, destroyed).await,
+            Err(e) => Err(e),
+        }
     } else {
         Err(Error::Other(format!(
             "{} is still connected: a machine was still being made there. Try disconnecting \
@@ -790,6 +799,7 @@ mod tests {
             let refused = disconnect_held(
                 &db,
                 provider,
+                || Ok(()),
                 async {
                     assert!(gate::make(provider).is_err(), "held while it sweeps");
                     Err(Error::Other("a spare is kept".into()))
@@ -802,9 +812,28 @@ mod tests {
             assert_eq!(asked.get(), 1, "and asks for the spares again");
             assert!(cloud::connection(&db.lock(), provider).unwrap().is_some());
 
+            // A runner whose machine was made while the hold waited: asked
+            // under the hold, nothing is destroyed and the provider stays.
+            let refused = disconnect_held(
+                &db,
+                provider,
+                || {
+                    assert!(gate::held(provider), "asked once the hold stands");
+                    Err(Error::Other("a runner is there".into()))
+                },
+                async { panic!("nothing is destroyed under a runner") },
+                || asked.set(asked.get() + 1),
+            )
+            .await;
+            assert!(refused.is_err());
+            assert!(!gate::held(provider));
+            assert_eq!(asked.get(), 2);
+            assert!(cloud::connection(&db.lock(), provider).unwrap().is_some());
+
             disconnect_held(
                 &db,
                 provider,
+                || Ok(()),
                 async {
                     assert!(gate::held(provider), "held while it sweeps");
                     Ok(())
@@ -817,7 +846,7 @@ mod tests {
             assert!(!gate::held(provider), "let go once forgotten");
             assert_eq!(
                 asked.get(),
-                1,
+                2,
                 "no spares asked for a provider disconnected"
             );
         })

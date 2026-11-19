@@ -1228,6 +1228,7 @@ async fn winding_down_destroys_every_cloud_box_with_a_directory_and_nothing_else
             root.path(),
             no_spares.path(),
             &|_| Ok(fake.client()),
+            false,
             || {},
         )
         .await;
@@ -1248,6 +1249,7 @@ async fn winding_down_destroys_every_cloud_box_with_a_directory_and_nothing_else
             root.path(),
             no_spares.path(),
             &|_| Ok(fake.client()),
+            false,
             || {},
         )
         .await;
@@ -1264,6 +1266,7 @@ async fn winding_down_destroys_every_cloud_box_with_a_directory_and_nothing_else
             root.path(),
             no_spares.path(),
             &|_| Ok(refusing.client()),
+            false,
             || {},
         )
         .await;
@@ -1275,6 +1278,27 @@ async fn winding_down_destroys_every_cloud_box_with_a_directory_and_nothing_else
         failed.sort();
         assert_eq!(failed, ["glacier", "otter"]);
         assert!(refused.failed.iter().all(|f| !f.error.is_empty()));
+        let provider = refusing.client().provider();
+        assert!(
+            !super::gate::held(provider),
+            "the host goes on: its hold is released"
+        );
+
+        // The same refusal for a host that is deleted whatever it could
+        // destroy: it makes no machine from then on.
+        let for_good = super::destroy_cloud_boxes_in(
+            root.path(),
+            no_spares.path(),
+            &|_| Ok(refusing.client()),
+            true,
+            || panic!("no spares are asked for a host that is going"),
+        )
+        .await;
+        assert!(!for_good.failed.is_empty());
+        assert!(
+            super::gate::held(provider),
+            "kept for the rest of the process"
+        );
     })
     .await;
 }
@@ -1315,7 +1339,7 @@ async fn a_box_made_while_a_wind_down_begins_is_waited_for_and_swept() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             let (outcome, ()) = tokio::join!(
-                super::destroy_cloud_boxes_in(&boxes, &spares, &client_for, || {}),
+                super::destroy_cloud_boxes_in(&boxes, &spares, &client_for, false, || {}),
                 async {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     assert!(

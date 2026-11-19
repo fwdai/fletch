@@ -2148,15 +2148,17 @@ pub struct CloudBoxNotDestroyed {
 /// Says which went and which did not, a spare by its placeholder id
 /// (`spare-…`), a workspace's box by its agent id, and a machine still being
 /// made when the hold's wait ran out as one that may be left. When every one
-/// went, the hold is kept for the rest of the process: the host is about to
-/// be deleted. When any did not, the hold is released and a replenish asked
-/// for, so the host goes on as before. Only what this install made: a box at
-/// a provider with no directory here is never touched. A workspace's box
+/// went, or the host is deleted whatever this could destroy (`for_good`, a
+/// forced delete), the hold is kept for the rest of the process, so nothing
+/// is made behind the deletion. Otherwise the hold is released and a
+/// replenish asked for, and the host goes on as before. Only what this
+/// install made: a box at a provider with no directory here is never
+/// touched. A workspace's box
 /// directory stays; a box destroyed already is destroyed again as success.
 /// What a runner is asked to do before it is deleted with its disk
 /// (`crate::cloud_runner`), so that nothing it made is left at the provider
 /// with no record of it.
-pub async fn destroy_cloud_boxes() -> CloudBoxesDestroyed {
+pub async fn destroy_cloud_boxes(for_good: bool) -> CloudBoxesDestroyed {
     let (Ok(boxes), Ok(spares)) = (boxes_root(), spares::root()) else {
         return CloudBoxesDestroyed::default();
     };
@@ -2164,6 +2166,7 @@ pub async fn destroy_cloud_boxes() -> CloudBoxesDestroyed {
         &boxes,
         &spares,
         &cloud::client,
+        for_good,
         spares::replenish_in_background,
     )
     .await
@@ -2176,6 +2179,7 @@ async fn destroy_cloud_boxes_in(
     boxes: &Path,
     spares: &Path,
     client_for: &(impl Fn(crate::cloud::ProviderId) -> Result<crate::cloud::Client> + Sync),
+    for_good: bool,
     replenish: impl FnOnce(),
 ) -> CloudBoxesDestroyed {
     let hold = gate::hold(None).await;
@@ -2203,7 +2207,7 @@ async fn destroy_cloud_boxes_in(
             }
         }
     }
-    if outcome.failed.is_empty() {
+    if for_good || outcome.failed.is_empty() {
         hold.keep();
     } else {
         drop(hold);

@@ -710,10 +710,11 @@ async fn a_refused_wind_down_releases_its_hold_and_spares_are_made_again() {
         refusing.refuse_destroy();
         let asked = std::sync::atomic::AtomicUsize::new(0);
 
-        let outcome = super::super::destroy_cloud_boxes_in(&boxes, &root, &client_for, || {
-            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        })
-        .await;
+        let outcome =
+            super::super::destroy_cloud_boxes_in(&boxes, &root, &client_for, false, || {
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
         assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(!gate::held(refusing.client().provider()), "released");

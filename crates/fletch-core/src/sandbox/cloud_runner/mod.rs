@@ -411,8 +411,9 @@ pub fn check_disconnect(provider: ProviderId) -> Result<()> {
 
 /// Delete the runner: first it destroys, at their provider, every machine it
 /// made, its spares and its workspaces' boxes, under a hold that refuses any
-/// new one and, once all are gone, stands for the rest of its process
-/// (`destroy_cloud_boxes`; started for that if it is stopped), then its own
+/// new one and, once all are gone or when the delete is forced, stands for
+/// the rest of its process (`destroy_cloud_boxes`; started for that if it is
+/// stopped), then its own
 /// machine and disk go, history, logins and pairings with them, and the
 /// directory.
 /// When the runner cannot be reached (its disk lost, a machine that will not
@@ -422,7 +423,10 @@ pub async fn delete(db: &DbState, force: bool) -> Result<Deleted> {
     let _under_way = UnderWay::begin(Change::Other)?;
     let dir = dir()?;
     let clients = |p| client_for(db, p);
-    delete_in(&dir, &clients, force, || setup::wind_down(&dir, &clients)).await
+    delete_in(&dir, &clients, force, || {
+        setup::wind_down(&dir, &clients, force)
+    })
+    .await
 }
 
 /// A pairing code for another device, minted by the running runner with the

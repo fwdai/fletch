@@ -199,7 +199,10 @@ provider (a spare when one is ready), since the runner cannot boot a VM.
   disk. Then its spare machines, ready or not, and every workspace's machine
   are destroyed. When all of them went, the hold stands for the rest of its
   process; when any did not, the hold is released and the spares made again,
-  so the runner the user still has goes on as before. Then the laptop
+  so the runner the user still has goes on as before. A forced delete tells
+  the runner so (`final`), and its hold then stands whatever it could
+  destroy: the runner goes either way, and must make nothing behind the
+  deletion. Then the laptop
   destroys the runner's own machine and disk and removes the directory. A
   runner that cannot be reached (its disk lost, a machine that will not
   start), or that could not destroy them all (a spare or a workspace's
