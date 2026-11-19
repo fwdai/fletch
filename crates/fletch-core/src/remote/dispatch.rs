@@ -2147,7 +2147,7 @@ async fn boxes_op(ctx: &Arc<EngineCtx>, op: &str, args: Value) -> DispatchResult
         "box_list" => res(c::box_list_impl(ctx)),
         "box_stop" => {
             let a: AgentArgs = parse(args)?;
-            res(c::box_stop_impl(&a.agent_id).await)
+            res(c::box_stop_impl(ctx, &a.agent_id).await)
         }
         "box_egress_allow" => {
             let a: EgressAllowArgs = parse(args)?;

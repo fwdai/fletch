@@ -2247,6 +2247,47 @@ impl Supervisor {
         self.settle_turn(&ctx, agent_id);
         Ok(())
     }
+
+    /// End the sessions of `agent_ids` ahead of the user's stop of the machine
+    /// they run in (a box, `commands::box_stop_impl`), so that stop is no
+    /// crash for any of them. Each process is taken down as a session switch
+    /// takes one, its generation retired first: neither its own exit nor the
+    /// machine going down under it reports an error. An agent at rest stays
+    /// idle; one mid-turn ends the turn as the user's stop of it does,
+    /// interrupted, its follow-ups held. Either way the next message revives
+    /// the session (`needs_revive`), and its launch starts the machine again.
+    pub fn rest_sessions(&self, ctx: &Arc<EngineCtx>, agent_ids: &[String]) {
+        for agent_id in agent_ids {
+            // Read under the `agents` lock the process is removed under, as
+            // `take_idle` reads it.
+            let (agent, mid_turn) = {
+                let mut agents = self.agents.lock();
+                let Some(agent) = agents.remove(agent_id) else {
+                    continue;
+                };
+                let mid_turn = matches!(self.live_status(agent_id), Some(AgentStatus::Running));
+                (agent, mid_turn)
+            };
+            // Before the shutdown, so the exit it causes is recognized as
+            // ours and nothing the dying process still prints moves the status.
+            self.bump_generation(agent_id);
+            self.activities.lock().remove(agent_id);
+            self.native_inputs.lock().remove(agent_id);
+            self.heuristic_idle.lock().remove(agent_id);
+            let _ = agent.shutdown();
+            // Still Running: an exit handled before the generation moved was
+            // no stop's, and the error it reported stands.
+            if mid_turn && matches!(self.live_status(agent_id), Some(AgentStatus::Running)) {
+                // The turn closes as interrupted (`persist_and_emit_status`
+                // reads the flag), and the next turn's start clears it. Not
+                // through `transition_active`: its turn-end reads (the PR's
+                // state) run in the checkout, in the machine about to go
+                // down, and one landing after the stop would start it again.
+                self.interrupted.lock().insert(agent_id.clone());
+                self.set_status(ctx, agent_id, AgentStatus::Idle, None);
+            }
+        }
+    }
 }
 
 /// Process-exit outcomes that feed `apply_exit_if_current`. `PtyExit` and
@@ -3139,5 +3180,190 @@ mod tests {
             vec![api]
         );
         assert!(unattached_repos(&record, vec![primary]).is_empty());
+    }
+
+    // ── the user's stop of a box ──────────────────────────────────────────
+
+    /// A supervisor that knows `ids`, each at rest, and that the context
+    /// knows, as it does once the engine has booted.
+    fn agents_at_rest(ctx: &Arc<EngineCtx>, ids: &[&str]) -> Arc<Supervisor> {
+        let sup = Arc::new(crate::supervisor::tests::test_supervisor());
+        ctx.set_supervisor(sup.clone());
+        for id in ids {
+            let mut record = crate::supervisor::tests::record_with_status(id, AgentStatus::Idle);
+            sup.workspace.add_agent(&mut record).unwrap();
+            sup.statuses
+                .lock()
+                .insert(id.to_string(), AgentStatus::Idle);
+        }
+        sup
+    }
+
+    /// `agent_id`'s session in a box as the host holds it: a process that
+    /// exits 255, as ssh does when the machine goes down under it, once
+    /// `halt` exists in `machine`. Its exit goes to the supervisor's handler
+    /// as a launch's does; the receiver hears each exit once it is handled.
+    fn session_in(
+        sup: &Arc<Supervisor>,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+        machine: &Path,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<()> {
+        let gen = {
+            let mut generations = sup.generations.lock();
+            let gen = generations.entry(agent_id.to_string()).or_insert(0);
+            *gen += 1;
+            *gen
+        };
+        let handler = make_exit_handler(sup.clone(), ctx.clone(), agent_id.to_string(), gen);
+        // The handler runs on the session's waiter thread, which has no
+        // runtime of its own for `host::spawn` to fall back to before boot.
+        let runtime = tokio::runtime::Handle::current();
+        let (handled, exits) = tokio::sync::mpsc::unbounded_channel();
+        let pty = crate::pty_session::PtySession::spawn(
+            crate::pty_session::PtySpawn {
+                program: Path::new("/bin/sh"),
+                args: &[
+                    "-c".to_string(),
+                    "while [ ! -e halt ]; do sleep 0.05; done; exit 255".to_string(),
+                ],
+                cwd: machine,
+                env: &[],
+                cols: 80,
+                rows: 24,
+                env_remove: &[],
+                kill_plan: sandbox::KillHandle::ProcessGroup,
+                after_exit: None,
+            },
+            |_| {},
+            move |exit: crate::pty_session::PtyExit| {
+                let _runtime = runtime.enter();
+                handler(exit);
+                let _ = handled.send(());
+            },
+        )
+        .unwrap();
+        sup.agents
+            .lock()
+            .insert(agent_id.to_string(), Arc::new(Agent::over_pty(pty)));
+        exits
+    }
+
+    /// Take `machine` down under whatever still runs in it.
+    fn halt(machine: &Path) {
+        std::fs::write(machine.join("halt"), b"").unwrap();
+    }
+
+    /// Wait for the next exit `exits` hears to have been handled.
+    async fn handled(exits: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
+        tokio::time::timeout(Duration::from_secs(10), exits.recv())
+            .await
+            .expect("the session exits")
+            .expect("its exit is handled");
+    }
+
+    /// `agent_id` rests as if its session had gone to rest on its own: idle,
+    /// no error recorded or announced, and no process left, so the next
+    /// message revives it (`needs_revive`).
+    fn assert_at_rest(sup: &Supervisor, sink: &crate::host::sink::RecordingSink, agent_id: &str) {
+        assert_eq!(sup.status_of(agent_id), Some(AgentStatus::Idle));
+        assert_eq!(sup.workspace.agent(agent_id).unwrap().last_error, None);
+        let errors: Vec<_> = sink
+            .events()
+            .into_iter()
+            .filter(|(name, p)| {
+                name == "agent:status" && p["agent_id"] == agent_id && p["status"] == "error"
+            })
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(!sup.agents.lock().contains_key(agent_id));
+    }
+
+    /// The user stops a box whose session is idle: the machine going down
+    /// under it afterwards is no crash.
+    #[tokio::test]
+    async fn an_idle_session_rests_when_the_user_stops_its_box() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let id = "box-stop-idle";
+        let sup = agents_at_rest(&ctx, &[id]);
+        let machine = tempfile::tempdir().unwrap();
+        let mut exits = session_in(&sup, &ctx, id, machine.path());
+
+        crate::commands::box_stop_impl(&ctx, id).await.unwrap();
+        halt(machine.path());
+        handled(&mut exits).await;
+
+        assert_at_rest(&sup, &sink, id);
+    }
+
+    /// A turn running when the user stops its box ends as the user's stop of
+    /// the turn ends one: interrupted, not failed.
+    #[tokio::test]
+    async fn a_turn_in_progress_ends_interrupted_when_the_user_stops_its_box() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let id = "box-stop-turn";
+        let sup = agents_at_rest(&ctx, &[id]);
+        let machine = tempfile::tempdir().unwrap();
+        let mut exits = session_in(&sup, &ctx, id, machine.path());
+        sup.workspace
+            .insert_user_turn(id, "t1", "fix the build", &[])
+            .unwrap();
+        mark_user_turn_started(&sup, &ctx, id, Some("t1"));
+
+        crate::commands::box_stop_impl(&ctx, id).await.unwrap();
+        halt(machine.path());
+        handled(&mut exits).await;
+
+        assert_at_rest(&sup, &sink, id);
+        let turns = sup.workspace.read_history_turns(id).unwrap();
+        assert_eq!(turns[0].outcome.as_deref(), Some("interrupted"));
+        assert_eq!(sup.turn_since(id), None);
+    }
+
+    /// A tenant's session runs in its host's box, and rests with it as the
+    /// owner's does.
+    #[tokio::test]
+    async fn a_tenants_session_rests_with_its_hosts_box() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let (host, tenant) = ("box-stop-host", "box-stop-tenant");
+        let sup = agents_at_rest(&ctx, &[host, tenant]);
+        let registry = crate::sandbox::boxes::BoxRegistry::global();
+        registry.register_tenant(tenant, PathBuf::from("/box-stop-tenant/root"), host, false);
+        let machine = tempfile::tempdir().unwrap();
+        let mut host_exits = session_in(&sup, &ctx, host, machine.path());
+        let mut tenant_exits = session_in(&sup, &ctx, tenant, machine.path());
+
+        crate::commands::box_stop_impl(&ctx, host).await.unwrap();
+        halt(machine.path());
+        handled(&mut host_exits).await;
+        handled(&mut tenant_exits).await;
+        registry.forget_tenant(tenant);
+
+        assert_at_rest(&sup, &sink, host);
+        assert_at_rest(&sup, &sink, tenant);
+    }
+
+    /// An exit nobody asked for is still a crash, reported with what the
+    /// process said: a box's stop rests only the sessions in that box.
+    #[tokio::test]
+    async fn an_exit_no_stop_asked_for_is_still_a_crash() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let id = "box-stop-elsewhere";
+        let sup = agents_at_rest(&ctx, &[id]);
+        let machine = tempfile::tempdir().unwrap();
+        let mut exits = session_in(&sup, &ctx, id, machine.path());
+
+        crate::commands::box_stop_impl(&ctx, "box-stop-another")
+            .await
+            .unwrap();
+        halt(machine.path());
+        handled(&mut exits).await;
+
+        assert_eq!(sup.status_of(id), Some(AgentStatus::Error));
+        assert_eq!(
+            sup.workspace.agent(id).unwrap().last_error.as_deref(),
+            Some("Agent process exited: Exited with code 255")
+        );
+        assert!(!sup.agents.lock().contains_key(id));
     }
 }

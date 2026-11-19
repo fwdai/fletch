@@ -70,8 +70,8 @@ pub async fn box_list(ctx: State<'_, Arc<EngineCtx>>) -> Result<Vec<engine::BoxV
 
 /// Stop the agent's box now; answers which rung of the ladder worked.
 #[tauri::command]
-pub async fn box_stop(agent_id: String) -> Result<String> {
-    engine::box_stop_impl(&agent_id).await
+pub async fn box_stop(ctx: State<'_, Arc<EngineCtx>>, agent_id: String) -> Result<String> {
+    engine::box_stop_impl(&ctx, &agent_id).await
 }
 
 /// Add one host pattern to a project's egress allow-list; answers the list.

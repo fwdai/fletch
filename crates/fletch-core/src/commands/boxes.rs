@@ -3,6 +3,8 @@
 //! `src-tauri` wraps each in a `#[tauri::command]` and `remote::dispatch` in
 //! a remote op.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -190,11 +192,19 @@ fn vms_of(workspace: &WorkspaceManager, ids: impl Iterator<Item = String>) -> Ve
         .collect()
 }
 
-/// `box_stop(agent_id)`: stop the box now, reporting which rung worked.
-pub async fn box_stop_impl(agent_id: &str) -> Result<String> {
-    let outcome = BoxRegistry::global()
-        .stop(agent_id, StopReason::User)
-        .await?;
+/// `box_stop(agent_id)`: stop the box now, reporting which rung worked. The
+/// sessions in it, its owner's and its tenants', are put to rest first
+/// (`Supervisor::rest_sessions`): the user stops them with it.
+pub async fn box_stop_impl(ctx: &Arc<EngineCtx>, agent_id: &str) -> Result<String> {
+    let registry = BoxRegistry::global();
+    if let Some(supervisor) = ctx.supervisor() {
+        let tenants = registry.tenants_of(agent_id).into_iter().map(|(id, _)| id);
+        let sessions: Vec<String> = std::iter::once(agent_id.to_string())
+            .chain(tenants)
+            .collect();
+        supervisor.rest_sessions(ctx, &sessions);
+    }
+    let outcome = registry.stop(agent_id, StopReason::User).await?;
     Ok(format!("{outcome:?}").to_ascii_lowercase())
 }
 
