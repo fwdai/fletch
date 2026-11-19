@@ -1509,7 +1509,7 @@ impl BoxRegistry {
         let _lease = prepared?;
         match self.take_running(agent_id, |entry| only_attached(entry, launch_id)) {
             Some(taken) => {
-                self.stop_taken(agent_id, StopReason::Reattach, taken)
+                self.stop_taken(agent_id, StopReason::Reattach, taken, |_| {})
                     .await?;
             }
             // Not taken: a session attached during the wait (refused), or the
@@ -1908,10 +1908,35 @@ impl BoxRegistry {
     /// the control port, the ssh sysrq rung, SIGTERM, SIGKILL. `dirty` is
     /// cleared only after a clean rung.
     pub async fn stop(&self, agent_id: &str, reason: StopReason) -> Result<StopOutcome> {
+        self.stop_with(agent_id, reason, |_| {}).await
+    }
+
+    /// [`Self::stop`], telling `going_down` which agents have their sessions
+    /// in the box ([`Self::sessions_in`]) once the stop has the box and
+    /// before anything of it goes down, so their owner can end them as a
+    /// stop rather than have them die with the machine. Called only for a
+    /// box this stop took: an agent with no running box has none, and nothing
+    /// is named for it. It runs with the box's boots held off, so a launch
+    /// one of those agents makes meanwhile boots the box again after the stop
+    /// instead of landing in the machine going down.
+    pub async fn stop_with(
+        &self,
+        agent_id: &str,
+        reason: StopReason,
+        going_down: impl FnOnce(&[String]),
+    ) -> Result<StopOutcome> {
         match self.take_running(agent_id, |_| true) {
-            Some(taken) => self.stop_taken(agent_id, reason, taken).await,
+            Some(taken) => self.stop_taken(agent_id, reason, taken, going_down).await,
             None => Ok(StopOutcome::AlreadyExited),
         }
+    }
+
+    /// The agents whose sessions run in `host_agent_id`'s box: its owner and
+    /// its tenants.
+    pub fn sessions_in(&self, host_agent_id: &str) -> Vec<String> {
+        std::iter::once(host_agent_id.to_string())
+            .chain(self.tenants_of(host_agent_id).into_iter().map(|(id, _)| id))
+            .collect()
     }
 
     /// Take `agent_id`'s running VM for a stop, if `may_stop` allows it: both
@@ -1950,7 +1975,8 @@ impl BoxRegistry {
             .is_some_and(|entry| entry.attached.is_empty())
     }
 
-    /// The ladder for a VM [`Self::take_running`] took.
+    /// The ladder for a VM [`Self::take_running`] took, `going_down` told the
+    /// agents in it first ([`Self::stop_with`]).
     ///
     /// A [`StopReason::Shutdown`] stop is bounded by [`SHUTDOWN_GRACE`] (the
     /// lock wait, the sessions pull, and the clean rungs from `send_stop` on;
@@ -1965,12 +1991,14 @@ impl BoxRegistry {
         agent_id: &str,
         reason: StopReason,
         (running, lifecycle): (Arc<RunningBox>, Arc<tokio::sync::Mutex<()>>),
+        going_down: impl FnOnce(&[String]),
     ) -> Result<StopOutcome> {
         let bound = (reason == StopReason::Shutdown).then_some(SHUTDOWN_GRACE);
         let guard = match bound {
             Some(bound) => tokio::time::timeout(bound, lifecycle.lock()).await.ok(),
             None => Some(lifecycle.lock().await),
         };
+        going_down(&self.sessions_in(agent_id));
         let outcome = if let Some(no_boot) = guard {
             match reason {
                 StopReason::Discard => {}
@@ -2275,7 +2303,7 @@ impl BoxRegistry {
                 return;
             };
             if let Err(e) = registry
-                .stop_taken(&agent_id, StopReason::Idle, taken)
+                .stop_taken(&agent_id, StopReason::Idle, taken, |_| {})
                 .await
             {
                 tracing::warn!(agent_id, error = %e, "idle stop failed");
@@ -3298,6 +3326,52 @@ mod tests {
             registry.stop(id, StopReason::User).await.unwrap(),
             StopOutcome::AlreadyExited
         );
+    }
+
+    /// A stop names the agents with a session in the box it took, its owner
+    /// and its tenants, before the machine is asked to halt; a stop that
+    /// finds no running box names nobody.
+    #[tokio::test]
+    async fn a_stop_names_the_sessions_of_the_box_it_took() {
+        let registry = test_registry();
+        let (id, tenant) = ("fake-stop-sessions", "fake-stop-tenant");
+        let (running, asked) = fake_box(&registry, id, StopOutcome::Control);
+        drop(registry.publish(running).await.unwrap());
+        registry.register_tenant(tenant, PathBuf::from("/fake-stop-tenant/root"), id, false);
+        registry.register_tenant(
+            "elsewhere",
+            PathBuf::from("/elsewhere/root"),
+            "other",
+            false,
+        );
+
+        let mut named = Vec::new();
+        let halted_before = Mutex::new(None);
+        let outcome = registry
+            .stop_with(id, StopReason::Discard, |sessions| {
+                named = sessions.to_vec();
+                *halted_before.lock() = Some(!asked.lock().is_empty());
+            })
+            .await
+            .unwrap();
+        assert_eq!(outcome, StopOutcome::Control);
+        named.sort();
+        assert_eq!(named, [id, tenant]);
+        assert_eq!(*halted_before.lock(), Some(false));
+
+        // Stopped now: nothing is running to take, so nobody is named, and
+        // neither is anybody for an agent the registry never knew.
+        for none in [id, "fake-stop-unknown"] {
+            let outcome = registry
+                .stop_with(none, StopReason::User, |sessions| {
+                    panic!("named {sessions:?} for a box that is not running")
+                })
+                .await
+                .unwrap();
+            assert_eq!(outcome, StopOutcome::AlreadyExited);
+        }
+        registry.forget_tenant(tenant);
+        registry.forget_tenant("elsewhere");
     }
 
     /// A boot that finishes once the app is quitting never becomes the

@@ -193,18 +193,18 @@ fn vms_of(workspace: &WorkspaceManager, ids: impl Iterator<Item = String>) -> Ve
 }
 
 /// `box_stop(agent_id)`: stop the box now, reporting which rung worked. The
-/// sessions in it, its owner's and its tenants', are put to rest first
-/// (`Supervisor::rest_sessions`): the user stops them with it.
+/// sessions in the box the stop takes are put to rest first
+/// (`Supervisor::rest_sessions`): the user stops them with it. An agent with
+/// no running box has nothing stopped, its session included.
 pub async fn box_stop_impl(ctx: &Arc<EngineCtx>, agent_id: &str) -> Result<String> {
-    let registry = BoxRegistry::global();
-    if let Some(supervisor) = ctx.supervisor() {
-        let tenants = registry.tenants_of(agent_id).into_iter().map(|(id, _)| id);
-        let sessions: Vec<String> = std::iter::once(agent_id.to_string())
-            .chain(tenants)
-            .collect();
-        supervisor.rest_sessions(ctx, &sessions);
-    }
-    let outcome = registry.stop(agent_id, StopReason::User).await?;
+    let supervisor = ctx.supervisor();
+    let outcome = BoxRegistry::global()
+        .stop_with(agent_id, StopReason::User, |sessions| {
+            if let Some(supervisor) = &supervisor {
+                supervisor.rest_sessions(ctx, sessions);
+            }
+        })
+        .await?;
     Ok(format!("{outcome:?}").to_ascii_lowercase())
 }
 

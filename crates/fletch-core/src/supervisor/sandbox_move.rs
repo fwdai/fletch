@@ -48,12 +48,12 @@ use crate::host::EngineCtx;
 use crate::sandbox::provision::CheckoutSpec;
 use crate::sandbox::{self, stamped_engine, EngineKind};
 use crate::workspace::{
-    agent_parent_dir, folder_grants, moving_dir, moving_root, AgentRecord, Anchor, SessionLineage,
-    TrackedRepo, WorkspaceManager,
+    agent_parent_dir, folder_grants, moving_dir, moving_root, AgentRecord, AgentStatus, Anchor,
+    SessionLineage, TrackedRepo, WorkspaceManager,
 };
 
 use super::events::emit_workspace_changed;
-use super::lifecycle::{fail_spawn, provision_codegraph_index};
+use super::lifecycle::provision_codegraph_index;
 use super::Supervisor;
 
 const BUSY: &str = "Wait for the turn to finish before moving the workspace.";
@@ -266,17 +266,20 @@ impl Supervisor {
                 "The workspace moved, but its old sandbox couldn't be cleared ({e}). \
                  Send a message or restart Fletch to finish."
             );
-            fail_spawn(self, ctx, agent_id, why.clone());
+            // Not a launch's failure: the agent is down either way, whether
+            // or not its conversation switched, and no launch follows.
+            self.set_status(ctx, agent_id, AgentStatus::Error, Some(why.clone()));
             return Err(Error::Other(why));
         }
         drop(move_lock);
         warm_indexes(&moved).await;
-        switched.map_err(|e| {
+        let launch = switched.map_err(|e| {
             Error::Other(format!(
                 "The workspace moved, but its conversation couldn't go with it: {e}"
             ))
         })?;
-        self.launch_native_session(ctx, &moved, context).await;
+        self.launch_native_session(ctx, &moved, &launch, context)
+            .await;
         self.agent_record(agent_id)
             .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))
     }

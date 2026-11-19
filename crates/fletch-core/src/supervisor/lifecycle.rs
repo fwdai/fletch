@@ -33,7 +33,7 @@ use super::messaging::{
 };
 use super::rpc_watch::spawn_rpc_watcher;
 use super::session_sync::{should_live_sync, spawn_live_transcript_sync};
-use super::{transition_active, Supervisor};
+use super::{transition_active, Launch, Supervisor};
 
 const WATCHDOG_TICK: Duration = Duration::from_millis(500);
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -729,13 +729,11 @@ impl Supervisor {
                 "effort": record.effort,
             }),
         );
-        self.set_status(&ctx, &agent_id, AgentStatus::Spawning, None);
-        // This attempt's identity for the liveness checks below. Captured here,
-        // synchronously and before the watchdog is armed, so it can never pick
-        // up the bump that the watchdog (or any other teardown) makes when it
-        // claims this spawn — the point being that the number then stops
-        // matching and the abandoned task can't revive under a later attempt.
-        let spawn_gen = self.generations.lock().get(&agent_id).copied().unwrap_or(0);
+        // This attempt, for everything below that acts on the agent: once it
+        // is ended from outside (the watchdog, a teardown, a stop of its
+        // machine) the abandoned task can neither go on under a later attempt
+        // nor report its own end as the agent's.
+        let launch = self.begin_launch(&ctx, &agent_id);
         // A new row is a structural change: `agent:status` alone is dropped by
         // any view that doesn't have the agent yet (the desktop window when a
         // paired phone spawned it, and vice versa). Announce it so every other
@@ -782,7 +780,7 @@ impl Supervisor {
             // is exactly the case where the checkout is no longer ours to
             // delete, and only that helper can tell them apart.
             let progress = |stage, detail| {
-                if !sup.spawn_still_live(&id_for_task, spawn_gen) {
+                if !sup.launch_is_live(&launch) {
                     tracing::debug!(
                         agent_id = %id_for_task,
                         ?stage,
@@ -798,7 +796,7 @@ impl Supervisor {
                 return;
             }
             if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
-                fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+                fail_spawn(&sup, &ctx_for_task, &launch, e.to_string());
                 return;
             }
 
@@ -835,7 +833,7 @@ impl Supervisor {
             // Nothing is undone: the agent's next launch makes the checkout
             // this one could not (`ensure_checkouts`).
             if let Err(e) = provision_result {
-                fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+                fail_spawn(&sup, &ctx_for_task, &launch, e.to_string());
                 return;
             }
 
@@ -899,7 +897,7 @@ impl Supervisor {
                         fail_spawn(
                             &sup,
                             &ctx_for_task,
-                            &id_for_task,
+                            &launch,
                             format!("checkout of {} failed: {e}", source.display()),
                         );
                         return;
@@ -920,7 +918,7 @@ impl Supervisor {
                 if let Err(e) = sup.start_from(&id_for_task, code).await {
                     discard_failed_spawn(&id_for_task, owned_checkout.as_deref(), &parent_dir)
                         .await;
-                    fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+                    fail_spawn(&sup, &ctx_for_task, &launch, e.to_string());
                     return;
                 }
             }
@@ -940,7 +938,7 @@ impl Supervisor {
                         fail_spawn(
                             &sup,
                             &ctx_for_task,
-                            &id_for_task,
+                            &launch,
                             format!("Couldn't carry the conversation over: {e}"),
                         );
                         return;
@@ -960,7 +958,7 @@ impl Supervisor {
                     if let Err(e) = sup.workspace.set_handoff_context(&id_for_task, &context) {
                         discard_failed_spawn(&id_for_task, owned_checkout.as_deref(), &parent_dir)
                             .await;
-                        fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+                        fail_spawn(&sup, &ctx_for_task, &launch, e.to_string());
                         return;
                     }
                 }
@@ -977,11 +975,11 @@ impl Supervisor {
             // step and fails with its own reason; a clone that takes its time
             // (a VM boot queued behind others, a slow network) is not a
             // process that did not come up.
-            arm_spawn_timeout(sup.clone(), ctx_for_task.clone(), id_for_task.clone());
+            arm_spawn_timeout(sup.clone(), ctx_for_task.clone(), launch.clone());
             // A process that fails to start leaves its workspace in place: it
             // is whole, and the agent's next launch starts in it.
-            if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task).await {
-                fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+            if let Err(e) = sup.start_process(&ctx_for_task, &launch).await {
+                fail_spawn(&sup, &ctx_for_task, &launch, e.to_string());
             }
         };
         crate::host::spawn(provision_then_release(provisioning, pin));
@@ -1216,8 +1214,9 @@ impl Supervisor {
     pub(super) async fn start_process(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
-        agent_id: &str,
+        launch: &Launch,
     ) -> Result<()> {
+        let agent_id = launch.agent_id();
         // Never into checkouts a move has, or left unsettled: what a move
         // left is finished first, when it can be, and the checkouts it runs
         // in are held until it is up, so no move starts under the launch
@@ -1378,13 +1377,14 @@ impl Supervisor {
         let start = session_start(&record, &cwd);
 
         let agent_id_str = agent_id.to_string();
-
-        let my_gen = {
-            let mut g = self.generations.lock();
-            let entry = g.entry(agent_id_str.clone()).or_insert(0);
-            *entry += 1;
-            *entry
-        };
+        // The process runs under its launch's generation, so whatever retires
+        // the one retires the other.
+        let my_gen = launch.gen;
+        // Ended from outside while it was getting ready: the agent's runtime
+        // is no longer this launch's to touch.
+        if self.launch_superseded(launch) {
+            return Err(launch_ended());
+        }
 
         // A fresh process/view must never inherit a recoverable-idle marker
         // from the native process it replaced, nor a run the old one opened.
@@ -1417,43 +1417,43 @@ impl Supervisor {
             )
             .await?;
 
-        self.agents
-            .lock()
-            .insert(agent_id_str.clone(), Arc::new(agent));
+        // Kept only by a launch that is still its agent's: one ended while
+        // the process was coming up (a stop of its machine, the spawn timeout,
+        // a teardown) lets the process go and reports nothing, since whoever
+        // ended it already left the agent as it should be. Checked under the
+        // `agents` lock, so an end that comes after this finds the process in
+        // the map and takes it down itself.
+        let agent = Arc::new(agent);
+        {
+            let mut agents = self.agents.lock();
+            if self.launch_superseded(launch) {
+                drop(agents);
+                let _ = agent.shutdown();
+                return Err(launch_ended());
+            }
+            agents.insert(agent_id_str.clone(), agent.clone());
+        }
 
         // Initial status is always Idle now — at process start there's
         // never an in-flight turn (we no longer pass a task as a spawn
-        // arg). The user's first send flips it to Running. Promote out of
-        // the live Spawning state atomically (a turn that already started
-        // mustn't be clobbered). If the swap fails because the spawn already
-        // timed out (status Error), the timeout fired before we inserted the
-        // process above — so its shutdown was a no-op and we'd leak a live
-        // process shown as failed. Tear down what we just started instead.
-        // The user stopped the machine while this launch was on its way into
-        // it (`rest_sessions`): the process is not kept, and the launch's
-        // caller settles the agent at rest (`fail_spawn`).
-        if self.launches_to_rest.lock().contains(&agent_id_str) {
-            self.bump_generation(&agent_id_str);
-            let taken = self.agents.lock().remove(&agent_id_str);
-            if let Some(agent) = taken {
+        // arg). The user's first send flips it to Running. The launch settles
+        // atomically, so a turn its process already started on its own is not
+        // clobbered: that one keeps the status it raised, under the launch's
+        // generation. A launch ended between the check above and here keeps
+        // nothing, whether or not its end already took the process.
+        let promoted = self.settle_launch(ctx, launch, AgentStatus::Idle, None);
+        if !promoted && self.launch_superseded(launch) {
+            let ours = {
+                let mut agents = self.agents.lock();
+                match agents.get(&agent_id_str) {
+                    Some(current) if Arc::ptr_eq(current, &agent) => agents.remove(&agent_id_str),
+                    _ => None,
+                }
+            };
+            if let Some(agent) = ours {
                 let _ = agent.shutdown();
             }
-            self.activities.lock().remove(&agent_id_str);
-            return Err(Error::Other(
-                "launch stopped: its machine was stopped before the process became ready".into(),
-            ));
-        }
-        let promoted = self.claim_spawn_outcome(ctx, &agent_id_str, AgentStatus::Idle, None);
-        if !promoted && matches!(self.live_status(&agent_id_str), Some(AgentStatus::Error)) {
-            self.bump_generation(&agent_id_str);
-            let taken = self.agents.lock().remove(&agent_id_str);
-            if let Some(agent) = taken {
-                let _ = agent.shutdown();
-            }
-            self.activities.lock().remove(&agent_id_str);
-            return Err(Error::Other(
-                "spawn aborted: timed out before the process became ready".into(),
-            ));
+            return Err(launch_ended());
         }
 
         // A message sent before the process finished coming up was enqueued —
@@ -1505,14 +1505,16 @@ impl Supervisor {
     /// Launch `agent_id`: `Spawning` under the spawn watchdog, then
     /// [`Self::start_process`], after `pause` when given (time for a process
     /// it replaces to let go of its session). A failed launch leaves the
-    /// agent in `Error` with the reason, and hands the error back.
+    /// agent in `Error` with the reason, and hands the error back; one ended
+    /// from outside (`Launch`) hands back that it was, and leaves the agent as
+    /// whoever ended it did.
     pub(super) async fn launch(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
         agent_id: &str,
         pause: Option<Duration>,
     ) -> Result<()> {
-        self.set_status(ctx, agent_id, AgentStatus::Spawning, None);
+        let launch = self.begin_launch(ctx, agent_id);
         // Ahead of the watchdog, which times the process: a move left
         // unsettled is finished, then a checkout the agent's spawn never made
         // is made, neither on the process's clock.
@@ -1521,15 +1523,15 @@ impl Supervisor {
             self.ensure_checkouts(ctx, agent_id).await
         };
         if let Err(e) = ready.await {
-            fail_spawn(self, ctx, agent_id, e.to_string());
+            fail_spawn(self, ctx, &launch, e.to_string());
             return Err(e);
         }
-        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
+        arm_spawn_timeout(self.clone(), ctx.clone(), launch.clone());
         if let Some(pause) = pause {
             tokio::time::sleep(pause).await;
         }
-        if let Err(e) = self.start_process(ctx, agent_id).await {
-            fail_spawn(self, ctx, agent_id, e.to_string());
+        if let Err(e) = self.start_process(ctx, &launch).await {
+            fail_spawn(self, ctx, &launch, e.to_string());
             return Err(e);
         }
         Ok(())
@@ -2264,39 +2266,32 @@ impl Supervisor {
 
     /// End the sessions of `agent_ids` ahead of the user's stop of the machine
     /// they run in (a box, `commands::box_stop_impl`), so that stop is no
-    /// crash for any of them. Each process is taken down as a session switch
-    /// takes one, its generation retired first: neither its own exit nor the
-    /// machine going down under it reports an error. An agent at rest stays
-    /// idle; one mid-turn ends the turn as the user's stop of it does,
-    /// interrupted, its follow-ups held. One whose launch has no process yet
-    /// is marked, and that launch ends at rest instead of failing or running
-    /// (`Supervisor::launch_rests`). Either way the next message revives the
-    /// session (`needs_revive`), and its launch starts the machine again.
+    /// crash for any of them. Each generation is retired first: neither the
+    /// process's own exit nor the machine going down under it reports an
+    /// error, and a launch still on its way into the machine is over wherever
+    /// it is (`Launch`). An agent at rest stays idle; one mid-turn ends the
+    /// turn as the user's stop of it does, interrupted, its follow-ups held;
+    /// one still launching is at rest at once, a message held for the launch
+    /// kept with it. In every case the agent is idle with no process when
+    /// this returns, so the next message revives the session
+    /// (`needs_revive`), and its launch starts the machine again.
     pub fn rest_sessions(&self, ctx: &Arc<EngineCtx>, agent_ids: &[String]) {
         for agent_id in agent_ids {
+            self.bump_generation(agent_id);
             // Read under the `agents` lock the process is removed under, as
             // `take_idle` reads it.
             let (agent, mid_turn) = {
                 let mut agents = self.agents.lock();
-                let Some(agent) = agents.remove(agent_id) else {
-                    // No process yet: a launch on its way into the machine.
-                    // It stays `Spawning`, so nothing else launches the agent
-                    // meanwhile, and ends at rest whatever comes of it.
-                    if matches!(self.live_status(agent_id), Some(AgentStatus::Spawning)) {
-                        self.launches_to_rest.lock().insert(agent_id.clone());
-                    }
-                    continue;
-                };
+                let agent = agents.remove(agent_id);
                 let mid_turn = matches!(self.live_status(agent_id), Some(AgentStatus::Running));
                 (agent, mid_turn)
             };
-            // Before the shutdown, so the exit it causes is recognized as
-            // ours and nothing the dying process still prints moves the status.
-            self.bump_generation(agent_id);
             self.activities.lock().remove(agent_id);
             self.native_inputs.lock().remove(agent_id);
             self.heuristic_idle.lock().remove(agent_id);
-            let _ = agent.shutdown();
+            if let Some(agent) = agent {
+                let _ = agent.shutdown();
+            }
             // Still Running: an exit handled before the generation moved was
             // no stop's, and the error it reported stands.
             if mid_turn && matches!(self.live_status(agent_id), Some(AgentStatus::Running)) {
@@ -2307,9 +2302,19 @@ impl Supervisor {
                 // down, and one landing after the stop would start it again.
                 self.interrupted.lock().insert(agent_id.clone());
                 self.set_status(ctx, agent_id, AgentStatus::Idle, None);
+            } else if self.rest_launch(ctx, agent_id) {
+                // The turn a held message was owed is not coming from this
+                // launch; the message waits for the next one.
+                self.settle_turn(ctx, agent_id);
             }
         }
     }
+}
+
+/// What a launch ended from outside hands back (`Launch`): not a failure of
+/// the agent's, and never recorded as one.
+fn launch_ended() -> Error {
+    Error::Other("launch ended before its process became ready".into())
 }
 
 /// Process-exit outcomes that feed `apply_exit_if_current`. `PtyExit` and
@@ -2661,52 +2666,60 @@ fn spawn_turn_watchdog(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: Stri
     });
 }
 
-/// Fail the launch of `agent_id` if its process is still not up after
-/// [`SPAWN_TIMEOUT`]. Armed where the process is started, never over the
-/// provisioning before it.
-pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: String) {
+/// Fail `launch` if its process is still not up after [`SPAWN_TIMEOUT`].
+/// Armed where the process is started, never over the provisioning before it.
+/// It times that one attempt: ended or settled meanwhile, the timeout finds
+/// nothing to fail, whatever the agent is doing by then.
+pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, launch: Launch) {
     crate::host::spawn(async move {
+        let agent_id = launch.agent_id();
         // An agent may first have to wait for the engine's setup (a box's
         // image download and tools disk build), far longer than any process
         // start; the box reports that wait as its own phase meanwhile.
         let setup = sup
             .workspace
-            .agent(&agent_id)
+            .agent(agent_id)
             .ok()
             .map_or(Duration::ZERO, |record| sandbox::setup_allowance(&record));
         let timeout = SPAWN_TIMEOUT + setup;
         tokio::time::sleep(timeout).await;
-        // Atomically claim the timeout outcome. Only an agent still in the
-        // live Spawning state may be timed out; if the swap fails the spawn
-        // already left Spawning (completed, or failed on its own) and must
-        // not be killed. The compare-and-swap also closes the race with
-        // start_process: if the spawn task inserts its process concurrently,
-        // exactly one of us flips the status, and the loser tears down.
-        let err = format!(
-            "Spawn timed out after {}s — process did not become ready.",
-            timeout.as_secs()
-        );
-        if !sup.claim_spawn_outcome(&ctx, &agent_id, AgentStatus::Error, Some(err)) {
-            return;
-        }
-        // Invalidate any gen-guarded loop / exit handler from this spawn before
-        // killing the process (same reason as `detach_runtime`).
-        sup.bump_generation(&agent_id);
-        let taken = sup.agents.lock().remove(&agent_id);
-        if let Some(agent) = taken {
-            let _ = agent.shutdown();
-        }
-        sup.activities.lock().remove(&agent_id);
+        spawn_timed_out(&sup, &ctx, &launch, timeout);
     });
 }
 
-pub(super) fn fail_spawn(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, err: String) {
-    // A launch the user's stop of its machine met did not fail: it rests.
-    if sup.launch_rests(ctx, agent_id) {
-        tracing::info!(agent_id, error = %err, "a launch ended with its machine's stop; at rest");
+/// `launch`'s spawn timeout is up after `timeout`: fail it if it is still
+/// unsettled, and take down whatever process it had started.
+fn spawn_timed_out(sup: &Supervisor, ctx: &Arc<EngineCtx>, launch: &Launch, timeout: Duration) {
+    // Settling retires the launch's generation with the status, so the
+    // process this attempt may be inserting concurrently is either not kept
+    // by `start_process` or taken down below, and nothing it still prints or
+    // exits with is read as the agent's.
+    let err = format!(
+        "Spawn timed out after {}s — process did not become ready.",
+        timeout.as_secs()
+    );
+    if !sup.settle_launch(ctx, launch, AgentStatus::Error, Some(err)) {
         return;
     }
-    sup.set_status(ctx, agent_id, AgentStatus::Error, Some(err));
+    let agent_id = launch.agent_id();
+    let taken = sup.agents.lock().remove(agent_id);
+    if let Some(agent) = taken {
+        let _ = agent.shutdown();
+    }
+    sup.activities.lock().remove(agent_id);
+}
+
+/// `launch` failed with `err`: its agent is left in `Error` with the reason,
+/// unless the launch was ended from outside first (`Launch`), whose failure
+/// is nobody's to see.
+pub(super) fn fail_spawn(sup: &Supervisor, ctx: &Arc<EngineCtx>, launch: &Launch, err: String) {
+    if !sup.settle_launch(ctx, launch, AgentStatus::Error, Some(err.clone())) {
+        tracing::info!(
+            agent_id = launch.agent_id(),
+            error = %err,
+            "a launch that was already over ended; nothing reported"
+        );
+    }
 }
 
 fn apply_exit_if_current(
@@ -2739,15 +2752,6 @@ fn apply_exit_if_current(
     drop(taken);
     sup.activities.lock().remove(agent_id);
     sup.native_inputs.lock().remove(agent_id);
-
-    // The machine went down, at the user's stop of it, under a process whose
-    // launch had not finished: at rest, and the launch settles the rest
-    // (`start_process`). Nothing is read from its checkout, which is in the
-    // machine that just stopped.
-    if !success && sup.launches_to_rest.lock().contains(agent_id) {
-        sup.claim_spawn_outcome(ctx, agent_id, AgentStatus::Idle, None);
-        return;
-    }
 
     let (status, err) = if success {
         // Clean exit means the agent is resumable — keep it Idle so the
@@ -3315,6 +3319,13 @@ mod tests {
         assert!(!sup.agents.lock().contains_key(agent_id));
     }
 
+    /// What the user's stop of a box does to the sessions in it, once the
+    /// registry has the box (`commands::box_stop_impl`).
+    fn stop_box_of(sup: &Supervisor, ctx: &Arc<EngineCtx>, sessions: &[&str]) {
+        let sessions: Vec<String> = sessions.iter().map(|id| id.to_string()).collect();
+        sup.rest_sessions(ctx, &sessions);
+    }
+
     /// The user stops a box whose session is idle: the machine going down
     /// under it afterwards is no crash.
     #[tokio::test]
@@ -3325,7 +3336,7 @@ mod tests {
         let machine = tempfile::tempdir().unwrap();
         let mut exits = session_in(&sup, &ctx, id, machine.path());
 
-        crate::commands::box_stop_impl(&ctx, id).await.unwrap();
+        stop_box_of(&sup, &ctx, &[id]);
         halt(machine.path());
         handled(&mut exits).await;
 
@@ -3346,7 +3357,7 @@ mod tests {
             .unwrap();
         mark_user_turn_started(&sup, &ctx, id, Some("t1"));
 
-        crate::commands::box_stop_impl(&ctx, id).await.unwrap();
+        stop_box_of(&sup, &ctx, &[id]);
         halt(machine.path());
         handled(&mut exits).await;
 
@@ -3363,63 +3374,139 @@ mod tests {
         let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
         let (host, tenant) = ("box-stop-host", "box-stop-tenant");
         let sup = agents_at_rest(&ctx, &[host, tenant]);
-        let registry = crate::sandbox::boxes::BoxRegistry::global();
-        registry.register_tenant(tenant, PathBuf::from("/box-stop-tenant/root"), host, false);
         let machine = tempfile::tempdir().unwrap();
         let mut host_exits = session_in(&sup, &ctx, host, machine.path());
         let mut tenant_exits = session_in(&sup, &ctx, tenant, machine.path());
 
-        crate::commands::box_stop_impl(&ctx, host).await.unwrap();
+        stop_box_of(&sup, &ctx, &[host, tenant]);
         halt(machine.path());
         handled(&mut host_exits).await;
         handled(&mut tenant_exits).await;
-        registry.forget_tenant(tenant);
 
         assert_at_rest(&sup, &sink, host);
         assert_at_rest(&sup, &sink, tenant);
     }
 
-    /// An exit nobody asked for is still a crash, reported with what the
-    /// process said: a box's stop rests only the sessions in that box.
+    /// `box_stop` for an agent that has no running box stops nothing: its
+    /// session, wherever it runs, goes on, and an exit of it afterwards is
+    /// the crash it would have been.
     #[tokio::test]
-    async fn an_exit_no_stop_asked_for_is_still_a_crash() {
+    async fn a_box_stop_for_an_agent_with_no_box_leaves_its_session_running() {
         let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
-        let id = "box-stop-elsewhere";
+        let id = "box-stop-no-box";
         let sup = agents_at_rest(&ctx, &[id]);
         let machine = tempfile::tempdir().unwrap();
         let mut exits = session_in(&sup, &ctx, id, machine.path());
+        let generation = sup.generation(id);
 
-        crate::commands::box_stop_impl(&ctx, "box-stop-another")
-            .await
-            .unwrap();
+        let outcome = crate::commands::box_stop_impl(&ctx, id).await.unwrap();
+
+        assert_eq!(outcome, "alreadyexited");
+        assert!(sup.agents.lock().contains_key(id));
+        assert_eq!(sup.generation(id), generation);
+        assert_eq!(sup.status_of(id), Some(AgentStatus::Idle));
+
         halt(machine.path());
         handled(&mut exits).await;
-
         assert_eq!(sup.status_of(id), Some(AgentStatus::Error));
         assert_eq!(
             sup.workspace.agent(id).unwrap().last_error.as_deref(),
             Some("Agent process exited: Exited with code 255")
         );
-        assert!(!sup.agents.lock().contains_key(id));
     }
 
-    /// The user stops a box while a launch is still on its way into it, its
-    /// box up and no process registered yet: the launch failing against the
-    /// machine going down is no failure of the agent's.
+    /// The user stops a box while a launch is still on its way into it, no
+    /// process registered yet: the agent is at rest at once, and the launch
+    /// failing against the machine going down afterwards is no failure of
+    /// the agent's.
     #[tokio::test]
     async fn a_launch_met_by_its_boxs_stop_rests_instead_of_failing() {
         let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
         let id = "box-stop-launching";
         let sup = agents_at_rest(&ctx, &[id]);
-        sup.set_status(&ctx, id, AgentStatus::Spawning, None);
+        let launch = sup.begin_launch(&ctx, id);
 
-        crate::commands::box_stop_impl(&ctx, id).await.unwrap();
-        // Still launching until the launch itself ends, so nothing else
-        // launches the agent meanwhile.
+        stop_box_of(&sup, &ctx, &[id]);
+        assert_at_rest(&sup, &sink, id);
+
+        fail_spawn(&sup, &ctx, &launch, "ssh: connection closed".into());
+        assert_at_rest(&sup, &sink, id);
+    }
+
+    /// A message sent after that stop, before the stopped launch has come
+    /// back, finds the agent at rest and revives it: nothing waits on the
+    /// launch that was ended. A message held for that launch is kept, and
+    /// its turn is no longer owed until the next launch delivers it.
+    #[tokio::test]
+    async fn a_message_after_a_stop_during_launch_revives_the_session() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let id = "box-stop-then-message";
+        let sup = agents_at_rest(&ctx, &[id]);
+        let launch = sup.begin_launch(&ctx, id);
+        sup.open_turn(&ctx, id);
+        sup.message_queue.lock().enqueue(
+            id,
+            crate::message_queue::PendingMsg {
+                turn_id: "t-held".into(),
+                text: "held for the launch".into(),
+                attachments: Vec::new(),
+            },
+        );
+        assert!(!sup.needs_revive(id));
+
+        stop_box_of(&sup, &ctx, &[id]);
+
+        assert!(sup.needs_revive(id));
+        assert_eq!(sup.turn_since(id), None);
+        assert!(!sup.message_queue.lock().is_empty(id));
+
+        // The revive's launch is the agent's attempt now; the stopped one
+        // coming back, either way, changes nothing about it.
+        let revived = sup.begin_launch(&ctx, id);
+        fail_spawn(&sup, &ctx, &launch, "ssh: connection closed".into());
+        assert!(!sup.settle_launch(&ctx, &launch, AgentStatus::Idle, None));
+        assert!(sup.launch_is_live(&revived));
         assert_eq!(sup.status_of(id), Some(AgentStatus::Spawning));
-        fail_spawn(&sup, &ctx, id, "ssh: connection closed".into());
+        assert!(sup.settle_launch(&ctx, &revived, AgentStatus::Idle, None));
+        assert_at_rest(&sup, &sink, id);
+    }
+
+    /// The spawn timeout of a launch a stop ended finds nothing to fail,
+    /// whether it is up before the launch comes back or after.
+    #[tokio::test]
+    async fn the_spawn_timeout_of_a_stopped_launch_reports_nothing() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let id = "box-stop-timeout";
+        let sup = agents_at_rest(&ctx, &[id]);
+        let launch = sup.begin_launch(&ctx, id);
+
+        stop_box_of(&sup, &ctx, &[id]);
+        spawn_timed_out(&sup, &ctx, &launch, SPAWN_TIMEOUT);
 
         assert_at_rest(&sup, &sink, id);
+        fail_spawn(&sup, &ctx, &launch, "ssh: connection closed".into());
+        assert_at_rest(&sup, &sink, id);
+    }
+
+    /// A spawn timeout times the launch it was armed for: it never fails a
+    /// later launch of the same agent, and still fails its own.
+    #[tokio::test]
+    async fn a_spawn_timeout_fails_only_its_own_launch() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let id = "spawn-timeout-own";
+        let sup = agents_at_rest(&ctx, &[id]);
+        let first = sup.begin_launch(&ctx, id);
+        fail_spawn(&sup, &ctx, &first, "no such binary".into());
+
+        // Resumed before the first launch's timeout is up.
+        let second = sup.begin_launch(&ctx, id);
+        spawn_timed_out(&sup, &ctx, &first, SPAWN_TIMEOUT);
+        assert!(sup.launch_is_live(&second));
+
+        spawn_timed_out(&sup, &ctx, &second, SPAWN_TIMEOUT);
+        assert_eq!(sup.status_of(id), Some(AgentStatus::Error));
+        let error = sup.workspace.agent(id).unwrap().last_error.unwrap();
+        assert!(error.starts_with("Spawn timed out"), "{error}");
     }
 
     /// The same stop, when the launch's process came up and the machine went
@@ -3429,29 +3516,29 @@ mod tests {
         let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
         let id = "box-stop-launched";
         let sup = agents_at_rest(&ctx, &[id]);
-        sup.set_status(&ctx, id, AgentStatus::Spawning, None);
-
-        crate::commands::box_stop_impl(&ctx, id).await.unwrap();
+        sup.begin_launch(&ctx, id);
         let machine = tempfile::tempdir().unwrap();
         let mut exits = session_in(&sup, &ctx, id, machine.path());
+
+        stop_box_of(&sup, &ctx, &[id]);
         halt(machine.path());
         handled(&mut exits).await;
 
         assert_at_rest(&sup, &sink, id);
     }
 
-    /// A stop excuses the one launch it met: the next launch's failure is
+    /// A stop ends the one launch it met: the next launch's failure is
     /// reported.
     #[tokio::test]
     async fn a_stop_does_not_excuse_the_next_launchs_failure() {
         let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
         let id = "box-stop-relaunch";
         let sup = agents_at_rest(&ctx, &[id]);
-        sup.set_status(&ctx, id, AgentStatus::Spawning, None);
-        crate::commands::box_stop_impl(&ctx, id).await.unwrap();
+        sup.begin_launch(&ctx, id);
+        stop_box_of(&sup, &ctx, &[id]);
 
-        sup.set_status(&ctx, id, AgentStatus::Spawning, None);
-        fail_spawn(&sup, &ctx, id, "no such binary".into());
+        let next = sup.begin_launch(&ctx, id);
+        fail_spawn(&sup, &ctx, &next, "no such binary".into());
 
         assert_eq!(sup.status_of(id), Some(AgentStatus::Error));
         assert_eq!(

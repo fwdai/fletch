@@ -22,11 +22,11 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
-use crate::workspace::{AgentRecord, AgentStatus, Anchor, NativeTranscript, SessionLineage};
+use crate::workspace::{AgentRecord, Anchor, NativeTranscript, SessionLineage};
 
 use super::events::{emit_spawn_progress, emit_workspace_changed, SpawnStage};
 use super::lifecycle::{arm_spawn_timeout, fail_spawn};
-use super::{RestoreReport, Supervisor};
+use super::{Launch, RestoreReport, Supervisor};
 
 /// What a rewind puts back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -227,18 +227,22 @@ impl Supervisor {
             }
             _ => None,
         };
-        self.start_rewound_session(ctx, record, &plan.lineage, native.as_ref())
+        let launch = self
+            .start_rewound_session(ctx, record, &plan.lineage, native.as_ref())
             .await?;
-        if let Err(e) = self.launch_rewound_session(ctx, record, plan.handoff).await {
+        if let Err(e) = self
+            .launch_rewound_session(ctx, record, &launch, plan.handoff)
+            .await
+        {
             tracing::warn!(agent_id = %record.id, error = %e, "rewound agent failed to start");
-            fail_spawn(self, ctx, &record.id, e.to_string());
+            fail_spawn(self, ctx, &launch, e.to_string());
         }
         Ok(())
     }
 
     /// Replace `record`'s session with one that continues `lineage`, as the
     /// provider session `native` was written as when given, and leave the
-    /// agent `Spawning` for its launch. Under the lifecycle lock, as a spawn
+    /// agent `Spawning` on the launch handed back. Under the lifecycle lock, as a spawn
     /// creates its agent: project deletion either goes first or finds the
     /// agent `Spawning` and waits the launch out.
     async fn start_rewound_session(
@@ -247,26 +251,27 @@ impl Supervisor {
         record: &AgentRecord,
         lineage: &SessionLineage,
         native: Option<&NativeTranscript>,
-    ) -> Result<()> {
-        {
+    ) -> Result<Launch> {
+        let launch = {
             let _lifecycle = self.agent_lifecycle.lock().await;
             if self.deleting_projects.lock().contains(&record.project_id) {
                 return Err(Error::Other("project deletion is in progress".into()));
             }
             self.start_session(&record.id, lineage, native)?;
-            self.set_status(ctx, &record.id, AgentStatus::Spawning, None);
-        }
+            self.begin_launch(ctx, &record.id)
+        };
         // The session, and with it the history the chat shows, changed.
         emit_workspace_changed(ctx.sink.as_ref());
-        Ok(())
+        Ok(launch)
     }
 
-    /// Brief the rewound session's agent as `handoff` says, then start it:
-    /// resuming its written transcript, or fresh.
+    /// Brief the rewound session's agent as `handoff` says, then start it on
+    /// `launch`: resuming its written transcript, or fresh.
     async fn launch_rewound_session(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
         record: &AgentRecord,
+        launch: &Launch,
         handoff: Handoff,
     ) -> Result<()> {
         if let Some(context) = self.brief(ctx, record, handoff).await {
@@ -275,8 +280,8 @@ impl Supervisor {
         emit_spawn_progress(ctx.sink.as_ref(), &record.id, SpawnStage::Starting, None);
         // Ahead of the spawn watchdog; kept for the launch (`prefetch_login`).
         let _ = self.prefetch_login(&record.id).await;
-        arm_spawn_timeout(self.clone(), ctx.clone(), record.id.clone());
-        self.start_process(ctx, &record.id).await
+        arm_spawn_timeout(self.clone(), ctx.clone(), launch.clone());
+        self.start_process(ctx, launch).await
     }
 
     /// The handoff context `handoff` gives the rewound session's agent, if
@@ -304,7 +309,7 @@ impl Supervisor {
     /// Switch `record` to a new session continuing `lineage` natively,
     /// without launching it: `history` is written as that session's own
     /// transcript where `record`'s engine keeps it, and the agent is left
-    /// `Spawning`. A rewind's `Exact` conversation, split at its launch for a
+    /// `Spawning` on the launch handed back. A rewind's `Exact` conversation, split at its launch for a
     /// move between sandboxes, which switches the conversation as soon as
     /// the code is across and launches once its checkouts are at rest
     /// ([`Self::launch_native_session`]).
@@ -314,7 +319,7 @@ impl Supervisor {
         record: &AgentRecord,
         lineage: &SessionLineage,
         history: &[Value],
-    ) -> Result<()> {
+    ) -> Result<Launch> {
         let session = uuid::Uuid::new_v4().to_string();
         let native = self.write_native_transcript(record, &session, history)?;
         self.start_rewound_session(ctx, record, lineage, native.as_ref())
@@ -322,21 +327,25 @@ impl Supervisor {
     }
 
     /// Launch the session [`Self::begin_native_session`] switched `record`
-    /// to, its agent told `context`. A failed launch leaves the agent in
-    /// error, as a rewind's does.
+    /// to, on the `launch` it handed back, its agent told `context`. A failed
+    /// launch leaves the agent in error, as a rewind's does.
     pub(super) async fn launch_native_session(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
         record: &AgentRecord,
+        launch: &Launch,
         context: Option<String>,
     ) {
         let handoff = Handoff::Native {
             history: Vec::new(),
             context,
         };
-        if let Err(e) = self.launch_rewound_session(ctx, record, handoff).await {
+        if let Err(e) = self
+            .launch_rewound_session(ctx, record, launch, handoff)
+            .await
+        {
             tracing::warn!(agent_id = %record.id, error = %e, "moved agent failed to start");
-            fail_spawn(self, ctx, &record.id, e.to_string());
+            fail_spawn(self, ctx, launch, e.to_string());
         }
     }
 }
@@ -354,6 +363,7 @@ mod tests {
     use crate::supervisor::tests::{committed_repo, record_in_checkouts, test_supervisor};
     use crate::supervisor::ArchiveTrigger;
     use crate::workspace::tests::test_prompts;
+    use crate::workspace::AgentStatus;
 
     const AGENT: &str = "denali";
 

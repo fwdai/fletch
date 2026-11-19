@@ -155,7 +155,10 @@ async fn switch_between(scratch: &Path, from: &str, to: &str) {
     );
     assert_ne!(from_digest, to_digest, "the two accounts share a token");
 
-    sup.start_process(&ctx, AGENT).await.expect("first launch");
+    let launch = sup.begin_launch(&ctx, AGENT);
+    sup.start_process(&ctx, &launch)
+        .await
+        .expect("first launch");
     wait_idle(&sup).await;
     sup.clone()
         .send_user_message(&ctx, AGENT, "t-1", "first", &[])
@@ -342,7 +345,10 @@ fn scripted_codex_switch_moves_the_next_turn_onto_the_other_login() {
         let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
         ctx.set_supervisor(sup.clone());
 
-        sup.start_process(&ctx, AGENT).await.expect("first launch");
+        let launch = sup.begin_launch(&ctx, AGENT);
+        sup.start_process(&ctx, &launch)
+            .await
+            .expect("first launch");
         sup.clone()
             .send_user_message(&ctx, AGENT, "t-1", "first", &[])
             .await

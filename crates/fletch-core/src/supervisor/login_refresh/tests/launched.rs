@@ -116,7 +116,10 @@ async fn launched(root: &Path, expires_in_ms: i64) -> Launched {
     let (ctx, _sink, dir) = crate::host::ctx::test_ctx();
     ctx.set_supervisor(sup.clone());
 
-    sup.start_process(&ctx, AGENT).await.expect("first launch");
+    let launch = sup.begin_launch(&ctx, AGENT);
+    sup.start_process(&ctx, &launch)
+        .await
+        .expect("first launch");
     wait_for_launches(&log, 1).await;
     let projects = parent
         .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME)

@@ -241,7 +241,7 @@ struct SpawnProgressPayload {
 /// One stage boundary of a fresh spawn, so a client can say what the 15-odd
 /// seconds behind "spawning" are actually being spent on. Never emitted after
 /// the spawn's terminal status: every caller sits ahead of the work it names,
-/// and re-checks `Supervisor::spawn_still_live` for its own attempt before
+/// and re-checks `Supervisor::launch_is_live` for its own attempt before
 /// emitting, so a spawn whose outcome was already claimed (timeout) stops
 /// instead of narrating — and stays stopped if the agent is resumed under a
 /// later attempt.

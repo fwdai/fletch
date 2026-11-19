@@ -330,18 +330,16 @@ impl Supervisor {
         }
 
         self.workspace.restore_agent(agent_id, restored)?;
-        self.set_status(&ctx, agent_id, AgentStatus::Spawning, None);
+        let launch = self.begin_launch(&ctx, agent_id);
         emit_workspace_changed(ctx.sink.as_ref());
 
-        // Restore is an explicit user action, so bring the process up now
-        // (set_status(Spawning) above lets start_process promote to Idle).
-        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
+        // Restore is an explicit user action, so bring the process up now.
+        arm_spawn_timeout(self.clone(), ctx.clone(), launch.clone());
         let sup = self.clone();
         let ctx_for_task = ctx.clone();
-        let id_for_task = agent_id.to_string();
         crate::host::spawn(async move {
-            if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task).await {
-                fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+            if let Err(e) = sup.start_process(&ctx_for_task, &launch).await {
+                fail_spawn(&sup, &ctx_for_task, &launch, e.to_string());
             }
         });
 
