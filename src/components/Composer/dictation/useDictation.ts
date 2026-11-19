@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DictationAvailability, DictationSessionId } from "@/api";
 import { useEngine } from "@/api/engine";
 import type { DictationPhase } from "../PrimaryControl/primaryState";
-import { type ComposerInput, grow } from "../useComposerInput";
+import type { ComposerInput } from "../useComposerInput";
 import { type FreshSpan, insertTranscript } from "./spliceTranscript";
 
 /** What we assume when the availability probe itself fails — an older backend
@@ -136,14 +136,12 @@ export function useDictation(input: ComposerInput) {
       freshTimer.current = null;
       if (mountedRef.current) setFresh(null);
     }, FRESH_TTL_MS);
-    // Same tail as `append`: the box has to grow with the text and keep the
-    // caret behind the last dictated word so typing continues there. Focus
-    // returns to the field after every commit.
+    // Same tail as `append`: the caret stays behind the last dictated word so
+    // typing continues there. Focus returns to the field after every commit.
     requestAnimationFrame(() => {
       const el = ip.ta.current;
       if (!el) return;
       el.focus();
-      grow(el);
       el.setSelectionRange(caret, caret);
     });
   }

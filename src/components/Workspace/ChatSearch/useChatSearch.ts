@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { holdView } from "@/util/stickToBottom";
 
 /** Names of the two registered CSS custom highlights. One paints every match
  *  faintly; the other paints the active match in the accent colour. */
@@ -85,6 +86,7 @@ function scrollRangeIntoView(container: HTMLElement, range: Range): void {
   const cRect = container.getBoundingClientRect();
   if (rRect.top >= cRect.top && rRect.bottom <= cRect.bottom) return; // visible
   const offset = rRect.top - cRect.top - container.clientHeight / 2 + rRect.height / 2;
+  if (offset < 0) holdView(container);
   container.scrollTo({ top: container.scrollTop + offset, behavior: "smooth" });
 }
 

@@ -1,11 +1,13 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { Icon } from "@/components/Icon";
 import { AttachmentList } from "./AttachmentList";
 import { AutocompleteMenu } from "./autocomplete/AutocompleteMenu";
 import { FolderList } from "./FolderList";
 import { type GhostProps, InterimGhost } from "./InterimGhost";
 import type { ComposerInput } from "./useComposerInput";
-import { grow } from "./useComposerInput";
+
+/** Max grown height of the input, in px, before it scrolls internally. */
+const MAX_HEIGHT = 240;
 
 interface Props {
   /** The shared input core from [`useComposerInput`]. */
@@ -47,16 +49,29 @@ export function ComposerFrame({
   const listening = dictation?.listening ?? false;
   const showGhost = !!dictation && (interim !== "" || listening || dictation.fresh !== null);
 
-  // The interim text lives in the ghost, so the box has to grow to it — the
-  // textarea's own value doesn't hold it. Measured after each revision, and
-  // after each edit made while the ghost is up.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure when the previewed text changes; the refs are stable
-  useEffect(() => {
+  // The one place the input is sized: to its text, or to the dictation ghost
+  // over it when that is taller, whoever changed either (typing, a paste, a
+  // pick from a menu, a dictated phrase, a restored draft). Before paint, so
+  // the box never shows a frame at the old height.
+  //
+  // The textarea collapses to be measured, and for that one layout everything
+  // around it would shrink too: WebKit then clamps a log scrolled to its
+  // bottom (the chat above the composer) and leaves it there once the box
+  // regrows, a line's height short per keystroke. So the box is held at its
+  // height meanwhile. The box, not the field: the ghost is laid over the
+  // field and has to collapse with it to measure its own text.
+  const boxRef = useRef<HTMLDivElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: these are what the height depends on, not values the body reads; the refs are stable
+  useLayoutEffect(() => {
     const ta = input.ta.current;
-    const ghost = ghostRef.current;
-    if (!ta || !ghost) return;
-    grow(ta, () => ghost.scrollHeight);
-  }, [interim, showGhost, input.text]);
+    const box = boxRef.current;
+    if (!ta || !box) return;
+    box.style.minHeight = `${box.getBoundingClientRect().height}px`;
+    ta.style.height = "auto";
+    const wanted = Math.max(ta.scrollHeight, ghostRef.current?.scrollHeight ?? 0);
+    ta.style.height = `${Math.min(wanted, MAX_HEIGHT)}px`;
+    box.style.minHeight = "";
+  }, [input.text, interim, showGhost, minRows]);
 
   const cls = [
     "composer",
@@ -67,7 +82,7 @@ export function ComposerFrame({
     .join(" ");
 
   return (
-    <div className={cls}>
+    <div className={cls} ref={boxRef}>
       {input.isDropTarget && (
         <div className="composer-drop-overlay flex-center text-sm">
           <Icon name="upload" size={20} />
@@ -96,7 +111,7 @@ export function ComposerFrame({
           value={input.text}
           rows={minRows}
           // Floor at `minRows` lines; mirrors .composer-input's line-height (1.55)
-          // and vertical padding (12+8px), so grow() can't shrink it below this.
+          // and vertical padding (12+8px), so sizing can't shrink it below this.
           style={minRows > 1 ? { minHeight: `calc(${minRows} * 1.55em + 20px)` } : undefined}
           disabled={disabled}
           // A box taller than MAX_HEIGHT scrolls; the ghost has to follow.

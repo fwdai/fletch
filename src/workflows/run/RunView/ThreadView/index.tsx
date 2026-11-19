@@ -6,10 +6,11 @@
 // bottom. The pane is never blank — whatever the run is doing between two
 // streaming turns gets a named phase row with a live timer (see phases.ts).
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { AgentRecord, WfEvent, WfRun, WfStepExec } from "../../../../api";
 import { isAgentBusy } from "../../../../helpers";
 import { useAppStore } from "../../../../store";
+import { scrollToRow, useStickToBottom } from "../../../../util/stickToBottom";
 import type { ResolvedAgent } from "../../../shared";
 import type { StepDesc } from "../flatten";
 import { PhaseRow } from "./PhaseRow";
@@ -17,7 +18,6 @@ import { derivePhase } from "./phases";
 import { deriveSegments, liveAgent } from "./segments";
 import { ThreadComposer } from "./ThreadComposer";
 import { ThreadSegment } from "./ThreadSegment";
-import { useThreadScroll } from "./useThreadScroll";
 
 /** A step the user asked to see. Carries a nonce so re-picking the same step
  *  scrolls again, and so the thread never yanks the view on its own when the
@@ -45,7 +45,11 @@ export function ThreadView({
   resolve: (alias: string) => ResolvedAgent | null;
   focus: FocusRequest | null;
 }) {
-  const { scrollRef, innerRef, onScroll, toBottom } = useThreadScroll(run.id);
+  // The thread's content comes from several sources at once (segments append,
+  // lazy history lands under an older one, a phase row swaps for a taller one):
+  // following the rendered height covers them all with one rule.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const toBottom = useStickToBottom(scrollRef, run.id);
 
   const segments = useMemo(
     () => deriveSegments(steps, attempts, agents),
@@ -76,15 +80,15 @@ export function ThreadView({
   // own scrolling as the run advances.
   useEffect(() => {
     if (!focus) return;
-    const el = innerRef.current?.querySelector(`[data-step-id="${CSS.escape(focus.stepId)}"]`);
-    el?.scrollIntoView({ block: "start" });
-  }, [focus, innerRef]);
+    const el = scrollRef.current?.querySelector(`[data-step-id="${CSS.escape(focus.stepId)}"]`);
+    if (el) scrollToRow(el, { block: "start" });
+  }, [focus]);
 
   return (
     <div className="chat wf-thread">
       <div className="chat-scroll-wrap">
-        <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
-          <div className="chat-inner fade-in" ref={innerRef}>
+        <div className="chat-scroll" ref={scrollRef}>
+          <div className="chat-inner fade-in">
             {segments.map((segment) => (
               <ThreadSegment
                 key={segment.exec.id}

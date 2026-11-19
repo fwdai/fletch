@@ -15,9 +15,6 @@ import { offersFolder, pathMentions } from "./mentions";
 import { stageAttachmentPath, stageEnvironmentPath } from "./stageAttachment";
 import { useFileDrop } from "./useFileDrop";
 
-/** Max grown height of the input, in px, before it scrolls internally. */
-const MAX_HEIGHT = 240;
-
 export interface ComposerInputConfig {
   /** Provider id driving the `/` slash-command source (claude has commands;
    *  other providers use an empty adapter). */
@@ -51,28 +48,6 @@ export interface ComposerInputConfig {
    *  claim it — the agent composer routes Enter, Escape and ⌘⇧D through here
    *  because what they do depends on dictation and the agent's state. */
   onKeyDown?: (e: React.KeyboardEvent) => boolean;
-}
-
-/** Resize a textarea to fit its content, capped at `MAX_HEIGHT`; `alsoFit`
- *  reads another height the box must hold (the dictation ghost's). Exported
- *  for the dictation hook, which writes text the user didn't type, and the
- *  frame, which sizes the box to the ghost.
- *
- *  The textarea collapses to be measured, and for that one layout everything
- *  around it would shrink too: WebKit then clamps a scroller pinned to its
- *  bottom (the chat log above the composer) to the shorter extent and leaves
- *  it there once the box regrows, a line's height short of the bottom per
- *  keystroke. So the composer box is held at its height while the textarea
- *  measures. The box, not the field: the ghost is laid over the field and has
- *  to collapse with it to measure its own text. */
-export function grow(el: HTMLTextAreaElement, alsoFit?: () => number) {
-  const box = el.closest<HTMLElement>(".composer");
-  const held = box?.style.minHeight ?? "";
-  if (box) box.style.minHeight = `${box.getBoundingClientRect().height}px`;
-  el.style.height = "auto";
-  const wanted = Math.max(el.scrollHeight, alsoFit?.() ?? 0);
-  el.style.height = `${Math.min(wanted, MAX_HEIGHT)}px`;
-  if (box) box.style.minHeight = held;
 }
 
 /** The reusable composer input core: the textarea's text/caret/attachment
@@ -110,7 +85,6 @@ export function useComposerInput(cfg: ComposerInputConfig) {
       if (!el) return;
       el.focus();
       el.setSelectionRange(pos, pos);
-      grow(el);
     });
   }
 
@@ -290,13 +264,6 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     if (autoFocus) ta.current?.focus();
   }, [autoFocus]);
 
-  // On mount (including the remount a view switch causes) a restored multi-line
-  // draft renders at single-row height until grow() runs on an edit; resize once
-  // so it fits its content.
-  useEffect(() => {
-    if (ta.current) grow(ta.current);
-  }, []);
-
   // Mirror the draft into the store on every edit so it survives the remount a
   // view switch causes. Clearing `text` on send clears the entry.
   useEffect(() => {
@@ -313,7 +280,6 @@ export function useComposerInput(cfg: ComposerInputConfig) {
         const el = ta.current;
         if (!el) return;
         el.focus();
-        grow(el);
         const end = next.length;
         el.setSelectionRange(end, end);
         setCaret(end);
@@ -353,7 +319,6 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     setText("");
     setAttachments([]);
     setFolders([]);
-    if (ta.current) ta.current.style.height = "auto";
   }
 
   /** Put back a draft whose send failed after `clear` (a refused folder, a
@@ -395,7 +360,6 @@ export function useComposerInput(cfg: ComposerInputConfig) {
       onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => {
         setText(e.target.value);
         setCaret(e.target.selectionStart ?? e.target.value.length);
-        grow(e.target);
       },
       onSelect: (e: React.SyntheticEvent<HTMLTextAreaElement>) =>
         setCaret(e.currentTarget.selectionStart ?? 0),

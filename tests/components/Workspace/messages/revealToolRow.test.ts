@@ -45,18 +45,18 @@ describe("revealToolRow", () => {
     const store = makeStore();
     store.setState({ chatFocus: { agentId: "a1", toolUseId: "toolu_1" } });
     const frames = fakeFrames();
-    const root = { scrollIntoView: vi.fn() };
+    const scroll = vi.fn();
     const open = vi.fn();
 
-    revealToolRow(() => root, open, store.getState().clearChatFocus, frames.raf, frames.caf);
+    revealToolRow(scroll, open, store.getState().clearChatFocus, frames.raf, frames.caf);
 
     // Synchronously: the row is open, nothing has scrolled, the request stands.
     expect(open).toHaveBeenCalledTimes(1);
-    expect(root.scrollIntoView).not.toHaveBeenCalled();
+    expect(scroll).not.toHaveBeenCalled();
     expect(store.getState().chatFocus).toEqual({ agentId: "a1", toolUseId: "toolu_1" });
 
     frames.flush();
-    expect(root.scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+    expect(scroll).toHaveBeenCalledTimes(1);
     expect(store.getState().chatFocus).toBeNull();
   });
 
@@ -64,12 +64,12 @@ describe("revealToolRow", () => {
     const store = makeStore();
     store.setState({ chatFocus: { agentId: "a1", toolUseId: "toolu_1" } });
     const frames = fakeFrames();
-    const root = { scrollIntoView: vi.fn() };
+    const scroll = vi.fn();
 
     // Unmounted before the frame: no scroll, and the request stays for the
     // row that mounts next (e.g. after a lazy history load).
     const cancel = revealToolRow(
-      () => root,
+      scroll,
       () => {},
       store.getState().clearChatFocus,
       frames.raf,
@@ -77,32 +77,32 @@ describe("revealToolRow", () => {
     );
     cancel();
     frames.flush();
-    expect(root.scrollIntoView).not.toHaveBeenCalled();
+    expect(scroll).not.toHaveBeenCalled();
     expect(store.getState().chatFocus).not.toBeNull();
 
     // Frame fired first: the later cleanup (the effect re-running once the
     // clear flips `focused`) has nothing left to cancel.
     const cancelAfter = revealToolRow(
-      () => root,
+      scroll,
       () => {},
       store.getState().clearChatFocus,
       frames.raf,
       frames.caf,
     );
     frames.flush();
-    expect(root.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveBeenCalledTimes(1);
     expect(store.getState().chatFocus).toBeNull();
     cancelAfter();
     expect(frames.size()).toBe(0);
   });
 
-  it("still consumes the request when the row is gone by the time the frame fires", () => {
+  it("still consumes the request when the scroll finds no row by the time the frame fires", () => {
     const store = makeStore();
     store.setState({ chatFocus: { agentId: "a1", toolUseId: "toolu_1" } });
     const frames = fakeFrames();
 
     revealToolRow(
-      () => null,
+      () => {},
       () => {},
       store.getState().clearChatFocus,
       frames.raf,

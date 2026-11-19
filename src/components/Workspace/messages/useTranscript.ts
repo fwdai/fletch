@@ -43,8 +43,6 @@ export interface Transcript {
   /** The agent has had a conversation of its own (distinguishes "empty new
    *  session" from "transcript missing on disk"). */
   hasPriorConversation: boolean;
-  /** Raw log identity — a stable dep for scroll-to-bottom effects. */
-  log: unknown;
 }
 
 /** An agent's own conversation: its log from the store, loaded from history
@@ -158,6 +156,5 @@ export function useTranscriptFrom(
     awaitingInput,
     transcriptLoading,
     hasPriorConversation,
-    log,
   };
 }

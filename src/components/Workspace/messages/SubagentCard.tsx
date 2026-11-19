@@ -10,6 +10,7 @@ import { Icon } from "@/components/Icon";
 import { Loader } from "@/components/ui/Loader";
 import { type BackgroundTask, useAppStore } from "@/store";
 import { useMinuteClock } from "@/util/hooks";
+import { holdView } from "@/util/stickToBottom";
 import {
   type ThreadState,
   threadLabel,
@@ -96,7 +97,10 @@ export function SubagentCard({
           className="sa-toggle"
           aria-expanded={details}
           aria-label={details ? "Hide prompt and report" : "Show prompt and report"}
-          onClick={() => setDetails((d) => !d)}
+          onClick={(e) => {
+            holdView(e.currentTarget);
+            setDetails((d) => !d);
+          }}
         >
           {details ? "▾" : "▸"}
         </button>

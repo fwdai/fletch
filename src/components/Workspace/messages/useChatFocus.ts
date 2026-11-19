@@ -5,6 +5,7 @@
 // both reveal the same way. The frame-ordering subtlety lives in revealToolRow.
 
 import { useEffect, useRef } from "react";
+import { scrollToRow } from "@/util/stickToBottom";
 import { useTranscriptHost } from "./host";
 import { revealToolRow } from "./revealToolRow";
 
@@ -31,7 +32,10 @@ export function useChatFocus(
   useEffect(() => {
     if (!focused) return;
     return revealToolRow(
-      () => rootRef.current(),
+      () => {
+        const row = rootRef.current();
+        if (row) scrollToRow(row, { block: "center" });
+      },
       () => openRef.current(),
       clearFocus,
     );
