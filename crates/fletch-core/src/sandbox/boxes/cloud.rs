@@ -25,10 +25,11 @@
 //!   that is gone is the workspace's files gone, and is refused
 //!   ([`Error::CloudGone`]), never replaced by an empty one; a provider that
 //!   cannot run the machine now is refused with its reason, and nothing is
-//!   destroyed. The guest's host key is read through the provider's
-//!   authenticated exec at every boot and pinned, then ssh is waited for:
-//!   a new machine's name takes a while to resolve. Nothing local is made:
-//!   no data disk, no dirty marker, no egress proxy, no tools disk.
+//!   destroyed. The guest's host key, kept on the box's disk, is read
+//!   through the provider's authenticated exec and pinned at the box's first
+//!   boot (and at any boot that finds no pin), then ssh is waited for: a new
+//!   machine's name takes a while to resolve. Nothing local is made: no data
+//!   disk, no dirty marker, no egress proxy, no tools disk.
 //! - **A spare** ([`super::spares`]) is a box made ahead of any workspace,
 //!   under a placeholder identity of its own, its CLIs installed and its
 //!   machine parked. A box with nothing made for it yet takes one at its
@@ -101,8 +102,11 @@ const HOST_KEY_BOUND: Duration = Duration::from_secs(30);
 const HOST_KEY_PACE: Duration = Duration::from_secs(2);
 const HOST_KEY_EXEC: Duration = Duration::from_secs(10);
 /// How long the guest may take to answer over ssh once its machine runs: a
-/// new box's name takes a while to resolve.
+/// new box's name takes a while to resolve. The pause between two tries
+/// starts short, for a machine that answers a moment after the first, and
+/// doubles up to the longest ([`ssh_pauses`]).
 const SSH_BOUND: Duration = Duration::from_secs(90);
+const SSH_FIRST_PACE: Duration = Duration::from_millis(250);
 const SSH_PACE: Duration = Duration::from_secs(3);
 /// The `sync` a stop asks of the guest before the provider stops it.
 const SYNC_BOUND: Duration = Duration::from_secs(5);
@@ -251,14 +255,20 @@ pub(super) fn spec(identity: &BoxIdentity, authorized_key: String) -> MachineSpe
     }
 }
 
-/// Bring the machine of the box in `dir` to running and pin its guest's host
-/// key there, through `client`; answers the box's handle. With no handle in
-/// `dir` the box is made from `spec` and its handle kept at once; with one,
-/// its machine is started, waited for, or replaced on its disk, as its state
-/// asks. A box whose disk is gone is refused ([`Error::CloudGone`]) and
-/// nothing is made in its place; a machine the provider cannot run is
+/// Bring the machine of the box in `dir` to running, its guest's host key
+/// pinned there, through `client`; answers the box's handle. With no handle
+/// in `dir` the box is made from `spec` and its handle kept at once; with
+/// one, its machine is started, waited for, or replaced on its disk, as its
+/// state asks. A box whose disk is gone is refused ([`Error::CloudGone`])
+/// and nothing is made in its place; a machine the provider cannot run is
 /// refused with why, and nothing destroyed. `phase` hears what the boot
 /// does. Once the machine runs, a failure stops it, its handle kept.
+///
+/// The guest keeps its host key on the box's disk, so the key is the box's
+/// for its whole life, through a replaced machine too: it is read through
+/// the provider for a box just made and for a directory that holds no pin,
+/// and every other boot trusts the pin, which the ssh handshake checks
+/// ([`reach`]).
 pub async fn machine_up(
     client: &Arc<Client>,
     dir: &Path,
@@ -266,7 +276,8 @@ pub async fn machine_up(
     phase: &(dyn Fn(BoxPhase) + Sync),
 ) -> Result<Handle> {
     let label = client.provider().label();
-    let handle = match read_handle(dir)? {
+    let pinned = std::fs::metadata(dir.join(channel::KNOWN_HOSTS_FILE)).is_ok_and(|m| m.len() > 0);
+    let (handle, made) = match read_handle(dir)? {
         None => {
             phase(BoxPhase::Preparing {
                 detail: format!("creating a {label} machine"),
@@ -288,10 +299,13 @@ pub async fn machine_up(
                 }
                 return Err(e);
             }
-            created.handle
+            (created.handle, true)
         }
-        Some(handle) => to_running(client, dir, handle, spec, phase).await?,
+        Some(handle) => (to_running(client, dir, handle, spec, phase).await?, false),
     };
+    if pinned && !made {
+        return Ok(handle);
+    }
     if let Err(e) = pin_host_key(client, &handle, dir).await {
         drop(stop_in_background(
             client.clone(),
@@ -385,30 +399,49 @@ async fn pin_host_key(client: &Client, handle: &Handle, dir: &Path) -> Result<()
 }
 
 /// The channel to the guest of the box `handle` names, authenticating with
-/// `key` and trusting the host key [`machine_up`] pinned in `dir`, once its
-/// sshd answers.
+/// `key` and trusting the host key pinned in `dir` ([`machine_up`]), once its
+/// sshd answers. A guest whose key is not the pinned one is refused at once:
+/// no wait makes it right.
 pub(super) async fn reach(dir: &Path, key: &Path, handle: &Handle) -> Result<Channel> {
     let endpoint = handle.endpoint();
     let route = route(&endpoint)?;
     let known_hosts = dir.join(channel::KNOWN_HOSTS_FILE);
     let channel = Channel::with_route(dir, route, key, &known_hosts)
         .map_err(|e| Error::Other(e.to_string()))?;
+    let label = handle.provider().label();
     let deadline = Instant::now() + SSH_BOUND;
+    let mut pauses = ssh_pauses();
     loop {
         let why = match channel.exec(None, None, &["true"]).await {
             Ok(out) if out.status.success() => return Ok(channel),
             Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
             Err(e) => e.to_string(),
         };
+        // What ssh says when the guest's key is not the one pinned.
+        if why.contains("Host key verification failed") {
+            return Err(Error::SandboxUnavailable(format!(
+                "the {label} machine's ssh host key is not the one pinned for this workspace in {}, \
+                 so Fletch won't connect to it. If you know why its key changed, delete that file \
+                 and start the workspace again: the key the machine has is then pinned.",
+                known_hosts.display()
+            )));
+        }
         if Instant::now() >= deadline {
             return Err(Error::SandboxUnavailable(format!(
-                "the {} machine did not answer over ssh within {} s: {why}",
-                handle.provider().label(),
+                "the {label} machine did not answer over ssh within {} s: {why}",
                 SSH_BOUND.as_secs()
             )));
         }
-        tokio::time::sleep(SSH_PACE).await;
+        tokio::time::sleep(pauses.next().unwrap_or(SSH_PACE)).await;
     }
+}
+
+/// The pauses between [`reach`]'s tries: [`SSH_FIRST_PACE`], doubling up to
+/// [`SSH_PACE`].
+fn ssh_pauses() -> impl Iterator<Item = Duration> {
+    std::iter::successors(Some(SSH_FIRST_PACE), |pause| {
+        Some((*pause * 2).min(SSH_PACE))
+    })
 }
 
 /// How ssh reaches a guest at `endpoint`.
