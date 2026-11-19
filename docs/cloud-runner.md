@@ -1,9 +1,10 @@
 # Cloud execution: the runner and provider sandboxes
 
-Status: design agreed 2026-11-19. The sandbox half is merged and not yet proven
-against a real provider; the runner half is not started. Every statement here
-is a decision Alex made, a fact checked in the code at the path given, or
-marked **open**. Nothing in section 8 may be assumed.
+Status: design agreed 2026-11-19. The sandbox half is merged and ran on Fly.io
+that day (section 5); spares and the runner are not started. Every statement
+here is a decision Alex made, a fact checked in the code at the path given,
+measured, or quoted from a provider's documentation, or it is marked **open**.
+Nothing in section 8 may be assumed.
 
 ## 1. The goal
 
@@ -18,6 +19,8 @@ In Alex's words:
   the transcript with its messages and tool calls, and the file changes.
 - The user opens the pull request from a client. The agent does not need to
   open it on its own.
+- A new agent starts quickly: the user does not wait for a machine to be
+  created.
 
 ## 2. Two separate choices
 
@@ -32,7 +35,7 @@ In Alex's words:
 | Supervisor | Sandbox | State |
 | --- | --- | --- |
 | The user's device | Local VM, or the macOS sandbox | Shipped |
-| The user's device | Provider machine | Merged (#1135, #1136, #1137, #1138, #1143, #1144); never completed a boot on a real provider |
+| The user's device | Provider machine | Merged (#1135, #1136, #1137, #1138, #1143, #1144, #1146); ran on Fly.io 2026-11-19 |
 | A paired host (`fletch-host`) | Local VM on that host | Shipped; needs KVM on Linux |
 | A **runner**: `fletch-host` on a provider machine | Provider machine | To build (section 6) |
 
@@ -73,9 +76,46 @@ transcripts, holds the logins, and serves every paired device through the
 relay. It does not run agents on itself.
 
 **A provider machine per workspace.** The runner sandboxes each workspace
-exactly as a laptop can since #1143: a box whose machine is created at the
-provider, stopped when idle, destroyed with the workspace. The code is in
-`fletch-core`, which `fletch-host` runs.
+exactly as a laptop can since #1143: a box whose machine is at the provider,
+at rest when idle, destroyed with the workspace. The code is in `fletch-core`,
+which `fletch-host` runs. Archiving a workspace winds its machine down; the
+others are untouched.
+
+**Fletch's image, not the provider's.** Every machine runs the box image, the
+one built for VMs on the user's machine, with its tools already in it. For a
+provider it is the cloud image (`packaging/cloud-image`), built from the box
+image's x86_64 release.
+
+**A spare is always ready.** The supervisor keeps a machine created ahead of
+any workspace and parked, so a new agent starts on a machine that only has to
+wake:
+
+- A spare is a whole box with no owner yet: the image, its disk, its ssh key,
+  its host key pinned, and the agent CLIs on its disk, so that no launch
+  creates a machine or installs anything.
+- A new workspace takes the spare. Its replacement is created at once, in the
+  background.
+- There is always at least one spare, whatever the number of workspaces,
+  including none. How many is a setting; the default is one.
+- With no spare ready (two agents spawned in a row, a spare that failed), the
+  workspace's machine is created directly, as it is today. A spawn never fails
+  or waits for want of a spare.
+- A spare made for another image or agent CLI version than the supervisor now
+  uses is replaced.
+
+**Parked means the fastest way back.** A spare rests in whichever state its
+provider wakes soonest from. On Fly.io that is suspended, where its limits
+allow (section 5), else stopped. Which state is the adapter's answer, not the
+core's.
+
+**A spare gets its identity when it is taken, over ssh.** A box binds the
+paths of its workspace, which carry the workspace's id. A spare is created
+before that workspace exists, and Fly.io's documentation does not say that
+changing a machine's configuration keeps a suspended machine's snapshot
+(an update takes the machine down and brings it back up), so a spare is never
+given its workspace through the provider. The guest takes its workspace's
+paths once, from its supervisor, after it wakes, and the spare's directory on
+the supervisor becomes the workspace's box directory.
 
 **Devices are clients.** A laptop or phone paired with the runner launches,
 watches and reviews through the existing remote protocol. Nothing about the
@@ -189,6 +229,38 @@ The sandbox half:
   pinned in `crates/fletch-box/src/image_store/mod.rs` and checked by
   `scripts/check-cloud-image.sh`.
 
+Measured on Fly.io on 2026-11-19, from the app's log (one run each):
+
+- A new workspace took about a minute to its agent starting. After Fly.io
+  reported the machine created: 0.9 s to read the host key and connect over
+  ssh, 19 s installing the agent CLI, 10 s writing its version marker and
+  syncing the disk, 8 s on the CLI capability probe and launch preparation.
+  The creation before that was not timed.
+- Waking the same workspace from stopped took about 4.4 s to a connected box
+  and about 15 s to the agent's process. The other 11 s was the engine's: a
+  turn checkpoint that ran out its 10 s timeout while the box started, and a
+  delivery that failed once and was queued again.
+- A local VM the same morning was ready in 1.8 s.
+- The machine has no `/dev/kvm` and its CPU shows no virtualization flags: a
+  Fly.io machine cannot boot a VM. Its image reads `x86_64`.
+
+What Fly.io documents (`docs.fly.io/reference/suspend-resume`,
+`machines/api/machines-resource`, `machines/overview`, `about/pricing`):
+
+- Creating a machine "can take some time, maybe low double digit seconds".
+- A suspended machine resumes in "a few hundred ms"; a cold start is "~2+
+  seconds for common apps". Suspend is `POST …/machines/{id}/suspend`, and
+  the ordinary start resumes it.
+- A machine can suspend with at most 2 GB of memory, no swap and no schedule.
+  A box has 2048 MiB by default (`sandbox/boxes/settings.rs`).
+- A resume is not guaranteed: a machine cold-starts when its snapshot is lost,
+  its host is maintained, it is migrated, or it is stopped while suspended.
+- After a resume the clock can lag until NTP syncs, and connections the
+  machine held may be dead.
+- A stopped or suspended machine is billed for its root filesystem only,
+  $0.15 per GB a month; a volume is $0.15 per GB a month in any state.
+- A machine can be created without being started (`skip_launch`).
+
 What stops a runner today:
 
 - Off macOS a new agent is always a local box
@@ -203,30 +275,43 @@ What stops a runner today:
 
 ## 6. What to build
 
-In this order; each is one pull request.
+In this order; each is one pull request. Steps 1 to 3 make a new agent start
+quickly and are tested from a laptop; steps 4 to 6 make it run unattended.
 
-1. **A headless host sandboxes in provider machines.** It can hold a provider
+1. **The engine's own delays.** No disk sync that a launch waits on; the CLI
+   capability probe remembered per CLI version, not per box; a wake that does
+   not run out the turn checkpoint's timeout or fail its first delivery. Done
+   when the log of a wake shows the agent's process starting within a second
+   or two of the box being connected.
+2. **Parking.** The adapter can put a box at rest in its fastest-waking state
+   and wake it, falling back to a stop where that state is not available.
+   Done when a parked Fly.io box resumes and its box is connected again, and
+   a box over the suspend limit still stops and starts.
+3. **Spares.** The supervisor prepares a box with no owner (created, agent
+   CLIs installed, parked), hands it to the next new workspace with that
+   workspace's identity given over ssh, and replaces it; with none ready it
+   creates the machine directly. The count is a setting. Done when, with a
+   spare ready, a new workspace's agent starts without creating a machine or
+   installing a CLI, a second spare exists shortly after, and archiving the
+   workspace destroys only its own machine.
+4. **A headless host sandboxes in provider machines.** It can hold a provider
    connection, and where it cannot boot a local VM it gives a new workspace a
    provider machine instead of refusing. Done when a `fletch-host` on a Linux
    machine without VM support, given a connection, runs a workspace in a
    provider machine.
-2. **The runner image and its hands-off start.** An image with `fletch-host`
+5. **The runner image and its hands-off start.** An image with `fletch-host`
    that comes up with the relay on, the creating device authorised, and its
    GitHub token and provider connection in place, with no terminal, and its
    data directory on the durable disk. Done when a machine booted from it with
    those inputs is reachable from the creating device through the relay, and
    after a stop and a start it is the same runner: same identity, pairings,
    logins and history.
-3. **One click in the app.** Settings → Cloud creates, shows, stops, starts and
+6. **One click in the app.** Settings → Cloud creates, shows, stops, starts and
    deletes the runner through the provider adapter. Creating it pairs this
    device, and the runner appears as a host to run on; another device pairs
-   with a code. Done when, from a laptop with a connected provider: one click,
-   launch a workspace on the runner, close the laptop, follow it from the
-   phone.
-
-Before 1: one workspace driven from a laptop must boot on a real provider
-machine. The first attempt failed at its first request; #1146 fixed that
-request, and nothing after it has been seen to run.
+   with a code. The runner keeps the spares. Done when, from a laptop with a
+   connected provider: one click, launch a workspace on the runner and see its
+   agent start on a spare, close the laptop, follow it from the phone.
 
 ## 7. Rules for whoever builds this
 
@@ -237,6 +322,13 @@ request, and nothing after it has been seen to run.
 - Two isolation engines; no third.
 - A box whose disk is gone is refused, never recreated on an empty disk. The
   same holds for the runner.
+- A spare is the supervisor's, known by its own directory: the sweep that
+  destroys boxes no workspace owns never takes one, and deleting the runner
+  destroys its spares with it.
+- A spare is never given its workspace by changing its machine's
+  configuration.
+- A guest must work after a resume and after a cold start alike: nothing may
+  depend on which one it got.
 - A provider token and every other secret stay out of logs, errors and
   telemetry.
 - Local boxes, the macOS sandbox and the laptop-driven cloud box behave as
@@ -255,12 +347,29 @@ Not investigated:
 - How the creating device learns the runner's public key, and how its own key
   is authorised on the runner, without a pairing code.
 - How the provider connection reaches the runner.
+- How the guest takes its workspace's paths after it has started. Today they
+  are bound once, by the image's entrypoint, from the machine's environment
+  (`packaging/cloud-image/entrypoint`).
+
+Awaiting Alex's decision:
+
+- **Which agent CLIs a spare carries.** Proposed: every agent CLI the
+  supervisor has a login for, at the version it would launch.
+- **Whether a laptop that drives provider machines itself keeps a spare.**
+  Proposed: the setting defaults to one on the runner and none on a laptop,
+  since a spare is billed whether or not it is used.
+- **Whether an idle workspace's machine is parked like a spare** rather than
+  stopped, so that waking it is as fast.
 
 Not verified:
 
-- Whether a Fly machine can boot a local VM. The design does not depend on it.
-- Every request to a provider after app creation: addresses, volume, machine,
-  host key, ssh.
+- How long a new agent takes on a spare, end to end. Fly.io's figure covers
+  the resume alone; connecting, giving the box its workspace and pushing the
+  checkout into it come on top.
+- What a spare costs: its root filesystem's size has not been read.
+- Whether a suspended machine keeps its snapshot across a configuration
+  update. The design does not depend on it.
+- How long the creation part of a new machine takes on Fly.io.
 - The runner's size and cost.
 - `fletch-host` on Linux end to end: the acceptance line in
   `docs/multi-host-plan.md` (3e) is unchecked, and that document still
