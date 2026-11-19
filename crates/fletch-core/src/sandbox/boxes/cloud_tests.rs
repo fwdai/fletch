@@ -118,6 +118,36 @@ async fn a_stopped_machine_is_started_and_a_running_one_left_alone() {
     assert_eq!(fake.boxes(), 1);
 }
 
+/// A parked machine is at rest like a stopped one, and a boot wakes it the
+/// same way: started, on the same handle, its host key read again.
+#[tokio::test]
+async fn a_parked_machine_is_woken_as_a_stopped_one_is() {
+    let fake = FakeCloud::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let handle = made(&fake, dir.path()).await;
+    let client = Arc::new(fake.client());
+
+    client.park(&handle).await.unwrap();
+    assert_eq!(client.state(&handle).await.unwrap(), MachineState::Stopped);
+    client.park(&handle).await.unwrap();
+    assert_eq!(
+        fake.acts(),
+        ["create", "exec", "park"],
+        "a machine at rest is parked once"
+    );
+
+    let again = machine_up(
+        &client,
+        dir.path(),
+        &spec(&identity("glacier"), "ssh-ed25519 AAAA engine".into()),
+        &Phases::default().hear(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again, handle);
+    assert_eq!(fake.acts(), ["create", "exec", "park", "start", "exec"]);
+}
+
 #[tokio::test]
 async fn a_lost_machine_is_replaced_on_its_disk_and_the_new_handle_kept() {
     let fake = FakeCloud::start().await;
