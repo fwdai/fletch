@@ -19,6 +19,7 @@ import { useGate } from "@/store/capabilities";
 import { isCompacting } from "@/store/compaction";
 import { EGRESS_MODE_KEY, effectiveEgressMode } from "@/util/egressMode";
 import { useProjectSettings } from "@/util/useProjectSettings";
+import { inCloud } from "@/util/workspaceKind";
 import { currentAccountId } from "./AccountPicker/choices";
 import { ChatWorkingStatus } from "./ChatWorkingStatus";
 
@@ -109,17 +110,19 @@ export function ChatComposer({
   // (per-turn agents). So `canSend` no longer gates on `busy`; the Composer
   // shows Stop when empty and Send once the user types (see Composer).
   // The VM's network for this turn: offered where there is something to open —
-  // a box under a posture that holds or refuses new hosts, on a host that
-  // can — and while it is open, so it can be closed again.
+  // a box on this Mac under a posture that holds or refuses new hosts, on a
+  // host that can — and while it is open, so it can be closed again. A box at
+  // a cloud provider has no allow-list to open: its network is its machine's.
   const turnOpen = useAppStore((s) => s.boxStates[agent.id]?.turn_open === true);
   const setTurnNetworkOpen = useAppStore((s) => s.setTurnNetworkOpen);
   const boxEgressMode = useAppStore((s) => s.boxEgressMode);
   const turnGate = useGate("egressTurn");
-  const inBox = agent.sandbox_engine === "box";
-  const { settings: projectSettings } = useProjectSettings(inBox ? projectId || null : null);
+  const cloud = inCloud(agent);
+  const proxied = agent.sandbox_engine === "box" && !cloud;
+  const { settings: projectSettings } = useProjectSettings(proxied ? projectId || null : null);
   const posture = effectiveEgressMode(projectSettings?.[EGRESS_MODE_KEY], boxEgressMode).mode;
   const network =
-    inBox && !turnGate && (turnOpen || posture !== "open")
+    proxied && !turnGate && (turnOpen || posture !== "open")
       ? { open: turnOpen, onToggle: (open: boolean) => void setTurnNetworkOpen(agent.id, open) }
       : undefined;
 
@@ -193,7 +196,8 @@ export function ChatComposer({
               }
               listDir={api.listDir}
               listPrs={() => api.listPrs(agent.id)}
-              folders
+              // A machine at a cloud provider mounts no folder from this Mac.
+              folders={!cloud}
               grantedFolders={agent.folder_grants}
               onChangeGrantedFolder={(path, writable) => void grantFolder(agent.id, path, writable)}
               onRevokeFolder={(path) => void revokeFolder(agent.id, path)}
