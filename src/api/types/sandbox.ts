@@ -133,6 +133,8 @@ export interface BoxVm {
   name: string;
   project_id: string;
   created_at: string;
+  /** The cloud provider whose machine the VM is; absent for one on this Mac. */
+  cloud_provider?: string | null;
   state: BoxStateEvent;
 }
 

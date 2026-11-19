@@ -7,20 +7,25 @@ import { useGate } from "@/store/capabilities";
 import { SetDisclosure, SetGroup, SetRow } from "../primitives";
 import { foldVmRows, type VmRow, vmRows } from "./vmRows";
 
-const VM = isolationOf({ sandbox_engine: "box" }, null);
-
 function VmListRow({ row }: { row: VmRow }) {
   const stopBox = useAppStore((s) => s.stopBox);
   const stopGate = useGate("stopVm");
   const project = useAppStore(
     (s) => s.workspace?.projects.find((p) => p.project_id === row.vm.project_id)?.name,
   );
+  const providers = useAppStore((s) => s.cloudProviders);
+  const isolation = isolationOf(
+    { sandbox_engine: "box", cloud_provider: row.vm.cloud_provider },
+    providers,
+  );
   return (
     <SetRow
       compact
-      icon={<IsolationIcon isolation={VM} boxPhase={row.phase} size={14} />}
+      icon={<IsolationIcon isolation={isolation} boxPhase={row.phase} size={14} />}
       title={row.vm.name}
-      sub={[project, row.status].filter(Boolean).join(" · ")}
+      sub={[project, row.vm.cloud_provider ? isolation.title : null, row.status]
+        .filter(Boolean)
+        .join(" · ")}
     >
       {boxIsUp(row.phase) && !stopGate && (
         <Button variant="outline" size="sm" onClick={() => void stopBox(row.vm.agent_id)}>
