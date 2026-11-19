@@ -171,12 +171,6 @@ impl Supervisor {
                     tracing::warn!(error = %e, agent_id, turn_id, subdir = %repo.subdir, "turn checkpoint failed");
                 }
             }
-            // A box agent's checkpoint lives in the guest; the host-side
-            // mirror follows it so publish has the objects whenever the box
-            // next stops. Best effort, like the rest.
-            if let Err(e) = crate::sandbox::after_checkpoint(agent_id).await {
-                tracing::info!(error = %e, agent_id, "box mirror refresh after checkpoint failed");
-            }
         };
         if tokio::time::timeout(CAPTURE_TIMEOUT, capture_all)
             .await
@@ -189,6 +183,18 @@ impl Supervisor {
                 CAPTURE_TIMEOUT.as_secs()
             );
         }
+        // A box agent's checkpoint lives in the guest; the host-side mirror
+        // follows it so publish has the objects whenever the box next stops.
+        // Off the send's path: it is a fetch over the box's channel, slow for
+        // a cloud box, and nothing the turn does waits on it — transport and
+        // the stop ladder refresh the mirror for themselves, and the refresh
+        // never carries checkpoints. Best effort, like the rest.
+        let agent_id = agent_id.to_string();
+        crate::host::spawn(async move {
+            if let Err(e) = crate::sandbox::after_checkpoint(&agent_id).await {
+                tracing::info!(error = %e, agent_id, "box mirror refresh after checkpoint failed");
+            }
+        });
     }
 
     /// Each of `agent_id`'s checkouts with its checkpoint for `turn_id`, in

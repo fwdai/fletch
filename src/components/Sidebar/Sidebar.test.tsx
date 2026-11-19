@@ -118,6 +118,23 @@ describe("Sidebar", () => {
     expect(document.querySelectorAll(".proj[data-repo-path]")).toHaveLength(2);
   });
 
+  it("reads a turn the host opened, still idle, as working, as the chat does", () => {
+    studio();
+    hostStore("studio").setState({ turnStartedAt: { etna: Date.now() } });
+    render(<Sidebar />);
+
+    const row = rowTitled("Atlas work");
+    expect(row.querySelector(".ag-rail.run")).not.toBeNull();
+    expect(row.querySelector(".ag-loader")).not.toBeNull();
+    expect(row.querySelector("[aria-label='Stop']")).not.toBeNull();
+    expect(row.querySelector("[aria-label='Archive']")).toBeNull();
+
+    act(() => hostStore("studio").setState({ turnStartedAt: {} }));
+    expect(row.querySelector(".ag-rail.idle")).not.toBeNull();
+    expect(row.querySelector(".ag-loader")).toBeNull();
+    expect(row.querySelector("[aria-label='Archive']")).not.toBeNull();
+  });
+
   it("merges a paired host's work into This Mac's project of the same id, with a chip", () => {
     thisMac();
     studio();
