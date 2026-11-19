@@ -196,13 +196,18 @@ impl Admin {
             }
             // Every machine this host made at a provider, its spares and its
             // workspaces' boxes, destroyed there, with which went and which
-            // did not (`{ destroyed: [<id>], failed: [{ agentId, error }] }`);
-            // from then on it makes no spare. What the engine that made this
-            // host on a provider machine (a runner) asks first when it
-            // deletes it with its disk, so that nothing the runner made is
-            // left at the provider with no record of it
-            // (`fletch_core::cloud_runner::delete`).
-            "destroy_cloud_boxes" => value(&sandbox::boxes::destroy_cloud_boxes().await),
+            // did not (`{ destroyed: [<id>], failed: [{ agentId, error }] }`).
+            // While it runs the host makes no machine; it goes on making
+            // none when every one went, or when `final` says the host is
+            // deleted whatever could be destroyed, and makes them again
+            // otherwise. What the engine that made this host on a provider
+            // machine (a runner) asks first when it deletes it with its
+            // disk, so that nothing the runner made is left at the provider
+            // with no record of it (`fletch_core::cloud_runner::delete`).
+            "destroy_cloud_boxes" => {
+                let for_good = args.get("final").and_then(Value::as_bool).unwrap_or(false);
+                value(&sandbox::boxes::destroy_cloud_boxes(for_good).await)
+            }
             _ => Err(UNKNOWN_OP.to_string()),
         }
     }

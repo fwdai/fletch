@@ -181,31 +181,49 @@ provider (a spare when one is ready), since the runner cannot boot a VM.
   running workspace machine: it pulls the box's sessions, syncs its disks and
   has the provider stop it, each within ten seconds, the machines side by
   side. So a stopped runner leaves none of its workspaces' machines running.
-  A machine that is not running has nothing to end: the provider's stop is
-  all. When the guest cannot be reached over ssh, or the service does not end
-  within the bound, the machine is stopped all the same, so a runner that
-  cannot be ended keeps nobody billed, and that is logged as a warning;
-  SQLite's own journal is then what protects the databases.
+  Only a machine seen at rest (stopped, or gone) is only asked of the
+  provider; any other, starting among them, may be running its service a
+  moment later, so its end is attempted. The cost: a machine that never
+  finishes starting is stopped only once the wait to reach it over ssh
+  (90 s) runs out. When the guest cannot be reached over ssh, or the service
+  does not end within the bound, the machine is stopped all the same, so a
+  runner that cannot be ended keeps nobody billed, and that is logged as a
+  warning; SQLite's own journal is then what protects the databases.
 - `pairing_link(preset)` asks the running runner for a pairing code for
   another device (`begin_pairing`) and answers its link, code and expiry.
 - `delete(force)` has the runner destroy every machine it made
-  (`destroy_cloud_boxes`; the runner is started for it): its spare machines
-  first, after which its process makes no new spare (a replenish under way is
-  waited for), then every workspace's machine. Then it destroys its own
-  machine and disk and removes the directory. A runner that cannot be reached
-  (its disk lost, a machine that will not start), or that could not destroy
-  them all (a spare or a workspace's machine its provider would not delete),
-  is refused unless `force`, and with `force` the answer says which machines
-  may remain at the provider. A deletion needs no clean end of the service:
-  the disk goes with the machine.
+  (`destroy_cloud_boxes`; the runner is started for it). The runner first
+  holds every provider (`sandbox/boxes/gate.rs`): from then on no machine is
+  made, a spawn or a spare's preparation is refused at once, and a machine
+  whose making is already under way is waited for until its handle is on
+  disk. Then its spare machines, ready or not, and every workspace's machine
+  are destroyed. When all of them went, the hold stands for the rest of its
+  process; when any did not, the hold is released and the spares made again,
+  so the runner the user still has goes on as before. A forced delete tells
+  the runner so (`final`), and its hold then stands whatever it could
+  destroy: the runner goes either way, and must make nothing behind the
+  deletion. Then the laptop
+  destroys the runner's own machine and disk and removes the directory. A
+  runner that cannot be reached (its disk lost, a machine that will not
+  start), or that could not destroy them all (a spare or a workspace's
+  machine its provider would not delete, or a machine still being made when
+  the wait ran out), is refused unless `force`, and with `force` the answer
+  says which machines may remain at the provider. A deletion needs no clean
+  end of the service: the disk goes with the machine.
 
 **Disconnecting the provider** the runner is at is refused on this machine
 (`cloud_disconnect`, the engine's `commands::cloud_disconnect_impl`) while
 the runner exists, decided by the runner's directory and handle alone: the
 runner is billed while it exists and can only be managed through that
-connection, so it is deleted first. The runner itself has no runner of its
-own, so the rule changes nothing there; its own disconnect destroys its
-spares first, as on any host.
+connection, so it is deleted first. Any other disconnect holds the provider
+the same way (no machine made there, one being made waited for), destroys
+its spares, forgets the connection and only then lets go; a disconnect
+refused because a spare could not be destroyed lets go and has the spares
+made again. The runner itself has no runner of its own, so the first rule
+changes nothing there; its own disconnect is the same hold and sweep.
+
+Every machine made at a provider has its handle on disk under a directory
+a sweep reads, or its making is under way and a sweep's hold waits for it.
 
 `fletch-host update`, run on the runner, replaces `/data/host/fletch-host` in
 place; the start script runs the new binary once the old one exits.

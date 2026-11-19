@@ -19,7 +19,7 @@
 //!   (`CloudMachine::ensure_cli`), then the machine parked
 //!   (`CloudMachine::halt` for an idle stop); the marker is written once the
 //!   provider confirmed the park and the ssh master is closed, and only while
-//!   the provider is still connected. The installs run with a home outside
+//!   no sweep holds the provider (`super::gate`). The installs run with a home outside
 //!   the guest's disk ([`PREPARE_HOME`]), so the guest's home and checkout
 //!   directories hold nothing of them. A preparation that fails destroys what
 //!   it made and removes its directory.
@@ -49,24 +49,26 @@
 //!   box whether or not it took a spare, and when the setting changes; a
 //!   failure waits for the next of those, the next new box at the latest.
 //! - **Disconnecting a provider** (`commands::cloud_disconnect_impl`)
-//!   destroys its spares first ([`destroy_all`]) and forgets its token only
-//!   once they are all gone: a spare is billed while it exists, and a
-//!   provider that is not connected has no client to destroy it with. While
-//!   one cannot be destroyed the disconnect is refused, and the spare's
-//!   directory kept for the next try. The boxes of workspaces at the provider
-//!   are not touched.
+//!   holds the provider (`super::gate`: no machine is made there, and one
+//!   being made is waited for), destroys its spares ([`destroy_all`], every
+//!   directory with a handle, ready or not) and forgets its token only once
+//!   they are all gone: a spare is billed while it exists, and a provider
+//!   that is not connected has no client to destroy it with. While one cannot
+//!   be destroyed the disconnect is refused, the hold released, and the
+//!   spare's directory kept for the next try. The boxes of workspaces at the
+//!   provider are not touched.
 //! - **A host winding down** (`super::destroy_cloud_boxes`, what a cloud
-//!   runner is asked before it is deleted with its disk) destroys every
-//!   spare too ([`wind_down`]), and from then on its process prepares none:
-//!   a take or a setting change during those seconds would otherwise make a
-//!   machine nobody would ever know of.
+//!   runner is asked before it is deleted with its disk) holds every
+//!   provider the same way and destroys every spare too ([`destroy_in`]).
+//!   A preparation already past its make has its handle on disk, so the
+//!   sweep destroys its machine; the preparation then fails, cleans up what
+//!   is left, and writes no marker. A replenish that meets a hold fails as
+//!   any preparation does, and is left for its next trigger.
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use fletch_box::Channel;
 use parking_lot::Mutex;
@@ -100,15 +102,6 @@ static TAKING: Mutex<()> = Mutex::new(());
 
 /// The one [`replenish`] that may run at a time.
 static REPLENISHING: Mutex<Flight> = Mutex::new(Flight::new());
-
-/// Set once this host has begun winding down ([`wind_down`]): from then on
-/// no replenish prepares a spare, for the rest of the process.
-static WOUND_DOWN: AtomicBool = AtomicBool::new(false);
-
-/// How long a wind-down waits for a replenish under way to finish, and the
-/// pause between two looks.
-const WIND_DOWN_WAIT: Duration = Duration::from_secs(10 * 60);
-const WIND_DOWN_PACE: Duration = Duration::from_millis(500);
 
 /// Where the spares are kept, one directory each: beside the boxes, on the
 /// same volume, so a spare becomes a box by a rename.
@@ -216,7 +209,19 @@ fn read_built(dir: &Path) -> Option<Build> {
 }
 
 /// Write `build` as the marker in `dir`, whole: a reader finds it or not.
-fn write_ready(dir: &Path, build: &Build) -> Result<()> {
+/// Refused while a sweep holds `provider` ([`super::gate`]): the sweep, which
+/// read the spares root once its hold stood, destroys this machine, and a
+/// marker would let a taker have it first. Under [`TAKING`], as a sweep's
+/// removal of the marker is, so the two never cross; the directory is never
+/// made again here, so a marker never lands where a sweep removed one.
+fn write_ready(dir: &Path, build: &Build, provider: ProviderId) -> Result<()> {
+    let _taking = TAKING.lock();
+    if super::gate::held(provider) {
+        return Err(Error::Other(format!(
+            "the machines at {} are being deleted; this spare goes with them",
+            provider.label()
+        )));
+    }
     let staging = dir.join(format!("{READY_FILE}.building"));
     std::fs::write(&staging, serde_json::to_vec(build)?)?;
     std::fs::rename(&staging, dir.join(READY_FILE))?;
@@ -339,11 +344,13 @@ impl Guest for Ssh {
 
 /// Prepare one spare of `build` in `root`, at its provider through a client
 /// from `client_for`, its guest worked through `guest`; answers its
-/// directory. The marker is written only while `client_for` still has a
-/// client for the provider: a provider disconnected meanwhile has had its
-/// spares destroyed, and this one, not yet among them, goes too. A failure
-/// destroys what was made, through the client it was made with, and removes
-/// the directory, which is kept only when the destroy fails.
+/// directory. Its machine is made through the gate ([`super::gate`]), so a
+/// sweep that holds the provider refuses the make, or waits for it and then
+/// destroys the machine with the rest; the marker is not written while a
+/// sweep holds the provider ([`write_ready`]). A failure destroys what was
+/// made, through the client it was made with, and removes the directory,
+/// which is kept only when the destroy fails; a directory a sweep removed
+/// already is nothing to clean.
 async fn prepare(
     root: &Path,
     build: &Build,
@@ -365,13 +372,7 @@ async fn prepare(
     std::fs::create_dir_all(&dir)?;
     let made = async {
         make(&dir, &id, client.clone(), build, guest).await?;
-        client_for(provider).map_err(|e| {
-            Error::Other(format!(
-                "{} was disconnected while a spare was made there: {e}",
-                provider.label()
-            ))
-        })?;
-        write_ready(&dir, build)
+        write_ready(&dir, build, provider)
     }
     .await;
     let Err(e) = made else {
@@ -458,8 +459,8 @@ async fn retire(
 /// for: stale and unfinished ones destroyed, any past the number destroyed,
 /// and what is missing prepared. One run at a time: a call while one runs
 /// has that run go once more when it is done. Nothing for a provider that is
-/// not connected, and nothing at all once this host has begun winding down
-/// ([`wind_down`]). A failure is logged and left for the next call.
+/// not connected. A preparation a sweep's hold refuses ([`super::gate`])
+/// fails as any other does: a failure is logged and left for the next call.
 pub async fn replenish() {
     single_flight(&REPLENISHING, replenish_once).await;
 }
@@ -492,22 +493,19 @@ async fn replenish_once() {
         .into_iter()
         .map(|provider| Build::now(provider, &clis))
         .collect();
-    replenish_with(&root, &builds, count, &cloud::client, &Ssh, &WOUND_DOWN).await;
+    replenish_with(&root, &builds, count, &cloud::client, &Ssh).await;
 }
 
 /// [`replenish_once`] in `root`, keeping `count` spares for each of
 /// `builds` (one per connected provider, as a box made now there gets).
-/// Nothing is done, and no further spare prepared, once `wound_down` is set
-/// ([`WOUND_DOWN`]).
 async fn replenish_with(
     root: &Path,
     builds: &[Build],
     count: u32,
     client_for: &(impl Fn(ProviderId) -> Result<Client> + Sync),
     guest: &impl Guest,
-    wound_down: &AtomicBool,
 ) {
-    if builds.is_empty() || wound_down.load(Ordering::SeqCst) {
+    if builds.is_empty() {
         return;
     }
     let mut fresh: HashMap<&str, Vec<PathBuf>> = HashMap::new();
@@ -568,9 +566,6 @@ async fn replenish_with(
             }
         }
         for _ in ready.len()..count {
-            if wound_down.load(Ordering::SeqCst) {
-                return;
-            }
             match prepare(root, build, client_for, guest).await {
                 Ok(dir) => tracing::info!(spare = %dir.display(), "a spare cloud box is ready"),
                 Err(e) => {
@@ -584,41 +579,28 @@ async fn replenish_with(
 
 /// Destroy every spare of `provider`, or of every provider, at its provider,
 /// and remove its directory: what disconnecting a provider does first
-/// (`commands::cloud_disconnect_impl`). A spare that cannot be destroyed
-/// keeps its directory, so a later call finds it again, and makes this an
-/// error, once every other was tried.
+/// (`commands::cloud_disconnect_impl`), under its hold. A spare that cannot be
+/// destroyed keeps its directory, so a later call finds it again, and makes
+/// this an error, once every other was tried.
 pub async fn destroy_all(provider: Option<ProviderId>) -> Result<()> {
     destroy_all_in(&root()?, provider, &cloud::client).await
 }
 
-/// [`destroy_all`] in `root`, with clients from `client_for`. A directory
-/// with no handle belongs to no provider: it goes when every provider's
-/// spares go, and is left alone when one provider's do.
+/// [`destroy_all`] in `root`, with clients from `client_for`.
 pub(crate) async fn destroy_all_in(
     root: &Path,
     provider: Option<ProviderId>,
     client_for: &(impl Fn(ProviderId) -> Result<Client> + Sync),
 ) -> Result<()> {
-    let mut kept = Vec::new();
-    for found in found_in(root) {
-        let ours = match &found.handle {
-            Ok(Some(handle)) => provider.map_or(true, |p| handle.provider() == p),
-            Ok(None) => provider.is_none(),
-            Err(e) => {
-                kept.push(format!("{}: {e}", found.dir.display()));
-                continue;
-            }
-        };
-        if !ours {
-            continue;
-        }
-        if let Err(e) = retire(&found.dir, client_for).await {
-            kept.push(format!("{}: {e}", found.dir.display()));
-        }
-    }
-    if kept.is_empty() {
+    let outcome = destroy_in(root, provider, client_for).await;
+    if outcome.failed.is_empty() {
         return Ok(());
     }
+    let kept: Vec<String> = outcome
+        .failed
+        .iter()
+        .map(|f| format!("{}: {}", f.agent_id, f.error))
+        .collect();
     Err(Error::Other(format!(
         "{} spare cloud box(es) could not be destroyed and are kept: {}",
         kept.len(),
@@ -626,51 +608,19 @@ pub(crate) async fn destroy_all_in(
     )))
 }
 
-/// Wind this host's spares down for good, as part of its wind-down
-/// (`super::destroy_cloud_boxes`): no replenish prepares a spare from now on
-/// in this process, a replenish under way is waited for, then every spare is
-/// destroyed at its provider and its directory removed. Answers each spare
-/// destroyed and each that was not, with why, by its placeholder id: a spare
-/// a replenish was still preparing when the wait ran out is among those not.
-pub(super) async fn wind_down() -> super::CloudBoxesDestroyed {
-    let Ok(root) = root() else {
-        return super::CloudBoxesDestroyed::default();
-    };
-    wind_down_in(
-        &root,
-        &WOUND_DOWN,
-        &REPLENISHING,
-        WIND_DOWN_WAIT,
-        &cloud::client,
-    )
-    .await
-}
-
-/// [`wind_down`] in `root`, setting `wound_down` and waiting at most `wait`
-/// for a run under `flight` to finish, with clients from `client_for`.
-async fn wind_down_in(
+/// Destroy, in `root`, every spare of `provider` (every spare with `None`)
+/// whose directory has a handle, ready or not, with clients from
+/// `client_for`, and answer which went and which did not, each by its
+/// placeholder id. A directory with no handle belongs to no provider: it is
+/// removed when every provider's spares go, and left alone when one
+/// provider's do. What a sweep does in the spares root, under its hold
+/// ([`super::gate`]).
+pub(super) async fn destroy_in(
     root: &Path,
-    wound_down: &AtomicBool,
-    flight: &Mutex<Flight>,
-    wait: Duration,
+    provider: Option<ProviderId>,
     client_for: &(impl Fn(ProviderId) -> Result<Client> + Sync),
 ) -> super::CloudBoxesDestroyed {
-    wound_down.store(true, Ordering::SeqCst);
     let mut outcome = super::CloudBoxesDestroyed::default();
-    let deadline = Instant::now() + wait;
-    while flight.lock().running {
-        if Instant::now() >= deadline {
-            outcome.failed.push(super::CloudBoxNotDestroyed {
-                agent_id: "spares".into(),
-                error: format!(
-                    "a spare was still being prepared after {} s; it may be left at its provider",
-                    wait.as_secs()
-                ),
-            });
-            break;
-        }
-        tokio::time::sleep(WIND_DOWN_PACE).await;
-    }
     for found in found_in(root) {
         let id = found
             .dir
@@ -678,7 +628,9 @@ async fn wind_down_in(
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         let made = match &found.handle {
-            Ok(handle) => handle.is_some(),
+            Ok(Some(handle)) if provider.map_or(true, |p| handle.provider() == p) => true,
+            Ok(None) if provider.is_none() => false,
+            Ok(_) => continue,
             Err(e) => {
                 outcome.failed.push(super::CloudBoxNotDestroyed {
                     agent_id: id,
@@ -691,7 +643,7 @@ async fn wind_down_in(
             Ok(()) if made => outcome.destroyed.push(id),
             Ok(()) => {}
             Err(e) => {
-                tracing::warn!(spare = %found.dir.display(), error = %e, "a spare cloud box could not be destroyed in a wind-down");
+                tracing::warn!(spare = %found.dir.display(), error = %e, "a spare cloud box could not be destroyed");
                 outcome.failed.push(super::CloudBoxNotDestroyed {
                     agent_id: id,
                     error: e.to_string(),

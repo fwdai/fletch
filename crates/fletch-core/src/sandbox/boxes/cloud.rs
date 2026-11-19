@@ -29,7 +29,10 @@
 //!   through the provider's authenticated exec and pinned at the box's first
 //!   boot (and at any boot that finds no pin), then ssh is waited for: a new
 //!   machine's name takes a while to resolve. Nothing local is made: no data
-//!   disk, no dirty marker, no egress proxy, no tools disk.
+//!   disk, no dirty marker, no egress proxy, no tools disk. These two are
+//!   the only places a machine is made at a provider, and each registers
+//!   with the gate ([`super::gate`]) until its handle is kept: refused while
+//!   a sweep holds its provider, waited for by a sweep that began meanwhile.
 //! - **A spare** ([`super::spares`]) is a box made ahead of any workspace,
 //!   under a placeholder identity of its own, its CLIs installed and its
 //!   machine parked. A box with nothing made for it yet takes one at its
@@ -288,6 +291,9 @@ pub async fn machine_up(
     let pinned = std::fs::metadata(dir.join(channel::KNOWN_HOSTS_FILE)).is_ok_and(|m| m.len() > 0);
     let (handle, made) = match read_handle(dir)? {
         None => {
+            // Registered until the handle is kept, or the box destroyed when
+            // it cannot be: a sweep waits for it (`super::gate`).
+            let _making = super::gate::make(client.provider())?;
             phase(BoxPhase::Preparing {
                 detail: format!("creating a {label} machine"),
             });
@@ -356,6 +362,8 @@ async fn to_running(
                 tokio::time::sleep(SETTLE_PACE).await;
             }
             MachineState::MachineGone => {
+                // Registered until the new handle is kept (`super::gate`).
+                let _making = super::gate::make(client.provider())?;
                 phase(BoxPhase::Preparing {
                     detail: format!("replacing the {label} machine"),
                 });
