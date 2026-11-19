@@ -2699,6 +2699,8 @@ async fn provision_cloud(
     crate::rpc::ensure_mailbox(&identity.rpc_dir)?;
     let spec = cloud::spec(identity, authorized);
     let handle = cloud::machine_up(&client, &dir, &spec, phase).await?;
+    // Made or replaced, if it had to be: what is left is the guest's start.
+    phase(BoxPhase::Starting);
     let machine = CloudMachine::new(&identity.agent_id, client, handle.clone());
     let channel = match cloud::reach(&dir, &key, &handle).await {
         Ok(channel) => channel,
