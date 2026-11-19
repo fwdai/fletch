@@ -19,8 +19,11 @@ if out=$(docker manifest inspect "$IMAGE" 2>&1); then
   echo "$IMAGE is in the registry; nothing to push"
   exit 0
 fi
+# "no such manifest" is docker's own wording, "manifest unknown" and "name
+# unknown" the registry's (ghcr.io answers with these): the tag, or the whole
+# package, is not there.
 case "$out" in
-  *"no such manifest"*) ;;
+  *"no such manifest"*|*"manifest unknown"*|*"name unknown"*) ;;
   *) echo "::error::cannot tell whether the registry has $IMAGE: $out"; exit 1 ;;
 esac
 docker push "$IMAGE"
