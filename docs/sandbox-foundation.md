@@ -56,7 +56,9 @@ engine enforces) and `docs/box.md` is the box runtime.
    ref it needs is fetched into the mirror under a name of its own
    (`sandbox::carry_checkpoint`), never the box's every checkpoint.
 
-5. **Provider knowledge is one adapter.** What a provider CLI keeps outside
+5. **Provider knowledge is one adapter.** (A cloud provider's knowledge is
+   likewise its adapter's, in `crate::cloud`: nothing outside `cloud/` names
+   one, `cloud::neutral_tests`.) What a provider CLI keeps outside
    the checkout, how its credential reaches a launch, where its transcripts
    land, and which engines can run it are answered by `sandbox::provider`
    (the `ProviderHome` adapter, one per provider; the credential resolution
@@ -92,16 +94,26 @@ engine enforces) and `docs/box.md` is the box runtime.
    seatbelt: every new agent is a box (`boxes::engine_for_new_agent`), and a
    host that cannot boot one says why at boot and refuses each spawn with it.
    The override stands over the placement for that spawn. The composer's choice is
-   `Host` or `Box` (`WorkspaceType::parse`): `Host` is seatbelt, refused with
+   `Host`, `Box` or `Cloud(provider)` (`WorkspaceType::parse`: `host`, `box`,
+   `cloud:<provider>`): `Host` is seatbelt, refused with
    the user-facing reason off macOS, where there is none (`seatbelt::refusal`,
    the one place that fact lives); `Box` is a box that waits for its image as
    a box-pinned project does, and a spawn refused with the user-facing reason
    when there can be no box (runtime unusable, provider unsupported), never a
-   quiet fallback. The same two refusals decide what the composer's list
-   offers as available and what `sandbox::engine_for` launches, so a type the
+   quiet fallback. `Cloud(provider)` is a box whose machine is made at a
+   cloud provider (`sandbox::boxes::cloud`, docs/box.md "Cloud boxes"): the
+   `box` engine, with the provider stamped beside it
+   (`AgentRecord::cloud_provider`), needing no runtime on this machine and
+   refused when the agent's provider cannot run in a box or the cloud
+   provider is not connected here; the list offers one per connected
+   provider, never as the default, and nothing moves to or from one. The same refusals decide what the composer's list
+   offers as available and what `sandbox::engine_for` launches
+   (`engine_for_agent` for a launch, which skips the runtime probe for a
+   cloud box), so a type the
    host does not have is never offered, stamped or launched. A fork
    passes its parent's exact engine (`WorkspaceType::stamped`, the
-   `Stamped(kind)` variant only `sandbox` builds): the child gets that engine
+   `Stamped(kind)` variant only `sandbox` builds, or `Cloud` at the parent's
+   provider): the child gets that engine
    whatever the automatic choice says now, a stamped box refused like an explicit `Box`
    when it cannot be had. A record stamped with a retired engine (`docker`,
    `podman`) is refused at every launch and fork

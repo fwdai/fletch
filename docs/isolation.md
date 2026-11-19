@@ -60,7 +60,10 @@ whatever the placement now says, so a parent kept on this Mac never forks into a
 per-session Linux VM that cannot be had (a runtime that cannot boot, a
 provider boxes do not run) fails the spawn with that reason
 rather than landing somewhere else; the composer offers the choice from the
-same answer (`available_workspace_types`). An agent that adopts an existing
+same answer (`available_workspace_types`). A connected cloud provider adds a
+third kind, a Linux VM made at the provider (docs/box.md, "Cloud boxes"),
+whose network is its own: no egress proxy or allow-list of Fletch's stands in
+front of it, and no folder of this Mac is shared with it. An agent that adopts an existing
 tree (the local reviewer, a workflow step in its run's workspace) runs where
 that tree lives whatever was chosen. The result is stamped on the record and
 kept for life.
