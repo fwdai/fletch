@@ -13,8 +13,9 @@ export interface CloudSlice {
   refreshCloudProviders: () => Promise<void>;
   /** Check `token` with the provider and keep it; the provider's entry takes
    *  the answer. Rejects with the provider's reason, the list unchanged. The
-   *  token goes to the backend and is held nowhere here. */
-  connectCloud: (provider: CloudProviderId, token: string, org: string) => Promise<void>;
+   *  token goes to the backend and is held nowhere here. An empty `account`
+   *  is the provider's default. */
+  connectCloud: (provider: CloudProviderId, token: string, account: string) => Promise<void>;
   /** Forget the provider's token. Its machines stay where they are. */
   disconnectCloud: (provider: CloudProviderId) => Promise<void>;
 }
@@ -38,8 +39,8 @@ export const createCloudSlice: SliceCreator<CloudSlice> = (set, _get, { api }) =
     set({ cloudProviders: await api.cloudProviders() });
   },
 
-  connectCloud: async (provider, token, org) => {
-    const status = await api.cloudConnect(provider, token, org);
+  connectCloud: async (provider, token, account) => {
+    const status = await api.cloudConnect(provider, token, account);
     set((s) => ({ cloudProviders: withCloudProvider(s.cloudProviders, status) }));
   },
 

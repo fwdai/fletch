@@ -12,7 +12,7 @@ const { cloudProviders, cloudConnect, cloudDisconnect } = vi.hoisted(() => ({
 }));
 vi.mock("@/api", () => ({ api: { cloudProviders, cloudConnect, cloudDisconnect } }));
 
-import type { CloudProviderId, CloudProviderStatus } from "@/api";
+import type { CloudProviderStatus } from "@/api";
 import { activeEngine } from "@/api/engine";
 import { createCloudSlice, withCloudProvider } from "./cloud";
 import type { AppState } from "./types";
@@ -22,15 +22,24 @@ const fly = (over: Partial<CloudProviderStatus> = {}): CloudProviderStatus => ({
   label: "Fly.io",
   connected: false,
   account: null,
+  account_label: "Organization",
+  account_placeholder: "personal",
+  token_placeholder: "FlyV1 fm2_…",
+  token_help: "Run fly tokens create org in a terminal.",
+  billing: "Fly.io bills its disk while the workspace exists.",
   ...over,
 });
 
-// A provider the frontend's union does not name yet.
 const daytona = (over: Partial<CloudProviderStatus> = {}): CloudProviderStatus => ({
-  id: "daytona" as CloudProviderId,
+  id: "daytona",
   label: "Daytona",
   connected: false,
   account: null,
+  account_label: "Organization",
+  account_placeholder: "default",
+  token_placeholder: "dtn_…",
+  token_help: "Create an API key in the Daytona dashboard.",
+  billing: "Daytona bills the sandbox while it runs.",
   ...over,
 });
 

@@ -2,8 +2,15 @@ import { useState } from "react";
 import type { CloudProviderStatus } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
-import { connectedLine } from "./providers";
 import { StatusLine } from "./StatusLine";
+
+/** Where a connected provider stands, in words: the account its token acts
+ *  for, under the provider's own name for one. */
+function connectedLine({ account, account_label }: CloudProviderStatus): string {
+  if (!account) return "Connected";
+  const noun = account_label.trim().toLowerCase();
+  return noun ? `Connected to the ${account} ${noun}` : `Connected as ${account}`;
+}
 
 /** A connected provider: the account its token acts for, and Disconnect,
  *  which forgets the token at once, as the Account pane's GitHub and Linear
