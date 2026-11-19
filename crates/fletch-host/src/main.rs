@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use fletch_core::host::HeadlessRelay;
-use fletch_host::{admin, provider, serve, service, update};
+use fletch_host::{admin, cloud, provider, serve, service, update};
 use serde_json::{json, Value};
 
 #[derive(Parser)]
@@ -100,6 +100,12 @@ enum Command {
         #[command(subcommand)]
         command: ProviderCommand,
     },
+    /// Cloud provider accounts. Where this host cannot boot a box, a new
+    /// workspace gets a machine at a connected one.
+    Cloud {
+        #[command(subcommand)]
+        command: CloudCommand,
+    },
     /// Run `serve` under this machine's init system (systemd or launchd).
     Service {
         #[command(subcommand)]
@@ -167,6 +173,23 @@ enum ServiceCommand {
 enum DeviceCommand {
     /// List every paired device.
     List,
+    /// Authorize a device by its public key, with no pairing code. A key
+    /// that is already authorized is left as it is.
+    Add {
+        /// The device's public key: 43 characters of base64url. One that
+        /// starts with `-` is still the key, not an option.
+        #[arg(allow_hyphen_values = true)]
+        public_key: String,
+        /// What `devices list` calls it.
+        #[arg(long)]
+        name: Option<String>,
+        /// What it runs on, e.g. macos or ios.
+        #[arg(long)]
+        platform: Option<String>,
+        /// What it may do: `full` or `control`, as for `pair`.
+        #[arg(long, value_name = "PRESET", default_value = "full")]
+        scope: String,
+    },
     /// Revoke a device's credential and hang up on it.
     Revoke {
         /// The device's id, from `devices list`.
@@ -215,6 +238,30 @@ enum ProviderCommand {
     Login {
         /// The provider, from `provider status` (e.g. `claude`).
         id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum CloudCommand {
+    /// One line per cloud provider: connected and in which account, or the
+    /// command that connects it.
+    Status,
+    /// Connect a provider with an API token, read from stdin: typed at a
+    /// prompt that does not echo it, or piped in. The host checks the token
+    /// with the provider before storing it.
+    Connect {
+        /// The provider, as `cloud status` lists it.
+        provider: String,
+        /// The account the token acts in. Defaults to the provider's default
+        /// account; the outcome line names the one used.
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Forget a provider's token. Machines made with it stay at the provider,
+    /// and their workspaces do not start until it is connected again.
+    Disconnect {
+        /// The provider, as `cloud status` lists it.
+        provider: String,
     },
 }
 
@@ -344,6 +391,36 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
                     );
                 }
             }
+            DeviceCommand::Add {
+                public_key,
+                name,
+                platform,
+                scope,
+            } => {
+                let device = admin::call(
+                    data_dir,
+                    "add_device",
+                    json!({
+                        "publicKey": public_key,
+                        "name": name,
+                        "platform": platform,
+                        "preset": scope,
+                    }),
+                )
+                .await?;
+                let line = format!(
+                    "{}  {} ({})  {}",
+                    string(&device, "deviceId"),
+                    string(&device, "name"),
+                    string(&device, "platform"),
+                    device_preset(&device),
+                );
+                if device["alreadyAuthorized"] == json!(true) {
+                    println!("already authorized, nothing changed: {line}");
+                } else {
+                    println!("authorized {line}");
+                }
+            }
             DeviceCommand::Revoke { id } => {
                 admin::call(data_dir, "revoke_device", json!({ "deviceId": id })).await?;
                 println!("revoked {id}");
@@ -400,6 +477,13 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
         Command::Provider { command } => match command {
             ProviderCommand::Status => provider::print_status(data_dir).await?,
             ProviderCommand::Login { id } => provider::login(data_dir, &id).await?,
+        },
+        Command::Cloud { command } => match command {
+            CloudCommand::Status => cloud::print_status(data_dir).await?,
+            CloudCommand::Connect { provider, account } => {
+                cloud::connect(data_dir, &provider, account.as_deref()).await?
+            }
+            CloudCommand::Disconnect { provider } => cloud::disconnect(data_dir, &provider).await?,
         },
     }
     Ok(())

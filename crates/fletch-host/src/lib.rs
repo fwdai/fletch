@@ -13,6 +13,9 @@
 //!   and both ends of it.
 //! - [`ops`] — what the socket can ask the engine to do.
 //! - [`login`] — the GitHub device flow, held across two admin calls.
+//! - [`provider`] — `provider status|login`: the agent CLIs on this machine.
+//! - [`cloud`] — `cloud status|connect|disconnect`: the cloud provider a
+//!   workspace's machine is made at where this host cannot boot a box.
 //! - [`service`] — `service install|uninstall`: the systemd unit and the
 //!   launchd agent, rendered from the templates in `/packaging`.
 //! - [`update`] — `update`: resolve a release, verify it, swap this binary.
@@ -21,6 +24,7 @@
 //! process and talk to it exactly as the CLI does.
 
 pub mod admin;
+pub mod cloud;
 pub mod login;
 pub mod ops;
 pub mod provider;
