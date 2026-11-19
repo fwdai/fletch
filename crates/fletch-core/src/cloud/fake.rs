@@ -73,6 +73,7 @@ impl FakeCloud {
     }
 
     /// Every act on a box so far, in order: `create`, `start`, `stop`,
+    /// `park` (the machine put at rest the provider's fastest way back),
     /// `replace`, `exec`, `destroy`.
     pub(crate) fn acts(&self) -> Vec<&'static str> {
         self.account.lock().unwrap().acts.clone()
@@ -233,6 +234,11 @@ fn answer(account: &mut Account, r: &Request) -> Reply {
                             *state = "stopped";
                             acts.push("stop");
                             Reply::json(200, json!({}))
+                        }
+                        ("POST", ["suspend"]) => {
+                            *state = "suspended";
+                            acts.push("park");
+                            Reply::json(200, json!({ "ok": true }))
                         }
                         ("POST", ["exec"]) if *state == "started" => {
                             acts.push("exec");

@@ -99,6 +99,7 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   listeners.clear();
   vi.spyOn(api, "remoteDevicePublicKey").mockResolvedValue("device-key");
+  vi.spyOn(api, "cloudSpares").mockResolvedValue(null);
 });
 
 afterEach(() => {

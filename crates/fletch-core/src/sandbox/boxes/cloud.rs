@@ -29,6 +29,15 @@
 //!   authenticated exec at every boot and pinned, then ssh is waited for:
 //!   a new machine's name takes a while to resolve. Nothing local is made:
 //!   no data disk, no dirty marker, no egress proxy, no tools disk.
+//! - **A spare** ([`super::spares`]) is a box made ahead of any workspace,
+//!   under a placeholder identity of its own, its CLIs installed and its
+//!   machine parked. A box with nothing made for it yet takes one at its
+//!   first boot and wakes its machine instead of making one. Its guest
+//!   started with the placeholder's paths in its environment, which is never
+//!   changed, so every boot binds the box's own paths in the guest over the
+//!   channel where they are not bound yet ([`bind_identity`]): once after the
+//!   take, and again after any cold start, while a box made for its
+//!   workspace has them bound by its entrypoint and binds nothing.
 //! - **Its CLIs** live on its own disk, under `/data/tools/<provider>`,
 //!   where a tools disk would hold them (`fletch_box::tools::install_cli`):
 //!   the owner's is installed at boot at the version a local box would get
@@ -37,9 +46,13 @@
 //!   is not installed in a cloud box (its bundle is per-architecture and
 //!   built for local boxes), so a cloud box offers none (`codegraph_bin`).
 //! - **A stop** syncs the guest's disks over the channel, then has the
-//!   provider stop the machine ([`CloudMachine::halt`]); a stop that fails
-//!   leaves a machine that may be running and billed, and says so in the log
-//!   with its handle.
+//!   provider stop the machine ([`CloudMachine::halt`]). A box stopped for
+//!   being idle has its machine parked instead ([`Client::park`]): at rest
+//!   in whichever state the provider wakes it from soonest, everything on it
+//!   kept, and woken by the next boot as a stopped one is; whether the guest
+//!   then resumed or started afresh is the provider's, and nothing here
+//!   depends on it. A stop or park that fails leaves a machine that may be
+//!   running and billed, and says so in the log with its handle.
 //! - **A discard** destroys the box at the provider before its directory
 //!   goes (`registry`), and keeps the directory when it cannot: the handle
 //!   and the key are the only way back to it. At startup a directory no live
@@ -54,7 +67,7 @@
 //!   seed, codegraph, and moving the workspace to or from this machine.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -66,7 +79,7 @@ use crate::cloud::{self, Client, Endpoint, Handle, MachineSpec, MachineState, Pr
 use crate::error::{Error, Result};
 use crate::roadmap::Db;
 
-use super::registry::{BoxIdentity, BoxPhase, BoxRegistry};
+use super::registry::{BoxIdentity, BoxPhase, BoxRegistry, StopReason};
 use super::settings;
 
 /// The file in a cloud box's directory holding its [`Handle`].
@@ -285,6 +298,7 @@ pub async fn machine_up(
             client.clone(),
             handle.clone(),
             spec.name.clone(),
+            false,
         ));
         return Err(e);
     }
@@ -407,22 +421,29 @@ pub(super) fn route(endpoint: &Endpoint) -> Result<Route<'_>> {
     .map_err(|e| Error::Other(e.to_string()))
 }
 
-/// The provider's stop of `handle`'s machine, in a task of its own: the
-/// request is made whatever the caller's wait comes to. `true` once the
-/// provider confirmed it; a failure is logged, since the machine may still
-/// be running and billed.
+/// The provider's stop of `handle`'s machine, or its park when `park`, in a
+/// task of its own: the request is made whatever the caller's wait comes
+/// to. `true` once the provider confirmed it; a failure is logged, since the
+/// machine may still be running and billed.
 fn stop_in_background(
     client: Arc<Client>,
     handle: Handle,
     agent_id: String,
+    park: bool,
 ) -> tokio::task::JoinHandle<bool> {
     crate::host::spawn(async move {
-        match client.stop(&handle).await {
+        let stopped = if park {
+            client.park(&handle).await
+        } else {
+            client.stop(&handle).await
+        };
+        match stopped {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!(
                     agent_id,
                     handle = %handle,
+                    park,
                     error = %e,
                     "a cloud machine's stop failed; it may still be running and billed"
                 );
@@ -462,11 +483,22 @@ impl CloudMachine {
         self.handle.provider()
     }
 
+    pub(super) fn handle(&self) -> &Handle {
+        &self.handle
+    }
+
     /// Stop the machine cleanly: the guest's disks synced over `channel`,
-    /// then the provider's stop. With a `bound`, the two together get that
-    /// long; the stop request is made whatever comes of the wait, and an
-    /// unconfirmed stop is not a clean one.
-    pub(super) async fn halt(&self, channel: &Channel, bound: Option<Duration>) -> StopOutcome {
+    /// then the provider's stop, or for a box stopped for being idle
+    /// ([`StopReason::Idle`]) its park, so that it wakes the soonest when it
+    /// is wanted again. With a `bound`, the two together get that long; the
+    /// request is made whatever comes of the wait, and an unconfirmed stop
+    /// or park is not a clean one.
+    pub(super) async fn halt(
+        &self,
+        channel: &Channel,
+        reason: StopReason,
+        bound: Option<Duration>,
+    ) -> StopOutcome {
         let started = Instant::now();
         let sync = bound.map_or(SYNC_BOUND, |bound| bound.min(SYNC_BOUND));
         let synced = tokio::time::timeout(sync, channel.exec(None, None, &["sync"])).await;
@@ -476,23 +508,28 @@ impl CloudMachine {
                 "the cloud box's disks were not synced before its stop"
             );
         }
-        self.stop(bound.map(|bound| bound.saturating_sub(started.elapsed())))
-            .await
+        let park = reason == StopReason::Idle;
+        self.stop(
+            bound.map(|bound| bound.saturating_sub(started.elapsed())),
+            park,
+        )
+        .await
     }
 
     /// Stop the machine without asking its guest, waiting a short while for
     /// the provider to confirm it.
     pub(super) async fn kill(&self) -> StopOutcome {
-        self.stop(Some(KILL_BOUND)).await
+        self.stop(Some(KILL_BOUND), false).await
     }
 
     /// Have the provider stop the machine, waiting for nothing.
     pub(super) fn abort(&self) {
-        drop(self.send());
+        drop(self.send(false));
     }
 
-    async fn stop(&self, bound: Option<Duration>) -> StopOutcome {
-        let stopping = self.send();
+    /// Have the provider stop the machine, or park it when `park`.
+    async fn stop(&self, bound: Option<Duration>, park: bool) -> StopOutcome {
+        let stopping = self.send(park);
         let confirmed = match bound {
             Some(bound) => tokio::time::timeout(bound, stopping).await.ok(),
             None => Some(stopping.await),
@@ -504,6 +541,7 @@ impl CloudMachine {
                 tracing::warn!(
                     agent_id = self.agent_id,
                     handle = %self.handle,
+                    park,
                     "the provider did not confirm a cloud machine's stop in time; it may still be \
                      running and billed"
                 );
@@ -512,11 +550,12 @@ impl CloudMachine {
         }
     }
 
-    fn send(&self) -> tokio::task::JoinHandle<bool> {
+    fn send(&self, park: bool) -> tokio::task::JoinHandle<bool> {
         stop_in_background(
             self.client.clone(),
             self.handle.clone(),
             self.agent_id.clone(),
+            park,
         )
     }
 
@@ -647,6 +686,94 @@ pub fn setup_allowance(agent_id: &str) -> Option<Duration> {
 /// Whether the box directory `dir` is a cloud box's: it holds a handle.
 pub fn is_cloud_dir(dir: &Path) -> bool {
     dir.join(HANDLE_FILE).is_file()
+}
+
+/// Bring up the machine of the box in `dir` as `identity`'s, through
+/// `client`: the box's ssh key made in `dir` when it holds none, then its
+/// machine made from [`spec`] or brought to running ([`machine_up`]).
+/// Answers the machine and the key its guest is reached with ([`reach`]).
+/// What a box's boot starts with in the box's directory
+/// (`registry::provision_cloud`), and a spare's preparation in a directory
+/// of its own (`spares`). `phase` hears what it does.
+pub(super) async fn bring_up(
+    client: Arc<Client>,
+    identity: &BoxIdentity,
+    dir: &Path,
+    phase: &(dyn Fn(BoxPhase) + Sync),
+) -> Result<(CloudMachine, PathBuf)> {
+    let key = channel::keygen(dir)?;
+    let authorized = channel::authorized_key(&key)?;
+    let spec = spec(identity, authorized);
+    let handle = machine_up(&client, dir, &spec, phase).await?;
+    Ok((CloudMachine::new(&identity.agent_id, client, handle), key))
+}
+
+/// Binds a box's paths in its guest where they are not bound yet, as the
+/// entrypoint binds them at the machine's start (`bind_identity` in
+/// `packaging/cloud-image/entrypoint`), with its refusals and its ownership
+/// of the directories on the way: the home, the rpc dir and the writable
+/// root, in that order, each from its directory under `/data`. Run as the
+/// guest user, whose `sudo` needs no password; a path that is a mount point
+/// already is left alone, so a guest started with the box's own identity
+/// runs nothing privileged. Arguments: the three paths.
+const BIND_IDENTITY: &str = r#"set -eu
+bind() {
+  mountpoint -q "$1" && return
+  case "$1" in /?*/?*) ;; *) echo "$1 is not an absolute path with two components or more" >&2; exit 1;; esac
+  top=${1#/}; top=/${top%%/*}
+  case "$top" in
+    /bin|/boot|/data|/dev|/etc|/lib|/lib64|/opt|/proc|/run|/sbin|/sys|/tmp|/usr|/var)
+      echo "cannot place $1 under $top: it would shadow the guest's own files" >&2; exit 1;;
+  esac
+  [ -d "$top" ] || { echo "no $top directory in the guest to mount $1 under" >&2; exit 1; }
+  sudo -n mkdir -p "$1"
+  dir=${1%/*}
+  while [ "$dir" != "$top" ]; do
+    sudo -n chown -h agent:agent "$dir"
+    dir=${dir%/*}
+  done
+  sudo -n mount --bind "$2" "$1"
+}
+bind "$1" /data/home
+bind "$2" /data/rpc
+bind "$3" /data/ws
+"#;
+
+/// The command [`bind_identity`] runs in the guest for `identity`.
+fn bind_identity_argv(identity: &BoxIdentity) -> Vec<String> {
+    ["sh", "-c", BIND_IDENTITY, "sh"]
+        .into_iter()
+        .map(String::from)
+        .chain(
+            [&identity.home, &identity.rpc_dir, &identity.writable_root]
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned()),
+        )
+        .collect()
+}
+
+/// Make sure `identity`'s paths are bound in the guest `channel` reaches,
+/// binding those that are not ([`BIND_IDENTITY`]), in one ssh round trip.
+/// A box's guest started with another identity's paths when it was made as
+/// a spare (`spares`), and its entrypoint binds only those, at every start:
+/// so a boot of a cloud box asks every time, and the guest of a box made
+/// for its workspace answers that there is nothing to do. Bind mounts, so
+/// each path resolves to itself; the placeholder's stay as aliases.
+pub(super) async fn bind_identity(channel: &Channel, identity: &BoxIdentity) -> Result<()> {
+    let argv = bind_identity_argv(identity);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let out = channel
+        .exec(None, None, &argv)
+        .await
+        .map_err(|e| Error::Other(format!("bind the box's paths in its guest: {e}")))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(Error::SandboxUnavailable(format!(
+        "the box's paths could not be bound in its guest ({}): {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr).trim()
+    )))
 }
 
 #[cfg(test)]

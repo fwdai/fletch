@@ -54,6 +54,7 @@ boxes, and a box's entrypoint refuses an identity path under `/data`.
                             other files beside it: the box runtime, README.md)
   env                       CLAUDE_CODE_OAUTH_TOKEN=…   0600
   start                     the start script the entrypoint runs
+  start.pid                 the running start script's pid, while it runs
 /data/tools/claude/         the Claude CLI; the entrypoint binds /data/tools
                             read-only at /opt/fletch/tools
 /data/home/                 the service's home, bound at /home/agent
@@ -79,12 +80,31 @@ set -a
 . /data/host/env
 set +a
 cd "$HOME" || exit 1
-while :; do
-  /data/host/fletch-host serve --data-dir /home/agent/fletch-host --relay wss://relay.fletch.sh --name 'Fletch runner'
-  echo "fletch-host exited with status $?; starting it again in 5 s" >&2
+stopping=
+service=
+trap 'stopping=1; [ -n "$service" ] && kill -TERM "$service" 2>/dev/null' TERM
+echo $$ > /data/host/start.pid
+while [ -z "$stopping" ]; do
+  /data/host/fletch-host serve --data-dir /home/agent/fletch-host --relay wss://relay.fletch.sh --name 'Fletch runner' &
+  service=$!
+  status=0
+  while kill -0 "$service" 2>/dev/null; do
+    [ -n "$stopping" ] && kill -TERM "$service" 2>/dev/null
+    wait "$service"
+    status=$?
+  done
+  service=
+  [ -n "$stopping" ] && break
+  echo "fletch-host exited with status $status; starting it again in 5 s" >&2
   sleep 5
 done
+rm -f /data/host/start.pid
 ```
+
+The service runs in the background of the script, which waits for it: when
+it exits on its own, the script starts it again after five seconds; when the
+script itself is sent TERM, it passes the TERM to the service, waits for it
+to end, removes its pid file and ends without starting it again.
 
 Its flags live in the script, not in the image: a machine keeps the image it
 was made with. The image's entrypoint runs `/data/host/start` when the disk
@@ -117,10 +137,12 @@ each step reported to `progress`:
    **the start script**.
 5. **The service**: the machine is stopped and started through the adapter, so
    the image's hook starts the service as it will at every start, and the
-   engine waits for its admin socket. An image without the hook fails with a
-   message that says so.
+   engine waits for its admin socket. The service has never run before this
+   stop, so the stop is the provider's alone. An image without the hook fails
+   with a message that says so.
 6. **Over the admin socket** (`fletch-host call <op>` over ssh, the arguments
-   on stdin): `cloud_connect` with this machine's own provider connection,
+   on stdin): `cloud_connect` with this machine's own provider connection
+   (which, on the runner, makes its default spare machine in the background),
    `add_device` with the calling device's public key and full access,
    `github_login_start` — the caller shows the code and the URL — and
    `github_login_status` until it is entered, then `status` for the runner's
@@ -138,8 +160,9 @@ execs sshd. The script loads the Claude token, puts the CLIs on its `PATH` and
 runs `fletch-host serve`, which opens its database on the disk, keeps its host
 key (the same identity) and its paired devices, reads its GitHub token and
 provider connection from its settings table, stops any workspace machine left
-running, and dials the relay. Devices reach it there; a new workspace gets a
-machine at the connected provider, since the runner cannot boot a VM.
+running, brings its spare machines to their number, and dials the relay.
+Devices reach it there; a new workspace gets a machine at the connected
+provider (a spare when one is ready), since the runner cannot boot a VM.
 
 ## The rest of its life
 
@@ -149,15 +172,40 @@ machine at the connected provider, since the runner cannot boot a VM.
 - `start` brings the machine up with `machine_up`: a lost machine is made
   again on the runner's disk with the same spec, the same runner; a lost disk
   is refused and never made again on an empty one.
-- `stop` stops the machine through the adapter.
+- `stop` ends the service cleanly before the machine goes down. Over ssh, it
+  sends TERM to the start script whose pid is in `/data/host/start.pid` (and
+  only while that pid is a process running the script), waits up to 90 s for
+  it to be gone, and syncs the disk; then the provider stops the machine. The
+  script passes the TERM to `fletch-host`, whose own shutdown (the one a TERM
+  gives every `fletch-host serve`) kills its agents' sessions and stops each
+  running workspace machine: it pulls the box's sessions, syncs its disks and
+  has the provider stop it, each within ten seconds, the machines side by
+  side. So a stopped runner leaves none of its workspaces' machines running.
+  A machine that is not running has nothing to end: the provider's stop is
+  all. When the guest cannot be reached over ssh, or the service does not end
+  within the bound, the machine is stopped all the same, so a runner that
+  cannot be ended keeps nobody billed, and that is logged as a warning;
+  SQLite's own journal is then what protects the databases.
 - `pairing_link(preset)` asks the running runner for a pairing code for
   another device (`begin_pairing`) and answers its link, code and expiry.
-- `delete(force)` has the runner destroy every machine its workspaces have
-  (`destroy_cloud_boxes`; the runner is started for it), then destroys its own
+- `delete(force)` has the runner destroy every machine it made
+  (`destroy_cloud_boxes`; the runner is started for it): its spare machines
+  first, after which its process makes no new spare (a replenish under way is
+  waited for), then every workspace's machine. Then it destroys its own
   machine and disk and removes the directory. A runner that cannot be reached
-  (its disk lost, a machine that will not start) or could not destroy them
-  all is refused unless `force`, and with `force` the answer says its
-  workspaces' machines may remain at the provider.
+  (its disk lost, a machine that will not start), or that could not destroy
+  them all (a spare or a workspace's machine its provider would not delete),
+  is refused unless `force`, and with `force` the answer says which machines
+  may remain at the provider. A deletion needs no clean end of the service:
+  the disk goes with the machine.
+
+**Disconnecting the provider** the runner is at is refused on this machine
+(`cloud_disconnect`, the engine's `commands::cloud_disconnect_impl`) while
+the runner exists, decided by the runner's directory and handle alone: the
+runner is billed while it exists and can only be managed through that
+connection, so it is deleted first. The runner itself has no runner of its
+own, so the rule changes nothing there; its own disconnect destroys its
+spares first, as on any host.
 
 `fletch-host update`, run on the runner, replaces `/data/host/fletch-host` in
 place; the start script runs the new binary once the old one exits.

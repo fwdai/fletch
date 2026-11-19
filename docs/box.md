@@ -542,9 +542,16 @@ everything provider-specific (nothing outside `cloud/` names a provider:
   (`guarantees::Guarantee::cloud_coverage`).
 - **Stop.** The guest syncs its disks over ssh (bounded), then the provider
   stops the machine; at app exit within the shutdown grace, the request made
-  whatever comes of the wait. An unconfirmed stop counts as not clean; a
-  failed one is logged with the handle, since the machine may still be
-  running and billed. The idle stop works as for any box.
+  whatever comes of the wait. The idle stop, otherwise as for any box, parks
+  the machine instead (`cloud::Client::park`): at rest in whichever state the
+  provider wakes it from soonest, everything on it kept. Which state is the
+  adapter's answer: on Fly.io suspended, where the machine is within Fly's
+  limits for it (at most 2 GB of memory, no swap, no schedule), else stopped.
+  The next boot starts a parked machine as it starts a stopped one; the
+  provider resumes it when it can and boots it afresh when it cannot, and
+  nothing in the guest or the engine depends on which. An unconfirmed stop
+  or park counts as not clean; a failed one is logged with the handle, since
+  the machine may still be running and billed.
 - **Discard** destroys the box at the provider before its directory goes; a
   destroy that fails (offline, provider disconnected) keeps the directory
   and fails the discard, which archive records. At startup a box directory

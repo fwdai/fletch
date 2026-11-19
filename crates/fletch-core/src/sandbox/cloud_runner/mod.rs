@@ -40,11 +40,23 @@
 //! What is made is undone on failure: a create that fails at any step
 //! destroys the machine and its disk and removes the directory, so a retry
 //! starts clean. Deleting the runner first has it destroy every machine it
-//! made at its providers, then destroys its own; a runner that cannot be
-//! reached is deleted only when asked to be anyway (`force`), and its
-//! workspaces' machines may then remain. Nothing is destroyed at a provider
-//! that this install has no directory for, and a runner whose disk is gone is
-//! never made again on an empty one.
+//! made at its providers, its spares and its workspaces' boxes
+//! (`destroy_cloud_boxes`), then destroys its own; a runner that cannot be
+//! reached, or that could not destroy them all, is deleted only when asked to
+//! be anyway (`force`), and those machines may then remain. Nothing is
+//! destroyed at a provider that this install has no directory for, and a
+//! runner whose disk is gone is never made again on an empty one.
+//!
+//! **The runner's service is always ended cleanly before its machine goes
+//! down on purpose**: [`stop`] has its start script end `fletch-host` (whose
+//! own shutdown stops its workspaces' machines) and syncs the disk before the
+//! provider stops the machine, and falls back to the provider's stop alone,
+//! logged, only when the guest cannot be reached or the service does not end
+//! in time. The stop and start inside [`create`] comes before the service
+//! ever ran, and [`delete`] takes the disk with the machine. And while the
+//! runner is at a provider, that provider is not disconnected on this
+//! machine ([`check_disconnect`]): the connection is the only way to manage
+//! the runner.
 
 mod setup;
 #[cfg(test)]
@@ -223,11 +235,11 @@ pub struct RunnerRecord {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Deleted {
-    /// The workspaces' machines the runner destroyed at their provider, by
-    /// agent id.
+    /// The machines the runner destroyed at their provider: its workspaces'
+    /// boxes by agent id, its spares by their placeholder id (`spare-…`).
     pub destroyed: Vec<String>,
     /// Set when the runner was deleted with `force` without having destroyed
-    /// all its workspaces' machines: what may remain at the provider, for the
+    /// all the machines it made: what may remain at the provider, for the
     /// person to delete there.
     pub warning: Option<String>,
 }
@@ -365,16 +377,39 @@ pub async fn start(db: &DbState) -> Result<()> {
     start_in(&dir()?, |p| client_for(db, p)).await
 }
 
-/// Stop the runner's machine and wait until it has stopped. Its provider
-/// leaves it stopped until [`start`]; nothing on its disk is lost.
+/// Stop the runner's machine and wait until it has stopped. A running
+/// runner's service is ended cleanly first, over ssh (`setup::end_service`):
+/// its start script is told to stop, `fletch-host` shuts down as it does on
+/// a TERM (stopping its workspaces' machines), and the disk is synced; only
+/// then is the provider asked to stop the machine. A guest that cannot be
+/// reached, or a service that does not end in time, does not keep the
+/// machine running: it is stopped all the same, and that is logged. Its
+/// provider leaves it stopped until [`start`].
 pub async fn stop(db: &DbState) -> Result<()> {
     let _under_way = UnderWay::begin(Change::Other)?;
-    stop_in(&dir()?, |p| client_for(db, p)).await
+    let dir = dir()?;
+    let at = dir.as_path();
+    stop_in(
+        at,
+        |p| client_for(db, p),
+        |handle| async move { setup::end_service(at, &handle).await },
+    )
+    .await
 }
 
-/// Delete the runner: first it destroys, at their provider, every machine its
-/// workspaces have (started for that if it is stopped), then its own machine
-/// and disk go, history, logins and pairings with them, and the directory.
+/// Refuse to disconnect `provider` while this install's runner is at it: the
+/// runner, billed while it exists, can only be managed through that
+/// connection. Decided by the runner's directory and handle alone, nothing
+/// asked of the provider; a host with no runner of its own (a runner itself)
+/// has nothing here.
+pub fn check_disconnect(provider: ProviderId) -> Result<()> {
+    check_disconnect_in(&dir()?, provider)
+}
+
+/// Delete the runner: first it destroys, at their provider, every machine it
+/// made, its spares and its workspaces' boxes, and makes no spare after
+/// (started for that if it is stopped), then its own machine and disk go,
+/// history, logins and pairings with them, and the directory.
 /// When the runner cannot be reached (its disk lost, a machine that will not
 /// start) or could not destroy them all, it is refused unless `force`, and
 /// with `force` [`Deleted::warning`] says what may remain.
@@ -513,15 +548,51 @@ async fn start_in(dir: &Path, client_for: impl Fn(ProviderId) -> Result<Client>)
     Ok(())
 }
 
-/// [`stop`] for the runner in `dir`.
-async fn stop_in(dir: &Path, client_for: impl Fn(ProviderId) -> Result<Client>) -> Result<()> {
+/// [`stop`] for the runner in `dir`: a running machine's service is ended
+/// first by `end_service` (`setup::end_service`; a test's stand-in), and the
+/// provider's stop follows whatever came of it, a failure logged. A machine
+/// that is not running has nothing to end: the provider's stop is all.
+async fn stop_in<E, Fut>(
+    dir: &Path,
+    client_for: impl Fn(ProviderId) -> Result<Client>,
+    end_service: E,
+) -> Result<()>
+where
+    E: FnOnce(Handle) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
     let handle = boxes_cloud::read_handle(dir)?.ok_or_else(no_runner)?;
-    client_for(handle.provider())?.stop(&handle).await
+    let client = client_for(handle.provider())?;
+    if client.state(&handle).await? == MachineState::Running {
+        if let Err(e) = end_service(handle.clone()).await {
+            tracing::warn!(
+                handle = %handle,
+                error = %e,
+                "the cloud runner's service was not ended cleanly before its machine was \
+                 stopped; its databases rely on their own journals"
+            );
+        }
+    }
+    client.stop(&handle).await
 }
 
-/// [`delete`] for the runner in `dir`: `wind_down` has it destroy its
-/// workspaces' machines (`setup::wind_down`; a test's stand-in), then its own
-/// machine and disk are destroyed and the directory removed.
+/// [`check_disconnect`] for the runner in `dir`.
+fn check_disconnect_in(dir: &Path, provider: ProviderId) -> Result<()> {
+    match boxes_cloud::read_handle(dir)? {
+        Some(handle) if handle.provider() == provider => Err(Error::Other(format!(
+            "{label} can't be disconnected while this machine's cloud runner is at {label}: \
+             the runner is billed while it exists and can only be managed through this \
+             connection. Delete the runner first.",
+            label = provider.label()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// [`delete`] for the runner in `dir`: `wind_down` has it destroy the
+/// machines it made, its spares and its workspaces' boxes
+/// (`setup::wind_down`; a test's stand-in), then its own machine and disk are
+/// destroyed and the directory removed.
 async fn delete_in<W, Fut>(
     dir: &Path,
     client_for: &impl Fn(ProviderId) -> Result<Client>,
@@ -550,9 +621,9 @@ where
                 .collect();
             if !force {
                 return Err(Error::Other(format!(
-                    "the runner could not destroy the machines of these workspaces at {label}: \
-                     {}. Try again, or delete the runner anyway and delete them in {label}'s \
-                     dashboard",
+                    "the runner could not destroy these of its machines at {label} (its \
+                     workspaces' by workspace, its spares as spare-…): {}. Try again, or delete \
+                     the runner anyway and delete them in {label}'s dashboard",
                     left.join("; ")
                 )));
             }
@@ -560,7 +631,7 @@ where
             (
                 outcome.destroyed,
                 Some(format!(
-                    "The machines of these workspaces may remain at {label}: {}. Delete them in \
+                    "These of the runner's machines may remain at {label}: {}. Delete them in \
                      its dashboard.",
                     names.join(", ")
                 )),
@@ -569,16 +640,17 @@ where
         Err(e) => {
             if !force {
                 return Err(Error::Other(format!(
-                    "Fletch can't reach the runner to have it destroy its workspaces' machines: \
-                     {e}. Delete it anyway to destroy its own machine and disk; any machines its \
-                     workspaces have then remain at {label}"
+                    "Fletch can't reach the runner to have it destroy the machines it made (its \
+                     workspaces' and its spares): {e}. Delete it anyway to destroy its own \
+                     machine and disk; those machines then remain at {label}"
                 )));
             }
             (
                 Vec::new(),
                 Some(format!(
-                    "The runner could not be reached ({e}), so any machines its workspaces had \
-                     may remain at {label}. Delete them in its dashboard."
+                    "The runner could not be reached ({e}), so the machines it made (its \
+                     workspaces' and its spares) may remain at {label}. Delete them in its \
+                     dashboard."
                 )),
             )
         }

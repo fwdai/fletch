@@ -26,6 +26,8 @@
 //! - [`cloud`]: what only a box whose machine is at a cloud provider does:
 //!   its handle, bringing its machine up, its CLIs, stopping and destroying
 //!   it through the provider.
+//! - [`spares`]: cloud boxes made ahead of any workspace, kept in a root of
+//!   their own beside the boxes, and taken by the next new cloud box.
 //! - [`executor`]: the `RemoteExecutor` the path-routed seam (`crate::exec`)
 //!   dispatches to for a box's writable root.
 //! - [`relay`]: the mailbox and transcript relays over the channel.
@@ -46,7 +48,9 @@
 //! `console.log`, `mirror.git/`, the provider's sessions mirror
 //! (`claude-projects/`, `codex-sessions/` — [`home`]), `relay/`. A cloud
 //! box's has no `data.img`, `dirty` or sockets, and holds `cloud`, its handle
-//! at the provider ([`cloud::HANDLE_FILE`]).
+//! at the provider ([`cloud::HANDLE_FILE`]). A spare cloud box's directory is
+//! a cloud box's before its first boot, plus its marker, under
+//! `box-spares/spare-<random>/` beside the boxes ([`spares`]).
 //!
 //! **The engine names no provider.** What a CLI keeps outside the checkout —
 //! its config, its login, its transcripts — and how each reaches or leaves
@@ -123,6 +127,7 @@ pub mod run;
 pub mod seed;
 pub mod settings;
 pub mod setup;
+pub mod spares;
 pub mod ssh_access;
 #[cfg(test)]
 mod tests;
@@ -2005,7 +2010,8 @@ pub fn close() {
 /// (so a Git panel read before the first launch boots it lazily), route every
 /// tenant to its host's box, log boxes whose last VM did not stop cleanly,
 /// and kill `fletch-vm` processes whose owning Fletch is dead. Off the boot
-/// thread for the process scan.
+/// thread for the process scan, after which the spare cloud boxes are
+/// brought to their number ([`spares::replenish`]).
 pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
     if let Ok(ids) = workspace.live_agent_ids() {
         let records: Vec<_> = ids
@@ -2074,6 +2080,10 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
                 }
             }
         }
+        // The spares are in a root of their own, which the sweep above never
+        // lists: what a run that died left of one goes here, and the
+        // missing ones are made.
+        block_on(spares::replenish());
     });
     // A cloud box's machine an earlier run left running, it stops; in the
     // background, since each asks its provider.
@@ -2126,18 +2136,25 @@ pub struct CloudBoxNotDestroyed {
     pub error: String,
 }
 
-/// Destroy, at its provider, every cloud box this host has a directory for,
-/// whatever its workspace's state (each through [`cloud::destroy_box`]), and
-/// say which went and which did not. Only what this install made: a box at a
-/// provider with no directory here is never touched. The directories stay;
-/// a box destroyed already is destroyed again as success. What a runner is
-/// asked to do before it is deleted with its disk (`crate::cloud_runner`), so
-/// that nothing it made is left at the provider with no record of it.
+/// Destroy, at its provider, every cloud box this host has a directory for:
+/// its spares first, after which it prepares no more for the rest of the
+/// process ([`spares::wind_down`]), then every workspace's box whatever its
+/// workspace's state (each through [`cloud::destroy_box`]); and say which
+/// went and which did not, a spare by its placeholder id (`spare-…`), a
+/// workspace's box by its agent id. Only what this install made: a box at a
+/// provider with no directory here is never touched. A workspace's box
+/// directory stays; a box destroyed already is destroyed again as success.
+/// What a runner is asked to do before it is deleted with its disk
+/// (`crate::cloud_runner`), so that nothing it made is left at the provider
+/// with no record of it.
 pub async fn destroy_cloud_boxes() -> CloudBoxesDestroyed {
-    let Ok(root) = boxes_root() else {
-        return CloudBoxesDestroyed::default();
-    };
-    destroy_cloud_boxes_in(&root, cloud::client).await
+    let mut outcome = spares::wind_down().await;
+    if let Ok(root) = boxes_root() {
+        let boxes = destroy_cloud_boxes_in(&root, cloud::client).await;
+        outcome.destroyed.extend(boxes.destroyed);
+        outcome.failed.extend(boxes.failed);
+    }
+    outcome
 }
 
 /// [`destroy_cloud_boxes`] with the boxes root given, and the client for a

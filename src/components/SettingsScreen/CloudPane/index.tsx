@@ -3,19 +3,22 @@ import { useAppStore } from "@/store";
 import { SetHead } from "../primitives";
 import { ProviderSection } from "./ProviderSection";
 import { useRunnerStatus } from "./Runner/useRunnerStatus";
+import { SparesRow } from "./SparesRow";
 
 /** Settings › Cloud: the providers whose machines a workspace can run on
  *  instead of this Mac, one section each, in the order the backend lists them,
- *  and this install's runner under the provider it is at. All of it is this
- *  Mac's (the tokens are in its keychain), so it never follows a host picked
- *  elsewhere in Settings. The list and the runner are the store's
- *  (`cloudProviders`, `cloudRunner`), re-read on every visit; what is being
- *  typed into a form stays in that form. */
+ *  with this install's runner under the provider it is at; then, once one is
+ *  connected, how many spare machines each keeps. All of it is this Mac's (the
+ *  tokens are in its keychain), so it never follows a host picked elsewhere in
+ *  Settings. The list and the runner are the store's (`cloudProviders`,
+ *  `cloudRunner`), re-read on every visit; what is being typed into a form
+ *  stays in that form. */
 export function CloudPane() {
   const providers = useAppStore((s) => s.cloudProviders);
   const refresh = useAppStore((s) => s.refreshCloudProviders);
   const [error, setError] = useState<string | null>(null);
   const runnerError = useRunnerStatus();
+  const connected = !!providers?.some((p) => p.connected);
 
   useEffect(() => {
     refresh().then(
@@ -37,9 +40,10 @@ export function CloudPane() {
           key={p.id}
           provider={p}
           runnerError={runnerError}
-          last={i === providers.length - 1}
+          last={!connected && i === providers.length - 1}
         />
       ))}
+      {connected && <SparesRow last />}
     </div>
   );
 }

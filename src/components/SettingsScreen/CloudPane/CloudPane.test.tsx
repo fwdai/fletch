@@ -46,8 +46,11 @@ const tokenField = () => screen.getByLabelText("Token") as HTMLInputElement;
 const orgField = () => screen.getByLabelText("Organization") as HTMLInputElement;
 const connectButton = () => screen.getByRole("button", { name: /Connect Fly\.io|Connecting/ });
 
+const sparesField = () => screen.getByLabelText("Spare machines per provider") as HTMLInputElement;
+
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
+  vi.spyOn(api, "cloudSpares").mockResolvedValue(null);
   // The pane reads the runner too (Runner/Runner.test.tsx); here there is none.
   vi.spyOn(api, "cloudRunnerStatus").mockResolvedValue({
     state: "none",
@@ -69,6 +72,7 @@ describe("Settings › Cloud", () => {
     expect(orgField().placeholder).toBe("personal");
     expect(screen.getByText(/fly tokens create org/)).toBeTruthy();
     expect(screen.getByText(/kept in this Mac's keychain/)).toBeTruthy();
+    expect(screen.queryByLabelText("Spare machines per provider")).toBeNull();
     // Nothing to send until there is a token.
     expect(connectButton()).toHaveProperty("disabled", true);
     fireEvent.change(tokenField(), { target: { value: "FlyV1 secret" } });
@@ -144,17 +148,19 @@ describe("Settings › Cloud", () => {
     expect(screen.queryByText("Fly.io refused this token")).toBeNull();
   });
 
-  it("disconnects back to the form, and says the machines stay", async () => {
+  it("disconnects back to the form, and says the spares went and the workspaces' machines stay", async () => {
     const disconnect = vi.spyOn(api, "cloudDisconnect").mockResolvedValue(undefined);
     await mount([fly({ connected: true, account: "acme" })]);
-    expect(screen.queryByText(/not deleted by disconnecting/)).toBeNull();
+    expect(screen.queryByText(/Disconnecting deleted/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
 
     expect(await screen.findByLabelText("Token")).toBeTruthy();
     expect(disconnect).toHaveBeenCalledWith("fly");
     expect(
-      screen.getByText("Machines already created at Fly.io are not deleted by disconnecting."),
+      screen.getByText(
+        "Disconnecting deleted any spare machines at Fly.io; the machines of workspaces there stay.",
+      ),
     ).toBeTruthy();
   });
 
@@ -166,6 +172,20 @@ describe("Settings › Cloud", () => {
 
     expect(await screen.findByText("keychain locked")).toBeTruthy();
     expect(screen.getByText("Connected to the acme organization")).toBeTruthy();
+  });
+
+  it("shows a disconnect refused for a spare that could not be deleted, still connected", async () => {
+    const refusal =
+      "Fly.io is still connected: its spare machines could not all be deleted, and Fly.io bills them while they exist. Try disconnecting again in a moment.";
+    vi.spyOn(api, "cloudDisconnect").mockRejectedValue(refusal);
+    await mount([fly({ connected: true, account: "acme" })]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+    expect(await screen.findByText(refusal)).toBeTruthy();
+    expect(screen.getByText("Connected to the acme organization")).toBeTruthy();
+    expect(screen.getByLabelText("Spare machines per provider")).toBeTruthy();
+    expect(screen.queryByText(/Disconnecting deleted/)).toBeNull();
   });
 
   it("connects any provider the backend lists with the same form, in its own words", async () => {
@@ -214,6 +234,43 @@ describe("Settings › Cloud", () => {
     await vi.waitFor(() =>
       expect(screen.getAllByText("Connected to the acme team")).toHaveLength(2),
     );
+  });
+
+  it("offers spares once a provider is connected, says what they cost, and stores the count", async () => {
+    const save = vi.spyOn(api, "cloudSetSpares").mockResolvedValue(undefined);
+    await mount([fly({ connected: true, account: "acme" })]);
+    await vi.waitFor(() => expect(sparesField().disabled).toBe(false));
+    expect(sparesField().value).toBe("");
+    expect(sparesField().placeholder).toBe("0");
+    expect(screen.getByText(/A spare is a machine made and set up ahead of time/)).toBeTruthy();
+    expect(screen.getByText(/bills it while it exists/)).toBeTruthy();
+
+    fireEvent.change(sparesField(), { target: { value: " 2 " } });
+    fireEvent.blur(sparesField());
+    await vi.waitFor(() => expect(sparesField().value).toBe("2"));
+    expect(save).toHaveBeenCalledWith("2");
+
+    // Cleared: back to the engine's default.
+    fireEvent.change(sparesField(), { target: { value: "" } });
+    fireEvent.blur(sparesField());
+    await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith(null));
+  });
+
+  it("shows the count stored, and the engine's refusal of another under the field", async () => {
+    vi.spyOn(api, "cloudSpares").mockResolvedValue("1");
+    vi.spyOn(api, "cloudSetSpares").mockRejectedValue(
+      "box_cloud_spares must be a whole number from 0 to 10",
+    );
+    await mount([fly({ connected: true, account: "acme" })]);
+    await vi.waitFor(() => expect(sparesField().value).toBe("1"));
+
+    fireEvent.change(sparesField(), { target: { value: "99" } });
+    fireEvent.keyDown(sparesField(), { key: "Enter" });
+    fireEvent.blur(sparesField());
+    expect(
+      await screen.findByText("box_cloud_spares must be a whole number from 0 to 10"),
+    ).toBeTruthy();
+    expect(sparesField().className).toContain("invalid");
   });
 
   it("says when the providers could not be read", async () => {

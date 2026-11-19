@@ -99,7 +99,12 @@ fn the_machine_meets_the_entrypoints_contract_with_its_home_on_the_disk() {
 /// starts the service from.
 #[test]
 fn the_runners_own_files_are_in_the_disks_host_directory() {
-    for path in [HOST_BIN, ENV_FILE, guest::CLOUD_HOST_SERVICE] {
+    for path in [
+        HOST_BIN,
+        ENV_FILE,
+        setup::PID_FILE,
+        guest::CLOUD_HOST_SERVICE,
+    ] {
         assert!(
             path.starts_with(&format!("{}/", guest::CLOUD_HOST_DIR)),
             "{path}"
@@ -109,7 +114,9 @@ fn the_runners_own_files_are_in_the_disks_host_directory() {
 
 /// The start script loads the credentials, finds the CLIs where the
 /// entrypoint binds them, and runs the host with its data on the disk, the
-/// relay and the name, quoted, again whenever it exits.
+/// relay and the name, quoted, keeping its own pid where a stop finds it.
+/// What it does with the service is run under a shell below
+/// (`the_start_script_ends_its_service_on_a_term_and_starts_nothing_more`).
 #[test]
 fn the_start_script_runs_the_host_with_its_data_on_the_disk() {
     let script = setup::start_script("wss://relay.example", "Alex's runner");
@@ -123,11 +130,14 @@ fn the_start_script_runs_the_host_with_its_data_on_the_disk() {
     assert!(
         script.contains(
             "  /data/host/fletch-host serve --data-dir /home/agent/fletch-host --relay \
-             wss://relay.example --name 'Alex'\\''s runner'\n"
+             wss://relay.example --name 'Alex'\\''s runner' &\n"
         ),
         "{script}"
     );
-    assert!(script.contains("while :; do"), "{script}");
+    assert!(
+        script.contains(&format!("echo $$ > {}\n", setup::PID_FILE)),
+        "{script}"
+    );
     assert!(
         script.find("set -a").unwrap() < script.find("serve").unwrap(),
         "the credentials are loaded before the host starts"
@@ -427,20 +437,114 @@ async fn status_reports_each_state_of_the_machine_and_nothing_without_one() {
     }
 }
 
+/// A running runner's service is ended before the provider is asked to stop
+/// its machine; then `start` starts it again.
 #[tokio::test]
-async fn start_starts_a_stopped_runner_and_stop_stops_it() {
+async fn stop_ends_the_service_before_the_machine_and_start_starts_it_again() {
     let fake = FakeCloud::start().await;
     let root = tempfile::tempdir().unwrap();
     let dir = runner_dir(&root);
     made(&fake, &dir).await;
+    let ended = Mutex::new(Vec::new());
 
-    stop_in(&dir, |_| Ok(fake.client())).await.unwrap();
+    stop_in(
+        &dir,
+        |_| Ok(fake.client()),
+        |handle| {
+            ended.lock().push(handle);
+            assert!(
+                !fake.acts().contains(&"stop"),
+                "the service ends while its machine runs"
+            );
+            async { Ok(()) }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        *ended.lock(),
+        [boxes_cloud::read_handle(&dir).unwrap().unwrap()]
+    );
     assert_eq!(fake.acts(), ["create", "exec", "stop"]);
+
     start_in(&dir, |_| Ok(fake.client())).await.unwrap();
     assert_eq!(
         fake.acts(),
         ["create", "exec", "stop", "start", "exec"],
         "started, and its host key pinned again"
+    );
+}
+
+/// A service that cannot be ended (a guest out of reach, a service that
+/// outlasts the bound) does not keep the machine running: the provider stops
+/// it all the same.
+#[tokio::test]
+async fn a_service_that_cannot_be_ended_does_not_keep_the_machine_running() {
+    let fake = FakeCloud::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let dir = runner_dir(&root);
+    made(&fake, &dir).await;
+
+    stop_in(
+        &dir,
+        |_| Ok(fake.client()),
+        |_| async { Err(Error::Other("the runner did not answer over ssh".into())) },
+    )
+    .await
+    .unwrap();
+    assert_eq!(fake.acts(), ["create", "exec", "stop"]);
+    assert_eq!(
+        status_in(&dir, |_| Ok(fake.client())).await.unwrap().state,
+        RunnerState::Stopped
+    );
+}
+
+/// A machine that is not running has no service to end: the provider alone
+/// is asked, and a stopped one is left as it is.
+#[tokio::test]
+async fn a_runner_that_is_not_running_is_only_asked_of_the_provider() {
+    let fake = FakeCloud::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let dir = runner_dir(&root);
+    made(&fake, &dir).await;
+    fake.shape(Shape::Stopped);
+
+    stop_in(
+        &dir,
+        |_| Ok(fake.client()),
+        |_| async { panic!("no service to end on a stopped machine") },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        fake.acts(),
+        ["create", "exec"],
+        "nothing asked of a stopped one"
+    );
+}
+
+/// A provider with this install's runner at it is not disconnected: the
+/// runner's handle says so, with nothing asked of the provider. With no
+/// runner, or a runner with no machine yet, nothing is refused.
+#[tokio::test]
+async fn a_provider_holding_the_runner_is_not_disconnected() {
+    let fake = FakeCloud::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let dir = runner_dir(&root);
+    let provider = ProviderId::ALL[0];
+    check_disconnect_in(&dir, provider).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(RECORD_FILE), "{}").unwrap();
+    check_disconnect_in(&dir, provider).unwrap();
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    made(&fake, &dir).await;
+    let refusal = check_disconnect_in(&dir, provider).unwrap_err().to_string();
+    assert!(refusal.contains(provider.label()), "{refusal}");
+    assert!(refusal.contains("Delete the runner first"), "{refusal}");
+    assert!(
+        refusal.contains("only be managed through this connection"),
+        "{refusal}"
     );
 }
 
@@ -620,4 +724,166 @@ fn every_change_is_a_send_future() {
     send(stop(&db));
     send(delete(&db, false));
     send(pairing_link(&db, None));
+}
+
+/// The start script as the engine writes it, its guest paths moved under
+/// `root` so a local shell can run it.
+fn start_script_under(root: &Path) -> String {
+    setup::start_script("wss://relay.example", "Fletch runner")
+        .replace("/data/host/", &format!("{}/host/", root.display()))
+        .replace(HOME, &root.join("home").to_string_lossy())
+        .replace(guest::TOOLS_MOUNT, &root.join("tools").to_string_lossy())
+}
+
+/// Run [`setup::END_SERVICE`] under a local shell against the pid file and
+/// script in `root`, waiting at most `bound` seconds; its exit code.
+fn end_service_under(root: &Path, pid_file: &Path, bound: u32) -> Option<i32> {
+    std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(setup::END_SERVICE)
+        .arg("sh")
+        .arg(pid_file)
+        .arg(root.join("host").join("start"))
+        .arg(bound.to_string())
+        .status()
+        .unwrap()
+        .code()
+}
+
+/// Wait until `done` holds, at most `bound`.
+fn eventually(bound: std::time::Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + bound;
+    while !done() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    true
+}
+
+/// The real start script under a local shell, with a stand-in service that
+/// exits on its own the first time and waits for a TERM the next: the script
+/// gives the service its environment, starts it again after it exited on its
+/// own, keeps its own pid on the disk, and on a TERM (what a stop sends,
+/// `END_SERVICE`) ends the service, waits for it, and ends without starting
+/// it again. A pid file naming any other process is not signalled.
+#[test]
+fn the_start_script_ends_its_service_on_a_term_and_starts_nothing_more() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let host = root.join("host");
+    let log = root.join("service.log");
+    for dir in [
+        host.clone(),
+        root.join("home"),
+        root.join("tools/claude/bin"),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let executable = |path: &Path, text: &str| {
+        std::fs::write(path, text).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    executable(&root.join("tools/claude/bin/claude"), "#!/bin/sh\n");
+    std::fs::write(host.join("env"), setup::env_file("sk-ant-oat01-test")).unwrap();
+    executable(
+        &host.join("fletch-host"),
+        &format!(
+            "#!/bin/sh\n\
+             echo \"run $*\" >> '{log}'\n\
+             echo \"env ${{CLAUDE_CODE_OAUTH_TOKEN:+token}} $(command -v claude) $HOME $(pwd)\" >> '{log}'\n\
+             [ \"$(grep -c '^run ' '{log}')\" -eq 1 ] && exit 3\n\
+             trap 'echo ended >> \"{log}\"; exit 0' TERM\n\
+             while :; do sleep 0.1; done\n",
+            log = log.display()
+        ),
+    );
+    let script = host.join("start");
+    std::fs::write(&script, start_script_under(root)).unwrap();
+    let pid_file = host.join("start.pid");
+    let read_log = || std::fs::read_to_string(&log).unwrap_or_default();
+    let runs = || read_log().lines().filter(|l| l.starts_with("run ")).count();
+
+    // Whatever this test leaves running under `root` goes with it, so a
+    // failure leaves no script or service behind.
+    struct Leftovers<'a>(&'a Path);
+    impl Drop for Leftovers<'_> {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("pkill")
+                .arg("-KILL")
+                .arg("-f")
+                .arg(self.0)
+                .status();
+        }
+    }
+    let _leftovers = Leftovers(root);
+
+    // As the entrypoint runs it: by /bin/sh, with an empty environment.
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg(&script)
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let (exited_tx, exited) = std::sync::mpsc::channel();
+    std::thread::spawn(move || exited_tx.send(child.wait().unwrap()).unwrap());
+
+    assert!(
+        eventually(std::time::Duration::from_secs(20), || runs() == 2),
+        "the service, exited on its own, was started again: {}",
+        read_log()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&pid_file).unwrap().trim(),
+        pid.to_string(),
+        "the script keeps its own pid on the disk"
+    );
+    let home = root.join("home");
+    let first = read_log().lines().next().unwrap().to_string();
+    assert_eq!(
+        first,
+        format!(
+            "run serve --data-dir {}/fletch-host --relay wss://relay.example --name Fletch runner",
+            home.display()
+        )
+    );
+    assert!(
+        read_log().contains(&format!(
+            "env token {}/tools/claude/bin/claude {} {}",
+            root.display(),
+            home.display(),
+            home.display()
+        )),
+        "{}",
+        read_log()
+    );
+
+    // A pid file naming another process: nothing is signalled.
+    let stale = root.join("stale.pid");
+    std::fs::write(&stale, format!("{}\n", std::process::id())).unwrap();
+    assert_eq!(end_service_under(root, &stale, 1), Some(3));
+
+    assert_eq!(
+        end_service_under(root, &pid_file, 10),
+        Some(0),
+        "ended in time"
+    );
+    let status = exited
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the script has ended");
+    assert!(status.success(), "{status}");
+    assert!(read_log().contains("ended"), "the service had its TERM");
+    assert_eq!(runs(), 2, "and was not started again");
+    assert!(!pid_file.exists(), "the script took its pid file away");
+    assert_eq!(
+        end_service_under(root, &pid_file, 1),
+        Some(3),
+        "no service left to end"
+    );
 }

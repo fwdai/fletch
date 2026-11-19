@@ -38,8 +38,18 @@ export interface CloudSlice {
    *  token goes to the backend and is held nowhere here. An empty `account`
    *  is the provider's default. */
   connectCloud: (provider: CloudProviderId, token: string, account: string) => Promise<void>;
-  /** Forget the provider's token. Its machines stay where they are. */
+  /** Delete the provider's spare machines, then forget its token. Rejects
+   *  with the refusal to show, the list unchanged, while a spare could not be
+   *  deleted. The machines of workspaces there stay where they are. */
   disconnectCloud: (provider: CloudProviderId) => Promise<void>;
+  /** How many spare machines each connected provider keeps, as stored on
+   *  this Mac, `""` for the engine's default; `null` until the first read. */
+  cloudSpares: string | null;
+  /** Re-read `cloudSpares`. Rejects with the reason, keeping the last value. */
+  refreshCloudSpares: () => Promise<void>;
+  /** Store a new count, `""` for the default. Resolves to the engine's
+   *  refusal to show, or `null` once the count is stored. */
+  saveCloudSpares: (count: string) => Promise<string | null>;
 
   /** Re-read `cloudRunner`. Rejects with the reason, keeping the last answer. */
   refreshCloudRunner: () => Promise<void>;
@@ -116,6 +126,22 @@ export const createCloudSlice: SliceCreator<CloudSlice> = (set, get, { api, even
           ) ?? null,
       }));
       get().reloadWorkspaceTypes();
+    },
+
+    cloudSpares: null,
+
+    refreshCloudSpares: async () => {
+      set({ cloudSpares: (await api.cloudSpares()) ?? "" });
+    },
+
+    saveCloudSpares: async (count) => {
+      try {
+        await api.cloudSetSpares(count || null);
+        set({ cloudSpares: count });
+        return null;
+      } catch (e) {
+        return String(e);
+      }
     },
 
     refreshCloudRunner: async () => {

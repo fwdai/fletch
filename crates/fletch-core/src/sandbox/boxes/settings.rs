@@ -3,6 +3,7 @@
 //! in sync by `commands::set_box_setting_impl` / `box_egress_allow_impl`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -32,6 +33,9 @@ pub const EGRESS_ALLOW_KEY: &str = "box.egress_allow";
 /// `.fletch/settings.json`: an agent can edit a file in its repository, and a
 /// mode it could set to open would widen its own sandbox.
 pub const EGRESS_MODE_KEY: &str = "sandbox.egress_mode";
+/// Spare cloud boxes kept ready per connected cloud provider (`spares`);
+/// absent is this host's default ([`default_cloud_spares`]).
+pub const CLOUD_SPARES_SETTING: &str = "box_cloud_spares";
 
 /// Every global key, for the host-owned allowlist.
 pub const KEYS: &[&str] = &[
@@ -41,6 +45,7 @@ pub const KEYS: &[&str] = &[
     IMAGE_URL_SETTING,
     IDLE_STOP_SETTING,
     EGRESS_MODE_SETTING,
+    CLOUD_SPARES_SETTING,
 ];
 
 /// What a box does with a host its allow-list does not name. The posture a
@@ -95,6 +100,7 @@ pub const DEFAULT_DISK_GIB: u32 = (fletch_box::disks::DEFAULT_DATA_DISK_BYTES >>
 pub const MIN_DISK_GIB: u32 = 4;
 pub const MAX_DISK_GIB: u32 = 256;
 pub const DEFAULT_IDLE_STOP_MINUTES: u64 = 10;
+pub const MAX_CLOUD_SPARES: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoxSettings {
@@ -108,6 +114,9 @@ pub struct BoxSettings {
     pub idle_stop: Option<Duration>,
     /// The global posture; a project may override it ([`egress_mode`]).
     pub egress_mode: EgressMode,
+    /// The spare cloud boxes kept per connected provider; `None` is this
+    /// host's default ([`cloud_spares`]).
+    pub cloud_spares: Option<u32>,
 }
 
 impl BoxSettings {
@@ -126,6 +135,7 @@ impl Default for BoxSettings {
             image_url: None,
             idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
             egress_mode: EgressMode::Open,
+            cloud_spares: None,
         }
     }
 }
@@ -137,7 +147,13 @@ static SETTINGS: RwLock<BoxSettings> = RwLock::new(BoxSettings {
     image_url: None,
     idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
     egress_mode: EgressMode::Open,
+    cloud_spares: None,
 });
+
+/// Whether this engine is a headless host (`fletch-host`) rather than the
+/// desktop app: set once at boot ([`set_headless`]), and what the defaults
+/// that differ between the two are read against ([`default_cloud_spares`]).
+static HEADLESS: AtomicBool = AtomicBool::new(false);
 
 /// `project_id → patterns`, the per-project egress additions.
 static EGRESS: RwLock<Option<HashMap<String, Vec<String>>>> = RwLock::new(None);
@@ -163,6 +179,25 @@ pub fn set(settings: BoxSettings) {
     *SETTINGS.write() = settings;
 }
 
+/// Say whether this engine is a headless host; boot, before [`seed`].
+pub fn set_headless(headless: bool) {
+    HEADLESS.store(headless, Ordering::Relaxed);
+}
+
+/// The spare cloud boxes a host keeps per connected provider when the
+/// setting is absent: one on a headless host, which exists to run agents,
+/// and none on the desktop app, since a spare is billed whether or not it is
+/// used.
+pub fn default_cloud_spares() -> u32 {
+    u32::from(HEADLESS.load(Ordering::Relaxed))
+}
+
+/// The spare cloud boxes to keep per connected provider: the setting, else
+/// this host's default.
+pub fn cloud_spares() -> u32 {
+    current().cloud_spares.unwrap_or_else(default_cloud_spares)
+}
+
 /// The settings as the table holds them. Each raw value goes through the same
 /// parser the setter validates with, so a hand-edited row reads as its default
 /// rather than as something the setter would have refused.
@@ -176,6 +211,7 @@ pub fn load(conn: &Connection) -> BoxSettings {
         idle_stop: parse_idle_stop(raw(IDLE_STOP_SETTING).as_deref())
             .unwrap_or(Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60))),
         egress_mode: EgressMode::parse(raw(EGRESS_MODE_SETTING).as_deref()).unwrap_or_default(),
+        cloud_spares: parse_cloud_spares(raw(CLOUD_SPARES_SETTING).as_deref()).unwrap_or(None),
     }
 }
 
@@ -286,6 +322,20 @@ pub fn parse_idle_stop(raw: Option<&str>) -> Result<Option<Duration>> {
     }
 }
 
+/// A whole number of spares, at most [`MAX_CLOUD_SPARES`]; `None` when
+/// absent or blank, which is this host's default.
+pub fn parse_cloud_spares(raw: Option<&str>) -> Result<Option<u32>> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    match raw.parse::<u32>() {
+        Ok(count) if count <= MAX_CLOUD_SPARES => Ok(Some(count)),
+        _ => Err(Error::Other(format!(
+            "{CLOUD_SPARES_SETTING} must be a whole number from 0 to {MAX_CLOUD_SPARES}; got {raw:?}"
+        ))),
+    }
+}
+
 /// Validate `value` for `key` and return it normalized for storage, or why it
 /// is refused. `None` for a key that is not a box setting.
 pub fn validate(key: &str, value: &str) -> Option<Result<String>> {
@@ -298,6 +348,9 @@ pub fn validate(key: &str, value: &str) -> Option<Result<String>> {
             parse_idle_stop(Some(value)).map(|d| d.map_or(0, |d| d.as_secs() / 60).to_string())
         }
         EGRESS_MODE_SETTING => EgressMode::parse(Some(value)).map(|m| m.as_setting().to_string()),
+        CLOUD_SPARES_SETTING => {
+            parse_cloud_spares(Some(value)).map(|n| n.map_or_else(String::new, |n| n.to_string()))
+        }
         _ => return None,
     })
 }
@@ -482,6 +535,48 @@ mod tests {
         assert!(egress_allow("p-unknown").is_empty());
     }
 
+    /// A headless host keeps one spare cloud box per provider unless told
+    /// otherwise, the desktop none; a stored count wins on either, and a
+    /// count past the cap or not a whole number is refused.
+    #[test]
+    fn a_headless_host_keeps_a_spare_by_default_and_the_desktop_none() {
+        let _serial = TEST_LOCK.blocking_lock();
+        set(BoxSettings::default());
+        set_headless(false);
+        assert_eq!(cloud_spares(), 0, "desktop");
+        set_headless(true);
+        assert_eq!(cloud_spares(), 1, "headless");
+        set(BoxSettings {
+            cloud_spares: Some(3),
+            ..BoxSettings::default()
+        });
+        assert_eq!(cloud_spares(), 3);
+        set_headless(false);
+        assert_eq!(cloud_spares(), 3);
+        set(BoxSettings {
+            cloud_spares: Some(0),
+            ..BoxSettings::default()
+        });
+        set_headless(true);
+        assert_eq!(cloud_spares(), 0, "the setting turns the default off");
+        set_headless(false);
+        set(BoxSettings::default());
+
+        assert_eq!(parse_cloud_spares(None).unwrap(), None);
+        assert_eq!(parse_cloud_spares(Some(" ")).unwrap(), None);
+        assert_eq!(parse_cloud_spares(Some(" 2 ")).unwrap(), Some(2));
+        for bad in ["11", "-1", "1.5", "some"] {
+            assert!(parse_cloud_spares(Some(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(
+            validate(CLOUD_SPARES_SETTING, "0").unwrap().unwrap(),
+            "0",
+            "none, said outright"
+        );
+        assert_eq!(validate(CLOUD_SPARES_SETTING, "").unwrap().unwrap(), "");
+        assert!(KEYS.contains(&CLOUD_SPARES_SETTING));
+    }
+
     #[test]
     fn load_reads_the_table_with_defaults_for_the_rest() {
         let dir = tempfile::tempdir().unwrap();
@@ -492,10 +587,12 @@ mod tests {
         database::set_setting(&conn, IDLE_STOP_SETTING, "0").unwrap();
         database::set_setting(&conn, CPUS_SETTING, "bogus").unwrap();
         database::set_setting(&conn, EGRESS_MODE_SETTING, "allowlist").unwrap();
+        database::set_setting(&conn, CLOUD_SPARES_SETTING, "2").unwrap();
         let loaded = load(&conn);
         assert_eq!(loaded.memory_mib, 3072);
         assert_eq!(loaded.idle_stop, None);
         assert_eq!(loaded.cpus, DEFAULT_CPUS, "a bad row reads as the default");
         assert_eq!(loaded.egress_mode, EgressMode::AllowList);
+        assert_eq!(loaded.cloud_spares, Some(2));
     }
 }

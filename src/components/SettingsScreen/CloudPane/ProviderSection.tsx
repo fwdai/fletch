@@ -6,8 +6,10 @@ import { ConnectForm } from "./ConnectForm";
 import { Runner } from "./Runner";
 
 /** One provider, under its own name: connected, or the form that connects
- *  it. Once it is disconnected here, a line says what that left behind. A
- *  connected provider shows this install's runner too (`Runner`). */
+ *  it. Once it is disconnected here, a line says what that did and did not
+ *  delete: the engine deletes the provider's spare machines before it
+ *  disconnects, and never a workspace's. A connected provider shows this
+ *  install's runner too (`Runner`). */
 export function ProviderSection({
   provider,
   runnerError,
@@ -30,7 +32,8 @@ export function ProviderSection({
         )}
         {disconnected && !provider.connected && (
           <div className="set-gh-hint text-sm">
-            Machines already created at {provider.label} are not deleted by disconnecting.
+            Disconnecting deleted any spare machines at {provider.label}; the machines of workspaces
+            there stay.
           </div>
         )}
       </div>
