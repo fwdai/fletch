@@ -48,9 +48,12 @@ from a laptop, useful and not autonomous.
 
 ## 3. Business decisions
 
-1. **The free app sets everything up in one click.** Running agents unattended
-   in the cloud, on the user's own provider account, is free. Nothing in the
-   app is gated.
+1. **The free app sets everything up in one guided setup.** In Settings →
+   Cloud the user pastes a Claude token, presses Create and confirms a GitHub
+   code; nothing is typed on the runner. Running agents unattended in the
+   cloud, on the user's own provider account, is free. Nothing in the app is
+   gated. (First worded "in one click"; reworded 2026-11-19, since neither
+   credential can be had without a sign-in in a browser.)
 2. **The paid product is a Fletch cloud account**, for solo developers and
    teams: conveniences worth paying for. Doing the same things by hand
    (pairing each device, adding projects on each, signing in on each) stays
@@ -98,8 +101,8 @@ wake:
 
 - A spare is a whole box with no owner yet: the image, its disk, its ssh key,
   its host key pinned, and on its disk every agent CLI the supervisor has a
-  login for, at the version it would launch, so that no launch creates a
-  machine or installs anything.
+  login for, at the version it would launch, so that a launch on a fresh
+  spare creates no machine and installs nothing.
 - A new workspace takes the spare. Its replacement is created at once, in the
   background.
 - A supervisor that keeps spares always has at least one, whatever the number
@@ -108,8 +111,14 @@ wake:
 - With no spare ready (two agents spawned in a row, a spare that failed), the
   workspace's machine is created directly, as it is today. A spawn never fails
   or waits for want of a spare.
-- A spare made for another image or agent CLI version than the supervisor now
-  uses is replaced.
+- A spare made for another image, size or agent CLI version than the
+  supervisor now uses is stale, and the next replenish destroys and replaces
+  it (at startup, when a provider is connected, with every new cloud box, and
+  when the setting changes). Until then a new workspace may still take a stale
+  spare whose machine fits (the provider, the image and the size): it skips
+  the machine's creation, and its launch brings the CLI to the version it
+  needs, which costs one install. A take never asks which CLIs the supervisor
+  is signed in to, so it waits on no login probe.
 - The runner keeps one spare by default. A laptop that drives provider
   machines itself keeps none by default, since a spare is billed whether or
   not it is used; the same setting turns it on.
@@ -350,8 +359,8 @@ machine.
    CLIs installed, parked), hands it to the next new workspace with that
    workspace's identity given over ssh, and replaces it; with none ready it
    creates the machine directly. The count is a setting. Done when, with a
-   spare ready, a new workspace's agent starts without creating a machine or
-   installing a CLI, in a checkout directory and home that hold nothing but
+   fresh spare ready, a new workspace's agent starts without creating a
+   machine or installing a CLI, in a checkout directory and home that hold nothing but
    what its own launch put there; a second spare exists shortly after; and
    archiving the workspace destroys its machine and returns nothing to the
    spares.
@@ -369,12 +378,15 @@ machine.
    or on the remote wire. Done when a machine set up that way is reachable
    from the creating device through the relay, and after a stop and a start it
    is the same runner: same identity, pairings, logins and history.
-6. **One click in the app.** Settings → Cloud creates, shows, stops, starts and
-   deletes the runner through the provider adapter. Creating it pairs this
-   device, and the runner appears as a host to run on; another device pairs
-   with a code. The runner keeps the spares. Done when, from a laptop with a
-   connected provider: one click, launch a workspace on the runner and see its
-   agent start on a spare, close the laptop, follow it from the phone.
+6. **One guided setup in the app.** Settings → Cloud creates, shows, stops,
+   starts and deletes the runner through the provider adapter. Creating it
+   pairs this device, and the runner appears as a host to run on; another
+   device pairs with the QR code or link the pane shows (a typed code carries
+   no relay address, so it works only on a local network). The runner keeps
+   the spares. Done when, from a laptop with a connected provider: paste a
+   Claude token, press Create, confirm the GitHub code; then launch a
+   workspace on the runner and see its agent start on a spare, close the
+   laptop, follow it from the phone.
 
 ## 7. Rules for whoever builds this
 
