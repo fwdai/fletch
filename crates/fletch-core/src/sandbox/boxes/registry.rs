@@ -2736,7 +2736,7 @@ async fn provision_cloud(
     }
     let client = Arc::new(cloud::client(provider)?);
     let dir = identity.box_dir()?;
-    super::spares::take(provider, &dir).await;
+    super::spares::take(provider, &dir);
     std::fs::create_dir_all(&dir)?;
     // The mailbox the relay mirrors into exists before anything can write it.
     crate::rpc::ensure_mailbox(&identity.rpc_dir)?;

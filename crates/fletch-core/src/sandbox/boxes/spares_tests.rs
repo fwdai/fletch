@@ -206,10 +206,6 @@ async fn with_no_spare_ready_the_box_is_made_directly() {
     let spare = prepare(root.path(), &older, &|_| Ok(fake.client()), &guest)
         .await
         .unwrap();
-    assert!(
-        !take_in(root.path(), &box_dir, &wanted),
-        "another CLI version"
-    );
     let other_image = Build {
         image: "registry.test/fletch-cloud:2".into(),
         ..older.clone()
@@ -236,10 +232,11 @@ async fn with_no_spare_ready_the_box_is_made_directly() {
     assert_ne!(Some(made), cloud::read_handle(&spare).unwrap());
     assert_eq!(fake.acts()[3..], ["create", "exec"], "made directly");
 
-    // An empty directory is one nothing was made for.
+    // An empty directory is one nothing was made for, and a spare whose CLI
+    // is another version is still the machine: the launch brings its CLI up.
     let empty = boxes.path().join("shasta");
     std::fs::create_dir_all(&empty).unwrap();
-    assert!(take_in(root.path(), &empty, &older));
+    assert!(take_in(root.path(), &empty, &wanted));
     assert!(!spare.exists());
 }
 
