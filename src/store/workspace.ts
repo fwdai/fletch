@@ -8,6 +8,7 @@ import type {
   FolderGrant,
   ForkCode,
   ForkContext,
+  LocalWorkspaceKind,
   RunPortEvent,
   RunStateEvent,
   RunStateSnapshot,
@@ -16,7 +17,6 @@ import type {
   SpawnStage,
   UserTurn,
   Workspace,
-  WorkspaceKind,
 } from "@/api";
 import { discoverCommands } from "@/data/slashCommands";
 import {
@@ -141,7 +141,7 @@ export interface WorkspaceSlice {
    *  or absent otherwise): its agent is down, and the title bar shows where
    *  it's going. Kept as asked, since the host restamps the record before
    *  the move is over. */
-  movingWorkspace: Record<string, WorkspaceKind | null>;
+  movingWorkspace: Record<string, LocalWorkspaceKind | null>;
   /** True while a folder grant (or revoke) waits for the agent's running turn
    *  to end before it relaunches with it — the composer offers to apply it
    *  now. Set from the grant's reply and `agent:folder-grants`; cleared once
@@ -246,7 +246,7 @@ export interface WorkspaceSlice {
    *  branch and conversation. Queued with the config changes, so a send right
    *  after it reaches the moved agent. On refusal sets `lastError` and
    *  resolves to null, as it does when a move is already in flight. */
-  moveWorkspace: (id: string, kind: WorkspaceKind) => Promise<AgentRecord | null>;
+  moveWorkspace: (id: string, kind: LocalWorkspaceKind) => Promise<AgentRecord | null>;
   /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
    *  Looks up the held control-protocol request for `toolUseId` and delivers
    *  `updatedInput` (the tool's input with the user's `answers` merged in) as

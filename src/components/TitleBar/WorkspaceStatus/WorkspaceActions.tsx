@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { AgentRecord, WorkspaceKind } from "@/api";
+import type { AgentRecord, LocalWorkspaceKind } from "@/api";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
@@ -22,7 +22,7 @@ export function WorkspaceActions({ agent, onBox }: { agent: AgentRecord; onBox: 
 
   // Where it's going: the move in flight's own target (the record is
   // restamped before it ends), else the other sandbox.
-  const kind: WorkspaceKind = movingTo ?? (onBox ? "host" : "box");
+  const kind: LocalWorkspaceKind = movingTo ?? (onBox ? "host" : "box");
   const target = kind === "box" ? LINUX_VM : MACOS_SANDBOX;
   const busy = agent.status === "running" || agent.status === "spawning";
   const wait =

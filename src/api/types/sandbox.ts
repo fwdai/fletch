@@ -84,17 +84,29 @@ export interface BoxRuntimeProbe {
   host_memory_mib?: number | null;
 }
 
-/** A workspace type a new agent may be given (`sandbox::placement::Placement`
- *  minus automatic): the macOS sandbox or a Linux VM. */
-export type WorkspaceKind = "host" | "box";
+/** A workspace type on this Mac (`sandbox::placement::Placement` minus
+ *  automatic): the macOS sandbox or a Linux VM. A workspace moves only between
+ *  these. */
+export type LocalWorkspaceKind = "host" | "box";
 
-/** One row of `available_workspace_types(repo_path, provider)`. `host` is
- *  always available; `box` exactly when a spawn asking for it would be
- *  accepted, else `reason` is the sentence that spawn would fail with.
- *  `default` marks what a spawn with no choice picks; on the default `host`
- *  row, `reason` says why it is not a VM (`sandbox::workspace_types`). */
+/** A box on a machine at a connected cloud provider: `cloud:` and the
+ *  provider's id. Read and written by `util/workspaceKind` only. */
+export type CloudWorkspaceKind = `cloud:${string}`;
+
+/** A workspace type a new agent may be given. */
+export type WorkspaceKind = LocalWorkspaceKind | CloudWorkspaceKind;
+
+/** One row of `available_workspace_types(repo_path, provider)`: `box`, `host`,
+ *  then one per connected cloud provider. `host` is always available; any
+ *  other exactly when a spawn asking for it would be accepted, else `reason`
+ *  is the sentence that spawn would fail with. `default` marks what a spawn
+ *  with no choice picks; on the default `host` row, `reason` says why it is
+ *  not a VM (`sandbox::workspace_types`). */
 export interface WorkspaceTypeOption {
   kind: WorkspaceKind;
+  /** The provider's name on a cloud row; null for `box` and `host`, and
+   *  absent from a host before cloud rows. */
+  label?: string | null;
   available: boolean;
   reason: string | null;
   default: boolean;

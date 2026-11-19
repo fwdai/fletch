@@ -14,7 +14,7 @@ import type {
   RewindScope,
   TrackedRepo,
 } from "../types/agent";
-import type { WorkspaceKind } from "../types/sandbox";
+import type { LocalWorkspaceKind, WorkspaceKind } from "../types/sandbox";
 
 export const agentsApi = (invoke: Invoke) => ({
   spawnAgent: (
@@ -56,9 +56,10 @@ export const agentsApi = (invoke: Invoke) => ({
      *  launch (the composer's folder chips). Each is checked by the backend;
      *  a refused one fails the spawn with the reason. */
     folderGrants?: FolderGrant[],
-    /** The new-workspace row's workspace type for this agent: the macOS sandbox or a
-     *  Linux VM, over the project's placement. `undefined` leaves it to the
-     *  host. A VM that cannot be had fails the spawn with why. */
+    /** The new-workspace row's workspace type for this agent: the macOS sandbox, a
+     *  Linux VM or a machine at a connected cloud provider, over the project's
+     *  placement. `undefined` leaves it to the host. One that cannot be had
+     *  fails the spawn with why. */
     workspaceType?: WorkspaceKind,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
@@ -180,8 +181,9 @@ export const agentsApi = (invoke: Invoke) => ({
   /** Move the agent's workspace to the sandbox `kind` names, keeping its code
    *  (committed and not, on its branch) and its conversation. Resolves to the
    *  moved record once its agent is launching there; rejects with why it
-   *  couldn't move, or what didn't follow it. Ignored files stay behind. */
-  moveWorkspace: (agentId: string, kind: WorkspaceKind) =>
+   *  couldn't move, or what didn't follow it. Ignored files stay behind. A
+   *  workspace moves only on this Mac: none leaves the cloud or enters it. */
+  moveWorkspace: (agentId: string, kind: LocalWorkspaceKind) =>
     invoke<AgentRecord>("move_workspace", { agentId, kind }),
   resumeAgent: (agentId: string) => invoke<void>("resume_agent", { agentId }),
   stopAgent: (agentId: string) => invoke<void>("stop_agent", { agentId }),

@@ -1,4 +1,4 @@
-import type { BoxStateEvent, WorkspaceKind } from "@/api";
+import type { BoxStateEvent, LocalWorkspaceKind } from "@/api";
 import type { IconName } from "@/components/Icon";
 import { LINUX_VM, MACOS_SANDBOX } from "@/util/sandboxNames";
 
@@ -54,7 +54,7 @@ export function isolationOf(engine: string | null | undefined): Isolation {
  *  before the move is over). */
 export function shownIsolation(
   engine: string | null | undefined,
-  movingTo: WorkspaceKind | null,
+  movingTo: LocalWorkspaceKind | null,
 ): Isolation {
   if (movingTo) return movingTo === "box" ? BOX : SEATBELT;
   return isolationOf(engine);
