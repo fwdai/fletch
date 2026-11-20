@@ -1986,9 +1986,9 @@ impl BoxRegistry {
     /// agents in it first ([`Self::stop_with`]).
     ///
     /// A [`StopReason::Shutdown`] stop is bounded by [`SHUTDOWN_GRACE`] (the
-    /// lock wait, the sessions pull, and the clean rungs from `send_stop` on;
-    /// the disposal read beside the pull gets [`SHUTDOWN_DISPOSAL_READ`]) and skips the mirror refresh: every
-    /// turn checkpoint already refreshed it. Nothing holds the lifecycle lock
+    /// lock wait; the sessions pull and the mirror refresh, side by side; and
+    /// the clean rungs from `send_stop` on; the disposal read beside the pull
+    /// gets [`SHUTDOWN_DISPOSAL_READ`]). Nothing holds the lifecycle lock
     /// long once a box runs, but if something did, the VM is killed without
     /// it. On app exit nothing can boot meanwhile ([`Self::close`]); with the
     /// box flag going off, a boot could start a second VM on the same disk
@@ -2020,15 +2020,33 @@ impl BoxRegistry {
                         SHUTDOWN_GRACE,
                         super::home::pull_before_stop(&running),
                     );
+                    // The mirror refresh a turn checkpoint starts runs behind
+                    // the send, so at exit it may be unfinished, or not begun
+                    // and then finds no running box. This one waits out any
+                    // in flight (`mirror::lock`) and leaves the mirror with
+                    // what the guest has now.
+                    let mirrored = tokio::time::timeout(
+                        SHUTDOWN_GRACE,
+                        super::mirror::refresh_running(&running),
+                    );
                     let quiet = self.nothing_attached(agent_id);
                     let recorded = async {
                         if quiet {
                             record_disposal_within(&running, SHUTDOWN_DISPOSAL_READ).await;
                         }
                     };
-                    let (pulled, ()) = tokio::join!(pulled, recorded);
+                    let (pulled, mirrored, ()) = tokio::join!(pulled, mirrored, recorded);
                     if pulled.is_err() {
                         tracing::warn!(agent_id, "sessions pull before shutdown timed out");
+                    }
+                    match mirrored {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            tracing::info!(agent_id, error = %e, "mirror refresh before stop failed");
+                        }
+                        Err(_) => {
+                            tracing::warn!(agent_id, "mirror refresh before shutdown timed out");
+                        }
                     }
                 }
                 _ => {
@@ -3291,6 +3309,21 @@ mod tests {
         id: &str,
         halts_with: StopOutcome,
     ) -> (RunningBox, Arc<Mutex<Vec<String>>>) {
+        fake_box_in(
+            registry,
+            id,
+            PathBuf::from(format!("/{id}/box")),
+            halts_with,
+        )
+    }
+
+    /// [`fake_box`] with its box directory at `dir`.
+    fn fake_box_in(
+        registry: &BoxRegistry,
+        id: &str,
+        dir: PathBuf,
+        halts_with: StopOutcome,
+    ) -> (RunningBox, Arc<Mutex<Vec<String>>>) {
         let identity = BoxIdentity {
             agent_id: id.into(),
             project_id: "p".into(),
@@ -3304,7 +3337,6 @@ mod tests {
         entry.attached.insert("launch".into());
         registry.entries.lock().insert(id.into(), entry);
         let asked = Arc::new(Mutex::new(Vec::new()));
-        let dir = PathBuf::from(format!("/{id}/box"));
         let running = RunningBox {
             identity,
             channel: Arc::new(Channel::open(&dir)),
@@ -3423,6 +3455,47 @@ mod tests {
         assert_eq!(outcome, StopOutcome::Killed);
         assert_eq!(*asked.lock(), ["kill", "release after Killed"]);
         assert_eq!(registry.state(id), BoxPhase::Stopped);
+    }
+
+    /// At app exit the stop refreshes the box's mirror itself, once any
+    /// refresh in flight is done: the one a turn checkpoint starts runs
+    /// behind the send, so it may be unfinished, or begin after the box was
+    /// taken for the stop and then do nothing.
+    #[tokio::test]
+    async fn a_shutdown_stop_refreshes_the_mirror_after_a_refresh_in_flight() {
+        let registry = test_registry();
+        let id = "fake-mirrored";
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        crate::git::testing::init_repo(&source);
+        let dir = root.path().join("box");
+        std::fs::create_dir(&dir).unwrap();
+        super::super::mirror::record_source(&dir, Path::new("/guest/checkout"), &source).unwrap();
+        let mirror = super::super::mirror::mirror_dir(&dir);
+        let (running, asked) = fake_box_in(&registry, id, dir, StopOutcome::Control);
+        registry.publish(running).await.unwrap();
+
+        let in_flight = super::super::mirror::lock(&mirror).await;
+        let stop = registry.stop(id, StopReason::Shutdown);
+        tokio::pin!(stop);
+        tokio::select! {
+            _ = &mut stop => panic!("stopped while a mirror refresh was in flight"),
+            () = tokio::time::sleep(Duration::from_millis(300)) => {}
+        }
+        assert!(asked.lock().is_empty(), "{:?}", asked.lock());
+
+        drop(in_flight);
+        assert_eq!(stop.await.unwrap(), StopOutcome::Control);
+        assert_eq!(
+            *asked.lock(),
+            [
+                format!("halt within {:?}", Some(SHUTDOWN_GRACE)),
+                "release after Control".to_string(),
+            ]
+        );
+        // The fake's guest answers no fetch; the mirror a refresh makes
+        // before it fetches is what shows the stop ran one.
+        assert!(mirror.join("HEAD").exists());
     }
 
     /// `registry` knowing a published cloud box `id`, its machine made at

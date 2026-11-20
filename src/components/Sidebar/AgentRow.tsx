@@ -10,6 +10,7 @@ import { shownIsolation } from "@/components/TitleBar/WorkspaceStatus/isolation"
 import { Badge } from "@/components/ui/Badge";
 import { providerChip, providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
+import { isAgentBusy } from "@/helpers";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { formatAge, formatElapsed } from "@/util/format";
@@ -128,9 +129,13 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const title = agent.title || firstShort(agent.task) || "Untitled";
   const untitled = !agent.title;
   const age = formatAge(agent.created_at, now);
-  // spawning is the start of a run — show it as "working" too, not a dead row;
-  // so is an idle agent whose sub-agents are still at it.
-  const working = agent.status === "running" || agent.status === "spawning" || subRunning > 0;
+  // The turn reads as working by the same measure the chat goes by
+  // (`isAgentBusy`): the host's status, a turn it has opened but not yet
+  // started running (the checkpoint and wake ahead of a box agent's prompt),
+  // and this client's own unanswered send. An idle agent whose sub-agents are
+  // still at it is working too.
+  const busy = useAppStore((s) => isAgentBusy(s, agent.id, agent.status));
+  const working = busy || subRunning > 0;
   // The agent has paused on a question/plan tool and is waiting for a human
   // answer (AskUserQuestion / ExitPlanMode). Status stays `running`, so this
   // separate signal is what distinguishes "the ball's in your court" from
@@ -158,9 +163,10 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
     costUsd: usage?.spend.costUsd ?? null,
   };
 
-  const stoppable = agent.status === "spawning" || agent.status === "running";
+  // Stop where the chat's composer offers it: for the whole of a busy turn.
+  const stoppable = busy;
   const archivable =
-    agent.status === "idle" || agent.status === "stopped" || agent.status === "error";
+    !busy && (agent.status === "idle" || agent.status === "stopped" || agent.status === "error");
 
   // The status rail doubles as the left spine: colored for live/terminal
   // states, purple once every PR of the set merged, everything else is a
@@ -245,7 +251,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
                   />
                 )
               )}
-              {agent.status === "idle" && !active && unseen && (
+              {agent.status === "idle" && !busy && !active && unseen && (
                 <span
                   className="ag-unseen tip"
                   data-tip="New results to review"
