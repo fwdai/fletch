@@ -2108,3 +2108,75 @@ fn pending_messages_has_no_thinking_column() {
         .unwrap();
     assert_eq!(n, 0);
 }
+
+const V_BEFORE_INHERITED_PURGE: usize = 64;
+
+/// 0065 removes what a workspace inherited with a recycled name: rows older
+/// than the workspace that has the id now, and rows no workspace has. What a
+/// workspace made itself stays.
+#[test]
+fn inherited_purge_migration_keeps_only_a_workspaces_own_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_BEFORE_INHERITED_PURGE)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('bavaria', 'p', 'bavaria', 100);
+         INSERT INTO review_threads (id, agent_id, round, title, author, created_at) VALUES
+           ('local:inherited', 'bavaria', 2, 'legacy pages', 'R', 50),
+           ('local:own', 'bavaria', 1, 'own', 'R', 150),
+           ('local:orphan', 'gone', 1, 'orphan', 'R', 150);
+         INSERT INTO review_state (agent_id, subdir, state, updated_at) VALUES
+           ('bavaria', '', '{}', 150), ('bavaria', 'api', '{}', 50), ('gone', '', '{}', 150);
+         INSERT INTO autopilot_log (id, agent_id, at, outcome, rung, attempt) VALUES
+           ('inherited', 'bavaria', 50, 'dispatch', 'review', 1),
+           ('own', 'bavaria', 150, 'dispatch', 'review', 1),
+           ('orphan', 'gone', 150, 'dispatch', 'review', 1);
+         INSERT INTO project_settings (project_id, key, value) VALUES
+           ('p', 'run.agent.bavaria.dev', 'kept'),
+           ('p', 'run.agent.gone.dev', 'dropped'),
+           ('p', 'run.agent.bavaria-2.dev', 'dropped'),
+           ('p', 'run.dev', 'kept');
+         INSERT INTO settings (key, value) VALUES ('autopilotPausedAgents', '[\"gone\",\"bavaria\"]');
+         INSERT INTO roadmap_items (id, project_id, code, title, horizon, status, agent_id, created_at, updated_at) VALUES
+           ('inherited', 'p', 'R-1', 't', 'now', 'open', 'bavaria', 0, 50),
+           ('own', 'p', 'R-2', 't', 'now', 'open', 'bavaria', 0, 150),
+           ('orphan', 'p', 'R-3', 't', 'now', 'open', 'gone', 0, 150);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = init(dir.path()).unwrap();
+    let conn = db.lock();
+    let ids = |sql: &str| -> Vec<String> {
+        conn.prepare(sql)
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    assert_eq!(
+        ids("SELECT id FROM review_threads ORDER BY id"),
+        ["local:own"]
+    );
+    assert_eq!(
+        ids("SELECT agent_id || '/' || subdir FROM review_state ORDER BY 1"),
+        ["bavaria/"]
+    );
+    assert_eq!(ids("SELECT id FROM autopilot_log ORDER BY id"), ["own"]);
+    assert_eq!(
+        ids("SELECT key FROM project_settings ORDER BY key"),
+        ["run.agent.bavaria.dev", "run.dev"]
+    );
+    assert_eq!(
+        ids("SELECT id FROM roadmap_items WHERE agent_id IS NOT NULL"),
+        ["own"]
+    );
+    assert_eq!(
+        ids("SELECT value FROM settings WHERE key = 'autopilotPausedAgents'"),
+        ["[\"bavaria\"]"]
+    );
+}

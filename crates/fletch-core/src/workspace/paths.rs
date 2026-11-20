@@ -219,9 +219,9 @@ pub(super) fn migrate_checkouts_root_in(fletch_dir: &Path, overridden: bool) {
 /// Where agent dirs set aside for deletion go: a sibling of the checkouts root
 /// (`~/.fletch/workspaces.discarding/` beside `~/.fletch/workspaces/`), on the
 /// same filesystem so the move is one `rename`. Deliberately *outside* the
-/// checkouts root: agent ids are user-supplied names, so no naming rule inside
-/// that root could tell a tombstone from an agent that happens to be called
-/// like one. Everything under this dir is a delete that has not finished, and
+/// checkouts root: an agent's id starts with its name, which a draft may
+/// supply, so no naming rule inside that root could tell a tombstone from an
+/// agent that happens to be called like one. Everything under this dir is a delete that has not finished, and
 /// nothing else ever writes here.
 pub fn discard_root(checkouts_root: &Path) -> PathBuf {
     let name = checkouts_root

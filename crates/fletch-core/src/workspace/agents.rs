@@ -81,16 +81,8 @@ pub fn live_agents_on_account(
 }
 
 impl WorkspaceManager {
-    /// Ids of every live (non-archived) agent in this build's DB — the set of
-    /// names that are actually reserved. Archived agents have had their
-    /// checkout and mailbox torn down, so their name is free to reuse.
-    ///
-    /// The one definition of "taken", shared by the draft-name preview
-    /// (`allocate_draft_name`) and the startup mailbox sweep. Callers never
-    /// assemble this set themselves — a caller-supplied set is how archived
-    /// agents once leaked into name allocation and saturated the pool.
-    /// `add_agent_allocating` runs the same query, but inline, because it must
-    /// read inside its own `IMMEDIATE` transaction to stay serialized.
+    /// Ids of live (non-archived) agents: the workspaces that still have a
+    /// mailbox, a box and checkouts on disk. What the startup sweeps keep.
     pub fn live_agent_ids(&self) -> Result<HashSet<String>> {
         let conn = self.db.lock();
         let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
@@ -138,62 +130,81 @@ impl WorkspaceManager {
         Ok(rows)
     }
 
+    /// The names live (non-archived) workspaces go by: what a new name is
+    /// drawn clear of, so two workspaces in the sidebar rarely share one.
+    /// Hidden agents included.
+    ///
+    /// The one definition of "taken" for names. Callers never assemble this
+    /// set themselves — a caller-supplied set is how archived agents once
+    /// leaked into name allocation and saturated the pool.
+    pub fn live_agent_names(&self) -> Result<HashSet<String>> {
+        let conn = self.db.lock();
+        Self::live_names(&conn)
+    }
+
+    fn live_names(conn: &Connection) -> Result<HashSet<String>> {
+        let mut stmt = conn.prepare("SELECT name FROM workspaces WHERE archived_at IS NULL")?;
+        let names = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(names)
+    }
+
+    /// Insert `record` under the id and name it already carries. For a caller
+    /// that holds both; a new workspace goes through
+    /// [`Self::add_agent_allocating`].
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
-        let cleanup = Self::insert_agent(&tx, record)?;
+        Self::insert_agent(&tx, record)?;
         tx.commit()?;
-        cleanup.apply(&conn);
         Ok(())
     }
 
-    /// Allocate a fresh name and insert the record in one serialized transaction.
+    /// Give a new workspace its identity and insert it, in one serialized
+    /// transaction: a fresh id (`names::unique_id`), which no row has ever
+    /// had, and a name. A name the record already carries (a draft's) is
+    /// kept unless a live workspace took it since the draft drew it (another
+    /// device's draft, spawned first); then, as for an empty one, a name is
+    /// drawn from the pool, clear of the live names.
     ///
-    /// Allocation is DB-authoritative: the only reserved names are this build's
-    /// live (non-archived) rows. Archived agents have had their checkout torn
-    /// down, and each build has its own checkouts root (see `checkouts_root`),
-    /// so no other build shares this namespace and we never consult the
-    /// filesystem — a stale dir from a crashed spawn or a failed teardown can't
-    /// collide, since provision clears any leftover at the clone target.
+    /// The id is what everything is keyed by. An archived workspace keeps its
+    /// row under its own id when its name is given out again, so the two
+    /// share nothing but how they read.
     ///
-    /// The live-name read and the insert run in a single `IMMEDIATE`
-    /// transaction, so allocation is serialized by the database's write lock —
-    /// the one coordinator threads *and* separate processes share. Two instances
-    /// of the same build hold separate connections the in-process mutex can't
+    /// The name read and the insert run in a single `IMMEDIATE` transaction,
+    /// so allocation is serialized by the database's write lock — the one
+    /// coordinator threads *and* separate processes share. Two instances of
+    /// the same build hold separate connections the in-process mutex can't
     /// coordinate, but `IMMEDIATE` takes the write lock up front, so a second
-    /// allocator waits (WAL + `busy_timeout`), then reads the committed set and
-    /// picks a distinct name. No `workspaces.id` conflict can arise, so there is
-    /// nothing to retry. Overwrites `record.id`/`record.name`; callers that must
-    /// keep a specific id (restore, a draft-supplied name) use `add_agent`,
-    /// where a clash is a real error.
+    /// allocator waits (WAL + `busy_timeout`), then reads the committed set
+    /// and picks a distinct name.
     pub fn add_agent_allocating(&self, record: &mut AgentRecord) -> Result<()> {
         let mut conn = self.db.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let live: HashSet<String> = {
-            let mut stmt = tx.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
-            let ids = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
-                .filter_map(|r| r.ok())
-                .collect();
-            ids
+        let live = Self::live_names(&tx)?;
+        if record.name.is_empty() || live.contains(&record.name) {
+            record.name = names::allocate(&live);
+        }
+        record.id = loop {
+            let id = names::unique_id(&record.name);
+            let taken: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM workspaces WHERE id = ?1)",
+                [&id],
+                |r| r.get(0),
+            )?;
+            if !taken {
+                break id;
+            }
         };
-        let id = names::allocate(&live);
-        record.name = id.clone();
-        record.id = id;
-        let cleanup = Self::insert_agent(&tx, record)?;
+        Self::insert_agent(&tx, record)?;
         tx.commit()?;
-        cleanup.apply(&conn);
         Ok(())
     }
 
-    /// Write the workspace + session + worktree rows for a new agent. Runs
-    /// inside the caller's transaction — which also scopes name allocation in
-    /// `add_agent_allocating` — so the recycle-delete and every insert commit
-    /// (or roll back) as one unit.
-    fn insert_agent(
-        tx: &rusqlite::Transaction,
-        record: &mut AgentRecord,
-    ) -> Result<sessions::TranscriptCleanup> {
+    /// Write the workspace + session + worktree rows for a new agent, inside
+    /// the caller's transaction, so they commit (or roll back) as one unit.
+    fn insert_agent(tx: &rusqlite::Transaction, record: &mut AgentRecord) -> Result<()> {
         // Look up project_id from the primary repo path.
         let project_id = if let Some(primary) = record.repos.first() {
             let path_str = primary.repo_path.to_string_lossy().to_string();
@@ -207,34 +218,6 @@ impl WorkspaceManager {
         let created_millis = chrono::DateTime::parse_from_rfc3339(&record.created_at)
             .map(|dt| dt.timestamp_millis())
             .unwrap_or_else(|_| now_millis());
-
-        // Recycling a freed name: the allocator only hands back ids held by
-        // *archived* agents (live ones and on-disk checkouts are excluded), but
-        // the archived row still owns this primary key. Evict it so the INSERT
-        // below doesn't trip the PK constraint. Cascades clear its sessions and
-        // worktrees, once any fork still inheriting from them is detached; its
-        // transcript rows are returned for the caller to delete after commit.
-        // A *live* row with this id would be a genuine bug,
-        // so we deliberately don't touch those — the INSERT will surface the
-        // conflict instead of silently clobbering a running agent.
-        let archived = tx
-            .query_row(
-                "SELECT id FROM workspaces WHERE id = ?1 AND archived_at IS NOT NULL",
-                [&record.id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?;
-        let mut cleanup = sessions::TranscriptCleanup::default();
-        if let Some(evicted) = archived {
-            let doomed = std::slice::from_ref(&evicted);
-            cleanup.trims = lineage::detach_children(tx, doomed)?;
-            cleanup.sessions = sessions::session_ids_for_workspaces(tx, doomed)?;
-            tx.execute("DELETE FROM workspaces WHERE id = ?1", [&evicted])?;
-            tracing::info!(
-                agent_id = %record.id,
-                "reusing archived agent name; evicted its archived record",
-            );
-        }
 
         // The workspace is the durable work-area (identity + task metadata).
         tx.execute(
@@ -295,7 +278,7 @@ impl WorkspaceManager {
         // Folders granted at spawn, so the first launch already has them.
         super::folder_grants::insert_folder_grants(tx, &record.id, &record.folder_grants)?;
 
-        Ok(cleanup)
+        Ok(())
     }
 
     pub fn update_agent_status(
@@ -778,14 +761,35 @@ impl WorkspaceManager {
     /// Clear archive metadata and re-seed `repos`. Clearing `archived_at`
     /// (with no `stopped_at`/error) makes the workspace derive back to
     /// `Idle`; the supervisor's restore path drives the live spawn explicitly.
+    ///
+    /// A workspace whose name was given to a live one while it was archived
+    /// comes back under a freshly drawn name, so the sidebar never shows two
+    /// of a name. Its id, and everything keyed by it, is unchanged. One
+    /// `IMMEDIATE` transaction, as for [`Self::add_agent_allocating`]: the
+    /// name is read and the workspace made live under the same write lock.
     pub fn restore_agent(&self, id: &str, repos: Vec<TrackedRepo>) -> Result<()> {
-        let conn = self.db.lock();
-        Self::ensure_agent_exists(&conn, id)?;
+        let mut conn = self.db.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let name: String = tx
+            .query_row("SELECT name FROM workspaces WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .map_err(|_| Error::AgentNotFound(id.to_string()))?;
+        // Still archived here, so the live names are everyone else's.
+        let live = Self::live_names(&tx)?;
+        if live.contains(&name) {
+            let renamed = names::allocate(&live);
+            tx.execute(
+                "UPDATE workspaces SET name = ?1 WHERE id = ?2",
+                rusqlite::params![renamed, id],
+            )?;
+            tracing::info!(agent_id = id, from = %name, to = %renamed, "restored under a new name: a live workspace has the old one");
+        }
 
         // Clearing both dispositions (archived + user-stopped) returns the
         // record to its resting `Idle` state — a restored agent should be
         // live-able again, not stuck Stopped.
-        conn.execute(
+        tx.execute(
             "UPDATE workspaces SET archived_at = NULL, stopped_at = NULL,
                     archive_completed_at = NULL, archive_error = NULL
              WHERE id = ?1",
@@ -798,7 +802,7 @@ impl WorkspaceManager {
         // `supervisor::disposition`), so a row still naming the adopted tree
         // would point every reader away from the checkout that was just built.
         for repo in &repos {
-            conn.execute(
+            tx.execute(
                 "UPDATE worktrees SET branch = ?1, parent_branch = ?2,
                         branch_tip_sha = NULL, parent_branch_sha = NULL,
                         diff_additions = 0, diff_deletions = 0,
@@ -808,6 +812,7 @@ impl WorkspaceManager {
             )?;
         }
 
+        tx.commit()?;
         Ok(())
     }
 

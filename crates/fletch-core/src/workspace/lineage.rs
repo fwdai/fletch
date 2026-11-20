@@ -506,8 +506,8 @@ pub(super) fn detach_children(conn: &Connection, doomed: &[String]) -> Result<Ve
 mod tests {
     use super::*;
     use crate::workspace::tests::{
-        agent, concat, exchange, history, history_turns, inherited, mark_archived, owned,
-        seed_repo, session_of, test_db,
+        agent, concat, exchange, history, history_turns, inherited, owned, seed_repo, session_of,
+        test_db,
     };
     use serde_json::json;
 
@@ -1043,29 +1043,6 @@ mod tests {
         wm.remove_agent("a").unwrap();
         assert_eq!(workspace_of(&wm, &a).0, "c");
         assert_eq!(&history(&wm, "c")[..4], &before[..4]);
-    }
-
-    #[test]
-    fn evicting_a_recycled_name_detaches_its_forks() {
-        let db = test_db();
-        seed_repo(&db, "/r");
-        let wm = WorkspaceManager::new(db.clone());
-        agent(&wm, "kilimanjaro", "/r", None);
-        exchange(&wm, "kilimanjaro", "k1", "alpha");
-        let old = session_of(&wm, "kilimanjaro");
-        let lineage = wm.resolve_anchor("kilimanjaro", Anchor::End).unwrap();
-        agent(&wm, "fork", "/r", Some(lineage));
-        mark_archived(&db, "kilimanjaro");
-
-        // Reusing the archived name evicts its row — but not the fork's history.
-        agent(&wm, "kilimanjaro", "/r", None);
-
-        assert_eq!(history(&wm, "fork"), inherited(&["k1-u", "k1-a"]));
-        assert_eq!(workspace_of(&wm, &old).0, "fork");
-        assert!(
-            history(&wm, "kilimanjaro").is_empty(),
-            "the new agent starts fresh"
-        );
     }
 
     #[test]

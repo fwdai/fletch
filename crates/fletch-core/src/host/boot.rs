@@ -509,10 +509,8 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // Drop RPC mailboxes left by agents that are gone. Teardown removes them
     // now, but installs predating that carry one leaked dir per agent ever
     // spawned. Runs before anything spawns, so every mailbox present is either a
-    // live agent's or an orphan — and an orphan can hold a request an
-    // interrupted run never answered, which the poll loop would dispatch against
-    // whichever agent next takes that recycled name. Skipped only for a nested
-    // Fletch, whose roots are the parent's (see `StateRoots`).
+    // live agent's or an orphan. Skipped only for a nested Fletch, whose roots
+    // are the parent's (see `StateRoots`).
     if state_roots.owned() {
         match (workspace.live_agent_ids(), rpc::rpc_root()) {
             (Ok(live), Ok(root)) => rpc::sweep_orphan_mailboxes_in(&root, &live),
@@ -1163,9 +1161,8 @@ mod tests {
 
     /// A host that configured its own RPC root still has to sweep it. The sweep
     /// used to skip any root set through `$FLETCH_RPC_ROOT`, which is exactly
-    /// how `fletch-host` points the engine at its own — leaving an orphan
-    /// mailbox with a pending request for `process_pending` to dispatch against
-    /// whichever agent next drew that recycled name.
+    /// how `fletch-host` points the engine at its own — leaving every orphan
+    /// mailbox there for good.
     #[test]
     fn an_owned_override_root_is_swept_at_boot() {
         let td = tempfile::tempdir().unwrap();

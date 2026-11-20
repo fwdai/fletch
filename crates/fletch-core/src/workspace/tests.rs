@@ -3720,53 +3720,102 @@ pub(crate) fn mark_archived(db: &Arc<Mutex<Connection>>, id: &str) {
     .unwrap();
 }
 
+/// A name given out again belongs to a new workspace with an id of its own:
+/// the archived one that had it keeps its row and its conversation.
 #[test]
-fn add_agent_reuses_archived_name() {
+fn a_reused_name_leaves_the_archived_workspace_as_it_was() {
     let db = test_db();
     seed_repo(&db, "/r");
     let wm = WorkspaceManager::new(db.clone());
-
-    let mut first = new_agent_record(
-        "kilimanjaro".into(),
-        "first".into(),
-        "claude".into(),
-        mk_repo("/r"),
-        String::new(),
-        AgentView::Custom,
-    );
-    wm.add_agent(&mut first).unwrap();
-    mark_archived(&db, "kilimanjaro");
-
-    // Recycling the freed name must succeed — the archived row is evicted
-    // rather than tripping the primary-key constraint.
-    let mut second = new_agent_record(
-        "kilimanjaro".into(),
-        "second".into(),
-        "claude".into(),
-        mk_repo("/r"),
-        String::new(),
-        AgentView::Custom,
-    );
-    wm.add_agent(&mut second).unwrap();
-
-    let conn = db.lock();
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM workspaces WHERE id = 'kilimanjaro'",
-            [],
-            |r| r.get(0),
+    let named = || {
+        new_agent_record(
+            String::new(),
+            "kilimanjaro".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            String::new(),
+            AgentView::Custom,
         )
-        .unwrap();
-    assert_eq!(count, 1, "exactly one row should remain");
-    let (name, archived): (String, Option<i64>) = conn
-        .query_row(
-            "SELECT name, archived_at FROM workspaces WHERE id = 'kilimanjaro'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+    };
+    let mut first = named();
+    wm.add_agent_allocating(&mut first).unwrap();
+    exchange(&wm, &first.id, "t1", "first life");
+    mark_archived(&db, &first.id);
+
+    let mut second = named();
+    wm.add_agent_allocating(&mut second).unwrap();
+
+    assert_eq!(second.name, "kilimanjaro");
+    assert_ne!(second.id, first.id);
+    assert_ne!(second.id, second.name, "an id is never the name");
+    assert!(wm.agent(&first.id).unwrap().archive.is_some());
+    assert_eq!(wm.read_session_records(&first.id).unwrap().len(), 2);
+    assert!(wm.read_session_records(&second.id).unwrap().is_empty());
+}
+
+/// Two drafts can be shown the same name before either spawns (two devices,
+/// a stale draft): the second to spawn draws another.
+#[test]
+fn a_draft_name_taken_since_it_was_drawn_is_replaced_at_spawn() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+    let named = || {
+        new_agent_record(
+            String::new(),
+            "kilimanjaro".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            String::new(),
+            AgentView::Custom,
         )
-        .unwrap();
-    assert_eq!(name, "second", "the live agent should have replaced it");
-    assert!(archived.is_none(), "the recycled agent must be live");
+    };
+    let (mut first, mut second) = (named(), named());
+
+    wm.add_agent_allocating(&mut first).unwrap();
+    wm.add_agent_allocating(&mut second).unwrap();
+
+    assert_eq!(first.name, "kilimanjaro");
+    assert_ne!(second.name, "kilimanjaro");
+    assert!(names::PLACES.contains(&second.name.as_str()));
+    assert!(second.id.starts_with(&format!("{}-", second.name)));
+    assert_eq!(wm.agent(&second.id).unwrap().name, second.name);
+}
+
+/// Restoring a workspace whose name a live one took meanwhile gives the
+/// restored one a new name; with the name free it keeps its own.
+#[test]
+fn a_restored_workspace_is_renamed_only_when_its_name_is_live_elsewhere() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db.clone());
+    let named = || {
+        new_agent_record(
+            String::new(),
+            "kilimanjaro".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            String::new(),
+            AgentView::Custom,
+        )
+    };
+    let mut first = named();
+    wm.add_agent_allocating(&mut first).unwrap();
+    mark_archived(&db, &first.id);
+
+    wm.restore_agent(&first.id, vec![mk_repo("/r")]).unwrap();
+    assert_eq!(wm.agent(&first.id).unwrap().name, "kilimanjaro");
+
+    mark_archived(&db, &first.id);
+    let mut second = named();
+    wm.add_agent_allocating(&mut second).unwrap();
+    wm.restore_agent(&first.id, vec![mk_repo("/r")]).unwrap();
+
+    let restored = wm.agent(&first.id).unwrap();
+    assert!(restored.archive.is_none());
+    assert_ne!(restored.name, "kilimanjaro");
+    assert!(names::PLACES.contains(&restored.name.as_str()));
+    assert_eq!(wm.agent(&second.id).unwrap().name, "kilimanjaro");
 }
 
 #[test]
@@ -3829,8 +3878,8 @@ fn add_agent_allocating_excludes_archived_from_reservation() {
     }
 
     // Every pool name is archived (so all are reusable) — allocation should
-    // hand back a bare pool name, never a "-N" exhaustion suffix, evicting the
-    // archived row it reuses.
+    // hand back a bare pool name, never a "-N" exhaustion suffix, under an id
+    // that is not the archived workspace's.
     let mut rec = new_agent_record(
         String::new(),
         String::new(),
@@ -3841,10 +3890,12 @@ fn add_agent_allocating_excludes_archived_from_reservation() {
     );
     wm.add_agent_allocating(&mut rec).unwrap();
     assert!(
-        names::PLACES.contains(&rec.id.as_str()),
+        names::PLACES.contains(&rec.name.as_str()),
         "expected a reusable pool name, got {}",
-        rec.id
+        rec.name
     );
+    assert!(wm.agent(&rec.name).unwrap().archive.is_some());
+    assert!(wm.agent(&rec.id).unwrap().archive.is_none());
 }
 
 #[test]
@@ -3870,24 +3921,28 @@ fn add_agent_allocating_assigns_distinct_live_names() {
     let mut b = mk();
     wm.add_agent_allocating(&mut a).unwrap();
     wm.add_agent_allocating(&mut b).unwrap();
-    assert!(!a.id.is_empty() && !b.id.is_empty());
-    assert_ne!(a.id, b.id, "two live agents must not share a name");
+    assert_ne!(a.id, b.id);
+    assert_ne!(
+        a.name, b.name,
+        "a fresh name is drawn clear of the live ones"
+    );
 }
 
-/// `live_agent_ids` is the single definition of "this name is taken", shared by
-/// the draft-name preview and the startup mailbox sweep. Archiving must free the
-/// name: counting archived agents is what saturated the ~300-name pool and
-/// pushed new workspaces onto `-2` suffixes.
+/// `live_agent_names` is the single definition of "this name is taken", for the
+/// draft-name preview and a new workspace alike; `live_agent_ids` is what the
+/// startup sweeps keep. Archiving must free the name: counting archived agents
+/// is what saturated the ~300-name pool and pushed new workspaces onto `-2`
+/// suffixes.
 #[test]
-fn live_agent_ids_covers_live_agents_and_frees_archived_ones() {
+fn live_agents_cover_live_workspaces_and_archiving_frees_the_name() {
     let db = test_db();
     seed_repo(&db, "/r");
     let wm = WorkspaceManager::new(db);
 
-    for id in ["yosemite", "dolomites"] {
+    for name in ["yosemite", "dolomites"] {
         let mut rec = new_agent_record(
-            id.into(),
-            id.into(),
+            format!("{name}-k3f9x2ab"),
+            name.into(),
             "claude".into(),
             mk_repo("/r"),
             "task".into(),
@@ -3897,20 +3952,31 @@ fn live_agent_ids_covers_live_agents_and_frees_archived_ones() {
     }
 
     assert_eq!(
-        wm.live_agent_ids().unwrap(),
+        wm.live_agent_names().unwrap(),
         HashSet::from(["yosemite".to_string(), "dolomites".to_string()]),
     );
-
-    wm.begin_archive("dolomites").unwrap();
-
     assert_eq!(
         wm.live_agent_ids().unwrap(),
+        HashSet::from([
+            "yosemite-k3f9x2ab".to_string(),
+            "dolomites-k3f9x2ab".to_string()
+        ]),
+    );
+
+    wm.begin_archive("dolomites-k3f9x2ab").unwrap();
+
+    assert_eq!(
+        wm.live_agent_names().unwrap(),
         HashSet::from(["yosemite".to_string()]),
         "archiving must release the name back to the pool"
     );
+    assert_eq!(
+        wm.live_agent_ids().unwrap(),
+        HashSet::from(["yosemite-k3f9x2ab".to_string()]),
+    );
     // The archived agent is still readable (History shows it) — it just no
     // longer reserves its name.
-    assert!(wm.agent("dolomites").unwrap().archive.is_some());
+    assert!(wm.agent("dolomites-k3f9x2ab").unwrap().archive.is_some());
 }
 
 // ── Transcript rows live in another file: every workspace deletion removes
@@ -3941,21 +4007,6 @@ fn remove_agent_deletes_its_transcript_rows() {
 
     assert_eq!(transcript_rows(&db), 2);
     assert_eq!(wm.read_session_records("kept").unwrap().len(), 2);
-}
-
-#[test]
-fn reusing_an_archived_name_deletes_the_evicted_agents_transcript_rows() {
-    let db = test_db();
-    seed_repo(&db, "/r");
-    let wm = WorkspaceManager::new(db.clone());
-    agent(&wm, "everest", "/r", None);
-    exchange(&wm, "everest", "t1", "first life");
-    mark_archived(&db, "everest");
-
-    agent(&wm, "everest", "/r", None);
-
-    assert_eq!(transcript_rows(&db), 0);
-    assert!(wm.read_session_records("everest").unwrap().is_empty());
 }
 
 #[test]

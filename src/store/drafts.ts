@@ -258,11 +258,11 @@ async function prepareDraft(
 /** Whether this host can give a draft the name it had on another: no open
  *  draft here and no live workspace has it. Read from the snapshot, which a
  *  move refreshes just before; an archived workspace has given its name up.
- *  A name taken between this and the spawn fails the spawn with the host's
- *  reason, as for any draft. */
+ *  A name taken between this and the spawn is replaced by the host, as for
+ *  any draft: the spawned record carries the name it went live with. */
 function nameIsFree(state: AppState, name: string): boolean {
   if (state.drafts.some((d) => d.name === name)) return false;
-  return !(state.workspace?.agents ?? []).some((a) => a.id === name && !a.archive);
+  return !(state.workspace?.agents ?? []).some((a) => a.name === name && !a.archive);
 }
 
 /** Put a prepared draft on screen: seeded, listed first, selected. The seed

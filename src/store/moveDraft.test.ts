@@ -58,10 +58,10 @@ const ref = (path: string, home?: ProjectRef["home"]): ProjectRef => ({
   home,
 });
 
-const agent = (id: string, repoPath: string): AgentRecord =>
+const agent = (name: string, repoPath: string): AgentRecord =>
   ({
-    id,
-    name: id,
+    id: `${name}-k3f9x2ab`,
+    name,
     project_id: "p1",
     provider: "claude",
     status: "spawning",
@@ -211,7 +211,7 @@ describe("a draft left on its own host", () => {
     expect(localApi.spawnAgent.mock.calls[0][1]).toBe(HOME_PATH);
     expect(studio.ops()).not.toContain("ensure_project");
     expect(studio.ops()).not.toContain("spawn_agent");
-    expect(useAppStore.getState().selectedAgentId).toBe("kyoto");
+    expect(useAppStore.getState().selectedAgentId).toBe("kyoto-k3f9x2ab");
     expect(useAppStore.getState().activeEnvironmentId).toBe(LOCAL_ENVIRONMENT_ID);
   });
 
@@ -322,10 +322,13 @@ describe("a draft moved to a paired host", () => {
       forkBase: "develop",
       task: TEXT,
     });
-    expect(argsOf(studio, "send_user_message")).toMatchObject({ agentId: "fuji", text: TEXT });
+    expect(argsOf(studio, "send_user_message")).toMatchObject({
+      agentId: "fuji-k3f9x2ab",
+      text: TEXT,
+    });
     expect(localApi.spawnAgent).not.toHaveBeenCalled();
     const s = useAppStore.getState();
-    expect(s.hostStates.studio.selectedAgentId).toBe("fuji");
+    expect(s.hostStates.studio.selectedAgentId).toBe("fuji-k3f9x2ab");
     expect(s.hostStates.studio.drafts).toEqual([]);
     expect(s.workspace?.agents).toEqual([]);
   });
