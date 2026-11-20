@@ -3753,6 +3753,35 @@ fn a_reused_name_leaves_the_archived_workspace_as_it_was() {
     assert!(wm.read_session_records(&second.id).unwrap().is_empty());
 }
 
+/// Two drafts can be shown the same name before either spawns (two devices,
+/// a stale draft): the second to spawn draws another.
+#[test]
+fn a_draft_name_taken_since_it_was_drawn_is_replaced_at_spawn() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+    let named = || {
+        new_agent_record(
+            String::new(),
+            "kilimanjaro".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            String::new(),
+            AgentView::Custom,
+        )
+    };
+    let (mut first, mut second) = (named(), named());
+
+    wm.add_agent_allocating(&mut first).unwrap();
+    wm.add_agent_allocating(&mut second).unwrap();
+
+    assert_eq!(first.name, "kilimanjaro");
+    assert_ne!(second.name, "kilimanjaro");
+    assert!(names::PLACES.contains(&second.name.as_str()));
+    assert!(second.id.starts_with(&format!("{}-", second.name)));
+    assert_eq!(wm.agent(&second.id).unwrap().name, second.name);
+}
+
 /// Restoring a workspace whose name a live one took meanwhile gives the
 /// restored one a new name; with the name free it keeps its own.
 #[test]

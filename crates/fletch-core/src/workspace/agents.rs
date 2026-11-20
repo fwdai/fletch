@@ -164,7 +164,9 @@ impl WorkspaceManager {
     /// Give a new workspace its identity and insert it, in one serialized
     /// transaction: a fresh id (`names::unique_id`), which no row has ever
     /// had, and a name. A name the record already carries (a draft's) is
-    /// kept; an empty one is drawn from the pool, clear of the live names.
+    /// kept unless a live workspace took it since the draft drew it (another
+    /// device's draft, spawned first); then, as for an empty one, a name is
+    /// drawn from the pool, clear of the live names.
     ///
     /// The id is what everything is keyed by. An archived workspace keeps its
     /// row under its own id when its name is given out again, so the two
@@ -180,8 +182,9 @@ impl WorkspaceManager {
     pub fn add_agent_allocating(&self, record: &mut AgentRecord) -> Result<()> {
         let mut conn = self.db.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if record.name.is_empty() {
-            record.name = names::allocate(&Self::live_names(&tx)?);
+        let live = Self::live_names(&tx)?;
+        if record.name.is_empty() || live.contains(&record.name) {
+            record.name = names::allocate(&live);
         }
         record.id = loop {
             let id = names::unique_id(&record.name);
