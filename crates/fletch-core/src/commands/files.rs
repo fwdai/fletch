@@ -104,6 +104,32 @@ pub struct CheckoutFileContents {
     pub chg_mod: Vec<u32>,
     pub binary: bool,
     pub too_large: bool,
+    /// The file as an image the webview can draw, when it is one. A raster
+    /// image is `binary` with no `text`; an SVG carries both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<CheckoutImage>,
+}
+
+/// An image's bytes for an `<img>`: `data:{mime};base64,{data}`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct CheckoutImage {
+    pub mime: &'static str,
+    pub data: String,
+}
+
+/// `bytes` as an image to preview, told from the bytes themselves (an ICO as
+/// its largest embedded PNG). An SVG is taken only from a `.svg`: its sniff is
+/// "text that mentions `<svg`", which a component's source does too.
+fn preview_image(lang: &str, bytes: &[u8]) -> Option<CheckoutImage> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let (bytes, mime) = crate::icon_detect::image::normalize(bytes.to_vec())?;
+    if mime == "image/svg+xml" && lang != "svg" {
+        return None;
+    }
+    Some(CheckoutImage {
+        mime,
+        data: STANDARD.encode(bytes),
+    })
 }
 
 /// Collapse a rich git status into the single-letter code the panel renders.
@@ -708,29 +734,43 @@ pub async fn read_checkout_file_impl(
         chg_mod: vec![],
         binary,
         too_large,
+        image: None,
     };
 
-    // Deleted by the agent: the file is gone from disk, so show its prior
-    // contents from the parent ref (the design lets you re-create it).
-    if status.as_deref() == Some("D") {
-        let text = git::show_file(&checkout, &diff_ref, &path)
+    let bytes = if status.as_deref() == Some("D") {
+        // Deleted by the agent: the file is gone from disk, so show its prior
+        // contents from the parent ref (the design lets you re-create it).
+        let bytes = git::show_file(&checkout, &diff_ref, &path)
             .await
             .unwrap_or_default();
-        return Ok(empty(text, false, false));
-    }
-
-    // Where the checkout lives: a box keeps it in its guest (`crate::exec`).
-    let exec = crate::exec::for_path(&checkout);
-    let stat = exec.stat_async(&abs).await.ok().flatten();
-    let Some(meta) = stat.filter(|m| m.is_file) else {
-        return Ok(empty(String::new(), false, false));
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Ok(empty(String::new(), false, true));
+        }
+        bytes
+    } else {
+        // Where the checkout lives: a box keeps it in its guest (`crate::exec`).
+        let exec = crate::exec::for_path(&checkout);
+        let stat = exec.stat_async(&abs).await.ok().flatten();
+        let Some(meta) = stat.filter(|m| m.is_file) else {
+            return Ok(empty(String::new(), false, false));
+        };
+        if meta.len > MAX_FILE_BYTES {
+            return Ok(empty(String::new(), false, true));
+        }
+        exec.read_async(&abs).await?
     };
-    if meta.len > MAX_FILE_BYTES {
-        return Ok(empty(String::new(), false, true));
-    }
-    let bytes = exec.read_async(&abs).await?;
-    if bytes.contains(&0) {
-        return Ok(empty(String::new(), true, false));
+
+    let binary = bytes.contains(&0);
+    // Only a file that could be one is sniffed: every other text file would
+    // pay a copy of itself to learn it is not an image.
+    let image = (binary || lang == "svg")
+        .then(|| preview_image(&lang, &bytes))
+        .flatten();
+    if binary {
+        return Ok(CheckoutFileContents {
+            image,
+            ..empty(String::new(), true, false)
+        });
     }
     let text = String::from_utf8_lossy(&bytes).into_owned();
 
@@ -750,6 +790,7 @@ pub async fn read_checkout_file_impl(
         chg_mod,
         binary: false,
         too_large: false,
+        image,
     })
 }
 
@@ -1394,5 +1435,32 @@ mod held_checkout_tests {
              resolving a checkout path itself: {added:?}\n\
              no longer doing so, strike from ALLOWED: {gone:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod preview_image_tests {
+    use super::preview_image;
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+    #[test]
+    fn a_raster_image_is_told_from_its_bytes_whatever_its_name() {
+        let image = preview_image("bin", PNG).unwrap();
+        assert_eq!(image.mime, "image/png");
+        assert_eq!(image.data, "iVBORw0KGgoAAAANSUhEUg==");
+    }
+
+    #[test]
+    fn an_svg_is_an_image_only_under_its_own_extension() {
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        assert_eq!(preview_image("svg", svg).unwrap().mime, "image/svg+xml");
+        assert_eq!(preview_image("tsx", b"const a = <svg/>;"), None);
+    }
+
+    #[test]
+    fn other_bytes_are_no_image() {
+        assert_eq!(preview_image("bin", b"\0\x01\x02"), None);
+        assert_eq!(preview_image("svg", b"not markup"), None);
     }
 }

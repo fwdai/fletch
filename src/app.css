@@ -60,6 +60,7 @@
 @import "./components/RoadmapScreen/Activity/Activity.css";
 @import "./components/ProjectContext/ProjectContext.css";
 @import "./components/RightPanel/FilePanel/FilePanel.css";
+@import "./components/RightPanel/ImagePreview/ImagePreview.css";
 /* Ahead of SettingsScreen.css (its former home) and of CustomAgents.css /
    Feedback.css, whose prose-box classes compose on top of `.ui-input`. */
 @import "./components/ui/TextInput.css";

@@ -47,9 +47,9 @@ pub async fn list_files_at(repo: &Path, rev: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Read a single file's contents at a given ref (e.g. the parent branch),
-/// used to show the prior contents of a file the agent deleted.
-pub async fn show_file(checkout: &Path, base_ref: &str, path: &str) -> Result<String> {
+/// Read a single file's bytes at a given ref (e.g. the parent branch), used
+/// to show the prior contents of a file the agent deleted.
+pub async fn show_file(checkout: &Path, base_ref: &str, path: &str) -> Result<Vec<u8>> {
     let spec = format!("{base_ref}:{path}");
     let out = run_git(
         checkout,
@@ -57,7 +57,7 @@ pub async fn show_file(checkout: &Path, base_ref: &str, path: &str) -> Result<St
         &format!("show {base_ref}:{path}"),
     )
     .await?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(out.stdout)
 }
 
 /// Return the 1-indexed line numbers (in the current working-tree file) the

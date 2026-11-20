@@ -40,6 +40,12 @@ export interface DirListing {
   truncated?: boolean;
 }
 
+/** An image's bytes for an `<img>`: `data:${mime};base64,${data}`. */
+export interface CheckoutImage {
+  mime: string;
+  data: string;
+}
+
 /** A checkout file's contents plus the metadata the File-panel editor
  *  needs. `chg_add` / `chg_mod` are 1-indexed line numbers the agent
  *  added / modified (drives the change gutter). */
@@ -51,4 +57,8 @@ export interface CheckoutFileContents {
   chg_mod: number[];
   binary: boolean;
   too_large: boolean;
+  /** The file as an image, when it is one the webview can draw: a raster
+   *  image is `binary` with no `text`, an SVG carries both. Absent for any
+   *  other file, and from a host too old to send it. */
+  image?: CheckoutImage;
 }

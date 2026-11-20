@@ -14,7 +14,7 @@
 //! network, no agent, never a checkout — so it runs when a project is added or
 //! relocated and on the picker's "Detect again" ([`store`]).
 
-mod image;
+pub(crate) mod image;
 pub mod store;
 
 use serde::Serialize;
