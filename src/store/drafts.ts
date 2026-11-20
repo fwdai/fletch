@@ -262,7 +262,7 @@ async function prepareDraft(
  *  reason, as for any draft. */
 function nameIsFree(state: AppState, name: string): boolean {
   if (state.drafts.some((d) => d.name === name)) return false;
-  return !(state.workspace?.agents ?? []).some((a) => a.id === name && !a.archive);
+  return !(state.workspace?.agents ?? []).some((a) => a.name === name && !a.archive);
 }
 
 /** Put a prepared draft on screen: seeded, listed first, selected. The seed

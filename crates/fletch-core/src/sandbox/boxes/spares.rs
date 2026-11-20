@@ -85,8 +85,8 @@ use super::settings;
 /// A spare's marker, written last: the [`Build`] it was made for.
 const READY_FILE: &str = "ready.json";
 
-/// What every spare's placeholder id starts with. A workspace's id is a
-/// place name (`names`), which never does.
+/// What every spare's placeholder id starts with. A workspace's id starts
+/// with its place name (`names`), which is never `spare`.
 const ID_PREFIX: &str = "spare-";
 
 /// The home a preparation's CLI installs run with: a directory on the

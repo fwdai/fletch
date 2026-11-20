@@ -13,12 +13,11 @@ use crate::workspace::Workspace;
 /// Allocate a fresh name from the place pool for a draft agent.
 ///
 /// Not a throwaway preview: a draft carries its name into `spawn_agent`, which
-/// pins it via `add_agent` (see `lifecycle.rs`), so whatever this returns is
-/// the agent's real name — `add_agent_allocating` only runs for the draft-less
-/// path. The reserved set is therefore load-bearing, and the DB owns it:
-/// `live_agent_ids` supplies the live agents, and the caller passes *only*
-/// `drafts` — the open, unpersisted drafts, the one piece of state the frontend
-/// has that the DB can't see.
+/// keeps it (`add_agent_allocating`), so whatever this returns is the name the
+/// workspace goes by. The reserved set is the DB's: `live_agent_names`
+/// supplies the live workspaces, and the caller passes *only* `drafts` — the
+/// open, unpersisted drafts, the one piece of state the frontend has that the
+/// DB can't see.
 ///
 /// Deliberately not "caller passes everything that's taken": that let a
 /// frontend set that also counted archived agents saturate the ~300-name pool
@@ -27,7 +26,7 @@ use crate::workspace::Workspace;
 /// Shared with the remote dispatcher, so a phone's draft allocation reserves
 /// against the same live set.
 pub fn allocate_draft_name_impl(supervisor: &Supervisor, drafts: Vec<String>) -> Result<String> {
-    let mut reserved = supervisor.workspace.live_agent_ids()?;
+    let mut reserved = supervisor.workspace.live_agent_names()?;
     reserved.extend(drafts);
     Ok(names::allocate(&reserved))
 }

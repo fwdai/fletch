@@ -370,7 +370,8 @@ pub struct SpawnRequest {
     pub repo_path: PathBuf,
     /// Provider id (e.g. `"claude"`, `"codex"`).
     pub provider: String,
-    /// Pre-allocated agent id from the draft; `None`/blank allocates a fresh one.
+    /// The name the draft showed; `None`/blank draws a fresh one. The id is
+    /// never the caller's to choose.
     pub name: Option<String>,
     /// Session-level effort (claude `--effort`), reapplied on every spawn.
     pub effort: Option<String>,
@@ -607,18 +608,15 @@ impl Supervisor {
             AgentView::Custom
         };
 
-        // Use the name the draft already showed in the sidebar so it locks in
-        // rather than being regenerated; only allocate a fresh one when the
-        // caller didn't supply it (the draft-less spawn path).
-        // Whether the caller pinned a name (draft / restore) or we auto-allocate.
-        // For the auto path the id is chosen inside `add_agent_allocating`, under
-        // the same lock as the insert, so concurrent spawns can't race on it — so
-        // the final id isn't known until after the row is written, below.
-        let supplied_name = match name {
-            Some(n) if !n.trim().is_empty() => Some(n),
-            _ => None,
-        };
-        let initial_id = supplied_name.clone().unwrap_or_default();
+        // The name the draft already showed in the sidebar locks in rather
+        // than being regenerated; an empty one (the draft-less spawn path) is
+        // drawn with the row. The id is always chosen there, under the same
+        // lock as the insert, so neither is final until the row is written,
+        // below.
+        let supplied_name = name
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_default();
 
         // The agent's parent branch — the base its checkout forks from and the
         // ref it later targets for PRs / ahead-behind. The base the user chose
@@ -664,8 +662,8 @@ impl Supervisor {
             .filter(|t| !t.is_empty() && !t.starts_with('/'))
             .unwrap_or_default();
         let mut record = new_agent_record(
-            initial_id.clone(),
-            initial_id,
+            String::new(),
+            supplied_name,
             provider,
             primary,
             initial_task,
@@ -717,14 +715,10 @@ impl Supervisor {
         // Written with the row, so the provisioning box and the first launch
         // see them (`add_agent`).
         record.folder_grants = folder_grants;
-        // Insert first: on the auto path this both allocates the id and writes
-        // the row under one lock, so `record.id` is final only afterward. A
-        // pinned name goes through `add_agent`, where a clash is a real error.
-        if supplied_name.is_some() {
-            self.workspace.add_agent(&mut record)?;
-        } else {
-            self.workspace.add_agent_allocating(&mut record)?;
-        }
+        // Insert first: this both gives the workspace its id (and its name,
+        // unless the draft supplied one) and writes the row under one lock, so
+        // `record.id` is final only afterward.
+        self.workspace.add_agent_allocating(&mut record)?;
         let agent_id = record.id.clone();
         let parent_dir = agent_parent_dir(&agent_id)?;
         // Resolved through the record's own repo entry so the adopted tree and

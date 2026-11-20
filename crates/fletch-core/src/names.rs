@@ -1,4 +1,4 @@
-//! Natural-place name pool used to generate readable agent ids.
+//! Natural-place name pool used to generate readable workspace names.
 //!
 //! Random short hashes (`b5a471ff`) were unique but anonymous —
 //! impossible to refer to in conversation, hard to spot in a directory
@@ -6,6 +6,11 @@
 //! seas give every agent a distinct identity that's easy to read,
 //! type, and remember. (We avoid city names because Conductor already
 //! uses them.) On the rare collision we suffix `-2`, `-3`, …
+//!
+//! A name is only what the user reads. It is drawn clear of the live
+//! workspaces' names and comes round again once its workspace is archived, so
+//! nothing is keyed by it: rows, folders, mailboxes and boxes go by the
+//! workspace's id ([`unique_id`]), which is never given out twice.
 
 use std::collections::HashSet;
 
@@ -315,7 +320,7 @@ pub const PLACES: &[&str] = &[
     "torres",
 ];
 
-/// Allocate a unique id from the city pool.
+/// Allocate a name no workspace in `used` has, from the place pool.
 ///
 /// Strategy: try up to 10 random picks first — if any of them aren't
 /// taken, use it. Most users have a handful of agents so this almost
@@ -352,6 +357,22 @@ pub fn allocate(used: &HashSet<String>) -> String {
     }
 }
 
+/// Characters of an id's random part: lowercase, with the look-alikes
+/// (`i`, `l`, `o`, `u`) left out.
+const ID_ALPHABET: &[u8; 32] = b"abcdefghjkmnpqrstvwxyz0123456789";
+
+/// A fresh id for a workspace named `name`: the name, for whoever reads a log
+/// or a directory listing, and eight random characters that make it this
+/// workspace's alone. Opaque: nothing reads the name back out of it.
+pub fn unique_id(name: &str) -> String {
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    let random: String = bytes[..8]
+        .iter()
+        .map(|b| ID_ALPHABET[usize::from(b % 32)] as char)
+        .collect();
+    format!("{name}-{random}")
+}
+
 /// Cheap random pick — folds the first 8 bytes of a fresh UUID into a
 /// `u64` index. Avoids pulling in the `rand` crate for a single use.
 ///
@@ -368,6 +389,13 @@ fn pick_random() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_id_carries_its_name_and_is_never_the_name() {
+        let (a, b) = (unique_id("bavaria"), unique_id("bavaria"));
+        assert!(a.starts_with("bavaria-") && a.len() == "bavaria-".len() + 8);
+        assert_ne!(a, b);
+    }
 
     #[test]
     fn returns_unused_name_on_empty_set() {
