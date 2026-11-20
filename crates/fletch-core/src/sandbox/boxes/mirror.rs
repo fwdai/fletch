@@ -7,11 +7,13 @@
 //! the box (`sandbox::carry_checkpoint`, [`carry_out`]). Reads (`git_state`,
 //! diffs) do not come here: they run in the guest through the routed seam.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use fletch_box::Channel;
+use parking_lot::Mutex;
 
 use crate::error::{Error, Result};
 use crate::git;
@@ -41,9 +43,14 @@ pub async fn for_transport(checkout: &Path, source_repo: &Path) -> Result<Option
     let running = BoxRegistry::global()
         .running_or_start(&identity.agent_id)
         .await?;
-    refresh_checkout(&running, checkout, Some(source_repo))
-        .await
-        .map(Some)
+    let mirror = mirror_dir(&running.dir);
+    refresh(
+        &mirror,
+        &running.channel.git_ssh_command(),
+        &[(running.git_url(checkout), Some(source_repo.to_path_buf()))],
+    )
+    .await?;
+    Ok(Some(mirror))
 }
 
 /// `<box>/sources.json`: each checkout provisioned into the box and the user's
@@ -161,8 +168,8 @@ pub fn disposal_at_stop(checkout: &Path) -> Option<crate::git_state::DisposalChe
 }
 
 /// [`refresh_running`] for an agent by id: a no-op for one with no running
-/// box (another engine's, or a box that is stopped and so already mirrored).
-/// Never boots one.
+/// box (another engine's, or a box that is stopped or being stopped: a stop
+/// that keeps the box refreshes the mirror itself). Never boots one.
 pub async fn refresh_agent(agent_id: &str) -> Result<()> {
     match BoxRegistry::global().running(agent_id) {
         Some(running) => refresh_running(&running).await,
@@ -170,52 +177,87 @@ pub async fn refresh_agent(agent_id: &str) -> Result<()> {
     }
 }
 
-/// Refresh the mirror from every checkout of a running box: the stop ladder's
-/// first rung, so a stopped box still has its objects on the host. A box with
-/// no provisioned checkout (a test's) has nothing to mirror.
+/// Refresh the mirror from every checkout of a running box, so a stopped box
+/// still has its objects on the host: what a turn checkpoint starts and what
+/// a stop does before its machine goes. A box with no provisioned checkout
+/// (a test's) has nothing to mirror.
 pub async fn refresh_running(running: &RunningBox) -> Result<()> {
-    for (checkout, source) in read_sources(&running.dir) {
-        refresh_checkout(running, Path::new(&checkout), Some(Path::new(&source))).await?;
+    let checkouts: Vec<_> = read_sources(&running.dir)
+        .into_iter()
+        .map(|(checkout, source)| {
+            (
+                running.git_url(Path::new(&checkout)),
+                Some(PathBuf::from(source)),
+            )
+        })
+        .collect();
+    refresh(
+        &mirror_dir(&running.dir),
+        &running.channel.git_ssh_command(),
+        &checkouts,
+    )
+    .await
+}
+
+/// Wait for `mirror` to be free of every other refresh, and hold it.
+///
+/// A box's checkouts share the one mirror and every refresh writes the same
+/// names there, so two at once fail on each other's ref locks: a turn's
+/// refresh, which runs behind its send, against the one a push opens with or
+/// a stop's. One lock per mirror path, which outlives the box's VM. Held
+/// across a refresh's fetches and nothing else — no boot, nothing routed into
+/// the guest — so a stop may wait for it under the box's lifecycle lock.
+pub(super) async fn lock(mirror: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let lock = LOCKS
+        .get_or_init(Mutex::default)
+        .lock()
+        .entry(mirror.to_path_buf())
+        .or_default()
+        .clone();
+    lock.lock_owned().await
+}
+
+/// `git fetch` into `mirror` the heads, HEAD and tracking refs of each of
+/// `checkouts` — a guest checkout's git URL, reached with `ssh_command`, and
+/// the user's repository it was provisioned from — creating the mirror (with
+/// alternates to that repository) on first use. Not the checkpoints: their
+/// snapshots carry untracked files, and every stop, turn and transport open
+/// runs this; [`carry_out`] fetches the one a fork needs. One refresh of a
+/// mirror at a time ([`lock`]), whoever asks.
+async fn refresh(
+    mirror: &Path,
+    ssh_command: &str,
+    checkouts: &[(String, Option<PathBuf>)],
+) -> Result<()> {
+    let _one_at_a_time = lock(mirror).await;
+    for (url, source_repo) in checkouts {
+        ensure_mirror(mirror, source_repo.as_deref()).await?;
+        let mut cmd = crate::git_dist::command(mirror);
+        cmd.env("GIT_SSH_COMMAND", ssh_command);
+        cmd.args([
+            "fetch",
+            "--quiet",
+            "--prune",
+            "--no-write-fetch-head",
+            url,
+            "+refs/heads/*:refs/heads/*",
+            "+HEAD:refs/fletch/head",
+            "+refs/remotes/origin/*:refs/remotes/origin/*",
+        ]);
+        let out = output(&mut cmd, "mirror fetch").await?;
+        if !out.status.success() {
+            return Err(Error::Git(format!(
+                "refreshing the box mirror failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
     }
     Ok(())
 }
 
-/// `git fetch` the guest checkout's heads, HEAD and tracking refs into the
-/// mirror, creating it (with alternates to `source_repo`) on first use. Not
-/// its checkpoints: their snapshots carry untracked files, and every stop,
-/// turn and transport open runs this; [`carry_out`] fetches the one a fork
-/// needs.
-pub async fn refresh_checkout(
-    running: &RunningBox,
-    checkout: &Path,
-    source_repo: Option<&Path>,
-) -> Result<PathBuf> {
-    let mirror = mirror_dir(&running.dir);
-    ensure_mirror(&mirror, source_repo).await?;
-    let mut cmd = crate::git_dist::command(&mirror);
-    cmd.env("GIT_SSH_COMMAND", running.channel.git_ssh_command());
-    cmd.args([
-        "fetch",
-        "--quiet",
-        "--prune",
-        "--no-write-fetch-head",
-        &running.git_url(checkout),
-        "+refs/heads/*:refs/heads/*",
-        "+HEAD:refs/fletch/head",
-        "+refs/remotes/origin/*:refs/remotes/origin/*",
-    ]);
-    let out = output(&mut cmd, "mirror fetch").await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "refreshing the box mirror failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(mirror)
-}
-
 /// Where [`carry_out`] puts a ref it fetched, one name per call. Outside
-/// every namespace [`refresh_checkout`] fetches or prunes.
+/// every namespace [`refresh`] fetches or prunes.
 const CARRY_NS: &str = "refs/fletch-carry";
 
 /// Fetch `refname` (a turn checkpoint) from `checkout`, a checkout in
@@ -406,6 +448,61 @@ async fn output(cmd: &mut tokio::process::Command, what: &str) -> Result<std::pr
 mod tests {
     use super::*;
     use crate::git::testing::{bare, commit_file, git, init_repo};
+
+    /// A refresh that reaches the guest while another of the same mirror is
+    /// still fetching waits for it: both write the same names there, and a
+    /// turn's refresh runs behind its send, where the one a push opens with
+    /// (or a stop's) can meet it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refresh_waits_for_the_one_in_flight_on_its_mirror() {
+        let td = tempfile::tempdir().unwrap();
+        let guest = td.path().join("guest");
+        init_repo(&guest);
+        let tip = commit_file(&guest, "a");
+        let mirror = td.path().join("mirror.git");
+        let (reached, go) = (td.path().join("reached"), td.path().join("go"));
+
+        // The channel's ssh, stood in for: it notes that a fetch reached the
+        // guest, holds it until `go` exists, then serves the guest's
+        // repository. Git first asks an ssh it does not know for `-G`.
+        let ssh = td.path().join("ssh.sh");
+        std::fs::write(
+            &ssh,
+            format!(
+                "[ \"$1\" = -G ] && exit 1\n\
+                 echo fetch >> '{reached}'\n\
+                 while [ ! -e '{go}' ]; do sleep 0.05; done\n\
+                 exec git upload-pack '{guest}'\n",
+                reached = reached.display(),
+                go = go.display(),
+                guest = guest.display(),
+            ),
+        )
+        .unwrap();
+        let ssh = format!("sh '{}'", ssh.display());
+        let fetches = || std::fs::read_to_string(&reached).map_or(0, |s| s.lines().count());
+        let refreshing = || {
+            let (mirror, ssh) = (mirror.clone(), ssh.clone());
+            tokio::spawn(async move {
+                refresh(&mirror, &ssh, &[("box:/guest/checkout".into(), None)]).await
+            })
+        };
+
+        let first = refreshing();
+        while fetches() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let second = refreshing();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(fetches(), 1, "two refreshes of one mirror fetched at once");
+
+        std::fs::write(&go, "").unwrap();
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+        assert_eq!(fetches(), 2);
+        assert_eq!(git(&mirror, &["rev-parse", "refs/fletch/head"]), tip);
+    }
 
     /// The tracking sync leaves the guest's `origin/HEAD` symref, and the
     /// branch it names, standing — the mirror has no `origin/HEAD` of its own
