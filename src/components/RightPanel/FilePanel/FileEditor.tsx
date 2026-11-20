@@ -1,15 +1,18 @@
 // The Files-panel editor: a transparent <textarea> over a live
 // syntax-highlight layer, with line numbers and a git-style change gutter.
 // Edit, ⌘S to save, Revert to restore the agent's version. The "Diff" toggle
-// swaps the editor for a read-only unified diff of the agent's changes.
+// swaps the editor for a read-only unified diff of the agent's changes, and an
+// SVG's "Preview" toggle for the image it draws.
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRecord, CheckoutFileContents, DiffBaseMode } from "@/api";
 import { useEngine } from "@/api/engine";
 import { Icon } from "@/components/Icon";
 import { FileDiff } from "@/components/RightPanel/Code/DiffView";
+import { ImagePreview } from "@/components/RightPanel/ImagePreview";
 import { CODE_THEMES } from "@/data/codeThemes";
 import { langLabel } from "@/data/languages";
 import { useAppStore } from "@/store";
+import { bytesToBase64 } from "@/util/base64";
 import { useHljsTheme } from "@/util/codeTheme";
 import { highlightToHtml } from "@/util/highlight";
 import { ViewerHeader } from "./ViewerHeader";
@@ -31,11 +34,21 @@ export function FileEditor({ agent, path, name, dir, file, diffBase, onBack }: F
   // Files auto-save a short beat after you stop typing — no Save button. This
   // drives the quiet status line; `savedRef` tracks what's currently on disk.
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  // "code" = editable view; "diff" = read-only unified diff of agent changes.
-  const [view, setView] = useState<"code" | "diff">("code");
+  // "code" = editable view; "diff" = read-only unified diff of agent changes;
+  // "preview" = the file drawn as the image it is (an SVG).
+  const [view, setView] = useState<"code" | "diff" | "preview">("code");
   // Only changed files have a diff worth showing.
   const canDiff = !!file.status;
   const diffView = view === "diff" && canDiff;
+  const imageMime = file.image?.mime;
+  // Drawn from the buffer, not from what was read, so it follows the edits.
+  const preview = useMemo(
+    () =>
+      view === "preview" && imageMime
+        ? { mime: imageMime, data: bytesToBase64(new TextEncoder().encode(value)) }
+        : null,
+    [view, imageMime, value],
+  );
 
   // Syntax theme: "quorum" uses our palette (gated by the `cq` class); other
   // families load a highlight.js stylesheet that follows the app's dark/light.
@@ -205,15 +218,26 @@ export function FileEditor({ agent, path, name, dir, file, diffBase, onBack }: F
         status={file.status}
         dirty={saveState === "saving"}
         actions={
-          canDiff ? (
+          canDiff || imageMime ? (
             <span className="fp-vh-actions iflex-center">
-              <button
-                className={`fp-meta-btn iflex-center ${diffView ? "active" : ""}`}
-                title={diffView ? "Back to the file" : "Show what the agent changed"}
-                onClick={() => setView((v) => (v === "diff" ? "code" : "diff"))}
-              >
-                <Icon name="diff" size={11} /> Diff
-              </button>
+              {imageMime && (
+                <button
+                  className={`fp-meta-btn iflex-center ${preview ? "active" : ""}`}
+                  title={preview ? "Back to the source" : "Show the image"}
+                  onClick={() => setView((v) => (v === "preview" ? "code" : "preview"))}
+                >
+                  <Icon name="image" size={11} /> Preview
+                </button>
+              )}
+              {canDiff && (
+                <button
+                  className={`fp-meta-btn iflex-center ${diffView ? "active" : ""}`}
+                  title={diffView ? "Back to the file" : "Show what the agent changed"}
+                  onClick={() => setView((v) => (v === "diff" ? "code" : "diff"))}
+                >
+                  <Icon name="diff" size={11} /> Diff
+                </button>
+              )}
             </span>
           ) : undefined
         }
@@ -227,6 +251,8 @@ export function FileEditor({ agent, path, name, dir, file, diffBase, onBack }: F
           isBuiltInTheme={isBuiltInTheme}
           base={diffBase}
         />
+      ) : preview ? (
+        <ImagePreview image={preview} name={name} />
       ) : (
         <>
           {isDeleted && (

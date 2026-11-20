@@ -1,11 +1,11 @@
-// Loads a checkout file's contents and routes to the right view: a "no
-// preview" message for binary / too-large / unreadable files, a loading
-// state, or the editable FileEditor.
-import { useEffect, useState } from "react";
-import type { AgentRecord, CheckoutFileContents, DiffBaseMode } from "@/api";
-import { useEngine } from "@/api/engine";
+// Loads a checkout file's contents and routes to the right view: the image
+// itself for an image, a "no preview" message for other binary / too-large /
+// unreadable files, a loading state, or the editable FileEditor.
+import type { AgentRecord, DiffBaseMode } from "@/api";
+import { ImagePreview } from "@/components/RightPanel/ImagePreview";
 import { basename, parentDir } from "@/util/format";
 import { FileEditor } from "./FileEditor";
+import { useCheckoutFile } from "./useCheckoutFile";
 import { ViewerHeader } from "./ViewerHeader";
 
 interface FileViewerProps {
@@ -16,29 +16,26 @@ interface FileViewerProps {
 }
 
 export function FileViewer({ agent, path, diffBase, onBack }: FileViewerProps) {
-  const { api } = useEngine();
   const name = basename(path);
   const dir = parentDir(path);
+  const { contents, error } = useCheckoutFile(agent.id, path, diffBase);
 
-  const [contents, setContents] = useState<CheckoutFileContents | null>(null);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setContents(null);
-    setError(false);
-    api
-      .readCheckoutFile(agent.id, path, diffBase)
-      .then((c) => {
-        if (!cancelled) setContents(c);
-      })
-      .catch(() => {
-        if (!cancelled) setError(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [agent.id, path, diffBase, api]);
+  // A raster image has no text to edit. An SVG does, and goes to the editor,
+  // which offers the preview.
+  if (contents?.binary && contents.image) {
+    return (
+      <div className="fp-wrap">
+        <ViewerHeader
+          name={name}
+          dir={dir}
+          onBack={onBack}
+          status={contents.status}
+          dirty={false}
+        />
+        <ImagePreview image={contents.image} name={name} />
+      </div>
+    );
+  }
 
   if (error || (contents && (contents.binary || contents.too_large))) {
     return (

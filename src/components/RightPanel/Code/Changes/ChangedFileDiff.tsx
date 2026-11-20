@@ -1,7 +1,8 @@
 // One changed file's diff, opened from a changes list (the Code panel's or the
 // Git panel's): the editor's header with a way back, the file's place in the
 // list with prev/next (also `[` / `]`), and the diff, refetched whenever the
-// file's revision moves so it tracks the agent's edits.
+// file's revision moves so it tracks the agent's edits. An image, whose change
+// has no lines to diff, shows as the image.
 import type { DiffBaseMode, FileStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ViewerHeader } from "@/components/RightPanel/FilePanel/ViewerHeader";
@@ -11,6 +12,7 @@ import { fileRevision, statusLetter } from "@/util/diff";
 import { basename, parentDir } from "@/util/format";
 import { useBareKeys } from "@/util/hooks";
 import { DiffPane, extOf, useFileDiff } from "../DiffView";
+import { ChangedImage } from "./ChangedImage";
 import { useFreshLines } from "./useFreshLines";
 import type { WalkthroughRange } from "./Walkthrough";
 
@@ -55,8 +57,21 @@ export function ChangedFileDiff({
   const fetchPath = repoDir ? `${repoDir}/${path}` : path;
   // Refetched whenever the file's revision moves — an edit that keeps the
   // line counts included.
-  const diff = useFileDiff(agentId, fetchPath, file ? fileRevision(file) : "", base);
+  const rev = file ? fileRevision(file) : "";
+  const diff = useFileDiff(agentId, fetchPath, rev, base);
   const freshKeys = useFreshLines(`${base}:${fetchPath}`, diff);
+  // A diff with no lines is what an image's change looks like.
+  const noLines = diff.loaded && !diff.error && diff.hunks.length === 0;
+  const pane = (
+    <DiffPane
+      diff={diff}
+      lang={extOf(path)}
+      isBuiltInTheme={isBuiltInTheme}
+      live={live}
+      freshKeys={freshKeys}
+      focusRange={focusRange}
+    />
+  );
 
   useBareKeys({
     ...(prev && { "[": () => onSelect(prev.path) }),
@@ -118,14 +133,13 @@ export function ChangedFileDiff({
           </span>
         }
       />
-      <DiffPane
-        diff={diff}
-        lang={extOf(path)}
-        isBuiltInTheme={isBuiltInTheme}
-        live={live}
-        freshKeys={freshKeys}
-        focusRange={focusRange}
-      />
+      {noLines ? (
+        <ChangedImage agentId={agentId} path={fetchPath} base={base} rev={rev}>
+          {pane}
+        </ChangedImage>
+      ) : (
+        pane
+      )}
     </>
   );
 }
