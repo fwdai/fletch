@@ -17,8 +17,6 @@ const stateWith = (a: AgentRecord, over: Partial<AppState> = {}): AppState =>
     compactions: {},
     usage: {},
     transcriptLoading: {},
-    switchInFlight: {},
-    features: { nativeView: false },
     ...over,
   }) as unknown as AppState;
 
@@ -78,7 +76,7 @@ describe("compactBlocker", () => {
 });
 
 describe("compactBlocker", () => {
-  it("lets an idle Claude agent in the chat view compact", () => {
+  it("lets an idle Claude agent compact", () => {
     expect(compactBlocker(stateWith(agent()), "a1")).toBeNull();
   });
 
@@ -86,13 +84,6 @@ describe("compactBlocker", () => {
     expect(compactBlocker(stateWith(agent({ status: "running" })), "a1")).toBe(
       "Available when the agent is idle",
     );
-  });
-
-  it("refuses the native view, whose terminal takes /compact itself", () => {
-    const s = stateWith(agent({ view: "native" }), {
-      features: { nativeView: true } as AppState["features"],
-    });
-    expect(compactBlocker(s, "a1")).toBe("Type /compact in the terminal");
   });
 
   it("refuses an agent that isn't ready, and one whose provider can't", () => {

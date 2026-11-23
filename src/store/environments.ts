@@ -169,8 +169,7 @@ export const createEnvironmentsSlice: SliceCreator<EnvironmentsSlice> = (set) =>
 // The store owns this state, but the readers below are called from outside React
 // — on every op and on every PTY chunk — and src/api must not import the store
 // (the store is built over @/api's engine, so that would close a cycle). So store/index.ts
-// hands its getter in here once, the way src/pty/terminals registers its cache
-// hooks with src/pty/buffers. Until it does, the answer is the local
+// hands its getter in here once. Until it does, the answer is the local
 // environment, which is also what the store starts with.
 let read: () => EnvironmentsState = initialState;
 

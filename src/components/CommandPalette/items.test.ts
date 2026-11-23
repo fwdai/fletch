@@ -90,7 +90,6 @@ function state(over: Partial<AppState> = {}): AppState {
       terminal: false,
       tokenUsage: true,
       sidebarActiveFirst: true,
-      nativeView: false,
     },
     theme: "dark",
     accent: "copper",

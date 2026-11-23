@@ -6,13 +6,11 @@ import type {
   AgentManagedEvent,
   AgentModelEvent,
   AgentNotifyEvent,
-  AgentOutputEvent,
   AgentRepoAddedEvent,
   AgentSpawnProgressEvent,
   AgentStatusEvent,
   AgentTaskEvent,
   AgentTitleEvent,
-  AgentViewEvent,
   ShellOutputEvent,
   WorkspaceAutoArchivedEvent,
 } from "./types/agent";
@@ -175,9 +173,6 @@ export function makeEvents(on: Subscribe, onLocal: Subscribe) {
     onAgentInstallState: (cb: (e: AgentInstallEvent) => void): Promise<UnlistenFn> =>
       onLocal<AgentInstallEvent>("agent-install:state", cb),
 
-    onAgentOutput: (cb: (e: AgentOutputEvent) => void): Promise<UnlistenFn> =>
-      on<AgentOutputEvent>("agent:output", cb),
-
     onShellOutput: (cb: (e: ShellOutputEvent) => void): Promise<UnlistenFn> =>
       on<ShellOutputEvent>("shell:output", cb),
 
@@ -238,9 +233,6 @@ export function makeEvents(on: Subscribe, onLocal: Subscribe) {
      *  only — `agent:status` stays the authoritative state. */
     onSpawnProgress: (cb: (e: AgentSpawnProgressEvent) => void): Promise<UnlistenFn> =>
       on<AgentSpawnProgressEvent>("agent:spawn-progress", cb),
-
-    onAgentView: (cb: (e: AgentViewEvent) => void): Promise<UnlistenFn> =>
-      on<AgentViewEvent>("agent:view", cb),
 
     /** Fires when a session's reasoning effort is changed mid-conversation, so the
      *  composer's effort chip reflects the new value without a full resync. */
@@ -475,7 +467,6 @@ export const {
   onRoadmapProjectHoldReleased,
   onRoadmapQueueNote,
   onAgentInstallState,
-  onAgentOutput,
   onShellOutput,
   onDictationTranscript,
   onDictationState,
@@ -488,7 +479,6 @@ export const {
   onTurnStarted,
   onAgentStatus,
   onSpawnProgress,
-  onAgentView,
   onAgentEffort,
   onAgentFolderGrants,
   onAgentModel,

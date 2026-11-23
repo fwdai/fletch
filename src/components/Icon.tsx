@@ -30,7 +30,6 @@ import {
   ExternalLink,
   File,
   FileDiff,
-  FlaskConical,
   Folder,
   FolderLock,
   FoldVertical,
@@ -199,7 +198,6 @@ const ICON_COMPONENTS = {
   wrench: Wrench,
   task: ListChecks,
   fetch: Globe,
-  flask: FlaskConical,
   globe: Globe,
   history: History,
   // Home — the center pane with nothing selected.

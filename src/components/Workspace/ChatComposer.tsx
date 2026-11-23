@@ -51,7 +51,6 @@ export function ChatComposer({
   // A compaction outlives the turn that asked for it (store/compaction), so
   // the slash label alone would fall back to "is working" halfway through.
   const compacting = useAppStore((s) => isCompacting(s, agent.id));
-  const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   // Which step a fresh spawn is on, so the disabled composer says "Cloning
   // repository…" rather than only "Agent is not ready".
   const spawnStage = useAppStore((s) => s.spawnStage[agent.id]);
@@ -129,7 +128,7 @@ export function ChatComposer({
   // An agent whose process is down (stopped, or failed) takes a message too:
   // the host relaunches it for the message, so there is nothing to click first.
   // Only a spawn in flight holds the composer, behind the step it is on.
-  const canSend = !transcriptLoading && !switchInFlight && agent.status !== "spawning";
+  const canSend = !transcriptLoading && agent.status !== "spawning";
 
   return (
     <div className="composer-wrap">
@@ -186,9 +185,7 @@ export function ChatComposer({
                   ? undefined
                   : transcriptLoading
                     ? "Loading transcript…"
-                    : switchInFlight
-                      ? "Switching view…"
-                      : (spawnStageLabel(spawnStage) ?? "Agent is not ready")
+                    : (spawnStageLabel(spawnStage) ?? "Agent is not ready")
               }
               stopping={busy}
               mentionSource={() =>

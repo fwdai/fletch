@@ -10,14 +10,11 @@ import { RunView } from "@/workflows/run/RunView";
 import { ChatView } from "./ChatView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
 import { Home } from "./Home";
-import { NativeView } from "./NativeView";
 import { SubagentThreadView } from "./SubagentThread";
-import { TranscriptRail } from "./TranscriptRail";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
 /** Center pane orchestrator. Decides whether to show: a draft empty
- *  state, the chat view, the native xterm view, or a fallback
- *  placeholder. Listens to the global `viewMode` from the store. */
+ *  state, the chat view, or a fallback placeholder. */
 export function Workspace() {
   const workspace = useAppStore((s) => s.workspace);
   const environment = useHostEntry();
@@ -30,7 +27,6 @@ export function Workspace() {
   const selectedRunId = useAppStore((s) => s.selectedRunId);
   const drafts = useAppStore((s) => s.drafts);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
-  const nativeView = useAppStore((s) => s.features.nativeView);
   const openThread = useAppStore((s) => s.openThread);
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
@@ -86,16 +82,7 @@ export function Workspace() {
       <WorkspaceHeader agent={agent} />
       {agent.status === "error" && <CrashBanner agent={agent} />}
       <SyncHealthBanner agentId={agent.id} />
-      {/* The flag gates the *presentation*, not the record: an agent left in
-          native mode when the flag flips off renders as chat (its transcript
-          is synced either way) instead of being force-switched, which would
-          kill and respawn its process — and could resurrect a stopped one.
-          Flipping the flag back on restores the terminal. */}
-      {agent.view === "native" && nativeView ? (
-        <NativeBody agent={agent} />
-      ) : (
-        <ChatView agent={agent} />
-      )}
+      <ChatView agent={agent} />
     </div>
   );
 }
@@ -158,23 +145,6 @@ function SyncHealthBanner({ agentId }: { agentId: string }) {
             : `Fletch couldn't read this session's history from the ${provider} CLI — new history for this session may not be saved. The conversation you see is still up to date.`}
         </span>
       </div>
-    </div>
-  );
-}
-
-/** Native view body: the agent's TUI, with the structured transcript rail
- *  optionally docked beside it. The terminal is the live surface you type into;
- *  the rail is the inspector (tool cards, turn footers, cost) that the raw
- *  terminal can't give you. */
-function NativeBody({ agent }: { agent: AgentRecord }) {
-  const railOpen = useAppStore((s) => s.transcriptRailOpen);
-  const toggleRail = useAppStore((s) => s.toggleTranscriptRail);
-  return (
-    <div className="chat native-split">
-      <div className="native-term">
-        <NativeView agent={agent} />
-      </div>
-      {railOpen && <TranscriptRail agent={agent} onClose={toggleRail} />}
     </div>
   );
 }

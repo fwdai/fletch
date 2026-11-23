@@ -236,11 +236,6 @@ export const GATES = {
     label: "Local review",
     reason: "This host is too old to run a local reviewer. Update it.",
   },
-  nativeView: {
-    op: "switch_view",
-    label: "The native terminal view",
-    reason: "The native terminal view isn't available on a remote host yet.",
-  },
   fork: {
     op: "fork_agent",
     label: "Forking",

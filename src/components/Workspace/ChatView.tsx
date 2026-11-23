@@ -60,7 +60,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   }, [agent.id]);
 
   // Log derivation (lazy history load, display policy, tool pairing, per-turn
-  // bookkeeping) is shared with the native view's rail — see useTranscript.
+  // bookkeeping) lives in useTranscript, shared with the other chat surfaces.
   const transcript = useTranscript(agent);
   const { items, turns, activeModel, awaitingInput, openTurnStartedAt } = transcript;
 

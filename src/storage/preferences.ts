@@ -27,7 +27,6 @@ export type SettingsSection =
   | "skills"
   | "tools"
   | "workflows"
-  | "experimental"
   | "developer";
 
 /** One-shot deep-link intent handed to a settings pane when it opens: open
@@ -46,10 +45,6 @@ export interface FeatureFlags {
    *  the sidebar; the quiet ones keep the manual order beneath them. Off keeps
    *  the whole list in manual order, and only then can projects be dragged. */
   sidebarActiveFirst: boolean;
-  /** Experimental: expose the Custom/Native view switcher so agents can be
-   *  driven through the provider's own terminal UI. Off by default — native
-   *  mode isn't equally solid across providers yet. */
-  nativeView: boolean;
 }
 
 export const DEFAULT_FEATURES: FeatureFlags = {
@@ -59,7 +54,6 @@ export const DEFAULT_FEATURES: FeatureFlags = {
   terminal: false,
   tokenUsage: true,
   sidebarActiveFirst: true,
-  nativeView: false,
 };
 
 export function parseFeatures(raw: string | undefined): FeatureFlags {
@@ -76,6 +70,7 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
       sidebarUsage?: boolean;
       missionControl?: boolean;
       thinkingBudget?: boolean;
+      nativeView?: boolean;
     };
     // The old "Files" and "Diff" tabs were merged into the Code panel; honor a
     // saved preference for either when migrating an existing settings blob.
@@ -97,6 +92,7 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
       sidebarUsage: _sidebarUsage,
       missionControl: _missionControl,
       thinkingBudget: _thinkingBudget,
+      nativeView: _nativeView,
       ...rest
     } = saved;
     void _files;
@@ -106,6 +102,7 @@ export function parseFeatures(raw: string | undefined): FeatureFlags {
     void _sidebarUsage;
     void _missionControl;
     void _thinkingBudget;
+    void _nativeView;
     if (preMigration) delete rest.tokenUsage;
     return {
       ...DEFAULT_FEATURES,

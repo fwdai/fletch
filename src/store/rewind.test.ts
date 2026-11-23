@@ -15,7 +15,7 @@ const api = vi.hoisted(() => ({
   syncSession: vi.fn(),
 }));
 vi.mock("@/api", () => ({ api }));
-vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
+vi.mock("@/pty/buffers", () => ({ dropShellBuffer: vi.fn() }));
 
 import type { ChatItem } from "@/adapters";
 import type { RestoreReport, SessionRecord, UserTurn } from "@/api";

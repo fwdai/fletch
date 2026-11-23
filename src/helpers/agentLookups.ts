@@ -100,8 +100,9 @@ export function repoPathFor(state: AppState, agentId: string): string | undefine
 /** A per-turn agent captures its session id on its first turn (e.g. agy reads
  *  it from disk at turn-end), but the id only reaches the live frontend via a
  *  full `getWorkspace`. True when an agent's turn just landed yet its session
- *  id is still missing locally — the cue to re-fetch so the Native toggle
- *  unblocks without a reload. False once present, to avoid per-turn re-fetch. */
+ *  id is still missing locally — the cue to re-fetch, since the history load
+ *  keys off it (`useHistoryLoad`). False once present, to avoid per-turn
+ *  re-fetch. */
 export function needsSessionIdRefresh(workspace: Workspace | null, agentId: string): boolean {
   const agent = workspace?.agents.find((a) => a.id === agentId);
   return !!agent && !agent.session_id;

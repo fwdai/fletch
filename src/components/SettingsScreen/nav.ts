@@ -55,9 +55,9 @@ const GUARDRAILS_GROUP = "Guardrails";
 // and the cloud providers whose machines workspaces can run on. Says nothing
 // about the platform, so a Linux or Windows build needs no rename.
 const MACHINES_GROUP = "Machines";
-// The conventional tail: things most people never open. A regular user sees
-// "Advanced › Experimental" — a deliberate category, not a stray entry under
-// Machines — and an admin's Developer slots in under the same header.
+// The conventional tail: things most people never open. Developer, when
+// unlocked, sits under it as a deliberate category rather than a stray entry
+// under Machines.
 const ADVANCED_GROUP = "Advanced";
 
 // General holds only what has no better home (appearance, alerts, privacy);
@@ -103,7 +103,6 @@ const NAV: NavItem[] = [
   // After Devices: a cloud machine is the farther place to run, and connecting
   // a provider is a one-time act, where pairing is the common visit.
   { id: "cloud", label: "Cloud", icon: "cloud", order: 63, group: MACHINES_GROUP },
-  { id: "experimental", label: "Experimental", icon: "flask", order: 70, group: ADVANCED_GROUP },
 ];
 // Stable sort by weight keeps contribution order on ties.
 NAV.sort((a, b) => a.order - b.order);

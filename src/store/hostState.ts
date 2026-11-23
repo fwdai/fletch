@@ -14,8 +14,8 @@
 // copy of the whole set is one list, in one place.
 //
 // What is NOT here, and why:
-//   - PTY ring buffers and the live-terminal cache key on the environment
-//     themselves (src/pty/buffers, src/pty/terminals).
+//   - The side shell's PTY ring buffers key on the environment themselves
+//     (src/pty/buffers).
 //   - Provider versions, model catalogs, installs, the custom agent / skill /
 //     MCP libraries, the account profile, the Linear connection, the cloud
 //     providers and the appearance settings are properties of this desktop,
@@ -60,7 +60,6 @@ export const HOST_KEYS = [
   "compactions",
   "spawnStage",
   "turnStartedAt",
-  "switchInFlight",
   "switchingAccount",
   "movingWorkspace",
   "folderChangeWaiting",
@@ -172,7 +171,6 @@ export const BLANK_HOST_STATE: HostState = {
   compactions: {},
   spawnStage: {},
   turnStartedAt: {},
-  switchInFlight: {},
   switchingAccount: {},
   movingWorkspace: {},
   folderChangeWaiting: {},

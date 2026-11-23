@@ -19,7 +19,7 @@ const { spawnAgent, getWorkspace, repoDefaultBranch, listRepoBranches } = vi.hoi
 vi.mock("@/api", () => ({
   api: { spawnAgent, getWorkspace, repoDefaultBranch, listRepoBranches },
 }));
-vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
+vi.mock("@/pty/buffers", () => ({ dropShellBuffer: vi.fn() }));
 
 import { api } from "@/api";
 import { activeEngine } from "@/api/engine";

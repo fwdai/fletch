@@ -2,9 +2,9 @@
 // load, the display-policy + tool-pairing pass, and the per-turn bookkeeping
 // (navigable prompts, closing footers, which turn is open).
 //
-// Extracted from ChatView so the native view's transcript rail renders the
-// identical log from the identical derivation — the two surfaces differ only in
-// chrome, and a second copy of this logic would drift.
+// Extracted from ChatView so every surface that renders an agent's log (the
+// chat, a workflow thread, the roadmap's chat pane) derives it identically — a
+// second copy of this logic would drift.
 import { useEffect, useMemo, useRef } from "react";
 import { getAdapter } from "@/adapters";
 import type { AgentRecord } from "@/api";
@@ -55,13 +55,12 @@ export function useTranscript(agent: AgentRecord): Transcript {
 }
 
 /** Kick off the lazy history load for an agent whose log is not in the store
- *  yet. Called by every surface that reads the log (the chat, the native rail,
- *  a sub-agent thread) so whichever mounts first after a reload gets it. */
+ *  yet. Called by every surface that reads the log (the chat, a sub-agent
+ *  thread) so whichever mounts first after a reload gets it. */
 export function useHistoryLoad(agent: AgentRecord): void {
   const log = useAppStore((s) => s.managedLogs[agent.id]);
   const transcriptLoading = useAppStore((s) => s.transcriptLoading[agent.id] ?? false);
   const transcriptLoaded = useAppStore((s) => s.transcriptLoaded[agent.id] ?? false);
-  const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
 
   // A first message was sent (it becomes the task), so a provider session
@@ -72,22 +71,14 @@ export function useHistoryLoad(agent: AgentRecord): void {
   const hasHistory = (Boolean(agent.session_id) && hasPriorConversation) || agent.lineage != null;
 
   useEffect(() => {
-    if (!hasHistory || transcriptLoaded || transcriptLoading || switchInFlight) {
+    if (!hasHistory || transcriptLoaded || transcriptLoading) {
       return;
     }
     if (log !== undefined) {
       return;
     }
     void loadHistoryTranscript(agent.id);
-  }, [
-    agent.id,
-    hasHistory,
-    loadHistoryTranscript,
-    log,
-    switchInFlight,
-    transcriptLoaded,
-    transcriptLoading,
-  ]);
+  }, [agent.id, hasHistory, loadHistoryTranscript, log, transcriptLoaded, transcriptLoading]);
 }
 
 /** Derive a display transcript from any log rendered as `agent`'s — its own,

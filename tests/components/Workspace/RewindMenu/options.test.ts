@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentStatus, AgentView, RestoreReport } from "@/api";
+import type { AgentStatus, RestoreReport } from "@/api";
 import {
   type CodeState,
   rewindBlocker,
@@ -7,14 +7,14 @@ import {
 } from "@/components/Workspace/RewindMenu/options";
 
 const report: RestoreReport = { repos: [] };
-const idle = { status: "idle" as AgentStatus, view: "custom" as AgentView };
+const idle = { status: "idle" as AgentStatus };
 
 /** `[scope, reason]` per option, in menu order. */
 const reasons = (blocker: string | null, code: CodeState) =>
   rewindOptions(blocker, code).map((o) => [o.scope, o.reason]);
 
 describe("rewind menu availability", () => {
-  it("offers every rewind of an idle agent in the chat view whose code is restorable", () => {
+  it("offers every rewind of an idle agent whose code is restorable", () => {
     expect(rewindBlocker(idle)).toBeNull();
     expect(rewindOptions(null, { report }).map((o) => [o.scope, o.label, o.reason])).toEqual([
       ["conversation", "Restore conversation", null],
@@ -37,17 +37,6 @@ describe("rewind menu availability", () => {
     for (const status of ["stopped", "error"] as AgentStatus[]) {
       expect(rewindBlocker({ ...idle, status })).toBeNull();
     }
-  });
-
-  it("offers every rewind in the native view too", () => {
-    const native = { ...idle, view: "native" as AgentView };
-    const blocker = rewindBlocker(native);
-    expect(blocker).toBeNull();
-    expect(reasons(blocker, { report })).toEqual([
-      ["conversation", null],
-      ["code", null],
-      ["both", null],
-    ]);
   });
 
   it("keeps the conversation when the code can't be restored, and says why", () => {

@@ -1,6 +1,6 @@
 import type { Workspace } from "@/api";
 import { dropAgentsEntries } from "@/helpers";
-import { clearOutputBuffer } from "@/pty/buffers";
+import { dropShellBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
 import { projectKey } from "@/util/projects";
 import { track } from "@/util/track";
@@ -153,7 +153,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get, { api, host
     refuseWhenGated(hostId);
     const result = await api.deleteProject(projectId);
     const deletedIds = result.deleted_agent_ids;
-    for (const id of deletedIds) clearOutputBuffer(hostId, id);
+    for (const id of deletedIds) dropShellBuffer(hostId, id);
     set((state) => ({
       ...dropAgentsEntries(state, deletedIds),
       workspace: result.workspace,

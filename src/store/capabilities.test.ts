@@ -173,7 +173,6 @@ describe("gateReason", () => {
     expect(gateReason(old, "runScripts")).toBe(GATES.runScripts.reason);
     expect(gateReason(old, "workflows")).toBe(GATES.workflows.reason);
     expect(gateReason(old, "roadmap")).toBe(GATES.roadmap.reason);
-    expect(gateReason(old, "nativeView")).toBe(GATES.nativeView.reason);
     expect(gateReason(old, "fork")).toBe(GATES.fork.reason);
     expect(gateReason(old, "rewind")).toBe(GATES.rewind.reason);
     // Added after the descriptor existed, so a host that reports none is too
@@ -336,16 +335,14 @@ describe("hostSkew", () => {
   });
 
   it("names the gaps while there are few of them", () => {
-    // Everything but the native view and restoring a session.
-    const missing = ["switch_view", "restore_agent"];
+    // Everything but forking and restoring a session.
+    const missing = ["fork_agent", "restore_agent"];
     const nearly = host([...V2_DEFAULT_OPS, ...GATED_OPS.filter((op) => !missing.includes(op))]);
 
     const skew = hostSkew(withVersion(nearly, "0.7.30"), CLIENT);
 
-    expect(skew?.closed.map((g) => g.name)).toEqual(["nativeView", "restore"]);
-    expect(skew?.summary).toBe(
-      "The native terminal view and Restoring a session unavailable on this host",
-    );
+    expect(skew?.closed.map((g) => g.name)).toEqual(["fork", "restore"]);
+    expect(skew?.summary).toBe("Forking and Restoring a session unavailable on this host");
   });
 
   it("counts them once a list would be too long, and reports both versions", () => {
