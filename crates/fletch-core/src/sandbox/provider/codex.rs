@@ -113,7 +113,6 @@ mod tests {
             rpc_dir: Path::new("/rpc/a"),
             cwd: root,
             home: Path::new("/Users/u"),
-            interactive: false,
             blackboard: None,
             account_dir: None,
             oauth_token: None,

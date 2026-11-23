@@ -49,7 +49,6 @@ pub mod managed_session;
 pub mod message_queue;
 pub mod model_catalog;
 pub mod names;
-pub mod native_input;
 pub mod new_project;
 pub mod oauth;
 pub mod power;

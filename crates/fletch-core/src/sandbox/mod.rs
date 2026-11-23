@@ -315,7 +315,7 @@ pub fn ensure_folders_can_be_shared(
 
 /// Whether `provider` can launch under `engine`: the one support gate,
 /// [`provider::supports`], as the spawn path's error. Checked before every
-/// spawn — fresh spawns and resume/view-switch — so a record stamped with an
+/// spawn — fresh spawns and resumes — so a record stamped with an
 /// engine can never launch a provider that engine cannot run.
 pub fn ensure_supports_provider(engine: EngineKind, provider: &str) -> Result<()> {
     self::provider::supports(engine, provider).map_err(Error::Other)

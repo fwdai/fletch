@@ -57,7 +57,7 @@ use serde_json::{json, Value};
 use super::RemoteState;
 use crate::host::{EngineCtx, EventSink, Sink};
 use crate::supervisor::Supervisor;
-use crate::workspace::{AgentStatus, AgentView};
+use crate::workspace::AgentStatus;
 
 /// Settings key: alert on `turn_complete` at all. Opt-out — only `"false"`
 /// silences it; `needs_input` is always sent. Shared with the desktop chime and
@@ -136,11 +136,6 @@ pub(super) trait AgentLookup: Send + Sync {
     /// finishing on its own. See the module doc on why this must be read
     /// synchronously.
     fn was_interrupted(&self, agent_id: &str) -> bool;
-    /// Whether the agent runs in the native PTY view. Its status is a heuristic
-    /// read off terminal quiet, so `running → idle` there is not a turn ending
-    /// — and the desktop never notifies for it either (`signalAway` fires from
-    /// the structured event stream, which a native agent does not have).
-    fn is_native(&self, agent_id: &str) -> bool;
 }
 
 impl AgentLookup for Supervisor {
@@ -149,13 +144,6 @@ impl AgentLookup for Supervisor {
             .agent(agent_id)
             .ok()
             .map(|record| record.name)
-    }
-
-    fn is_native(&self, agent_id: &str) -> bool {
-        self.workspace
-            .agent(agent_id)
-            .ok()
-            .is_some_and(|record| matches!(record.view, AgentView::Native))
     }
 
     fn was_interrupted(&self, agent_id: &str) -> bool {
@@ -243,11 +231,6 @@ impl PushTriggers {
         if agents.was_interrupted(agent_id) {
             // A stop converges on this same Idle (the dying process flushes its
             // last event); it is not a completion to celebrate.
-            return;
-        }
-        if agents.is_native(agent_id) {
-            // A native agent's Idle is "the terminal went quiet", which happens
-            // several times in one turn; there is no turn boundary to report.
             return;
         }
         if !turn_complete_enabled() {

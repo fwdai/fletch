@@ -5,7 +5,7 @@
 //! carries *every* event the engine emits — so this filters by name, and that
 //! filter is the whitelist the protocol doc describes: nothing outside
 //! `FORWARDED_EVENTS` can reach a remote client, and raw PTY output
-//! (`agent:output`, `shell:output`, `run:output`) in particular never does.
+//! (`shell:output`, `run:output`) in particular never does.
 //!
 //! One subscriber task for the whole stream, where the Tauri event bus needed
 //! one `listen_any` per name: the name is in the event now, not in the

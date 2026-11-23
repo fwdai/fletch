@@ -51,7 +51,6 @@ use crate::agent::Agent;
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::message_queue::MessageQueue;
-use crate::native_input::NativeInputTracker;
 use crate::run_session::RunSession;
 use crate::workspace::{
     AgentRecord, AgentStatus, ClosedTurn, ProjectDeleteResult, TurnOutcome, Workspace,
@@ -88,11 +87,6 @@ pub struct Supervisor {
     pub agents: Mutex<HashMap<String, Arc<Agent>>>,
     pub generations: Mutex<HashMap<String, u64>>,
     pub activities: Mutex<HashMap<String, Box<dyn Activity>>>,
-    /// Native PTY turns whose silence heuristic most recently moved them to
-    /// Idle. A later byte proves that heuristic was early; the output handler
-    /// consumes this marker and restores Running. Structured providers never
-    /// enter this set because their terminal events are authoritative.
-    pub heuristic_idle: Mutex<HashSet<String>>,
     /// When the turn the provider opened on its own began, per agent running
     /// one. Fletch delivered nothing to open it, so no turn row carries its
     /// clock; `persist_and_emit_status` closes it onto the turn it followed.
@@ -112,16 +106,13 @@ pub struct Supervisor {
     /// dispositions, so a resting record loaded from it derives `Idle`;
     /// this map carries the real current status while an agent is live.
     pub statuses: Mutex<HashMap<String, AgentStatus>>,
-    /// Per-agent native-view input trackers, reconstructing submitted lines
-    /// from raw keystroke bytes (see `native_input`).
-    pub native_inputs: Mutex<HashMap<String, NativeInputTracker>>,
     /// Per-agent workspace terminals, each open or still opening (see
     /// `shell::ShellSlot`).
     pub shells: Mutex<HashMap<String, shell::ShellSlot>>,
     /// Per-agent run-panel processes (dev server + setup). Reused
     /// across start/stop cycles so the log buffer survives.
     pub runs: Mutex<HashMap<String, Arc<RunSession>>>,
-    /// Serializes agent creation/resume/view-switch/restore against project
+    /// Serializes agent creation/resume/restore against project
     /// deletion. A status snapshot alone cannot close the startup race.
     pub(super) agent_lifecycle: tokio::sync::Mutex<()>,
     /// Project ids currently being deleted. Fresh turns check and transition
@@ -229,11 +220,9 @@ impl Supervisor {
             agents: Mutex::new(HashMap::new()),
             generations: Mutex::new(HashMap::new()),
             activities: Mutex::new(HashMap::new()),
-            heuristic_idle: Mutex::new(HashSet::new()),
             provider_runs: Mutex::new(HashMap::new()),
             open_turns: Mutex::new(HashMap::new()),
             statuses: Mutex::new(HashMap::new()),
-            native_inputs: Mutex::new(HashMap::new()),
             shells: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
             agent_lifecycle: tokio::sync::Mutex::new(()),
@@ -283,7 +272,7 @@ impl Supervisor {
     /// The events of this agent's current (or, once idle, most recent) turn,
     /// for a client rebuilding a log it missed the stream of. Empty for an
     /// agent with no buffered turn — one that never ran under this host
-    /// process, or a native-view agent, whose PTY bytes are not events.
+    /// process.
     pub fn read_live_turn(&self, agent_id: &str) -> LiveTurnSnapshot {
         self.live_turns
             .lock()

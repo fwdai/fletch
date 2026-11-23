@@ -24,8 +24,7 @@ impl Supervisor {
     /// in memory that belonged to it goes too:
     /// - its queued follow-ups (their rows go with the switch);
     /// - the live-turn buffer, which holds its last turn;
-    /// - the stop flag, a deferred respawn and the native-silence marker, all
-    ///   about its process's turn;
+    /// - the stop flag and a deferred respawn, both about its process's turn;
     /// - the live status, which now derives from the new row: no process, no
     ///   error.
     ///
@@ -45,8 +44,8 @@ impl Supervisor {
         if record.archive.is_some() {
             return Err(Error::Other("agent is archived".into()));
         }
-        // Checked under the `agents` lock it is removed under: a keystroke in
-        // the native view starts a turn without the delivery lock.
+        // Checked under the `agents` lock it is removed under: a turn the
+        // provider opens on its own starts without the delivery lock.
         let taken = {
             let mut agents = self.agents.lock();
             if self.is_busy(agent_id) {
@@ -62,7 +61,6 @@ impl Supervisor {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
-        self.native_inputs.lock().remove(agent_id);
 
         let session = self.finish_ingest(agent_id, || {
             // The rows and the in-memory queue go under one hold of the queue
@@ -77,7 +75,6 @@ impl Supervisor {
         }
         self.interrupted.lock().remove(agent_id);
         self.respawn_pending.lock().remove(agent_id);
-        self.heuristic_idle.lock().remove(agent_id);
         self.provider_runs.lock().remove(agent_id);
         self.statuses.lock().remove(agent_id);
         Ok(session)
@@ -181,7 +178,7 @@ mod tests {
             .entry(AGENT.into())
             .or_default()
             .push(json!({"type": "assistant"}));
-        for flags in [&sup.interrupted, &sup.respawn_pending, &sup.heuristic_idle] {
+        for flags in [&sup.interrupted, &sup.respawn_pending] {
             flags.lock().insert(AGENT.into());
         }
         let gen = sup.generations.lock().get(AGENT).copied().unwrap_or(0);
@@ -221,7 +218,7 @@ mod tests {
         let live = sup.read_live_turn(AGENT);
         assert!(live.events.is_empty());
         assert_eq!(live.next_seq, 1, "the event count goes on");
-        for flags in [&sup.interrupted, &sup.respawn_pending, &sup.heuristic_idle] {
+        for flags in [&sup.interrupted, &sup.respawn_pending] {
             assert!(!flags.lock().contains(AGENT));
         }
         assert_eq!(sup.statuses.lock().get(AGENT), None);

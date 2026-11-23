@@ -1488,7 +1488,6 @@ fn launch_ctx<'a>(
         rpc_dir: Path::new(OWN_RPC),
         cwd,
         home: Path::new(HOME),
-        interactive: true,
         blackboard: None,
         account_dir: None,
         oauth_token: None,
@@ -1870,9 +1869,9 @@ fn a_confined_launch_renders_the_view_it_was_given() {
 }
 
 /// An agent's launcher is ssh running the launch's command, which names the
-/// process's args file: over the box's shared connection, with a tty only for
-/// the PTY view. A command too long for that connection (a view of very many
-/// paths) takes one of its own.
+/// process's args file: over the box's shared connection, without a tty. A
+/// command too long for that connection (a view of very many paths) takes one
+/// of its own.
 #[test]
 fn an_agent_launch_shares_the_box_connection_unless_its_command_is_long() {
     let launch_id = "8a0c4f2e-1d3b-4c5a-9e7f-0123456789ab";
@@ -1897,12 +1896,8 @@ fn an_agent_launch_shares_the_box_connection_unless_its_command_is_long() {
     );
     assert!(remote.len() < super::executor::SHARED_CONNECTION_COMMAND_MAX);
     assert_eq!(
-        super::agent_launcher(config, false, &args_file, &command),
+        super::agent_launcher(config, &args_file, &command),
         ["-F", "/b/ssh_config", "-T", "box", remote.as_str()]
-    );
-    assert_eq!(
-        super::agent_launcher(config, true, &args_file, &command),
-        ["-F", "/b/ssh_config", "-tt", "box", remote.as_str()]
     );
 
     let view = super::ConfinedView {
@@ -1913,7 +1908,7 @@ fn an_agent_launch_shares_the_box_connection_unless_its_command_is_long() {
         ..Default::default()
     };
     let long = super::agent_remote_command(&tree, &env_file, Some(&view), claude);
-    let launcher = super::agent_launcher(config, false, &args_file, &long);
+    let launcher = super::agent_launcher(config, &args_file, &long);
     assert!(launcher.last().unwrap().len() > super::executor::SHARED_CONNECTION_COMMAND_MAX);
     assert_eq!(&launcher[..5], ["-F", "/b/ssh_config", "-S", "none", "-T"]);
 }

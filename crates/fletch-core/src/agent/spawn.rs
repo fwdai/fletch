@@ -8,20 +8,19 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::exec_session::{ExecCallbacks, ExecExit, ExecSession, ExecSpawn};
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
-use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
 use crate::sandbox::{
     AgentLaunchCtx, EngineKind, EnvDelivery, KillGuard, LaunchPlan, SandboxEngine, TurnPrep,
 };
 
 use super::accounts;
-use super::args::{prepare_managed_args, prepare_pty_args};
-use super::capabilities::{mcp_delivery, per_turn_descriptor};
+use super::args::prepare_managed_args;
+use super::capabilities::mcp_delivery;
 use super::codex_home;
 use super::host_login;
 use super::host_login::claude::AccessToken;
 use super::probe::resolve_agent_bin;
-use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, PtyAgent, TurnArgs};
+use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, TurnArgs};
 
 /// Parameters for spawning a per-turn runner. Unlike `SpawnSpec` there's
 /// no sandbox profile (the agent sandboxes itself) and the session id is
@@ -111,12 +110,11 @@ pub struct SpawnSpec<'a> {
     pub source_repos: &'a [PathBuf],
     pub session_id: &'a str,
     /// How claude attaches to `session_id`: fresh until its transcript holds a
-    /// message, resumed from then on (view switch, respawn, restore). Per-turn
-    /// agents' native view always resumes and ignores it.
+    /// message, resumed from then on (respawn, restore).
     pub start: SessionStart,
     /// Claude's session-level effort (`--effort <level>`), chosen at session
     /// creation and persisted on the `AgentRecord`. Applied on every spawn
-    /// (fresh, view-switch, resume) so it sticks for the session. `None` =
+    /// (fresh, resume) so it sticks for the session. `None` =
     /// no selection; claude uses its own default. Ignored by per-turn agents,
     /// which take effort per-turn via their `thinking` build-args instead.
     pub effort: Option<&'a str>,
@@ -137,10 +135,8 @@ pub struct SpawnSpec<'a> {
     pub mcp_servers: &'a [crate::agent_profile::McpServerSnapshot],
     /// The agent's RPC mailbox dir, exposed to the child as `FLETCH_RPC_DIR`.
     pub rpc_dir: PathBuf,
-    pub cols: u16,
-    pub rows: u16,
     /// Sandbox engine stamped on the agent's record at creation and reused on
-    /// every subsequent spawn (fresh, view-switch, resume), so a settings
+    /// every subsequent spawn (fresh, resume), so a settings
     /// change never re-engines an existing agent (see `supervisor::lifecycle`).
     pub engine: EngineKind,
     /// Provider account stamped on the agent's record at creation and reused on
@@ -335,7 +331,7 @@ impl CodexHome {
 /// points at it. An empty delivery when the provider has no MCP surface, which
 /// is exactly the "snapshot not consumed" behavior those providers had before.
 ///
-/// Called on every launch path (fresh, resume, view-switch) rather than
+/// Called on every launch path (fresh, resume) rather than
 /// persisted, so a config file is always regenerated from the current snapshot
 /// — the same reasoning as `write_claude_mcp_config` and the skill index.
 fn resolve_mcp(
@@ -366,212 +362,6 @@ struct ExecLaunch<'a> {
 }
 
 impl Agent {
-    pub fn spawn_pty<F, G>(spec: SpawnSpec<'_>, on_output: F, on_exit: G) -> Result<Self>
-    where
-        F: Fn(Vec<u8>) + Send + 'static,
-        G: Fn(PtyExit) + Send + 'static,
-    {
-        let home =
-            dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let engine = sandbox::engine_for_agent(spec.engine, spec.agent_id)?;
-        let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
-        let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
-        let agent_args = prepare_pty_args(&spec, &mcp.args);
-        let mut account = account_launch("claude", spec.account)?;
-
-        let ctx = AgentLaunchCtx {
-            agent_id: spec.agent_id,
-            project_id: spec.project_id,
-            provider: "claude",
-            writable_root: &spec.sandbox_root,
-            source_repos: spec.source_repos,
-            rpc_dir: &spec.rpc_dir,
-            cwd: &spec.cwd,
-            home: &home,
-            interactive: true,
-            blackboard: spec.blackboard,
-            account_dir: account.dir.as_deref(),
-            oauth_token: spec.oauth_token,
-            codex_home: None,
-            adopted_read_only: spec.adopted_read_only,
-            folder_grants: spec.folder_grants,
-        };
-        let LaunchPlan {
-            program,
-            launcher_args,
-            env: launch_env,
-            env_remove,
-            env_delivery,
-            // A long-lived session: its credential is delivered once, at launch.
-            before_turn: _,
-            after_exit,
-            kill,
-            claude_thinking_summaries: _,
-        } = engine.launch_agent(&ctx, &claude)?;
-        // Released on any failure before the session owns it (`KillGuard`).
-        let kill = KillGuard::new(kill);
-        account.unset.extend(env_remove);
-        let args = launcher_args.for_process(&agent_args)?;
-        let mut env = launch_env;
-        env.extend(rpc_env(&spec.rpc_dir));
-        env.extend(mcp.env);
-        let env = launcher_env(engine.as_ref(), spec.agent_id, &env_delivery, env)?;
-
-        tracing::info!(
-            agent_id = %spec.agent_id,
-            session = %spec.session_id,
-            start = spec.start.label(),
-            cwd = %spec.cwd.display(),
-            sandbox_root = %spec.sandbox_root.display(),
-            argv = ?args,
-            "spawning sandboxed pty agent"
-        );
-
-        let pty = kill.start(|kill_plan| {
-            PtySession::spawn(
-                PtySpawn {
-                    program: &program,
-                    args: &args,
-                    cwd: &spec.cwd,
-                    env: &env,
-                    cols: spec.cols,
-                    rows: spec.rows,
-                    env_remove: &account.unset,
-                    kill_plan,
-                    after_exit,
-                },
-                on_output,
-                on_exit,
-            )
-        })?;
-
-        Ok(Self::Pty(PtyAgent {
-            pty,
-            login_expires_at_ms: spec.oauth_token.map(AccessToken::expires_at_ms),
-        }))
-    }
-
-    /// Launch a per-turn agent's interactive TUI in a PTY — the native view
-    /// for codex/cursor/opencode/pi. Unlike claude's `spawn_pty`, the agent
-    /// binary runs directly (no `sandbox-exec`): these agents self-sandbox.
-    /// The session is always resumed (`spec.start` is ignored); the supervisor
-    /// only routes a per-turn agent here once it has an established session
-    /// id, so the TUI continues the same conversation the Custom view built.
-    pub fn spawn_pty_native<F, G>(
-        spec: SpawnSpec<'_>,
-        provider: &str,
-        on_output: F,
-        on_exit: G,
-    ) -> Result<Self>
-    where
-        F: Fn(Vec<u8>) + Send + 'static,
-        G: Fn(PtyExit) + Send + 'static,
-    {
-        let desc = per_turn_descriptor(provider)
-            .ok_or_else(|| Error::Other(format!("no per-turn descriptor for `{provider}`")))?;
-        let home =
-            dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-        let engine = sandbox::engine_for_agent(spec.engine, spec.agent_id)?;
-        // In a box this is the tools disk's bin; under seatbelt the
-        // host-resolved path — same decision claude makes.
-        let bin = agent_bin_for(desc.id, desc.bin, desc.label, engine.as_ref(), &home)?;
-        // Provider MCP delivery, rebuilt from the session's snapshot so the TUI
-        // resumes with the same tool set the Custom-view turns had.
-        let mcp = resolve_mcp(provider, spec.mcp_servers, &spec.sandbox_root)?;
-        let agent_args = (desc.pty_args)(
-            Some(spec.session_id),
-            spec.model,
-            spec.instructions,
-            &mcp.args,
-        );
-        let mut account = account_launch(provider, spec.account)?;
-        // The TUI is one long process and gets its credential once, here: a
-        // TUI left open past the access token's expiry has to be reopened.
-        let codex = CodexHome::prepare(
-            provider,
-            spec.agent_id,
-            account.dir.as_deref(),
-            &home,
-            Some(spec.session_id),
-        )?;
-
-        // Unified sandbox: run the agent's TUI under the sandbox engine (the
-        // agent's own sandbox is disabled in its arg builder), so per-turn
-        // agents are confined exactly like claude.
-        let ctx = AgentLaunchCtx {
-            agent_id: spec.agent_id,
-            project_id: spec.project_id,
-            provider,
-            writable_root: &spec.sandbox_root,
-            source_repos: spec.source_repos,
-            rpc_dir: &spec.rpc_dir,
-            cwd: &spec.cwd,
-            home: &home,
-            interactive: true,
-            blackboard: spec.blackboard,
-            account_dir: account.dir.as_deref(),
-            oauth_token: None,
-            codex_home: codex.as_ref().map(|c| c.overlay.as_path()),
-            adopted_read_only: spec.adopted_read_only,
-            folder_grants: spec.folder_grants,
-        };
-        let LaunchPlan {
-            program,
-            launcher_args,
-            env: launch_env,
-            env_remove,
-            env_delivery,
-            // The TUI is one long process: its credential is delivered once.
-            before_turn: _,
-            after_exit,
-            kill,
-            claude_thinking_summaries: _,
-        } = engine.launch_agent(&ctx, &bin)?;
-        // Released on any failure before the session owns it (`KillGuard`).
-        let kill = KillGuard::new(kill);
-        account.unset.extend(env_remove);
-        let args = launcher_args.for_process(&agent_args)?;
-        let mut env = launch_env;
-        env.extend(rpc_env(&spec.rpc_dir));
-        env.extend(mcp.env);
-        env.extend(codex.as_ref().map(CodexHome::env));
-        let env = launcher_env(engine.as_ref(), spec.agent_id, &env_delivery, env)?;
-
-        tracing::info!(
-            agent_id = %spec.agent_id,
-            provider = %provider,
-            session = %spec.session_id,
-            cwd = %spec.cwd.display(),
-            sandbox_root = %spec.sandbox_root.display(),
-            bin = %bin,
-            argv = ?args,
-            "spawning sandboxed native pty per-turn agent"
-        );
-
-        let pty = kill.start(|kill_plan| {
-            PtySession::spawn(
-                PtySpawn {
-                    program: &program,
-                    args: &args,
-                    cwd: &spec.cwd,
-                    env: &env,
-                    cols: spec.cols,
-                    rows: spec.rows,
-                    env_remove: &account.unset,
-                    kill_plan,
-                    after_exit,
-                },
-                on_output,
-                on_exit,
-            )
-        })?;
-
-        Ok(Self::Pty(PtyAgent {
-            pty,
-            login_expires_at_ms: None,
-        }))
-    }
-
     pub fn spawn_managed<F, G>(spec: SpawnSpec<'_>, on_event: F, on_exit: G) -> Result<Self>
     where
         F: Fn(Value) + Send + 'static,
@@ -593,7 +383,6 @@ impl Agent {
             rpc_dir: &spec.rpc_dir,
             cwd: &spec.cwd,
             home: &home,
-            interactive: false,
             blackboard: spec.blackboard,
             account_dir: account.dir.as_deref(),
             oauth_token: spec.oauth_token,
@@ -797,7 +586,6 @@ impl Agent {
             rpc_dir: &spec.rpc_dir,
             cwd: &spec.cwd,
             home: &home,
-            interactive: false,
             blackboard: spec.blackboard.as_deref(),
             account_dir: account.dir.as_deref(),
             oauth_token: None,
@@ -865,24 +653,11 @@ impl Agent {
         }))
     }
 
-    pub fn write_pty(&self, bytes: &[u8]) -> Result<()> {
-        match self {
-            Self::Pty(a) => a.pty.write(bytes),
-            Self::Managed(_) | Self::PerTurn(_) => {
-                Err(Error::Other("write_pty called on a managed agent".into()))
-            }
-        }
-    }
-
     /// Deliver a user turn. `model`/`effort` are the session's current config,
     /// resolved from the record at dispatch (see `deliver_user_message`) and
     /// used only by per-turn runners, which bake them into that turn's argv.
     /// claude (Managed) ignores them — its config is fixed on the persistent
     /// process at spawn and changed via a session-preserving respawn instead.
-    /// The native (Pty) view has no structured input channel, so a message is
-    /// typed into the TUI exactly as a user would — clearing whatever was in
-    /// the editor first (see [`pty_input_keystrokes`]); model/effort are
-    /// likewise fixed on its running process.
     pub fn send_user_message(
         &self,
         text: &str,
@@ -895,7 +670,6 @@ impl Agent {
             Self::PerTurn(a) => a
                 .session
                 .send_user_message(text, attachments, model, effort),
-            Self::Pty(a) => a.pty.write(&pty_input_keystrokes(text, attachments)),
         }
     }
 
@@ -904,26 +678,25 @@ impl Agent {
     /// account with no host login).
     pub fn login_expires_at_ms(&self) -> Option<i64> {
         match self {
-            Self::Pty(a) => a.login_expires_at_ms,
             Self::Managed(a) => a.login_expires_at_ms,
             Self::PerTurn(_) => None,
         }
     }
 
     /// True while a turn is paused on a held permission prompt. Only the managed
-    /// (Claude stream-json) transport can pause this way; per-turn and PTY
-    /// agents run fully auto-approved and never gate.
+    /// (Claude stream-json) transport can pause this way; per-turn agents run
+    /// fully auto-approved and never gate.
     pub fn is_tool_gated(&self) -> bool {
         match self {
             Self::Managed(a) => a.session.is_tool_gated(),
-            Self::PerTurn(_) | Self::Pty(_) => false,
+            Self::PerTurn(_) => false,
         }
     }
 
     /// Answer a held user-input prompt (`AskUserQuestion` / `ExitPlanMode`) by
     /// delivering the user's selection as a control response. Only the managed
-    /// (Claude stream-json) transport pauses on tools this way; per-turn and
-    /// PTY agents run fully auto-approved and never surface such a prompt.
+    /// (Claude stream-json) transport pauses on tools this way; per-turn
+    /// agents run fully auto-approved and never surface such a prompt.
     pub fn answer_tool_use(
         &self,
         request_id: &str,
@@ -936,32 +709,22 @@ impl Agent {
                 a.session
                     .answer_tool_use(request_id, updated_input, behavior, message)
             }
-            Self::PerTurn(_) | Self::Pty(_) => Err(Error::Other(
+            Self::PerTurn(_) => Err(Error::Other(
                 "answer_tool_use is only supported for managed agents".into(),
             )),
         }
     }
 
-    /// Interrupt the agent's current turn without terminating the process.
-    /// For PTY agents this writes Ctrl+C; for managed agents this sends SIGINT.
+    /// Interrupt the agent's current turn (SIGINT) without tearing the
+    /// session down.
     pub fn interrupt(&self) {
         match self {
-            Self::Pty(a) => {
-                let _ = a.pty.interrupt();
-            }
             Self::Managed(a) => {
                 a.session.interrupt();
             }
             Self::PerTurn(a) => {
                 a.session.interrupt();
             }
-        }
-    }
-
-    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-        match self {
-            Self::Pty(a) => a.pty.resize(cols, rows),
-            Self::Managed(_) | Self::PerTurn(_) => Ok(()),
         }
     }
 
@@ -973,72 +736,8 @@ impl Agent {
     /// `kill` is), and `Drop` still runs it as a last-`Arc`-drop safety net.
     pub fn shutdown(&self) -> Result<()> {
         match self {
-            Self::Pty(a) => a.pty.kill(),
             Self::Managed(a) => a.session.kill(),
             Self::PerTurn(a) => a.session.kill(),
-        }
-    }
-}
-
-/// Put the TUI's line editor into a known-empty state: Ctrl-E (end of line)
-/// then Ctrl-U (kill line). Correct under both readline semantics — where
-/// Ctrl-U clears the whole line the Ctrl-E is a harmless no-op, and where it
-/// only kills back to the cursor, Ctrl-E has already moved the cursor to the
-/// end. `NativeInputTracker` models 0x15 as a line clear for the same reason.
-const CLEAR_LINE: &[u8] = &[0x05, 0x15];
-
-/// Render an app-originated message as the exact keystrokes a user would type
-/// into an agent's TUI: clear the editor, type one line, submit with CR.
-///
-/// Three ways this can otherwise submit something other than what we recorded
-/// as the turn — all of them make the agent run a conversation that diverges
-/// from `session_user_turns`:
-///
-/// 1. **The editor is not empty.** A half-typed prompt may be sitting at the
-///    prompt when a git-action trigger or a queued follow-up is delivered.
-///    Typing on top of it submits `<their draft><our message>`, so the editor
-///    is cleared first. (That discards the draft — unavoidable, and the right
-///    trade for "send this message now"; the app also drops its mirror of it,
-///    see `Supervisor::reset_native_input`.)
-/// 2. **Embedded newlines submit early.** A TUI reads LF/CR as "send now", so
-///    an unflattened multi-line prompt arrives as several truncated turns
-///    instead of one.
-/// 3. **Other control bytes steer the TUI rather than entering it.** Ctrl-C
-///    interrupts, ESC opens modes, Ctrl-U clears. These are dropped — in the
-///    message *and* in attachment paths, which are ordinary bytes on Unix and
-///    may legally contain a newline or a control character.
-pub(super) fn pty_input_keystrokes(text: &str, attachments: &[String]) -> Vec<u8> {
-    let mut line = String::new();
-    push_typed(&mut line, text);
-    for path in attachments {
-        // Only separate from preceding content — a message that is nothing but
-        // an attachment must not submit a leading space.
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        push_typed(&mut line, path);
-    }
-
-    let mut out = Vec::with_capacity(CLEAR_LINE.len() + line.len() + 1);
-    out.extend_from_slice(CLEAR_LINE);
-    out.extend_from_slice(line.as_bytes());
-    out.push(b'\r'); // the one and only submit
-    out
-}
-
-/// Append `s` as literal typing. Newlines become a single space so words stay
-/// separated (a run of them collapses rather than padding the prompt), and every
-/// other control character is dropped.
-fn push_typed(out: &mut String, s: &str) {
-    for ch in s.chars() {
-        match ch {
-            '\r' | '\n' => {
-                if !out.ends_with(' ') && !out.is_empty() {
-                    out.push(' ');
-                }
-            }
-            c if c.is_control() => {}
-            c => out.push(c),
         }
     }
 }
@@ -1238,7 +937,6 @@ mod tests {
             rpc_dir: &rpc,
             cwd: &cwd,
             home: &home,
-            interactive: false,
             blackboard: None,
             account_dir: Some(&source),
             oauth_token: None,

@@ -348,8 +348,8 @@ impl Supervisor {
     /// Take `agent_id`'s process out of the `agents` map if it is idle. The
     /// status check and the removal happen under one `agents` lock: a send can
     /// flip an agent Idle→Running on another thread (`transition_active`
-    /// touches only `statuses`), and a keystroke into a native TUI can start a
-    /// turn at any time, so a separate check-then-remove could tear down an
+    /// touches only `statuses`), and the provider can open a turn of its own
+    /// at any time, so a separate check-then-remove could tear down an
     /// in-flight turn.
     pub(super) fn take_idle(&self, agent_id: &str, record: &AgentRecord) -> Taken {
         let mut agents = self.agents.lock();
@@ -387,7 +387,6 @@ impl Supervisor {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
-        self.native_inputs.lock().remove(agent_id);
 
         // Let the old process fully release its session before resuming it.
         self.launch(ctx, agent_id, Some(Duration::from_millis(150)))

@@ -815,24 +815,6 @@ mod tests {
         assert!(sink.events().is_empty());
     }
 
-    /// The native view is no obstacle: what it resumes is a transcript like
-    /// any other.
-    #[tokio::test]
-    async fn the_native_view_rewinds_too() {
-        let td = tempfile::tempdir().unwrap();
-        let (sup, checkout) = talked(td.path()).await;
-        let (ctx, _sink, _dir) = test_ctx();
-        sup.workspace
-            .update_agent_view(AGENT, crate::workspace::AgentView::Native)
-            .unwrap();
-
-        sup.rewind(&ctx, AGENT, "t2", RewindScope::Code, None)
-            .await
-            .unwrap();
-
-        assert_eq!(code(&checkout), "after t1");
-    }
-
     #[tokio::test]
     async fn the_code_alone_rewinds_and_its_undo_puts_it_back() {
         let td = tempfile::tempdir().unwrap();

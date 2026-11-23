@@ -253,7 +253,7 @@ fn parse_jsonl_record(line: &[u8], id_field: Option<&str>, idx: usize) -> Option
 ///   transcript) it may be half-written, so we hold it and re-read once it's
 ///   terminated — the byte offset stays before it.
 /// - For an **exited writer** (`consume_trailing == true`, i.e. a per-turn agent
-///   in Custom view that has finished the turn) the trailing line is the final,
+///   that has finished the turn) the trailing line is the final,
 ///   complete line. Cursor and Pi write their last line with no trailing
 ///   newline, so without this they'd never be ingested. We consume it *only if
 ///   it parses as JSON*, so a genuinely partial line (caught mid-write) is still

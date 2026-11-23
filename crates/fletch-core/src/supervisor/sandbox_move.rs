@@ -359,7 +359,7 @@ impl Supervisor {
     /// whether the agent had a process.
     fn take_down(&self, agent_id: &str) -> Result<bool> {
         // As a session switch takes its process: checked under the `agents`
-        // lock, since a keystroke in the native view starts a turn without
+        // lock, since a turn the provider opens on its own starts without
         // the delivery lock.
         let taken = {
             let mut agents = self.agents.lock();
@@ -375,7 +375,6 @@ impl Supervisor {
             let _ = agent.shutdown();
         }
         self.activities.lock().remove(agent_id);
-        self.native_inputs.lock().remove(agent_id);
         self.end_shell(agent_id);
         let run = self.runs.lock().remove(agent_id);
         if let Some(run) = run {

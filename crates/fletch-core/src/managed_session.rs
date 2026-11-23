@@ -1,4 +1,4 @@
-//! Non-PTY runner for "custom view" agents.
+//! The runner for claude: one persistent stream-json process per session.
 //!
 //! Launches `claude --print` with `--input-format stream-json` and
 //! `--output-format stream-json` so the app owns the input box and

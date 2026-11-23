@@ -325,22 +325,6 @@ pub(crate) fn cursor_session_id(event: &Value) -> Option<String> {
     )
 }
 
-/// Cursor: bare `cursor-agent` launches the TUI; `--force` auto-allows
-/// commands. `--resume <id>` continues a prior chat. `_extra` unused: cursor
-/// has no system-prompt slot, so the brief was prepended on the first
-/// Custom-view turn and now lives in the resumed conversation.
-pub(crate) fn cursor_pty_args(
-    session_id: Option<&str>,
-    model: Option<&str>,
-    _extra: Option<&str>,
-    _mcp_args: &[String],
-) -> Vec<String> {
-    let mut args: Vec<String> = vec!["--force".into()];
-    args.extend(model_args(model));
-    push_opt(&mut args, "--resume", session_id);
-    args
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

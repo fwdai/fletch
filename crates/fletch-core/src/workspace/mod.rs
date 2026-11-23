@@ -647,8 +647,7 @@ pub struct UserTurn {
     /// Matched `session_records.native_id`; `None` = pending or failed turn.
     pub native_id: Option<String>,
     /// Wall-clock millis when the turn flipped to Running. `None` for turns
-    /// that never started a run (native PTY turns, or rows from before timing
-    /// existed).
+    /// that never started a run, and for rows from before timing existed.
     pub started_at: Option<i64>,
     /// Wall-clock millis when the turn reached a terminal state. `None` while
     /// in flight — the live-timer signal.
@@ -711,7 +710,8 @@ impl TurnOutcome {
 
 /// Stats for a turn that `mark_user_turn_ended` just closed, returned so the
 /// caller can emit per-turn telemetry. `None` from that call means no open turn
-/// existed (resting Idle at spawn, or a native turn with no timing row).
+/// existed (resting Idle at spawn, or a turn the provider opened on its own,
+/// which has no row).
 pub struct ClosedTurn {
     /// Wall-clock run duration (`ended_at - started_at`).
     pub duration_ms: i64,

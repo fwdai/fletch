@@ -204,21 +204,6 @@ pub(crate) fn pi_session_id(event: &Value) -> Option<String> {
     gated_session_id(event, Some("session"), None, "id")
 }
 
-/// Pi: bare `pi` launches the interactive TUI (tools auto-run there).
-/// `--session <id>` resumes — same flag the Custom-view runner uses, since the
-/// versions we target (0.74.x) lack `--session-id`.
-pub(crate) fn pi_pty_args(
-    session_id: Option<&str>,
-    model: Option<&str>,
-    extra: Option<&str>,
-    _mcp_args: &[String],
-) -> Vec<String> {
-    let mut args: Vec<String> = instructions::append_system_prompt_args(extra);
-    args.extend(model_args(model));
-    push_opt(&mut args, "--session", session_id);
-    args
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,8 +293,5 @@ mod tests {
         });
         assert!(turn.args.ends_with(&["--session".into(), NEW.into()]));
         assert_eq!(turn.stdin.as_deref(), Some("go on"));
-        assert!(
-            pi_pty_args(Some(NEW), None, None, &[]).ends_with(&["--session".into(), NEW.into()])
-        );
     }
 }

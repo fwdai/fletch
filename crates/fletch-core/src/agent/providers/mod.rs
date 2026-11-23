@@ -1,5 +1,5 @@
 //! Per-provider transcript readers and CLI arg builders. Each submodule holds
-//! one provider's `locate`/`read`/`build_args`/`pty_args`/`session_id` fns,
+//! one provider's `locate`/`read`/`build_args`/`session_id` fns,
 //! wired into the `PER_TURN_AGENTS` table in `super::capabilities`.
 
 pub(crate) mod antigravity;

@@ -8,14 +8,11 @@
 //! app-supplied guidance, so the *delivery* is per-agent while the *text* is
 //! shared:
 //!
-//! - **Claude** — `--append-system-prompt-file <path>` in the custom view, the
-//!   text in a file of the session's profile dir that every spawn rewrites
+//! - **Claude** — `--append-system-prompt-file <path>`, the text in a file of
+//!   the session's profile dir that every spawn rewrites
 //!   (`agent_profile::write_system_prompt`): one argument can be at most
 //!   128 KiB on Linux, inside a box included, and the text with a forked
-//!   conversation's context can come near that. Claude's native (PTY) view
-//!   keeps `--append-system-prompt <text>`: claude long documented the file
-//!   form as print-mode only, and a TUI that ignored it would lose the
-//!   instructions without a word. Either way the text appends to the real
+//!   conversation's context can come near that. The text appends to the real
 //!   system prompt, re-passed every spawn, one non-accumulating copy.
 //! - **Pi** — `--append-system-prompt <text>`. Pi also takes a path there, but
 //!   reads a path it cannot see as the text itself, silently.

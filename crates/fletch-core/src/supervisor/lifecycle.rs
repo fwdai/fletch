@@ -1,15 +1,15 @@
-//! Agent process lifecycle: spawning, resuming, view switches, binary-swap
-//! respawns, and the shared output/exit/watchdog handlers.
+//! Agent process lifecycle: spawning, resuming, binary-swap respawns, and the
+//! shared event/exit handlers.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
+use crate::activity::{Activity, ManagedActivity};
 use crate::agent::{
-    accounts, capabilities, claude_session_has_messages, per_turn_descriptor, Agent, PerTurnSpec,
-    SessionStart, SpawnSpec,
+    accounts, claude_session_has_messages, per_turn_descriptor, Agent, PerTurnSpec, SessionStart,
+    SpawnSpec,
 };
 use crate::error::{Error, Result};
 use crate::git;
@@ -25,17 +25,13 @@ use crate::workspace::{
 };
 
 use super::events::{
-    emit_agent_event, emit_agent_output, emit_effort, emit_folder_grants, emit_model,
-    emit_repo_added, emit_spawn_progress, emit_view, emit_workspace_changed, SpawnStage,
+    emit_agent_event, emit_effort, emit_folder_grants, emit_model, emit_repo_added,
+    emit_spawn_progress, emit_workspace_changed, SpawnStage,
 };
-use super::messaging::{
-    drain_message_queue, flush_queued, mark_user_turn_started, on_first_user_message,
-};
+use super::messaging::{drain_message_queue, flush_queued, mark_user_turn_started};
 use super::rpc_watch::spawn_rpc_watcher;
-use super::session_sync::{should_live_sync, spawn_live_transcript_sync};
 use super::{transition_active, Launch, Supervisor};
 
-const WATCHDOG_TICK: Duration = Duration::from_millis(500);
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The account a new agent of `provider` is stamped with: the active-account
@@ -202,8 +198,8 @@ async fn discard_failed_spawn(agent_id: &str, checkout: Option<&Path>, parent_di
 /// Both paths are keyed by agent id, not by attempt, so an *abandoned* spawn
 /// task that deletes them unconditionally deletes whatever a later attempt put
 /// there: the agent times out, the user resumes it (`resume_agent`,
-/// `switch_view`, `respawn_agent_preserving_session`, `restore_agent` — all of
-/// which reuse the same checkout), and the stale task then removes the live
+/// `respawn_agent_preserving_session`, `restore_agent` — all of which reuse
+/// the same checkout), and the stale task then removes the live
 /// workspace out from under the running process.
 ///
 /// So the ownership check happens under the lifecycle lock, the same lock every
@@ -299,23 +295,13 @@ struct ProcessLaunch {
     adopted_read_only: bool,
 }
 
-/// Pick the turn-end detector for an agent by provider class and view, and
-/// reset it when this spawn begins a fresh turn.
-///
-/// Per-turn agents carry their detector in the descriptor table — but only for
-/// the Custom (exec/JSON) view. In the native view they run their interactive
-/// TUI in a PTY with no JSON stream, so turn-end is detected by silence, the
-/// same as claude's native view. Claude (no descriptor) picks by view too.
+/// Pick the turn-end detector for an agent by provider class, and reset it
+/// when this spawn begins a fresh turn. Per-turn agents carry their detector
+/// in the descriptor table; claude (no descriptor) has its own.
 fn build_activity(record: &AgentRecord, start: &SessionStart) -> Box<dyn Activity> {
     let mut activity: Box<dyn Activity> = match per_turn_descriptor(&record.provider) {
-        Some(desc) => match record.view {
-            AgentView::Native => Box::new(ClaudeNativeActivity::new()),
-            AgentView::Custom => (desc.activity)(),
-        },
-        None => match record.view {
-            AgentView::Native => Box::new(ClaudeNativeActivity::new()),
-            AgentView::Custom => Box::new(ManagedActivity::claude()),
-        },
+        Some(desc) => (desc.activity)(),
+        None => Box::new(ManagedActivity::claude()),
     };
     if *start == SessionStart::Fresh {
         activity.reset_for_new_turn();
@@ -599,15 +585,6 @@ impl Supervisor {
 
         sandbox::ensure_supports_provider(engine_kind, &provider)?;
 
-        // Only agents with a wired native (PTY/TUI) view can honor a Native
-        // request; the rest fall back to the structured Custom view. Native
-        // views are being rolled out per agent (see `AgentCapabilities`).
-        let view = if capabilities(&provider).native_view {
-            view
-        } else {
-            AgentView::Custom
-        };
-
         // The name the draft already showed in the sidebar locks in rather
         // than being regenerated; an empty one (the draft-less spawn path) is
         // drawn with the row. The id is always chosen there, under the same
@@ -673,7 +650,7 @@ impl Supervisor {
         // re-applies it on every spawn. Per-turn agents ignore it at spawn.
         record.effort = effort;
         // Session-level model selection. `None` preserves the provider CLI
-        // default; selected values are reapplied on resume and view switches.
+        // default; selected values are reapplied on resume.
         record.model = model;
         // Custom agent identity + snapshotted brief. Both `None` for a plain
         // built-in spawn. The brief is re-injected on every spawn/resume.
@@ -687,11 +664,11 @@ impl Supervisor {
         }
         record.custom_agent_id = custom_agent_id;
         // Skill/MCP snapshots, persisted like the brief so every process spawn
-        // (fresh, view-switch, resume) re-materializes the same profile.
+        // (fresh, resume) re-materializes the same profile.
         record.skills = skills;
         record.mcp_servers = mcp_servers;
         // Stamp the sandbox engine at creation: the agent keeps this engine
-        // for life (respawn, view-switch, restore), so a later settings change
+        // for life (respawn, restore), so a later settings change
         // never re-engines it — see `spawn_agent_process`, which reuses the
         // stored value instead of the live setting.
         record.sandbox_engine = Some(engine_kind.as_setting().to_string());
@@ -1389,9 +1366,7 @@ impl Supervisor {
             return Err(launch_ended());
         }
 
-        // A fresh process/view must never inherit a recoverable-idle marker
-        // from the native process it replaced, nor a run the old one opened.
-        self.heuristic_idle.lock().remove(&agent_id_str);
+        // A fresh process must never inherit a run the old one opened.
         self.provider_runs.lock().remove(&agent_id_str);
         self.activities
             .lock()
@@ -1473,24 +1448,6 @@ impl Supervisor {
             drain_message_queue(self, ctx, &agent_id_str);
         }
 
-        // Only the native view needs a clock to end a turn: its PTY has no
-        // terminal event, so silence is the signal. Event-stream views move
-        // the status from the event handler itself (`make_event_handler`) or
-        // from the per-turn process exit (`on_turn_exit`).
-        if matches!(record.view, AgentView::Native) {
-            spawn_turn_watchdog(self.clone(), ctx.clone(), agent_id_str.clone(), my_gen);
-        }
-
-        // A native-view agent drives its own TUI in a PTY, so there's no event
-        // stream to render progress from — without this the panel stays a raw
-        // terminal until the turn-end sync lands. Poll its on-disk transcript
-        // instead so structure (tool cards, thinking) appears while it works.
-        // Self-gating: a no-op for the custom view and for providers whose
-        // reader can't tail cheaply.
-        if should_live_sync(&record.provider, record.view) {
-            spawn_live_transcript_sync(self.clone(), ctx.clone(), agent_id_str.clone(), my_gen);
-        }
-
         // Watch this agent's RPC mailbox for the life of this generation,
         // executing allowlisted ops and writing responses back.
         spawn_rpc_watcher(
@@ -1541,7 +1498,7 @@ impl Supervisor {
     }
 
     /// Spawn the agent's child process, dispatching on provider class
-    /// (per-turn vs. claude) and view (Native PTY vs. Custom managed/exec).
+    /// (per-turn vs. claude).
     /// Returns the live `Agent` handle for the supervisor to track.
     async fn spawn_agent_process(
         self: &Arc<Self>,
@@ -1564,7 +1521,7 @@ impl Supervisor {
         let agent_id_str = agent_id.to_string();
 
         let engine = sandbox::stamped_engine(record);
-        // Re-checked on every launch path (resume, view switch, binary-swap
+        // Re-checked on every launch path (resume, binary-swap
         // respawn), not just fresh spawns: not every provider runs in a box.
         sandbox::ensure_supports_provider(engine, &record.provider)?;
         // Before the profile is materialized under `sandbox_root` below, so
@@ -1705,81 +1662,34 @@ impl Supervisor {
         let folder_grants = crate::workspace::folder_grants::present(&record.folder_grants);
 
         if per_turn {
-            match record.view {
-                // Native view: launch the agent's interactive TUI in a PTY,
-                // resuming the session the Custom view established. The
-                // switch_view guard guarantees a session id is present before
-                // we ever route a per-turn agent here.
-                AgentView::Native => {
-                    let session_id = session_id.as_deref().ok_or_else(|| {
-                        Error::Other("native view requires an established session id".into())
-                    })?;
-                    let spec = SpawnSpec {
-                        agent_id: &agent_id_str,
-                        project_id: &record.project_id,
-                        cwd,
-                        sandbox_root,
-                        source_repos: &source_repos,
-                        session_id,
-                        // Per-turn native always resumes (the agent built its
-                        // session in the Custom view first).
-                        start: SessionStart::Resume,
-                        // Per-turn agents take effort per-turn (build-args),
-                        // not at spawn.
-                        effort: None,
-                        model: record.model.as_deref(),
-                        instructions: instructions.as_deref(),
-                        mcp_servers: &mcp_servers,
-                        codegraph_available,
-                        rpc_dir,
-                        cols: 120,
-                        rows: 32,
-                        engine,
-                        account: record.account.as_deref(),
-                        oauth_token: None,
-                        blackboard: blackboard.as_deref(),
-                        adopted_read_only,
-                        folder_grants: &folder_grants,
-                    };
-                    spawn_pty_per_turn_agent(
-                        spec,
-                        record.provider.clone(),
-                        ctx.clone(),
-                        agent_id_str.clone(),
-                        self.clone(),
-                        my_gen,
-                    )
-                }
-                // Custom view: per-turn runner — no process spawns until the
-                // first user message. No sandbox profile: the agent sandboxes
-                // itself rather than running under sandbox-exec.
-                AgentView::Custom => spawn_per_turn_agent(
-                    &record.provider,
-                    PerTurnSpec {
-                        agent_id: agent_id_str.clone(),
-                        project_id: record.project_id.clone(),
-                        cwd,
-                        sandbox_root,
-                        source_repos: source_repos.clone(),
-                        session_id,
-                        // model/effort aren't spawn-time for per-turn agents:
-                        // the supervisor resolves them from the record and passes
-                        // them into each turn's dispatch (see deliver_user_message).
-                        instructions: instructions.clone(),
-                        mcp_servers: mcp_servers.clone(),
-                        rpc_dir,
-                        engine,
-                        account: record.account.clone(),
-                        blackboard: blackboard.clone(),
-                        adopted_read_only,
-                        folder_grants: folder_grants.clone(),
-                    },
-                    ctx.clone(),
-                    agent_id_str.clone(),
-                    self.clone(),
-                    my_gen,
-                ),
-            }
+            // No process spawns until the first user message. No sandbox
+            // profile here: each turn's launch is confined when it starts.
+            spawn_per_turn_agent(
+                &record.provider,
+                PerTurnSpec {
+                    agent_id: agent_id_str.clone(),
+                    project_id: record.project_id.clone(),
+                    cwd,
+                    sandbox_root,
+                    source_repos: source_repos.clone(),
+                    session_id,
+                    // model/effort aren't spawn-time for per-turn agents:
+                    // the supervisor resolves them from the record and passes
+                    // them into each turn's dispatch (see deliver_user_message).
+                    instructions: instructions.clone(),
+                    mcp_servers: mcp_servers.clone(),
+                    rpc_dir,
+                    engine,
+                    account: record.account.clone(),
+                    blackboard: blackboard.clone(),
+                    adopted_read_only,
+                    folder_grants: folder_grants.clone(),
+                },
+                ctx.clone(),
+                agent_id_str.clone(),
+                self.clone(),
+                my_gen,
+            )
         } else {
             let session_id = session_id
                 .as_deref()
@@ -1799,15 +1709,13 @@ impl Supervisor {
                 session_id,
                 start,
                 // Claude's session-level effort, persisted on the record so it
-                // re-applies on every spawn (fresh, view-switch, resume).
+                // re-applies on every spawn (fresh, resume).
                 effort: record.effort.as_deref(),
                 model: record.model.as_deref(),
                 instructions: instructions.as_deref(),
                 mcp_servers: &mcp_servers,
                 codegraph_available,
                 rpc_dir,
-                cols: 120,
-                rows: 32,
                 engine,
                 // The account stamped at creation, never the live setting.
                 account: record.account.as_deref(),
@@ -1816,22 +1724,13 @@ impl Supervisor {
                 adopted_read_only,
                 folder_grants: &folder_grants,
             };
-            let spawned = match record.view {
-                AgentView::Native => spawn_pty_agent(
-                    spec,
-                    ctx.clone(),
-                    agent_id_str.clone(),
-                    self.clone(),
-                    my_gen,
-                ),
-                AgentView::Custom => spawn_managed_agent(
-                    spec,
-                    ctx.clone(),
-                    agent_id_str.clone(),
-                    self.clone(),
-                    my_gen,
-                ),
-            };
+            let spawned = spawn_managed_agent(
+                spec,
+                ctx.clone(),
+                agent_id_str.clone(),
+                self.clone(),
+                my_gen,
+            );
             if spawned.is_ok() {
                 self.launch_succeeded(agent_id);
             }
@@ -1853,87 +1752,6 @@ impl Supervisor {
         // launch (`AgentRecord::launch_session`).
         record.launch_session()?;
         self.launch(&ctx, agent_id, None).await
-    }
-
-    pub fn write_to_agent(
-        self: Arc<Self>,
-        ctx: &Arc<EngineCtx>,
-        agent_id: &str,
-        bytes: &[u8],
-    ) -> Result<()> {
-        let project_id = self.workspace.agent(agent_id)?.project_id;
-        let deletion_guard = self.deleting_projects.lock();
-        if deletion_guard.contains(&project_id) {
-            return Err(Error::Other("project deletion is in progress".into()));
-        }
-        // A keystroke is input too: refused once an archive holds the agent, and
-        // it keeps the archive out while the bytes land (`Supervisor::open_route`).
-        let _route = self.open_route(agent_id)?;
-        self.live_agent(agent_id)?.write_pty(bytes)?;
-        let submitted = self
-            .native_inputs
-            .lock()
-            .entry(agent_id.to_string())
-            .or_default()
-            .observe(bytes);
-        for submitted in submitted {
-            mark_user_turn_started(&self, ctx, agent_id, None);
-            on_first_user_message(self.clone(), ctx.clone(), agent_id.to_string(), submitted);
-        }
-        drop(deletion_guard);
-        Ok(())
-    }
-
-    pub fn resize_agent(&self, agent_id: &str, cols: u16, rows: u16) -> Result<()> {
-        self.live_agent(agent_id)?.resize(cols, rows)
-    }
-
-    pub async fn switch_view(
-        self: Arc<Self>,
-        ctx: Arc<EngineCtx>,
-        agent_id: &str,
-        new_view: AgentView,
-    ) -> Result<()> {
-        // Kept for the launch below; a failure surfaces there.
-        let _ = self.prefetch_login(agent_id).await;
-        let _lifecycle_guard = self.agent_lifecycle.lock().await;
-        let record = self.workspace.agent(agent_id)?;
-        if record.view == new_view {
-            return Ok(());
-        }
-        // Reject switching to native for agents whose native view isn't
-        // wired yet (rolling out per agent — see `AgentCapabilities`).
-        if new_view == AgentView::Native && !capabilities(&record.provider).native_view {
-            return Err(Error::Other(
-                "The native view isn't available for this agent yet".into(),
-            ));
-        }
-
-        // Per-turn agents assign their own session id on the first turn, and
-        // the native TUI gives us no event stream to capture it. So we only
-        // allow switching to native once that id exists — the TUI then
-        // resumes the same session, and switching back to Custom can resume
-        // it too. (claude generates its id up front, so this never blocks it.)
-        if new_view == AgentView::Native
-            && is_per_turn_provider(&record.provider)
-            && record.session_id.is_none()
-        {
-            return Err(Error::Other(
-                "Switch to the native view after the agent's first turn".into(),
-            ));
-        }
-
-        let taken = self.agents.lock().remove(agent_id);
-        if let Some(agent) = taken {
-            let _ = agent.shutdown();
-        }
-        self.activities.lock().remove(agent_id);
-        self.native_inputs.lock().remove(agent_id);
-
-        self.workspace.update_agent_view(agent_id, new_view)?;
-        emit_view(ctx.sink.as_ref(), agent_id, new_view);
-        self.launch(&ctx, agent_id, Some(Duration::from_millis(150)))
-            .await
     }
 
     /// Change a session's reasoning effort mid-conversation. Persists the new
@@ -2136,7 +1954,7 @@ impl Supervisor {
 
     /// Respawn every live agent using `provider_id` so it picks up a freshly
     /// changed binary path. The binary is resolved only inside `start_process`
-    /// (spawn / resume / view-switch), so a live agent keeps the old binary —
+    /// (spawn / resume), so a live agent keeps the old binary —
     /// baked into its running process (claude, persistent) or frozen spawn args
     /// (per-turn) — until torn down and restarted. Callers must refresh the
     /// `bin_resolve` override registry *before* calling this so the restarted
@@ -2290,8 +2108,6 @@ impl Supervisor {
                 (agent, mid_turn)
             };
             self.activities.lock().remove(agent_id);
-            self.native_inputs.lock().remove(agent_id);
-            self.heuristic_idle.lock().remove(agent_id);
             if let Some(agent) = agent {
                 let _ = agent.shutdown();
             }
@@ -2318,49 +2134,6 @@ impl Supervisor {
 /// the agent's, and never recorded as one.
 fn launch_ended() -> Error {
     Error::Other("launch ended before its process became ready".into())
-}
-
-/// Process-exit outcomes that feed `apply_exit_if_current`. `PtyExit` and
-/// `ManagedExit` are distinct types but carry the same fields, so this trait
-/// lets `make_exit_handler` cover both spawners with one closure.
-trait ExitOutcome {
-    fn into_parts(self) -> (bool, String);
-}
-
-impl ExitOutcome for crate::pty_session::PtyExit {
-    fn into_parts(self) -> (bool, String) {
-        (self.success, self.message)
-    }
-}
-
-impl ExitOutcome for crate::managed_session::ManagedExit {
-    fn into_parts(self) -> (bool, String) {
-        (self.success, self.message)
-    }
-}
-
-/// Raw-byte output callback shared by the PTY spawners: record activity, then
-/// emit `agent:output`.
-fn make_output_handler(
-    sup: Arc<Supervisor>,
-    ctx: Arc<EngineCtx>,
-    agent_id: String,
-) -> impl Fn(Vec<u8>) + Send + Sync + 'static {
-    move |bytes: Vec<u8>| {
-        if let Some(activity) = sup.activities.lock().get_mut(&agent_id) {
-            activity.observe_bytes(&bytes);
-        }
-
-        // Native mode has no structured turn-end event, so its Idle transition
-        // is necessarily inferred from PTY silence. If bytes arrive afterwards,
-        // that inference was early: restore the live status immediately instead
-        // of leaving the sidebar idle while output continues.
-        if !bytes.is_empty() && sup.heuristic_idle.lock().remove(&agent_id) {
-            transition_active(&sup, &ctx, &agent_id, AgentStatus::Running);
-        }
-
-        emit_agent_output(ctx.sink.as_ref(), &agent_id, bytes);
-    }
 }
 
 /// What closes a turn for an agent whose output is a JSON event stream.
@@ -2445,51 +2218,17 @@ pub(super) fn make_event_handler(
     }
 }
 
-/// Process-exit callback shared by the pty/managed spawners: hand the outcome
-/// to `apply_exit_if_current`, which ignores exits from a stale generation.
-fn make_exit_handler<E: ExitOutcome>(
+/// Process-exit callback for the managed spawner: hand the outcome to
+/// `apply_exit_if_current`, which ignores exits from a stale generation.
+fn make_exit_handler(
     sup: Arc<Supervisor>,
     ctx: Arc<EngineCtx>,
     agent_id: String,
     gen: u64,
-) -> impl Fn(E) + Send + Sync + 'static {
-    move |exit: E| {
-        let (success, message) = exit.into_parts();
-        apply_exit_if_current(&sup, &ctx, &agent_id, gen, success, message);
+) -> impl Fn(crate::managed_session::ManagedExit) + Send + Sync + 'static {
+    move |exit| {
+        apply_exit_if_current(&sup, &ctx, &agent_id, gen, exit.success, exit.message);
     }
-}
-
-fn spawn_pty_agent(
-    spec: SpawnSpec<'_>,
-    ctx: Arc<EngineCtx>,
-    agent_id: String,
-    sup: Arc<Supervisor>,
-    gen: u64,
-) -> Result<Agent> {
-    Agent::spawn_pty(
-        spec,
-        make_output_handler(sup.clone(), ctx.clone(), agent_id.clone()),
-        make_exit_handler(sup, ctx, agent_id, gen),
-    )
-}
-
-/// Native (PTY/TUI) view for a per-turn agent. Same byte/exit wiring as
-/// `spawn_pty_agent` (claude), but launches the agent's own binary via
-/// `Agent::spawn_pty_native` rather than running claude under sandbox-exec.
-fn spawn_pty_per_turn_agent(
-    spec: SpawnSpec<'_>,
-    provider: String,
-    ctx: Arc<EngineCtx>,
-    agent_id: String,
-    sup: Arc<Supervisor>,
-    gen: u64,
-) -> Result<Agent> {
-    Agent::spawn_pty_native(
-        spec,
-        &provider,
-        make_output_handler(sup.clone(), ctx.clone(), agent_id.clone()),
-        make_exit_handler(sup, ctx, agent_id, gen),
-    )
 }
 
 fn spawn_managed_agent(
@@ -2534,13 +2273,13 @@ fn spawn_managed_agent(
 
 /// Build a per-turn agent (codex, cursor). Their process exits at the end
 /// of *every* turn — that's normal, not the agent dying — so unlike the
-/// pty/managed spawners we don't wire `apply_exit_if_current` (which would
+/// managed spawner we don't wire `apply_exit_if_current` (which would
 /// remove the agent from the map). Instead the per-turn exit is reported
 /// via `on_turn_exit`, which ends the turn (Idle) without tearing the
 /// agent down. This covers turns that exit without an in-band turn-end
-/// event (interrupt, crash) so the agent doesn't sit Running until the
-/// silence backstop. The session-id callback persists the id the agent
-/// assigns on its first turn so later turns (and re-attach after restart)
+/// event (interrupt, crash) so the agent doesn't sit Running forever. The
+/// session-id callback persists the id the agent assigns on its first turn so
+/// later turns (and re-attach after restart)
 /// resume it.
 fn spawn_per_turn_agent(
     provider: &str,
@@ -2587,7 +2326,7 @@ fn spawn_per_turn_agent(
         if current != gen {
             return;
         }
-        // End the turn. Idempotent with the in-band turn-end watchdog path.
+        // End the turn.
         // User Stop is an expected non-zero exit, and so is a turn the CLI
         // already reported as failed in-band (codex emits `turn.failed` for a
         // usage limit / auth / API error, then exits 1): the error is in the
@@ -2617,7 +2356,6 @@ fn spawn_per_turn_agent(
             let taken = sup_for_exit.agents.lock().remove(&id_for_exit);
             drop(taken);
             sup_for_exit.activities.lock().remove(&id_for_exit);
-            sup_for_exit.native_inputs.lock().remove(&id_for_exit);
             sup_for_exit.trigger_session_sync(ctx_for_exit.clone(), id_for_exit.clone());
             sup_for_exit.set_status(
                 &ctx_for_exit,
@@ -2634,39 +2372,6 @@ fn spawn_per_turn_agent(
     let desc = per_turn_descriptor(provider)
         .ok_or_else(|| Error::Other(format!("unknown per-turn agent provider: {provider}")))?;
     Agent::spawn_per_turn(desc, spec, on_event, on_session_id, on_turn_exit)
-}
-
-/// The native view's turn-end clock. A PTY has no terminal event, so a turn
-/// ends when the TUI's redraw stream goes quiet (`ClaudeNativeActivity`). The
-/// conclusion is a heuristic: it is marked as such in `heuristic_idle` so the
-/// output handler can revoke it the moment bytes arrive again.
-fn spawn_turn_watchdog(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: String, gen: u64) {
-    crate::host::spawn(async move {
-        loop {
-            tokio::time::sleep(WATCHDOG_TICK).await;
-
-            let current_gen = sup.generations.lock().get(&agent_id).copied().unwrap_or(0);
-            if current_gen != gen {
-                return;
-            }
-
-            let ended = sup
-                .activities
-                .lock()
-                .get(&agent_id)
-                .map(|a| a.turn_ended())
-                .unwrap_or(false);
-            if !ended {
-                continue;
-            }
-            // Bytes may land between the check above and the transition. The
-            // output handler's heuristic-idle recovery is the final authority
-            // either way, so mark before transitioning: a byte that arrives
-            // mid-handoff finds the marker and restores Running.
-            sup.heuristic_idle.lock().insert(agent_id.clone());
-            transition_active(&sup, &ctx, &agent_id, AgentStatus::Idle);
-        }
-    });
 }
 
 /// Fail `launch` if its process is still not up after [`SPAWN_TIMEOUT`].
@@ -2745,8 +2450,8 @@ fn apply_exit_if_current(
     }
 
     // The process is gone and we don't restart here (a clean exit stays Idle/
-    // resumable). Invalidate this generation so the gen-guarded turn watchdog
-    // and RPC watcher stop polling instead of spinning for the app's lifetime.
+    // resumable). Invalidate this generation so the gen-guarded RPC watcher
+    // stops polling instead of spinning for the app's lifetime.
     sup.bump_generation(agent_id);
 
     // Bind the removed handle so the `agents` guard drops before the
@@ -2754,7 +2459,6 @@ fn apply_exit_if_current(
     let taken = sup.agents.lock().remove(agent_id);
     drop(taken);
     sup.activities.lock().remove(agent_id);
-    sup.native_inputs.lock().remove(agent_id);
 
     let (status, err) = if success {
         // Clean exit means the agent is resumable — keep it Idle so the
@@ -3242,67 +2946,43 @@ mod tests {
         sup
     }
 
-    /// `agent_id`'s session in a box as the host holds it: a process that
-    /// exits 255, as ssh does when the machine goes down under it, once
-    /// `halt` exists in `machine`. Its exit goes to the supervisor's handler
-    /// as a launch's does; the receiver hears each exit once it is handled.
+    /// `agent_id`'s session in a box as the host holds it: a live process, and
+    /// the exit handler of the launch that started it.
+    struct BoxSession(Box<dyn Fn(crate::managed_session::ManagedExit)>);
+
+    impl BoxSession {
+        /// The machine goes down under the session: its ssh exits 255, and
+        /// the exit reaches the supervisor's handler as a launch's does.
+        fn machine_down(&self) {
+            (self.0)(crate::managed_session::ManagedExit {
+                success: false,
+                message: "exit status: 255".into(),
+            });
+        }
+    }
+
     fn session_in(
         sup: &Arc<Supervisor>,
         ctx: &Arc<EngineCtx>,
         agent_id: &str,
         machine: &Path,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<()> {
+    ) -> BoxSession {
         let gen = {
             let mut generations = sup.generations.lock();
             let gen = generations.entry(agent_id.to_string()).or_insert(0);
             *gen += 1;
             *gen
         };
-        let handler = make_exit_handler(sup.clone(), ctx.clone(), agent_id.to_string(), gen);
-        // The handler runs on the session's waiter thread, which has no
-        // runtime of its own for `host::spawn` to fall back to before boot.
-        let runtime = tokio::runtime::Handle::current();
-        let (handled, exits) = tokio::sync::mpsc::unbounded_channel();
-        let pty = crate::pty_session::PtySession::spawn(
-            crate::pty_session::PtySpawn {
-                program: Path::new("/bin/sh"),
-                args: &[
-                    "-c".to_string(),
-                    "while [ ! -e halt ]; do sleep 0.05; done; exit 255".to_string(),
-                ],
-                cwd: machine,
-                env: &[],
-                cols: 80,
-                rows: 24,
-                env_remove: &[],
-                kill_plan: sandbox::KillHandle::ProcessGroup,
-                after_exit: None,
-            },
-            |_| {},
-            move |exit: crate::pty_session::PtyExit| {
-                let _runtime = runtime.enter();
-                handler(exit);
-                let _ = handled.send(());
-            },
-        )
-        .unwrap();
-        sup.agents
-            .lock()
-            .insert(agent_id.to_string(), Arc::new(Agent::over_pty(pty)));
-        exits
-    }
-
-    /// Take `machine` down under whatever still runs in it.
-    fn halt(machine: &Path) {
-        std::fs::write(machine.join("halt"), b"").unwrap();
-    }
-
-    /// Wait for the next exit `exits` hears to have been handled.
-    async fn handled(exits: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
-        tokio::time::timeout(Duration::from_secs(10), exits.recv())
-            .await
-            .expect("the session exits")
-            .expect("its exit is handled");
+        sup.agents.lock().insert(
+            agent_id.to_string(),
+            Arc::new(Agent::idle_process(machine, None)),
+        );
+        BoxSession(Box::new(make_exit_handler(
+            sup.clone(),
+            ctx.clone(),
+            agent_id.to_string(),
+            gen,
+        )))
     }
 
     /// `agent_id` rests as if its session had gone to rest on its own: idle,
@@ -3337,11 +3017,10 @@ mod tests {
         let id = "box-stop-idle";
         let sup = agents_at_rest(&ctx, &[id]);
         let machine = tempfile::tempdir().unwrap();
-        let mut exits = session_in(&sup, &ctx, id, machine.path());
+        let session = session_in(&sup, &ctx, id, machine.path());
 
         stop_box_of(&sup, &ctx, &[id]);
-        halt(machine.path());
-        handled(&mut exits).await;
+        session.machine_down();
 
         assert_at_rest(&sup, &sink, id);
     }
@@ -3354,15 +3033,14 @@ mod tests {
         let id = "box-stop-turn";
         let sup = agents_at_rest(&ctx, &[id]);
         let machine = tempfile::tempdir().unwrap();
-        let mut exits = session_in(&sup, &ctx, id, machine.path());
+        let session = session_in(&sup, &ctx, id, machine.path());
         sup.workspace
             .insert_user_turn(id, "t1", "fix the build", &[])
             .unwrap();
         mark_user_turn_started(&sup, &ctx, id, Some("t1"));
 
         stop_box_of(&sup, &ctx, &[id]);
-        halt(machine.path());
-        handled(&mut exits).await;
+        session.machine_down();
 
         assert_at_rest(&sup, &sink, id);
         let turns = sup.workspace.read_history_turns(id).unwrap();
@@ -3378,13 +3056,12 @@ mod tests {
         let (host, tenant) = ("box-stop-host", "box-stop-tenant");
         let sup = agents_at_rest(&ctx, &[host, tenant]);
         let machine = tempfile::tempdir().unwrap();
-        let mut host_exits = session_in(&sup, &ctx, host, machine.path());
-        let mut tenant_exits = session_in(&sup, &ctx, tenant, machine.path());
+        let host_session = session_in(&sup, &ctx, host, machine.path());
+        let tenant_session = session_in(&sup, &ctx, tenant, machine.path());
 
         stop_box_of(&sup, &ctx, &[host, tenant]);
-        halt(machine.path());
-        handled(&mut host_exits).await;
-        handled(&mut tenant_exits).await;
+        host_session.machine_down();
+        tenant_session.machine_down();
 
         assert_at_rest(&sup, &sink, host);
         assert_at_rest(&sup, &sink, tenant);
@@ -3399,7 +3076,7 @@ mod tests {
         let id = "box-stop-no-box";
         let sup = agents_at_rest(&ctx, &[id]);
         let machine = tempfile::tempdir().unwrap();
-        let mut exits = session_in(&sup, &ctx, id, machine.path());
+        let session = session_in(&sup, &ctx, id, machine.path());
         let generation = sup.generation(id);
 
         let outcome = crate::commands::box_stop_impl(&ctx, id).await.unwrap();
@@ -3409,12 +3086,11 @@ mod tests {
         assert_eq!(sup.generation(id), generation);
         assert_eq!(sup.status_of(id), Some(AgentStatus::Idle));
 
-        halt(machine.path());
-        handled(&mut exits).await;
+        session.machine_down();
         assert_eq!(sup.status_of(id), Some(AgentStatus::Error));
         assert_eq!(
             sup.workspace.agent(id).unwrap().last_error.as_deref(),
-            Some("Agent process exited: Exited with code 255")
+            Some("Agent process exited: exit status: 255")
         );
     }
 
@@ -3521,11 +3197,10 @@ mod tests {
         let sup = agents_at_rest(&ctx, &[id]);
         sup.begin_launch(&ctx, id);
         let machine = tempfile::tempdir().unwrap();
-        let mut exits = session_in(&sup, &ctx, id, machine.path());
+        let session = session_in(&sup, &ctx, id, machine.path());
 
         stop_box_of(&sup, &ctx, &[id]);
-        halt(machine.path());
-        handled(&mut exits).await;
+        session.machine_down();
 
         assert_at_rest(&sup, &sink, id);
     }
