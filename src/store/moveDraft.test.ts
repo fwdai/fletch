@@ -65,7 +65,6 @@ const agent = (name: string, repoPath: string): AgentRecord =>
     project_id: "p1",
     provider: "claude",
     status: "spawning",
-    view: "custom",
     task: "",
     created_at: "2026-11-17T10:00:00Z",
     repos: [{ repo_path: repoPath, subdir: "", branch: null, parent_branch: "main" }],
@@ -188,7 +187,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   for (const key of Object.keys(localAnswers)) delete localAnswers[key];
   localAnswers.projectDefinition = () => DEFINITION;
-  localAnswers.spawnAgent = (_view, repoPath) => agent("kyoto", String(repoPath));
+  localAnswers.spawnAgent = (repoPath) => agent("kyoto", String(repoPath));
   localAnswers.sendUserMessage = () => true;
   useAppStore.setState(useAppStore.getInitialState(), true);
   studio = fakeHost("studio");
@@ -208,7 +207,7 @@ describe("a draft left on its own host", () => {
 
     expect(localApi.projectDefinition).not.toHaveBeenCalled();
     expect(localApi.spawnAgent).toHaveBeenCalledTimes(1);
-    expect(localApi.spawnAgent.mock.calls[0][1]).toBe(HOME_PATH);
+    expect(localApi.spawnAgent.mock.calls[0][0]).toBe(HOME_PATH);
     expect(studio.ops()).not.toContain("ensure_project");
     expect(studio.ops()).not.toContain("spawn_agent");
     expect(useAppStore.getState().selectedAgentId).toBe("kyoto-k3f9x2ab");

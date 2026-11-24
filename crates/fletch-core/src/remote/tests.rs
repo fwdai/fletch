@@ -4972,7 +4972,6 @@ fn switch_agent_account_takes_the_command_args_and_answers_the_record() {
             "claude".into(),
             tracked,
             String::new(),
-            crate::workspace::AgentView::Custom,
         );
         sup.workspace.add_agent(&mut record).unwrap();
         let d = dispatch::SupervisorDispatch::new(ctx, sup);

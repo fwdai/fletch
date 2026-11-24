@@ -15,7 +15,7 @@ use crate::autopilot::GiveUpReason;
 use crate::github::{MergeState, PrState};
 use crate::host::sink::RecordingSink;
 use crate::verify::{CheckOutcome, CheckResult};
-use crate::workspace::{new_agent_record, AgentView};
+use crate::workspace::new_agent_record;
 
 const NOW: i64 = 10_000_000;
 
@@ -99,7 +99,6 @@ fn agent(id: &str, project: &str, subdirs: &[&str]) -> AgentRecord {
         "claude".to_string(),
         tracked_repo(&path, subdirs[0]),
         String::new(),
-        AgentView::Custom,
     );
     record.project_id = project.to_string();
     for subdir in &subdirs[1..] {

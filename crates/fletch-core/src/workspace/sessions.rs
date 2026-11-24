@@ -268,16 +268,12 @@ impl WorkspaceManager {
     ///
     /// - The current session is superseded. Its open turn is closed and its
     ///   queued messages are dropped: nothing will deliver them now.
-    /// - The new session takes the old one's settings (provider, view, effort,
+    /// - The new session takes the old one's settings (provider, effort,
     ///   model, brief, custom agent, skills, MCP servers) but none of its
     ///   state: no handoff context, no error, nothing ingested, and a provider
     ///   session of its own: `native`'s, the transcript written for it, else
     ///   claude's minted here, as `insert_agent` does, or a per-turn
     ///   provider's captured from its first turn.
-    ///
-    /// The view carries over unless the new session can't open in the native
-    /// view yet: a per-turn provider without a session has none to resume
-    /// until its first turn (`Supervisor::switch_view` refuses it too).
     pub fn start_session(
         &self,
         workspace_id: &str,
@@ -288,18 +284,13 @@ impl WorkspaceManager {
         let tx = conn.unchecked_transaction()?;
         let old = current_session_id(&tx, workspace_id)
             .ok_or_else(|| Error::AgentNotFound(workspace_id.to_string()))?;
-        let (provider, view): (String, String) = tx.query_row(
-            "SELECT provider, view FROM sessions WHERE id = ?1",
-            [&old],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
+        let provider: String =
+            tx.query_row("SELECT provider FROM sessions WHERE id = ?1", [&old], |r| {
+                r.get(0)
+            })?;
         let provider_session_id = match native {
             Some(native) => Some(native.provider_session_id.clone()),
             None => (!is_per_turn_provider(&provider)).then(|| uuid::Uuid::new_v4().to_string()),
-        };
-        let view = match provider_session_id {
-            Some(_) => view,
-            None => view_to_str(&AgentView::Custom).to_string(),
         };
 
         let now = now_millis();
@@ -316,17 +307,16 @@ impl WorkspaceManager {
         tx.execute("DELETE FROM pending_messages WHERE session_id = ?1", [&old])?;
         let id = uuid::Uuid::new_v4().to_string();
         tx.execute(
-            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id,
+            "INSERT INTO sessions (id, workspace_id, provider, provider_session_id,
                                    effort, model, instructions, custom_agent_id, skills, mcp_servers,
                                    parent_session_id, parent_cut_seq, transcript_prefix, created_at)
-             SELECT ?2, workspace_id, provider, ?3, ?4,
+             SELECT ?2, workspace_id, provider, ?3,
                     effort, model, instructions, custom_agent_id, skills, mcp_servers,
-                    ?5, ?6, ?7, ?8
+                    ?4, ?5, ?6, ?7
                FROM sessions WHERE id = ?1",
             rusqlite::params![
                 old,
                 id,
-                view,
                 provider_session_id,
                 lineage.parent_session_id,
                 lineage.cut_seq,
@@ -606,13 +596,13 @@ mod tests {
         wm.db
             .lock()
             .query_row(
-                "SELECT provider, view, effort, model, instructions, custom_agent_id, skills,
+                "SELECT provider, effort, model, instructions, custom_agent_id, skills,
                         mcp_servers, handoff_context, last_error
                    FROM sessions WHERE id = ?1",
                 [session],
                 |r| {
-                    let taken = (0..8).map(|i| r.get(i)).collect::<rusqlite::Result<_>>()?;
-                    let left = (8..10).map(|i| r.get(i)).collect::<rusqlite::Result<_>>()?;
+                    let taken = (0..7).map(|i| r.get(i)).collect::<rusqlite::Result<_>>()?;
+                    let left = (7..9).map(|i| r.get(i)).collect::<rusqlite::Result<_>>()?;
                     Ok((taken, left))
                 },
             )
@@ -627,7 +617,7 @@ mod tests {
         wm.db
             .lock()
             .execute(
-                "UPDATE sessions SET view = 'native', effort = 'high', model = 'opus',
+                "UPDATE sessions SET effort = 'high', model = 'opus',
                         instructions = 'be brief', custom_agent_id = 'ca', skills = '[1]',
                         mcp_servers = '[2]', handoff_context = 'digest', last_error = 'boom'
                   WHERE id = ?1",
@@ -683,7 +673,7 @@ mod tests {
             concat(&[inherited(&["a1"]), owned(&["n1"])])
         );
         assert_eq!(wm.agent("a").unwrap().effort.as_deref(), Some("low"));
-        assert_eq!(settings(&wm, &old).0[2].as_deref(), Some("high"));
+        assert_eq!(settings(&wm, &old).0[1].as_deref(), Some("high"));
         let pending = wm.read_all_pending_messages().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].1.turn_id, "q2");
@@ -719,30 +709,23 @@ mod tests {
             "codex".into(),
             crate::workspace::tests::mk_repo("/r"),
             "task".into(),
-            AgentView::Native,
         );
         wm.add_agent(&mut codex).unwrap();
     }
 
-    /// The view carries over only where the new session can open in it.
+    /// A per-turn provider's new session has no provider session until its
+    /// first turn captures one.
     #[test]
-    fn a_session_that_cant_open_natively_yet_starts_in_the_chat_view() {
+    fn a_per_turn_providers_new_session_starts_without_a_provider_session() {
         let wm = talked();
         let restart = |ws: &str, native: Option<&NativeTranscript>| {
             let lineage = wm.resolve_anchor(ws, Anchor::End).unwrap();
             wm.start_session(ws, &lineage, native).unwrap();
         };
-        wm.update_agent_view("a", AgentView::Native).unwrap();
-        restart("a", None);
-        assert_eq!(wm.agent("a").unwrap().view, AgentView::Native);
-
-        // A per-turn provider's session is captured from its first turn, and
-        // only then can its native view resume it.
         codex_agent(&wm, "c");
         wm.set_agent_session_id("c", "thread-1").unwrap();
         restart("c", None);
         let c = wm.agent("c").unwrap();
-        assert_eq!(c.view, AgentView::Custom);
         assert_eq!(c.session_id, None);
         // And the superseded session's id stays its own.
         assert!(!wm.set_agent_session_id("c", "thread-1").unwrap());
@@ -750,7 +733,7 @@ mod tests {
     }
 
     /// A session whose transcript was written for it starts as that provider
-    /// session, in whatever view it was in: it has a conversation to resume.
+    /// session: it has a conversation to resume.
     #[test]
     fn a_session_with_a_written_transcript_starts_as_it() {
         let wm = talked();
@@ -761,7 +744,6 @@ mod tests {
 
         let c = wm.agent("c").unwrap();
         assert_eq!(c.session_id.as_deref(), Some("written-session"));
-        assert_eq!(c.view, AgentView::Native);
         assert_eq!(wm.session_transcript_prefix("c").unwrap(), 4);
         assert_eq!(wm.session_record_count("c").unwrap(), 0);
     }
@@ -893,7 +875,6 @@ mod tests {
                 "claude".into(),
                 crate::workspace::tests::mk_repo("/r"),
                 "task".into(),
-                AgentView::Custom,
             );
             rec.created_at = (Utc::now() - chrono::Duration::seconds(secs_ago)).to_rfc3339();
             rec.lineage = lineage;

@@ -250,8 +250,8 @@ struct AgentEffortPayload {
 }
 
 /// The session's reasoning-effort level changed mid-conversation
-/// (user-initiated). Mirrors `agent:view` so the composer reflects the new
-/// value without a full resync.
+/// (user-initiated), so the composer reflects the new value without a full
+/// resync.
 pub(super) fn emit_effort(sink: &dyn EventSink, agent_id: &str, effort: Option<&str>) {
     emit(
         sink,

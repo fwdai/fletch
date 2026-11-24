@@ -266,8 +266,8 @@ export function useDictation(input: ComposerInput) {
       cancelled = true;
       for (const off of offs) off();
       acceptingRef.current = false;
-      // Unmounting mid-session (a view switch) must not leave the mic open —
-      // nothing is left to receive its transcript. A start still sitting on the
+      // Unmounting mid-session (switching agents or screens) must not leave the
+      // mic open — nothing is left to receive its transcript. A start still sitting on the
       // permission prompt is stopped too: the backend cancels it before the mic
       // ever opens, or stops the session if it came up first (see `stop`).
       const ph = phaseRef.current;

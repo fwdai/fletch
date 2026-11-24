@@ -7,7 +7,6 @@ function agent(overrides: Partial<AgentRecord> = {}): AgentRecord {
     id: "a1",
     name: "agent",
     provider: "antigravity",
-    view: "custom",
     status: "idle",
     repos: [],
     ...overrides,

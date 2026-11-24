@@ -567,7 +567,7 @@ mod tests {
     use super::*;
     use crate::host::ctx::test_ctx;
     use crate::workspace::tests::{mk_repo, seed_repo, test_db};
-    use crate::workspace::{new_agent_record, AgentRecord, AgentView, PURPOSE_ROADMAP_PM};
+    use crate::workspace::{new_agent_record, AgentRecord, PURPOSE_ROADMAP_PM};
     use serde_json::json;
 
     /// The list is the VMs that exist, not the sidebar: a Roadmap chat, which
@@ -585,7 +585,6 @@ mod tests {
                 "claude".into(),
                 mk_repo("/r"),
                 "task".into(),
-                AgentView::Custom,
             )
         };
         let mut chat = record("shasta");

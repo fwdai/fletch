@@ -1314,9 +1314,7 @@ mod safe_join_tests {
 mod checkout_pending_tests {
     use super::checkout_pending;
     use crate::supervisor::Supervisor;
-    use crate::workspace::{
-        new_agent_record, AgentStatus, AgentView, TrackedRepo, WorkspaceManager,
-    };
+    use crate::workspace::{new_agent_record, AgentStatus, TrackedRepo, WorkspaceManager};
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -1360,7 +1358,6 @@ mod checkout_pending_tests {
                 adopted_checkout: None,
             },
             String::new(),
-            AgentView::Custom,
         );
         wm.add_agent(&mut record).unwrap();
         // Precondition of the regression: the stored record rests at Idle.

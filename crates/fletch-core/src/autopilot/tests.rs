@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::store::{LogScope, LOG_LIMIT, PAUSED_AGENTS_KEY, PROJECT_ENABLED_KEY};
 use super::*;
 use crate::host::sink::RecordingSink;
-use crate::workspace::{new_agent_record, AgentView, TrackedRepo, WorkspaceManager};
+use crate::workspace::{new_agent_record, TrackedRepo, WorkspaceManager};
 
 /// One database behind both the engine ctx and the supervisor, as in a real
 /// host: the switches are read through the ctx, the agents through the
@@ -71,7 +71,6 @@ fn add_agent(
         "claude".to_string(),
         tracked_repo(&primary, subdirs[0]),
         String::new(),
-        AgentView::Custom,
     );
     for subdir in &subdirs[1..] {
         let path = repo_dir(root, &format!("{project}-{subdir}"));

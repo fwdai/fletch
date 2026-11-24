@@ -2,8 +2,6 @@ import type { DiffStats } from "./git";
 
 export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
-export type AgentView = "custom" | "native";
-
 /** What a forked workspace's checkouts start from: `clean` — the parent's base
  *  branch; `current` — the parent's code now; `at_message` — the code as the
  *  anchor message's reply left it (message forks only). The last two copy the
@@ -116,7 +114,6 @@ export interface AgentRecord {
   repos: TrackedRepo[];
   task: string;
   status: AgentStatus;
-  view: AgentView;
   session_id?: string | null;
   /** Set when the agent's session continues an earlier conversation (a fork),
    *  whose history it shows before its own. */

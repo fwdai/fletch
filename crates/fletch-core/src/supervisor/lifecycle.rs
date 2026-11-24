@@ -21,7 +21,7 @@ use crate::workspace::{
     agent_parent_dir, allocate_repo_subdir,
     folder_grants::{FolderGranted, FolderGrantsUpdate},
     is_per_turn_provider, new_agent_record, repo_checkout_path, AgentRecord, AgentStatus,
-    AgentView, FolderGrant, TrackedRepo,
+    FolderGrant, TrackedRepo,
 };
 
 use super::events::{
@@ -350,8 +350,6 @@ pub enum SpawnHandoff {
 /// Everything a caller supplies to spawn a fresh agent. Bundled so the (single)
 /// call site reads as named fields rather than nine positional arguments.
 pub struct SpawnRequest {
-    /// Requested view; downgraded to `Custom` for providers without a native view.
-    pub view: AgentView,
     /// Primary repo the agent forks its checkout from.
     pub repo_path: PathBuf,
     /// Provider id (e.g. `"claude"`, `"codex"`).
@@ -545,7 +543,6 @@ impl Supervisor {
         .await?;
         let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let SpawnRequest {
-            view,
             repo_path,
             provider,
             name,
@@ -644,7 +641,6 @@ impl Supervisor {
             provider,
             primary,
             initial_task,
-            view,
         );
         // Session-level effort (claude `--effort`); persisted so start_process
         // re-applies it on every spawn. Per-turn agents ignore it at spawn.
@@ -2760,7 +2756,6 @@ mod tests {
                 provider.into(),
                 tracked.clone(),
                 "task".into(),
-                AgentView::Custom,
             );
             sup.workspace.add_agent(&mut record).unwrap();
         }

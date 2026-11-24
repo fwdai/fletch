@@ -91,7 +91,7 @@ mod tests {
     use crate::host::sink::RecordingSink;
     use crate::rpc::caps::AgentCaps;
     use crate::supervisor::Supervisor;
-    use crate::workspace::{new_agent_record, AgentView, TrackedRepo, WorkspaceManager};
+    use crate::workspace::{new_agent_record, TrackedRepo, WorkspaceManager};
     use serde_json::json;
 
     fn host(purpose: Option<&str>) -> (ReviewDispatcher, tempfile::TempDir) {
@@ -122,7 +122,6 @@ mod tests {
                 adopted_checkout: None,
             },
             String::new(),
-            AgentView::Custom,
         );
         record.purpose = purpose.map(str::to_string);
         sup.workspace.add_agent(&mut record).unwrap();

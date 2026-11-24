@@ -3,7 +3,6 @@ import type { SkillSnapshot } from "@/storage/skills";
 import type { Invoke } from "../invoke";
 import type {
   AgentRecord,
-  AgentView,
   FolderGrant,
   FolderGranted,
   FolderGrantsUpdate,
@@ -18,7 +17,6 @@ import type { LocalWorkspaceKind, WorkspaceKind } from "../types/sandbox";
 
 export const agentsApi = (invoke: Invoke) => ({
   spawnAgent: (
-    view: AgentView,
     repoPath: string,
     provider?: string,
     name?: string,
@@ -63,7 +61,6 @@ export const agentsApi = (invoke: Invoke) => ({
     workspaceType?: WorkspaceKind,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
-      view,
       repoPath,
       provider,
       name,

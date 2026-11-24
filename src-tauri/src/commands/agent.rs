@@ -10,7 +10,7 @@ use crate::host::EngineCtx;
 use crate::managed_session::ToolUseBehavior;
 use crate::supervisor::Supervisor;
 use crate::workspace::folder_grants::{FolderGranted, FolderGrantsUpdate};
-use crate::workspace::{AgentRecord, AgentView, FolderGrant, TrackedRepo};
+use crate::workspace::{AgentRecord, FolderGrant, TrackedRepo};
 
 // Args mirror the frontend `invoke("spawn_agent", ...)` payload one-to-one;
 // they're the IPC wire surface, not collapsible into a struct here.
@@ -19,7 +19,6 @@ use crate::workspace::{AgentRecord, AgentView, FolderGrant, TrackedRepo};
 pub async fn spawn_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     ctx: State<'_, Arc<EngineCtx>>,
-    view: Option<AgentView>,
     repo_path: String,
     provider: Option<String>,
     name: Option<String>,
@@ -52,7 +51,6 @@ pub async fn spawn_agent(
     fletch_core::commands::spawn_agent_impl(
         supervisor.inner().clone(),
         ctx.inner().clone(),
-        view,
         repo_path,
         provider,
         name,

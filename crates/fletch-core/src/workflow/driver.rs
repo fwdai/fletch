@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 use crate::error::Result;
 use crate::host::EngineCtx;
 use crate::supervisor::{SpawnRequest, StatusEvent, Supervisor};
-use crate::workspace::{AgentStatus, AgentView};
+use crate::workspace::AgentStatus;
 
 /// A `Send` boxed future — the object-safe return of the async trait methods
 /// below. This is the exact shape `#[async_trait]` desugars to; we spell it out
@@ -113,8 +113,6 @@ impl AgentDriver for SupervisorDriver {
                 .spawn_agent(
                     self.engine.clone(),
                     SpawnRequest {
-                        // Step agents render in the structured (Custom) view.
-                        view: AgentView::Custom,
                         repo_path,
                         provider,
                         name: None,

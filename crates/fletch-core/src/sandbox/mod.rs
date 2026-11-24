@@ -1108,7 +1108,6 @@ mod workspace_type_tests {
                 adopted_checkout: None,
             },
             String::new(),
-            crate::workspace::AgentView::Custom,
         )
     }
 
@@ -1397,7 +1396,6 @@ mod workspace_type_tests {
                 adopted_checkout: None,
             },
             String::new(),
-            crate::workspace::AgentView::Custom,
         );
         record.sandbox_engine = Some("docker".into());
         let err = ensure_engine_not_retired(&record).unwrap_err().to_string();

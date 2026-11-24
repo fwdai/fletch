@@ -249,13 +249,12 @@ impl WorkspaceManager {
             None => (None, None),
         };
         tx.execute(
-            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, instructions, handoff_context, custom_agent_id, skills, mcp_servers, parent_session_id, parent_cut_seq, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO sessions (id, workspace_id, provider, provider_session_id, last_error, effort, model, instructions, handoff_context, custom_agent_id, skills, mcp_servers, parent_session_id, parent_cut_seq, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             rusqlite::params![
                 session_id,
                 record.id,
                 record.provider,
-                view_to_str(&record.view),
                 record.session_id,
                 record.last_error,
                 record.effort,
@@ -602,16 +601,6 @@ impl WorkspaceManager {
             rusqlite::params![session_id, id],
         )?;
         Ok(taken > 0)
-    }
-
-    pub fn update_agent_view(&self, id: &str, view: AgentView) -> Result<()> {
-        let conn = self.db.lock();
-        Self::ensure_agent_exists(&conn, id)?;
-        conn.execute(
-            "UPDATE sessions SET view = ?1 WHERE workspace_id = ?2 AND superseded_at IS NULL",
-            rusqlite::params![view_to_str(&view), id],
-        )?;
-        Ok(())
     }
 
     /// Update the session's reasoning-effort level mid-conversation. Unlike the

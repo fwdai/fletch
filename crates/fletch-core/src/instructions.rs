@@ -349,9 +349,9 @@ pub fn combined(extra: Option<&str>) -> String {
     }
 }
 
-/// Args for agents that take `--append-system-prompt <text>` (claude's native
-/// view, pi). `extra` carries a custom agent's per-session instructions. Empty
-/// when there's nothing to inject.
+/// Args for agents that take `--append-system-prompt <text>` (pi). `extra`
+/// carries a custom agent's per-session instructions. Empty when there's
+/// nothing to inject.
 pub fn append_system_prompt_args(extra: Option<&str>) -> Vec<String> {
     let text = combined(extra);
     if text.is_empty() {

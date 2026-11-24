@@ -5,7 +5,7 @@ import { compactBlocker, compactionSignal, supportsCompaction } from "./compacti
 import type { AppState } from "./types";
 
 const agent = (over: Partial<AgentRecord> = {}): AgentRecord =>
-  ({ id: "a1", provider: "claude", status: "idle", view: "custom", ...over }) as AgentRecord;
+  ({ id: "a1", provider: "claude", status: "idle", ...over }) as AgentRecord;
 
 const stateWith = (a: AgentRecord, over: Partial<AppState> = {}): AppState =>
   ({

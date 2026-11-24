@@ -427,7 +427,7 @@ impl Supervisor {
     ///
     /// Refused, with nothing restored and the points dropped, once the code
     /// has changed in any checkout since the restore (`code_undo`): undoing
-    /// would discard that work, whichever view, terminal or editor made it.
+    /// would discard that work, whether a turn, the terminal or an editor made it.
     ///
     /// Takes the agent's delivery lock and input route, like a send: no turn
     /// may start on a half-undone tree, and no archive tear it down. Refused
@@ -492,8 +492,8 @@ impl Supervisor {
     /// The state of `agent_id`'s code undo. It can be undone only while every
     /// checkout holding a point is exactly as the restore left it
     /// (`checkpoint::undo_is_current`): an edit, a commit, a new file in any
-    /// one of them, from any view, terminal or editor, and the whole undo is
-    /// stale, as undoing only the untouched ones would leave the workspace in
+    /// one of them, from a turn, the terminal or an editor, and the whole undo
+    /// is stale, as undoing only the untouched ones would leave the workspace in
     /// a state it never had. A stale undo's points are dropped, best-effort,
     /// so they don't outlive their use when no turn comes to retire them.
     /// Runs under the caller's delivery lock.

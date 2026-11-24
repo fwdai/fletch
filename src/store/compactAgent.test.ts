@@ -39,7 +39,6 @@ const agent = {
   id: "a1",
   status: "idle",
   provider: "claude",
-  view: "custom",
   repos: [],
   folder_grants: [],
 } as unknown as AgentRecord;

@@ -1008,7 +1008,7 @@ mod tests {
     use super::*;
     use crate::pty_session::{PtySession, PtySpawn};
     use crate::sandbox::KillHandle;
-    use crate::workspace::{new_agent_record, AgentView, TrackedRepo};
+    use crate::workspace::{new_agent_record, TrackedRepo};
     use std::path::Path;
     use std::time::Duration;
 
@@ -1259,7 +1259,6 @@ mod tests {
                 adopted_checkout: None,
             },
             String::new(),
-            AgentView::Custom,
         );
         record.status = status;
         record
@@ -1432,7 +1431,6 @@ mod tests {
             "claude".into(),
             tracked,
             "task".into(),
-            AgentView::Custom,
         );
         sup.workspace.add_agent(&mut record).unwrap();
         sup.statuses

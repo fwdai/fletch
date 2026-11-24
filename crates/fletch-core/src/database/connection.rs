@@ -129,6 +129,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0063_repo_dropped.sql"),
     include_str!("../../migrations/0064_workspace_cloud_provider.sql"),
     include_str!("../../migrations/0065_purge_inherited_workspace_rows.sql"),
+    include_str!("../../migrations/0066_drop_session_view.sql"),
 ];
 
 /// The transcript log's own migrations, tracked by `transcripts.db`'s
@@ -150,10 +151,9 @@ pub(crate) const CONTEXT_MIGRATIONS: &[&str] =
 /// Rule: bump to the new `MIGRATIONS.len()` whenever a migration drops,
 /// renames or rebuilds something older code reads (a column, a table, a
 /// constraint it relies on); leave it alone for additive migrations (new
-/// nullable columns, new tables, new indexes). 47: migration 0047 dropped
-/// `session_records` from this file (it lives in `transcripts.db` now), which
-/// no earlier build can read around.
-pub(crate) const MIN_READER_VERSION: usize = 47;
+/// nullable columns, new tables, new indexes). 66: migration 0066 dropped
+/// `sessions.view`, which every earlier build selects with each agent row.
+pub(crate) const MIN_READER_VERSION: usize = 66;
 const _: () = assert!(MIN_READER_VERSION >= 1 && MIN_READER_VERSION <= MIGRATIONS.len());
 
 /// `settings` key holding `MIN_READER_VERSION` of the build that last

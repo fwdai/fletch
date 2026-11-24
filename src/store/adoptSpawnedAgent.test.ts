@@ -39,7 +39,6 @@ const record = (over: Partial<AgentRecord>): AgentRecord =>
     repos: [{ repo_path: "/repos/app", subdir: "app" }],
     task: "",
     status: "idle",
-    view: "custom",
     created_at: "2026-01-01T00:00:00Z",
     ...over,
   }) as AgentRecord;

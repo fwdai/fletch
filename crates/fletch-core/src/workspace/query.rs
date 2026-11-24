@@ -458,7 +458,7 @@ impl WorkspaceManager {
     }
 
     /// Map a row from an [`AGENT_SELECT`] query into the raw column tuple.
-    /// Shared by `query_all_agents` and `load_agent` so the 27-column layout
+    /// Shared by `query_all_agents` and `load_agent` so the 26-column layout
     /// is decoded in exactly one place.
     fn map_agent_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRow> {
         Ok((
@@ -488,7 +488,6 @@ impl WorkspaceManager {
             row.get(23)?,
             row.get(24)?,
             row.get(25)?,
-            row.get(26)?,
         ))
     }
 
@@ -505,7 +504,6 @@ impl WorkspaceManager {
             stopped_millis,
             archived_millis,
             provider,
-            view_str,
             session_id,
             last_error,
             effort,
@@ -559,7 +557,6 @@ impl WorkspaceManager {
             repos,
             task,
             status,
-            view: str_to_view(view_str.as_deref().unwrap_or("custom")),
             session_id,
             effort,
             model,

@@ -1431,7 +1431,6 @@ fn ingest_subagents(
 pub(super) mod tests {
     use super::*;
     use crate::agent::ReadDiagnostics;
-    use crate::workspace::AgentView;
     use std::path::Path;
 
     // Serialize the tests that mutate process-global CODEX_HOME /
@@ -1910,7 +1909,6 @@ pub(super) mod tests {
             "claude".into(),
             mk_repo("/r"),
             "task".into(),
-            AgentView::Custom,
         );
         let id = rec.id.clone();
         wm.add_agent(&mut rec).unwrap();
@@ -1963,7 +1961,6 @@ pub(super) mod tests {
             "claude".into(),
             repo,
             "task".into(),
-            AgentView::Custom,
         );
         let id = rec.id.clone();
         wm.add_agent(&mut rec).unwrap();

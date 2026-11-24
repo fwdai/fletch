@@ -3,7 +3,6 @@ import { handoffTranscript } from "@/adapters/handoff";
 import { hasUsage, type UsageSnapshot, usageFromRecords } from "@/adapters/usage";
 import type {
   AgentRecord,
-  AgentView,
   Api,
   FolderGrant,
   ForkCode,
@@ -54,7 +53,7 @@ import {
 } from "./pendingHides";
 import { refreshWorkspace } from "./refreshWorkspace";
 import { sendOrder, sendsInFlight } from "./sendOrder";
-import type { AppState, SliceCreator } from "./types";
+import type { SliceCreator } from "./types";
 
 /** A degraded transcript-ingest state stored per agent (the `healthy` status is
  *  never stored — it deletes the key). `provider`/`version` are for the banner
@@ -103,8 +102,7 @@ export interface WorkspaceSlice {
    *  turn end. The widget uses it to know a question is answerable and to route
    *  the answer back as the tool result (the real pause). */
   pendingToolUse: Record<string, Record<string, string>>;
-  /** True while an on-disk Claude transcript is being replayed into
-   *  the custom-view log. */
+  /** True while an on-disk transcript is being replayed into the chat log. */
   transcriptLoading: Record<string, boolean>;
   /** True once the current process has attempted transcript replay for
    *  an agent. Prevents repeated reloads when a session has no JSONL. */
@@ -179,7 +177,7 @@ export interface WorkspaceSlice {
   selectRunStep: (runId: string, agentId: string) => void;
   /** Clear the pending step-agent focus once the monitor has applied it. */
   clearFocusedStepAgent: () => void;
-  spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
+  spawn: (repoPath: string) => Promise<AgentRecord | null>;
   /** Fork an existing workspace into a new one at an anchor — through the
    *  turn `turnId` names, or the end of the conversation when `null` — seeding
    *  its worktree (`code`) and conversation (`context`) independently.
@@ -437,7 +435,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
       }),
     clearFocusedStepAgent: () => set({ focusedStepAgentId: null }),
 
-    spawn: async (view, repoPath) => {
+    spawn: async (repoPath) => {
       set({ busy: true, lastError: null });
       try {
         // The draft path carries the base the user picked; this one has no picker,
@@ -446,7 +444,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
         // — forking a new agent onto the user's in-progress local work.
         const base = await resolveBaseBranch(api, repoPath);
         const rec = await api.spawnAgent(
-          view,
           repoPath,
           undefined,
           undefined,
@@ -456,22 +453,19 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
           undefined,
           base,
         );
-        // Apply the selection (and custom-view log seeds) immediately, ahead of the
+        // Apply the selection (and the empty log seed) immediately, ahead of the
         // guarded workspace refresh, so this user-intent state can never be dropped
         // if a concurrent refresh supersedes ours. The record rides along so a
         // recycled name can't open the chat against its archived predecessor
         // (see adoptSpawnedAgent), nor show what that one left in the per-agent
         // maps (its PR, its diff).
         set((state) => {
-          const patches: Partial<AppState> = {
+          return {
             ...dropAgentEntries(state, rec.id),
             workspace: adoptSpawnedAgent(state.workspace, rec),
             selectedAgentId: rec.id,
+            managedLogs: { ...state.managedLogs, [rec.id]: [] },
           };
-          if (view === "custom") {
-            patches.managedLogs = { ...state.managedLogs, [rec.id]: [] };
-          }
-          return patches;
         });
         await refreshWorkspace(engine, set);
         return rec;

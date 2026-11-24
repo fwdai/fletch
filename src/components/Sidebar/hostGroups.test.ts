@@ -17,7 +17,6 @@ const agent = (id: string, project_id: string, repo: string, over: Partial<Agent
     repos: [{ repo_path: repo, subdir: "", branch: `feat/${id}` }],
     task: `Task for ${id}`,
     status: "idle",
-    view: "custom",
     created_at: "2026-11-05T10:00:00Z",
     ...over,
   }) as AgentRecord;

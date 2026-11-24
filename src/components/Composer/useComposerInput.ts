@@ -35,7 +35,7 @@ export interface ComposerInputConfig {
    *  from the `@` listing or a drop. Only where there is an agent to give
    *  them to; elsewhere a dropped folder is refused like any unreadable file. */
   folders?: boolean;
-  /** Persists unsent text across the remounts a view switch causes. */
+  /** Persists unsent text across remounts (switching agents or screens). */
   draftKey?: string;
   autoFocus?: boolean;
   /** Text injected from elsewhere; appended to the draft, then consumed. */
@@ -64,8 +64,8 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   const setLastError = useAppStore((s) => s.setLastError);
 
   // Read the restored draft once at mount via getState (not a subscription) so
-  // persisting on each keystroke doesn't re-render; a view switch remounts us
-  // and re-runs this initializer.
+  // persisting on each keystroke doesn't re-render; switching agents or
+  // screens remounts us and re-runs this initializer.
   const [text, setText] = useState(() =>
     draftKey ? (store.getState().composerDrafts[draftKey] ?? "") : "",
   );
@@ -268,8 +268,8 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     if (autoFocus) ta.current?.focus();
   }, [autoFocus]);
 
-  // Mirror the draft into the store on every edit so it survives the remount a
-  // view switch causes. Clearing `text` on send clears the entry.
+  // Mirror the draft into the store on every edit so it survives a remount.
+  // Clearing `text` on send clears the entry.
   useEffect(() => {
     if (draftKey) setComposerDraft(draftKey, text);
   }, [draftKey, text, setComposerDraft]);

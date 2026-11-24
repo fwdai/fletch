@@ -87,7 +87,7 @@ export function createApi(client: RemoteClient) {
   return {
     getWorkspace: () => read<Workspace | null>("get_workspace"),
     allocateDraftName: (drafts: string[]) => call<string>("allocate_draft_name", { drafts }),
-    /** Host forces `view: "custom"`. `skills`/`mcpServers` go null because the
+    /** `skills`/`mcpServers` go null because the
      *  phone never chooses them: it names the preset in `customAgentId` and the
      *  host resolves that row's brief, skills and MCP servers by value, so MCP
      *  configuration never crosses the wire. `options` carries the rest of what
@@ -104,7 +104,6 @@ export function createApi(client: RemoteClient) {
       options: SpawnOptions = {},
     ) =>
       call<AgentRecord>("spawn_agent", {
-        view: "custom",
         repoPath,
         provider,
         name,

@@ -12,7 +12,7 @@ use crate::rpc::caps::AgentCaps;
 use crate::rpc::git::test_support::*;
 use crate::rpc::git::GitDispatcher;
 use crate::supervisor::Supervisor;
-use crate::workspace::{new_agent_record, AgentView, TrackedRepo, WorkspaceManager};
+use crate::workspace::{new_agent_record, TrackedRepo, WorkspaceManager};
 
 const AGENT: &str = "arabia";
 
@@ -57,7 +57,6 @@ fn host() -> (
         "claude".to_string(),
         tracked_repo(&repo, "repo"),
         String::new(),
-        AgentView::Custom,
     );
     sup.workspace.add_agent(&mut record).unwrap();
 

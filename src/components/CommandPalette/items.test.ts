@@ -33,7 +33,6 @@ function agent(over: Partial<AgentRecord> & { id: string }): AgentRecord {
     ],
     task: `Task for ${over.id}`,
     status: "idle",
-    view: "custom",
     created_at: "2026-11-05T10:00:00Z",
     ...over,
   };

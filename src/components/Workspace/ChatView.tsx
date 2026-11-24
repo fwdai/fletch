@@ -12,7 +12,7 @@ import { isTurnPending } from "./messages/turnPending";
 import { useTranscript } from "./messages/useTranscript";
 import { useLiveBusy } from "./useLiveBusy";
 
-/** Custom-view body: scrolling chat log + composer at the bottom.
+/** The conversation pane: scrolling chat log + composer at the bottom.
  *  The composer here dispatches the user's message via the store; it
  *  doesn't care about provider routing yet. */
 export function ChatView({ agent }: { agent: AgentRecord }) {

@@ -4,8 +4,7 @@ use super::*;
 
 /// Per-turn agents run one process per turn, assign their own session id
 /// (captured from their first turn's events rather than generated up
-/// front), and render only in the structured (Custom) view for now. The
-/// canonical set is the `agent::PER_TURN_AGENTS` descriptor table.
+/// front). The canonical set is the `agent::PER_TURN_AGENTS` descriptor table.
 pub fn is_per_turn_provider(provider: &str) -> bool {
     crate::agent::per_turn_descriptor(provider).is_some()
 }
@@ -17,7 +16,6 @@ pub fn new_agent_record(
     provider: String,
     primary: TrackedRepo,
     task: String,
-    view: AgentView,
 ) -> AgentRecord {
     // Claude attaches to a session id we generate up front (passed as
     // `--session-id`). Per-turn agents (codex, cursor) assign their own id
@@ -38,7 +36,6 @@ pub fn new_agent_record(
         repos: vec![primary],
         task,
         status: AgentStatus::Spawning,
-        view,
         session_id,
         effort: None,
         model: None,

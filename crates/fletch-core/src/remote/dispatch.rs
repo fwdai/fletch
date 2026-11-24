@@ -31,7 +31,6 @@ use crate::commands::DiffBaseMode;
 use crate::host::EngineCtx;
 use crate::managed_session::ToolUseBehavior;
 use crate::supervisor::Supervisor;
-use crate::workspace::AgentView;
 
 /// A dispatched op's answer: the command's result serialized as Tauri would, or
 /// the `Display` of the Rust error.
@@ -778,8 +777,7 @@ impl Dispatch for SupervisorDispatch {
                     res(crate::commands::allocate_draft_name_impl(sup, a.drafts))
                 }
 
-                // The structured chat view is forced: the phone has no UI for a
-                // native PTY. A roadmap-PM `purpose` passes through so a phone
+                // A roadmap-PM `purpose` passes through so a phone
                 // can open the same planning chat the Roadmap tab does (see
                 // [`remote_purpose`]). The phone only *names* a preset in
                 // `customAgentId`; this host resolves it by value out of its own
@@ -812,7 +810,6 @@ impl Dispatch for SupervisorDispatch {
                     res(crate::commands::spawn_agent_impl(
                         sup.clone(),
                         ctx.clone(),
-                        Some(AgentView::Custom),
                         a.repo_path,
                         a.provider,
                         a.name,
@@ -3417,8 +3414,9 @@ mod arg_tests {
     }
 
     /// The mobile client sends the desktop's full `spawn_agent` payload, with
-    /// the fields v1 does not expose present but null. They must deserialize
-    /// away rather than fail the request.
+    /// the fields v1 does not expose present but null, and a client from
+    /// before the native view was removed still sends `view`. They must
+    /// deserialize away rather than fail the request.
     #[test]
     fn spawn_args_accept_the_full_desktop_payload() {
         let args: SpawnArgs = parse(json!({

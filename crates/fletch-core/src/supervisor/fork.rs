@@ -135,7 +135,6 @@ impl Supervisor {
         let pin = code_from.clone();
 
         let req = SpawnRequest {
-            view: parent.view,
             repo_path: primary.repo_path.clone(),
             provider: parent.provider.clone(),
             name: None,

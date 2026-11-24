@@ -301,7 +301,6 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
         );
         const base = await resolveBaseBranch(api, repo);
         const rec = await api.spawnAgent(
-          "custom",
           repo,
           pick.provider,
           // No pinned name: this chat was never a sidebar draft, so the backend

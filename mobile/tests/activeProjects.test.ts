@@ -25,7 +25,6 @@ const agent = (
   repos: [],
   task: "",
   status,
-  view: "custom",
   created_at: new Date(NOW - daysAgo * DAY).toISOString(),
 });
 

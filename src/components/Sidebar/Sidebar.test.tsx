@@ -33,7 +33,6 @@ const agent = (id: string, project_id: string, repo: string, task: string, creat
     repos: [{ repo_path: repo, subdir: "", branch: `feat/${id}` }],
     task,
     status: "idle",
-    view: "custom",
     created_at,
   }) as AgentRecord;
 
