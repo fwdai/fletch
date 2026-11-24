@@ -512,23 +512,6 @@ pub(crate) fn codex_session_id(event: &Value) -> Option<String> {
     gated_session_id(event, Some("thread.started"), None, "thread_id")
 }
 
-/// Codex: bare `codex` launches the interactive TUI;
-/// `--dangerously-bypass-approvals-and-sandbox` runs it unattended (Fletch
-/// already isolates the checkout). `resume <id>` continues a prior session.
-pub(crate) fn codex_pty_args(
-    session_id: Option<&str>,
-    model: Option<&str>,
-    extra: Option<&str>,
-    mcp_args: &[String],
-) -> Vec<String> {
-    let mut args: Vec<String> = vec!["--dangerously-bypass-approvals-and-sandbox".into()];
-    args.extend(model_args(model));
-    args.extend(instructions::codex_config_args(extra));
-    args.extend_from_slice(mcp_args);
-    push_opt(&mut args, "resume", session_id);
-    args
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -931,8 +914,5 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(turn.args[..3], ["exec", "resume", NEW]);
-        assert!(
-            codex_pty_args(Some(NEW), None, None, &[]).ends_with(&["resume".into(), NEW.into()])
-        );
     }
 }

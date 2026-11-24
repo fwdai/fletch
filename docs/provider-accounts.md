@@ -442,7 +442,7 @@ What codex's login is (codex-cli 0.154.0, `codex-rs/login/src/auth/manager.rs`):
 
 What Fletch does:
 
-- Every codex launch (per-turn exec, native TUI; seatbelt and boxes) runs
+- Every codex launch (per-turn exec; seatbelt and boxes) runs
   with `CODEX_HOME=<agent dir>/.fletch-codex-home` (`overlay_for_agent`, the
   one path the launch, the fork/rewind writer and the locator share), an
   overlay the host assembles before each launch: `sessions/` (the agent's own), the shared
@@ -573,7 +573,7 @@ classifies turn ends). Capture it there, where the agent record (hence the
 account) is known, and record it per `(provider, account)`. The claude adapter
 in `src/adapters/claude` currently ignores the event; it may keep ignoring it.
 
-**Claude, status line hook (covers the native PTY view).** Since Claude Code
+**Claude, status line hook.** Since Claude Code
 2.1.80 the JSON piped to a `statusLine` command includes
 `rate_limits.five_hour.{used_percentage, resets_at}` and `.seven_day` (percent
 0–100, epoch seconds), only for claude.ai Pro/Max logins. Fletch can inject a

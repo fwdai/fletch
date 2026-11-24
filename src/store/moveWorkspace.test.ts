@@ -11,7 +11,7 @@ const { moveWorkspace, sendUserMessage } = vi.hoisted(() => ({
   sendUserMessage: vi.fn(),
 }));
 vi.mock("@/api", () => ({ api: { moveWorkspace, sendUserMessage } }));
-vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
+vi.mock("@/pty/buffers", () => ({ dropShellBuffer: vi.fn() }));
 
 import type { AgentRecord } from "@/api";
 import { activeEngine } from "@/api/engine";

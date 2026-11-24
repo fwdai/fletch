@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::agent::{per_turn_descriptor, TranscriptReader};
 use crate::github::{MergeableState, PrState, PrStatus};
 use crate::host::EngineCtx;
-use crate::workspace::{AgentRecord, AgentStatus, AgentView, TrackedRepo, WorkspaceManager};
+use crate::workspace::{AgentRecord, AgentStatus, TrackedRepo, WorkspaceManager};
 
 use super::events::{
     emit_pr_set_entry, emit_pr_state, emit_session_records_appended, emit_session_sync_health,
@@ -27,12 +27,6 @@ const TURN_END_VERIFY_TIMEOUT_SECS: u64 = 900;
 /// opts a project into running verification at every ad-hoc turn end.
 const VERIFY_ON_TURN_END_KEY: &str = "verify.on_turn_end";
 
-/// How often the native-view live poller re-reads a running agent's transcript.
-/// A CLI flushes its JSONL once per *completed* assistant message (claude does
-/// so ~7 times in a turn, sub-second after each one), not per token — so a
-/// faster tick buys no extra freshness and only burns syscalls.
-const LIVE_SYNC_TICK: Duration = Duration::from_secs(1);
-
 impl Supervisor {
     /// Synchronously ingest the agent's transcript into session_records (used
     /// for lazy backfill when a session is opened with no records yet). `None`
@@ -48,10 +42,10 @@ impl Supervisor {
     ///
     /// The polling shape depends on whether the agent's process persists across
     /// turns (see `SyncPoll`):
-    /// - **Per-turn agents** (custom view) have *exited* by turn-end, so the
+    /// - **Per-turn agents** have *exited* by turn-end, so the
     ///   file is complete and quiescent — we just ride out any flush lag and stop
     ///   at the first non-empty read.
-    /// - **Claude / native-view agents** keep the transcript file open, so the
+    /// - **Claude** keeps the transcript file open, so the
     ///   final line can still be flushing. We poll until the file settles (two
     ///   consecutive reads add nothing) before trusting the turn is fully on disk.
     pub fn trigger_session_sync(&self, ctx: Arc<EngineCtx>, agent_id: String) {
@@ -750,94 +744,11 @@ pub async fn resolve_all_pr_status(
 }
 
 /// Does this agent keep its transcript file open across turns? Per-turn agents
-/// in the custom view *exit* at each turn-end, so the file is complete and
-/// quiescent the moment we sync. Everything else — claude, and any agent in the
-/// native (PTY/TUI) view — holds the file open, so the final line may still be
-/// flushing and we must poll until it settles.
+/// *exit* at each turn-end, so the file is complete and quiescent the moment we
+/// sync. Claude holds the file open, so the final line may still be flushing
+/// and we must poll until it settles.
 fn is_persistent_runner(record: &AgentRecord) -> bool {
-    let per_turn = per_turn_descriptor(&record.provider).is_some();
-    !(per_turn && record.view == AgentView::Custom)
-}
-
-/// Whether this agent qualifies for the mid-turn live transcript poll.
-///
-/// Two independent things have to hold:
-///
-/// - **Native view.** There the CLI runs its own TUI in a PTY and we get no
-///   event stream, so the transcript on disk is the only structured view of the
-///   turn in progress. A custom-view agent already streams its structure, so
-///   polling would duplicate work and race the stream.
-/// - **A tailable reader.** `sync_session_records` only reads incrementally
-///   (O(new), seeking to the stored byte offset) when the reader declares
-///   `tail: Some(..)`. Readers with `tail: None` — codex and opencode locate
-///   several rollout files, antigravity a blob directory — fall back to a *full
-///   re-parse of every file on every call*. That's fine once at turn end and a
-///   performance bug at 1 Hz. Gating on `tail.is_some()` rather than a provider
-///   allowlist means any provider that later gains a single-file tail is picked
-///   up with no change here.
-pub(super) fn should_live_sync(provider: &str, view: AgentView) -> bool {
-    view == AgentView::Native
-        && crate::agent::transcript_reader(provider).is_some_and(|r| r.tail.is_some())
-}
-
-/// Ingest the native-view agent's transcript *during* the turn, so the UI can
-/// render tool cards and thinking blocks while its TUI is still working instead
-/// of waiting for the turn-end sync.
-///
-/// Gen-guarded exactly like `spawn_turn_watchdog`: no handle is tracked, the
-/// task simply retires itself once a respawn/teardown/view-switch bumps the
-/// generation it was started under. Because a view switch goes through
-/// `start_process` (new generation), the view/provider gate is evaluated once up
-/// front rather than re-read from the DB every tick.
-///
-/// This deliberately calls `sync_session_records` directly rather than reusing
-/// `trigger_session_sync`:
-///
-/// - `SyncPoll` stops after two consecutive zero-insert reads. At turn end that
-///   means "the file settled"; mid-turn it only means the model is thinking, so
-///   it would give up seconds into a long reasoning block.
-/// - `ReadDiagnostics::absorb` accumulates across passes and is never reset, and
-///   `classify` maps `records_parsed > 0 && io_errors > 0` to `PartialRead` — so
-///   a single transient read error would permanently pin this agent's reported
-///   health. Turn-end stays the sole authority on sync health; this path never
-///   classifies.
-pub(super) fn spawn_live_transcript_sync(
-    sup: Arc<Supervisor>,
-    ctx: Arc<EngineCtx>,
-    agent_id: String,
-    gen: u64,
-) {
-    crate::host::spawn(async move {
-        loop {
-            tokio::time::sleep(LIVE_SYNC_TICK).await;
-
-            let current_gen = sup.generations.lock().get(&agent_id).copied().unwrap_or(0);
-            if current_gen != gen {
-                return;
-            }
-
-            // Only read while a turn is actually in flight. An idle agent's
-            // transcript cannot grow, so ticking the filesystem and the (global)
-            // sqlite lock once a second for it would be a permanent background
-            // tax that scales with the number of open agents. `Spawning` is
-            // excluded too — there is no turn yet, and the turn-end sync from
-            // the *previous* generation may still be draining.
-            if !matches!(sup.live_status(&agent_id), Some(AgentStatus::Running)) {
-                continue;
-            }
-
-            let inserted = sync_session_records(&sup.workspace, &agent_id)
-                .map(|o| o.inserted)
-                .unwrap_or(0);
-
-            // Emit only on a real insert. The frontend refetches the whole
-            // record list on this event, so firing it every tick would turn a
-            // thinking agent into a 1 Hz refetch loop over the conversation.
-            if inserted > 0 {
-                emit_session_records_appended(ctx.sink.as_ref(), &agent_id);
-            }
-        }
-    });
+    per_turn_descriptor(&record.provider).is_none()
 }
 
 /// A top-level (main-thread) Claude event that means the transcript grew while
@@ -1265,7 +1176,7 @@ fn ingest_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Optio
     // sessions); multi-file / blob-dir readers fall back to a full read whose
     // already-stored rows are idempotently skipped. Either way the batch lands
     // in one transaction.
-    // Per-turn agents in Custom view have exited by turn-end, so their final
+    // Per-turn agents have exited by turn-end, so their final
     // line is complete even without a trailing newline (cursor/pi write it that
     // way) — consume it. Persistent writers (claude) keep the file open, so a
     // trailing line may be mid-write; hold it until it's newline-terminated.
@@ -1998,7 +1909,6 @@ pub(super) mod tests {
             "claude".into(),
             mk_repo("/r"),
             "task".into(),
-            AgentView::Custom,
         );
         let id = rec.id.clone();
         wm.add_agent(&mut rec).unwrap();
@@ -2051,7 +1961,6 @@ pub(super) mod tests {
             "claude".into(),
             repo,
             "task".into(),
-            AgentView::Custom,
         );
         let id = rec.id.clone();
         wm.add_agent(&mut rec).unwrap();
@@ -2869,49 +2778,6 @@ pub(super) mod tests {
 
         subagent_cursors().lock().remove(&first);
         subagent_cursors().lock().remove(&second);
-    }
-
-    // ── Live-poll gate: native view AND a reader that can tail ──
-
-    #[test]
-    fn live_sync_polls_native_agents_whose_reader_tails() {
-        // claude/pi/cursor all locate a single JSONL, so `sync_session_records`
-        // seeks to the stored offset and reads only what's new — cheap at 1 Hz.
-        // The gate is `tail.is_some()`, not a provider allowlist, so all three
-        // qualify without being named anywhere.
-        for provider in ["claude", "pi", "cursor"] {
-            assert!(
-                should_live_sync(provider, AgentView::Native),
-                "{provider} tails a single jsonl and should be polled live"
-            );
-        }
-    }
-
-    #[test]
-    fn live_sync_skips_the_custom_view() {
-        // Custom-view agents render from their event stream, which already
-        // carries live structure; polling the transcript would duplicate it.
-        for provider in ["claude", "pi", "cursor"] {
-            assert!(
-                !should_live_sync(provider, AgentView::Custom),
-                "{provider} in the custom view already streams structure"
-            );
-        }
-    }
-
-    #[test]
-    fn live_sync_skips_readers_that_cannot_tail() {
-        // These readers locate multiple files (codex rollouts, opencode's blob
-        // dir, antigravity), so every pass is a full re-parse of the whole
-        // conversation. Polling them once a second would be a performance bug.
-        for provider in ["codex", "opencode", "antigravity"] {
-            assert!(
-                !should_live_sync(provider, AgentView::Native),
-                "{provider} has tail: None — a live poll would re-parse everything"
-            );
-        }
-        // A provider with no transcript reader at all is likewise skipped.
-        assert!(!should_live_sync("nonesuch", AgentView::Native));
     }
 
     // ── Background work finishing after the main turn settled ──

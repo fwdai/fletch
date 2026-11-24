@@ -19,7 +19,6 @@ function agent(daysAgo: number, status: AgentRecord["status"] = "idle"): AgentRe
     repos: [{ repo_path: "/r", subdir: "" }],
     task: "",
     status,
-    view: "custom",
     created_at: new Date(NOW - daysAgo * DAY).toISOString(),
   };
 }

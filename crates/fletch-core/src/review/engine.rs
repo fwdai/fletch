@@ -37,7 +37,7 @@ use super::{now_ms, persist, store, Key};
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::supervisor::{CheckoutHold, SpawnRequest, StatusEvent, Supervisor};
-use crate::workspace::{AgentRecord, AgentStatus, AgentView, TrackedRepo, PURPOSE_REVIEWER};
+use crate::workspace::{AgentRecord, AgentStatus, TrackedRepo, PURPOSE_REVIEWER};
 
 /// One `ReviewState`, whenever a checkout's review changes.
 pub const EVENT_CHANGED: &str = "review:changed";
@@ -1205,7 +1205,6 @@ async fn ensure_reviewer(
     };
     let coder_name = coder.title.clone().unwrap_or_else(|| coder.name.clone());
     let req = SpawnRequest {
-        view: AgentView::Custom,
         repo_path: repo.repo_path.clone(),
         provider: spec.base.clone(),
         name: None,

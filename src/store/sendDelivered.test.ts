@@ -12,7 +12,7 @@ const { sendUserMessage, grantAgentFolder } = vi.hoisted(() => ({
   grantAgentFolder: vi.fn(),
 }));
 vi.mock("@/api", () => ({ api: { sendUserMessage, grantAgentFolder } }));
-vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
+vi.mock("@/pty/buffers", () => ({ dropShellBuffer: vi.fn() }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 vi.mock("@/data/slashCommands", () => ({ discoverCommands: vi.fn() }));
 

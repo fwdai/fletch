@@ -710,7 +710,6 @@ mod tests {
             "claude".into(),
             crate::workspace::tests::mk_repo(app_clone.to_str().unwrap()),
             "".into(),
-            crate::workspace::AgentView::Custom,
         );
         sup.workspace.add_agent(&mut agent).unwrap();
 
@@ -736,7 +735,6 @@ mod tests {
             "claude".into(),
             crate::workspace::tests::mk_repo(app_clone.to_str().unwrap()),
             "".into(),
-            crate::workspace::AgentView::Custom,
         );
         let refused = sup.workspace.add_agent(&mut late).unwrap_err().to_string();
         assert!(

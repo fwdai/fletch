@@ -1,6 +1,6 @@
 // Regression tests for the base branch a spawn forks from.
 //
-// The bug these pin: `spawn(view, repoPath)` passed no `forkBase` at all, so the
+// The bug these pin: `spawn(repoPath)` passed no `forkBase` at all, so the
 // backend fell back to the source repo's *currently-checked-out* branch — a new
 // agent silently forked onto the user's in-progress local work. The product rule
 // is that the app must never pick that branch implicitly, so every spawn path
@@ -19,7 +19,7 @@ const { spawnAgent, getWorkspace, repoDefaultBranch, listRepoBranches } = vi.hoi
 vi.mock("@/api", () => ({
   api: { spawnAgent, getWorkspace, repoDefaultBranch, listRepoBranches },
 }));
-vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
+vi.mock("@/pty/buffers", () => ({ dropShellBuffer: vi.fn() }));
 
 import { api } from "@/api";
 import { activeEngine } from "@/api/engine";
@@ -36,8 +36,8 @@ const makeStore = () => {
   return store;
 };
 
-/** `forkBase` is the 9th positional arg of `api.spawnAgent`. */
-const forkBaseArg = (call: unknown[]) => call[8];
+/** `forkBase` is the 8th positional arg of `api.spawnAgent`. */
+const forkBaseArg = (call: unknown[]) => call[7];
 
 describe("spawn base branch", () => {
   beforeEach(() => {
@@ -50,7 +50,7 @@ describe("spawn base branch", () => {
     repoDefaultBranch.mockResolvedValue("develop");
     const store = makeStore();
 
-    await store.getState().spawn("custom", "/repos/app");
+    await store.getState().spawn("/repos/app");
 
     expect(repoDefaultBranch).toHaveBeenCalledWith("/repos/app");
     expect(forkBaseArg(spawnAgent.mock.calls[0])).toBe("develop");
@@ -62,7 +62,7 @@ describe("spawn base branch", () => {
     repoDefaultBranch.mockRejectedValue(new Error("no such repo"));
     const store = makeStore();
 
-    await store.getState().spawn("custom", "/repos/app");
+    await store.getState().spawn("/repos/app");
 
     expect(forkBaseArg(spawnAgent.mock.calls[0])).toBe("main");
   });

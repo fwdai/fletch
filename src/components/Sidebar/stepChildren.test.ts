@@ -10,7 +10,6 @@ function agent(over: Partial<AgentRecord> & { id: string }): AgentRecord {
     repos: [],
     task: "",
     status: "idle" as AgentStatus,
-    view: "custom",
     created_at: "2026-01-01T00:00:00.000Z",
     ...over,
   } as AgentRecord;

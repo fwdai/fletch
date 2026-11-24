@@ -13,7 +13,7 @@ const { sendUserMessage, grantAgentFolder } = vi.hoisted(() => ({
   grantAgentFolder: vi.fn(),
 }));
 vi.mock("@/api", () => ({ api: { sendUserMessage, grantAgentFolder } }));
-vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
+vi.mock("@/pty/buffers", () => ({ dropShellBuffer: vi.fn() }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 vi.mock("@/data/slashCommands", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/data/slashCommands")>()),
@@ -39,7 +39,6 @@ const agent = {
   id: "a1",
   status: "idle",
   provider: "claude",
-  view: "custom",
   repos: [],
   folder_grants: [],
 } as unknown as AgentRecord;
@@ -59,8 +58,6 @@ const makeStore = () => {
     sending: {},
     busyLabel: {},
     transcriptLoading: {},
-    switchInFlight: {},
-    features: { nativeView: false },
   } as unknown as Partial<AppState>);
   return store;
 };

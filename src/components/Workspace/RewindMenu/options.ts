@@ -13,8 +13,7 @@ export interface RewindOption {
  *  was kept), or nothing yet. */
 export type CodeState = { report: RestoreReport } | { unavailable: string } | "checking";
 
-/** Why no rewind can start now, if none can: the agent is mid-turn. The view
- *  is no obstacle: the rewound session launches in it like any other. */
+/** Why no rewind can start now, if none can: the agent is mid-turn. */
 export function rewindBlocker(agent: Pick<AgentRecord, "status">): string | null {
   if (agent.status === "running" || agent.status === "spawning") return "Stop the agent first.";
   return null;

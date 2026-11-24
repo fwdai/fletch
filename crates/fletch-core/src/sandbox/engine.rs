@@ -103,7 +103,6 @@ pub struct AgentLaunchCtx<'a> {
     pub rpc_dir: &'a Path,
     pub cwd: &'a Path,
     pub home: &'a Path,
-    pub interactive: bool,
     /// A workflow step agent's blackboard directory
     /// (`~/.fletch/runs/<run-id>/blackboard/`), granted read-write into the
     /// sandbox on top of the writable root: seatbelt adds it as a writable
@@ -321,7 +320,7 @@ pub struct LaunchPlan {
     pub kill: KillHandle,
     /// Whether the claude this plan runs — the binary the engine committed to
     /// in `launch_agent`: the host's or a box's tools
-    /// disk's — parses `--thinking-display`, so the custom view can ask it for
+    /// disk's — parses `--thinking-display`, so the launch can ask it for
     /// thinking summaries (`agent::args::prepare_managed_args`). A claude that
     /// doesn't parse the flag refuses to launch with it, so this is evidence
     /// about that very binary (`agent::probe`), never a guess from another;
@@ -373,7 +372,6 @@ mod tests {
             rpc_dir: Path::new("/rpc/yosemite"),
             cwd,
             home: Path::new("/home/u"),
-            interactive: true,
             blackboard: None,
             account_dir: None,
             oauth_token: None,

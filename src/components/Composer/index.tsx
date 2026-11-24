@@ -153,7 +153,7 @@ interface Props {
    *  then `onSeedConsumed` fires so the parent can clear it. */
   seed?: string;
   onSeedConsumed?: () => void;
-  /** Persists unsent text across view switches (which remount this component).
+  /** Persists unsent text across remounts (switching agents or screens).
    *  Use the agent id for existing chats, the draft id for the new-agent
    *  composer. The initial value is restored from the store on mount and kept
    *  in sync on every edit; omit it to disable draft persistence. */

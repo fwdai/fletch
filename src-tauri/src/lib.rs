@@ -33,9 +33,9 @@ pub use fletch_core::{
     activity, agent, agent_install, agent_profile, attachments, bin_resolve, child_io, cloud,
     codegraph, database, download, error, exec_session, git, git_dist, git_state, github, host,
     instructions, issues, keychain, linear, managed_session, message_queue, model_catalog, names,
-    native_input, new_project, power, pty_session, publish_prefs, roadmap, rpc, run_detect,
-    run_env, run_session, sandbox, secrets, slash_commands, supervisor, telemetry, transcripts,
-    usage_scan, verify, workflow, workspace,
+    new_project, power, pty_session, publish_prefs, roadmap, rpc, run_detect, run_env, run_session,
+    sandbox, secrets, slash_commands, supervisor, telemetry, transcripts, usage_scan, verify,
+    workflow, workspace,
 };
 // Paired-device remote access (Settings → Devices). Desktop-only: the
 // host is the machine agents run on, never the phone.
@@ -1277,11 +1277,8 @@ pub fn run() {
             commands::undo_code_restore,
             commands::discard_code_undo,
             commands::has_code_undo,
-            commands::write_to_agent,
             commands::send_user_message,
             commands::answer_tool_use,
-            commands::resize_agent,
-            commands::switch_view,
             commands::set_agent_effort,
             commands::set_agent_model,
             commands::grant_agent_folder,

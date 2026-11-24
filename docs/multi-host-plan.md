@@ -40,9 +40,9 @@ sound in shape. What follows is only what was wrong, understated, or missing.
 
 ### 1.2 Open questions in the original, now answered
 
-- **PTY scrollback on the host: none for agent and shell PTYs.** `pty_session.rs`
-  is a thin `portable_pty` wrapper; `agent:output` is emitted per PTY chunk
-  (`supervisor/lifecycle.rs:1575` → `events.rs:35`) and forgotten. The only
+- **PTY scrollback on the host: none for shell PTYs.** `pty_session.rs`
+  is a thin `portable_pty` wrapper; `shell:output` is emitted per PTY chunk
+  and forgotten. The only
   replay buffer is in the **frontend**: `src/pty/channel.ts` keeps a 256 KiB
   ring per agent, replayed on first mount and documented as lossy. Run sessions
   are the exception: `run_session.rs` keeps a 5 MiB backend log exposed by the
@@ -575,7 +575,7 @@ Every row is a remote-parity gap; local behaviour is unaffected.
 | 11 | `admin` op to start the GitHub device flow from a client and return the code | M | 3 | 1.5 | 13 | GitHub login on a host without a shell |
 | 12 | Mobile multi-host UI (store map, host switcher) on top of the shared registry | M | 3 | 1.5 | Phase 6 step 1 | Phone controls several hosts |
 | 13 | Op registry with per-device `scopes` (Phase 4) | L | 3 | 1.0 | Phase 2 | Graduated permissions; prerequisite for terminal ops |
-| 14 | PTY streams (Phase 5): host-side retained buffer, `stream_open/close`, binary frames, coalescing | XL | 5 | 1.25 | 13 | Native-view agents, side shells and run scripts on remote hosts |
+| 14 | PTY streams (Phase 5): host-side retained buffer, `stream_open/close`, binary frames, coalescing | XL | 5 | 1.25 | 13 | Side shells and run scripts on remote hosts |
 | 15 | Generated Operations/Events tables in `docs/remote-protocol.md`, CI diff check | M | 2 | 1.0 | 13 | Doc cannot drift from code |
 | 15a | Local engine as a sidecar process (desktop spawns `fletch-host`, renderer connects over a Unix socket, T3Code's model) | L | 3 | 1.0 | 13, 14 | Agents survive a webview crash or app restart; one code path for local and remote. Not before 13 and 14: without them all 212 commands and PTY output would have to cross the socket on day one |
 | 16 | "Add host over SSH" bootstrap (install runtime, start service, pair) | L | 3 | 1.0 | Phase 3, Phase 6 | Zero-touch cloud host setup |
@@ -631,7 +631,7 @@ pass), which need a real machine and a phone.
 - [x] Shared Rust dialer `fletch_proto::client::Dialer` (many connections, keyed by connection id); desktop `remote_connect/send/close/device_public_key`; desktop device key. PR #756.
 - [x] Paired hosts part a: `remote.hosts` setting, background connections after first paint, Settings → Remote control → Paired hosts (paste link, state dot, Forget). PR #758.
 - [x] Paired hosts part b: switcher in the sidebar header (only when a host is saved), `switchEnvironment` (stash/restore workspace-shaped state + selected agent, detach/re-attach engine listeners), per-slice agent-id collision table, capability gating from `protocol` (add project, shells, run, workflows, roadmap, native view, fork; autopilot local-only), reconnect refetch, `retrying` on the entry. PR #763.
-- [ ] Manual pass (all client PRs merged): local app unchanged with no hosts; device key created lazily and `host_key` untouched; native-view replay after env-keyed PTY buffers; pair a phone against a desktop built on `fletch-proto`.
+- [ ] Manual pass (all client PRs merged): local app unchanged with no hosts; device key created lazily and `host_key` untouched; side-shell replay after env-keyed PTY buffers; pair a phone against a desktop built on `fletch-proto`.
 
 ### 6.2 Deferred (§5.3)
 

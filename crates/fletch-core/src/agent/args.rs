@@ -6,8 +6,7 @@ use crate::instructions;
 
 use super::spawn::{SessionStart, SpawnSpec};
 
-/// Claude's session-level effort flag (`--effort <level>`), shared by the
-/// managed (custom-view) and PTY (native-view) arg builders. Empty when no
+/// Claude's session-level effort flag (`--effort <level>`). Empty when no
 /// effort was selected for the session, so claude falls back to its own
 /// default. Effort is a spawn-time flag for the whole session, not per-turn
 /// (unlike the per-turn agents' `thinking` arg) — see `providerDetail.ts`.
@@ -52,7 +51,7 @@ pub(crate) fn subagent_args(codegraph_available: bool) -> Vec<String> {
     ]
 }
 
-/// Claude's session flags, shared by the managed and PTY builders.
+/// Claude's session flags.
 fn session_args(start: SessionStart, session_id: &str) -> Vec<String> {
     let flag = match start {
         SessionStart::Fresh => "--session-id",
@@ -65,24 +64,7 @@ fn session_args(start: SessionStart, session_id: &str) -> Vec<String> {
 /// by the spawn path (see `agent::mcp_delivery`) — for claude that's
 /// `--mcp-config <path> --strict-mcp-config`. Empty when no servers are
 /// attached.
-pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) -> Vec<String> {
-    let mut args: Vec<String> = vec![
-        "--dangerously-skip-permissions".into(),
-        "--permission-mode".into(),
-        "bypassPermissions".into(),
-    ];
-    args.extend(effort_args(spec.effort));
-    args.extend(model_args(spec.model));
-    // The text itself, not the file the custom view reads: a TUI that took
-    // the file form for print mode only would drop it unseen (`instructions`).
-    args.extend(instructions::append_system_prompt_args(spec.instructions));
-    args.extend(crate::attribution::claude_settings_args());
-    args.extend_from_slice(mcp_args);
-    args.extend(subagent_args(spec.codegraph_available));
-    args.extend(session_args(spec.start, spec.session_id));
-    args
-}
-
+///
 /// `thinking_summaries`: whether the claude this launch runs parses
 /// `--thinking-display` (see below). `system_prompt`: the file the session's
 /// instruction text was written to (`agent_profile::write_system_prompt`),

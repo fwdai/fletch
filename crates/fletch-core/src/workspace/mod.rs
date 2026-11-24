@@ -51,23 +51,6 @@ pub enum AgentStatus {
     Error,
 }
 
-/// Which view the user has open for an agent. Both views attach to the
-/// same conversation (via claude's --session-id / --resume), but each
-/// view requires a different process shape, so only one can be live at
-/// a time per agent. The user can toggle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum AgentView {
-    /// Structured chat UI rendered from the agent's stream-json events.
-    #[default]
-    Custom,
-    /// The agent's own interactive TUI, streamed into an xterm that owns stdin
-    /// too — keystrokes go straight to the PTY. App-originated messages are
-    /// typed in as a line (see `agent::spawn::pty_input_line`).
-    Native,
-}
-
 /// One repo an agent has a checkout in.
 ///
 /// At spawn time every agent gets `repos[0]` populated from the
@@ -285,16 +268,13 @@ pub struct AgentRecord {
     pub repos: Vec<TrackedRepo>,
     pub task: String,
     pub status: AgentStatus,
-    #[serde(default)]
-    pub view: AgentView,
     /// UUID claude uses to persist this agent's conversation. Set on
-    /// first spawn; used with --resume on subsequent process spawns
-    /// (e.g. when the user switches views).
+    /// first spawn; used with --resume on subsequent process spawns.
     #[serde(default)]
     pub session_id: Option<String>,
     /// Claude's session-level reasoning effort (`--effort <level>`), chosen in
     /// the composer at session creation and applied on every process spawn
-    /// (fresh, view-switch, resume). `None` = no selection; claude uses its
+    /// (fresh, resume). `None` = no selection; claude uses its
     /// own default. Only the persistent-runner agent (claude) consumes this;
     /// per-turn agents take effort per-turn instead.
     #[serde(default)]
@@ -577,20 +557,6 @@ pub fn derive_status(
     AgentStatus::Idle
 }
 
-fn view_to_str(v: &AgentView) -> &'static str {
-    match v {
-        AgentView::Custom => "custom",
-        AgentView::Native => "native",
-    }
-}
-
-fn str_to_view(s: &str) -> AgentView {
-    match s {
-        "native" => AgentView::Native,
-        _ => AgentView::Custom,
-    }
-}
-
 fn millis_to_iso(millis: i64) -> String {
     DateTime::from_timestamp_millis(millis)
         .unwrap_or_default()
@@ -647,8 +613,7 @@ pub struct UserTurn {
     /// Matched `session_records.native_id`; `None` = pending or failed turn.
     pub native_id: Option<String>,
     /// Wall-clock millis when the turn flipped to Running. `None` for turns
-    /// that never started a run (native PTY turns, or rows from before timing
-    /// existed).
+    /// that never started a run, and for rows from before timing existed.
     pub started_at: Option<i64>,
     /// Wall-clock millis when the turn reached a terminal state. `None` while
     /// in flight — the live-timer signal.
@@ -711,7 +676,8 @@ impl TurnOutcome {
 
 /// Stats for a turn that `mark_user_turn_ended` just closed, returned so the
 /// caller can emit per-turn telemetry. `None` from that call means no open turn
-/// existed (resting Idle at spawn, or a native turn with no timing row).
+/// existed (resting Idle at spawn, or a turn the provider opened on its own,
+/// which has no row).
 pub struct ClosedTurn {
     /// Wall-clock run duration (`ended_at - started_at`).
     pub duration_ms: i64,
@@ -725,14 +691,14 @@ pub struct WorkspaceManager {
 }
 
 /// Identity + task metadata live on `workspaces`; the provider run
-/// (provider / view / session id / last_error / effort / model /
+/// (provider / session id / last_error / effort / model /
 /// instructions / custom agent / lineage) lives on the workspace's current
 /// `sessions` row — joined on its own, so a workspace is one row however many
 /// superseded sessions it keeps. Status is derived, never selected. Callers
 /// append their own `ORDER BY` / `WHERE`.
 const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
             w.stopped_at, w.archived_at,
-            s.provider, s.view, s.provider_session_id, s.last_error,
+            s.provider, s.provider_session_id, s.last_error,
             s.effort, s.model, s.instructions, s.handoff_context, s.custom_agent_id,
             s.skills, s.mcp_servers,
             w.sandbox_engine, w.owner_run_id, w.issue_ref, w.purpose, w.title,
@@ -750,7 +716,6 @@ type AgentRow = (
     Option<i64>,    // w.stopped_at
     Option<i64>,    // w.archived_at
     Option<String>, // s.provider
-    Option<String>, // s.view
     Option<String>, // s.provider_session_id
     Option<String>, // s.last_error
     Option<String>, // s.effort

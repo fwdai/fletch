@@ -121,7 +121,6 @@ fn seatbelt_run(
         rpc_dir: &rpc,
         cwd,
         home: &home,
-        interactive: false,
         blackboard: None,
         account_dir: None,
         oauth_token: Some(token),

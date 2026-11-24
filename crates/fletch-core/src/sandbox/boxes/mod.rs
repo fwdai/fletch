@@ -1284,24 +1284,18 @@ fn agent_remote_command(
 }
 
 /// The argv after [`SSH`] for one process of an agent launch, whose
-/// arguments were staged in `args_file`: `command` run in the guest (`-tt`
-/// when `interactive`, the PTY view), over the box's shared connection unless
-/// the command is too long for it ([`executor::SHARED_CONNECTION_COMMAND_MAX`]).
+/// arguments were staged in `args_file`: `command` run in the guest without a
+/// tty, over the box's shared connection unless the command is too long for it
+/// ([`executor::SHARED_CONNECTION_COMMAND_MAX`]).
 /// The launcher is ssh itself: it writes nothing in the guest.
-fn agent_launcher(
-    ssh_config: &Path,
-    interactive: bool,
-    args_file: &Path,
-    command: &AgentCommand,
-) -> Vec<String> {
+fn agent_launcher(ssh_config: &Path, args_file: &Path, command: &AgentCommand) -> Vec<String> {
     let remote = command.with_args_file(args_file);
     let mut args = vec!["-F".to_string(), ssh_config.to_string_lossy().into_owned()];
     if remote.len() > executor::SHARED_CONNECTION_COMMAND_MAX {
         args.extend(["-S".to_string(), "none".to_string()]);
     }
-    let tty = if interactive { "-tt" } else { "-T" };
     args.extend([
-        tty.to_string(),
+        "-T".to_string(),
         fletch_box::guest::SSH_HOST_ALIAS.to_string(),
         remote,
     ]);
@@ -1512,18 +1506,13 @@ impl SandboxEngine for BoxEngine {
         let files = Arc::new(launch_files::LaunchFiles::new(&launch_id));
         let stage_args: crate::sandbox::StageArgs = {
             let (files, box_agent_id) = (files.clone(), box_agent_id.clone());
-            let (ssh_config, interactive) = (running.channel.config.clone(), ctx.interactive);
+            let ssh_config = running.channel.config.clone();
             Arc::new(move |args: &[String]| {
                 let channel = BoxRegistry::global().channel_for(&box_agent_id)?;
                 let args_file = files.stage(args, |path, bytes| {
                     executor::put(&channel, bytes, path, 0o600)
                 })?;
-                Ok(agent_launcher(
-                    &ssh_config,
-                    interactive,
-                    &args_file,
-                    &command,
-                ))
+                Ok(agent_launcher(&ssh_config, &args_file, &command))
             })
         };
 

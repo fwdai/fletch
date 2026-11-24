@@ -92,15 +92,8 @@ export function compactBlocker(state: AppState, agentId: string): string | null 
   // again would summarize a summary. The badge hides its button for the same
   // reason; this keeps ⌘⇧K in step.
   if (state.usage[agentId]?.context.compacted) return "Nothing new to compact";
-  if (state.features.nativeView && agent.view === "native") {
-    return "Type /compact in the terminal";
-  }
   if (isAgentBusy(state, agentId)) return "Available when the agent is idle";
-  if (
-    agent.status !== "idle" ||
-    state.transcriptLoading[agentId] ||
-    state.switchInFlight[agentId]
-  ) {
+  if (agent.status !== "idle" || state.transcriptLoading[agentId]) {
     return "Agent is not ready";
   }
   return null;

@@ -3,7 +3,6 @@ import type { SkillSnapshot } from "@/storage/skills";
 import type { Invoke } from "../invoke";
 import type {
   AgentRecord,
-  AgentView,
   FolderGrant,
   FolderGranted,
   FolderGrantsUpdate,
@@ -18,7 +17,6 @@ import type { LocalWorkspaceKind, WorkspaceKind } from "../types/sandbox";
 
 export const agentsApi = (invoke: Invoke) => ({
   spawnAgent: (
-    view: AgentView,
     repoPath: string,
     provider?: string,
     name?: string,
@@ -63,7 +61,6 @@ export const agentsApi = (invoke: Invoke) => ({
     workspaceType?: WorkspaceKind,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
-      view,
       repoPath,
       provider,
       name,
@@ -122,8 +119,6 @@ export const agentsApi = (invoke: Invoke) => ({
   /** Whether the agent's last code restore can still be undone. Its undo
    *  point lasts until it is used or discarded, or the next turn starts. */
   hasCodeUndo: (agentId: string) => invoke<boolean>("has_code_undo", { agentId }),
-  writeToAgent: (agentId: string, data: string) =>
-    invoke<void>("write_to_agent", { agentId, data }),
   /** Resolves to `true` when the message was enqueued for a later turn boundary
    *  rather than delivered now (injected live / sent as a new turn). */
   sendUserMessage: (agentId: string, turnId: string, text: string, attachments: string[] = []) =>
@@ -147,9 +142,6 @@ export const agentsApi = (invoke: Invoke) => ({
       behavior,
       message: message ?? null,
     }),
-  resizeAgent: (agentId: string, cols: number, rows: number) =>
-    invoke<void>("resize_agent", { agentId, cols, rows }),
-  switchView: (agentId: string, view: AgentView) => invoke<void>("switch_view", { agentId, view }),
   setAgentEffort: (agentId: string, effort: string | null) =>
     invoke<void>("set_agent_effort", { agentId, effort }),
   setAgentModel: (agentId: string, model: string | null) =>

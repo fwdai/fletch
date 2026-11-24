@@ -26,7 +26,6 @@ const agent = (over: Partial<AgentRecord> = {}): AgentRecord => ({
   repos: [{ repo_path: "/repos/acme", subdir: "" }],
   task: "",
   status: "idle",
-  view: "custom",
   created_at: "2026-11-19T00:00:00Z",
   sandbox_engine: "box",
   ...over,

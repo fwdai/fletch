@@ -183,9 +183,9 @@ describe("mergeUserTurns", () => {
   });
 
   it("keeps an unmatched turn from shifting the turn ids of the ones around it", () => {
-    // A prompt typed in the terminal (no row) and an echo-less turn between
+    // A prompt Fletch did not send (no row) and an echo-less turn between
     // two paired ones: each paired turn still lands on its own record.
-    const items = [user("one", 1), user("native", 2), user("three", 4)];
+    const items = [user("one", 1), user("rowless", 2), user("three", 4)];
     const out = mergeUserTurns(items, [
       echoed("t1", "one", 1),
       turn({ turn_id: "t2", text: "two", position: 4, ended_at: 1, outcome: "interrupted" }),
@@ -193,7 +193,7 @@ describe("mergeUserTurns", () => {
     ]);
     expect(shape(out)).toEqual([
       ["user_message", "one", "t1"],
-      ["user_message", "native", undefined],
+      ["user_message", "rowless", undefined],
       ["user_message", "two", "t2"],
       ["user_message", "three", "t3"],
     ]);

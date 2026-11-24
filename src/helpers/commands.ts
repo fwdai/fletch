@@ -220,7 +220,7 @@ const CLAUDE_TUI_ONLY_COMMANDS = new Set([
  *  unsupported over stream-json — and NOT a command we actually handle for this
  *  provider (local or passthrough, built-in or discovered) — return its bare
  *  name; otherwise null. Scoped to claude; other providers never match. The
- *  store uses this to block the send and surface a "use the Native view" notice
+ *  store uses this to block the send and surface a "use the terminal" notice
  *  instead of dispatching a doomed turn that flashes and disappears. */
 export async function unsupportedManagedCommand(
   engine: Pick<Engine, "api" | "hostId">,

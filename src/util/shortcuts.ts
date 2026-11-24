@@ -222,7 +222,7 @@ const ACTIONS: Record<string, Action> = {
         void s.stop(agent.id);
     },
   },
-  // The store checks the agent can compact now (provider, idle, chat view).
+  // The store checks the agent can compact now (provider, idle).
   compactAgent: {
     whileTyping: true,
     run: () => {

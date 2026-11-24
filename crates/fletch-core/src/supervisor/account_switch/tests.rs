@@ -5,8 +5,6 @@ use std::sync::Arc;
 use super::*;
 use crate::agent::Agent;
 use crate::host::sink::RecordingSink;
-use crate::pty_session::{PtySession, PtySpawn};
-use crate::sandbox::KillHandle;
 use crate::supervisor::login_refresh::LoginVerdict;
 use crate::supervisor::tests::{
     committed_repo, record_in_checkouts, record_with_status, test_supervisor,
@@ -68,19 +66,17 @@ async fn agent_on(dir: &Path, account: Option<&str>) -> Arc<Supervisor> {
 }
 
 fn live_process(sup: &Supervisor, dir: &Path) {
-    let pty = cat_pty(dir);
     sup.agents
         .lock()
-        .insert(AGENT.to_string(), Arc::new(Agent::over_pty(pty)));
+        .insert(AGENT.to_string(), Arc::new(Agent::idle_process(dir, None)));
 }
 
 /// A live process launched on a host token, so a 401 result reaches the
 /// login retry (`observe_login`).
 fn live_process_with_login(sup: &Supervisor, dir: &Path) {
-    let pty = cat_pty(dir);
     sup.agents.lock().insert(
         AGENT.to_string(),
-        Arc::new(Agent::over_pty_with_login(pty, far_future_ms())),
+        Arc::new(Agent::idle_process(dir, Some(far_future_ms()))),
     );
 }
 
@@ -91,25 +87,6 @@ fn rejected_result() -> serde_json::Value {
         "api_error_status": 401,
         "result": "Failed to authenticate. API Error: 401",
     })
-}
-
-fn cat_pty(dir: &Path) -> PtySession {
-    PtySession::spawn(
-        PtySpawn {
-            program: Path::new("/bin/cat"),
-            args: &[],
-            cwd: dir,
-            env: &[],
-            cols: 80,
-            rows: 24,
-            env_remove: &[],
-            kill_plan: KillHandle::ProcessGroup,
-            after_exit: None,
-        },
-        |_| {},
-        |_| {},
-    )
-    .unwrap()
 }
 
 fn stamp(sup: &Supervisor) -> Option<String> {

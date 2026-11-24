@@ -179,8 +179,7 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
   itself. The snapshot seeds a temporary index from the real one, so only
   changed files are re-hashed.
 - No checkpoint is taken for: live-injected mid-turn messages (the agent is
-  mid-edit), native PTY typing (no turn row), or workflow step agents
-  (`owner_run_id`, which share a tree).
+  mid-edit), or workflow step agents (`owner_run_id`, which share a tree).
 - Checkpoints live in the checkout, so they disappear when the checkout is
   deleted on archive. "Code as of this message" is then unavailable.
 - A child receives a checkpoint by fetching its ref from the checkout that
@@ -242,7 +241,7 @@ turn and no archive takes the workspace halfway through.
   in any way, whichever comes first. An undo applies only while every restored
   checkout is exactly as the restore left it (HEAD and the working tree,
   ignored files aside), so it never discards newer work, whether a turn, the
-  native view, the terminal or an editor made it. `has_code_undo` tells a
+  terminal or an editor made it. `has_code_undo` tells a
   client whether a valid one is still there, after a restart too.
 - **Conversation:**
   1. Resolve `Before(T)` to the lineage `(session owning T, cut before T)`.
@@ -361,7 +360,6 @@ tracking ref; the conversation as a rewind's `Exact` through `End`.
   `native_id`: the prefix rule covers it.
 
 ## Known limits (v1)
-- Native PTY turns can't be anchors or checkpoints.
 - Native continuation is claude, codex and pi. Cursor, Antigravity and
   OpenCode fork and rewind with `Summary`.
 - A claude checkout path over 200 characters can't be materialized: claude

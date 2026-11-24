@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::host::EngineCtx;
 use crate::sandbox::WorkspaceType;
 use crate::supervisor::{SpawnRequest, Supervisor};
-use crate::workspace::{AgentRecord, AgentView, FolderGrant};
+use crate::workspace::{AgentRecord, FolderGrant};
 
 /// The user-spawn field mapping: the argument defaults every caller funnels
 /// through on the way to `Supervisor::spawn_agent`. Shared by the desktop's
@@ -20,7 +20,6 @@ use crate::workspace::{AgentRecord, AgentView, FolderGrant};
 pub async fn spawn_agent_impl(
     sup: Arc<Supervisor>,
     ctx: Arc<EngineCtx>,
-    view: Option<AgentView>,
     repo_path: String,
     provider: Option<String>,
     name: Option<String>,
@@ -42,7 +41,6 @@ pub async fn spawn_agent_impl(
     sup.spawn_agent(
         ctx,
         SpawnRequest {
-            view: view.unwrap_or_default(),
             repo_path: PathBuf::from(repo_path),
             provider: provider.unwrap_or_else(|| "claude".to_string()),
             name,

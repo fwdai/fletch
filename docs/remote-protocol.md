@@ -368,10 +368,7 @@ or a PR number. Transcript text never leaves the Mac.
   them. A token is a routing handle, not a credential: with it and the relay's
   APNs key one can send this phone a Fletch-branded alert, nothing more.
 - **Triggers (host).** `turn_complete`: an agent's status goes
-  `running → idle` and the user did not stop or interrupt it. Native-view
-  agents are excluded: their status is read off terminal quiet and can flap
-  several times in one turn, and the desktop does not notify for them either
-  (phones only spawn the structured view anyway). `needs_input`:
+  `running → idle` and the user did not stop or interrupt it. `needs_input`:
   the first held `control_request` (`can_use_tool`) for an agent while none is
   pending for it — one alert per batch of parallel prompts, cleared when the
   turn ends. Both mirror `signalAway` in `src/store/eventListeners.ts`.
@@ -854,7 +851,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 |---|---|---|
 | `get_workspace` | `{}` | `Workspace \| null` |
 | `allocate_draft_name` | `{ drafts: string[] }` | `string` |
-| `spawn_agent` | as command; host forces `view: "custom"` and ignores `skills` / `mcpServers` — it resolves `customAgentId` against its own library instead, stamping that row's brief, skills and MCP servers on the session (a dangling id spawns a plain agent, and the phone's `instructions` are used only when the row's brief is blank). `purpose` is honoured only when it is `"roadmap-pm"` (see "Planning chats from the phone") and dropped otherwise. `folderGrants` (`{ path, writable }[]`) name folders on the host, each checked as `grant_agent_folder` checks it; one refused fails the spawn | `AgentRecord` |
+| `spawn_agent` | as command; host ignores `skills` / `mcpServers` (and a `view` key an older client still sends) — it resolves `customAgentId` against its own library instead, stamping that row's brief, skills and MCP servers on the session (a dangling id spawns a plain agent, and the phone's `instructions` are used only when the row's brief is blank). `purpose` is honoured only when it is `"roadmap-pm"` (see "Planning chats from the phone") and dropped otherwise. `folderGrants` (`{ path, writable }[]`) name folders on the host, each checked as `grant_agent_folder` checks it; one refused fails the spawn | `AgentRecord` |
 | `send_user_message` | `{ agentId, turnId, text, attachments: string[] }` — paths from `attachment_end` (see "Attachments") | `boolean` |
 | `answer_tool_use` | `{ agentId, requestId, updatedInput, behavior, message? }` | `null` |
 | `answer_publish_approval` | `{ id, approved }` — `id` from the `publish:approval-requested` event; an id the host has already timed out is ignored | `null` |
@@ -1040,8 +1037,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
 (`write_checkout_file`, `rename_*`, `delete_*`, `create_*`, `copy_*`), shell
-ops (`open_agent_shell`, `write_to_shell`, …), `write_to_agent` (raw PTY),
-editor/log/telemetry ops, the provider install/login ops (`install_agent`,
+ops (`open_agent_shell`, `write_to_shell`, …), editor/log/telemetry ops, the provider install/login ops (`install_agent`,
 `open_provider_login`) and the two desktop provider probes behind Settings ›
 Providers (`probe_provider_versions`, `probe_provider_auth`, which answer with
 resolved binary paths), the cloud provider connection behind Settings
@@ -1767,7 +1763,7 @@ the stored string, `null` for a deleted row.
 write to the project's context on the host). It carries no row: a client
 re-reads `context_overview`, which is small by design.
 
-Never forwarded: `agent:output`, `shell:output`, `run:output` (raw PTY bytes),
+Never forwarded: `shell:output`, `run:output` (raw PTY bytes),
 the rest of `run:*`, `dictation:*` and `agent-install:*`.
 
 Delivery is best effort, exactly like the desktop frontend: the phone must

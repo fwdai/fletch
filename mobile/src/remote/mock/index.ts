@@ -905,7 +905,6 @@ export class MockHost {
           ],
           task: "",
           status: "spawning",
-          view: "custom",
           session_id: null,
           created_at: new Date().toISOString(),
           last_error: null,

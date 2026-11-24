@@ -62,7 +62,7 @@ pub async fn has_undo(checkout: &Path) -> Result<bool> {
 /// Whether `checkout` is still exactly as the restore its undo point was
 /// pinned for left it: HEAD on the checkpoint's parent, and the working tree,
 /// ignored files aside, the checkpoint's tree. Anything since — a commit, an
-/// edit, a new file, from any view, terminal or editor — and an undo would
+/// edit, a new file, from a turn, the terminal or an editor — and an undo would
 /// discard it. `false` when there is no restore to compare with.
 pub async fn undo_is_current(checkout: &Path) -> Result<bool> {
     let Some(restored) = resolve_ref(checkout, RESTORED_REF).await? else {

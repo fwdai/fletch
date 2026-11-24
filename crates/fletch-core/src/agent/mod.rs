@@ -1,19 +1,17 @@
 //! Per-agent lifecycle.
 //!
 //! An agent is a git worktree + a coding-agent process running inside
-//! it. There are three runner shapes:
+//! it. There are two runner shapes, both rendered by the app as structured
+//! chat:
 //!
-//! - **Pty** (native view): a sandboxed agent process in a PTY rendering its
-//!   own TUI; xterm owns stdin, so the user types straight into it.
-//! - **Managed** (claude custom view): a sandboxed, persistent
-//!   `claude --print` stream-json subprocess; the app renders structured
-//!   chat. Both claude shapes attach to the same conversation via
+//! - **Managed** (claude): a sandboxed, persistent `claude --print`
+//!   stream-json subprocess. It attaches to its conversation via
 //!   `--session-id <uuid>` until its transcript holds a message and
 //!   `--resume <uuid>` after (`SessionStart`).
-//! - **CodexManaged** (codex custom view): codex's `exec` runs one turn
-//!   and exits, so there's no persistent process — each user message
-//!   spawns a fresh `codex exec [resume <id>]` (see `codex_session`).
-//!   Codex sandboxes itself rather than running under sandbox-exec.
+//! - **PerTurn** (codex, cursor, opencode, pi, antigravity): the CLI runs one
+//!   turn and exits, so there's no persistent process — each user message
+//!   spawns a fresh one (e.g. `codex exec [resume <id>]`, see
+//!   `exec_session`).
 
 mod account_identity;
 pub mod accounts;
@@ -36,7 +34,6 @@ mod tests;
 
 use crate::exec_session::ExecSession;
 use crate::managed_session::ManagedSession;
-use crate::pty_session::PtySession;
 
 pub(crate) use auth_probe::env_key_present;
 pub use auth_probe::{probe_all_provider_auth, AuthStatus, ProviderAuthProbe};
@@ -65,7 +62,6 @@ pub use transcript::{
 pub(crate) use transcript::{write_new_jsonl, SUBAGENT_TAG};
 
 pub enum Agent {
-    Pty(PtyAgent),
     Managed(ManagedAgent),
     /// A per-turn runner (codex, cursor): holds no live process between
     /// turns; each user message spawns a fresh process. The agent
@@ -73,36 +69,56 @@ pub enum Agent {
     PerTurn(PerTurnAgent),
 }
 
-pub struct PtyAgent {
-    pty: PtySession,
-    /// When the claude access token this process was launched with lapses
-    /// (`host_login::claude`). The process can't take a new one, so the supervisor
-    /// relaunches it before a turn that would outrun it.
-    login_expires_at_ms: Option<i64>,
-}
-
 #[cfg(test)]
 impl Agent {
-    /// An agent over a bare PTY process, for a test that needs a live process
-    /// to hand messages to.
-    pub(crate) fn over_pty(pty: PtySession) -> Self {
-        Self::Pty(PtyAgent {
-            pty,
-            login_expires_at_ms: None,
+    /// An agent over a bare process (`program args` in `cwd`), for a test that
+    /// needs a live one to hand messages to. `login_expires_at_ms` is the host
+    /// token it would have been launched on, when the test is about one.
+    pub(crate) fn over_process(
+        program: &std::path::Path,
+        args: &[String],
+        cwd: &std::path::Path,
+        login_expires_at_ms: Option<i64>,
+        on_exit: impl Fn(crate::managed_session::ManagedExit) + Send + 'static,
+    ) -> Self {
+        let session = ManagedSession::spawn(
+            crate::managed_session::ManagedSpawn {
+                program,
+                args,
+                cwd,
+                env: &[],
+                env_remove: &[],
+                kill_plan: crate::sandbox::KillHandle::ProcessGroup,
+                after_exit: None,
+            },
+            |_| {},
+            on_exit,
+        )
+        .expect("the stand-in process starts");
+        Self::Managed(ManagedAgent {
+            session,
+            login_expires_at_ms,
         })
     }
 
-    pub(crate) fn over_pty_with_login(pty: PtySession, login_expires_at_ms: i64) -> Self {
-        Self::Pty(PtyAgent {
-            pty,
-            login_expires_at_ms: Some(login_expires_at_ms),
-        })
+    /// [`Agent::over_process`] for a process that takes whatever it is handed
+    /// and ignores it.
+    pub(crate) fn idle_process(cwd: &std::path::Path, login_expires_at_ms: Option<i64>) -> Self {
+        Self::over_process(
+            std::path::Path::new("/bin/sh"),
+            &["-c".to_string(), "cat >/dev/null".to_string()],
+            cwd,
+            login_expires_at_ms,
+            |_| {},
+        )
     }
 }
 
 pub struct ManagedAgent {
     session: ManagedSession,
-    /// As [`PtyAgent::login_expires_at_ms`].
+    /// When the claude access token this process was launched with lapses
+    /// (`host_login::claude`). The process can't take a new one, so the supervisor
+    /// relaunches it before a turn that would outrun it.
     login_expires_at_ms: Option<i64>,
 }
 
@@ -144,11 +160,6 @@ pub struct OneShot {
     /// writes when passed this flag and a path.
     pub reply_flag: Option<&'static str>,
 }
-
-/// Builds the native (PTY) view launch args from
-/// `(session [None = fresh], model, custom_instructions, mcp_args)`.
-pub(crate) type PtyArgsBuilder =
-    fn(Option<&str>, Option<&str>, Option<&str>, &[String]) -> Vec<String>;
 
 /// Places the session's MCP servers where a provider's CLI will find them.
 ///

@@ -13,7 +13,6 @@ import { CloudPane } from "./CloudPane";
 import { CustomAgentsPane } from "./CustomAgents";
 import { DevicesPane } from "./Devices";
 import { DictationPane } from "./Dictation";
-import { ExperimentalPane } from "./ExperimentalPane";
 import { GeneralPane } from "./GeneralPane";
 import { GitPane } from "./GitPane";
 import { LayoutPane } from "./LayoutPane";
@@ -178,7 +177,6 @@ function SettingsBody() {
               <McpServersPane />
             </HostScope>
           )}
-          {visible && section === "experimental" && <ExperimentalPane />}
           {visible && section === "developer" && (
             <Suspense fallback={null}>
               <HostScope>

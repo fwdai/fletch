@@ -140,7 +140,7 @@ impl WorkspaceManager {
     /// timestamp so the same value reaches the live timer (via the `turn:started`
     /// event) and the persisted duration. Guarded on `started_at IS NULL` so a
     /// delivery retry (same `turn_id`) never resets the clock. No-op when the row
-    /// doesn't exist (native PTY turns carry no timing row).
+    /// doesn't exist.
     pub fn mark_user_turn_started(&self, turn_id: &str, started_at: i64) -> Result<()> {
         let conn = self.db.lock();
         conn.execute(
@@ -169,7 +169,8 @@ impl WorkspaceManager {
     /// Close the in-flight turn at turn end by stamping `ended_at` and
     /// `outcome` on the open turn (started, not yet ended) of the workspace's
     /// current session, and return its stats for telemetry. `None` when none is open — e.g. the
-    /// resting Idle emitted at spawn, or a native turn with no timing row. At
+    /// resting Idle emitted at spawn, or a turn the provider opened on its own,
+    /// which has no row. At
     /// most one turn is ever open per session (each end closes the open turn
     /// before the next one starts), but the `WHERE` would safely close all open
     /// turns if one were ever stranded; duration then anchors on the earliest.
@@ -213,8 +214,8 @@ impl WorkspaceManager {
 
     /// The newest turn of the workspace's current session to have started
     /// running — the one in flight, or the last to run. A follow-up queued
-    /// behind it has not, and a native PTY turn writes no row, so `None` also
-    /// means the host does not know which turn this is.
+    /// behind it has not, and a turn the provider opens on its own writes no
+    /// row, so `None` also means the host does not know which turn this is.
     pub fn latest_user_turn_id(&self, workspace_id: &str) -> Result<Option<String>> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
@@ -283,8 +284,8 @@ impl WorkspaceManager {
     /// "fix the build"), or contain its first attachment path when it has
     /// attachments (the runner adds an `Attached file: <path>` line, and a
     /// path is the more distinctive of the two). The guard is what keeps a
-    /// prompt typed in the native terminal, which has no row, or a user record
-    /// the provider wrote itself from being taken by the wrong turn. At worst a
+    /// user record with no row behind it (one the provider wrote itself, or a
+    /// prompt Fletch did not send) from being taken by the wrong turn. At worst a
     /// turn stays pending; a wrong claim would be worse, since every cut at the
     /// turn (`resolve_anchor`) lands on the record it claimed.
     ///

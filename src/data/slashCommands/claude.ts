@@ -13,7 +13,7 @@ import type { CommandAdapter } from "./types";
 // `claude` subcommand and render the output; `app:*` drive existing app
 // capabilities. Still absent: `/model` (needs mid-session respawn — a separate
 // change) and interactive-only panels with no headless surface (e.g. `/usage`,
-// `/agents`), which belong in the native view.
+// `/agents`), which only the CLI's own TUI can show.
 export const claudeCommandAdapter: CommandAdapter = {
   id: "claude",
   discoverable: true,

@@ -213,7 +213,7 @@ pub fn require(provider: &str) -> Result<&'static dyn ProviderHome> {
 
 /// Whether `engine` can launch `provider`, or the refusal the user sees: the
 /// one provider support gate, checked before every spawn (fresh spawns and
-/// resume/view-switch, `sandbox::ensure_supports_provider`) and behind the
+/// resumes, `sandbox::ensure_supports_provider`) and behind the
 /// box's automatic engine choice (`boxes::supports_provider`).
 ///
 /// - Seatbelt runs every provider: the CLI runs on this host as it would

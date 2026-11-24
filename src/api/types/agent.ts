@@ -2,8 +2,6 @@ import type { DiffStats } from "./git";
 
 export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
-export type AgentView = "custom" | "native";
-
 /** What a forked workspace's checkouts start from: `clean` — the parent's base
  *  branch; `current` — the parent's code now; `at_message` — the code as the
  *  anchor message's reply left it (message forks only). The last two copy the
@@ -116,7 +114,6 @@ export interface AgentRecord {
   repos: TrackedRepo[];
   task: string;
   status: AgentStatus;
-  view: AgentView;
   session_id?: string | null;
   /** Set when the agent's session continues an earlier conversation (a fork),
    *  whose history it shows before its own. */
@@ -272,13 +269,7 @@ export interface ProjectDeleteResult {
   deleted_run_ids: string[];
 }
 
-export interface AgentOutputEvent {
-  agent_id: string;
-  /** Raw PTY bytes, base64-encoded over IPC. Decode with `decodeBase64`. */
-  bytes: string;
-}
-
-/** Raw stream-json event from claude in custom view. Shape varies by
+/** Raw stream-json event from the agent's CLI. Shape varies by
  *  `type`; the UI pattern-matches. */
 export interface AgentManagedEvent {
   agent_id: string;
@@ -319,11 +310,6 @@ export interface AgentSpawnProgressEvent {
   /** What the stage is working on, when it has something to name (the repo
    *  being checked out, say). */
   detail: string | null;
-}
-
-export interface AgentViewEvent {
-  agent_id: string;
-  view: AgentView;
 }
 
 export interface AgentEffortEvent {

@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 
 vi.mock("@/api", () => ({ api: {} }));
-vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
+vi.mock("@/pty/buffers", () => ({ dropShellBuffer: vi.fn() }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
 import { activeEngine } from "@/api/engine";

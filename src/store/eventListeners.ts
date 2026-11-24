@@ -35,7 +35,7 @@ import {
   reduceRecords,
   settleLiveUsage,
 } from "@/helpers";
-import { pushAgentOutput, pushShellOutput } from "@/pty/buffers";
+import { pushShellOutput } from "@/pty/buffers";
 import { decodeBase64 } from "@/pty/decode";
 import { getOrCreateAccount, toProfile } from "@/storage/accounts";
 import {
@@ -140,8 +140,6 @@ export const hydrateSettings = async (engine: Engine, set: AppSet) => {
       newDraftCustomAgentId,
       lastRepoPath: s.lastRepoPath || undefined,
       draftBaseByRepo: parseDraftBaseBranches(s.draftBaseBranches),
-      // Opt-out: only an explicit "false" hides the native view's rail.
-      transcriptRailOpen: s.transcriptRailOpen !== "false",
       roadmapThreadOpen: s.roadmapThreadOpen !== "false",
       gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
       onboardingComplete: s.onboardingComplete === "true",
@@ -232,12 +230,6 @@ export const registerEventListeners = async (engine: Engine, set: AppSet, get: A
     if (attached.get(hostId) === mine) mine.push(off);
     else await Promise.resolve(off()).catch(() => {});
   };
-
-  await bind(
-    events.onAgentOutput((e) => {
-      pushAgentOutput(hostId, e.agent_id, decodeBase64(e.bytes));
-    }),
-  );
 
   await bind(
     events.onShellOutput((e) => {
@@ -394,8 +386,9 @@ export const registerEventListeners = async (engine: Engine, set: AppSet, get: A
             void recordWorkspaceUsage(api, id, agentRecord(get(), id)?.project_id, usage);
           }
           // The first turn captures the agent's session id in the DB; pull it
-          // into the live workspace so the Native toggle unblocks without a
-          // reload. Only when still missing locally — avoids per-turn re-fetch.
+          // into the live workspace so its history loads on a later mount
+          // without a reload. Only when still missing locally — avoids per-turn
+          // re-fetch.
           if (needsSessionIdRefresh(get().workspace, id)) {
             await refreshWorkspace(engine, set);
           }
@@ -498,12 +491,6 @@ export const registerEventListeners = async (engine: Engine, set: AppSet, get: A
   );
 
   await bind(
-    events.onAgentView((e) => {
-      patchAgent(get, set, e.agent_id, { view: e.view });
-    }),
-  );
-
-  await bind(
     events.onAgentEffort((e) => {
       patchAgent(get, set, e.agent_id, { effort: e.effort });
     }),
@@ -536,8 +523,8 @@ export const registerEventListeners = async (engine: Engine, set: AppSet, get: A
       }
       // Delivering the agent's next turn retires a rewind's code undo point
       // (undoing after it would discard that turn's work too), so re-ask
-      // whether one is left. Any other change to the code (a native-view turn,
-      // the terminal, an editor) ends it as well: the backend checks the code
+      // whether one is left. Any other change to the code (the terminal, an
+      // editor) ends it as well: the backend checks the code
       // is as the restore left it on every ask, and again before undoing.
       if (e.status === "running" && e.agent_id in get().codeUndo) {
         void get().refreshCodeUndo(e.agent_id);

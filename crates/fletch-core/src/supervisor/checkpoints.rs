@@ -145,7 +145,7 @@ impl Supervisor {
     /// - a workflow step agent (`owner_run_id`) works in a tree its run shares,
     ///   and so never has a checkpoint to restore, nor an undo point.
     ///
-    /// Live-injected messages and native PTY typing never get here.
+    /// Live-injected messages never get here.
     pub(super) async fn checkpoint_turn(&self, agent_id: &str, turn_id: &str) {
         let Ok(record) = self.workspace.agent(agent_id) else {
             return;
@@ -427,7 +427,7 @@ impl Supervisor {
     ///
     /// Refused, with nothing restored and the points dropped, once the code
     /// has changed in any checkout since the restore (`code_undo`): undoing
-    /// would discard that work, whichever view, terminal or editor made it.
+    /// would discard that work, whether a turn, the terminal or an editor made it.
     ///
     /// Takes the agent's delivery lock and input route, like a send: no turn
     /// may start on a half-undone tree, and no archive tear it down. Refused
@@ -492,8 +492,8 @@ impl Supervisor {
     /// The state of `agent_id`'s code undo. It can be undone only while every
     /// checkout holding a point is exactly as the restore left it
     /// (`checkpoint::undo_is_current`): an edit, a commit, a new file in any
-    /// one of them, from any view, terminal or editor, and the whole undo is
-    /// stale, as undoing only the untouched ones would leave the workspace in
+    /// one of them, from a turn, the terminal or an editor, and the whole undo
+    /// is stale, as undoing only the untouched ones would leave the workspace in
     /// a state it never had. A stale undo's points are dropped, best-effort,
     /// so they don't outlive their use when no turn comes to retire them.
     /// Runs under the caller's delivery lock.
@@ -953,7 +953,7 @@ mod tests {
         let (sup, checkouts) = worked_past_the_turn(td.path()).await;
         let a = &checkouts[0];
         sup.restore_turn_code("denali", TURN).await.unwrap();
-        // What a native-view turn, the terminal panel or an editor does.
+        // What the terminal panel or an editor does.
         std::fs::write(a.join("wip.txt"), b"edited after the restore").unwrap();
 
         let err = sup.undo_code_restore("denali").await.unwrap_err();
@@ -1032,56 +1032,6 @@ mod tests {
         assert!(sup.has_code_undo("denali").await.unwrap());
         sup.undo_code_restore("denali").await.unwrap();
         assert_eq!(read(&a, "wip.txt").as_deref(), Some("edited later"));
-    }
-
-    /// Input typed into the native view never reaches `checkpoint_turn`, but
-    /// what its turn does to the code still ends the undo.
-    #[tokio::test]
-    async fn native_input_that_edits_the_code_ends_the_undo() {
-        use crate::pty_session::{PtySession, PtySpawn};
-        use std::time::Instant;
-
-        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
-        let td = tempfile::tempdir().unwrap();
-        let (sup, [a, ..]) = worked_past_the_turn(td.path()).await;
-        sup.restore_turn_code("denali", TURN).await.unwrap();
-        // A stand-in for the agent's TUI: it edits the code once a line is
-        // submitted.
-        let wip = a.join("wip.txt");
-        let script = format!("read line; echo \"$line\" > '{}'", wip.display());
-        let pty = PtySession::spawn(
-            PtySpawn {
-                program: Path::new("/bin/sh"),
-                args: &["-c".to_string(), script],
-                cwd: &a,
-                env: &[],
-                cols: 80,
-                rows: 24,
-                env_remove: &[],
-                kill_plan: crate::sandbox::KillHandle::ProcessGroup,
-                after_exit: None,
-            },
-            |_| {},
-            |_| {},
-        )
-        .unwrap();
-        let sup = std::sync::Arc::new(sup);
-        sup.agents.lock().insert(
-            "denali".to_string(),
-            std::sync::Arc::new(crate::agent::Agent::over_pty(pty)),
-        );
-
-        sup.clone()
-            .write_to_agent(&ctx, "denali", b"typed natively\r")
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while read(&a, "wip.txt").as_deref() != Some("typed natively\n") {
-            assert!(Instant::now() < deadline, "the native turn never edited");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-
-        assert!(!sup.has_code_undo("denali").await.unwrap());
-        assert_eq!(read(&a, "wip.txt").as_deref(), Some("typed natively\n"));
     }
 
     #[tokio::test]

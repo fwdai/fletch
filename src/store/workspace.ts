@@ -3,7 +3,6 @@ import { handoffTranscript } from "@/adapters/handoff";
 import { hasUsage, type UsageSnapshot, usageFromRecords } from "@/adapters/usage";
 import type {
   AgentRecord,
-  AgentView,
   Api,
   FolderGrant,
   ForkCode,
@@ -42,7 +41,7 @@ import {
   waitingBubble,
   whileSending,
 } from "@/helpers";
-import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
+import { dropShellBuffer } from "@/pty/buffers";
 import { createKeyedQueue } from "@/util/keyedQueue";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { interruptedAgents } from "./interrupted";
@@ -54,7 +53,7 @@ import {
 } from "./pendingHides";
 import { refreshWorkspace } from "./refreshWorkspace";
 import { sendOrder, sendsInFlight } from "./sendOrder";
-import type { AppState, SliceCreator } from "./types";
+import type { SliceCreator } from "./types";
 
 /** A degraded transcript-ingest state stored per agent (the `healthy` status is
  *  never stored — it deletes the key). `provider`/`version` are for the banner
@@ -103,8 +102,7 @@ export interface WorkspaceSlice {
    *  turn end. The widget uses it to know a question is answerable and to route
    *  the answer back as the tool result (the real pause). */
   pendingToolUse: Record<string, Record<string, string>>;
-  /** True while an on-disk Claude transcript is being replayed into
-   *  the custom-view log. */
+  /** True while an on-disk transcript is being replayed into the chat log. */
   transcriptLoading: Record<string, boolean>;
   /** True once the current process has attempted transcript replay for
    *  an agent. Prevents repeated reloads when a session has no JSONL. */
@@ -132,8 +130,6 @@ export interface WorkspaceSlice {
    *  the first stage arrives (a client that connects mid-spawn gets no
    *  snapshot), and dropped when the agent leaves `spawning`. */
   spawnStage: Record<string, { stage: SpawnStage; detail: string | null }>;
-  /** True while a view switch is in flight — disable toggle UI. */
-  switchInFlight: Record<string, boolean>;
   /** True while an account switch is in flight, so the header picker and the
    *  composer hint cannot both start one. */
   switchingAccount: Record<string, boolean>;
@@ -181,7 +177,7 @@ export interface WorkspaceSlice {
   selectRunStep: (runId: string, agentId: string) => void;
   /** Clear the pending step-agent focus once the monitor has applied it. */
   clearFocusedStepAgent: () => void;
-  spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
+  spawn: (repoPath: string) => Promise<AgentRecord | null>;
   /** Fork an existing workspace into a new one at an anchor — through the
    *  turn `turnId` names, or the end of the conversation when `null` — seeding
    *  its worktree (`code`) and conversation (`context`) independently.
@@ -260,7 +256,6 @@ export interface WorkspaceSlice {
     behavior?: "allow" | "deny",
     message?: string,
   ) => Promise<void>;
-  switchView: (id: string, view: AgentView) => Promise<void>;
   /** Record an agent's run from a `run:state` event or a RunPanel snapshot.
    *  Ignored when both carry a revision and the new one is no newer: the two
    *  paths arrive unordered, and a late one must not undo a newer state. A
@@ -357,7 +352,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
     turnStartedAt: {},
     busyLabel: {},
     spawnStage: {},
-    switchInFlight: {},
     switchingAccount: {},
     movingWorkspace: {},
     folderChangeWaiting: {},
@@ -441,7 +435,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
       }),
     clearFocusedStepAgent: () => set({ focusedStepAgentId: null }),
 
-    spawn: async (view, repoPath) => {
+    spawn: async (repoPath) => {
       set({ busy: true, lastError: null });
       try {
         // The draft path carries the base the user picked; this one has no picker,
@@ -450,7 +444,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
         // — forking a new agent onto the user's in-progress local work.
         const base = await resolveBaseBranch(api, repoPath);
         const rec = await api.spawnAgent(
-          view,
           repoPath,
           undefined,
           undefined,
@@ -460,22 +453,19 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
           undefined,
           base,
         );
-        // Apply the selection (and custom-view log seeds) immediately, ahead of the
+        // Apply the selection (and the empty log seed) immediately, ahead of the
         // guarded workspace refresh, so this user-intent state can never be dropped
         // if a concurrent refresh supersedes ours. The record rides along so a
         // recycled name can't open the chat against its archived predecessor
         // (see adoptSpawnedAgent), nor show what that one left in the per-agent
         // maps (its PR, its diff).
         set((state) => {
-          const patches: Partial<AppState> = {
+          return {
             ...dropAgentEntries(state, rec.id),
             workspace: adoptSpawnedAgent(state.workspace, rec),
             selectedAgentId: rec.id,
+            managedLogs: { ...state.managedLogs, [rec.id]: [] },
           };
-          if (view === "custom") {
-            patches.managedLogs = { ...state.managedLogs, [rec.id]: [] };
-          }
-          return patches;
         });
         await refreshWorkspace(engine, set);
         return rec;
@@ -634,7 +624,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
         // view's stream-json transport. Dispatched as a plain message they'd
         // produce a transient reply that never persists, so the turn reconciles
         // away and flashes out (see onSessionRecordsAppended). Intercept them here
-        // and leave a command_output notice pointing to the Native view instead of
+        // and leave a command_output notice pointing to the terminal instead of
         // sending a doomed turn. The notice is store-only but survives reconciles
         // (carryForwardStoreOnly), so the explanation persists for the session.
         const unsupported = await unsupportedManagedCommand(
@@ -648,7 +638,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
             kind: "notice",
             subtype: "command_output",
             label: `/${unsupported}`,
-            text: `/${unsupported} isn't available in this chat view — it only works in Claude's interactive TUI. Switch to the Native view to use it.`,
+            text: `/${unsupported} isn't available in Fletch's chat — it only works in Claude's interactive TUI. Run \`claude\` in a terminal to use it.`,
             is_error: true,
           });
           return true;
@@ -777,27 +767,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
       }
     },
 
-    switchView: async (id, view) => {
-      if (view === "native") {
-        clearOutputBuffer(hostId, id);
-      }
-      set((state) => ({
-        switchInFlight: { ...state.switchInFlight, [id]: true },
-      }));
-      try {
-        await api.switchView(id, view);
-        if (view === "custom") {
-          await get().loadHistoryTranscript(id);
-        }
-      } catch (e) {
-        set({ lastError: String(e) });
-      } finally {
-        set((state) => ({
-          switchInFlight: { ...state.switchInFlight, [id]: false },
-        }));
-      }
-    },
-
     applyRunState: (id, s) =>
       set((state) => {
         const current = state.runs[id];
@@ -841,7 +810,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
       }),
 
     resume: async (id) => {
-      clearOutputBuffer(hostId, id);
       try {
         await api.resumeAgent(id);
       } catch (e) {
@@ -865,9 +833,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
     discard: async (id) => {
       try {
         await api.discardAgent(id);
-        // The agent is gone for good: release its PTY state (both ring buffers
-        // and its cached live terminal) along with the store's side maps below.
-        dropAgentPty(hostId, id);
+        // The agent is gone for good: release its side shell's scrollback along
+        // with the store's side maps below.
+        dropShellBuffer(hostId, id);
         // The discard has committed, so drop the agent optimistically: remove its
         // row from the workspace AND its side maps together, and clear the
         // selection. Editing the workspace here (not just the side maps) keeps the
@@ -950,9 +918,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get, eng
         });
         return;
       }
-      // Archiving kills the agent's processes, so release its PTY state (both
-      // ring buffers and its cached live terminal); a restore starts fresh.
-      dropAgentPty(hostId, id);
+      // Archiving kills the agent's processes, so release its side shell's
+      // scrollback; a restore starts fresh.
+      dropShellBuffer(hostId, id);
       // The agent's side maps go ATOMICALLY with the snapshot that confirms the
       // archive and hides the row — this refresh's or, if it is superseded or
       // fails, whichever one does (`endedAgentIds`); until then they are kept,

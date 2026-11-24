@@ -178,24 +178,6 @@ pub(crate) fn opencode_session_id(event: &Value) -> Option<String> {
     gated_session_id(event, None, None, "sessionID")
 }
 
-/// OpenCode: bare `opencode` launches the interactive TUI; `--session <id>`
-/// continues a prior session. Note: no auto-approve flag — that's
-/// `--dangerously-skip-permissions`, which belongs to the `run` (headless)
-/// subcommand and makes the *default* (TUI) command print help and exit. The
-/// TUI prompts for tool permissions interactively, which the native view
-/// handles like any other keystroke.
-pub(crate) fn opencode_pty_args(
-    session_id: Option<&str>,
-    model: Option<&str>,
-    _extra: Option<&str>,
-    _mcp_args: &[String],
-) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
-    args.extend(model_args(model));
-    push_opt(&mut args, "--session", session_id);
-    args
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

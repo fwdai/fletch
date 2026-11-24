@@ -121,7 +121,6 @@ pub(crate) fn agent(wm: &WorkspaceManager, id: &str, repo: &str, lineage: Option
         "claude".into(),
         mk_repo(repo),
         "task".into(),
-        AgentView::Custom,
     );
     rec.lineage = lineage;
     wm.add_agent(&mut rec).unwrap();
@@ -218,7 +217,6 @@ fn agent_title_round_trips_and_overwrites() {
         "claude".into(),
         mk_repo("/r"),
         "hello".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut record).unwrap();
     assert_eq!(wm.agent("yosemite").unwrap().title, None);
@@ -275,7 +273,6 @@ fn adopted_checkout_round_trips_and_is_cleared_by_restore() {
             ..mk_repo("/r")
         },
         "task".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut record).unwrap();
 
@@ -345,7 +342,6 @@ fn persists_across_instances_and_rests_at_idle() {
             "claude".into(),
             mk_repo("/r"),
             "c".into(),
-            AgentView::Custom,
         );
         wm.add_agent(&mut running).unwrap();
 
@@ -357,7 +353,6 @@ fn persists_across_instances_and_rests_at_idle() {
             "claude".into(),
             mk_repo("/r2"),
             "sc".into(),
-            AgentView::Custom,
         );
         wm.add_agent(&mut stopped).unwrap();
         wm.update_agent_status("dolomites", AgentStatus::Stopped, None)
@@ -389,7 +384,6 @@ fn pending_messages_round_trip_and_scoped_delete() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut rec).unwrap();
 
@@ -448,7 +442,6 @@ fn pending_messages_excluded_for_archived_workspace() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut rec).unwrap();
     wm.enqueue_pending_message(
@@ -487,7 +480,6 @@ fn sandbox_engine_stamp_round_trips() {
         "claude".into(),
         mk_repo("/r"),
         "t".into(),
-        AgentView::Custom,
     );
     stamped.sandbox_engine = Some("box".into());
     wm.add_agent(&mut stamped).unwrap();
@@ -504,7 +496,6 @@ fn sandbox_engine_stamp_round_trips() {
         "claude".into(),
         mk_repo("/r2"),
         "t".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut legacy).unwrap();
     assert_eq!(wm.agent("dolomites").unwrap().sandbox_engine, None);
@@ -525,7 +516,6 @@ fn cloud_provider_stamp_round_trips() {
         "claude".into(),
         mk_repo("/r"),
         "t".into(),
-        AgentView::Custom,
     );
     cloud.sandbox_engine = Some("box".into());
     cloud.cloud_provider = Some("fly".into());
@@ -554,7 +544,6 @@ fn cloud_provider_stamp_round_trips() {
         "claude".into(),
         mk_repo("/r2"),
         "t".into(),
-        AgentView::Custom,
     );
     local.sandbox_engine = Some("box".into());
     wm.add_agent(&mut local).unwrap();
@@ -578,7 +567,6 @@ fn account_stamp_round_trips() {
         "claude".into(),
         mk_repo("/r"),
         "t".into(),
-        AgentView::Custom,
     );
     stamped.account = Some("work".into());
     wm.add_agent(&mut stamped).unwrap();
@@ -594,7 +582,6 @@ fn account_stamp_round_trips() {
         "claude".into(),
         mk_repo("/r2"),
         "t".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut plain).unwrap();
     assert_eq!(wm.agent("dolomites").unwrap().account, None);
@@ -621,7 +608,6 @@ fn live_agents_on_account_counts_unarchived_stamps_of_that_provider() {
             provider.into(),
             mk_repo(repo),
             "t".into(),
-            AgentView::Custom,
         );
         rec.account = Some("work".into());
         wm.add_agent(&mut rec).unwrap();
@@ -660,7 +646,6 @@ fn session_accounts_maps_each_provider_session_to_its_stamp() {
             "claude".into(),
             mk_repo(repo),
             "t".into(),
-            AgentView::Custom,
         );
         rec.account = account.map(str::to_string);
         wm.add_agent(&mut rec).unwrap();
@@ -690,7 +675,6 @@ fn restamping_an_agent_moves_it_off_the_old_account() {
         "claude".into(),
         mk_repo("/r"),
         "t".into(),
-        AgentView::Custom,
     );
     rec.account = Some("work".into());
     wm.add_agent(&mut rec).unwrap();
@@ -725,7 +709,6 @@ fn restamping_to_the_default_clears_the_stamp() {
         "claude".into(),
         mk_repo("/r"),
         "t".into(),
-        AgentView::Custom,
     );
     rec.account = Some("work".into());
     wm.add_agent(&mut rec).unwrap();
@@ -747,7 +730,6 @@ fn update_agent_effort_round_trips() {
         "claude".into(),
         mk_repo("/r"),
         "t".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut rec).unwrap();
 
@@ -773,7 +755,6 @@ fn update_agent_model_round_trips() {
         "claude".into(),
         mk_repo("/r"),
         "t".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut rec).unwrap();
 
@@ -882,7 +863,6 @@ fn delete_project_cascades_non_archived_agents_and_settings() {
         "claude".into(),
         mk_repo(repo.to_str().unwrap()),
         "task".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut rec).unwrap();
     db.lock()
@@ -938,7 +918,6 @@ fn delete_project_rolls_back_when_the_workflow_set_changed() {
         "claude".into(),
         mk_repo(repo.to_str().unwrap()),
         "task".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut rec).unwrap();
     db.lock()
@@ -1089,7 +1068,6 @@ fn remove_repo_leaves_agents_alone() {
         "claude".into(),
         mk_repo(repo_str),
         "".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut rec).unwrap();
     wm.remove_workspace_repo(&repo).unwrap();
@@ -1226,7 +1204,6 @@ fn attach_repo_refuses_project_with_agents() {
         "claude".into(),
         mk_repo(b.to_str().unwrap()),
         "".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut rec).unwrap();
 
@@ -1282,7 +1259,6 @@ fn detach_repo_guards() {
         "claude".into(),
         mk_repo(b.to_str().unwrap()),
         "".into(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut rec).unwrap();
     let err = wm.detach_repo_from_project(&project_id, &b).unwrap_err();
@@ -1320,7 +1296,6 @@ fn custom_agent_instructions_and_id_round_trip() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     rec.instructions = Some("You are the Reviewer. Be terse.".into());
@@ -1352,7 +1327,6 @@ fn custom_agent_instructions_and_id_round_trip() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let plain_id = plain.id.clone();
     wm.add_agent(&mut plain).unwrap();
@@ -1375,7 +1349,6 @@ fn handoff_context_round_trips_separately_from_the_brief() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     rec.instructions = Some("Be terse.".into());
@@ -1423,7 +1396,6 @@ fn run_owned_agents_are_hidden_from_the_workspace_list() {
         "claude".into(),
         mk_repo("/r"),
         "step task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     rec.owner_run_id = Some("run-1".into());
@@ -1453,7 +1425,6 @@ fn purpose_tagged_chats_are_hidden_from_the_sidebar_but_listed_by_their_surface(
         "claude".into(),
         mk_repo("/r"),
         "shape the roadmap".into(),
-        AgentView::Custom,
     );
     chat.purpose = Some(PURPOSE_ROADMAP_PM.to_string());
     let chat_id = chat.id.clone();
@@ -1467,7 +1438,6 @@ fn purpose_tagged_chats_are_hidden_from_the_sidebar_but_listed_by_their_surface(
         "claude".into(),
         mk_repo("/r"),
         "another thread".into(),
-        AgentView::Custom,
     );
     newer.purpose = Some(PURPOSE_ROADMAP_PM.to_string());
     newer.created_at = chrono::Utc::now()
@@ -1484,7 +1454,6 @@ fn purpose_tagged_chats_are_hidden_from_the_sidebar_but_listed_by_their_surface(
         "claude".into(),
         mk_repo("/r"),
         "build it".into(),
-        AgentView::Custom,
     );
     let plain_id = plain.id.clone();
     wm.add_agent(&mut plain).unwrap();
@@ -1531,7 +1500,6 @@ fn skill_and_mcp_snapshots_round_trip() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     rec.skills = vec![SkillSnapshot {
@@ -1560,7 +1528,6 @@ fn skill_and_mcp_snapshots_round_trip() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let plain_id = plain.id.clone();
     wm.add_agent(&mut plain).unwrap();
@@ -1582,7 +1549,6 @@ fn pr_number_persists_and_resets_on_name_reuse() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -1605,7 +1571,6 @@ fn pr_number_persists_and_resets_on_name_reuse() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let reused_id = reused.id.clone();
     wm.add_agent(&mut reused).unwrap();
@@ -1634,7 +1599,6 @@ fn recorded_base_follows_the_focused_prs_base() {
             ..mk_repo("/r")
         },
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -1706,7 +1670,6 @@ fn owned_branches_accumulate_per_checkout() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -1760,7 +1723,6 @@ fn pr_history_accumulates_across_rebinds() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -1848,7 +1810,6 @@ fn pr_history_is_scoped_to_its_checkout() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -1893,7 +1854,6 @@ fn pr_set_members_refresh_without_stealing_focus() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -2014,7 +1974,6 @@ fn pr_snapshot_persists_and_loads() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -2087,7 +2046,6 @@ fn binding_a_follow_up_pr_takes_its_own_snapshot() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -2180,7 +2138,6 @@ fn a_follow_up_snapshot_does_not_inherit_the_previous_merge_stamp() {
         "claude".into(),
         mk_repo("/r"),
         "task".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -2242,7 +2199,6 @@ fn agent_status_transitions() {
         "claude".into(),
         mk_repo("/r"),
         "c".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -2287,7 +2243,6 @@ fn archive_then_restore_roundtrip() {
         "claude".into(),
         mk_repo("/some/repo"),
         "do the thing".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -2369,7 +2324,6 @@ fn archive_trace_records_completion_and_error() {
         "claude".into(),
         mk_repo("/some/repo"),
         "".into(),
-        AgentView::Custom,
     );
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
@@ -2425,7 +2379,6 @@ fn archived_agents_survive_reload_without_reconcile() {
             "claude".into(),
             mk_repo("/r"),
             "".into(),
-            AgentView::Custom,
         );
         let id = rec.id.clone();
         wm.add_agent(&mut rec).unwrap();
@@ -2481,7 +2434,6 @@ pub(crate) fn make_workspace_with_session_for(
             adopted_checkout: None,
         },
         "task".into(),
-        AgentView::Custom,
     );
     // add_agent needs the repo pre-seeded in repos; add_workspace_repo
     // handles that above. But we also need the repo in the repos table
@@ -3734,7 +3686,6 @@ fn a_reused_name_leaves_the_archived_workspace_as_it_was() {
             "claude".into(),
             mk_repo("/r"),
             String::new(),
-            AgentView::Custom,
         )
     };
     let mut first = named();
@@ -3767,7 +3718,6 @@ fn a_draft_name_taken_since_it_was_drawn_is_replaced_at_spawn() {
             "claude".into(),
             mk_repo("/r"),
             String::new(),
-            AgentView::Custom,
         )
     };
     let (mut first, mut second) = (named(), named());
@@ -3796,7 +3746,6 @@ fn a_restored_workspace_is_renamed_only_when_its_name_is_live_elsewhere() {
             "claude".into(),
             mk_repo("/r"),
             String::new(),
-            AgentView::Custom,
         )
     };
     let mut first = named();
@@ -3830,7 +3779,6 @@ fn add_agent_does_not_evict_a_live_name_clash() {
         "claude".into(),
         mk_repo("/r"),
         String::new(),
-        AgentView::Custom,
     );
     wm.add_agent(&mut first).unwrap();
 
@@ -3842,7 +3790,6 @@ fn add_agent_does_not_evict_a_live_name_clash() {
         "claude".into(),
         mk_repo("/r"),
         String::new(),
-        AgentView::Custom,
     );
     assert!(wm.add_agent(&mut clash).is_err());
 
@@ -3871,7 +3818,6 @@ fn add_agent_allocating_excludes_archived_from_reservation() {
             "claude".into(),
             mk_repo("/r"),
             String::new(),
-            AgentView::Custom,
         );
         wm.add_agent(&mut rec).unwrap();
         mark_archived(&db, place);
@@ -3886,7 +3832,6 @@ fn add_agent_allocating_excludes_archived_from_reservation() {
         "claude".into(),
         mk_repo("/r"),
         String::new(),
-        AgentView::Custom,
     );
     wm.add_agent_allocating(&mut rec).unwrap();
     assert!(
@@ -3914,7 +3859,6 @@ fn add_agent_allocating_assigns_distinct_live_names() {
             "claude".into(),
             mk_repo("/r"),
             String::new(),
-            AgentView::Custom,
         )
     };
     let mut a = mk();
@@ -3946,7 +3890,6 @@ fn live_agents_cover_live_workspaces_and_archiving_frees_the_name() {
             "claude".into(),
             mk_repo("/r"),
             "task".into(),
-            AgentView::Custom,
         );
         wm.add_agent(&mut rec).unwrap();
     }
@@ -4055,7 +3998,6 @@ fn launch_session_requires_an_id_only_from_providers_that_mint_one() {
             provider.into(),
             mk_repo("/r"),
             String::new(),
-            AgentView::Custom,
         );
         record.session_id = session_id.map(str::to_string);
         record

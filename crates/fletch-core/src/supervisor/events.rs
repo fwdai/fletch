@@ -13,31 +13,12 @@ use crate::host::EventSink;
 use crate::pty_session::serialize_bytes_b64;
 use crate::run_session::{RunPhase, RunSession, RunState};
 use crate::sandbox::ForwardedPort;
-use crate::workspace::{AgentStatus, AgentView, TrackedRepo};
+use crate::workspace::{AgentStatus, TrackedRepo};
 
 /// Emit one event, logging (not propagating) failure — the shared tail of
 /// every typed emitter below.
 fn emit<T: serde::Serialize>(sink: &dyn EventSink, event: &str, payload: T) {
     crate::host::emit(sink, event, &payload);
-}
-
-#[derive(Clone, serde::Serialize)]
-struct AgentOutputPayload {
-    agent_id: String,
-    #[serde(serialize_with = "serialize_bytes_b64")]
-    bytes: Vec<u8>,
-}
-
-/// Raw PTY bytes from an agent's process (native view).
-pub(super) fn emit_agent_output(sink: &dyn EventSink, agent_id: &str, bytes: Vec<u8>) {
-    emit(
-        sink,
-        "agent:output",
-        AgentOutputPayload {
-            agent_id: agent_id.to_string(),
-            bytes,
-        },
-    );
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -263,31 +244,14 @@ pub(super) fn emit_spawn_progress(
 }
 
 #[derive(Clone, serde::Serialize)]
-struct AgentViewPayload {
-    agent_id: String,
-    view: AgentView,
-}
-
-pub(super) fn emit_view(sink: &dyn EventSink, agent_id: &str, view: AgentView) {
-    emit(
-        sink,
-        "agent:view",
-        AgentViewPayload {
-            agent_id: agent_id.to_string(),
-            view,
-        },
-    );
-}
-
-#[derive(Clone, serde::Serialize)]
 struct AgentEffortPayload {
     agent_id: String,
     effort: Option<String>,
 }
 
 /// The session's reasoning-effort level changed mid-conversation
-/// (user-initiated). Mirrors `agent:view` so the composer reflects the new
-/// value without a full resync.
+/// (user-initiated), so the composer reflects the new value without a full
+/// resync.
 pub(super) fn emit_effort(sink: &dyn EventSink, agent_id: &str, effort: Option<&str>) {
     emit(
         sink,
@@ -829,22 +793,6 @@ mod tests {
                     json!({ "agent_id": "fuji", "stage": "attaching_repos", "detail": "docs" })
                 ),
             ]
-        );
-    }
-
-    /// PTY bytes ride as base64 (`serialize_bytes_b64`), not as a number array.
-    /// Serializing the payload to a `Value` before the sink sees it is what
-    /// keeps that custom serializer in the path.
-    #[test]
-    fn pty_output_stays_base64() {
-        let sink = RecordingSink::new();
-        emit_agent_output(&sink, "fuji", b"hi".to_vec());
-        assert_eq!(
-            sink.events(),
-            vec![(
-                "agent:output".to_string(),
-                json!({ "agent_id": "fuji", "bytes": "aGk=" })
-            )]
         );
     }
 

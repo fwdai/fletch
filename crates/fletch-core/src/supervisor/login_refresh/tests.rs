@@ -1,6 +1,4 @@
 use super::*;
-use crate::pty_session::{PtySession, PtySpawn};
-use crate::sandbox::KillHandle;
 use crate::supervisor::tests::test_supervisor;
 use serde_json::json;
 
@@ -28,25 +26,9 @@ fn msg() -> PendingMsg {
 }
 
 fn live_with_login(sup: &Supervisor, dir: &std::path::Path, expires_at_ms: i64) {
-    let pty = PtySession::spawn(
-        PtySpawn {
-            program: std::path::Path::new("/bin/cat"),
-            args: &[],
-            cwd: dir,
-            env: &[],
-            cols: 80,
-            rows: 24,
-            env_remove: &[],
-            kill_plan: KillHandle::ProcessGroup,
-            after_exit: None,
-        },
-        |_| {},
-        |_| {},
-    )
-    .unwrap();
     sup.agents.lock().insert(
         "a1".into(),
-        Arc::new(Agent::over_pty_with_login(pty, expires_at_ms)),
+        Arc::new(Agent::idle_process(dir, Some(expires_at_ms))),
     );
 }
 

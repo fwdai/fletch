@@ -247,7 +247,7 @@ describe("handoffTranscript", () => {
 
   it("does not let a user message without a turn row bound the cut", () => {
     // The backend cuts at the next *matched* turn; a message with no turn row
-    // (typed into the native view) sits inside the carried range.
+    // (a prompt Fletch did not send) sits inside the carried range.
     const log: ChatItem[] = [user("q0", "t0"), agent("a0"), user("typed"), agent("a1")];
     expect(handoffTranscript(log, "t0")).toBe(
       "User: q0\n\nAssistant: a0\n\nUser: typed\n\nAssistant: a1",

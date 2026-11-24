@@ -373,9 +373,7 @@ impl Supervisor {
         self.persist_and_send(agent_id, msg, || {
             self.live_agent(agent_id)?
                 .send_user_message(&msg.text, &msg.attachments, None, None)
-        })?;
-        self.reset_native_input(agent_id);
-        Ok(())
+        })
     }
 
     /// Write `msg`'s turn row, then hand the message over with `send`. When
@@ -445,20 +443,7 @@ impl Supervisor {
             attachments,
             record.model.as_deref(),
             record.effort.as_deref(),
-        )?;
-        self.reset_native_input(agent_id);
-        Ok(())
-    }
-
-    /// Drop our mirror of a native agent's half-typed input line. A PTY
-    /// delivery clears the TUI's real editor before typing, so the mirror has
-    /// to be cleared in lockstep or the next Enter would attribute the
-    /// abandoned draft to the user's following turn. No-op for every other
-    /// transport (only native agents have a tracker entry).
-    fn reset_native_input(&self, agent_id: &str) {
-        if let Some(tracker) = self.native_inputs.lock().get_mut(agent_id) {
-            tracker.clear();
-        }
+        )
     }
 
     /// Deliver the user's answer to a held user-input prompt as a control
@@ -569,7 +554,6 @@ pub(super) fn mark_user_turn_started(
     // A new turn is starting, so any prior stop is moot: clear the interrupt
     // flag so this turn's natural completion flushes queued follow-ups.
     sup.interrupted.lock().remove(agent_id);
-    sup.heuristic_idle.lock().remove(agent_id);
     if let Some(activity) = sup.activities.lock().get_mut(agent_id) {
         activity.reset_for_new_turn();
     }
@@ -616,9 +600,9 @@ async fn deliver_as_turn(
         return Err(Error::Other("project deletion is in progress".into()));
     }
     // Never start a turn over a running one. The delivery lock orders every
-    // turn Fletch starts, but not one the user types into the native TUI
-    // (`write_to_agent`), nor a respawn's Spawning; either can land during the
-    // checkpoint above. Checked under the lock the Running flip below happens
+    // turn Fletch starts, but not one the provider opens on its own
+    // (`make_event_handler`), nor a respawn's Spawning; either can land during
+    // the checkpoint above. Checked under the lock the Running flip below happens
     // under; the caller then holds the message for the next turn boundary.
     if sup.is_busy(agent_id) {
         return Err(Error::Other("a turn is already in progress".into()));
@@ -882,8 +866,6 @@ mod tests {
     use crate::agent::Agent;
     use crate::error::Error;
     use crate::git::checkpoint;
-    use crate::pty_session::{PtySession, PtySpawn};
-    use crate::sandbox::KillHandle;
     use crate::supervisor::checkpoints::CAPTURE_TIMEOUT;
     use crate::supervisor::tests::{
         committed_repo, record_in_checkouts, record_with_status, test_supervisor,
@@ -1702,16 +1684,15 @@ mod tests {
         assert_eq!(checkpoint::resolve(&checkout, FIRST).await.unwrap(), None);
     }
 
-    /// The delivery lock orders the turns Fletch starts, not one the user
-    /// types into the native TUI. A flush that finds such a turn running holds
-    /// its message for that turn's boundary, with nothing captured or
-    /// persisted.
+    /// The delivery lock orders the turns Fletch starts, not one the provider
+    /// opens on its own. A flush that finds such a turn running holds its
+    /// message for that turn's boundary, with nothing captured or persisted.
     #[tokio::test]
-    async fn a_turn_typed_into_the_native_tui_is_not_superseded() {
+    async fn a_turn_the_provider_opened_is_not_superseded() {
         let td = tempfile::tempdir().unwrap();
         let (sup, checkout) = idle_agent_in(td.path()).await;
         let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
-        // What `write_to_agent` does when the typed line is submitted.
+        // What the event handler does when main-line output opens a turn.
         mark_user_turn_started(&sup, &ctx, "yosemite", None);
 
         sup.persist_and_enqueue("yosemite", pending(TURN));
@@ -1731,25 +1712,10 @@ mod tests {
     /// A process for `yosemite` that takes whatever it is handed and ignores
     /// it: a live agent to deliver to, without a real one.
     fn live_process(sup: &Supervisor, dir: &std::path::Path) {
-        let pty = PtySession::spawn(
-            PtySpawn {
-                program: std::path::Path::new("/bin/sh"),
-                args: &["-c".to_string(), "cat >/dev/null".to_string()],
-                cwd: dir,
-                env: &[],
-                cols: 80,
-                rows: 24,
-                env_remove: &[],
-                kill_plan: KillHandle::ProcessGroup,
-                after_exit: None,
-            },
-            |_| {},
-            |_| {},
-        )
-        .unwrap();
-        sup.agents
-            .lock()
-            .insert("yosemite".to_string(), Arc::new(Agent::over_pty(pty)));
+        sup.agents.lock().insert(
+            "yosemite".to_string(),
+            Arc::new(Agent::idle_process(dir, None)),
+        );
     }
 
     fn msg(turn_id: &str, text: &str) -> PendingMsg {

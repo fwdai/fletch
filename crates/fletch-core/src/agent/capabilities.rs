@@ -10,28 +10,26 @@ use crate::exec_session::TurnInvocation;
 use crate::message_queue::InjectionMode;
 
 use super::providers::antigravity::{
-    antigravity_build_args, antigravity_locate, antigravity_prompt_texts, antigravity_pty_args,
-    antigravity_read, antigravity_session_id_from_cwd,
+    antigravity_build_args, antigravity_locate, antigravity_prompt_texts, antigravity_read,
+    antigravity_session_id_from_cwd,
 };
 use super::providers::claude::{claude_one_shot_args, CLAUDE_TRANSCRIPT};
 use super::providers::codex::{
-    codex_build_args, codex_locate, codex_one_shot_args, codex_prompt_texts, codex_pty_args,
-    codex_read, codex_session_id, codex_write, CODEX_SUBAGENTS,
+    codex_build_args, codex_locate, codex_one_shot_args, codex_prompt_texts, codex_read,
+    codex_session_id, codex_write, CODEX_SUBAGENTS,
 };
 use super::providers::cursor::{
-    cursor_build_args, cursor_locate, cursor_one_shot_args, cursor_prompt_texts, cursor_pty_args,
-    cursor_read, cursor_session_id, CURSOR_SUBAGENTS,
+    cursor_build_args, cursor_locate, cursor_one_shot_args, cursor_prompt_texts, cursor_read,
+    cursor_session_id, CURSOR_SUBAGENTS,
 };
 use super::providers::opencode::{
-    opencode_build_args, opencode_locate, opencode_prompt_texts, opencode_pty_args, opencode_read,
-    opencode_session_id,
+    opencode_build_args, opencode_locate, opencode_prompt_texts, opencode_read, opencode_session_id,
 };
 use super::providers::pi::{
-    pi_build_args, pi_locate, pi_one_shot_args, pi_prompt_texts, pi_pty_args, pi_read,
-    pi_session_id, pi_write,
+    pi_build_args, pi_locate, pi_one_shot_args, pi_prompt_texts, pi_read, pi_session_id, pi_write,
 };
 use super::transcript::{JsonlTail, TranscriptReader};
-use super::{McpDeliveryBuilder, OneShot, PtyArgsBuilder, TurnArgs};
+use super::{McpDeliveryBuilder, OneShot, TurnArgs};
 
 /// Everything that varies between per-turn agents. The runner lifecycle —
 /// one fresh process per turn via `ExecSession` — is identical for all of
@@ -48,12 +46,8 @@ pub struct PerTurnDescriptor {
     pub(crate) label: &'static str,
     /// Builds one process invocation from the turn's [`TurnArgs`].
     pub(crate) build_args: fn(&TurnArgs) -> TurnInvocation,
-    /// Builds the args to launch this agent's interactive TUI in the native
-    /// (PTY) view: `(session [None = fresh], model, custom_instructions,
-    /// mcp_args)`.
-    pub(crate) pty_args: PtyArgsBuilder,
     /// Places the session's MCP servers where this provider's CLI finds them,
-    /// applied to both the per-turn and native-PTY launches. `None` = provider
+    /// applied to every turn's launch. `None` = provider
     /// has no MCP config surface we can drive; the snapshot is ignored (the
     /// editor UI says so up front). Resolve via [`mcp_delivery`], which also
     /// covers claude.
@@ -63,11 +57,8 @@ pub struct PerTurnDescriptor {
     /// different gates). No-op for `plaintext` agents (they emit no events — see
     /// `session_id_from_cwd`).
     pub(crate) session_id: fn(&Value) -> Option<String>,
-    /// Constructs this agent's turn-end detector (custom-view `Activity`).
+    /// Constructs this agent's turn-end detector (`Activity`).
     pub activity: fn() -> Box<dyn Activity>,
-    /// Whether this agent can render in the native PTY view (see
-    /// `AgentCapabilities::native_view`).
-    native_view: bool,
     /// True if the turn process emits **plaintext** on stdout rather than a
     /// newline-delimited JSON event stream. The runner then drains stdout
     /// without parsing (no events; history comes from `transcript`), and the
@@ -94,16 +85,9 @@ impl PerTurnDescriptor {
     }
 }
 
-/// What an agent can do *right now*. A rollout flag, not a fixed trait: native
-/// (PTY/TUI) view support is being brought to every agent, and callers gate on
-/// the capability, never on the provider id, so nothing else changes when
-/// support lands.
+/// What an agent can do *right now*. Callers gate on the capability, never on
+/// the provider id, so nothing else changes when support lands for a provider.
 pub struct AgentCapabilities {
-    /// Can render in the native PTY view (its interactive TUI streamed into
-    /// xterm), in addition to the structured custom view. Wired for claude
-    /// and every per-turn agent (codex/cursor/opencode/pi); a per-turn agent
-    /// can only switch *into* native once it has a session id to resume.
-    pub native_view: bool,
     /// Fletch can write this provider's session file (`TranscriptReader::write`),
     /// so a new session can continue a conversation natively: the CLI resumes
     /// the history written as its own transcript (a fork's full conversation,
@@ -111,16 +95,9 @@ pub struct AgentCapabilities {
     pub transcript_writer: bool,
 }
 
-/// Capabilities for a provider. Per-turn agents read theirs from the
-/// descriptor table; claude (the lone persistent-runner agent) is the
-/// fully-wired baseline. Unknown providers get nothing.
+/// Capabilities for a provider. Unknown providers get nothing.
 pub fn capabilities(provider: &str) -> AgentCapabilities {
-    let native_view = match per_turn_descriptor(provider) {
-        Some(d) => d.native_view,
-        None => provider == "claude",
-    };
     AgentCapabilities {
-        native_view,
         transcript_writer: transcript_reader(provider).is_some_and(|r| r.write.is_some()),
     }
 }
@@ -144,11 +121,9 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         bin: "codex",
         label: "Codex",
         build_args: codex_build_args,
-        pty_args: codex_pty_args,
         mcp: Some(crate::agent_profile::codex_mcp_delivery),
         session_id: codex_session_id,
         activity: || Box::new(ManagedActivity::codex()),
-        native_view: true,
         plaintext: false,
         session_id_from_cwd: None,
         transcript: Some(TranscriptReader {
@@ -169,13 +144,11 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         bin: "cursor-agent",
         label: "Cursor",
         build_args: cursor_build_args,
-        pty_args: cursor_pty_args,
         mcp: None,
         session_id: cursor_session_id,
         // Cursor emits Claude-shaped stream-json incl. a `result` turn-end,
         // so it reuses the Claude managed detector.
         activity: || Box::new(ManagedActivity::claude()),
-        native_view: true,
         plaintext: false,
         session_id_from_cwd: None,
         transcript: Some(TranscriptReader {
@@ -198,11 +171,9 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         bin: "opencode",
         label: "OpenCode",
         build_args: opencode_build_args,
-        pty_args: opencode_pty_args,
         mcp: Some(crate::agent_profile::opencode_mcp_delivery),
         session_id: opencode_session_id,
         activity: || Box::new(ManagedActivity::opencode()),
-        native_view: true,
         plaintext: false,
         session_id_from_cwd: None,
         transcript: Some(TranscriptReader {
@@ -225,11 +196,9 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         bin: "pi",
         label: "Pi",
         build_args: pi_build_args,
-        pty_args: pi_pty_args,
         mcp: None,
         session_id: pi_session_id,
         activity: || Box::new(ManagedActivity::pi()),
-        native_view: true,
         plaintext: false,
         session_id_from_cwd: None,
         // Pi is the reference reader — its per-session JSONL feeds session_records.
@@ -253,16 +222,12 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         bin: "agy",
         label: "Antigravity",
         build_args: antigravity_build_args,
-        pty_args: antigravity_pty_args,
         mcp: None,
         // agy emits no JSON events; its session id is read from the filesystem.
         session_id: |_| None,
         // No event stream to detect turn-end from — the turn's process exit ends
         // the turn (on_turn_exit). The detector is never fed, so any is fine.
         activity: || Box::new(ManagedActivity::claude()),
-        // Native PTY view runs agy's interactive TUI, resuming the conversation
-        // the custom view established (see antigravity_pty_args).
-        native_view: true,
         plaintext: true,
         session_id_from_cwd: Some(antigravity_session_id_from_cwd),
         transcript: Some(TranscriptReader {
@@ -282,7 +247,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
 
 /// Look up the descriptor for a per-turn provider id. `None` means the
 /// provider isn't a per-turn agent (e.g. claude, which has its own
-/// Pty/Managed runners) or isn't a known agent at all.
+/// managed runner) or isn't a known agent at all.
 pub fn per_turn_descriptor(id: &str) -> Option<&'static PerTurnDescriptor> {
     PER_TURN_AGENTS.iter().find(|d| d.id == id)
 }
@@ -463,7 +428,5 @@ mod tests {
             .collect();
         assert_eq!(writers, ["claude", "codex", "pi"]);
         assert!(!capabilities("nonesuch").transcript_writer);
-        assert!(capabilities("claude").native_view);
-        assert!(!capabilities("nonesuch").native_view);
     }
 }

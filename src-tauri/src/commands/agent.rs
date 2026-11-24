@@ -10,7 +10,7 @@ use crate::host::EngineCtx;
 use crate::managed_session::ToolUseBehavior;
 use crate::supervisor::Supervisor;
 use crate::workspace::folder_grants::{FolderGranted, FolderGrantsUpdate};
-use crate::workspace::{AgentRecord, AgentView, FolderGrant, TrackedRepo};
+use crate::workspace::{AgentRecord, FolderGrant, TrackedRepo};
 
 // Args mirror the frontend `invoke("spawn_agent", ...)` payload one-to-one;
 // they're the IPC wire surface, not collapsible into a struct here.
@@ -19,7 +19,6 @@ use crate::workspace::{AgentRecord, AgentView, FolderGrant, TrackedRepo};
 pub async fn spawn_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     ctx: State<'_, Arc<EngineCtx>>,
-    view: Option<AgentView>,
     repo_path: String,
     provider: Option<String>,
     name: Option<String>,
@@ -52,7 +51,6 @@ pub async fn spawn_agent(
     fletch_core::commands::spawn_agent_impl(
         supervisor.inner().clone(),
         ctx.inner().clone(),
-        view,
         repo_path,
         provider,
         name,
@@ -186,17 +184,6 @@ pub async fn has_code_undo(
     supervisor.inner().has_code_undo(&agent_id).await
 }
 
-#[tauri::command]
-pub fn write_to_agent(
-    supervisor: State<'_, Arc<Supervisor>>,
-    ctx: State<'_, Arc<EngineCtx>>,
-    agent_id: String,
-    data: String,
-) -> Result<()> {
-    let sup = supervisor.inner().clone();
-    sup.write_to_agent(ctx.inner(), &agent_id, data.as_bytes())
-}
-
 /// Returns `true` when the follow-up was enqueued for a later turn boundary
 /// rather than delivered now (see `Supervisor::send_user_message`).
 #[tauri::command]
@@ -228,16 +215,6 @@ pub fn answer_tool_use(
 }
 
 #[tauri::command]
-pub fn resize_agent(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    cols: u16,
-    rows: u16,
-) -> Result<()> {
-    supervisor.resize_agent(&agent_id, cols, rows)
-}
-
-#[tauri::command]
 pub async fn resume_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     ctx: State<'_, Arc<EngineCtx>>,
@@ -245,17 +222,6 @@ pub async fn resume_agent(
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
     sup.resume_agent(ctx.inner().clone(), &agent_id).await
-}
-
-#[tauri::command]
-pub async fn switch_view(
-    supervisor: State<'_, Arc<Supervisor>>,
-    ctx: State<'_, Arc<EngineCtx>>,
-    agent_id: String,
-    view: AgentView,
-) -> Result<()> {
-    let sup = supervisor.inner().clone();
-    sup.switch_view(ctx.inner().clone(), &agent_id, view).await
 }
 
 #[tauri::command]

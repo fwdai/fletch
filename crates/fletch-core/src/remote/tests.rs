@@ -994,7 +994,6 @@ fn never_exposed_ops_are_not_dispatchable() {
         "copy_checkout_file",
         "open_agent_shell",
         "write_to_shell",
-        "write_to_agent",
         "open_in_editor",
         "reveal_logs",
         "track_event",
@@ -1177,7 +1176,7 @@ fn the_wf_and_roadmap_events_are_forwarded_and_advertised() {
         );
     }
     // Raw PTY output stays off whatever else is added.
-    for event in ["agent:output", "shell:output", "run:output"] {
+    for event in ["shell:output", "run:output"] {
         assert!(
             !super::events::FORWARDED_EVENTS.contains(&event),
             "{event} must never be forwarded"
@@ -2128,8 +2127,8 @@ async fn pair_and_hello_answer_the_relay_url() {
 }
 
 /// The tap *is* the whitelist: it subscribes to the engine's whole event stream
-/// and only the documented names reach a connection. `agent:output` — raw PTY
-/// bytes — is the one that must never.
+/// and only the documented names reach a connection. `shell:output` — raw PTY
+/// bytes — is one that must never.
 #[tokio::test]
 async fn the_event_tap_forwards_only_whitelisted_names() {
     let host = boot();
@@ -2142,7 +2141,7 @@ async fn the_event_tap_forwards_only_whitelisted_names() {
     let mut frames = host.state.subscribe();
     events
         .send((
-            "agent:output".into(),
+            "shell:output".into(),
             Arc::new(json!({ "agent_id": "arabia", "bytes": "AAAA" })),
         ))
         .unwrap();
@@ -3312,13 +3311,11 @@ async fn register_push_cannot_be_the_first_frame() {
 // Push triggers
 // ---------------------------------------------------------------------------
 
-/// The supervisor's half of the triggers, stubbed: an agent's name, whether the
-/// user stopped it, and whether it runs in the native PTY view. Production
-/// reads all three off `Supervisor`.
+/// The supervisor's half of the triggers, stubbed: an agent's name and whether
+/// the user stopped it. Production reads both off `Supervisor`.
 struct Agents {
     name: Option<&'static str>,
     interrupted: bool,
-    native: bool,
 }
 
 impl Agents {
@@ -3326,20 +3323,12 @@ impl Agents {
         Self {
             name: Some(name),
             interrupted: false,
-            native: false,
         }
     }
 
     fn stopped(name: &'static str) -> Self {
         Self {
             interrupted: true,
-            ..Self::named(name)
-        }
-    }
-
-    fn native(name: &'static str) -> Self {
-        Self {
-            native: true,
             ..Self::named(name)
         }
     }
@@ -3352,10 +3341,6 @@ impl AgentLookup for Agents {
 
     fn was_interrupted(&self, _agent_id: &str) -> bool {
         self.interrupted
-    }
-
-    fn is_native(&self, _agent_id: &str) -> bool {
-        self.native
     }
 }
 
@@ -3479,21 +3464,6 @@ fn a_stopped_turn_sends_nothing() {
     h.triggers
         .on_status(&agents, "arabia", &AgentStatus::Running);
     h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
-    assert!(h.sent().is_empty(), "{:?}", h.sent());
-}
-
-/// A native-view agent's status is read off terminal quiet, so one turn can go
-/// `running → idle → running → idle`; none of those is a turn ending, and the
-/// desktop never notifies for such an agent either.
-#[test]
-fn a_native_agents_idle_is_not_a_turn_end() {
-    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
-    let agents = Agents::native("Fix login crash");
-    for _ in 0..2 {
-        h.triggers
-            .on_status(&agents, "arabia", &AgentStatus::Running);
-        h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
-    }
     assert!(h.sent().is_empty(), "{:?}", h.sent());
 }
 
@@ -3677,7 +3647,6 @@ fn an_agent_with_no_name_still_alerts() {
     let agents = Agents {
         name: None,
         interrupted: false,
-        native: false,
     };
     h.triggers
         .on_status(&agents, "arabia", &AgentStatus::Running);
@@ -5003,7 +4972,6 @@ fn switch_agent_account_takes_the_command_args_and_answers_the_record() {
             "claude".into(),
             tracked,
             String::new(),
-            crate::workspace::AgentView::Custom,
         );
         sup.workspace.add_agent(&mut record).unwrap();
         let d = dispatch::SupervisorDispatch::new(ctx, sup);

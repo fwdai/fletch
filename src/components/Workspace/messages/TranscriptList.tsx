@@ -1,7 +1,7 @@
 // The scrolling transcript itself: a log that follows its bottom and the turn
-// navigator around one agent's rows (TranscriptRows). Shared by the custom
-// view's ChatView (which stacks a composer under it) and the native view's rail
-// (which sits beside the terminal).
+// navigator around one agent's rows (TranscriptRows). Shared by every surface
+// that shows one agent's conversation: ChatView (which stacks a composer under
+// it), a sub-agent thread and the roadmap's chat pane.
 import { type MutableRefObject, useRef } from "react";
 import type { AgentRecord } from "@/api";
 import { useStickToBottom } from "@/util/stickToBottom";
@@ -23,8 +23,8 @@ interface Props {
   /** Filled with the log's "go to the bottom and follow", for a parent that
    *  sends a message while the user is scrolled up. */
   toBottomRef?: MutableRefObject<() => void>;
-  /** Suppress the turn navigator — while find-in-conversation is open (it owns
-   *  that corner), or in the native rail, which is too narrow for it. */
+  /** Suppress the turn navigator, e.g. while find-in-conversation is open (it
+   *  owns that corner). */
   hideNav?: boolean;
   /** The find-in-conversation query while the find bar is open. Folded rows
    *  holding a match open for as long as it stands. */

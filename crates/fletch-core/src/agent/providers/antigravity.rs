@@ -50,23 +50,6 @@ pub(crate) fn antigravity_build_args(turn: &TurnArgs) -> crate::exec_session::Tu
     crate::exec_session::TurnInvocation::args(args)
 }
 
-// `_model` unused: agy's TUI manages its own model selection (see
-// `antigravity_build_args` and `model_catalog::discover_one`). `_extra` unused:
-// the standing brief rides the first `--print` turn (above), which lives in the
-// resumed conversation the TUI then continues.
-pub(crate) fn antigravity_pty_args(
-    session_id: Option<&str>,
-    _model: Option<&str>,
-    _extra: Option<&str>,
-    _mcp_args: &[String],
-) -> Vec<String> {
-    // Native view: launch agy's interactive TUI (NOT `--print`, the
-    // non-interactive turn runner), resuming the conversation by id.
-    let mut args = vec!["--dangerously-skip-permissions".to_string()];
-    push_opt(&mut args, "--conversation", session_id);
-    args
-}
-
 /// agy stores `cwd → conversationId` in
 /// `~/.gemini/antigravity-cli/cache/last_conversations.json` (the checkout cwd
 /// is the key). Read it at turn-end to capture the id for resume + transcript.

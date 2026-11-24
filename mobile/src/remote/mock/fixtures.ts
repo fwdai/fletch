@@ -52,7 +52,6 @@ const agent = (a: Partial<AgentRecord> & Pick<AgentRecord, "id" | "name" | "proj
     repos: [repo(FLETCH_REPO, `feat/${a.name}`, "main")],
     task: "",
     status: "idle",
-    view: "custom",
     session_id: `sess-${a.id}`,
     created_at: "2026-09-07T09:12:00Z",
     last_error: null,

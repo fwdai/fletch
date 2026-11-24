@@ -461,10 +461,6 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
         // The composer's folders, still resolving its path mentions when the
         // send was made.
         const grants = await folders;
-        // Every agent starts in the custom view. Native is entered per agent via
-        // the header toggle, never as a spawn default — a per-turn provider has
-        // no session id before its first turn, and the backend's native path
-        // requires one, so a native spawn would fail and tear the checkout down.
         // Resolve the selected custom agent's brief + skill/MCP assignments into
         // by-value snapshots (see resolveAgentSpawnProfile), so the running agent
         // is unaffected if the preset is later edited or deleted.
@@ -503,7 +499,6 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get, engine) =
         // spawn (claude reads it as `--effort`; per-turn agents re-read it from
         // the record on each turn), so it never rides individual messages.
         const rec = await api.spawnAgent(
-          "custom",
           draft.repoPath,
           provider,
           draft.name,

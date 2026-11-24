@@ -546,8 +546,8 @@ mod tests {
 
     #[test]
     fn grants_round_trip_through_the_store() {
+        use crate::workspace::new_agent_record;
         use crate::workspace::tests::{mk_repo, seed_repo, test_db};
-        use crate::workspace::{new_agent_record, AgentView};
         let db = test_db();
         seed_repo(&db, "/r");
         let manager = WorkspaceManager::new(db);
@@ -557,7 +557,6 @@ mod tests {
             "claude".into(),
             mk_repo("/r"),
             "t".into(),
-            AgentView::Custom,
         );
         record.folder_grants = vec![FolderGrant {
             path: PathBuf::from("/Users/u/Projects/lib"),

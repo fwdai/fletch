@@ -2,17 +2,16 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use super::args::{effort_args, prepare_managed_args, prepare_pty_args};
+use super::args::{effort_args, prepare_managed_args};
 use super::capabilities::{provider_bin_label, PER_TURN_AGENTS};
 use super::providers::antigravity::{
     antigravity_build_args, antigravity_conv_id_from_map, antigravity_read,
     ANTIGRAVITY_PRINT_TIMEOUT,
 };
-use super::providers::codex::{codex_build_args, codex_pty_args, codex_session_id};
-use super::providers::cursor::{cursor_build_args, cursor_pty_args, cursor_session_id};
-use super::providers::opencode::{opencode_build_args, opencode_pty_args, opencode_session_id};
-use super::providers::pi::{pi_build_args, pi_pty_args, pi_session_id, pi_session_slug};
-use super::spawn::pty_input_keystrokes;
+use super::providers::codex::{codex_build_args, codex_session_id};
+use super::providers::cursor::{cursor_build_args, cursor_session_id};
+use super::providers::opencode::{opencode_build_args, opencode_session_id};
+use super::providers::pi::{pi_build_args, pi_session_id, pi_session_slug};
 use super::transcript::{jsonl_files_ending, records_with_id};
 use super::*;
 
@@ -33,8 +32,6 @@ fn claude_spec(start: SessionStart) -> SpawnSpec<'static> {
         codegraph_available: false,
         mcp_servers: &[],
         rpc_dir: PathBuf::new(),
-        cols: 80,
-        rows: 24,
         engine: crate::sandbox::EngineKind::SandboxExec,
         account: None,
         oauth_token: None,
@@ -45,7 +42,7 @@ fn claude_spec(start: SessionStart) -> SpawnSpec<'static> {
 }
 
 #[test]
-fn claude_session_flags_match_the_start_in_both_views() {
+fn claude_session_flags_match_the_start() {
     let cases = [
         (SessionStart::Fresh, vec!["--session-id", "own"]),
         (SessionStart::Resume, vec!["--resume", "own"]),
@@ -58,81 +55,11 @@ fn claude_session_flags_match_the_start_in_both_views() {
     for (start, flags) in cases {
         let flags: Vec<String> = flags.into_iter().map(String::from).collect();
         let spec = claude_spec(start);
-        for args in [
-            prepare_managed_args(&spec, &[], true, None),
-            prepare_pty_args(&spec, &[]),
-        ] {
-            assert!(args.ends_with(&flags), "{args:?}");
-            // Nothing earlier on the line names a session.
-            assert_eq!(session_flags(&args), session_flags(&flags), "{args:?}");
-        }
+        let args = prepare_managed_args(&spec, &[], true, None);
+        assert!(args.ends_with(&flags), "{args:?}");
+        // Nothing earlier on the line names a session.
+        assert_eq!(session_flags(&args), session_flags(&flags), "{args:?}");
     }
-}
-
-// ── native (PTY) view input ───────────────────────────────────────────
-//
-// These pin the invariant that one app-originated message becomes exactly one
-// turn, carrying exactly the text we recorded. A violation here means the agent
-// runs a conversation that diverges from `session_user_turns`.
-
-/// Ctrl-E, Ctrl-U — the editor clear that must precede every injected line.
-const CLEAR: &[u8] = &[0x05, 0x15];
-
-fn keys(text: &str, attachments: &[String]) -> Vec<u8> {
-    pty_input_keystrokes(text, attachments)
-}
-
-#[test]
-fn pty_input_clears_the_editor_before_typing() {
-    // The user may have a half-typed prompt sitting at the prompt when a
-    // git-action trigger lands. Without the clear, the agent would submit
-    // `<their draft>commit this`.
-    let out = keys("commit this", &[]);
-    assert!(out.starts_with(CLEAR), "must clear the line editor first");
-    assert_eq!(&out[CLEAR.len()..], b"commit this\r");
-}
-
-#[test]
-fn pty_input_submits_exactly_once_per_message() {
-    // A TUI reads LF/CR as "send now", so an unflattened multi-line prompt
-    // would arrive as several truncated turns.
-    let out = keys("first\nsecond\r\nthird", &[]);
-    assert_eq!(&out[CLEAR.len()..], b"first second third\r");
-    // Exactly one CR in the whole byte stream — the submit. (The clear prefix
-    // is 0x05/0x15, so it contributes none.)
-    assert_eq!(out.iter().filter(|&&b| b == b'\r').count(), 1);
-    assert_eq!(out.iter().filter(|&&b| b == b'\n').count(), 0);
-}
-
-#[test]
-fn pty_input_sanitizes_attachment_paths() {
-    // Paths are ordinary bytes on Unix and may legally contain a newline; an
-    // unsanitized one would split the message into two turns.
-    let out = keys("look at this", &["/tmp/we\nird.png".to_string()]);
-    assert_eq!(&out[CLEAR.len()..], b"look at this /tmp/we ird.png\r");
-    assert_eq!(out.iter().filter(|&&b| b == b'\r').count(), 1);
-}
-
-#[test]
-fn pty_input_drops_control_bytes_that_steer_the_tui() {
-    // Ctrl-C would interrupt the turn, ESC would open a mode, Ctrl-U would
-    // clear what we just typed — none may reach the TUI from message content.
-    let out = keys("a\u{3}b\u{1b}c", &["/tmp/x\u{15}.png".to_string()]);
-    assert_eq!(&out[CLEAR.len()..], b"abc /tmp/x.png\r");
-}
-
-#[test]
-fn pty_input_omits_a_leading_separator_for_attachment_only_messages() {
-    let out = keys("", &["/tmp/a.png".to_string()]);
-    assert_eq!(&out[CLEAR.len()..], b"/tmp/a.png\r");
-}
-
-#[test]
-fn pty_input_submits_even_when_empty() {
-    // A bare submit is still a submit — never a no-op write that silently
-    // drops a recorded turn.
-    let out = keys("", &[]);
-    assert_eq!(&out[CLEAR.len()..], b"\r");
 }
 
 // ── transcript readers ────────────────────────────────────────────────
@@ -401,13 +328,6 @@ fn antigravity_read_keys_by_step_index() {
     assert_eq!(diag.records_parsed, 3);
 }
 
-// agy's native (PTY/TUI) view is wired — it resumes the conversation the
-// custom view established. Rollout test below pins the full matrix.
-#[test]
-fn antigravity_native_view_is_wired() {
-    assert!(capabilities("antigravity").native_view);
-}
-
 #[test]
 fn pi_slug_wraps_cwd_with_dashes() {
     assert_eq!(
@@ -549,91 +469,6 @@ fn supported_per_turn_agents_keep_prompts_out_of_argv() {
     assert!(antigravity.args.last().unwrap().contains(prompt));
 }
 
-// ── pty (native TUI) args ──────────────────────────────────────────────
-
-#[test]
-fn codex_pty_args_launch_tui_fresh_and_resume() {
-    // Fresh: bypass approvals/sandbox so the TUI runs unattended; no
-    // `exec`/`resume` subcommand means the interactive CLI.
-    let fresh = codex_pty_args(None, None, None, &[]);
-    assert!(fresh.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
-    assert!(!fresh.iter().any(|a| a == "resume"));
-    // Resume: `resume <id>` continues the prior interactive session.
-    let resume = codex_pty_args(Some("abc123"), None, None, &[]);
-    assert!(resume.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
-    let pos = resume
-        .iter()
-        .position(|a| a == "resume")
-        .expect("resume subcommand");
-    assert_eq!(resume.get(pos + 1).map(String::as_str), Some("abc123"));
-}
-
-#[test]
-fn cursor_pty_args_force_and_resume() {
-    let fresh = cursor_pty_args(None, None, None, &[]);
-    assert!(fresh.contains(&"--force".to_string()));
-    assert!(!fresh.iter().any(|a| a == "--resume"));
-    let resume = cursor_pty_args(Some("chat-1"), None, None, &[]);
-    assert!(resume.contains(&"--force".to_string()));
-    let pos = resume
-        .iter()
-        .position(|a| a == "--resume")
-        .expect("--resume flag");
-    assert_eq!(resume.get(pos + 1).map(String::as_str), Some("chat-1"));
-}
-
-#[test]
-fn opencode_pty_args_launch_tui_and_session() {
-    // Fresh: bare `opencode` launches the TUI. It must NOT carry
-    // `--dangerously-skip-permissions` — that's a `run`-only flag, and
-    // the default (TUI) command prints help and exits when given it.
-    let fresh = opencode_pty_args(None, None, None, &[]);
-    assert!(!fresh.iter().any(|a| a == "--dangerously-skip-permissions"));
-    assert!(fresh.is_empty());
-    // Resume: `--session <id>` continues the prior session.
-    let resume = opencode_pty_args(Some("ses_9"), None, None, &[]);
-    assert!(!resume.iter().any(|a| a == "--dangerously-skip-permissions"));
-    let pos = resume
-        .iter()
-        .position(|a| a == "--session")
-        .expect("--session flag");
-    assert_eq!(resume.get(pos + 1).map(String::as_str), Some("ses_9"));
-}
-
-#[test]
-fn pi_pty_args_bare_tui_and_session() {
-    // Fresh: bare `pi` launches the interactive TUI; tools auto-run there.
-    // (May carry injected --append-system-prompt args, but never a resume.)
-    let fresh = pi_pty_args(None, None, None, &[]);
-    assert!(
-        !fresh.iter().any(|a| a == "--session"),
-        "fresh TUI has no resume flag"
-    );
-    // Resume uses `--session <id>` (target pi 0.74.x lacks `--session-id`).
-    let resume = pi_pty_args(Some("u-7"), None, None, &[]);
-    let pos = resume
-        .iter()
-        .position(|a| a == "--session")
-        .expect("--session flag");
-    assert_eq!(resume.get(pos + 1).map(String::as_str), Some("u-7"));
-}
-
-#[test]
-fn every_per_turn_agent_has_a_pty_arg_builder() {
-    // Native view is wired for every per-turn agent, so each descriptor
-    // must carry a TUI arg-builder. Fresh launch never references resume.
-    for d in PER_TURN_AGENTS {
-        let fresh = (d.pty_args)(None, None, None, &[]);
-        assert!(
-            !fresh
-                .iter()
-                .any(|a| a == "resume" || a == "--resume" || a == "--session"),
-            "fresh {} args must not resume: {fresh:?}",
-            d.id
-        );
-    }
-}
-
 #[test]
 fn opencode_args_variant_when_thinking_set() {
     let args = opencode_build_args(&TurnArgs {
@@ -682,9 +517,8 @@ fn pi_args_thinking_when_set() {
     assert!(args.args.contains(&"xhigh".to_string()));
 }
 
-/// The custom view asks claude for readable thinking summaries when the
-/// binary parses the flag, and launches exactly as before when it doesn't;
-/// the native view is claude's own TUI, which picks its display itself.
+/// Claude is asked for readable thinking summaries when the binary parses the
+/// flag, and launches exactly as before when it doesn't.
 #[test]
 fn managed_args_ask_for_summarized_thinking_only_when_the_binary_takes_it() {
     let spec = claude_spec(SessionStart::Fresh);
@@ -700,15 +534,11 @@ fn managed_args_ask_for_summarized_thinking_only_when_the_binary_takes_it() {
     let flag: Vec<String> = stripped.drain(at..at + 2).collect();
     assert_eq!(flag, ["--thinking-display", "summarized"]);
     assert_eq!(stripped, without, "the flag is the only difference");
-    assert!(!prepare_pty_args(&spec, &[])
-        .iter()
-        .any(|a| a == "--thinking-display"));
 }
 
-/// The custom view hands claude its instructions as a file, so no argument
-/// grows with them: however long the brief (a forked conversation's context
-/// rides in it), every argument stays far below the 128 KiB Linux allows one.
-/// The native view still passes the text itself, by design (`instructions`).
+/// Claude gets its instructions as a file, so no argument grows with them:
+/// however long the brief (a forked conversation's context rides in it), every
+/// argument stays far below the 128 KiB Linux allows one.
 #[test]
 fn managed_args_read_the_system_prompt_from_a_file() {
     let brief = "x".repeat(300 * 1024);
@@ -730,14 +560,6 @@ fn managed_args_read_the_system_prompt_from_a_file() {
     // No text, no file: no flag at all.
     let bare = prepare_managed_args(&spec, &[], true, None);
     assert!(!bare.iter().any(|a| a.starts_with("--append-system-prompt")));
-
-    let pty = prepare_pty_args(&spec, &[]);
-    let at = pty
-        .iter()
-        .position(|a| a == "--append-system-prompt")
-        .expect("the native view passes the text");
-    assert!(pty[at + 1].ends_with(&brief));
-    assert!(!pty.iter().any(|a| a == "--append-system-prompt-file"));
 }
 
 #[test]
@@ -821,29 +643,6 @@ fn every_per_turn_agent_resolves_to_its_descriptor() {
     }
     assert!(per_turn_descriptor("claude").is_none());
     assert!(per_turn_descriptor("nope").is_none());
-}
-
-/// Pins the current native-view capability rollout. When a follow-up wires
-/// native view for an agent, it flips the descriptor flag and updates the
-/// expectation here on purpose.
-#[test]
-fn capability_rollout_matches_what_is_wired_today() {
-    let cases = [
-        ("claude", true),
-        ("codex", true),
-        ("cursor", true),
-        ("opencode", true),
-        ("pi", true),
-        ("antigravity", true),
-        ("unknown", false),
-    ];
-    for (provider, native_view) in cases {
-        assert_eq!(
-            capabilities(provider).native_view,
-            native_view,
-            "native_view for {provider}"
-        );
-    }
 }
 
 /// `--agents` must only appear when codegraph actually landed: a subagent whose
