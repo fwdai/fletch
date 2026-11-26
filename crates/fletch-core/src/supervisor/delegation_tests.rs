@@ -1095,6 +1095,7 @@ fn a_delegation_and_a_review_never_both_take_a_checkout() {
                         "[app-action] commit",
                         false,
                     )
+                    .unwrap()
                     .is_some()
                 })
                 .collect()
@@ -1118,6 +1119,67 @@ fn a_delegation_and_a_review_never_both_take_a_checkout() {
             "round {round}: exactly one takes the checkout"
         );
     }
+}
+
+/// A branch switch is the third taker: while it has the tree neither of the
+/// other two gets the checkout, and it gets the tree from neither.
+#[test]
+fn a_tree_on_the_move_is_closed_to_a_delegation_and_a_review() {
+    use crate::review::engine::{claim_if_free, Claim, Table};
+
+    let delegations = Delegations::default();
+    let reviews = Table::default();
+    let key: Key = ("dee".to_string(), None);
+    let record = || {
+        record_unless_reviewed(
+            &delegations,
+            &reviews,
+            &key,
+            DelegationKind::Commit,
+            "[app-action] commit",
+            false,
+        )
+    };
+
+    let moving = reserve_tree(&delegations, &reviews, &key).expect("free");
+    assert_eq!(
+        record().unwrap_err().to_string(),
+        TREE_MOVE_HOLDS_CHECKOUT,
+        "no delegation is admitted"
+    );
+    assert!(delegations.is_empty(), "and none is recorded");
+    assert_eq!(claim_if_free(&reviews, &key, || true), Claim::CoderBusy);
+    assert_eq!(
+        reserve_tree(&delegations, &reviews, &key)
+            .unwrap_err()
+            .to_string(),
+        TREE_MOVE_HOLDS_CHECKOUT,
+        "nor a second move"
+    );
+    // Another checkout of the same agent is its own.
+    let other: Key = ("dee".to_string(), Some("repo-1".to_string()));
+    drop(reserve_tree(&delegations, &reviews, &other).expect("free"));
+
+    drop(moving);
+    assert!(
+        record().unwrap().is_some(),
+        "released: a delegation is admitted"
+    );
+    assert_eq!(
+        reserve_tree(&delegations, &reviews, &key)
+            .unwrap_err()
+            .to_string(),
+        DELEGATION_HOLDS_CHECKOUT
+    );
+
+    let reviewed: Key = ("dee".to_string(), Some("repo-2".to_string()));
+    assert_eq!(claim_if_free(&reviews, &reviewed, || true), Claim::Claimed);
+    assert_eq!(
+        reserve_tree(&delegations, &reviews, &reviewed)
+            .unwrap_err()
+            .to_string(),
+        REVIEW_HOLDS_TREE
+    );
 }
 
 #[tokio::test]
