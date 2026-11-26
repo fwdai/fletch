@@ -31,7 +31,7 @@
 //! tested here; [`spawn`] is the driver that feeds them status transitions,
 //! `agent:git-action` acks and a short tick while anything is live.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -721,9 +721,10 @@ async fn deliver(
 const REVIEW_HOLDS_CHECKOUT: &str =
     "A local review is reading this checkout. Wait for it to finish, or stop it.";
 
-/// Who takes a checkout next is decided one at a time. A delegation and a local
-/// review each read the other's table and then write their own, so with
-/// nothing around those two steps both could find the checkout free.
+/// Who takes a checkout next is decided one at a time. A delegation, a local
+/// review and a branch switch each read the others' records and then write
+/// their own, so with nothing around those two steps two could find the
+/// checkout free.
 static ADMISSION: Mutex<()> = Mutex::new(());
 
 /// Decide who takes a checkout, with no other such decision in between. Never
@@ -733,7 +734,64 @@ pub(crate) fn admit<T>(decide: impl FnOnce() -> T) -> T {
     decide()
 }
 
-/// Record a delegation on `key`, unless a local review holds it.
+/// What a delegation or a branch switch is refused with while the other of
+/// the two, or a local review, has the checkout.
+const TREE_MOVE_HOLDS_CHECKOUT: &str =
+    "This checkout is switching branches. Try again in a moment.";
+const DELEGATION_HOLDS_CHECKOUT: &str =
+    "The agent is working on this checkout. Switch branches when it is done.";
+const REVIEW_HOLDS_TREE: &str =
+    "A local review is reading this checkout. Stop it to switch branches.";
+
+/// Checkouts whose working tree is being moved to another branch
+/// (`Supervisor::checkout_pr`): a third taker beside a delegation and a local
+/// review, decided under the same [`admit`]. Taken after [`ADMISSION`].
+static TREE_MOVES: Mutex<BTreeSet<Key>> = Mutex::new(BTreeSet::new());
+
+/// A checkout's tree reserved for a move to another branch. While it lives no
+/// delegation is admitted and no review round claims the checkout.
+#[derive(Debug)]
+pub(crate) struct TreeMove(Key);
+
+impl Drop for TreeMove {
+    fn drop(&mut self) {
+        TREE_MOVES.lock().remove(&self.0);
+    }
+}
+
+/// Whether `key`'s tree is reserved for a move. Read under [`admit`] by the
+/// two other takers.
+pub(crate) fn tree_moving(key: &Key) -> bool {
+    TREE_MOVES.lock().contains(key)
+}
+
+/// Reserve `key`'s tree for a move, as one step against a delegation's
+/// admission and a review's claim: refused, saying which, while either has
+/// the checkout or another move does.
+pub(crate) fn reserve_tree(
+    table: &Delegations,
+    reviews: &crate::review::engine::Table,
+    key: &Key,
+) -> Result<TreeMove> {
+    admit(|| {
+        let held = if table.inner.lock().table.contains_key(key) {
+            Some(DELEGATION_HOLDS_CHECKOUT)
+        } else if reviews.reviewing(key) {
+            Some(REVIEW_HOLDS_TREE)
+        } else if !TREE_MOVES.lock().insert(key.clone()) {
+            Some(TREE_MOVE_HOLDS_CHECKOUT)
+        } else {
+            None
+        };
+        match held {
+            Some(why) => Err(Error::Other(why.into())),
+            None => Ok(TreeMove(key.clone())),
+        }
+    })
+}
+
+/// Record a delegation on `key`, unless a local review holds it (`None`) or
+/// its tree is moving to another branch (an error saying so).
 fn record_unless_reviewed(
     table: &Delegations,
     reviews: &crate::review::engine::Table,
@@ -741,10 +799,13 @@ fn record_unless_reviewed(
     kind: DelegationKind,
     prompt: &str,
     queued: bool,
-) -> Option<(u64, DelegationView)> {
+) -> Result<Option<(u64, DelegationView)>> {
     admit(|| {
-        (!reviews.reviewing(key))
-            .then(|| table.record(key.clone(), kind, prompt.to_string(), queued, now_ms()))
+        if tree_moving(key) {
+            return Err(Error::Other(TREE_MOVE_HOLDS_CHECKOUT.into()));
+        }
+        Ok((!reviews.reviewing(key))
+            .then(|| table.record(key.clone(), kind, prompt.to_string(), queued, now_ms())))
     })
 }
 
@@ -794,7 +855,7 @@ pub(crate) fn admit_to(
     let key: Key = (agent_id.to_string(), subdir);
     // Recorded before the send, so the `Running` that delivery raises finds it.
     let reviews = crate::review::engine::global();
-    let Some((id, shown)) = record_unless_reviewed(table, reviews, &key, kind, &prompt, queued)
+    let Some((id, shown)) = record_unless_reviewed(table, reviews, &key, kind, &prompt, queued)?
     else {
         return Ok(None);
     };

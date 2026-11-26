@@ -135,6 +135,12 @@ export function GitRepoSection({
   // tree's own lane when no PR covers its branch. Any other lane can only be
   // looked at — and focused.
   const acting = viewed == null || viewed.pr == null || viewed.focused;
+  // The working tree is on the lane's branch. Only there do the tree's rows
+  // and actions belong: the focused PR's lane, with the tree elsewhere, is
+  // about that PR alone — a commit or a push from it would land on a branch
+  // the lane doesn't show.
+  const onTree = viewed == null || viewed.current;
+  const actsOnTree = acting && onTree;
   // What the ladder AND the footer describe, so they can never disagree: the
   // focused PR's live state on its own lane; nothing on the tree's bare lane
   // while another PR is focused (a commit from there lands on its branch, a
@@ -156,6 +162,7 @@ export function GitRepoSection({
   // carries the one gate; the dispatch below re-runs it.
   const { primary, groups, tone, mainDisabled, mainReason, ending, gate } = useFooterModel({
     mode: acting ? "acting" : "focus",
+    tree: onTree,
     gitState,
     prState: acting ? lanePr : (viewedPr ?? null),
     checks: laneChecks,
@@ -165,9 +172,12 @@ export function GitRepoSection({
     customActive,
     delegationActive: delegation != null,
     busy: busy != null,
+    reviewActive: reviewInFlight(review),
+    agentWorking: agent.status === "running" || agent.status === "spawning",
     githubConnected,
     primaryCheckout: subdir === undefined,
-    reviewMenu: acting
+    // The reviewer reads the tree, so it is offered on the tree's lane.
+    reviewMenu: actsOnTree
       ? { state: review, reviewerName: reviewer?.name ?? null, refusal: reviewGate }
       : undefined,
   });
@@ -183,6 +193,7 @@ export function GitRepoSection({
     comments: laneComments,
     prUrl: viewedPr?.url,
     prNumber: viewedPr?.number,
+    prBranch: viewedPr?.branch ?? undefined,
     gate,
     githubConnected,
     hasOrigin,
@@ -203,8 +214,8 @@ export function GitRepoSection({
   };
 
   // The same five rows for every lane. A lane only looked at — another PR of
-  // the checkout — is drawn from its set entry, with the tree's rows and the
-  // review row idle and saying why.
+  // the checkout — is drawn from its set entry, with the review row idle and
+  // saying why; a lane the tree isn't on says where it is instead.
   const rows = useMemo(() => {
     if (!viewed) return [];
     if (!acting && viewed.pr) {
@@ -215,7 +226,7 @@ export function GitRepoSection({
         mergeState: viewed.pr.checks?.merge_state ?? null,
         comments: null,
         base,
-        lane: { tree: false, focused: false },
+        lane: { tree: onTree, focused: false },
       });
     }
     return buildLadder({
@@ -225,7 +236,9 @@ export function GitRepoSection({
       mergeState: laneMergeState,
       comments: laneComments,
       base,
-      review,
+      lane: { tree: onTree, focused: true },
+      // The reviewer's state is the tree's, like its controls.
+      review: onTree ? review : null,
       canReview: reviewGate == null,
       nowMs,
       coderName,
@@ -234,6 +247,7 @@ export function GitRepoSection({
     coderName,
     viewed,
     acting,
+    onTree,
     gitState,
     lanePr,
     laneChecks,
@@ -246,12 +260,12 @@ export function GitRepoSection({
   ]);
 
   // The Review row's controls: one button (set up / start / re-run / stop), and
-  // the per-thread fix and dismiss. On a lane the footer doesn't act on, none.
+  // the per-thread fix and dismiss. Off the lane whose tree it reads, none.
   // Stop also cancels a start the host is holding for the coder's turn.
   const reviewing = reviewInFlight(review);
   const reviewAgain = review != null && review.phase !== "idle" && review.phase !== "failed";
   const reviewBodies: ReviewBodies | null =
-    acting && !reviewGate
+    actsOnTree && !reviewGate
       ? {
           state: review,
           action: reviewing
@@ -303,7 +317,7 @@ export function GitRepoSection({
   const codeTab = useAppStore((s) => s.features.code);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const reviewInCode =
-    acting && codeTab
+    actsOnTree && codeTab
       ? () => {
           presetReviewAllChanges();
           setRightPanelTab(agent.id, "code");
@@ -312,7 +326,7 @@ export function GitRepoSection({
 
   // The commit composer yields while the agent holds a delegation, and only
   // belongs to the lane whose tree it commits.
-  const showCommit = acting && committable && !delegation;
+  const showCommit = actsOnTree && committable && !delegation;
   // Keys Fletch refuses to run git over here. While any remain, the git state is
   // stale and every action would fail, so the card replaces the body and the
   // footer steps aside.
@@ -340,9 +354,9 @@ export function GitRepoSection({
                 repoDir={repoDir}
                 rows={rows}
                 bodies={{
-                  files: acting ? (gitState?.files ?? []) : [],
+                  files: onTree ? (gitState?.files ?? []) : [],
                   onRefresh: () => void fetchGitState(agent.id),
-                  commitsLink: acting ? commitsLink : null,
+                  commitsLink: onTree ? commitsLink : null,
                   commitsAhead: aheadCount,
                   pr: viewedPr,
                   prBranch,

@@ -138,6 +138,9 @@ export function shipView(input: ShipInput): ShipView {
       // The phone offers no local review and doesn't track one. The host still
       // refuses a delegation while a review holds the checkout.
       reviewActive: false,
+      // `checkout-pr` is the desktop's: the phone has no lanes to move between.
+      agentWorking: false,
+      treeDirty: false,
       primaryCheckout: true,
       workSinceMerge: git != null && hasWorkSinceMerge(git),
     });

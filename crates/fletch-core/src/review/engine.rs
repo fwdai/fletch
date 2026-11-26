@@ -1369,7 +1369,9 @@ pub(crate) enum Claim {
 /// tick and a click) is refused rather than racing to the spawn.
 pub(crate) fn claim_if_free(table: &Table, key: &Key, free: impl FnOnce() -> bool) -> Claim {
     crate::supervisor::delegation::admit(|| {
-        if !free() {
+        // A tree on its way to another branch is not one to read: the round
+        // waits, as it does for the coder.
+        if !free() || crate::supervisor::delegation::tree_moving(key) {
             return Claim::CoderBusy;
         }
         match table.update(key, Tracked::claim) {

@@ -9,14 +9,14 @@
 //
 // Pure, like `ladderModel.ts`: every state has a test, and no store or React.
 
-import type { ReviewState } from "@/api";
+import type { PrState, ReviewState } from "@/api";
 import type { IconName } from "@/components/Icon";
 import type { ActionTone, GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { describeMergeGate } from "@/mergeGate";
 import { nextRung, type Rung } from "@/readiness";
 import { plural } from "@/util/format";
 import { reviewAllows } from "./actionGate";
-import type { LadderInput } from "./ladderModel";
+import { type LadderInput, withoutTree } from "./ladderModel";
 
 export interface FooterAction {
   /** The key `runAction` dispatches — or a commit mode, which the panel makes
@@ -50,14 +50,29 @@ export interface Footer {
   groups: FooterGroup[];
 }
 
+/** Checking out the PR's branch, for an open PR whose branch the tree isn't
+ *  on; null otherwise (nothing to move to, or already there). */
+function checkoutOf(pr: PrState | null, tree: boolean, label?: string): FooterAction | null {
+  if (tree || pr?.state !== "open" || !pr.branch) return null;
+  return { key: "checkout-pr", label: label ?? `Check out ${pr.branch}`, icon: "branch" };
+}
+
 /** The footer of a lane the panel can only look at — another PR of the
  *  checkout than the focused one. The host's PR actions and autopilot work on
- *  the focused PR, so acting on this one means focusing it first; that is the
- *  one place the panel moves the focus, and it says so. */
-export function focusFooter(): Footer {
+ *  the focused PR, so acting on this one starts with making it that. For an
+ *  open PR on another branch than the tree's that is a switch: its branch
+ *  checked out and the PR focused, so every action then runs in its branch.
+ *  Focusing alone stays in the menu, for what needs no checkout (the merge)
+ *  when the tree can't move. These are the only places the panel moves the
+ *  focus or the tree, and each says so. */
+export function focusFooter(lane?: { pr: PrState | null; tree: boolean }): Footer {
+  const view: FooterAction = { key: "view-pr", label: "View on GitHub", icon: "github" };
+  const focus: FooterAction = { key: "focus-pr", label: "Focus this PR", icon: "pr" };
+  const checkout = lane ? checkoutOf(lane.pr, lane.tree, "Switch to this PR") : null;
+  if (!checkout) return { primary: { ...focus, tone: "ghost" }, groups: [{ items: [view] }] };
   return {
-    primary: { key: "focus-pr", label: "Focus this PR", icon: "pr", tone: "ghost" },
-    groups: [{ items: [{ key: "view-pr", label: "View on GitHub", icon: "github" }] }],
+    primary: { ...checkout, tone: "ghost" },
+    groups: [{ items: [{ ...focus, label: "Focus without switching" }, view] }],
   };
 }
 
@@ -195,6 +210,11 @@ const REVIEW_WAIT: FooterAction = {
 function primaryOf(rung: Rung, input: FooterInput, unblock: FooterAction | null): FooterAction {
   const { git, pr, customActive, base } = input;
   const unpushed = git?.unpushed ?? 0;
+  // Off the tree's lane, a step that would work on the tree is not this
+  // lane's: its PR's page is. A step the agent takes in the PR's branch
+  // starts with checking that branch out.
+  const tree = input.lane?.tree ?? true;
+  const checkout = checkoutOf(pr, tree);
   switch (rung.do) {
     case "wait":
       return rung.why === "unknown-state"
@@ -230,20 +250,23 @@ function primaryOf(rung: Rung, input: FooterInput, unblock: FooterAction | null)
             unblock ?? { key: "push", label: `Push ${plural(unpushed, "commit")}`, icon: "push" }
           );
         case "update-branch":
-          return { key: "agent-update-branch", label: "Update branch", icon: "branch" };
+          return checkout ?? { key: "agent-update-branch", label: "Update branch", icon: "branch" };
         case "fix-checks":
-          return { key: "agent-fix", label: "Fix checks with agent", icon: "wrench" };
+          return checkout ?? { key: "agent-fix", label: "Fix checks with agent", icon: "wrench" };
         case "resolve-comments":
-          return {
-            key: "agent-resolve-comments",
-            label: "Resolve comments with agent",
-            icon: "chatPlus",
-          };
+          return (
+            checkout ?? {
+              key: "agent-resolve-comments",
+              label: "Resolve comments with agent",
+              icon: "chatPlus",
+            }
+          );
       }
       break;
     case "escalate":
       switch (rung.blocker.kind) {
         case "proposal-closed":
+          if (!tree) return { ...VIEW_PR, tone: "ghost" };
           return unblock ?? { key: "agent-open-pr", label: "Open new PR", icon: "pr" };
         case "draft":
           return { ...VIEW_PR, label: "View draft on GitHub", tone: "ghost" };
@@ -264,12 +287,19 @@ function primaryOf(rung: Rung, input: FooterInput, unblock: FooterAction | null)
     case "landed":
       // Shipped. Archiving and deleting the branch sit on the merged PR's row;
       // the footer keeps the quiet sync, since the next thing is a follow-up.
+      if (!tree) return { ...VIEW_PR, tone: "ghost" };
       return { key: "pull", label: "Pull", icon: "inbox", tone: "ghost" };
   }
   return { key: "loading", label: "Loading…", icon: "refresh" };
 }
 
-export function buildFooter(input: FooterInput): Footer {
+export function buildFooter(given: FooterInput): Footer {
+  // The footer acts on the lane in view. On the focused PR's lane while the
+  // tree is on another branch, that is the PR alone: the tree's work (commit,
+  // push, sync) is offered on the lane the tree is on, never here, where it
+  // would land on a branch the lane doesn't show.
+  const tree = given.lane?.tree ?? true;
+  const input = tree || !given.git ? given : { ...given, git: withoutTree(given.git) };
   const { git, pr, checks, comments, mergeState, base, commitMode, customActive } = input;
   const rung: Rung = git
     ? nextRung({ git, pr, checks, comments }, { base, commitMode: ladderCommitMode(commitMode) })
@@ -325,17 +355,21 @@ export function buildFooter(input: FooterInput): Footer {
     });
   }
 
-  // ── Branch ─────────────────────────────────────────────────────────────────
-  groups.push({
-    title: "Branch",
-    items: [
-      ...(unpushed > 0 && !unblock
-        ? [{ key: "push", label: `Push ${plural(unpushed, "commit")}`, icon: "push" as IconName }]
-        : []),
-      { key: "pull", label: "Pull", icon: "inbox" },
-      { key: "rebase", label: `Rebase onto ${base}`, icon: "branch" },
-    ],
-  });
+  // ── Branch: the one checked out, or the way onto the lane's ────────────────
+  const checkout = checkoutOf(pr, tree);
+  if (checkout) groups.push({ title: "Branch", items: [checkout] });
+  if (tree) {
+    groups.push({
+      title: "Branch",
+      items: [
+        ...(unpushed > 0 && !unblock
+          ? [{ key: "push", label: `Push ${plural(unpushed, "commit")}`, icon: "push" as IconName }]
+          : []),
+        { key: "pull", label: "Pull", icon: "inbox" },
+        { key: "rebase", label: `Rebase onto ${base}`, icon: "branch" },
+      ],
+    });
+  }
 
   // ── Pull request ───────────────────────────────────────────────────────────
   if (!unblock) {

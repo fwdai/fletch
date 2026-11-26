@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GitState, PrChecks, PrComment, PrState, ReviewState } from "@/api";
-import { buildFooter, type FooterInput } from "./footerModel";
+import { buildFooter, type FooterInput, focusFooter } from "./footerModel";
 
 function git(over: Partial<GitState> = {}): GitState {
   return {
@@ -456,5 +456,107 @@ describe("buildFooter · the local reviewer", () => {
       reviewMenu: menu(),
     });
     expect(f.primary.key).toBe("agent-resolve-comments");
+  });
+});
+
+// The focused PR's lane while the working tree is on another branch: the
+// footer is about that PR, and nothing in it works on the tree.
+describe("buildFooter · a lane the tree isn't on", () => {
+  const offTree = { lane: { tree: false, focused: true } };
+  // The tree, on its own branch, has everything a footer would otherwise ask
+  // for first: a file to commit and commits to push.
+  const busyTree = git({ branch: "other", files: [file()], unpushed: 2, ahead: 2, behind: 1 });
+
+  it("offers the PR's merge, whatever the tree holds", () => {
+    const f = footer({
+      ...offTree,
+      git: busyTree,
+      pr: pr({ branch: "feat" }),
+      checks: checks(),
+      mergeState: "clean",
+    });
+    expect(f.primary.key).toBe("merge");
+    // Nothing of the tree's: no commit mode, no push, pull or rebase.
+    expect(keys(f)).toEqual(["checkout-pr"]);
+  });
+
+  it("keeps the PR's own remediations and drops the tree's", () => {
+    const f = footer({
+      ...offTree,
+      git: busyTree,
+      pr: pr({ branch: "feat" }),
+      checks: checks({ merge_state: "behind" }),
+      mergeState: "behind",
+    });
+    expect(f.groups.map((g) => g.title)).toEqual(["Pull request"]);
+    expect(keys(f)).toEqual(["merge", "agent-update-branch"]);
+  });
+
+  it("offers the way onto the PR's branch, in the menu while the merge is the next step", () => {
+    const f = footer({
+      ...offTree,
+      git: busyTree,
+      pr: pr({ branch: "feat" }),
+      checks: checks({ merge_state: "behind" }),
+      mergeState: "behind",
+    });
+    // The agent would update the branch in it, so checking it out comes first.
+    expect(f.primary).toMatchObject({ key: "checkout-pr", label: "Check out feat" });
+    expect(keys(f)).not.toContain("checkout-pr");
+
+    const ready = footer({
+      ...offTree,
+      git: busyTree,
+      pr: pr({ branch: "feat" }),
+      checks: checks(),
+      mergeState: "clean",
+    });
+    expect(ready.primary.key).toBe("merge");
+    expect(group(ready, "Branch")?.items.map((i) => i.key)).toEqual(["checkout-pr"]);
+  });
+
+  it("never offers a checkout on the lane the tree is on", () => {
+    const f = footer({
+      git: git({ ahead: 1 }),
+      pr: pr({ branch: "feat" }),
+      checks: checks({ merge_state: "behind" }),
+      mergeState: "behind",
+    });
+    expect(f.primary.key).toBe("agent-update-branch");
+    expect(keys(f)).not.toContain("checkout-pr");
+  });
+
+  it("points at the PR's page once it is merged or closed, not at a sync of the tree", () => {
+    for (const state of ["merged", "closed"] as const) {
+      const f = footer({ ...offTree, git: busyTree, pr: pr({ branch: "feat", state }) });
+      expect(f.primary).toMatchObject({ key: "view-pr", tone: "ghost" });
+      expect(f.groups).toEqual([]);
+    }
+  });
+});
+
+// A lane only looked at: another PR of the checkout than the focused one.
+describe("focusFooter", () => {
+  it("switches to an open PR on another branch, with focusing alone in the menu", () => {
+    const f = focusFooter({ pr: pr({ branch: "feat-b" }), tree: false });
+    expect(f.primary).toMatchObject({ key: "checkout-pr", label: "Switch to this PR" });
+    expect(keys(f)).toEqual(["focus-pr", "view-pr"]);
+  });
+
+  it("only focuses when there is no branch to move to", () => {
+    const lanes = [
+      // The tree is already on the PR's branch.
+      { pr: pr({ branch: "feat" }), tree: true },
+      // Settled: its branch is history.
+      { pr: pr({ branch: "feat-b", state: "merged" as const }), tree: false },
+      { pr: pr({ branch: "feat-b", state: "closed" as const }), tree: false },
+      // An older snapshot that never recorded the branch.
+      { pr: pr(), tree: false },
+    ];
+    for (const lane of lanes) {
+      const f = focusFooter(lane);
+      expect(f.primary.key).toBe("focus-pr");
+      expect(keys(f)).toEqual(["view-pr"]);
+    }
   });
 });

@@ -85,7 +85,12 @@ pub async fn create_pr_impl(
     Ok(pr)
 }
 
-/// Merge the open PR for the targeted repo's current branch.
+/// Merge the targeted repo's focused PR.
+///
+/// A bound PR is merged by number, whatever branch the checkout is on: the
+/// focused PR is the one the panel offers to merge, and it need not be the
+/// checked-out branch's (see `get_pr_checks_impl`). Unbound, it is the
+/// checked-out branch's open PR.
 ///
 /// Shared with the remote dispatcher.
 pub async fn merge_pr_impl(
@@ -93,8 +98,11 @@ pub async fn merge_pr_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<()> {
-    let (_repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
-    gh::pr_merge(&checkout).await
+    let (repo, checkout, _hold) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    match repo.pr_number {
+        Some(number) => gh::pr_merge_number(&repo.repo_path, number as u32).await,
+        None => gh::pr_merge(&checkout).await,
+    }
 }
 
 /// Focus one of a checkout's PRs: rebind the checkout to PR `number`, which
@@ -110,6 +118,21 @@ pub fn set_focused_pr_impl(
     number: u32,
 ) -> Result<PrState> {
     supervisor.set_focused_pr(ctx, agent_id, subdir, number)
+}
+
+/// Check out the head branch of one of a checkout's PRs and focus it
+/// (`Supervisor::checkout_pr`): refused while the agent, a delegation or a
+/// local review is in the checkout, or while its tree has uncommitted work.
+///
+/// Shared with the remote dispatcher.
+pub async fn checkout_pr_impl(
+    supervisor: &Supervisor,
+    ctx: &crate::host::EngineCtx,
+    agent_id: &str,
+    subdir: Option<&str>,
+    number: u32,
+) -> Result<PrState> {
+    supervisor.checkout_pr(ctx, agent_id, subdir, number).await
 }
 
 /// Fetch and return the current PR state for the agent's primary repo: by

@@ -35,6 +35,8 @@ const open: GateContext = {
   delegationActive: false,
   busy: false,
   reviewActive: false,
+  agentWorking: false,
+  treeDirty: false,
   primaryCheckout: true,
   workSinceMerge: false,
 };
@@ -195,5 +197,40 @@ describe("gateAction", () => {
     expect(reason("focus-pr", { hostRefusal: refusalOf(oldHost), delegationActive: true })).toBe(
       actionGateReason(oldHost, "focus-pr"),
     );
+  });
+
+  // Moving the tree to another branch is the one action that needs the
+  // checkout to itself and its tree clean.
+  describe("checkout-pr", () => {
+    const other = { laneBranch: "feat/second" };
+
+    it("is open on a clean, idle checkout", () => {
+      expect(gateAction("checkout-pr", { ...open, ...other })).toBeNull();
+    });
+
+    it("waits for the agent, a delegation and a local review", () => {
+      expect(reason("checkout-pr", { ...other, agentWorking: true })).toMatch(/agent is working/);
+      expect(
+        gateAction("checkout-pr", { ...open, ...other, delegationActive: true }),
+      ).not.toBeNull();
+      expect(reason("checkout-pr", { ...other, reviewActive: true })).toMatch(/local review/);
+    });
+
+    it("refuses to carry uncommitted work across, naming the branch it is on", () => {
+      expect(reason("checkout-pr", { ...other, treeDirty: true })).toBe(
+        "Commit or stash the changes on feat/first first",
+      );
+    });
+
+    it("closes on a host without the op", () => {
+      expect(reason("checkout-pr", { ...other, hostRefusal: refusalOf(oldHost) })).toBe(
+        actionGateReason(oldHost, "checkout-pr"),
+      );
+    });
+
+    it("leaves focusing alone open in every one of those states", () => {
+      const held = { ...open, ...other, agentWorking: true, treeDirty: true, reviewActive: true };
+      expect(gateAction("focus-pr", held)).toBeNull();
+    });
   });
 });

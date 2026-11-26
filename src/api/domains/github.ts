@@ -56,6 +56,11 @@ export const githubApi = (invoke: Invoke) => ({
    *  host answers with the PR and emits `pr:state_changed` for it. */
   setFocusedPr: (agentId: string, number: number, subdir?: string) =>
     invoke<PrState>("set_focused_pr", { agentId, subdir, number }),
+  /** Check out the head branch of one of a checkout's PRs and focus it. The
+   *  host refuses while the checkout is in use or its tree has uncommitted
+   *  work, saying which. */
+  checkoutPr: (agentId: string, number: number, subdir?: string) =>
+    invoke<PrState>("checkout_pr", { agentId, subdir, number }),
   listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),
   listRepoPrs: (repoPath: string) => invoke<PrSummary[]>("list_repo_prs", { repoPath }),
 });
