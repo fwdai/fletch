@@ -15,7 +15,6 @@ import {
   type FooterAction,
   focusFooter,
   type ReviewFooterInput,
-  reviewInFlight,
 } from "../footerModel";
 
 /** The footer as the panel renders it: `buildFooter` (or `focusFooter` for a
@@ -26,6 +25,9 @@ export function useFooterModel(input: {
   /** `acting`: the lane the footer's actions apply to. `focus`: another PR of
    *  the checkout, which can only be focused or viewed on GitHub. */
   mode: "acting" | "focus";
+  /** The working tree is on the lane's branch: its footer offers the tree's
+   *  actions too. Off it, an acting lane's footer is its PR's alone. */
+  tree: boolean;
   gitState: GitState | null;
   prState: PrState | null;
   checks: PrChecks | null;
@@ -35,10 +37,15 @@ export function useFooterModel(input: {
   customActive: boolean;
   delegationActive: boolean;
   busy: boolean;
+  /** A local review is queued or running on the checkout, whichever lane is
+   *  in view. */
+  reviewActive: boolean;
+  /** The agent is mid-turn or still starting. */
+  agentWorking: boolean;
   githubConnected: boolean;
   primaryCheckout: boolean;
-  /** The local reviewer's menu entries; absent on a lane the footer doesn't
-   *  act on. */
+  /** The local reviewer's menu entries; absent off the lane whose tree it
+   *  reads. */
   reviewMenu?: ReviewFooterInput;
 }): Footer & {
   tone: ActionTone;
@@ -61,8 +68,8 @@ export function useFooterModel(input: {
   const laneBranch = prState?.branch ?? null;
   const checkoutBranch = gitState?.branch || null;
   const workSinceMerge = gitState != null && hasWorkSinceMerge(gitState);
-  const { delegationActive, busy, primaryCheckout } = input;
-  const reviewActive = reviewInFlight(input.reviewMenu?.state);
+  const { delegationActive, busy, primaryCheckout, reviewActive, agentWorking } = input;
+  const treeDirty = (gitState?.files.length ?? 0) > 0;
   const gate = useCallback(
     (key: string) =>
       gateAction(key, {
@@ -73,6 +80,8 @@ export function useFooterModel(input: {
         delegationActive,
         busy,
         reviewActive,
+        agentWorking,
+        treeDirty,
         primaryCheckout,
         workSinceMerge,
       }),
@@ -84,6 +93,8 @@ export function useFooterModel(input: {
       delegationActive,
       busy,
       reviewActive,
+      agentWorking,
+      treeDirty,
       primaryCheckout,
       workSinceMerge,
     ],
@@ -91,7 +102,7 @@ export function useFooterModel(input: {
 
   const footer =
     mode === "focus"
-      ? focusFooter()
+      ? focusFooter({ pr: prState, tree: input.tree })
       : buildFooter({
           git: gitState,
           pr: prState,
@@ -107,6 +118,7 @@ export function useFooterModel(input: {
           // flicker to "Publish" before the first read lands.
           hasOrigin: gitState?.has_origin ?? true,
           reviewMenu: input.reviewMenu,
+          lane: { tree: input.tree, focused: true },
         });
   const { primary, groups, mainDisabled, mainReason } = applyGate(footer, gate);
   const ending =

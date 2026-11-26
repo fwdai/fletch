@@ -1328,6 +1328,7 @@ pub fn run() {
             commands::get_pr_live,
             commands::get_pr_threads,
             commands::set_focused_pr,
+            commands::checkout_pr,
             commands::open_agent_shell,
             commands::close_agent_shell,
             commands::write_to_shell,

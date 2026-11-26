@@ -287,6 +287,36 @@ describe("buildLadder", () => {
     expect(current(rows)).toBeNull();
   });
 
+  it("reads the focused PR alone when the tree is on another branch", () => {
+    // The tree has its own work on feat-a; the lane is feat-b's PR, green.
+    const rows = ladder({
+      git: git({ branch: "feat-a", files: [file("modified")], unpushed: 2, ahead: 2 }),
+      pr: pr({ branch: "feat-b" }),
+      checks: checks(),
+      mergeState: "clean",
+      comments: { unresolved: [] },
+      lane: { tree: false, focused: true },
+    });
+    expect(row(rows, "changes")).toMatchObject({
+      mark: "idle",
+      summary: "working tree is on feat-a",
+    });
+    expect(row(rows, "commits")).toMatchObject({ mark: "idle", summary: "not checked out" });
+    // The next step is the PR's merge, not the tree's commit.
+    expect(row(rows, "pr")).toMatchObject({ summary: "#7 · ready to merge", current: true });
+    expect(current(rows)).toBe("pr");
+  });
+
+  it("shows the tree's rows on a lane only looked at when the tree is on it", () => {
+    const rows = ladder({
+      git: git({ branch: "feat-a", files: [file("modified")] }),
+      pr: pr({ branch: "feat-a" }),
+      lane: { tree: true, focused: false },
+    });
+    expect(row(rows, "changes")).toMatchObject({ mark: "attention", summary: "1 file" });
+    expect(current(rows)).toBeNull();
+  });
+
   it("renders nothing before the first git read", () => {
     expect(ladder({ git: null })).toEqual([]);
   });

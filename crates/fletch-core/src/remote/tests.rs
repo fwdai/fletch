@@ -652,6 +652,7 @@ fn allowlist_matches_the_protocol_table() {
         "create_pr",
         "merge_pr",
         "set_focused_pr",
+        "checkout_pr",
         "get_pr_state",
         "get_pr_checks",
         "get_pr_live",

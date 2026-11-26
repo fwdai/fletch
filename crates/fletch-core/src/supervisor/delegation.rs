@@ -529,6 +529,11 @@ impl Delegations {
         self.inner.lock().table.is_empty()
     }
 
+    /// A delegation is live on `key`'s checkout.
+    pub(crate) fn holds(&self, key: &Key) -> bool {
+        self.inner.lock().table.contains_key(key)
+    }
+
     /// Every live delegation, in key order.
     pub fn views(&self) -> Vec<DelegationView> {
         self.inner

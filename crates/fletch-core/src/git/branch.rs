@@ -265,6 +265,49 @@ pub async fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
     }
 }
 
+/// Whether the checkout holds uncommitted work: anything `git status` lists,
+/// untracked files included. A move to another branch would carry it along.
+pub async fn has_uncommitted_changes(checkout: &Path) -> Result<bool> {
+    let out = run_git(checkout, &["status", "--porcelain"], "status").await?;
+    Ok(!out.stdout.iter().all(u8::is_ascii_whitespace))
+}
+
+/// Put the checkout on `branch`: its local head, or one created at the tip
+/// this checkout knows for it on `origin` (`refs/remotes/origin/<branch>`).
+/// Local only; a branch the checkout has in neither place is an error, and
+/// fetching it first is the caller's.
+pub async fn switch_branch(checkout: &Path, branch: &str) -> Result<()> {
+    // `--` after the name, so a branch can never be read as a path.
+    if branch_exists(checkout, branch).await? {
+        run_git(
+            checkout,
+            &["checkout", branch, "--"],
+            &format!("checkout {branch}"),
+        )
+        .await?;
+        return Ok(());
+    }
+    if !has_origin_tracking_ref(checkout, branch).await? {
+        return Err(Error::Git(format!(
+            "checkout {branch} failed: this checkout has no branch of that name"
+        )));
+    }
+    run_git(
+        checkout,
+        &[
+            "checkout",
+            "--no-track",
+            "-b",
+            branch,
+            &format!("refs/remotes/origin/{branch}"),
+            "--",
+        ],
+        &format!("checkout {branch}"),
+    )
+    .await?;
+    Ok(())
+}
+
 /// Resolve a ref to its full SHA. Returns the bare 40-char hex string.
 /// Errors if the ref is unknown or git is unhappy.
 pub async fn rev_parse(repo: &Path, refname: &str) -> Result<String> {
@@ -306,6 +349,87 @@ mod tests {
 
     async fn config(repo: &Path, key: &str, val: &str) {
         crate::git::testing::git(repo, &["config", key, val]);
+    }
+
+    /// A repo on `main` with one commit and a committing identity.
+    async fn repo_with_commit(repo: &Path) {
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        commit_all(repo, "first").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn switch_branch_moves_between_local_branches() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        repo_with_commit(repo).await;
+        let start = current_branch(repo).await.unwrap().unwrap();
+        checkout_new_branch(repo, "feat/a").await.unwrap();
+        std::fs::write(repo.join("only-on-a.txt"), b"a").unwrap();
+        commit_all(repo, "on a").await.unwrap();
+
+        switch_branch(repo, &start).await.unwrap();
+        assert_eq!(
+            current_branch(repo).await.unwrap().as_deref(),
+            Some(&*start)
+        );
+        assert!(!repo.join("only-on-a.txt").exists());
+
+        switch_branch(repo, "feat/a").await.unwrap();
+        assert_eq!(
+            current_branch(repo).await.unwrap().as_deref(),
+            Some("feat/a")
+        );
+        assert!(repo.join("only-on-a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn switch_branch_creates_the_branch_from_origins_tracking_ref() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        repo_with_commit(repo).await;
+        let tip = rev_parse(repo, "HEAD").await.unwrap();
+        crate::git::testing::git(
+            repo,
+            &["update-ref", "refs/remotes/origin/feat/remote", &tip],
+        );
+
+        switch_branch(repo, "feat/remote").await.unwrap();
+        assert_eq!(
+            current_branch(repo).await.unwrap().as_deref(),
+            Some("feat/remote")
+        );
+        assert_eq!(rev_parse(repo, "HEAD").await.unwrap(), tip);
+    }
+
+    #[tokio::test]
+    async fn switch_branch_refuses_a_branch_the_checkout_does_not_have() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        repo_with_commit(repo).await;
+        let start = current_branch(repo).await.unwrap();
+
+        let err = switch_branch(repo, "feat/nowhere").await.unwrap_err();
+        assert!(err.to_string().contains("no branch of that name"), "{err}");
+        assert_eq!(current_branch(repo).await.unwrap(), start);
+    }
+
+    #[tokio::test]
+    async fn uncommitted_changes_count_untracked_files() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        repo_with_commit(repo).await;
+        assert!(!has_uncommitted_changes(repo).await.unwrap());
+
+        std::fs::write(repo.join("new.txt"), b"n").unwrap();
+        assert!(has_uncommitted_changes(repo).await.unwrap());
+        commit_all(repo, "second").await.unwrap();
+        assert!(!has_uncommitted_changes(repo).await.unwrap());
+
+        std::fs::write(repo.join("a.txt"), b"changed").unwrap();
+        assert!(has_uncommitted_changes(repo).await.unwrap());
     }
 
     #[tokio::test]

@@ -110,7 +110,8 @@ pub async fn create_pr(
         .await
 }
 
-/// Merge the open PR for the targeted repo's current branch.
+/// Merge the targeted repo's focused PR (the checked-out branch's open PR
+/// when none is bound).
 #[tauri::command]
 pub async fn merge_pr(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -236,6 +237,21 @@ pub async fn get_all_pr_status(
         false,
     )
     .await)
+}
+
+/// Check out the head branch of one of a checkout's PRs and focus it. Refused
+/// while the checkout is in use or its tree has uncommitted work. The remote
+/// op of the same name answers the same thing.
+#[tauri::command]
+pub async fn checkout_pr(
+    ctx: State<'_, Arc<EngineCtx>>,
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+    number: u32,
+) -> Result<PrState> {
+    fletch_core::commands::checkout_pr_impl(&supervisor, &ctx, &agent_id, subdir.as_deref(), number)
+        .await
 }
 
 /// Focus one of a checkout's PRs (`number` must be in its set): the PR the

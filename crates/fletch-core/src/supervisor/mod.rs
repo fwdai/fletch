@@ -3,6 +3,7 @@
 mod account_switch;
 pub mod auto_archive;
 pub mod base_freshness;
+mod checkout_pr;
 mod checkpoints;
 pub mod delegation;
 mod disposition;

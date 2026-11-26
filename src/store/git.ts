@@ -199,6 +199,10 @@ export interface GitSlice {
    *  a caller that awaits this reads the new focus whichever arrives first. A
    *  refusal lands in `lastError`. */
   focusPr: (agentId: string, number: number, subdir?: string) => Promise<void>;
+  /** Check out the head branch of one of a checkout's PRs and focus it, then
+   *  re-read the tree it moved. Resolves whether it switched; a refusal (the
+   *  agent is working, the tree has uncommitted work) lands in `lastError`. */
+  checkoutPr: (agentId: string, number: number, subdir?: string) => Promise<boolean>;
   /** Publish a local-only project (no origin) to GitHub, then refresh git
    *  state so the panel switches out of the no-origin affordances. Resolves
    *  the repo web URL on success, null on error. */
@@ -838,6 +842,23 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get, { api, hostId }
         set((s) => applyPrStateChanged(prOrder(), s, { agent_id: agentId, subdir, state: pr }));
       } catch (e) {
         get().setLastError(String(e));
+      }
+    },
+
+    checkoutPr: async (agentId, number, subdir) => {
+      const gated = gateReason(environmentEntry(hostId), "checkoutPr");
+      if (gated) {
+        get().setLastError(gated);
+        return false;
+      }
+      try {
+        const pr = await api.checkoutPr(agentId, number, subdir);
+        set((s) => applyPrStateChanged(prOrder(), s, { agent_id: agentId, subdir, state: pr }));
+        await get().fetchGitState(agentId, subdir);
+        return true;
+      } catch (e) {
+        get().setLastError(String(e));
+        return false;
       }
     },
 

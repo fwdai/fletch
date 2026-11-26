@@ -35,6 +35,7 @@ export const ACTION_GATES: Partial<Record<string, GateName>> = {
   "clear-config": "clearCheckoutConfig",
   "delete-branch": "deleteBranch",
   "focus-pr": "focusPr",
+  "checkout-pr": "checkoutPr",
   "review-start": "review",
   "review-stop": "review",
 };

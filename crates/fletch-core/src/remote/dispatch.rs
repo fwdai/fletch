@@ -164,6 +164,7 @@ pub const OPS: &[&str] = &[
     "create_pr",
     "merge_pr",
     "set_focused_pr",
+    "checkout_pr",
     "get_pr_state",
     "get_pr_checks",
     "get_pr_live",
@@ -504,6 +505,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("create_pr", Scope::Publish),
     ("merge_pr", Scope::Publish),
     ("set_focused_pr", Scope::Agents),
+    ("checkout_pr", Scope::Agents),
     ("get_pr_state", Scope::Observe),
     ("get_pr_checks", Scope::Observe),
     ("get_pr_live", Scope::Observe),
@@ -1153,6 +1155,18 @@ impl Dispatch for SupervisorDispatch {
                         a.subdir.as_deref(),
                         a.number,
                     ))
+                }
+
+                "checkout_pr" => {
+                    let a: SetFocusedPrArgs = parse(args)?;
+                    res(crate::commands::checkout_pr_impl(
+                        sup,
+                        ctx,
+                        &a.agent_id,
+                        a.subdir.as_deref(),
+                        a.number,
+                    )
+                    .await)
                 }
 
                 "get_pr_state" => {

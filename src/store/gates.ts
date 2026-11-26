@@ -285,6 +285,14 @@ export const GATES = {
     label: "Switching PRs",
     reason: "This host is too old to switch between PRs — update it.",
   },
+  /** Checking out a PR's branch in the checkout and focusing it. Acts inside
+   *  the checkout, like the working-tree moves, so it closes only against a
+   *  host from before the op existed. */
+  checkoutPr: {
+    op: "checkout_pr",
+    label: "Switching branches",
+    reason: "This host is too old to switch branches — ask the agent to check it out.",
+  },
   /** Bringing an archived session back. Also only closed by an older host. */
   restore: {
     op: "restore_agent",

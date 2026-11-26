@@ -31,9 +31,11 @@ interface GitActionsCtx {
   msg: string;
   checks: PrChecks | null;
   comments: PrComments | null;
-  /** The PR the lane in view is about: its page, and its number for `focus-pr`. */
+  /** The PR the lane in view is about: its page, its number for `focus-pr`
+   *  and `checkout-pr`, and its head branch for the latter's notice. */
   prUrl: string | undefined;
   prNumber: number | undefined;
+  prBranch: string | undefined;
   /** The one gate (`actionGate.ts`), re-run here so no caller of the dispatch
    *  — a stale menu, the composer's shortcut — reaches the host past it. */
   gate: (key: string) => Gate | null;
@@ -68,6 +70,7 @@ export function useGitActions(ctx: GitActionsCtx) {
     comments,
     prUrl,
     prNumber,
+    prBranch,
     gate,
     githubConnected,
     hasOrigin,
@@ -96,6 +99,7 @@ export function useGitActions(ctx: GitActionsCtx) {
   const deleteBranch = useAppStore((s) => s.deleteBranch);
   const delegateAction = useAppStore((s) => s.delegateAction);
   const focusPr = useAppStore((s) => s.focusPr);
+  const checkoutPr = useAppStore((s) => s.checkoutPr);
   const seedComposer = useAppStore((s) => s.seedComposer);
   const openGithubConnect = useAppStore((s) => s.openGithubConnect);
   const startReview = useAppStore((s) => s.startReview);
@@ -182,9 +186,20 @@ export function useGitActions(ctx: GitActionsCtx) {
 
     switch (key) {
       case "focus-pr":
-        // The one place the panel moves the host's focus: to the PR of the
-        // lane in view, so its actions and autopilot follow it.
+        // Moves the host's focus to the PR of the lane in view, so its
+        // PR actions and autopilot follow it. The tree stays where it is.
         if (prNumber != null) void focusPr(agentId, prNumber, subdir);
+        break;
+      case "checkout-pr":
+        // Moves the tree too: the lane's branch checked out and its PR
+        // focused, so everything the footer then offers runs in that branch.
+        if (prNumber != null) {
+          void runBusy("Switching branch…", async () => {
+            if (await checkoutPr(agentId, prNumber, subdir)) {
+              showNotice(prBranch ? `Switched to ${prBranch}` : "Switched branch");
+            }
+          });
+        }
         break;
       case "connect-github":
         // Start the OAuth device flow right here (in the app-level modal), so a

@@ -51,11 +51,11 @@ export interface LadderInput {
   mergeState: MergeState | null;
   comments: PrComments | null;
   base: string;
-  /** How the lane relates to the checkout. `tree`: its changes and commits are
-   *  the working tree's (the focused PR's lane, or the tree's own); otherwise
-   *  the tree is on another branch and those rows say so. `focused`: the host
-   *  reads its threads and the ladder has a next step; a lane only looked at
-   *  has neither. Both default to true. */
+  /** How the lane relates to the checkout. `tree`: the working tree is on its
+   *  branch, so its changes and commits are the tree's; otherwise those rows
+   *  say where the tree is, and the lane's next step is its PR's alone.
+   *  `focused`: the host reads its threads and the ladder has a next step; a
+   *  lane only looked at has neither. Both default to true. */
   lane?: { tree: boolean; focused: boolean };
   /** The local reviewer's state for the checkout, when the host reported one.
    *  Absent or null: never reviewed (the row then reads from the threads and
@@ -210,6 +210,13 @@ function checksRow(checks: PrChecks | null, reading: boolean, current: boolean):
   }
 }
 
+/** The checkout as a lane the working tree isn't on reads it: nothing
+ *  uncommitted and no commits of its own, so what stands between that lane and
+ *  landing is its PR's alone. */
+export function withoutTree(git: GitState): GitState {
+  return { ...git, files: [], additions: 0, deletions: 0, ahead: 0, behind: 0, unpushed: 0 };
+}
+
 export function buildLadder(input: LadderInput): LadderRow[] {
   const { git, pr, checks, mergeState, comments, base } = input;
   const lane = input.lane ?? { tree: true, focused: true };
@@ -217,11 +224,18 @@ export function buildLadder(input: LadderInput): LadderRow[] {
 
   const blockers = detectBlockers({ git, pr, checks, comments });
   const has = (kind: Blocker["kind"]) => blockers.some((b) => b.kind === kind);
-  // The next step belongs to the lane the tree is on; a lane only looked at
-  // has none. The commit mode only shapes the delegation's kind, never which
-  // row it is about, so any mode gives the same row.
-  const current = lane.tree
-    ? currentRow(nextRung({ git, pr, checks, comments }, { base, commitMode: "commit" }), pr)
+  // The next step belongs to the focused lane, counting the tree's work only
+  // where the tree is; a lane only looked at has none. The commit mode only
+  // shapes the delegation's kind, never which row it is about, so any mode
+  // gives the same row.
+  const current = lane.focused
+    ? currentRow(
+        nextRung(
+          { git: lane.tree ? git : withoutTree(git), pr, checks, comments },
+          { base, commitMode: "commit" },
+        ),
+        pr,
+      )
     : null;
   const is = (key: RungKey) => current === key;
 

@@ -3,7 +3,7 @@
 // every action the footer emits — the primary and each menu row — and again by
 // `runAction` before it dispatches, so nothing reaches the host that the
 // button wouldn't: not a stale menu, not the composer's shortcut, not a row
-// picked on a lane the action isn't about. Six rules, in the order a user
+// picked on a lane the action isn't about. Seven rules, in the order a user
 // would want to hear them.
 //
 // Store-free, so the phone runs the same gate over the same footer: the one
@@ -33,6 +33,10 @@ export interface GateContext {
   busy: boolean;
   /** A local review is queued or running on this checkout. */
   reviewActive: boolean;
+  /** The agent is mid-turn (or still starting) in this checkout. */
+  agentWorking: boolean;
+  /** The working tree has uncommitted files. */
+  treeDirty: boolean;
   /** The checkout is the agent's primary repo. */
   primaryCheckout: boolean;
   /** Uncommitted files or commits origin lacks since the PR merged — work
@@ -46,8 +50,8 @@ const ENDS_BRANCH = new Set(["archive", "delete-branch"]);
 /** The agent playbooks that work on the PR itself (its checks, its base, its
  *  threads) and the two ways to end a merged branch. From a tree on another
  *  branch than that PR's, these would land on the wrong one. Everything else
- *  acts on the branch checked out, which is right whichever lane is in view,
- *  or on GitHub alone. */
+ *  acts on the branch checked out, which the footer offers only where the
+ *  tree is (`FooterInput.lane`), or on GitHub alone. */
 const BRANCH_BOUND = new Set([
   "agent-fix",
   "agent-update-branch",
@@ -112,6 +116,17 @@ export function gateAction(key: string, ctx: GateContext): Gate | null {
   if (host) return { reason: host };
   const scope = AGENT_SCOPED[key];
   if (scope && !ctx.primaryCheckout) return { reason: scope };
+  // Moving the tree to another branch: never under the agent, and never with
+  // work that would ride along to the other branch.
+  if (key === "checkout-pr") {
+    if (ctx.agentWorking) {
+      return { reason: "The agent is working in this checkout — switch when its turn ends" };
+    }
+    if (ctx.treeDirty) {
+      const on = ctx.checkoutBranch ? ` on ${ctx.checkoutBranch}` : "";
+      return { reason: `Commit or stash the changes${on} first` };
+    }
+  }
   if (BRANCH_BOUND.has(key) && ctx.laneBranch && ctx.checkoutBranch) {
     if (ctx.laneBranch !== ctx.checkoutBranch) {
       return {

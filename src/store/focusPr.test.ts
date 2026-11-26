@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 
-const { setFocusedPr } = vi.hoisted(() => ({ setFocusedPr: vi.fn() }));
-vi.mock("@/api", () => ({ api: { setFocusedPr } }));
+const { setFocusedPr, checkoutPr, getGitState } = vi.hoisted(() => ({
+  setFocusedPr: vi.fn(),
+  checkoutPr: vi.fn(),
+  getGitState: vi.fn(),
+}));
+vi.mock("@/api", () => ({ api: { setFocusedPr, checkoutPr, getGitState } }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
 import type { PrState } from "@/api";
@@ -46,6 +50,8 @@ const makeStore = () => {
 
 beforeEach(() => {
   setFocusedPr.mockReset();
+  checkoutPr.mockReset();
+  getGitState.mockReset();
   activeIs();
 });
 
@@ -94,5 +100,54 @@ describe("focusPr", () => {
 
     expect(setLastError).toHaveBeenCalledWith(GATES.focusPr.reason);
     expect(setFocusedPr).not.toHaveBeenCalled();
+  });
+});
+
+/** `checkoutPr` moves the tree as well: the host checks the PR's branch out
+ *  and focuses it, and the store re-reads the tree that just moved. */
+describe("checkoutPr", () => {
+  it("follows the host's answer and re-reads the checkout", async () => {
+    const { store, setLastError } = makeStore();
+    store.setState({
+      prStates: { "a1::api": pr(43) },
+      prSets: { "a1::api": [{ state: pr(43), checks: null }] },
+    });
+    checkoutPr.mockResolvedValue(pr(42));
+    getGitState.mockResolvedValue(null);
+
+    expect(await store.getState().checkoutPr("a1", 42, "api")).toBe(true);
+
+    expect(checkoutPr).toHaveBeenCalledWith("a1", 42, "api");
+    expect(getGitState).toHaveBeenCalledWith("a1", "api", undefined);
+    expect(setLastError).not.toHaveBeenCalled();
+    expect(store.getState().prStates["a1::api"]?.number).toBe(42);
+  });
+
+  it("reports the host's refusal and leaves the focus where it was", async () => {
+    const { store, setLastError } = makeStore();
+    store.setState({ prStates: { a1: pr(43) } });
+    checkoutPr.mockRejectedValue(new Error("Commit or stash them first."));
+
+    expect(await store.getState().checkoutPr("a1", 42)).toBe(false);
+
+    expect(setLastError).toHaveBeenCalledWith("Error: Commit or stash them first.");
+    expect(store.getState().prStates.a1?.number).toBe(43);
+    expect(getGitState).not.toHaveBeenCalled();
+  });
+
+  it("refuses on a host without the op", async () => {
+    activeIs({
+      id: "host-1",
+      name: "Cloud box",
+      kind: "remote",
+      connection: "connected",
+      protocol: { version: 2, ops: [], events: [], features: [] },
+    });
+    const { store, setLastError } = makeStore();
+
+    expect(await store.getState().checkoutPr("a1", 42)).toBe(false);
+
+    expect(setLastError).toHaveBeenCalledWith(GATES.checkoutPr.reason);
+    expect(checkoutPr).not.toHaveBeenCalled();
   });
 });
